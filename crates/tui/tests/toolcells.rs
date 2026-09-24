@@ -59,6 +59,17 @@ fn started(app: &mut App, id: &str, tool: &str, arg: &str) {
 }
 
 fn ended(app: &mut App, id: &str, tool: &str, text: &str) {
+    ended_with(app, id, tool, text, false, serde_json::Value::Null);
+}
+
+fn ended_with(
+    app: &mut App,
+    id: &str,
+    tool: &str,
+    text: &str,
+    is_error: bool,
+    details: serde_json::Value,
+) {
     app.reduce_agent(AgentEvent::ToolExecutionEnd {
         tool_call_id: id.to_owned(),
         tool_name: tool.to_owned(),
@@ -67,12 +78,12 @@ fn ended(app: &mut App, id: &str, tool: &str, text: &str) {
                 text: text.to_owned(),
                 text_signature: None,
             }],
-            details: serde_json::Value::Null,
+            details,
             usage: None,
             added_tool_names: None,
             terminate: None,
         },
-        is_error: false,
+        is_error,
     });
 }
 
@@ -121,7 +132,7 @@ fn a_lone_read_still_renders_as_itself() -> TestResult {
     });
     let joined = flat(&app.take_commits()).join("\n");
     assert!(!joined.contains("Explored"), "{joined}");
-    assert!(joined.contains("→ read src/lib.rs"), "{joined}");
+    assert!(joined.contains("→ Read src/lib.rs"), "{joined}");
     Ok(())
 }
 
@@ -229,5 +240,189 @@ fn spacing_separates_blocks_but_not_one_line_rows() -> TestResult {
         spaced.iter().any(|row| row.is_empty()),
         "two multi-line blocks are separated: {spaced:?}"
     );
+    Ok(())
+}
+
+/// A finished card showed one line of a forty-line result and no sign of the rest.
+#[test]
+fn a_collapsed_card_shows_three_rows_and_counts_the_rest() -> TestResult {
+    let mut app = app();
+    let text: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
+    started(&mut app, "b0", "bash", "seq 40");
+    ended_with(
+        &mut app,
+        "b0",
+        "bash",
+        &text.join("\n"),
+        false,
+        json!({ "exitCode": 0 }),
+    );
+    let rows = flat(&app.take_commits());
+    let joined = rows.join("\n");
+    for needle in ["line 1", "line 2", "line 3", "… 37 more lines"] {
+        assert!(joined.contains(needle), "{needle}: {joined}");
+    }
+    assert!(!joined.contains("line 4"), "{joined}");
+    assert!(
+        !joined.contains("exit"),
+        "a zero exit says nothing: {joined}"
+    );
+    assert_eq!(
+        rows.iter().filter(|row| row.contains("line 1")).count(),
+        1,
+        "the first row is not repeated as a digest: {joined}"
+    );
+    Ok(())
+}
+
+/// The old `⏎ 0` chip sat on every card; a pipeline's tail hid a `command not found` under it.
+#[test]
+fn a_nonzero_exit_and_a_masked_not_found_are_the_chips() -> TestResult {
+    let mut app = app();
+    started(&mut app, "b0", "bash", "false");
+    ended_with(
+        &mut app,
+        "b0",
+        "bash",
+        "",
+        false,
+        json!({ "exitCode": 127 }),
+    );
+    let joined = flat(&app.take_commits()).join("\n");
+    assert!(joined.contains("exit 127"), "{joined}");
+    assert!(!joined.contains('⏎'), "{joined}");
+
+    started(&mut app, "b1", "bash", "fgj pr ls | head -20; echo ---");
+    ended_with(
+        &mut app,
+        "b1",
+        "bash",
+        "sh: fgj: command not found\n---",
+        false,
+        json!({ "exitCode": 0 }),
+    );
+    let joined = flat(&app.take_commits()).join("\n");
+    assert!(joined.contains("not found"), "{joined}");
+    assert!(!joined.contains("exit 0"), "{joined}");
+    Ok(())
+}
+
+#[test]
+fn a_failed_card_opens_with_a_cross_and_keeps_its_reason() -> TestResult {
+    let mut app = app();
+    started(&mut app, "t0", "todo", "done t2");
+    ended_with(
+        &mut app,
+        "t0",
+        "todo",
+        "done needs evidence: the command you ran",
+        true,
+        json!({}),
+    );
+    let rows = flat(&app.take_commits());
+    assert!(rows.iter().any(|row| row.contains("✗ ⚙ Todo")), "{rows:?}");
+    assert!(
+        rows.iter().any(|row| row.contains("done needs evidence")),
+        "{rows:?}"
+    );
+    Ok(())
+}
+
+/// The head cut at 60 characters while the row had room to 120 and wraps past it.
+#[test]
+fn a_long_command_keeps_its_head_to_one_hundred_and_twenty() -> TestResult {
+    let mut app = app();
+    let command = format!("grep -rn {} crates/*/src --include='*.rs'", "x".repeat(70));
+    started(&mut app, "b0", "bash", &command);
+    ended(&mut app, "b0", "bash", "");
+    let joined = flat(&app.take_commits()).join("\n");
+    assert!(
+        joined.contains("crates/*/src --include='*.rs'"),
+        "the head wraps instead of cutting: {joined}"
+    );
+    assert!(joined.contains(&"x".repeat(70)), "{joined}");
+    assert!(!joined.contains('…'), "{joined}");
+    Ok(())
+}
+
+fn ended_todo(app: &mut App, id: &str, text: &str, is_error: bool) {
+    app.reduce_agent(AgentEvent::ToolExecutionEnd {
+        tool_call_id: id.to_owned(),
+        tool_name: "todo".to_owned(),
+        result: ToolResult {
+            content: vec![Content::Text {
+                text: text.to_owned(),
+                text_signature: None,
+            }],
+            details: serde_json::Value::Null,
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+        is_error,
+    });
+}
+
+/// Six todo steps in one turn were six cards; the HUD block above the composer carries
+/// the list, so a step commits nothing, a refusal keeps its card, and the close is one row.
+#[test]
+fn todo_steps_live_in_the_hud_not_the_transcript() -> TestResult {
+    let mut app = app();
+    started(&mut app, "t0", "todo", "start t1");
+    ended_todo(
+        &mut app,
+        "t0",
+        "Todos 0/2 · running: read\n- [>] read\n- [ ] write",
+        false,
+    );
+    assert!(
+        app.take_commits().is_empty(),
+        "a step that succeeded commits no card"
+    );
+    started(&mut app, "t1", "todo", "done t1");
+    ended_todo(
+        &mut app,
+        "t1",
+        "done needs evidence: the command you ran",
+        true,
+    );
+    let refused = flat(&app.take_commits()).join("\n");
+    assert!(refused.contains("done needs evidence"), "{refused}");
+    started(&mut app, "t2", "todo", "done t2");
+    ended_todo(&mut app, "t2", "Todos 2/2\n- [x] read\n- [x] write", false);
+    let closed = flat(&app.take_commits()).join("\n");
+    assert!(closed.contains("↳ Todos 2/2"), "{closed}");
+    assert!(!closed.contains("⚙"), "{closed}");
+    Ok(())
+}
+
+fn custom(app: &mut App, kind: &str, text: &str, display: bool) {
+    app.reduce_agent(AgentEvent::MessageEnd {
+        message: yi_types::message::AgentMessage::Custom {
+            custom_type: kind.to_owned(),
+            content: yi_types::message::UserContent::Text(text.to_owned()),
+            display,
+            details: None,
+            timestamp: 0,
+        },
+    });
+}
+
+/// The todo prelude restated the whole checklist as a dozen flagged rows under the
+/// user's prompt; a message sent `display: false` is the model's alone.
+#[test]
+fn a_hidden_custom_message_stays_out_of_the_transcript() -> TestResult {
+    let mut app = app();
+    custom(
+        &mut app,
+        "todo_prelude",
+        "The todo list still holds 1 open item(s) from before.\n## Ground\n- [x] t1 read",
+        false,
+    );
+    custom(&mut app, "reminder", "Relevant: skill://plan", true);
+    let rows = flat(&app.take_commits()).join("\n");
+    assert!(!rows.contains("todo_prelude"), "{rows}");
+    assert!(!rows.contains("t1 read"), "{rows}");
+    assert!(rows.contains("⚑ reminder Relevant: skill://plan"), "{rows}");
     Ok(())
 }

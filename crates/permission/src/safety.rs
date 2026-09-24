@@ -2,6 +2,7 @@
 pub enum Class {
     Safe,
     Destructive,
+    Egress,
     Unknown,
 }
 
@@ -230,8 +231,29 @@ fn subcommand(argv: &[String]) -> Option<&str> {
         .find(|token| !token.starts_with('-'))
 }
 
+const GIT_VALUED_OPTIONS: [&str; 6] = [
+    "--config-env",
+    "--git-dir",
+    "--namespace",
+    "--work-tree",
+    "-C",
+    "-c",
+];
+
+pub(crate) fn git_subcommand(argv: &[String]) -> Option<&str> {
+    let mut tokens = argv.iter().skip(1).map(String::as_str);
+    while let Some(token) = tokens.next() {
+        if GIT_VALUED_OPTIONS.contains(&token) {
+            tokens.next();
+        } else if !token.starts_with('-') {
+            return Some(token);
+        }
+    }
+    None
+}
+
 fn git_class(argv: &[String]) -> Class {
-    let Some(subcommand) = subcommand(argv) else {
+    let Some(subcommand) = git_subcommand(argv) else {
         return Class::Safe;
     };
     let flags = flags(argv);
@@ -256,6 +278,12 @@ fn git_class(argv: &[String]) -> Class {
     };
     if destructive {
         return Class::Destructive;
+    }
+    if matches!(
+        subcommand,
+        "clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule"
+    ) {
+        return Class::Egress;
     }
     if GIT_READ.binary_search(&subcommand).is_ok() {
         return Class::Safe;
@@ -388,6 +416,14 @@ pub fn verdict(command: &str) -> Verdict {
                     ),
                 };
             }
+            Class::Egress => {
+                return Verdict::Ask {
+                    reason: format!(
+                        "`git {}` needs the network; a contained run has none",
+                        git_subcommand(argv).unwrap_or_default()
+                    ),
+                };
+            }
             Class::Unknown => {
                 if unknown.is_none() {
                     unknown = Some(format!(
@@ -402,5 +438,145 @@ pub fn verdict(command: &str) -> Verdict {
     match unknown {
         Some(reason) => Verdict::Contain { reason },
         None => Verdict::Allow,
+    }
+}
+
+/// Shell words a lenient split leaves behind; none of them is a program.
+const KEYWORDS: [&str; 12] = [
+    "case", "do", "done", "elif", "else", "esac", "fi", "for", "in", "then", "until", "while",
+];
+/// Shell words a command can hide behind, and words that open a header naming no command.
+const OPENERS: [&str; 6] = ["do", "done", "else", "esac", "fi", "then"];
+const HEADERS: [&str; 6] = ["case", "elif", "for", "if", "until", "while"];
+
+const VERB_PROGRAMS: [&str; 16] = [
+    "brew", "bun", "cargo", "docker", "gem", "git", "go", "just", "make", "npm", "pip", "pip3",
+    "pnpm", "rustup", "uv", "yarn",
+];
+
+fn scope(argv: &[String]) -> Option<String> {
+    let mut argv: &[String] = argv;
+    // A wrapper runs another program, so the scope is that program, not `timeout` or `nice`.
+    while let Some(first) = argv.first() {
+        let raw = first.trim_start_matches('\u{0}');
+        let token = program(raw);
+        let wrapper =
+            PASSTHROUGH.binary_search(&token).is_ok() || matches!(token, "timeout" | "env");
+        let carried = raw.starts_with('-')
+            || raw.contains('=')
+            || raw.chars().all(|character| character.is_ascii_digit())
+            || KEYWORDS.contains(&token);
+        match wrapper || carried {
+            true => argv = argv.get(1..)?,
+            false => break,
+        }
+    }
+    let name = program(argv.first()?.trim_start_matches('\u{0}'));
+    let verb = match name {
+        "git" => git_subcommand(argv),
+        name if VERB_PROGRAMS.binary_search(&name).is_ok() => subcommand(argv),
+        _ => None,
+    };
+    Some(match verb {
+        Some(verb) => format!("{name} {verb}"),
+        None => name.to_owned(),
+    })
+}
+
+/// Scopes a sandbox refusal is remembered by; lenient, since a scope only turns contain into ask.
+pub fn refused_scopes(command: &str) -> Vec<String> {
+    let segments = match parse(command) {
+        Parsed::Segments(segments) => segments,
+        Parsed::Unparsed => lenient_segments(command),
+    };
+    let reader = |argv: &&Vec<String>| {
+        argv.first()
+            .is_some_and(|argv0| SAFE.binary_search(&program(argv0)).is_ok())
+    };
+    let tiers: [Vec<&Vec<String>>; 3] = [
+        segments
+            .iter()
+            .filter(|argv| classify(argv) != Class::Safe)
+            .collect(),
+        segments.iter().filter(|argv| !reader(argv)).collect(),
+        segments.iter().collect(),
+    ];
+    let mut scopes: Vec<String> = tiers
+        .into_iter()
+        .find(|tier| !tier.is_empty())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|argv| scope(argv))
+        .collect();
+    scopes.dedup();
+    scopes
+}
+
+fn lenient_segments(command: &str) -> Vec<Vec<String>> {
+    let mut segments = vec![Vec::new()];
+    let mut tokens = command.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if matches!(token, "&&" | "||" | "|" | ";" | "&") {
+            segments.push(Vec::new());
+        } else if matches!(token, ">" | ">>" | "<") {
+            tokens.next();
+        } else if !token.contains('>') && !token.starts_with('<') {
+            let word = token.trim_matches(['(', ')', '$', '`', ';']);
+            if let Some(argv) = segments.last_mut().filter(|_| !word.is_empty()) {
+                argv.push(word.to_owned());
+            }
+            if token.ends_with(';') {
+                segments.push(Vec::new());
+            }
+        }
+    }
+    // `for f in *` is a header naming no program; `do ./x` is one behind a shell word.
+    for argv in &mut segments {
+        while argv
+            .first()
+            .is_some_and(|first| OPENERS.contains(&program(first)))
+        {
+            argv.remove(0);
+        }
+    }
+    segments.retain(|argv| {
+        argv.first()
+            .is_some_and(|first| !HEADERS.contains(&program(first)))
+    });
+    segments
+}
+
+/// Options that move a command's tree or repository, and so its blast radius, elsewhere.
+const ESCAPES_THE_TREE: [&str; 5] = ["--git-dir", "--work-tree", "-C", "--directory", "--chdir"];
+
+/// The one verb a grant may name: readable, nothing destructive or networked, one unproven scope.
+pub(crate) fn grant_scope(command: &str) -> Option<String> {
+    let Parsed::Segments(segments) = parse(command) else {
+        return None;
+    };
+    let mut scopes = Vec::new();
+    for argv in &segments {
+        let argv0 = argv.first()?;
+        // A `./python3` is a file the model can write, and `-C` moves the tree (D207).
+        if argv0.contains('=')
+            || argv0.starts_with('\u{0}')
+            || argv0.contains('/')
+            || argv
+                .iter()
+                .skip(1)
+                .any(|token| ESCAPES_THE_TREE.iter().any(|flag| token.starts_with(flag)))
+        {
+            return None;
+        }
+        match classify(argv) {
+            Class::Destructive | Class::Egress => return None,
+            Class::Unknown => scopes.extend(scope(argv)),
+            Class::Safe => {}
+        }
+    }
+    scopes.dedup();
+    match scopes.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
     }
 }

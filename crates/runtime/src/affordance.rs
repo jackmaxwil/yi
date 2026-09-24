@@ -1,57 +1,70 @@
-use std::path::Path;
+use std::sync::OnceLock;
 
 use serde_json::{Map, Value};
+use yi_types::graph::{Edge, Graph};
 
 /// Host-authored next steps: deterministic, at most two lines, and immutable
 /// once written, because a recomputed line would move transcript bytes.
 pub const NEXT: &str = "next: ";
 
-pub fn spawned(name: &str) -> String {
-    format!(
-        "{NEXT}await rlm.wait(120) blocks until this child reports; rlm.send('{name}', 'line') steers it"
-    )
+/// A tool result carries at most this many lines; the todo tool keeps its own three.
+pub const TOOL_LINES: usize = 2;
+const HOPS: usize = 2;
+
+/// What the host knows at the seam: the predicates that hold, and the one name a line cites.
+pub struct Facts<'a> {
+    pub holds: &'a [&'a str],
+    pub name: &'a str,
+    pub cap: usize,
 }
 
-pub fn coroutine_leak() -> String {
-    format!(
-        "{NEXT}an un-awaited coroutine ran nothing; rlm.run and handle.result are async, so write h = await rlm.run(...) then await h.result()"
-    )
+/// The graph this binary carries, parsed once; an unparsable graph renders nothing, and
+/// `the_shipped_graph_passes_every_structural_check` is what keeps that from shipping.
+pub fn shipped() -> &'static Graph {
+    static GRAPH: OnceLock<Graph> = OnceLock::new();
+    GRAPH.get_or_init(|| {
+        serde_json::from_str(include_str!("prompts/graph.json")).unwrap_or_default()
+    })
 }
 
-pub fn method_awaited() -> String {
-    format!(
-        "{NEXT}rlm.run is a method, not a coroutine — call it: h = await rlm.run('…'), then r = await h.result()"
-    )
-}
-
-pub fn listing_name() -> String {
-    // Incident: list_subagents()[0].name raised; listings expose session_name, spawn handles expose name.
-    format!(
-        "{NEXT}list_subagents() entries expose session_name; RLMSpawnHandle.name is the spawn handle"
-    )
-}
-
-pub fn child_finished(name: &str) -> String {
-    format!(
-        "{NEXT}await rlm.result('{name}', schema=…) validates the answer host-side; the child stays addressable for follow-ups"
-    )
-}
-
-pub fn grid_empty() -> Option<String> {
-    Some(format!(
-        "{NEXT}an empty grid answer means it cannot prove the relationship, not that the code is absent; grep to close the gap"
-    ))
-}
-
-pub fn compacted(session_file: Option<&Path>) -> String {
-    match session_file {
-        Some(_) => format!(
-            "{NEXT}the window holds a summary plus recent turns; compact.recall(\"needle\") then rlm.fetch(\"history://<id>/<entry>\") pulls what the summary cites as (#entry)"
-        ),
-        None => format!(
-            "{NEXT}the window holds a summary plus recent turns; compact.recall(\"needle\") pulls entry ids the summary cites as (#entry)"
-        ),
+/// Invariant: a pure function of the graph and the facts, localized by exact match on the
+/// last call, so a line written once never moves transcript bytes.
+pub fn render(graph: &Graph, last_call: &str, facts: &Facts<'_>) -> Vec<String> {
+    let holds = |edge: &&Edge| {
+        let condition = edge.condition.as_str();
+        condition == "always" || facts.holds.contains(&condition)
+    };
+    let mut edges: Vec<&Edge> = Vec::new();
+    let mut frontier = vec![last_call];
+    for _ in 0..HOPS {
+        let found: Vec<&Edge> = frontier
+            .iter()
+            .flat_map(|from| graph.out_edges(from))
+            .filter(holds)
+            .collect();
+        frontier = found.iter().map(|edge| edge.to.as_str()).collect();
+        edges.extend(found);
     }
+    edges.sort_by_key(|edge| std::cmp::Reverse(edge.weight));
+    let mut lines: Vec<String> = Vec::new();
+    for edge in edges {
+        let line = format!("{NEXT}{}", edge.guidance.replace("{name}", facts.name));
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    lines.truncate(facts.cap);
+    lines
+}
+
+/// The shipped graph's lines after `last_call`, joined for a notice or a reply field.
+pub fn next(last_call: &str, holds: &[&str], name: &str) -> String {
+    let facts = Facts {
+        holds,
+        name,
+        cap: TOOL_LINES,
+    };
+    render(shipped(), last_call, &facts).join("\n")
 }
 
 pub fn call_template(tool: &str, schema: &Value, arguments: &Map<String, Value>) -> String {
@@ -76,6 +89,11 @@ pub fn call_template(tool: &str, schema: &Value, arguments: &Map<String, Value>)
             });
             shape.insert(key.clone(), value);
         }
+    }
+    // Incident: the plan schema names no `attempt`, so a submit template printed without it and
+    // the parser refused the very call the surface had just shown (#478).
+    for (key, value) in arguments {
+        shape.entry(key.clone()).or_insert_with(|| value.clone());
     }
     let rendered = serde_json::to_string(&Value::Object(shape)).unwrap_or_else(|_| "{}".to_owned());
     format!("{NEXT}call {tool} as {rendered}")

@@ -12,6 +12,8 @@ use yi_console::model::SidebarMode;
 use yi_console::{ConsoleOptions, DriveOptions, parse_script, run_headless};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
+use yi_types::plan::doc::{TodoLabel, TodoStateName};
+use yi_types::todo::{PhaseName, TodoItem, TodoList, TodoPhase};
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
@@ -281,14 +283,12 @@ fn fixture_loop(listener: &UnixListener, script: Vec<Step>) -> Result<(), String
     Ok(())
 }
 
-/// Its Result surfaces through the join in `run`, so a protocol mismatch fails with evidence.
+/// Incident: bound inside the thread, the socket lost the race to a console that dialled
+/// first, and the join then waited on an accept until nextest killed the test at 60s.
 fn spawn_fixture(socket: PathBuf, script: Vec<Step>) -> JoinHandle<Result<(), String>> {
-    std::thread::spawn(move || {
-        let _ = std::fs::remove_file(&socket);
-        let listener =
-            UnixListener::bind(&socket).map_err(|error| format!("fixture bind: {error}"))?;
-        fixture_loop(&listener, script)
-    })
+    let _ = std::fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).map_err(|error| format!("fixture bind: {error}"));
+    std::thread::spawn(move || fixture_loop(&listener?, script))
 }
 
 fn init_reply(frame: &Value) -> Vec<Value> {
@@ -532,6 +532,42 @@ fn resume_replays_and_prompt_streams() -> TestResult {
          key enter\n\
          wait-frame 5000 streamed answer\n\
          wait-idle 5000\n\
+         quit\n",
+    )
+}
+
+fn resume_alpha_on_a_lane(frame: &Value) -> Vec<Value> {
+    let mut frames = resume_alpha(frame);
+    frames.insert(
+        0,
+        update(
+            "s-alpha",
+            json!({
+                "sessionUpdate": "_yi/workdir",
+                "cwd": "/home/user/.yi/lanes/897d6e91/1",
+                "lane": "yi ⎇ lane 1",
+            }),
+        ),
+    );
+    frames
+}
+
+/// D208: the row named the root the console opened, for a session that ran in a lane.
+#[test]
+fn the_status_row_follows_the_workers_lane() -> TestResult {
+    run(
+        "workdir",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha_on_a_lane),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 ⎇ lane 1\n\
          quit\n",
     )
 }
@@ -2321,4 +2357,82 @@ fn the_rail_reads_from_the_top() -> TestResult {
         "the first slot is on the first row: {first}"
     );
     Ok(())
+}
+
+fn todo_update() -> Vec<Value> {
+    let item = |label: &str, state: TodoStateName| {
+        TodoLabel::new(label).ok().map(|label| {
+            let mut item = TodoItem::pending(label);
+            item.state = state;
+            item
+        })
+    };
+    let Some(phase) = PhaseName::new("Tasks").ok() else {
+        return Vec::new();
+    };
+    let list = TodoList {
+        phases: vec![TodoPhase {
+            name: phase,
+            items: [
+                item("read the record", TodoStateName::Done),
+                item("write the plan", TodoStateName::Running),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            extra: serde_json::Map::new(),
+        }],
+        ..TodoList::default()
+    };
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/todo", "list": list}),
+    )]
+}
+
+/// The daemon streams `_yi/todo` and the port kept it, but the pane never asked the port,
+/// so the console showed six todo cards and no block above the composer.
+#[test]
+fn a_todo_update_paints_the_block_above_the_composer() -> TestResult {
+    run(
+        "todo-hud",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(todo_update),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 Todos 1/2\n\
+         wait-frame 5000 2. ▶ write the plan\n\
+         quit\n",
+    )
+}
+
+/// A drag copied silently, so nothing said whether the release had taken; the banner
+/// says what left for the clipboard.
+#[test]
+fn a_drag_over_the_transcript_flashes_what_it_copied() -> TestResult {
+    run(
+        "copy-flash",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         mouse down 32 2\n\
+         mouse drag 60 5\n\
+         mouse up 60 5\n\
+         wait-frame 3000 copied 4 lines\n\
+         quit\n",
+    )
 }

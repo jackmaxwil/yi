@@ -104,14 +104,20 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
 
 #[test]
 fn a_denial_is_only_claimed_when_the_output_says_so() {
-    assert!(denial_hint(Some(0), "operation not permitted").is_none());
-    assert!(denial_hint(Some(127), "command not found").is_none());
-    assert!(denial_hint(Some(1), "assertion failed").is_none());
+    assert!(denial_hint(Some(0), "operation not permitted", "touch x").is_none());
+    assert!(denial_hint(Some(127), "command not found", "nope").is_none());
+    assert!(denial_hint(Some(1), "assertion failed", "cargo nextest run").is_none());
     let hint = denial_hint(
         Some(1),
         "sh: cannot create out.txt: Operation not permitted",
+        "cd /x && cargo fmt 2>&1 | head",
+    )
+    .unwrap_or_default();
+    assert!(hint.starts_with("next: "), "{hint}");
+    assert!(
+        hint.contains("`cargo fmt` now needs permission") && !hint.contains("same command"),
+        "the hint names the refused scope and promises only what the broker does: {hint}"
     );
-    assert!(hint.is_some_and(|line| line.starts_with("next: ")));
 }
 
 /// The live half. Everything above describes the policy; this runs it.
@@ -127,6 +133,7 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
     let sandbox = Sandbox {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
+        deny_write: Vec::new(),
     };
 
     let (code, output) = run("echo contained > inside.txt", &project, Some(&sandbox))?;
@@ -144,7 +151,7 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
         "the file must not exist"
     );
     assert!(
-        denial_hint(Some(code), &output).is_some(),
+        denial_hint(Some(code), &output, &escape).is_some(),
         "the failure must read as a sandbox denial: {output}"
     );
 
@@ -161,6 +168,7 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
     let sandbox = Sandbox {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
+        deny_write: Vec::new(),
     };
 
     let ordinary = format!("cat {}", home.join("notes.md").display());
@@ -193,5 +201,133 @@ fn a_contained_command_has_no_network() -> TestResult {
     let sandbox = Sandbox::for_workspace(&project, &home, None);
     let (code, output) = run(probe, &project, Some(&sandbox))?;
     assert_ne!(code, 0, "the sandbox must refuse egress: {output}");
+    Ok(())
+}
+
+fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fixture repository is built with the real git a contained command runs"
+    )]
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()?;
+    if !output.status.success() {
+        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// A trunk with one commit and a detached linked worktree beside it, the shape of a lane.
+fn linked_worktree(root: &Path) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
+    let trunk = root.join("trunk");
+    std::fs::create_dir_all(&trunk)?;
+    git(&trunk, &["init", "-q", "-b", "main"])?;
+    git(&trunk, &["config", "user.email", "yi@example.com"])?;
+    git(&trunk, &["config", "user.name", "yi"])?;
+    std::fs::write(trunk.join("README.md"), "trunk\n")?;
+    git(&trunk, &["add", "README.md"])?;
+    git(&trunk, &["commit", "-q", "-m", "init"])?;
+    let lane = root.join("lane");
+    git(
+        &trunk,
+        &["worktree", "add", "-q", "--detach", &lane.to_string_lossy()],
+    )?;
+    Ok((trunk, lane))
+}
+
+#[test]
+fn a_linked_worktree_sandbox_writes_its_gitdir_and_common_dir() -> TestResult {
+    let (root, _project, home) = workspace("gitdirs")?;
+    let (trunk, lane) = linked_worktree(&root)?;
+    let sandbox = Sandbox::for_workspace(&lane, &home, None);
+    let common = trunk.join(".git").canonicalize()?;
+    let gitdir = PathBuf::from(git(&lane, &["rev-parse", "--absolute-git-dir"])?).canonicalize()?;
+    let roots: Vec<PathBuf> = sandbox
+        .params()
+        .into_iter()
+        .filter(|(key, _)| key.starts_with("WRITABLE_ROOT_"))
+        .map(|(_, path)| path)
+        .collect();
+    for wanted in [&gitdir, &common] {
+        assert!(
+            roots.iter().any(|root| root == wanted),
+            "{} must be writable, roots: {roots:?}",
+            wanted.display()
+        );
+    }
+    Ok(())
+}
+
+/// The incident: `git add` in a lane failed on `.git/worktrees/<lane>/index.lock`.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_contained_git_commit_succeeds_in_a_linked_worktree() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, _project, home) = workspace("commit")?;
+    let (_trunk, lane) = linked_worktree(&root)?;
+    std::fs::write(lane.join("change.txt"), "from the lane\n")?;
+    let mut sandbox = Sandbox::for_workspace(&lane, &home, None);
+    // The scratch dir sits under tmp, a writable root that would hide the trunk's git dir.
+    let scratch = root.canonicalize()?;
+    sandbox.writable.retain(|writable| {
+        writable
+            .canonicalize()
+            .is_ok_and(|resolved| resolved.starts_with(&scratch))
+            || writable == Path::new("/private/tmp")
+    });
+    let command = "git checkout -q -b feature && git add -A && \
+        GIT_CONFIG_GLOBAL=/dev/null git -c user.email=yi@example.com -c user.name=yi commit -q -m lane";
+    let (code, output) = run(command, &lane, Some(&sandbox))?;
+    assert_eq!(
+        code, 0,
+        "a contained commit in a lane must succeed: {output}"
+    );
+    assert_eq!(git(&lane, &["log", "-1", "--format=%s"])?, "lane");
+    Ok(())
+}
+
+/// A hook and a config are code git runs on the host, outside any sandbox: making the git dirs
+/// writable must not hand a contained command a way out of the sandbox (D205).
+#[cfg(target_os = "macos")]
+#[test]
+fn a_contained_command_cannot_write_a_hook_or_the_config() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, _project, home) = workspace("hooks")?;
+    let (trunk, lane) = linked_worktree(&root)?;
+    let mut sandbox = Sandbox::for_workspace(&lane, &home, None);
+    let scratch = root.canonicalize()?;
+    sandbox.writable.retain(|writable| {
+        writable
+            .canonicalize()
+            .is_ok_and(|resolved| resolved.starts_with(&scratch))
+            || writable == Path::new("/private/tmp")
+    });
+    let common = trunk.join(".git");
+    for target in [
+        common.join("hooks/post-commit"),
+        common.join("config"),
+        common.join("worktrees/lane/commondir"),
+    ] {
+        let command = format!("printf x >> {}", target.display());
+        let (code, output) = run(&command, &lane, Some(&sandbox))?;
+        assert_ne!(
+            code,
+            0,
+            "{} must stay out of reach: {output}",
+            target.display()
+        );
+    }
+    // The point of the grant is still met: the index and refs are writable.
+    std::fs::write(lane.join("change.txt"), "from the lane\n")?;
+    let (code, output) = run("git add -A", &lane, Some(&sandbox))?;
+    assert_eq!(code, 0, "a contained `git add` still works: {output}");
     Ok(())
 }

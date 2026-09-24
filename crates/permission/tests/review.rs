@@ -14,7 +14,7 @@ fn context() -> CatastrophicContext {
     CatastrophicContext {
         home_dir: Some(PathBuf::from("/home/user")),
         working_dir: Some(PathBuf::from("/home/user/project")),
-        workspace_git: Some(PathBuf::from("/home/user/project/.git")),
+        workspace_git: vec![PathBuf::from("/home/user/project/.git")],
     }
 }
 
@@ -41,6 +41,7 @@ fn ask(display: &str, canonical: &str) -> ReviewedAsk {
         display: display.to_owned(),
         canonical: canonical.to_owned(),
         kind: RuleKind::Command,
+        grants: Vec::new(),
         evidence: "the reviewer refused".to_owned(),
     }
 }

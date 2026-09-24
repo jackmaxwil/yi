@@ -7,7 +7,7 @@ use crate::colors::{ColorTier, Theme, name_accent};
 use crate::diffview::{self, DiffBudget};
 use crate::markdown;
 use crate::wrap::wrap_line;
-use yi_types::subagent::ChildActivity;
+use yi_types::subagent::{ChildActivity, ChildFlag};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranscriptMode {
@@ -102,7 +102,10 @@ pub struct TaskCell {
     pub spawn: Option<String>,
     pub answer: Option<String>,
     pub activity: ChildActivity,
+    pub flag: Option<ChildFlag>,
 }
+
+pub const REPLY_HINT: &str = "focus it (alt-↓) and type your answer";
 
 #[derive(Debug, Clone)]
 pub enum Cell {
@@ -124,8 +127,8 @@ pub const CALLOUT_RAIL: &str = "▌";
 const GUTTER_CONTINUATION: &str = "  ";
 const THOUGHT_INDENT: &str = "  ";
 
-/// Reasoning prose, dim and italic under a `∴` glyph. `header` is false past the
-/// first slice: a thought streams a paragraph at a time, and a label each reads as many.
+/// Reasoning prose, dim and italic, with nothing over it: the style is the label. `header`
+/// is false past the first slice, so a thought streamed in paragraphs opens one blank, not many.
 pub fn thought_lines(
     markdown: &str,
     width: usize,
@@ -134,18 +137,16 @@ pub fn thought_lines(
     header: bool,
 ) -> Vec<Line<'static>> {
     let style = theme.dim_style().add_modifier(Modifier::ITALIC);
-    let glyph = Span::styled("  ∴", style.fg(theme.purple));
     if mode == TranscriptMode::Normal {
         let lines = markdown.lines().count();
-        return vec![Line::from(vec![
-            glyph,
-            Span::styled(format!(" {lines} lines"), style),
-        ])];
+        return vec![Line::from(Span::styled(
+            format!("  thought · {}", count_label(lines, "line")),
+            style,
+        ))];
     }
     let mut out = Vec::new();
     if header {
         out.push(Line::default());
-        out.push(Line::from(glyph));
     }
     // Rendered two columns narrow, matching the indent below: at full width every line that
     // filled it wrapped again and shed its last word onto a line of its own.
@@ -223,7 +224,7 @@ fn tint(lines: Vec<Line<'static>>, width: usize, theme: &Theme) -> Vec<Line<'sta
 
 /// The user turn carries a heavy left bar in the session accent over a panel
 /// fill. The bar is what survives at 16 colors, where the tint degrades away.
-const USER_BAR: &str = "┃";
+pub const USER_BAR: &str = "┃";
 
 fn bar(lines: Vec<Line<'static>>, theme: &Theme) -> Vec<Line<'static>> {
     let style = theme.user_style().fg(theme.accent);
@@ -236,6 +237,17 @@ fn bar(lines: Vec<Line<'static>>, theme: &Theme) -> Vec<Line<'static>> {
         })
         .collect()
 }
+
+/// The tool's name as a card reads it, `Read`, the way the Explored verb column already does.
+pub fn label(tool: &str) -> String {
+    let mut chars = tool.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+const PREVIEW_ROWS: usize = 3;
 
 fn glyph(tool: &str) -> char {
     match tool {
@@ -352,15 +364,37 @@ impl ToolCell {
                 theme.accent_style(),
             )],
             ToolStatus::Awaiting => vec![Span::styled("△ ", style)],
-            _ => Vec::new(),
+            ToolStatus::Failed => vec![Span::styled("✗ ", style)],
+            ToolStatus::Denied => vec![Span::styled("⊘ ", style)],
+            ToolStatus::Done => Vec::new(),
         };
         spans.extend(self.summary_spans(theme, style));
         let (chips, digest) = self.chips(theme);
         let inner = crate::card::body_width(width);
         let mut body = Vec::new();
+        // `normal` folds every body away and `verbose` opens them all; the default view
+        // between them shows the first rows of the result and how many follow.
+        let preview: Vec<Line<'static>> =
+            if mode != TranscriptMode::Thinking || self.patch().is_some() || self.name == "todo" {
+                Vec::new()
+            } else {
+                self.body(theme).into_iter().take(PREVIEW_ROWS).collect()
+            };
+        let repeats_digest = |digest: &str| {
+            preview.first().is_some_and(|row| {
+                row.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    .trim()
+                    == digest.trim()
+            })
+        };
         // A failure's body is never mode-gated: a reader who cannot see why a
         // call failed cannot act on it, whatever mode the cell rendered under.
-        if let Some(digest) = digest {
+        if let Some(digest) = digest
+            && (failed || !repeats_digest(&digest))
+        {
             let detail = if failed {
                 Style::default().fg(theme.error)
             } else {
@@ -378,6 +412,18 @@ impl ToolCell {
         } else if expanded {
             for line in self.body(theme) {
                 body.extend(capped(&line, inner, "     ", theme));
+            }
+        } else {
+            let hidden = self.lines_total().saturating_sub(preview.len());
+            let shown = !preview.is_empty();
+            for line in preview {
+                body.extend(capped(&line, inner, "     ", theme));
+            }
+            if shown && hidden > 0 {
+                body.push(Line::from(Span::styled(
+                    format!("… {hidden} more lines"),
+                    theme.dim_style(),
+                )));
             }
         }
         crate::card::card(Line::from(spans), &chips, body, width, theme, self.status)
@@ -426,7 +472,21 @@ impl ToolCell {
         if self.status != ToolStatus::Running
             && let Some(code) = self.details.get("exitCode").and_then(Value::as_i64)
         {
-            chips.push(Chip::exit(code, theme));
+            chips.extend(Chip::exit(code, theme));
+            // Incident: `fgj … | head -20; echo ---` reported the tail's 0 over a `command
+            // not found`, and the reader saw a green pass where nothing ran.
+            if code == 0
+                && self
+                    .preview
+                    .iter()
+                    .any(|row| row.contains("command not found"))
+            {
+                chips.push(Chip::new(
+                    "not found",
+                    "",
+                    Style::default().fg(theme.warning),
+                ));
+            }
         }
         chips.extend(Chip::elapsed(self.elapsed_ms, theme));
         (chips, prose)
@@ -444,9 +504,10 @@ impl ToolCell {
             let name = Style::default()
                 .fg(crate::card::tool_hue(theme, &self.name))
                 .add_modifier(Modifier::BOLD);
-            return match self.summary.split_once(self.name.as_str()) {
+            let label = label(&self.name);
+            return match self.summary.split_once(label.as_str()) {
                 Some((glyph, rest)) => {
-                    let mut spans = vec![Span::styled(format!("{glyph}{}", self.name), name)];
+                    let mut spans = vec![Span::styled(format!("{glyph}{label}"), name)];
                     // A path is read by its basename; the directories are context, so dim.
                     match rest.rsplit_once('/') {
                         Some((dir, base)) if !rest.contains(' ') && !base.is_empty() => {
@@ -476,8 +537,9 @@ impl ToolCell {
         let anchored = matches!(self.name.as_str(), "read" | "edit");
         // A patch routes to `diffview`, which colours from its own header; this is the plain
         // numbered dump a read prints, its path in the summary since `details` lacks it.
+        let label = label(&self.name);
         let subject = anchored
-            .then(|| self.summary.split_once(self.name.as_str()))
+            .then(|| self.summary.split_once(label.as_str()))
             .flatten()
             .map(|(_, rest)| rest.trim())
             .filter(|subject| !subject.is_empty());
@@ -533,9 +595,23 @@ impl ToolCell {
         if name == "bash" && !argument.is_empty() {
             return format!("$ {argument}");
         }
-        format!("{} {} {}", glyph(name), name, argument)
+        format!("{} {} {}", glyph(name), label(name), argument)
             .trim_end()
             .to_owned()
+    }
+
+    /// The result's line count, read back from the preview and its elision marker.
+    fn lines_total(&self) -> usize {
+        let omitted = self.preview.iter().find_map(|row| {
+            row.strip_prefix("… ")?
+                .strip_suffix(" more lines")?
+                .parse::<usize>()
+                .ok()
+        });
+        match omitted {
+            Some(n) => self.preview.len().saturating_sub(1).saturating_add(n),
+            None => self.preview.len(),
+        }
     }
 
     /// Yi showed no result lines, so a finished call left no trace of its
@@ -580,6 +656,14 @@ impl ToolCell {
     }
 }
 
+pub(crate) fn activity_label(activity: ChildActivity) -> &'static str {
+    match activity {
+        ChildActivity::Waiting => "waiting",
+        ChildActivity::Writing => "writing",
+        ChildActivity::Executing => "executing",
+    }
+}
+
 impl TaskCell {
     pub fn lines(
         &self,
@@ -588,16 +672,20 @@ impl TaskCell {
         mode: TranscriptMode,
         spinner_phase: usize,
     ) -> Vec<Line<'static>> {
-        let activity = match self.activity {
-            ChildActivity::Waiting => "waiting",
-            ChildActivity::Writing => "writing",
-            ChildActivity::Executing => "executing",
-        };
+        let activity = activity_label(self.activity);
         let pulse = crate::motion::pulse_frame(crate::motion::elapsed_of(spinner_phase));
-        let (glyph, state, tone) = match self.status {
-            TaskStatus::Running => (pulse, activity, theme.purple),
-            TaskStatus::Done => ('↳', "done", theme.purple),
-            TaskStatus::Failed => ('✗', "failed", theme.error),
+        let flagged = match (self.status, &self.flag) {
+            (TaskStatus::Running, Some(ChildFlag::NeedsYou { note })) => {
+                Some(('?', "needs you", note))
+            }
+            (TaskStatus::Running, Some(ChildFlag::Stuck { note })) => Some(('!', "stuck", note)),
+            _ => None,
+        };
+        let (glyph, state, tone) = match (self.status, flagged) {
+            (_, Some((glyph, state, _))) => (glyph, state, theme.warning),
+            (TaskStatus::Running, None) => (pulse, activity, theme.purple),
+            (TaskStatus::Done, None) => ('↳', "done", theme.purple),
+            (TaskStatus::Failed, None) => ('✗', "failed", theme.error),
         };
         let (name, hash) = humanize(&self.description);
         let hash = if hash.is_empty() {
@@ -612,7 +700,16 @@ impl TaskCell {
         let elapsed = elapsed_label(self.elapsed_ms);
         let title = format!("{glyph} {name}{hash} · {state} {elapsed} · {calls}");
         let mut body = Vec::new();
-        if self.status == TaskStatus::Running {
+        if let Some((_, _, note)) = flagged {
+            let note: String = note.chars().filter(|c| !c.is_control()).collect();
+            body.push(Line::from(Span::styled(
+                note.clone(),
+                Style::default().fg(theme.warning),
+            )));
+            if note.starts_with("asks ") {
+                body.push(Line::from(Span::styled(REPLY_HINT, theme.dim_style())));
+            }
+        } else if self.status == TaskStatus::Running {
             let tool = self.last_tool.as_deref().unwrap_or("starting");
             let row = format!(
                 "⚙ {tool} · {} tokens",
@@ -794,36 +891,11 @@ impl Cell {
             Cell::Explored(rows) => explored_lines(rows, width, theme),
             Cell::Task(task) => task.lines(width, theme, mode, spinner_phase),
             Cell::Advisory { source, text } => {
-                // The advisor speaks over the agent's own output, so it takes the callout
-                // rail and blank air rather than a dim aside that reads as more prose.
-                let clean = strip_tags(text);
-                let rail = Style::default().fg(theme.warning);
-                let body = wrap_line(
-                    &Line::from(vec![
-                        Span::styled(format!("⚑ {source} "), rail.add_modifier(Modifier::BOLD)),
-                        Span::styled(clean, theme.muted_style()),
-                    ]),
-                    width.saturating_sub(4),
-                    "",
-                );
-                let mut out = vec![Line::default()];
-                out.extend(body.into_iter().map(|line| {
-                    let mut spans = vec![Span::styled(format!("  {CALLOUT_RAIL} "), rail)];
-                    spans.extend(line.spans);
-                    Line::from(spans)
-                }));
-                out.push(Line::default());
-                out
+                callout(Some(source), text, theme.muted_style(), width, theme)
             }
             Cell::Notice { text } => {
-                let style = Style::default().fg(theme.warning);
-                let rows = format!("  ⚑ {}", text.replace('\n', "\n    "));
-                rows.lines()
-                    .flat_map(|row| {
-                        let line = Line::from(Span::styled(row.to_owned(), style));
-                        wrap_line(&line, width, "    ")
-                    })
-                    .collect()
+                let body = Style::default().fg(theme.warning);
+                callout(None, text, body, width, theme)
             }
             Cell::Footer { text } => {
                 let line = Line::from(Span::styled(format!("  ↳ {text}"), theme.dim_style()));
@@ -848,6 +920,44 @@ impl Cell {
             }
         }
     }
+}
+
+/// Injected text, whoever injected it, takes one shape: the callout rail and a flag,
+/// so it never reads as the user or as the agent, and never as more than one row a line.
+fn callout(
+    source: Option<&str>,
+    text: &str,
+    body: Style,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let rail = Style::default().fg(theme.warning);
+    let mut head = String::from("⚑ ");
+    if let Some(source) = source {
+        head.push_str(source);
+        head.push(' ');
+    }
+    let mut out = Vec::new();
+    for row in text.lines() {
+        let row = if source.is_some() {
+            strip_tags(row)
+        } else {
+            row.trim().to_owned()
+        };
+        if row.is_empty() {
+            continue;
+        }
+        let line = Line::from(vec![
+            Span::styled(head.clone(), rail.add_modifier(Modifier::BOLD)),
+            Span::styled(row, body),
+        ]);
+        for wrapped in wrap_line(&line, width.saturating_sub(4), "") {
+            let mut spans = vec![Span::styled(format!("  {CALLOUT_RAIL} "), rail)];
+            spans.extend(wrapped.spans);
+            out.push(Line::from(spans));
+        }
+    }
+    out
 }
 
 const EXPLORED_CAP: usize = 32;
@@ -875,7 +985,7 @@ fn explored_lines(rows: &[ToolCell], width: usize, theme: &Theme) -> Vec<Line<'s
         // column now says; what is left is the subject.
         let subject = row
             .summary
-            .split_once(&row.name)
+            .split_once(label(&row.name).as_str())
             .map(|(_, rest)| rest.trim())
             .unwrap_or(row.summary.as_str())
             .to_owned();

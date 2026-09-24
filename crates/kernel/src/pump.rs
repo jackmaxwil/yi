@@ -291,6 +291,15 @@ pub(crate) fn handle_comm(inner: &Arc<Inner>, message: &JupyterMessage) {
             if let Ok(mut targets) = inner.comm_targets.lock() {
                 targets.remove(comm_id);
             }
+            // Incident: an abandoned `rlm.receive` polled on for 300 s and lost the mail it took.
+            if let Ok(mut in_flight) = inner.in_flight_host.lock() {
+                in_flight.retain(|(id, task)| {
+                    if id == comm_id {
+                        task.abort();
+                    }
+                    id != comm_id
+                });
+            }
             if let Ok(mut handled) = inner.handled_host_comm_ids.lock() {
                 handled.remove(comm_id);
             }
@@ -332,6 +341,7 @@ fn start_host_request(inner: &Arc<Inner>, comm_id: &str, data: Option<&Value>) {
     let payload = data.and_then(Value::as_object).cloned();
     let inner_task = Arc::clone(inner);
     let comm_id = comm_id.to_owned();
+    let comm_id_owned = comm_id.clone();
     let task = tokio::spawn(async move {
         let reply = dispatch_host_request(&inner_task, payload).await;
         let data = match reply {
@@ -373,8 +383,8 @@ fn start_host_request(inner: &Arc<Inner>, comm_id: &str, data: Option<&Value>) {
         }
     });
     if let Ok(mut in_flight) = inner.in_flight_host.lock() {
-        in_flight.retain(|task| !task.is_finished());
-        in_flight.push(task);
+        in_flight.retain(|(_, task)| !task.is_finished());
+        in_flight.push((comm_id_owned, task));
     }
 }
 

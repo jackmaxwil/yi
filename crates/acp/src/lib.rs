@@ -78,6 +78,39 @@ pub fn negotiate(protocol_version: u64) -> Result<u16, String> {
 
 type PendingAsks = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<Value>>>>;
 
+/// Grant 0 keeps the `allow_always` id, so a client that knows one always-option still works.
+fn permission_options(grants: &[yi_runtime::Grant]) -> Vec<AcpPermissionOption> {
+    let always = grants
+        .iter()
+        .enumerate()
+        .map(|(index, grant)| AcpPermissionOption {
+            option_id: match index {
+                0 => "allow_always".to_owned(),
+                _ => format!("allow_always_{index}"),
+            },
+            name: format!("Always allow {}", grant.label),
+            kind: AcpPermissionOptionKind::AllowAlways,
+        });
+    let bare = grants.is_empty().then(|| AcpPermissionOption {
+        option_id: "allow_always".to_owned(),
+        name: "Always allow".to_owned(),
+        kind: AcpPermissionOptionKind::AllowAlways,
+    });
+    std::iter::once(AcpPermissionOption {
+        option_id: "allow_once".to_owned(),
+        name: "Allow once".to_owned(),
+        kind: AcpPermissionOptionKind::AllowOnce,
+    })
+    .chain(always)
+    .chain(bare)
+    .chain(std::iter::once(AcpPermissionOption {
+        option_id: "reject_once".to_owned(),
+        name: "Reject".to_owned(),
+        kind: AcpPermissionOptionKind::RejectOnce,
+    }))
+    .collect()
+}
+
 /// Written synchronously BEFORE blocking, with the stdin reader thread routing the response
 /// into the std channel, so a current-thread runtime cannot deadlock waiting on itself.
 pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) -> Asker {
@@ -99,23 +132,7 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
             session_id: session_id.clone(),
             title: ask.title.to_owned(),
             description: Some(ask.description.to_owned()),
-            options: vec![
-                AcpPermissionOption {
-                    option_id: "allow_once".to_owned(),
-                    name: "Allow once".to_owned(),
-                    kind: AcpPermissionOptionKind::AllowOnce,
-                },
-                AcpPermissionOption {
-                    option_id: "allow_always".to_owned(),
-                    name: "Always allow".to_owned(),
-                    kind: AcpPermissionOptionKind::AllowAlways,
-                },
-                AcpPermissionOption {
-                    option_id: "reject_once".to_owned(),
-                    name: "Reject".to_owned(),
-                    kind: AcpPermissionOptionKind::RejectOnce,
-                },
-            ],
+            options: permission_options(ask.grants),
             content: ask.patch.map(|patch| {
                 vec![yi_types::acp::AcpToolContent::Diff {
                     changes: ask
@@ -149,8 +166,11 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
         match serde_json::from_value::<AcpPermissionOutcome>(outcome) {
             Ok(AcpPermissionOutcome::Selected { option_id }) => match option_id.as_str() {
                 "allow_once" => AskOutcome::AllowOnce,
-                "allow_always" => AskOutcome::AllowAlways,
-                _ => AskOutcome::Reject,
+                "allow_always" => AskOutcome::AllowAlways(0),
+                other => other
+                    .strip_prefix("allow_always_")
+                    .and_then(|index| index.parse().ok())
+                    .map_or(AskOutcome::Reject, AskOutcome::AllowAlways),
             },
             _ => AskOutcome::Reject,
         }
@@ -166,6 +186,8 @@ struct SessionHandle {
 impl Drop for SessionHandle {
     fn drop(&mut self) {
         self.forwarder.abort();
+        // Each running child is revoked under its own `parent_close`, its work kept.
+        let _revoked = self.host.close();
         self.session.dispose_kernel();
     }
 }
@@ -325,7 +347,7 @@ impl AcpState {
         }
         let events = session.subscribe();
         let context_window = session.model().context_window;
-        let parent = Parent {
+        let mut parent = Parent {
             forward: Forward {
                 session_id: session_id.clone(),
                 child: None,
@@ -338,7 +360,10 @@ impl AcpState {
             children: JoinSet::new(),
             seen: HashSet::new(),
             last_goal: Value::Null,
+            last_workdir: Value::Null,
+            launch_cwd: self.cwd.clone(),
         };
+        parent.watch_workdir();
         let forwarder = tokio::spawn(forward_parent(events, parent));
         self.sessions.insert(
             session_id.clone(),
@@ -608,7 +633,7 @@ impl AcpState {
             "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/kernel_execute"
             | "_yi/kernel_cancel" | "_yi/slash" => self.handle_extension(method, params),
             "_yi/steer" | "_yi/rewind" | "_yi/plan" | "_yi/todo" | "_yi/child_replay"
-            | "_yi/child_abort" => self.handle_control(method, params),
+            | "_yi/child_abort" | "_yi/child_answer" => self.handle_control(method, params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
     }
@@ -648,11 +673,21 @@ impl AcpState {
                     .session
                     .plan_service()
                     .ok_or((INTERNAL_ERROR, "no plan service is attached".to_owned()))?;
+                if text("action") == "submit" {
+                    return submit_plan(&service, params);
+                }
                 let plan = service
                     .read_plan()
                     .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
                 let subplans = yi_runtime::plan::subplans_of(&plan, service.plans_dir());
                 Ok(json!({"plan": plan, "subplans": subplans}))
+            }
+            "_yi/child_answer" => {
+                let told =
+                    handle
+                        .host
+                        .answer_told(text("childId"), text("questionId"), text("text"));
+                Ok(json!({ "text": told }))
             }
             "_yi/child_replay" | "_yi/child_abort" => {
                 let child_id = ChildId(text("childId").to_owned());
@@ -663,7 +698,7 @@ impl AcpState {
                     .find(|child| child.update.id == child_id)
                     .ok_or((INVALID_PARAMS, format!("unknown child {}", child_id.0)))?;
                 if method == "_yi/child_abort" {
-                    child.session.abort();
+                    let _stopped = handle.host.interrupt(&child_id.0);
                     return Ok(json!({}));
                 }
                 let store = child
@@ -929,6 +964,36 @@ impl AcpState {
         }
         Ok(total)
     }
+}
+
+/// Invariant: the daemon fans this worker's asks out to every attached client, so a submit
+/// carries no principal and is never confirmed here: an administrative op is `NoConfirmer`.
+fn submit_plan(
+    service: &yi_runtime::plan::PlanService,
+    params: &Value,
+) -> Result<Value, (i64, String)> {
+    use yi_runtime::plan::authority::{submission_of, submit};
+    let payload = params
+        .as_object()
+        .ok_or((INVALID_PARAMS, "params must be an object".to_owned()))?;
+    if payload.contains_key("actor") {
+        return Err((
+            INVALID_PARAMS,
+            yi_runtime::plan::tool::ArgError::ActorArg.to_string(),
+        ));
+    }
+    let (engine, actor) = service
+        .engine()
+        .ok_or((INTERNAL_ERROR, "no plan engine is attached".to_owned()))?;
+    let submission = submission_of(payload).map_err(|error| (INVALID_PARAMS, error))?;
+    let applied = submit(&engine, &actor, None, submission)
+        .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
+    Ok(json!({
+        "plan": applied.outcome.plan.id.as_str(),
+        "revision": applied.outcome.plan.touched.0,
+        "text": applied.text(),
+        "notices": applied.outcome.notices,
+    }))
 }
 
 fn respond(sink: &LineSink, id: Value, outcome: Result<Value, (i64, String)>) {

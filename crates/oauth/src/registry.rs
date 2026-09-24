@@ -77,6 +77,12 @@ fn oauth_code(id: &str, file: ProfileFile) -> Result<Kind> {
     let need = |field: Option<String>, key: &str| -> Result<String> {
         field.ok_or_else(|| format!("{id}: profile needs `{key}`").into())
     };
+    let redirect_host = file.redirect_host.unwrap_or_else(|| "localhost".to_owned());
+    if !matches!(redirect_host.as_str(), "localhost" | "127.0.0.1") {
+        return Err(
+            format!("{id}: `redirect_host` must be a loopback host, not {redirect_host}").into(),
+        );
+    }
     Ok(Kind::OauthCode(Box::new(OauthCode {
         id: id.to_owned(),
         client_id: need(file.client_id, "client_id")?,
@@ -88,7 +94,7 @@ fn oauth_code(id: &str, file: ProfileFile) -> Result<Kind> {
             .callback_port
             .ok_or_else(|| format!("{id}: profile needs `callback_port`"))?,
         callback_path: file.callback_path.unwrap_or_else(|| "/callback".to_owned()),
-        redirect_host: file.redirect_host.unwrap_or_else(|| "localhost".to_owned()),
+        redirect_host,
         port_fallback: file.port_fallback,
         json_token: file.json_token,
         extra_authorize: pairs(&file.extra_authorize),

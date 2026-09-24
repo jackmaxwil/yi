@@ -272,6 +272,73 @@ fn setting_the_permission_mode_takes_effect_and_echoes_back() -> TestResult {
     client.finish()
 }
 
+/// The daemon fans a worker's asks out to every attached client, so the worker never confirms
+/// (plan section 3.7's fallback): a `_yi/plan` submit of `fuse_reset` is refused with no
+/// `session/request_permission` raised, an actor in the frame is refused, the owner's own ops
+/// apply, and nothing by a user reaches the journal.
+#[test]
+fn a_submit_over_the_worker_cannot_confirm_an_administrative_op() -> TestResult {
+    let dir = temp_dir("plan-submit")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let new = client.request(
+        "2",
+        "session/new",
+        json!({"cwd": dir.display().to_string()}),
+    )?;
+    let session_id = new
+        .last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .ok_or("missing sessionId")?
+        .to_owned();
+    let submit = |args: Value| json!({"sessionId": session_id, "action": "submit", "args": args});
+    let opened = client.request(
+        "3",
+        "_yi/plan",
+        submit(json!({"op": "init", "goal": "ship the seam", "todos": [{"label": "cut"}]})),
+    )?;
+    let opened = opened.last().ok_or("no init response")?;
+    assert!(opened["result"]["plan"].is_string(), "{opened}");
+    let mut claimed = submit(json!({"op": "fuse_reset"}));
+    claimed["actor"] = json!("user://1");
+    let claimed = client.request("4", "_yi/plan", claimed)?;
+    let claimed = claimed.last().ok_or("no response")?;
+    assert!(
+        claimed["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("actor is not an argument")),
+        "{claimed}"
+    );
+    let refused = client.request("5", "_yi/plan", submit(json!({"op": "fuse_reset"})))?;
+    assert!(
+        refused
+            .iter()
+            .all(|frame| frame["method"] != "session/request_permission"),
+        "the worker raised an ask a peer could answer: {refused:?}"
+    );
+    let refused = refused.last().ok_or("no fuse_reset response")?;
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("confirmation")),
+        "{refused}"
+    );
+    let mut recorded = String::new();
+    for entry in std::fs::read_dir(dir.join(".yi/plans"))? {
+        let path = entry?.path().join("ops.jsonl");
+        if path.is_file() {
+            recorded.push_str(&std::fs::read_to_string(path)?);
+        }
+    }
+    assert!(
+        recorded.contains(r#""op":"init""#)
+            && !recorded.contains(r#""op":"fuse_reset""#)
+            && !recorded.contains("user://"),
+        "a user reached the journal over the socket: {recorded}"
+    );
+    client.finish()
+}
+
 #[test]
 fn v1_client_gets_the_exact_mismatch_error() -> TestResult {
     let dir = temp_dir("v1")?;
@@ -785,6 +852,54 @@ fn two_sessions_on_one_worker_hold_two_lanes() -> Result<(), Box<dyn Error>> {
             "session {id} has its own lane branch:\n{worktrees}"
         );
     }
+    client.finish()?;
+    Ok(())
+}
+
+/// D208: the console painted the root it launched in for a session that ran in a lane, so the
+/// status row named the wrong tree and branch for the whole session.
+#[test]
+fn attach_names_the_lane_path_not_the_launch_root() -> Result<(), Box<dyn Error>> {
+    let dir = temp_dir("workdir-update")?;
+    git_in(&dir, &["init", "-q", "-b", "main"])?;
+    git_in(
+        &dir,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base",
+        ],
+    )?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let frames = client.request(
+        "2",
+        "session/new",
+        json!({"cwd": dir.display().to_string(), "mcpServers": []}),
+    )?;
+    let workdir = frames
+        .iter()
+        .filter(|frame| frame["method"] == "session/update")
+        .map(|frame| &frame["params"]["update"])
+        .find(|update| update["sessionUpdate"] == "_yi/workdir")
+        .ok_or_else(|| format!("no _yi/workdir update in {frames:#?}"))?;
+    let cwd = workdir["cwd"].as_str().unwrap_or_default().to_owned();
+    assert!(
+        cwd.contains(".yi/lanes/"),
+        "the workdir update names the lane, not the launch root: {cwd}"
+    );
+    assert!(
+        workdir["lane"]
+            .as_str()
+            .is_some_and(|lane| lane.contains("⎇ lane")),
+        "the update carries the row label: {workdir}"
+    );
     client.finish()?;
     Ok(())
 }

@@ -53,15 +53,17 @@ impl Chip {
         Some(Self::new(crate::cell::elapsed_label(ms), "", style))
     }
 
-    pub fn exit(code: i64, theme: &Theme) -> Self {
-        let style = if code == 0 {
-            Style::default().fg(theme.success)
-        } else {
-            Style::default()
-                .fg(theme.error)
-                .add_modifier(Modifier::BOLD)
-        };
-        Self::new(format!("⏎ {code}"), "", style)
+    /// Zero is the expected outcome and says nothing; a nonzero code is the story.
+    pub fn exit(code: i64, theme: &Theme) -> Option<Self> {
+        (code != 0).then(|| {
+            Self::new(
+                format!("exit {code}"),
+                "",
+                Style::default()
+                    .fg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+            )
+        })
     }
 }
 

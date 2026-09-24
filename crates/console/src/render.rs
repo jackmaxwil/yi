@@ -674,6 +674,7 @@ fn paint_chat_pane(
             ..inner
         };
     }
+    chat.app.sync_port(Some(&chat.port));
     let goal = chat.port.goal();
     let mut scroll = pane.scroll_from_bottom;
     view.scroll = yi_tui::render::paint_pane(&mut chat.app, goal, buffer, inner, &mut scroll);
@@ -714,6 +715,20 @@ fn render_banner(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
             format!("  dropped:{}", app.state.dropped_frames),
             theme.dim_style(),
         ));
+    }
+    if spans.is_empty()
+        && let Some((flash, _)) = &app.flash
+    {
+        // What the last drag copied takes the hint row for two seconds, flush right.
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("{flash} "),
+                theme.accent_style(),
+            )))
+            .alignment(ratatui::layout::Alignment::Right),
+            area,
+        );
+        return;
     }
     if spans.is_empty() {
         let armed = matches!(app.state.mode, Mode::Prefix);

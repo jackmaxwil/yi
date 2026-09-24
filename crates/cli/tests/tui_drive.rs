@@ -420,6 +420,27 @@ fn one_path_for_both_capture_sinks_is_refused() -> TestResult {
     Ok(())
 }
 
+/// Dies with the cassette dropped on the console road: `yi console --faux` reused a listening
+/// daemon that never saw the cassette, so the scripted family met a real model.
+#[test]
+fn a_cassette_is_refused_where_it_cannot_reach_the_model() -> TestResult {
+    let dir = Scratch::new("yi-faux-console")?;
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(&cassette, "")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the flag contract is the spawned binary's argument parser"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args(["console", "--faux", &cassette.display().to_string()])
+        .env("HOME", dir.home()?)
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("--faux runs in-process only"), "{stderr}");
+    Ok(())
+}
+
 /// A paced `type` step holds the outer loop for its whole duration, and the
 /// wall clock is read there: without a check inside the step, a long paced
 /// line ran to completion past the deadline meant to bound it. Counting the
@@ -469,6 +490,373 @@ fn a_paced_type_step_still_honours_the_deadline() -> TestResult {
     assert!(
         landed < 30,
         "the step typed {landed} of 40 characters, so it ran past its deadline"
+    );
+    Ok(())
+}
+
+/// One assistant message per bash command, then a closing text reply, as `--faux` reads them.
+fn cassette_lines(calls: &[(&str, serde_json::Value)], reply: &str) -> String {
+    let message = |content: serde_json::Value, stop: &str| {
+        serde_json::json!({
+            "role": "assistant", "content": content,
+            "api": "faux", "provider": "faux", "model": "faux-1",
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                      "cost": {"input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.0}},
+            "stopReason": stop, "timestamp": 0
+        })
+        .to_string()
+    };
+    let mut lines: Vec<String> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (tool, arguments))| {
+            message(
+                serde_json::json!([{"type": "toolCall", "id": format!("call-{index}"), "name": tool, "arguments": arguments}]),
+                "toolUse",
+            )
+        })
+        .collect();
+    lines.push(message(
+        serde_json::json!([{"type": "text", "text": reply}]),
+        "stop",
+    ));
+    lines.join("\n") + "\n"
+}
+
+#[cfg(target_os = "macos")]
+fn bash(command: &str) -> (&'static str, serde_json::Value) {
+    ("bash", serde_json::json!({ "command": command }))
+}
+
+#[cfg(target_os = "macos")]
+/// A scratch dir under cargo's target tmp, removed on drop like [`Scratch`].
+struct TargetScratch(std::path::PathBuf);
+
+#[cfg(target_os = "macos")]
+impl TargetScratch {
+    /// A checkout under tmp puts cargo's target there too, inside a root the sandbox writes.
+    fn outside_tmp(&self) -> bool {
+        let resolved = self.0.canonicalize().unwrap_or_else(|_| self.0.clone());
+        ["/private/tmp", "/private/var/folders", "/tmp"]
+            .iter()
+            .all(|root| !resolved.starts_with(root))
+    }
+
+    fn new(name: &str) -> std::io::Result<Self> {
+        let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self(dir))
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for TargetScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fixture repository is built with the real git the session will run"
+    )]
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()?;
+    if !output.status.success() {
+        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// The incident (D205): a lane's index lives in the trunk's git dir, outside the tree, so a
+/// contained `git add` failed on `index.lock`. The real binary runs the commit contained here.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_lane_session_commits_contained() -> TestResult {
+    let dir = Scratch::new("yi-tui-lane-commit")?;
+    let home = dir.home()?;
+    // Outside tmp: every tmp root is writable, which would hide the trunk's git dir.
+    let trunk = TargetScratch::new("yi-tui-lane-commit")?;
+    if !trunk.outside_tmp() {
+        return Ok(());
+    }
+    let project = trunk.0.join("project");
+    std::fs::create_dir_all(&project)?;
+    git_in(&project, &["init", "-q", "-b", "main"])?;
+    std::fs::write(project.join("README.md"), "trunk\n")?;
+    git_in(&project, &["add", "README.md"])?;
+    git_in(
+        &project,
+        &[
+            "-c",
+            "user.email=yi@example.com",
+            "-c",
+            "user.name=yi",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ],
+    )?;
+    let command = "touch lane.txt && git add -A && git -c user.email=yi@example.com -c user.name=yi commit -q -m lane";
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(&cassette, cassette_lines(&[bash(command)], "committed"))?;
+    let keys = dir.join("script.keys");
+    std::fs::write(&keys, "wait-idle 30000\nquit\n")?;
+    let frames = dir.join("frames");
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--lanes",
+            "--model",
+            "faux/faux-1",
+            "--faux",
+            &cassette.display().to_string(),
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "commit it",
+        ])
+        .current_dir(&project)
+        .env("HOME", &home)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "drive run must exit 0: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut all_frames = String::new();
+    for entry in std::fs::read_dir(&frames)?.filter_map(Result::ok) {
+        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
+    }
+    assert!(
+        !all_frames.contains("Operation not permitted") && all_frames.contains("committed"),
+        "the contained commit must run to the final reply: {all_frames}"
+    );
+    let subjects = git_in(&project, &["log", "--all", "--format=%s"])?;
+    assert!(
+        subjects.lines().any(|subject| subject == "lane"),
+        "the lane's commit must reach the shared object store: {subjects}"
+    );
+    Ok(())
+}
+
+/// The incident's second half (D206): the retry reshaped the refused command, so an exact-text
+/// memory contained it again and no question ever reached the user.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_reshaped_retry_of_a_refused_program_reaches_the_approval_view() -> TestResult {
+    let dir = Scratch::new("yi-tui-refused-retry")?;
+    let home = dir.home()?;
+    let outside = TargetScratch::new("yi-tui-refused-retry")?;
+    if !outside.outside_tmp() {
+        return Ok(());
+    }
+    let first = format!("mkdir {}", outside.0.join("a").display());
+    let second = format!("mkdir {} && ls", outside.0.join("b").display());
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(
+        &cassette,
+        cassette_lines(&[bash(&first), bash(&second)], "gave up"),
+    )?;
+    let keys = dir.join("script.keys");
+    std::fs::write(
+        &keys,
+        "wait-frame 30000 Reject\nkey esc\nwait-idle 30000\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--faux",
+            &cassette.display().to_string(),
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "make the dirs",
+        ])
+        .current_dir(&*dir)
+        .env("HOME", &home)
+        .output()?;
+    let mut all_frames = String::new();
+    for entry in std::fs::read_dir(&frames)?.filter_map(Result::ok) {
+        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
+    }
+    assert!(
+        output.status.success(),
+        "drive run must exit 0: {}\n{all_frames}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        all_frames.contains("requires permission"),
+        "the reshaped retry must ask: {all_frames}"
+    );
+    assert!(
+        !outside.0.join("a").exists() && !outside.0.join("b").exists(),
+        "neither directory may exist: the first was contained, the second rejected"
+    );
+    Ok(())
+}
+
+/// D207: "Always allow" kept a rule keyed on the whole call, patch body and all, so the next
+/// edit in the same directory asked again.
+#[test]
+fn an_always_allowed_directory_edits_without_a_second_prompt() -> TestResult {
+    let dir = Scratch::new("yi-tui-grant")?;
+    let home = dir.home()?;
+    let write = |path: &str, text: &str| {
+        (
+            "write",
+            serde_json::json!({ "path": path, "content": text }),
+        )
+    };
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(
+        &cassette,
+        cassette_lines(
+            &[
+                write("notes/one.md", "first\n"),
+                write("notes/two.md", "second\n"),
+            ],
+            "both written",
+        ),
+    )?;
+    let keys = dir.join("script.keys");
+    // The second write may not ask: if it does, nothing answers it and the drive never idles.
+    std::fs::write(
+        &keys,
+        "wait-frame 30000 Always allow\nkey a\nwait-idle 30000\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--confirm",
+            "--model",
+            "faux/faux-1",
+            "--faux",
+            &cassette.display().to_string(),
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "write the notes",
+        ])
+        .current_dir(&*dir)
+        .env("HOME", &home)
+        .output()?;
+    let mut all_frames = String::new();
+    for entry in std::fs::read_dir(&frames)?.filter_map(Result::ok) {
+        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
+    }
+    assert!(
+        output.status.success(),
+        "the second write must not ask: {}\n{all_frames}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        all_frames.contains("Always allow edits under notes"),
+        "the prompt names the directory the grant covers:\n{all_frames}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("notes/two.md"))?,
+        "second\n"
+    );
+    Ok(())
+}
+
+/// Quit while a kernel cell sleeps: the process has to leave before the cell would end.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn quitting_during_a_running_kernel_cell_exits_promptly() -> TestResult {
+    let dir = Scratch::new("yi-tui-quit-cell")?;
+    let home = dir.home()?;
+    let calls = [
+        ("ipython", serde_json::json!({ "code": "print('booted')" })),
+        (
+            "ipython",
+            serde_json::json!({ "code": "import time\ntime.sleep(900)" }),
+        ),
+    ];
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(&cassette, cassette_lines(&calls, "done"))?;
+    let keys = dir.join("script.keys");
+    std::fs::write(&keys, "wait-frame 600000 time.sleep(900)\nquit\n")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--deadline",
+            "600",
+            "--model",
+            "faux/faux-1",
+        ])
+        .args(["--faux", &cassette.display().to_string()])
+        .args(["--session-dir", &dir.join("sessions").display().to_string()])
+        .args(["--keys", &keys.display().to_string(), "go"])
+        .env("HOME", &home)
+        // One venv per target dir, reused by every run rather than rebuilt under each HOME.
+        .env(
+            "YI_KERNEL_VENV",
+            std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("drive-kernel-venv"),
+        )
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill()?;
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    assert!(
+        status.is_some_and(|status| status.success()),
+        "the drive was still running a 900 s cell 300 s in, after its quit: {status:?}"
     );
     Ok(())
 }

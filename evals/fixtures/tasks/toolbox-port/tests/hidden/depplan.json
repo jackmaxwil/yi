@@ -1,0 +1,373 @@
+[
+ {
+  "id": "waves",
+  "args": [],
+  "stdin": "# a small build\nfetch(2):\nparse(3): fetch\nlint: parse\ncodegen(4): parse\ncompile(5): codegen lint\ndocs(2): parse\ntest(3): compile\npackage: test docs   # last\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "wave 1: fetch\nwave 2: parse\nwave 3: codegen docs lint\nwave 4: compile\nwave 5: test\nwave 6: package\n",
+  "files_after": {}
+ },
+ {
+  "id": "jobs-2",
+  "args": [
+   "--jobs",
+   "2"
+  ],
+  "stdin": "# a small build\nfetch(2):\nparse(3): fetch\nlint: parse\ncodegen(4): parse\ncompile(5): codegen lint\ndocs(2): parse\ntest(3): compile\npackage: test docs   # last\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "t=0 w1 fetch(2)\nt=2 w1 parse(3)\nt=5 w1 codegen(4)\nt=5 w2 docs(2)\nt=7 w2 lint(1)\nt=9 w1 compile(5)\nt=14 w1 test(3)\nt=17 w1 package(1)\nmakespan: 18\n",
+  "files_after": {}
+ },
+ {
+  "id": "target",
+  "args": [
+   "--target",
+   "docs",
+   "--target",
+   "lint"
+  ],
+  "stdin": "# a small build\nfetch(2):\nparse(3): fetch\nlint: parse\ncodegen(4): parse\ncompile(5): codegen lint\ndocs(2): parse\ntest(3): compile\npackage: test docs   # last\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "wave 1: fetch\nwave 2: parse\nwave 3: docs lint\n",
+  "files_after": {}
+ },
+ {
+  "id": "cycles",
+  "args": [],
+  "stdin": "a: b\nb: c\nc: a d\nd: e\ne: d\nf: f\ng: a\nh:\n",
+  "files": {},
+  "exit": 3,
+  "stdout": "cycle: a -> b -> c -> a\ncycle: d -> e -> d\ncycle: f -> f\n",
+  "files_after": {}
+ },
+ {
+  "id": "missing",
+  "args": [],
+  "stdin": "a: b zlib\nc: zlib yaml\n",
+  "files": {},
+  "exit": 4,
+  "stdout": "missing: b (needed by a)\nmissing: yaml (needed by c)\nmissing: zlib (needed by a c)\n",
+  "files_after": {}
+ },
+ {
+  "id": "allow-missing",
+  "args": [
+   "--allow-missing",
+   "--jobs",
+   "1"
+  ],
+  "stdin": "a(2): b zlib\nc: zlib\nb:\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "t=0 w1 b(1)\nt=1 w1 zlib(1)\nt=2 w1 a(2)\nt=4 w1 c(1)\nmakespan: 5\n",
+  "files_after": {}
+ },
+ {
+  "id": "duplicate",
+  "args": [],
+  "stdin": "a:\nb: a\na: b\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "jobs-1",
+  "args": [
+   "--jobs",
+   "1"
+  ],
+  "stdin": "# a small build\nfetch(2):\nparse(3): fetch\nlint: parse\ncodegen(4): parse\ncompile(5): codegen lint\ndocs(2): parse\ntest(3): compile\npackage: test docs   # last\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "t=0 w1 fetch(2)\nt=2 w1 parse(3)\nt=5 w1 codegen(4)\nt=9 w1 docs(2)\nt=11 w1 lint(1)\nt=12 w1 compile(5)\nt=17 w1 test(3)\nt=20 w1 package(1)\nmakespan: 21\n",
+  "files_after": {}
+ },
+ {
+  "id": "jobs-3",
+  "args": [
+   "--jobs",
+   "3"
+  ],
+  "stdin": "# a small build\nfetch(2):\nparse(3): fetch\nlint: parse\ncodegen(4): parse\ncompile(5): codegen lint\ndocs(2): parse\ntest(3): compile\npackage: test docs   # last\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "t=0 w1 fetch(2)\nt=2 w1 parse(3)\nt=5 w1 codegen(4)\nt=5 w2 docs(2)\nt=5 w3 lint(1)\nt=9 w1 compile(5)\nt=14 w1 test(3)\nt=17 w1 package(1)\nmakespan: 18\n",
+  "files_after": {}
+ },
+ {
+  "id": "jobs-many",
+  "args": [
+   "--jobs",
+   "16"
+  ],
+  "stdin": "# a small build\nfetch(2):\nparse(3): fetch\nlint: parse\ncodegen(4): parse\ncompile(5): codegen lint\ndocs(2): parse\ntest(3): compile\npackage: test docs   # last\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "t=0 w1 fetch(2)\nt=2 w1 parse(3)\nt=5 w1 codegen(4)\nt=5 w2 docs(2)\nt=5 w3 lint(1)\nt=9 w1 compile(5)\nt=14 w1 test(3)\nt=17 w1 package(1)\nmakespan: 18\n",
+  "files_after": {}
+ },
+ {
+  "id": "freed-worker-numbering",
+  "args": [
+   "--jobs",
+   "3"
+  ],
+  "stdin": "a(5):\nb(1):\nc(2):\nd(1): b\ne(1): b\nf(2): c d\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "t=0 w1 a(5)\nt=0 w2 b(1)\nt=0 w3 c(2)\nt=1 w2 d(1)\nt=2 w2 e(1)\nt=2 w3 f(2)\nmakespan: 5\n",
+  "files_after": {}
+ },
+ {
+  "id": "ready-at-finish-time",
+  "args": [
+   "--jobs",
+   "2"
+  ],
+  "stdin": "a(2):\nb(2):\nc(1): a b\nd(3): a\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "t=0 w1 a(2)\nt=0 w2 b(2)\nt=2 w1 c(1)\nt=2 w2 d(3)\nmakespan: 5\n",
+  "files_after": {}
+ },
+ {
+  "id": "target-skips-outside-cycle",
+  "args": [
+   "--target",
+   "h"
+  ],
+  "stdin": "a: b\nb: c\nc: a d\nd: e\ne: d\nf: f\ng: a\nh:\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "wave 1: h\n",
+  "files_after": {}
+ },
+ {
+  "id": "target-inside-cycle",
+  "args": [
+   "--target",
+   "g"
+  ],
+  "stdin": "a: b\nb: c\nc: a d\nd: e\ne: d\nf: f\ng: a\nh:\n",
+  "files": {},
+  "exit": 3,
+  "stdout": "cycle: a -> b -> c -> a\ncycle: d -> e -> d\n",
+  "files_after": {}
+ },
+ {
+  "id": "target-skips-outside-missing",
+  "args": [
+   "--target",
+   "b"
+  ],
+  "stdin": "a: nope\nb: c\nc:\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "wave 1: c\nwave 2: b\n",
+  "files_after": {}
+ },
+ {
+  "id": "unknown-target",
+  "args": [
+   "--target",
+   "zz",
+   "--target",
+   "aa"
+  ],
+  "stdin": "# a small build\nfetch(2):\nparse(3): fetch\nlint: parse\ncodegen(4): parse\ncompile(5): codegen lint\ndocs(2): parse\ntest(3): compile\npackage: test docs   # last\n",
+  "files": {},
+  "exit": 4,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "missing-before-cycle",
+  "args": [],
+  "stdin": "a: b nope\nb: a\n",
+  "files": {},
+  "exit": 4,
+  "stdout": "missing: nope (needed by a)\n",
+  "files_after": {}
+ },
+ {
+  "id": "shortest-cycle-smallest-path",
+  "args": [],
+  "stdin": "a: d b\nb: c\nc: a\nd: e\ne: f\nf: a\nb2: a\n",
+  "files": {},
+  "exit": 3,
+  "stdout": "cycle: a -> b -> c -> a\n",
+  "files_after": {}
+ },
+ {
+  "id": "two-shortest-cycles",
+  "args": [],
+  "stdin": "m: z b\nz: m\nb: m\n",
+  "files": {},
+  "exit": 3,
+  "stdout": "cycle: b -> m -> b\n",
+  "files_after": {}
+ },
+ {
+  "id": "cycle-order",
+  "args": [],
+  "stdin": "y: x\nx: y\nc: b\nb: c\nk: k\n",
+  "files": {},
+  "exit": 3,
+  "stdout": "cycle: b -> c -> b\ncycle: k -> k\ncycle: x -> y -> x\n",
+  "files_after": {}
+ },
+ {
+  "id": "self-dependency",
+  "args": [],
+  "stdin": "solo: solo\n",
+  "files": {},
+  "exit": 3,
+  "stdout": "cycle: solo -> solo\n",
+  "files_after": {}
+ },
+ {
+  "id": "bad-line",
+  "args": [],
+  "stdin": "a: b\nthis line is wrong\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "zero-cost",
+  "args": [],
+  "stdin": "a(0):\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "bad-dep-name",
+  "args": [],
+  "stdin": "a: b/c\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "bad-jobs",
+  "args": [
+   "--jobs",
+   "0"
+  ],
+  "stdin": "a:\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "empty-input",
+  "args": [],
+  "stdin": "# nothing\n\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "comment-and-spacing",
+  "args": [],
+  "stdin": "  b (2) : a\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "names-with-dots",
+  "args": [
+   "--jobs",
+   "2"
+  ],
+  "stdin": "lib.core(3):\nlib-util(2): lib.core\napp_1: lib-util lib.core  # trailing\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "t=0 w1 lib.core(3)\nt=3 w1 lib-util(2)\nt=5 w1 app_1(1)\nmakespan: 6\n",
+  "files_after": {}
+ },
+ {
+  "id": "duplicate-deps",
+  "args": [],
+  "stdin": "a: b b b\nb:\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "wave 1: b\nwave 2: a\n",
+  "files_after": {}
+ },
+ {
+  "id": "random-0",
+  "args": [
+   "--jobs",
+   "2"
+  ],
+  "stdin": "t06(6): t00 t03\nt08(3): t07\nt07(5): \nt02(5): t00\nt10(4): t01 t05 t02\nt04(5): t03 t01 t00\nt05(3): t02\nt01(6): t00\nt03(3): \nt09(5): \nt00(2): \n",
+  "files": {},
+  "exit": 0,
+  "stdout": "t=0 w1 t00(2)\nt=0 w2 t03(3)\nt=2 w1 t01(6)\nt=3 w2 t02(5)\nt=8 w1 t04(5)\nt=8 w2 t05(3)\nt=11 w2 t06(6)\nt=13 w1 t07(5)\nt=17 w2 t09(5)\nt=18 w1 t08(3)\nt=21 w1 t10(4)\nmakespan: 25\n",
+  "files_after": {}
+ },
+ {
+  "id": "random-1",
+  "args": [
+   "--jobs",
+   "2"
+  ],
+  "stdin": "t04(5): t01 t02\nt08(6): \nt00(2): \nt05(6): t02\nt02(2): \nt07(4): t00 t03 t05\nt01(4): t00\nt10(6): t07\nt09(1): t07\nt03(3): t00\nt06(2): \n",
+  "files": {},
+  "exit": 0,
+  "stdout": "t=0 w1 t00(2)\nt=0 w2 t02(2)\nt=2 w1 t01(4)\nt=2 w2 t03(3)\nt=5 w2 t05(6)\nt=6 w1 t04(5)\nt=11 w1 t06(2)\nt=11 w2 t07(4)\nt=13 w1 t08(6)\nt=15 w2 t09(1)\nt=16 w2 t10(6)\nmakespan: 22\n",
+  "files_after": {}
+ },
+ {
+  "id": "random-2",
+  "args": [],
+  "stdin": "t03(2): \nt07(1): \nt10(3): \nt11(2): \nt04(6): \nt00(5): \nt02(4): t00 t01\nt08(3): t00\nt05(5): t02 t04\nt06(3): \nt09(6): t00 t06 t02\nt12(3): t09 t02 t08\nt01(5): t00\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "wave 1: t00 t03 t04 t06 t07 t10 t11\nwave 2: t01 t08\nwave 3: t02\nwave 4: t05 t09\nwave 5: t12\n",
+  "files_after": {}
+ },
+ {
+  "id": "random-3",
+  "args": [
+   "--jobs",
+   "2"
+  ],
+  "stdin": "t04(2): t02 t01 t00\nt01(4): t00\nt13(4): t07\nt11(1): \nt03(1): \nt08(1): \nt00(3): \nt10(6): t03\nt07(5): \nt02(5): t00 t01\nt05(1): t03 t00 t04\nt12(5): \nt09(6): \nt14(6): t10\nt06(5): t03 t02\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "t=0 w1 t00(3)\nt=0 w2 t03(1)\nt=1 w2 t07(5)\nt=3 w1 t01(4)\nt=6 w2 t08(1)\nt=7 w1 t02(5)\nt=7 w2 t09(6)\nt=12 w1 t04(2)\nt=13 w2 t06(5)\nt=14 w1 t05(1)\nt=15 w1 t10(6)\nt=18 w2 t11(1)\nt=19 w2 t12(5)\nt=21 w1 t13(4)\nt=24 w2 t14(6)\nmakespan: 30\n",
+  "files_after": {}
+ },
+ {
+  "id": "random-4",
+  "args": [],
+  "stdin": "t03(4): \nt05(6): t02\nt04(5): t00 t01\nt01(4): t00\nt00(4): t01\nt07(4): \nt06(2): t00\nt02(4): t00 t01\n",
+  "files": {},
+  "exit": 3,
+  "stdout": "cycle: t00 -> t01 -> t00\n",
+  "files_after": {}
+ },
+ {
+  "id": "random-5",
+  "args": [],
+  "stdin": "t02(3): t00 t01\nt01(1): t00\nt06(3): \nt04(4): t03 t00 t02\nt08(6): t03 t05 t02\nt07(3): t08\nt00(2): \nt09(6): t02\nt03(1): t02 t00 t01\nt05(5): t02 t03\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "wave 1: t00 t06\nwave 2: t01\nwave 3: t02\nwave 4: t03 t09\nwave 5: t04 t05\nwave 6: t08\nwave 7: t07\n",
+  "files_after": {}
+ }
+]

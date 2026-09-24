@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use yi_permission::{Class, Parsed, Verdict, classify, parse, verdict};
+use yi_permission::{Class, Parsed, Verdict, classify, parse, refused_scopes, verdict};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -251,7 +251,7 @@ fn the_git_surface_splits_along_what_it_destroys() -> TestResult {
         ("git clean -fd", Class::Destructive),
         ("git checkout main", Class::Unknown),
         ("git checkout -- src", Class::Destructive),
-        ("git push origin main", Class::Unknown),
+        ("git push origin main", Class::Egress),
         (
             "git push --force-with-lease origin main",
             Class::Destructive,
@@ -331,4 +331,81 @@ fn find_and_sed_are_read_until_they_are_not() -> TestResult {
     assert_eq!(classify(&argv("sed -n '1,5p' file")[0]), Class::Safe);
     assert_eq!(classify(&argv("sed -i '' s/a/b/ file")[0]), Class::Unknown);
     Ok(())
+}
+
+#[test]
+fn git_network_verbs_ask_for_egress() -> TestResult {
+    for command in [
+        "git fetch origin",
+        "git pull --rebase",
+        "git push origin main",
+        "git clone https://example.com/repo.git",
+        "git ls-remote origin",
+        "git submodule update --init",
+        "git -C ../other fetch",
+    ] {
+        assert_eq!(classify(&argv(command)[0]), Class::Egress, "{command:?}");
+        match verdict(command) {
+            Verdict::Ask { reason } => assert!(reason.contains("network"), "{reason}"),
+            other => return Err(format!("{command:?} must ask, got {other:?}").into()),
+        }
+    }
+    assert_eq!(
+        classify(&argv("git push --force origin main")[0]),
+        Class::Destructive,
+        "a force push stays destructive, not merely egress"
+    );
+    Ok(())
+}
+
+#[test]
+fn git_global_options_do_not_become_the_subcommand() -> TestResult {
+    let cases = [
+        ("git -C ../wt status", Class::Safe),
+        ("git -C ../wt reset --hard HEAD~1", Class::Destructive),
+        ("git -c core.pager=cat log", Class::Safe),
+        (
+            "git --git-dir=.git --work-tree=. clean -fdx",
+            Class::Destructive,
+        ),
+        ("git -C ../wt commit -m x", Class::Unknown),
+        ("git --no-pager diff", Class::Safe),
+    ];
+    for (command, expected) in cases {
+        assert_eq!(classify(&argv(command)[0]), expected, "{command:?}");
+    }
+    Ok(())
+}
+
+/// What a sandbox refusal is remembered by: the program and its verb, so a retry that adds
+/// `&& git status | wc -l` is still the refused `git worktree`.
+#[test]
+fn scope_names_program_and_subcommand() {
+    let cases: [(&str, &[&str]); 14] = [
+        ("git worktree add ../wt br", &["git worktree"]),
+        ("git -C ../wt add -A", &["git add"]),
+        ("CARGO_TARGET_DIR=/t cargo nextest run", &["cargo nextest"]),
+        ("./scripts/adr.py 5", &["adr.py"]),
+        ("mkdir /outside/a && ls", &["mkdir"]),
+        ("cd /x && cargo fmt 2>&1 | head", &["cargo fmt"]),
+        (
+            "git worktree add -b b ../wt origin/main && git -C ../wt status --porcelain | wc -l",
+            &["git worktree"],
+        ),
+        (
+            "python3 scripts/guardrails/check_crate_size.py --update > log",
+            &["python3"],
+        ),
+        ("printf x > /outside/file", &["printf"]),
+        // A wrapper is not the program: remembering `timeout` poisons every later timeout and
+        // forgets the command that was actually refused (D206).
+        ("timeout 30 ./flaky.sh", &["flaky.sh"]),
+        ("nice -n 5 ./flaky.sh", &["flaky.sh"]),
+        ("env FOO=1 ./flaky.sh", &["flaky.sh"]),
+        ("ionice -c 3 nice cargo fmt", &["cargo fmt"]),
+        ("for f in *; do ./x $f; done", &["x"]),
+    ];
+    for (command, expected) in cases {
+        assert_eq!(refused_scopes(command), expected, "{command:?}");
+    }
 }

@@ -31,7 +31,7 @@ fn parse_tokens(body: &Value) -> Result<Credential> {
     let expires = body
         .get("expires_in")
         .and_then(Value::as_u64)
-        .map(|seconds| store::now() + std::time::Duration::from_secs(seconds));
+        .and_then(|seconds| store::now().checked_add(std::time::Duration::from_secs(seconds)));
     Ok(Credential {
         kind: Kind::Oauth,
         access,
@@ -61,11 +61,8 @@ fn id_token_account(body: &Value) -> Option<String> {
     let payload = id_token.split('.').nth(1)?;
     let claims: Value = serde_json::from_slice(&base64url_decode(payload)?).ok()?;
     claims
-        .pointer(
-            "/https:~1api.openai.com~1auth/chatgpt_account_id"
-                .replace("~1", "/")
-                .as_str(),
-        )
+        .get("https://api.openai.com/auth")?
+        .get("chatgpt_account_id")
         .and_then(Value::as_str)
         .map(str::to_owned)
 }
@@ -214,8 +211,8 @@ pub fn refresh(
     if next.refresh.is_none() {
         next.refresh = stored.refresh.clone();
     }
-    next.account = stored.account.clone();
-    next.org = stored.org.clone();
+    next.account = next.account.or_else(|| stored.account.clone());
+    next.org = next.org.or_else(|| stored.org.clone());
     next.extra = stored.extra.clone();
     Ok(next)
 }

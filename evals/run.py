@@ -142,6 +142,9 @@ def run_task(task_dir, binary, model, out=None):
             str(sessions),
             "--deadline",
             str(spec.get("timeoutSec", 600)),
+            # The binary reads YI_LEVERS only under this flag, and only a harness passes
+            # it (D220); an older binary that has no flag never sees it either.
+            *(["--eval"] if os.environ.get(yi_usage.LEVERS_ENV) else []),
             prompt,
         ]
         timed_out = False
@@ -300,7 +303,8 @@ def cache_check(spec, binary, model, out):
                 time.sleep(spec.get("settleSec", 3))
     warm_read = sum(turn["cacheRead"] or 0 for turn in turns[1:])
     row = {"task": spec["id"], "reward": 1 if warm_read else 0, "exit": exit_code, "timedOut": timed_out,
-           "wallSec": round(time.monotonic() - started, 2), "requests": len(turns)}
+           "wallSec": round(time.monotonic() - started, 2), "requests": len(turns),
+           "warmRead": warm_read, "warmInput": sum(turn["input"] or 0 for turn in turns[1:])}
     for key in (*yi_usage.TOKEN_KEYS, "nAssistantMessages", "costUnknownTurns"):
         row[key] = sum(turn.get(key) or 0 for turn in turns)
     costs = [turn.get("costUsd") for turn in turns]
@@ -333,7 +337,7 @@ def run_live(args):
     if args.task:
         specs = [spec for spec in specs if spec.name in set(args.task)]
     suite = f"live@{_capture(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'])}"
-    mode = "live" + yi_usage.routing_label(os.environ)
+    mode = "live" + yi_usage.routing_label(os.environ) + yi_usage.levers_label(os.environ)
     fingerprint = yi_usage.config_fingerprint(_capture([args.binary, "--version"]), args.model, mode, suite)
     rows, spent, budget_hit = [], 0.0, False
     for task_dir in specs:
@@ -368,7 +372,7 @@ def run_live(args):
         except json.JSONDecodeError:
             rollup = {}
     counts = {status: sum(1 for row in rows if row["status"] == status) for status in ("pass", "fail", "inconclusive")}
-    record = {"suite": suite, "model": args.model, "configFp": fingerprint, "capUsd": args.cap_usd,
+    record = {"suite": suite, "model": args.model, "mode": mode, "configFp": fingerprint, "capUsd": args.cap_usd,
               "spentUsd": round(spent, 6), "budgetHit": budget_hit, "counts": counts, "rows": rows, "telemetry": rollup}
     (out / "run.json").write_text(json.dumps(record, indent=1, sort_keys=True))
     print(json.dumps({"out": str(out), "counts": counts, "spentUsd": record["spentUsd"]}, sort_keys=True))
@@ -434,7 +438,7 @@ def main(argv=None):
         return report(errors, 0)
 
     suite = f"fixtures@{_capture(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'])}"
-    mode = (f"yolo+{args.variant}" if args.variant else "yolo") + yi_usage.routing_label(os.environ)
+    mode = (f"yolo+{args.variant}" if args.variant else "yolo") + yi_usage.routing_label(os.environ) + yi_usage.levers_label(os.environ)
     fingerprint = yi_usage.config_fingerprint(
         _capture([args.binary, "--version"]), args.model, mode, suite
     )

@@ -123,7 +123,11 @@ pub(crate) fn slash_off_thread(
 /// The active branch only: the whole tree is for the tree view, and a transcript built
 /// from it leaves rewound turns on screen.
 pub fn branch_of(session: &AgentSession) -> Vec<Entry> {
-    let Some(store) = session.store() else {
+    branch_in(session.store())
+}
+
+pub(crate) fn branch_in(store: Option<yi_runtime::session_store::SharedSession>) -> Vec<Entry> {
+    let Some(store) = store else {
         return Vec::new();
     };
     lock_session(&store)
@@ -315,14 +319,40 @@ impl SessionPort for Arc<AgentSession> {
     }
 }
 
+/// Invariant: only what the human typed draws as theirs; the host's words draw as a notice.
+pub(crate) fn user_cell(text: String, typed: bool) -> Cell {
+    if typed {
+        Cell::User { text }
+    } else {
+        Cell::Notice { text }
+    }
+}
+
 impl App {
     /// The model's context and the screen must agree about what was said.
     pub fn replay_entries(&mut self, entries: &[Entry]) {
         let cells: Vec<Cell> = entries
             .iter()
             .filter_map(|entry| match entry {
-                Entry::Message { message, .. } => match message {
-                    AgentMessage::User { content, .. } => Some(Cell::User {
+                Entry::Message {
+                    message, timestamp, ..
+                } => match message {
+                    AgentMessage::User {
+                        content,
+                        attribution,
+                        ..
+                    } => Some(user_cell(
+                        user_text(content),
+                        attribution.reads_as_typed(*timestamp),
+                    )),
+                    AgentMessage::Custom {
+                        custom_type,
+                        content,
+                        display: true,
+                        details,
+                        ..
+                    } => Some(Cell::Advisory {
+                        source: crate::app::mail_source(custom_type, details.as_ref()),
                         text: user_text(content),
                     }),
                     AgentMessage::Assistant { content, .. } => {
@@ -559,5 +589,17 @@ impl App {
 
     pub fn orb_animating(&self) -> bool {
         self.logo_phase != self.logo_target || self.logo_target > 0.0
+    }
+}
+
+impl crate::app::App {
+    pub fn set_workdir(&mut self, cwd: String, lane: Option<String>) {
+        if self.options.cwd == cwd && self.options.lane == lane {
+            return;
+        }
+        self.branch = git_branch(&cwd);
+        self.options.cwd = cwd;
+        self.options.lane = lane;
+        self.scheduler.request();
     }
 }

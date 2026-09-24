@@ -63,10 +63,11 @@ impl Tool for WriteTool {
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
-        let path = match require_str(&input, "path") {
-            Ok(path) => resolve_path(context, path),
+        let given = match require_str(&input, "path") {
+            Ok(path) => path,
             Err(message) => return error_output(message),
         };
+        let path = resolve_path(context, given);
         let content = match require_str(&input, "content") {
             Ok(content) => content,
             Err(message) => return error_output(message),
@@ -94,11 +95,22 @@ impl Tool for WriteTool {
         };
         match fs::write(&path, content) {
             Ok(()) => {
-                if let Some(state) = &self.hashline {
-                    crate::hashline::tool::record_write_snapshot(state, &path, content);
-                }
+                // Incident: the tag minted here was never shown, so 30 F0e edits after a write
+                // cited an invented one; the header is the anchor an edit must copy (#473).
+                let tag = self.hashline.as_ref().map(|state| {
+                    crate::hashline::tool::record_write_snapshot(state, &path, content)
+                });
                 let syntax = crate::syntax::verdict(&path);
-                let mut text = format!("Wrote {} bytes to {}", content.len(), path.display());
+                let mut text = String::new();
+                if let Some(tag) = tag {
+                    text.push_str(&crate::hashline::format::format_hashline_header(given, tag));
+                    text.push('\n');
+                }
+                text.push_str(&format!(
+                    "Wrote {} bytes to {}",
+                    content.len(),
+                    path.display()
+                ));
                 if let Some(line) = &syntax {
                     text.push('\n');
                     text.push_str(line);
@@ -451,6 +463,21 @@ fn timeout_limit(segment: &str) -> Option<std::time::Duration> {
     std::time::Duration::try_from_secs_f64(seconds * scale).ok()
 }
 
+/// Where no `bash` is on PATH the tool falls back to POSIX `sh`, so a bashism is a shell
+/// refusal the model cannot see in the output; named only when the shape matches (#476).
+fn posix_shell_hint(command: &str, exit_code: i32, stderr: &str) -> Option<String> {
+    const BASHISMS: [&str; 4] = ["<(", ">(", "[[", "declare"];
+    let shaped = exit_code == 2
+        && crate::jobs::interpreter() == "sh"
+        && stderr.contains("Syntax error")
+        && BASHISMS.iter().any(|token| command.contains(token));
+    shaped.then(|| {
+        "[this shell is POSIX sh, not bash: process substitution, [[ ]] and declare need \
+`bash -c '...'` or a temp file]"
+            .to_owned()
+    })
+}
+
 impl BashTool {
     /// How many of the last four calls hit their time limit, when this one did and one more did.
     fn ceiling_nudge(
@@ -477,7 +504,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with sh -c in the working directory and return its output and exit code. cwd persists between calls; shell state does not. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 8,192 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. wait is clamped 5-300 s; a longer command becomes a job you check by calling bash with no command. A command is killed at timeout_secs (default 300 s, ceiling 600 s); raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
+        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. cwd persists between calls; shell state does not. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 8,192 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. wait is clamped 5-300 s; a longer command becomes a job you check by calling bash with no command. A command is killed at timeout_secs (default 300 s, ceiling 600 s); raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
     }
 
     fn schema(&self) -> Value {
@@ -594,8 +621,11 @@ impl Tool for BashTool {
             sections.push(format!("exit code: {exit_code}"));
             if command.contains("&&") {
                 sections.push(format!(
-                    "[chain stopped at exit {exit_code}: the segments after the failing one did not run]"
+                    "[exit {exit_code} inside a && chain: any segment after the failing one did not run]"
                 ));
+            }
+            if let Some(hint) = posix_shell_hint(command, exit_code, &capture.stderr) {
+                sections.push(hint);
             }
         }
         if let Some(hits) = nudge {
@@ -610,6 +640,7 @@ impl Tool for BashTool {
             && let Some(hint) = crate::sandbox::denial_hint(
                 capture.exit_code,
                 &format!("{}{}", capture.stdout, capture.stderr),
+                command,
             )
         {
             sections.push(hint);

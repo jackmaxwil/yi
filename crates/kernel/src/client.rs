@@ -167,7 +167,7 @@ pub(crate) struct Inner {
     // from detached asyncio tasks can still attribute their spawning program.
     pub(crate) last_cell_code: Mutex<Option<String>>,
     pub(crate) kernel_stderr: Mutex<String>,
-    pub(crate) in_flight_host: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    pub(crate) in_flight_host: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
     pub(crate) child_pid: Mutex<Option<u32>>,
     pub(crate) snapshot: Option<KernelSnapshotConfig>,
     pub(crate) snapshot_timer: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -1094,7 +1094,7 @@ impl KernelManager {
         let in_flight: Vec<_> = inner
             .in_flight_host
             .lock()
-            .map(|mut tasks| tasks.drain(..).collect())
+            .map(|mut tasks| tasks.drain(..).map(|(_, task)| task).collect())
             .unwrap_or_default();
         if !in_flight.is_empty() {
             let deadline = std::time::Duration::from_millis(HOST_REQUEST_DISPOSE_TIMEOUT_MS);

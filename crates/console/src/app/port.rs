@@ -147,6 +147,10 @@ pub enum Decoded {
     Todo(Option<TodoList>),
     Config(Config),
     Child(ChildUpdate),
+    Workdir {
+        cwd: String,
+        lane: Option<String>,
+    },
     Other,
 }
 
@@ -222,6 +226,10 @@ pub fn decode(extension: &AcpExtensionUpdate) -> Result<Decoded, Malformed> {
             };
             Ok(Decoded::Replay(Box::new(replay), entries))
         }
+        "_yi/workdir" => Ok(Decoded::Workdir {
+            cwd: string(&fields, "cwd").ok_or(Malformed)?,
+            lane: string(&fields, "lane"),
+        }),
         "_yi/goal" => Ok(Decoded::Goal(fields.get("goal").and_then(goal_view))),
         "_yi/todo" => Ok(Decoded::Todo(fields.get("list").and_then(|value| {
             serde_json::from_value::<TodoList>(value.clone()).ok()
@@ -241,29 +249,34 @@ pub fn decode(extension: &AcpExtensionUpdate) -> Result<Decoded, Malformed> {
     }
 }
 
-/// The wire option the chat's answer names; the request's own ids, never invented ones.
+/// The wire option the chat's answer names: its own ids, and the nth of an always-choice's kind.
 pub fn option_for(choice: AskChoice, options: &[AcpPermissionOption]) -> String {
-    let wanted = match choice {
-        AskChoice::AllowOnce => AcpPermissionOptionKind::AllowOnce,
-        AskChoice::AllowAlways => AcpPermissionOptionKind::AllowAlways,
-        AskChoice::Reject => AcpPermissionOptionKind::RejectOnce,
-    };
-    let by_kind = |kind: AcpPermissionOptionKind| {
+    let nth = |kind: AcpPermissionOptionKind, index: usize| {
         options
             .iter()
-            .find(|option| option.kind == kind)
+            .filter(|option| option.kind == kind)
+            .nth(index)
             .map(|option| option.option_id.clone())
     };
-    by_kind(wanted)
-        .or_else(|| {
-            (choice == AskChoice::AllowAlways)
-                .then(|| by_kind(AcpPermissionOptionKind::AllowOnce))
-                .flatten()
-        })
-        .unwrap_or_else(|| match choice {
-            AskChoice::AllowOnce | AskChoice::AllowAlways => "allow_once".to_owned(),
-            AskChoice::Reject => "reject_once".to_owned(),
-        })
+    let wanted = match choice {
+        AskChoice::AllowOnce => nth(AcpPermissionOptionKind::AllowOnce, 0),
+        AskChoice::AllowAlways(index) => nth(AcpPermissionOptionKind::AllowAlways, index)
+            .or_else(|| nth(AcpPermissionOptionKind::AllowAlways, 0))
+            .or_else(|| nth(AcpPermissionOptionKind::AllowOnce, 0)),
+        AskChoice::Reject => nth(AcpPermissionOptionKind::RejectOnce, 0),
+    };
+    wanted.unwrap_or_else(|| match choice {
+        AskChoice::AllowOnce | AskChoice::AllowAlways(_) => "allow_once".to_owned(),
+        AskChoice::Reject => "reject_once".to_owned(),
+    })
+}
+
+pub fn grant_labels(options: &[AcpPermissionOption]) -> Vec<String> {
+    options
+        .iter()
+        .filter(|option| option.kind == AcpPermissionOptionKind::AllowAlways)
+        .filter_map(|option| option.name.strip_prefix("Always allow ").map(str::to_owned))
+        .collect()
 }
 
 #[cfg(test)]
@@ -291,5 +304,83 @@ mod todo_tests {
             Decoded::Todo(None)
         ));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod ask_tests {
+    use super::*;
+    use yi_types::acp::AcpExtensionUpdate;
+
+    fn option(id: &str, name: &str, kind: AcpPermissionOptionKind) -> AcpPermissionOption {
+        AcpPermissionOption {
+            option_id: id.to_owned(),
+            name: name.to_owned(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn a_workdir_update_decodes_path_and_lane() {
+        let update = AcpExtensionUpdate {
+            session_update: "_yi/workdir".to_owned(),
+            fields: [
+                (
+                    "cwd".to_owned(),
+                    serde_json::json!("/home/user/.yi/lanes/abc/1"),
+                ),
+                ("lane".to_owned(), serde_json::json!("project ⎇ lane 1")),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let decoded = decode(&update);
+        let named = matches!(
+            decoded,
+            Ok(Decoded::Workdir { ref cwd, ref lane })
+                if cwd == "/home/user/.yi/lanes/abc/1"
+                    && lane.as_deref() == Some("project ⎇ lane 1")
+        );
+        assert!(named, "the update carries the lane path and its row label");
+    }
+
+    #[test]
+    fn option_for_picks_the_nth_always_option_and_labels_it() {
+        let options = vec![
+            option(
+                "allow_once",
+                "Allow once",
+                AcpPermissionOptionKind::AllowOnce,
+            ),
+            option(
+                "allow_always",
+                "Always allow edits under crates/tui/src",
+                AcpPermissionOptionKind::AllowAlways,
+            ),
+            option(
+                "allow_always_1",
+                "Always allow edits anywhere in this tree",
+                AcpPermissionOptionKind::AllowAlways,
+            ),
+            option("reject_once", "Reject", AcpPermissionOptionKind::RejectOnce),
+        ];
+        assert_eq!(
+            option_for(AskChoice::AllowAlways(1), &options),
+            "allow_always_1"
+        );
+        assert_eq!(
+            option_for(AskChoice::AllowAlways(0), &options),
+            "allow_always"
+        );
+        assert_eq!(
+            option_for(AskChoice::AllowAlways(9), &options),
+            "allow_always",
+            "a grant the worker never offered falls back to the narrowest one"
+        );
+        assert_eq!(option_for(AskChoice::Reject, &options), "reject_once");
+        assert_eq!(
+            grant_labels(&options),
+            ["edits under crates/tui/src", "edits anywhere in this tree"]
+        );
     }
 }

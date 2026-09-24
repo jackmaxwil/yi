@@ -68,6 +68,19 @@ impl Journey {
         Ok(self.command(args).output()?)
     }
 
+    /// A refusal's contract is its stderr, the one place the binary explains itself; every
+    /// other call leaves stderr null because the kernel provisioner narrates there.
+    fn refused(&self, args: &[&str]) -> Result<String, Box<dyn Error>> {
+        let output = self.command(args).stderr(Stdio::piped()).output()?;
+        let said = String::from_utf8_lossy(&output.stderr).into_owned();
+        if output.status.success() {
+            return Err(
+                format!("yi {args:?} succeeded; a refusal was the contract: {said}").into(),
+            );
+        }
+        Ok(said)
+    }
+
     /// One `yi rpc` process fed every frame at once: the journey asserts on the
     /// response stream, and interleaving would make it a timing test.
     fn rpc(&self, frames: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
@@ -163,14 +176,15 @@ fn a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree() -> 
 
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
-fn a_red_goal_check_refuses_the_completion_claim_and_the_plan_surface_stays_read_only() -> TestResult
-{
+fn a_red_goal_check_refuses_the_completion_claim_and_the_plan_surface_mints_no_principal()
+-> TestResult {
     let journey = Journey::new("goalgate")?;
     let responses = journey.rpc(&[
         json!({"id": "goal", "type": "goal", "action": "create", "objective": "ship it", "check": "echo goal check red; exit 3"}),
         json!({"id": "complete", "type": "goal", "action": "update", "status": "complete"}),
         json!({"id": "read", "type": "plan", "action": "get"}),
         json!({"id": "write", "type": "plan", "action": "update", "taskId": "t1", "state": "done"}),
+        json!({"id": "claim", "type": "plan", "action": "submit", "actor": "user://1", "op": "init", "goal": "ship it"}),
     ])?;
 
     let complete = reply(&responses, "complete")?;
@@ -185,8 +199,8 @@ fn a_red_goal_check_refuses_the_completion_claim_and_the_plan_surface_stays_read
         "the completion refusal names the red check: {rejection}"
     );
 
-    // D97 left one writer: the plan tool. The rpc surface is a view, and the
-    // done-gate it used to carry is `plan_ops` plus the walkthrough fixtures.
+    // Invariant: plan section 5.6. The rpc surface reads and submits and nothing else, and a
+    // submit names no principal: `Actor::User` is minted only by the session's confirmation.
     let read = reply(&responses, "read")?;
     assert_eq!(
         read["success"],
@@ -196,9 +210,16 @@ fn a_red_goal_check_refuses_the_completion_claim_and_the_plan_surface_stays_read
     let write = reply(&responses, "write")?;
     assert_eq!(write["success"], json!(false), "{write}");
     assert!(
-        error_of(write).contains("read-only"),
-        "a mutation through rpc is refused by name: {}",
+        error_of(write).contains("get|submit"),
+        "a hand edit through rpc is refused and the whole surface is named: {}",
         error_of(write)
+    );
+    let claim = reply(&responses, "claim")?;
+    assert_eq!(claim["success"], json!(false), "{claim}");
+    assert!(
+        error_of(claim).contains("actor is not an argument"),
+        "a submit that names its own actor is refused before any op runs: {}",
+        error_of(claim)
     );
     journey.reclaim();
     Ok(())
@@ -229,9 +250,10 @@ const HAND_WRITTEN_PLAN: &str = r#"---
 The adapter cannot land before staging is green.
 "#;
 
-/// The plan document driven through the real binary: the store parses it, the
-/// resolver addresses a todo by slug, the lint reads it, and a `Plan:` trailer
-/// resolves back to the goal. The tool itself is model-invoked, so this journey
+/// The plan document driven through the real binary: a format-1 document names its own
+/// import (plan section 5.6: a hand-edited view never overwrites the journal), the import
+/// opens it, the resolver addresses a todo by slug, the lint reads it, and a `Plan:`
+/// trailer resolves back to the goal. The tool itself is model-invoked, so this journey
 /// covers every surface around it rather than the tool's own call path.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
@@ -240,6 +262,20 @@ fn a_hand_written_plan_lints_resolves_and_answers_why() -> TestResult {
     let plans = journey.project().join(".yi/plans");
     std::fs::create_dir_all(&plans)?;
     std::fs::write(plans.join("ship-the-widget.md"), HAND_WRITTEN_PLAN)?;
+
+    let named = journey.refused(&["plan", "lint", "ship-the-widget"])?;
+    assert!(
+        named.contains("yi plan import ship-the-widget"),
+        "a format-1 document is read-only and the refusal names the way on: {named}"
+    );
+    let imported = succeeded(
+        &journey.yi(&["plan", "import", "ship-the-widget"])?,
+        "yi plan import",
+    )?;
+    assert!(
+        imported.contains("ship-the-widget"),
+        "the import names the plan it opened: {imported}"
+    );
 
     let linted = succeeded(&journey.yi(&["plan", "lint", "--json"])?, "yi plan lint")?;
     let findings: Value = serde_json::from_str(linted.trim())?;
@@ -331,6 +367,15 @@ fn a_hand_written_plan_lints_resolves_and_answers_why() -> TestResult {
     assert!(
         indexed.contains("Wire the adapter through the staging seam"),
         "the reverse index is the same data: {indexed}"
+    );
+
+    // Last, because it breaks the plan: a checkpoint that cannot be read is a damaged plan,
+    // and an unnamed verb says which one rather than reporting an empty directory.
+    std::fs::write(plans.join("ship-the-widget/plan.json"), "{ not json")?;
+    let damaged = journey.refused(&["plan", "lint"])?;
+    assert!(
+        damaged.contains("ship-the-widget"),
+        "an unreadable root is named, not counted as absent: {damaged}"
     );
     journey.reclaim();
     Ok(())

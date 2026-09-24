@@ -146,7 +146,8 @@ fn parse_hashline_header_line(
             return Ok(Some(recovered));
         }
         return Err(format!(
-            "Input header must be {HL_FILE_PREFIX}PATH{HL_FILE_SUFFIX} or {HL_FILE_PREFIX}PATH#TAG{HL_FILE_SUFFIX} with a {HL_FILE_HASH_LENGTH}-hex content-hash tag; got {trimmed:?}."
+            "Input header must be {HL_FILE_PREFIX}PATH{HL_FILE_SUFFIX} or {HL_FILE_PREFIX}PATH#TAG{HL_FILE_SUFFIX} with a {HL_FILE_HASH_LENGTH}-hex content-hash tag; got {trimmed:?}. \
+TAG is the {HL_FILE_HASH_LENGTH}-hex after # on the {HL_FILE_PREFIX}path#TAG{HL_FILE_SUFFIX} line of the read, write or edit result; omit it to edit the last version shown."
         ));
     };
     let parsed_path = normalize_hashline_path(&path, cwd);

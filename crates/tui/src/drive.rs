@@ -101,7 +101,6 @@ pub fn key_event(key: &SingleKey) -> KeyEvent {
 /// park a headless process, and the seconds are attacker-free but unbounded.
 const DEADLINE_CAP_SECS: u64 = 86_400;
 
-/// Key events for a `type` step, shared by drive loops.
 pub fn typed_events(text: &str) -> Vec<CtEvent> {
     text.chars()
         .map(|ch| {
@@ -121,8 +120,6 @@ pub enum WaitPoll {
     TimedOut,
 }
 
-/// One poll of a wait step: unsatisfied conditions sleep 2 ms and requeue,
-/// TimedOut prints the failure line.
 pub fn poll_condition(satisfied: bool, started: Instant, ms: u64, what: &str) -> WaitPoll {
     if satisfied {
         return WaitPoll::Done;

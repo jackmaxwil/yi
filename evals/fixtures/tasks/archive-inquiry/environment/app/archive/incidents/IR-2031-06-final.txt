@@ -1,0 +1,108 @@
+Quillfen Water Cooperative
+INCIDENT REVIEW IR-2031-06
+Stage: FINAL
+Site: Brackwater Lock
+
+Occurred: 2031-05-30. Severity as assessed at this stage: 3.
+
+Summary
+-------
+
+Flooding on the lane to Low Fennick delayed the delivery by a day; no cost was
+incurred by the cooperative. The draft drawing register for Low Fennick is 16 percent
+complete and will be issued once the as-built survey is checked.
+
+Timeline
+--------
+
+  06:34  crew on site
+  07:05  plant isolated
+  07:18  crew on site
+  07:46  supply restored
+  08:18  plant isolated
+  08:57  standby plant started
+  09:18  supply restored
+
+Findings
+--------
+
+Tamsin Orrel raised the question of lone working at Eastmere Intake and was referred
+to the existing guidance held by the asset planning group. the asset planning group
+reminded everyone that permits for confined spaces must be closed out the same day.
+The telemetry link to Harrow Weir dropped twice in the period; both outages were under
+37 minutes and no alarms were missed. Lucan Marsh confirmed that spares for the
+penstock actuator are held at the central store and that the reorder level is 15
+units. The draft drawing register for Low Fennick is 26 percent complete and will be
+issued once the as-built survey is checked.
+
+Root cause
+----------
+
+A watchdog fault in outstation firmware 4.1.7 froze the outputs.
+
+Recommendations
+---------------
+
+1. Review alarm escalation at Brackwater Lock.
+
+2. Update the outstation firmware at Brackwater Lock to 4.2.1.
+
+Annex A. Site notes
+-------------------
+
+Ansel Brightwater noted that the calibration certificate for the surge vessel expires
+next quarter and has booked the visit. Members of the networks team asked for the
+seasonal demand figures to be circulated before the next meeting. the field crews will
+coordinate with Dov Callender on the training calendar, which currently shows 36 open
+places. Sampling results for the quarter were within the expected band at every point
+except one, which is being resampled. It was noted that access to Merrow Basin remains
+difficult after heavy rain and that the track will be regraded when crews allow.
+
+A walkdown of Pike Hollow found the signage faded; replacement boards have been
+ordered under the routine budget. It was noted that access to Eastmere Intake remains
+difficult after heavy rain and that the track will be regraded when crews allow. A
+walkdown of Harrow Weir found the signage faded; replacement boards have been ordered
+under the routine budget.
+
+Annex B. Any other business
+---------------------------
+
+Mirela Stanck presented a short paper on sensor drift and recommended a comparison
+check at Cindergate Station every 21 weeks. No complaints were received from
+neighbours of Tolland Sluice during the works, and the liaison log has been closed.
+Members of the networks team asked for the seasonal demand figures to be circulated
+before the next meeting. Sampling results for the quarter were within the expected
+band at every point except one, which is being resampled. Dov Callender raised the
+question of lone working at Tolland Sluice and was referred to the existing guidance
+held by the networks team.
+
+Flooding on the lane to Pike Hollow delayed the delivery by a day; no cost was
+incurred by the cooperative. Sampling results for the quarter were within the expected
+band at every point except one, which is being resampled. the finance office reminded
+everyone that permits for confined spaces must be closed out the same day. Members of
+the control room asked for the seasonal demand figures to be circulated before the
+next meeting. Members of the finance office asked for the seasonal demand figures to
+be circulated before the next meeting.
+
+Annex C. Site notes
+-------------------
+
+A walkdown of Osier Bank found the signage faded; replacement boards have been ordered
+under the routine budget. The contractor's method statement for work at Pike Hollow
+was reviewed by the finance office and returned with 11 comments. Tamsin Orrel
+reported that the sample tap at Harrow Weir had been inspected and found serviceable,
+with minor wear noted on the seals.
+
+The draft drawing register for Low Fennick is 25 percent complete and will be issued
+once the as-built survey is checked. Bram Ketteridge noted that the calibration
+certificate for the telemetry outstation expires next quarter and has booked the
+visit. An energy audit of Low Fennick suggested that running the flow meter off-peak
+would reduce cost without affecting service. Tamsin Orrel noted that the calibration
+certificate for the control panel expires next quarter and has booked the visit.
+
+The contractor's method statement for work at Tolland Sluice was reviewed by the
+networks team and returned with 7 comments. The contractor's method statement for work
+at Osier Bank was reviewed by the control room and returned with 31 comments. The
+contractor's method statement for work at Cindergate Station was reviewed by the
+networks team and returned with 34 comments. Ysolde Quint noted that the calibration
+certificate for the surge vessel expires next quarter and has booked the visit.

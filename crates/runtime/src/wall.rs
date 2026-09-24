@@ -31,8 +31,7 @@ fn parse_paths(value: Option<&Value>, cwd: &Path, key: &str) -> Result<Vec<PathB
         .collect()
 }
 
-/// A deny entry is matched at an address boundary, so a bare scheme
-/// (`kernel://`) walls the whole scheme and a longer prefix walls a path.
+/// A deny entry matches at an address boundary: a bare `kernel://` walls the whole scheme.
 fn parse_prefixes(value: Option<&Value>) -> Result<Vec<String>, String> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
         return Ok(Vec::new());
@@ -60,6 +59,15 @@ impl Wall {
         })
     }
 
+    /// Hereditary shrink (plan section 7.6): the child is denied all its parent is denied.
+    #[must_use]
+    pub fn under(mut self, parent: &Self) -> Self {
+        self.deny_write.extend(parent.deny_write.iter().cloned());
+        self.deny_read.extend(parent.deny_read.iter().cloned());
+        self.deny_url.extend(parent.deny_url.iter().cloned());
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
         self.deny_write.is_empty() && self.deny_read.is_empty() && self.deny_url.is_empty()
     }
@@ -69,7 +77,7 @@ impl Wall {
     pub fn check_url(&self, url: &Url, workspace: &Path) -> Option<String> {
         let rendered = url.to_string();
         if let Some(hit) = self.deny_url.iter().find(|prefix| walls(prefix, &rendered)) {
-            return Some(refusal("fetch", hit));
+            return Some(refusal("fetch", hit, "deny_url"));
         }
         let raw = match url.scheme() {
             Scheme::Local => Path::new(url.path()),
@@ -102,11 +110,10 @@ impl Wall {
                 normalized.starts_with(yi_permission::lexical_normalize(denied))
                     || std::fs::canonicalize(denied).is_ok_and(|real| normalized.starts_with(real))
             })
-            .map(|hit| refusal("fetch", &hit.display().to_string()))
+            .map(|hit| refusal("fetch", &hit.display().to_string(), "deny_read"))
     }
 
-    /// Denies before the call runs, naming the path as evidence. Not a sandbox:
-    /// a command naming no denied path runs, stopping an honest agent, not an evasive one.
+    /// Denies before the call runs, naming the path; not a sandbox, it stops an honest agent.
     pub fn check(
         &self,
         tool_name: &str,
@@ -125,21 +132,109 @@ impl Wall {
         if denied.is_empty() {
             return None;
         }
-        for target in crate::permission::extract_targets(tool_name, args, cwd) {
-            let normalized = yi_permission::lexical_normalize(&target);
-            if let Some(hit) = denied
-                .iter()
-                .find(|denied| normalized.starts_with(yi_permission::lexical_normalize(denied)))
-            {
-                return Some(refusal(tool_name, &hit.display().to_string()));
-            }
+        let list = |hit: &PathBuf| {
+            let list = if self.deny_read.contains(hit) {
+                "deny_read"
+            } else {
+                "deny_write"
+            };
+            refusal(tool_name, &hit.display().to_string(), list)
+        };
+        if let Some(hit) = under(
+            &crate::permission::extract_targets(tool_name, args, cwd),
+            &denied,
+        ) {
+            return Some(list(hit));
         }
         let command = args.get("command").and_then(Value::as_str)?;
-        denied
+        if let Some(hit) = self
+            .deny_read
             .iter()
             .find(|denied| command.contains(&denied.to_string_lossy().into_owned()))
-            .map(|hit| refusal(tool_name, &hit.display().to_string()))
+        {
+            return Some(list(hit));
+        }
+        let written: Vec<PathBuf> = write_targets(command)
+            .iter()
+            .map(|raw| yi_permission::resolve_target(raw, cwd))
+            .collect();
+        let walled: Vec<&PathBuf> = self.deny_write.iter().collect();
+        (!matches!(kind, ToolKind::Read))
+            .then(|| under(&written, &walled))
+            .flatten()
+            .map(list)
     }
+}
+
+fn under<'a>(targets: &[PathBuf], denied: &[&'a PathBuf]) -> Option<&'a PathBuf> {
+    let targets: Vec<PathBuf> = targets
+        .iter()
+        .map(|target| yi_permission::lexical_normalize(target))
+        .collect();
+    denied.iter().copied().find(|denied| {
+        let denied = yi_permission::lexical_normalize(denied);
+        targets.iter().any(|target| target.starts_with(&denied))
+    })
+}
+
+/// What a command writes as an honest agent spells it: redirects, in-place edits, file verbs.
+fn write_targets(command: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (at, _) in command.match_indices('>') {
+        let rest = command[at..].trim_start_matches(['>', '|']).trim_start();
+        let target: String = rest
+            .chars()
+            .take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '&' | '|' | ')'))
+            .collect();
+        if !target.is_empty() && !command[at..].starts_with(">&") {
+            out.push(target);
+        }
+    }
+    for segment in command.split([';', '&', '|', '\n', '(', ')']) {
+        let words: Vec<&str> = segment
+            .split_whitespace()
+            .map(|word| word.trim_matches(['\'', '"']))
+            .skip_while(|word| {
+                word.contains('=') || matches!(*word, "sudo" | "env" | "time" | "nohup" | "command")
+            })
+            .collect();
+        let Some((head, args)) = words.split_first() else {
+            continue;
+        };
+        let operands: Vec<String> = args
+            .iter()
+            .filter(|word| !word.starts_with('-') && !word.contains('>') && !word.contains('<'))
+            .map(|word| (*word).to_owned())
+            .collect();
+        let program = head.rsplit('/').next().unwrap_or(head);
+        let in_place = args.iter().any(|word| {
+            *word == "--in-place"
+                || (word.starts_with('-') && !word.starts_with("--") && word.contains('i'))
+        });
+        match program {
+            "sed" | "perl" if in_place => out.extend(operands),
+            "rm" | "rmdir" | "unlink" | "mv" | "tee" | "touch" | "chmod" | "chown" | "truncate"
+            | "mkdir" | "shred" => out.extend(operands),
+            "cp" | "ln" | "install" | "rsync" => out.extend(operands.last().cloned()),
+            "dd" => out.extend(
+                args.iter()
+                    .filter_map(|word| word.strip_prefix("of="))
+                    .map(str::to_owned),
+            ),
+            "git"
+                if operands.first().is_some_and(|verb| {
+                    matches!(
+                        verb.as_str(),
+                        "checkout" | "restore" | "rm" | "mv" | "clean" | "reset" | "apply"
+                    )
+                }) =>
+            {
+                out.extend(operands.into_iter().skip(1))
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Incident: a raw prefix walled every address beginning with it, so `plan://secret` refused
@@ -151,9 +246,9 @@ fn walls(prefix: &str, rendered: &str) -> bool {
     rest.is_empty() || prefix.ends_with('/') || rest.starts_with('/') || rest.starts_with('#')
 }
 
-fn refusal(tool_name: &str, path: &str) -> String {
+fn refusal(tool_name: &str, path: &str, list: &str) -> String {
     format!(
-        "Denied by the reviewer wall: {tool_name} targets {path}, which this agent may not touch. \
-         The standard is fixed for the run — report the mismatch instead of changing it."
+        "Denied by the reviewer wall: {tool_name} targets {path}, which this agent's {list} covers. \
+         The standard is fixed for the run: report the mismatch instead of changing it."
     )
 }

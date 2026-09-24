@@ -1,0 +1,115 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0219
+Title: Raise wet well stop level
+Site: Pike Hollow
+Requested by: Hollis Wray
+Implemented: 2031-02-11
+
+Outcome: ROLLED BACK
+
+Description
+-----------
+
+An energy audit of Pike Hollow suggested that running the flow meter off-peak would
+reduce cost without affecting service. Members of the asset planning group asked for
+the seasonal demand figures to be circulated before the next meeting.
+
+The change was rolled back on the day after implementation when the expected
+improvement did not appear.
+
+Risk and rollback plan
+----------------------
+
+The previous settings were recorded so that they could be restored.
+
+Dov Callender raised the question of lone working at Harrow Weir and was referred to
+the existing guidance held by the finance office. the safety committee reminded
+everyone that permits for confined spaces must be closed out the same day.
+
+Verification
+------------
+
+The telemetry link to Eastmere Intake dropped twice in the period; both outages were
+under 16 minutes and no alarms were missed. Members of the finance office asked for
+the seasonal demand figures to be circulated before the next meeting. A walkdown of
+Brackwater Lock found the signage faded; replacement boards have been ordered under
+the routine budget.
+
+Annex A. Any other business
+---------------------------
+
+A walkdown of Merrow Basin found the signage faded; replacement boards have been
+ordered under the routine budget. the networks team will coordinate with Lucan Marsh
+on the training calendar, which currently shows 19 open places. It was noted that
+access to Harrow Weir remains difficult after heavy rain and that the track will be
+regraded when crews allow. No complaints were received from neighbours of Eastmere
+Intake during the works, and the liaison log has been closed. Dov Callender raised the
+question of lone working at Cindergate Station and was referred to the existing
+guidance held by the safety committee.
+
+Members of the finance office asked for the seasonal demand figures to be circulated
+before the next meeting. the control room will coordinate with Tamsin Orrel on the
+training calendar, which currently shows 23 open places. The contractor's method
+statement for work at Osier Bank was reviewed by the field crews and returned with 5
+comments.
+
+Annex B. Site notes
+-------------------
+
+Bram Ketteridge thanked the asset planning group for covering the holiday rota at
+short notice. Vegetation clearance around the penstock actuator at Pike Hollow was
+completed and the area photographed for the asset record. Flooding on the lane to Pike
+Hollow delayed the delivery by a day; no cost was incurred by the cooperative. The
+contractor's method statement for work at Harrow Weir was reviewed by the networks
+team and returned with 33 comments.
+
+It was noted that access to Harrow Weir remains difficult after heavy rain and that
+the track will be regraded when crews allow. The handover notes between shifts were
+sampled by the asset planning group and found complete in all but 16 cases. A minor
+oil weep from the level sensor at Harrow Weir was cleaned up and a drip tray fitted
+pending the next service. The telemetry link to Cindergate Station dropped twice in
+the period; both outages were under 14 minutes and no alarms were missed. Ysolde Quint
+thanked the field crews for covering the holiday rota at short notice.
+
+No complaints were received from neighbours of Low Fennick during the works, and the
+liaison log has been closed. Lucan Marsh thanked the asset planning group for covering
+the holiday rota at short notice. The contractor's method statement for work at
+Tolland Sluice was reviewed by the finance office and returned with 6 comments.
+Vegetation clearance around the telemetry outstation at Low Fennick was completed and
+the area photographed for the asset record. An energy audit of Eastmere Intake
+suggested that running the surge vessel off-peak would reduce cost without affecting
+service.
+
+Annex C. Follow-up from the last period
+---------------------------------------
+
+Members of the asset planning group asked for the seasonal demand figures to be
+circulated before the next meeting. the field crews will coordinate with Lucan Marsh
+on the training calendar, which currently shows 36 open places. An energy audit of
+Cindergate Station suggested that running the dosing skid off-peak would reduce cost
+without affecting service. Members of the safety committee asked for the seasonal
+demand figures to be circulated before the next meeting.
+
+The stores count showed 9 discrepancies, all traced to items issued to vans without a
+ticket. A walkdown of Brackwater Lock found the signage faded; replacement boards have
+been ordered under the routine budget. A minor oil weep from the control panel at
+Brackwater Lock was cleaned up and a drip tray fitted pending the next service. The
+telemetry link to Brackwater Lock dropped twice in the period; both outages were under
+2 minutes and no alarms were missed. Flooding on the lane to Eastmere Intake delayed
+the delivery by a day; no cost was incurred by the cooperative.
+
+Annex D. Correspondence
+-----------------------
+
+Oona Farrow confirmed that spares for the penstock actuator are held at the central
+store and that the reorder level is 38 units. Lucan Marsh confirmed that spares for
+the standby pump are held at the central store and that the reorder level is 16 units.
+Oona Farrow noted that the calibration certificate for the sample tap expires next
+quarter and has booked the visit.
+
+An energy audit of Eastmere Intake suggested that running the penstock actuator off-
+peak would reduce cost without affecting service. the networks team will coordinate
+with Ysolde Quint on the training calendar, which currently shows 5 open places. the
+asset planning group reminded everyone that permits for confined spaces must be closed
+out the same day. A walkdown of Brackwater Lock found the signage faded; replacement
+boards have been ordered under the routine budget.

@@ -33,7 +33,7 @@ fn started(cwd: &Path, home: &Path) -> Host {
 
 #[test]
 fn slots_assemble_in_rank_order_and_attach_is_idempotent() -> TestResult {
-    let mut state = PromptState::new("nonce".to_owned());
+    let mut state = PromptState::default();
     assert!(state.attach(Slot::new(Rank::Schema, "schema"), "SCHEMA".to_owned()));
     assert!(state.attach(Slot::new(Rank::Identity, "identity"), "ID".to_owned()));
     assert!(state.attach(Slot::new(Rank::Mode, "permission"), "MODE".to_owned()));
@@ -53,7 +53,7 @@ fn slots_assemble_in_rank_order_and_attach_is_idempotent() -> TestResult {
 
 #[test]
 fn the_yard_is_a_third_block_and_external_text_cannot_close_its_fence() -> TestResult {
-    let mut state = PromptState::new("abc123".to_owned());
+    let mut state = PromptState::default();
     state.attach(Slot::new(Rank::Identity, "identity"), "ID".to_owned());
     state.attach_external(
         "AGENTS.md",
@@ -64,7 +64,16 @@ fn the_yard_is_a_third_block_and_external_text_cannot_close_its_fence() -> TestR
     let blocks: Vec<&str> = assembled.split(SYSTEM_BLOCK_SEPARATOR).collect();
     assert_eq!(blocks.len(), 2, "identity plus the yard: {assembled:?}");
     let yard = blocks[1];
-    assert!(yard.starts_with("<<<yi-external abc123 source=\"AGENTS.md\" trust=\"untrusted\">>>"));
+    let id = yard
+        .strip_prefix("<<<yi-external ")
+        .and_then(|rest| rest.split_once(' '))
+        .map(|(id, _)| id)
+        .ok_or("no fence header")?;
+    assert_eq!(id.len(), 16, "{yard}");
+    assert!(
+        yard.ends_with(&format!("\n<<<end-yi-external {id}>>>")),
+        "{yard}"
+    );
     assert_eq!(
         yard.matches("<<<end-yi-external").count(),
         1,
@@ -76,7 +85,7 @@ fn the_yard_is_a_third_block_and_external_text_cannot_close_its_fence() -> TestR
 
 #[test]
 fn granted_entries_sort_before_untrusted_ones() -> TestResult {
-    let mut state = PromptState::new("n".to_owned());
+    let mut state = PromptState::default();
     state.attach_external("z-untrusted", Trust::Untrusted, "u");
     state.attach_external("a-granted", Trust::Granted, "g");
     let assembled = state.assemble();
@@ -238,29 +247,67 @@ fn every_commonmark_bullet_marker_counts_as_an_enumeration() {
 }
 
 #[test]
-fn a_quiet_prompt_escalates_on_the_trajectory() -> TestResult {
+fn a_turn_that_only_read_stays_one_shot_and_a_write_escalates_silently() -> TestResult {
     let dir = Scratch::new("yi-ext-escalate")?;
     let mut host = started(&dir, &dir);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = std::sync::Arc::clone(&seen);
+    host.set_notice(std::sync::Arc::new(move |line: &str| {
+        if let Ok(mut lines) = sink.lock() {
+            lines.push(line.to_owned());
+        }
+    }));
     host.dispatch(&host.prompt_event("fix the typo"), None);
+    let call = |name: &str, target: &str| Event::ToolCall {
+        name: name.to_owned(),
+        target: Some(PathBuf::from(target)),
+    };
+    for n in 0..20 {
+        host.dispatch(&call("read", &format!("src/{n}.rs")), None);
+    }
+    let end = host.turn_end_event();
+    host.dispatch(&end, None);
     assert!(
         !host.system_prompt().contains("# Orchestrate"),
-        "a small prompt must not load the protocol"
+        "twenty reads and no write is an assessment, not a program"
     );
-    for _ in 0..5 {
-        host.dispatch(
-            &Event::ToolCall {
-                name: "read".to_owned(),
-                target: None,
-            },
-            None,
-        );
+    host.dispatch(&call("read", "src/lib.rs"), None);
+    host.dispatch(&call("edit", "src/lib.rs"), None);
+    for n in 0..3 {
+        host.dispatch(&call("read", &format!("src/{n}.rs")), None);
     }
     let end = host.turn_end_event();
     host.dispatch(&end, None);
     assert!(
         host.system_prompt().contains("# Orchestrate"),
-        "five tool calls in one turn is the escalation signal"
+        "five calls with a write in the turn loads the protocol"
     );
+    let nudges = || {
+        seen.lock()
+            .map(|lines| lines.iter().filter(|l| l.contains("outgrown")).count())
+            .unwrap_or(usize::MAX)
+    };
+    assert_eq!(
+        nudges(),
+        0,
+        "the turn-end signal attaches silently; a nudge after the answer is a wasted turn"
+    );
+    host.dispatch(&call("edit", "src/never_read.rs"), None);
+    assert_eq!(
+        nudges(),
+        0,
+        "the protocol is already attached, so a later signal adds nothing"
+    );
+    let dir = Scratch::new("yi-ext-edit-before-read")?;
+    let mut host = started(&dir, &dir);
+    let sink = std::sync::Arc::clone(&seen);
+    host.set_notice(std::sync::Arc::new(move |line: &str| {
+        if let Ok(mut lines) = sink.lock() {
+            lines.push(line.to_owned());
+        }
+    }));
+    host.dispatch(&call("edit", "src/never_read.rs"), None);
+    assert_eq!(nudges(), 1, "a mid-turn signal still reminds");
     Ok(())
 }
 
@@ -325,11 +372,17 @@ fn fragment_examples_name_real_kernel_apis() -> TestResult {
         .and_then(Path::parent)
         .ok_or("no repo root")?
         .to_path_buf();
+    // Top-level defs for a module prefix; every def, methods included, for a handle's.
     let api = |path: &str, prefix: &str| -> Result<Vec<String>, Box<dyn Error>> {
         let source = std::fs::read_to_string(root.join(path))?;
         Ok(source
             .lines()
             .filter_map(|line| {
+                let line = if prefix == "plan." {
+                    line.trim_start()
+                } else {
+                    line
+                };
                 let rest = line
                     .strip_prefix("async def ")
                     .or_else(|| line.strip_prefix("def "))?;
@@ -339,23 +392,46 @@ fn fragment_examples_name_real_kernel_apis() -> TestResult {
     };
     let mut names = api("python/yi_runtime/src/rlm/__init__.py", "rlm.")?;
     names.extend(api("python/skills/goal/src/goal/__init__.py", "goal.")?);
-    let fragments = [
+    names.extend(api("python/yi_runtime/src/yi/plan.py", "plan.")?);
+    // `yi` re-exports: its names are the quoted entries of `__all__`.
+    let exported = std::fs::read_to_string(root.join("python/yi_runtime/src/yi/__init__.py"))?;
+    names.extend(exported.lines().filter_map(|line| {
+        let name = line.trim().strip_prefix('"')?.strip_suffix("\",")?;
+        Some(format!("yi.{name}"))
+    }));
+    let unknown = |fragment: &str| -> Option<String> {
+        fragment
+            .split(|ch: char| !(ch.is_alphanumeric() || ch == '.' || ch == '_'))
+            .filter(|word| {
+                ["rlm.", "goal.", "yi.", "plan."]
+                    .iter()
+                    .any(|p| word.starts_with(p))
+            })
+            .map(|word| word.trim_end_matches('.'))
+            // A sentence that ends in "plan." names no API; `yi.Plan.create` is judged as `yi.Plan`.
+            .filter(|name| name.contains('.'))
+            .map(|name| name.splitn(3, '.').take(2).collect::<Vec<_>>().join("."))
+            .find(|name| !names.iter().any(|known| known == name))
+    };
+    for fragment in [
         include_str!("../src/prompts/orchestrate.md"),
         include_str!("../src/prompts/identity.md"),
         include_str!("../src/prompts/doctrine.md"),
-    ];
-    for fragment in fragments {
-        for word in fragment.split(|ch: char| !(ch.is_alphanumeric() || ch == '.' || ch == '_')) {
-            let is_call = word.starts_with("rlm.") || word.starts_with("goal.");
-            if !is_call {
-                continue;
-            }
-            let name = word.trim_end_matches('.');
-            assert!(
-                names.iter().any(|known| known == name),
-                "fragment names {name}, which the kernel API does not export"
-            );
-        }
+    ] {
+        assert_eq!(
+            unknown(fragment),
+            None,
+            "a fragment names an API the kernel does not export"
+        );
+    }
+    let known = "p = await yi.Plan.create(goal); t = await plan.todo(key='a'); await plan.run()";
+    assert_eq!(unknown(known), None, "the gate must know the yi library");
+    for gone in [
+        "await plan.split(todo)",
+        "yi.Planner",
+        "await rlm.background(x)",
+    ] {
+        assert!(unknown(gone).is_some(), "the gate must refuse {gone}");
     }
     Ok(())
 }
