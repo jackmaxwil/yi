@@ -263,7 +263,7 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
             }),
         },
         events: events.clone(),
-        report: Arc::new(move |message| {
+        report: Arc::new(move |message, _| {
             if let Ok(mut sink) = entry_sink.lock() {
                 sink.push(message.clone());
             }
@@ -1135,10 +1135,12 @@ async fn a_woken_childs_turn_is_a_run_the_parent_can_wait_on() -> TestResult {
 
 /// A family whose one child asks its parent a question with `ask_user`, then answers; the
 /// parent's mail rides its own queue, as the root's does.
-fn asking_family(parent: &Arc<AgentSession>) -> std::io::Result<(Scratch, Arc<SubagentHost>)> {
+type AskingFamily = (Scratch, Arc<SubagentHost>, yi_session::SharedSession);
+
+fn asking_family(parent: &Arc<AgentSession>) -> std::io::Result<AskingFamily> {
     let root = Scratch::new("yi-ask-parent")?;
-    let report = parent.heartbeat_hook();
     let store = support::memory_store("ask-parent");
+    let kept = store.clone();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
         max_depth: 1,
@@ -1171,13 +1173,13 @@ fn asking_family(parent: &Arc<AgentSession>) -> std::io::Result<(Scratch, Arc<Su
         notice: yi_runtime::wiring::lifecycle_notice(parent),
         events: parent.events_sender(),
         parent_messages: Arc::new(Vec::new),
-        report: Arc::new(move |message| report(message, yi_types::schedule::DeliveryMode::Steer)),
+        report: parent.deliver_hook(),
         attribute: Arc::new(|_usage| {}),
-        store: Arc::new(move || Some(store.clone())),
+        store: Arc::new(move || Some(kept.clone())),
         plans_dir: root.join(".yi/plans"),
         family_live: Arc::new(|| 0),
     }));
-    Ok((root, host))
+    Ok((root, host, store))
 }
 
 /// Dies with the ask ending the child's turn: in `mbx-ask` the question met the empty-stop
@@ -1185,7 +1187,7 @@ fn asking_family(parent: &Arc<AgentSession>) -> std::io::Result<(Scratch, Arc<Su
 #[tokio::test]
 async fn a_childs_question_is_a_request_its_parent_answers_with_one_call() -> TestResult {
     let parent = parent_session(&["writer asks for a file name", "answered"]);
-    let (_root, host) = asking_family(&parent)?;
+    let (_root, host, _store) = asking_family(&parent)?;
     host.spawn(
         "write a greeting file".to_owned(),
         kwargs(&[("name", "writer")]),
@@ -1272,11 +1274,12 @@ async fn asked_id(host: &SubagentHost) -> Result<String, Box<dyn Error>> {
 }
 
 /// Dies with no human road to a child's question, and with both answers landing: the parent's
-/// second reply to an answered request was presented to the child as fresh mail.
+/// second reply to an answered request was presented to the child as fresh mail. Dies too with
+/// the human's answer unrecorded: the envelope, the parent's journal and its model never said so.
 #[tokio::test]
 async fn the_humans_answer_resolves_a_question_and_the_parents_is_refused() -> TestResult {
     let parent = parent_session(&["writer asks for a file name", "answered"]);
-    let (_root, host) = asking_family(&parent)?;
+    let (_root, host, store) = asking_family(&parent)?;
     host.spawn(
         "write a greeting file".to_owned(),
         kwargs(&[("name", "writer")]),
@@ -1287,7 +1290,7 @@ async fn the_humans_answer_resolves_a_question_and_the_parents_is_refused() -> T
         matches!(&flag, Some(yi_types::subagent::ChildFlag::NeedsYou { note }) if note.contains("Which file name?")),
         "the card's update carries the question: {flag:?}"
     );
-    let sent = host.answer("writer", "notes.md")?;
+    let sent = host.answer("writer", &id, "notes.md")?;
     assert_eq!(state_of(&sent), "answered", "{sent:?}");
     let second = json!({"target": "writer", "message": "hello.txt", "reply_to": id});
     let refused = host.send("parent", second.as_object().ok_or("second")?);
@@ -1311,6 +1314,29 @@ async fn the_humans_answer_resolves_a_question_and_the_parents_is_refused() -> T
         presented_mail(&child.session.messages()).is_empty(),
         "neither answer is presented as mail"
     );
+    let inbox = child.session.store().ok_or("no child store")?;
+    let query = |kind: &str| yi_session::EntryQuery {
+        custom_type: Some(kind.to_owned()),
+        ..yi_session::EntryQuery::default()
+    };
+    let inbox = yi_session::lock_session(&inbox).find_entries(&query("agent_message"))?;
+    let inbox = serde_json::to_string(&inbox)?;
+    assert!(inbox.contains(r#""answeredBy":"human""#), "{inbox}");
+    let journal = yi_session::lock_session(&store).find_entries(&query("human_answer"))?;
+    let journal = serde_json::to_string(&journal)?;
+    assert!(
+        journal.contains(&format!(r#""inReplyTo":"{id}""#)) && journal.contains("notes.md"),
+        "{journal}"
+    );
+    let told = format!("The human answered writer's question {id} for you: notes.md");
+    for _ in 0..POLL_ATTEMPTS {
+        if serde_json::to_string(&parent.messages())?.contains(&told) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    let root = serde_json::to_string(&parent.messages())?;
+    assert!(root.contains(&told), "the parent's model is told: {root}");
     // A reply to a request nobody waits on any more is history: it wakes no finished child.
     let stray = json!({"target": "writer", "message": "late", "reply_to": "writer-99"});
     let stray = host.send("parent", stray.as_object().ok_or("stray")?)?;
@@ -1324,7 +1350,7 @@ async fn the_humans_answer_resolves_a_question_and_the_parents_is_refused() -> T
 #[tokio::test]
 async fn the_parents_answer_first_refuses_the_humans() -> TestResult {
     let parent = parent_session(&["writer asks for a file name", "answered"]);
-    let (_root, host) = asking_family(&parent)?;
+    let (_root, host, _store) = asking_family(&parent)?;
     host.spawn(
         "write a greeting file".to_owned(),
         kwargs(&[("name", "writer")]),
@@ -1333,7 +1359,7 @@ async fn the_parents_answer_first_refuses_the_humans() -> TestResult {
     let answer = json!({"target": "writer", "message": "notes.md", "reply_to": id});
     host.send("parent", answer.as_object().ok_or("answer")?)?;
     let refused = host
-        .answer("writer", "hello.txt")
+        .answer("writer", &id, "hello.txt")
         .err()
         .ok_or("the human's answer was sent")?;
     assert!(
@@ -1348,7 +1374,7 @@ async fn the_parents_answer_first_refuses_the_humans() -> TestResult {
 #[tokio::test]
 async fn a_cancel_ends_a_childs_open_question() -> TestResult {
     let parent = parent_session(&["writer asks for a file name", "answered"]);
-    let (_root, host) = asking_family(&parent)?;
+    let (_root, host, _store) = asking_family(&parent)?;
     host.spawn(
         "write a greeting file".to_owned(),
         kwargs(&[("name", "writer")]),
@@ -2012,7 +2038,7 @@ async fn a_service_whose_kernel_dies_respawns_with_its_pending_mail() -> TestRes
         notice: Arc::new(|_text: &str, _| {}),
         events,
         parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message| {}),
+        report: Arc::new(|_message, _| {}),
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(move || Some(store.clone())),
         plans_dir: root.join(".yi/plans"),

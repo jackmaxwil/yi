@@ -249,7 +249,7 @@ impl SubagentHost {
         }
         draft.admit(from)?;
         let mut desk = self.mail.lock().map_err(|_| "mail state poisoned")?;
-        desk.refuse_second_answer(draft)?;
+        desk.refuse_second_answer(target, draft)?;
         let receipts = match target {
             "parent" if from == PARENT_NAME => {
                 return Err("the parent has no parent to message".to_owned());
@@ -327,7 +327,7 @@ impl SubagentHost {
             crate::mail::mark_read(&store, vec![Value::String(envelope.id.0.clone())]);
         }
         if envelope.kind != Kind::Progress && !answered {
-            (self.options.report)(crate::mail::present(&envelope));
+            (self.options.report)(crate::mail::present(&envelope), true);
         }
         let state = if answered { "answered" } else { "delivered" };
         let mut row = receipt(PARENT_NAME, state);
@@ -682,13 +682,16 @@ impl SubagentHost {
                 }
                 None => format!("deferred discovery from {child}: {}", row.text),
             };
-            (self.options.report)(AgentMessage::Custom {
-                custom_type: "discovery".to_owned(),
-                content: UserContent::Text(text),
-                display: true,
-                details: Some(details),
-                timestamp: yi_session::now_ms(),
-            });
+            (self.options.report)(
+                AgentMessage::Custom {
+                    custom_type: "discovery".to_owned(),
+                    content: UserContent::Text(text),
+                    display: true,
+                    details: Some(details),
+                    timestamp: yi_session::now_ms(),
+                },
+                true,
+            );
         }
         Ok(())
     }
@@ -808,17 +811,20 @@ impl SubagentHost {
                 produced: answer.is_some(),
             });
         }
-        (self.options.report)(AgentMessage::Custom {
-            custom_type: "reap".to_owned(),
-            content: UserContent::Text(block),
-            display: true,
-            details: Some(json!({
-                "child": name,
-                "status": crate::family::read_exit(record.exit).status.as_str(),
-                "error": record.error,
-            })),
-            timestamp: yi_session::now_ms(),
-        });
+        (self.options.report)(
+            AgentMessage::Custom {
+                custom_type: "reap".to_owned(),
+                content: UserContent::Text(block),
+                display: true,
+                details: Some(json!({
+                    "child": name,
+                    "status": crate::family::read_exit(record.exit).status.as_str(),
+                    "error": record.error,
+                })),
+                timestamp: yi_session::now_ms(),
+            },
+            true,
+        );
         Ok(Harvest {
             name,
             produced: answer.is_some(),
@@ -964,7 +970,7 @@ mod tests {
             notice: Arc::new(|_text: &str, _| {}),
             events,
             parent_messages: Arc::new(Vec::new),
-            report: Arc::new(move |message| {
+            report: Arc::new(move |message, _| {
                 if let Ok(mut queue) = sink.lock() {
                     queue.push(message);
                 }

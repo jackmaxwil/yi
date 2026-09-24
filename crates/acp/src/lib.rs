@@ -683,7 +683,10 @@ impl AcpState {
                 Ok(json!({"plan": plan, "subplans": subplans}))
             }
             "_yi/child_answer" => {
-                let told = handle.host.answer_told(text("childId"), text("text"));
+                let told =
+                    handle
+                        .host
+                        .answer_told(text("childId"), text("questionId"), text("text"));
                 Ok(json!({ "text": told }))
             }
             "_yi/child_replay" | "_yi/child_abort" => {

@@ -135,17 +135,19 @@ fn a_card_shows_the_question_the_stall_and_a_second_run() -> TestResult {
 }
 
 /// Dies with host words drawn as the user's and mail drawn without its sender: a replayed
-/// "[subagent writer finished]" took the prompt bar, and a request lost who asked it.
+/// "[subagent writer finished]" took the prompt bar, and a request lost who asked it. Dies too
+/// with a prompt typed before D25, which carries no attribution, replayed as a host notice.
 #[test]
 fn a_replayed_notice_and_mail_name_their_source() -> TestResult {
-    let entry = |seq: u64, message: AgentMessage| Entry::Message {
+    let at = |seq: u64, timestamp: u64, message: AgentMessage| Entry::Message {
         id: format!("e{seq}"),
         message,
         terminate: None,
         parent_id: None,
         seq,
-        timestamp: 0,
+        timestamp,
     };
+    let entry = |seq, message| at(seq, yi_types::message::ATTRIBUTED_SINCE_MS + seq, message);
     let notice = AgentMessage::host_user(
         UserContent::Text("[subagent writer (sub-writer) finished]".to_owned()),
         0,
@@ -161,8 +163,10 @@ fn a_replayed_notice_and_mail_name_their_source() -> TestResult {
         timestamp: 0,
     };
     let typed = AgentMessage::user_input(UserContent::Text("write a greeting".to_owned()), 0);
+    let old = AgentMessage::host_user(UserContent::Text("hello from august".to_owned()), 0);
+    let old = at(0, 1_787_622_423_154, old);
     let mut app = app();
-    app.replay_entries(&[entry(1, typed), entry(2, notice), entry(3, mail)]);
+    app.replay_entries(&[old, entry(1, typed), entry(2, notice), entry(3, mail)]);
     let lines = flat(&app.take_commits());
     let find = |needle: &str| lines.iter().find(|line| line.contains(needle)).cloned();
     let notice = find("[subagent writer").ok_or(format!("no notice: {lines:#?}"))?;
@@ -172,10 +176,72 @@ fn a_replayed_notice_and_mail_name_their_source() -> TestResult {
     );
     let asked = find("Which file name?").ok_or(format!("no mail: {lines:#?}"))?;
     assert!(asked.contains("request writer → parent"), "{asked:?}");
-    let prompt = find("write a greeting").ok_or(format!("no prompt: {lines:#?}"))?;
-    assert!(
-        !prompt.contains('⚑'),
-        "the human's words stay theirs: {prompt:?}"
+    for typed in ["write a greeting", "hello from august"] {
+        let prompt = find(typed).ok_or(format!("no prompt: {lines:#?}"))?;
+        assert!(
+            !prompt.contains('⚑'),
+            "the human's words stay theirs: {prompt:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Types `text` and presses Enter; what the composer sent, as `prompt <text>` or
+/// `answer <question> <text>`.
+fn typed(app: &mut App, text: &str) -> Vec<String> {
+    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+    for c in text.chars() {
+        yi_tui::input::handle_terminal_event(app, &tx, key(KeyCode::Char(c)));
+    }
+    yi_tui::input::handle_terminal_event(app, &tx, key(KeyCode::Enter));
+    let mut sent = Vec::new();
+    while let Ok(command) = rx.try_recv() {
+        sent.push(match command {
+            yi_tui::Command::Prompt(text) => format!("prompt {text}"),
+            yi_tui::Command::Answer { question, text, .. } => format!("answer {question} {text}"),
+            _ => "other".to_owned(),
+        });
+    }
+    sent
+}
+
+fn asks(id: &str) -> Option<ChildFlag> {
+    Some(ChildFlag::NeedsYou {
+        note: format!("asks {id}: Which file name?"),
+    })
+}
+
+/// Dies with the reply target read at Enter: a steer typed before the child asked answered the
+/// child, and an answer typed before the parent answered first went to the root as a prompt.
+#[test]
+fn a_draft_answers_the_question_open_when_it_started() -> TestResult {
+    let mut app = app();
+    app.adopt(&update(ChildStatus::Running, None), None);
+    app.set_focus(Some("sub-writer".to_owned()));
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let key = |c| {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+    };
+    yi_tui::input::handle_terminal_event(&mut app, &tx, key('g'));
+    app.reduce_child_update(&update(ChildStatus::Running, asks("writer-1")));
+    let sent = typed(&mut app, "o on");
+    assert_eq!(
+        sent,
+        ["prompt go on"],
+        "a draft begun before the question is no answer"
+    );
+
+    yi_tui::input::handle_terminal_event(&mut app, &tx, key('n'));
+    app.reduce_child_update(&update(ChildStatus::Running, None));
+    app.reduce_child_update(&update(ChildStatus::Running, asks("writer-2")));
+    let sent = typed(&mut app, "otes.md");
+    assert_eq!(
+        sent,
+        ["answer writer-1 notes.md"],
+        "the answer stays bound to the question it was written to"
     );
     Ok(())
 }
@@ -203,7 +269,6 @@ fn said(text: &str) -> AgentMessage {
 
 /// A family whose one child asks its parent a question through `ask_user`.
 fn asking_host(dir: &Scratch, parent: &Arc<AgentSession>) -> Arc<SubagentHost> {
-    let report = parent.heartbeat_hook();
     Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
         max_depth: 1,
@@ -229,7 +294,7 @@ fn asking_host(dir: &Scratch, parent: &Arc<AgentSession>) -> Arc<SubagentHost> {
         notice: yi_runtime::wiring::lifecycle_notice(parent),
         events: parent.events_sender(),
         parent_messages: Arc::new(Vec::new),
-        report: Arc::new(move |message| report(message, yi_types::schedule::DeliveryMode::Steer)),
+        report: parent.deliver_hook(),
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: dir.join(".yi/plans"),
@@ -279,11 +344,10 @@ fn the_reply_box_answers_a_childs_question() -> TestResult {
     let child = host.children_view().pop().ok_or("no child")?;
     let transcript = serde_json::to_string(&child.session.messages())?;
     assert!(transcript.contains("answered: notes.md"), "{transcript}");
-    let root = serde_json::to_string(&parent.messages())?;
-    assert!(
-        !root.contains("\"notes.md\""),
-        "the answer never became a root prompt: {root}"
-    );
+    let prompted = parent.messages().into_iter().any(|message| {
+        matches!(&message, AgentMessage::User { content: UserContent::Text(text), .. } if text == "notes.md")
+    });
+    assert!(!prompted, "the answer never became a root prompt");
     let mut dumped: Vec<_> = std::fs::read_dir(&frames)?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .collect();

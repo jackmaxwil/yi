@@ -890,7 +890,7 @@ mod tests {
         assert!(!super::holds(&view("repeat_break"), true));
     }
 
-    /// Dies with the ask ending the child's run: it would be accepted mid-question.
+    /// Dies with the ask ending the child's run, or read as outside its tool call.
     #[tokio::test]
     async fn an_asking_child_is_not_submitted() -> TestResult {
         let ask = serde_json::Map::from_iter([("question".to_owned(), "which region?".into())]);
@@ -924,9 +924,22 @@ mod tests {
             todo.state
         );
         assert!(texts(&rig.said).is_empty(), "nothing was submitted");
-        for child in rig.host.children_view() {
-            rig.host.interrupt(&child.update.name)?;
+        let name = rig
+            .host
+            .children_view()
+            .pop()
+            .ok_or("no child")?
+            .update
+            .name;
+        assert!(rig.host.in_tool(&name), "blocked inside ask_user");
+        rig.host.interrupt(&name)?;
+        for _ in 0..400 {
+            if !rig.host.in_tool(&name) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
+        assert!(!rig.host.in_tool(&name), "a stopped run is in no tool");
         Ok(())
     }
 }

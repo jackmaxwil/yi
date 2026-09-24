@@ -193,7 +193,7 @@ fn rig(owner: Model, max_children: usize) -> Result<Rig, Box<dyn Error>> {
         }),
         events,
         parent_messages: Arc::new(|| vec![yi_runtime::session::user_input(OWNER_SAID)]),
-        report: Arc::new(|_message| {}),
+        report: Arc::new(|_message, _| {}),
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: root.join(".yi/plans"),

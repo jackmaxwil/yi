@@ -128,7 +128,7 @@ async fn a_reaped_childs_booted_kernel_process_is_gone() -> TestResult {
         notice: Arc::new(|_, _| {}),
         events,
         parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_| {}),
+        report: Arc::new(|_, _| {}),
         attribute: Arc::new(|_| {}),
         store: Arc::new(|| None),
         plans_dir: std::env::temp_dir().join(".yi/plans"),

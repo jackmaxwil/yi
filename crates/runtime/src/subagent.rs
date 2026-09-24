@@ -189,8 +189,8 @@ pub struct SubagentHostOptions {
     /// Where the lane pool lives (`~/.yi/lanes`), and how many slots it has.
     pub home: PathBuf,
     pub lane_slots: u8,
-    /// A child's B6 report, injected into the parent's own transcript.
-    pub report: Arc<dyn Fn(AgentMessage) + Send + Sync>,
+    /// A child's B6 report, injected into the parent's own transcript; `true` wakes it.
+    pub report: Arc<dyn Fn(AgentMessage, bool) + Send + Sync>,
     /// Folds a child's billable usage onto the parent's last assistant message.
     pub attribute: Arc<AttributeFn>,
     /// The plan a discovery's named ancestor task is resolved against.

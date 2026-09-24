@@ -116,8 +116,12 @@ pub(crate) fn spawn_runtime_bridge(
                         Command::Slash(line) => {
                             crate::port::slash_off_thread(&driver_session, line, &reply_tx);
                         }
-                        Command::Answer { child_id, text } => {
-                            let told = driver_host.answer_told(&child_id, &text);
+                        Command::Answer {
+                            child_id,
+                            question,
+                            text,
+                        } => {
+                            let told = driver_host.answer_told(&child_id, &question, &text);
                             let _ = reply_tx.send(UiEvent::Reply(crate::port::Reply::Notice(told)));
                         }
                         Command::StopChild(child_id) => {

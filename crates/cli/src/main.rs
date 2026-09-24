@@ -157,6 +157,12 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             format!("{flag} needs --headless").into(),
         ));
     }
+    if faux.is_some() && !headless && !solo && matches!(command.as_str(), "" | "console") {
+        return Err(lexopt::Error::Custom(
+            "--faux runs in-process only: add --solo, or use `yi tui`, `yi ask` or --headless"
+                .into(),
+        ));
+    }
     Ok(Args {
         command,
         model_pinned: model.is_some(),

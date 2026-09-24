@@ -277,8 +277,9 @@ pub fn layout_chat(
     } else {
         theme.muted_style()
     };
-    let reply = app.reply_target().map(|(_, title)| title);
-    app.composer.set_frame(border, theme.dim_style(), reply);
+    app.bind_reply();
+    app.composer
+        .set_frame(border, theme.dim_style(), app.reply_title());
     let composer_height = app.composer.desired_height();
 
     let bottom_height = bottom_lines.as_ref().map_or(composer_height, |lines| {
