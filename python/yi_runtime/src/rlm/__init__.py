@@ -590,9 +590,10 @@ async def wait(timeout: float = 300.0, cursor: int | None = None) -> dict[str, A
 
     The reply carries ``cursor`` (pass it back on the next call and no other
     waiter can steal your updates), ``changed`` and its one-release alias
-    ``updated`` (the names that moved), ``states`` (every registered child by
-    name: ``running``, ``finished``, ``failed``, ``needs_you`` or ``stuck``)
-    and ``notes``. With no cursor the host keeps your last one: the first call
+    ``updated`` (the names that moved), ``causes`` (why each moved, by name:
+    ``mail``, ``finished``, ``asked``, ``reaped`` and the like), ``states`` (every
+    registered child by name: ``running``, ``finished``, ``failed``, ``needs_you``
+    or ``stuck``) and ``notes``. With no cursor the host keeps your last one: the first call
     answers at once with the family as it stands, each later one blocks until a
     child moves, so ``await rlm.wait(300)`` in a loop waits instead of spinning.
     The host clamps the timeout and says so in the reply (``clamped``), so a
