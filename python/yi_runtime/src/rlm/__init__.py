@@ -491,7 +491,8 @@ async def send(
     receipt is ``{target, id, state}`` and ``state`` says what the host did once
     the message was in the target's inbox: ``queued`` (a running turn will take
     it), ``woken`` (a turn was started on it) or ``inboxed`` (it waits in the
-    store; nothing is running to read it). ``reply_to=<id>`` answers a request.
+    store; nothing is running to read it). ``reply_to=<id>`` answers a request: the
+    waiting call returns it (``answered``), and a request already answered refuses it.
     ``kind`` is ``inform`` (the default), ``progress``, ``failure`` or ``cancel``.
     A body over 16 KiB is refused, never trimmed: ``put`` it and pass
     ``ref="family://<name>"``.

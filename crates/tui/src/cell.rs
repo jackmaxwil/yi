@@ -7,7 +7,7 @@ use crate::colors::{ColorTier, Theme, name_accent};
 use crate::diffview::{self, DiffBudget};
 use crate::markdown;
 use crate::wrap::wrap_line;
-use yi_types::subagent::ChildActivity;
+use yi_types::subagent::{ChildActivity, ChildFlag};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranscriptMode {
@@ -102,7 +102,10 @@ pub struct TaskCell {
     pub spawn: Option<String>,
     pub answer: Option<String>,
     pub activity: ChildActivity,
+    pub flag: Option<ChildFlag>,
 }
+
+pub const REPLY_HINT: &str = "focus it (alt-↓) and type your answer";
 
 #[derive(Debug, Clone)]
 pub enum Cell {
@@ -671,10 +674,18 @@ impl TaskCell {
     ) -> Vec<Line<'static>> {
         let activity = activity_label(self.activity);
         let pulse = crate::motion::pulse_frame(crate::motion::elapsed_of(spinner_phase));
-        let (glyph, state, tone) = match self.status {
-            TaskStatus::Running => (pulse, activity, theme.purple),
-            TaskStatus::Done => ('↳', "done", theme.purple),
-            TaskStatus::Failed => ('✗', "failed", theme.error),
+        let flagged = match (self.status, &self.flag) {
+            (TaskStatus::Running, Some(ChildFlag::NeedsYou { note })) => {
+                Some(('?', "needs you", note))
+            }
+            (TaskStatus::Running, Some(ChildFlag::Stuck { note })) => Some(('!', "stuck", note)),
+            _ => None,
+        };
+        let (glyph, state, tone) = match (self.status, flagged) {
+            (_, Some((glyph, state, _))) => (glyph, state, theme.warning),
+            (TaskStatus::Running, None) => (pulse, activity, theme.purple),
+            (TaskStatus::Done, None) => ('↳', "done", theme.purple),
+            (TaskStatus::Failed, None) => ('✗', "failed", theme.error),
         };
         let (name, hash) = humanize(&self.description);
         let hash = if hash.is_empty() {
@@ -689,7 +700,16 @@ impl TaskCell {
         let elapsed = elapsed_label(self.elapsed_ms);
         let title = format!("{glyph} {name}{hash} · {state} {elapsed} · {calls}");
         let mut body = Vec::new();
-        if self.status == TaskStatus::Running {
+        if let Some((_, _, note)) = flagged {
+            let note: String = note.chars().filter(|c| !c.is_control()).collect();
+            body.push(Line::from(Span::styled(
+                note.clone(),
+                Style::default().fg(theme.warning),
+            )));
+            if note.starts_with("asks ") {
+                body.push(Line::from(Span::styled(REPLY_HINT, theme.dim_style())));
+            }
+        } else if self.status == TaskStatus::Running {
             let tool = self.last_tool.as_deref().unwrap_or("starting");
             let row = format!(
                 "⚙ {tool} · {} tokens",

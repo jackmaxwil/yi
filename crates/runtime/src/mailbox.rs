@@ -187,7 +187,7 @@ impl ParentLink {
         let runtime = tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
         runtime.block_on(async {
             let stopped = async {
-                while !cancelled() {
+                while !cancelled() && !host.cancelled_member(&self.child_name) {
                     tokio::time::sleep(std::time::Duration::from_millis(WAIT_POLL_MS)).await;
                 }
             };
@@ -249,6 +249,7 @@ impl SubagentHost {
         }
         draft.admit(from)?;
         let mut desk = self.mail.lock().map_err(|_| "mail state poisoned")?;
+        desk.refuse_second_answer(draft)?;
         let receipts = match target {
             "parent" if from == PARENT_NAME => {
                 return Err("the parent has no parent to message".to_owned());
@@ -294,8 +295,6 @@ impl SubagentHost {
             .unwrap_or_else(|| target.to_owned())
     }
 
-    /// The parent's turn is the report hook's to queue or start, and the hook says nothing
-    /// back, so this receipt keeps the word it always carried.
     fn deliver_to_parent(
         &self,
         desk: &mut Desk,
@@ -323,17 +322,19 @@ impl SubagentHost {
         if let Some(store) = (self.options.store)() {
             crate::mail::inbox(&store, &envelope)?;
         }
-        desk.resolve(&envelope);
-        if envelope.kind != Kind::Progress {
+        let answered = desk.resolve(&envelope, draft.by_human);
+        if answered && let Some(store) = (self.options.store)() {
+            crate::mail::mark_read(&store, vec![Value::String(envelope.id.0.clone())]);
+        }
+        if envelope.kind != Kind::Progress && !answered {
             (self.options.report)(crate::mail::present(&envelope));
         }
-        let mut row = receipt(PARENT_NAME, "delivered");
+        let state = if answered { "answered" } else { "delivered" };
+        let mut row = receipt(PARENT_NAME, state);
         row["id"] = Value::String(envelope.id.0);
         Ok(row)
     }
 
-    /// Invariant: the receipt is read off the delivery attempt: `queued` where a running turn
-    /// will drain it, `woken` where this send started the turn, `inboxed` where neither.
     fn deliver_to_child(
         &self,
         desk: &mut Desk,
@@ -373,12 +374,17 @@ impl SubagentHost {
         let between = (incarnation_of(from), incarnation_of(&name));
         let envelope = desk.seal((from, &name), between, draft);
         crate::mail::inbox(&store, &envelope)?;
-        desk.resolve(&envelope);
+        let answered = desk.resolve(&envelope, draft.by_human);
         let message = crate::mail::present(&envelope);
-        // `followup` only wakes an idle receiver: every kind joins the one queue in send order.
+        // `followup` only wakes an idle receiver; a late reply wakes nobody, its asker returned.
         let wakes = envelope.kind != Kind::Cancel
-            && (draft.followup || !matches!(envelope.kind, Kind::Inform | Kind::Progress));
+            && (draft.followup
+                || !matches!(envelope.kind, Kind::Inform | Kind::Progress | Kind::Reply));
         let state = match record {
+            _ if answered => {
+                crate::mail::mark_read(&store, vec![Value::String(envelope.id.0.clone())]);
+                Delivery::Answered
+            }
             _ if envelope.kind == Kind::Progress => Delivery::Inboxed,
             // A revoked child is admitted no new work; its inbox still keeps the message.
             Some(record) if record.lease.revoked.is_some() && envelope.kind != Kind::Cancel => {

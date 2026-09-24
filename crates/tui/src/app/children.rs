@@ -76,6 +76,7 @@ impl App {
                 answer_preview: None,
                 error: Some(GONE.to_owned()),
                 exit: None,
+                flag: None,
             })
             .collect();
         for update in &gone {
@@ -104,6 +105,7 @@ impl App {
                         spawn: self.spawning_cell(),
                         answer: None,
                         activity: update.activity,
+                        flag: None,
                     },
                     started: Instant::now(),
                     finished: None,
@@ -133,7 +135,15 @@ impl App {
             || state.cell.toolcalls != toolcalls
             || state.cell.tokens != update.token_count
             || state.cell.activity != update.activity
+            || state.cell.flag != update.flag
         {
+            if status == TaskStatus::Running && state.finished.is_some() {
+                state.finished = None;
+                state.started = Instant::now();
+                state.cell.answer = None;
+                self.committed_tasks.remove(id);
+            }
+            state.cell.flag = update.flag.clone();
             state.cell.status = status;
             state.cell.activity = update.activity;
             state.cell.error = update.error.clone();

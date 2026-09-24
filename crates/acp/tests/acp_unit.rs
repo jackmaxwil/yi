@@ -215,6 +215,7 @@ fn child_updates_become_a_subagent_update_notification() -> TestResult {
                 answer_preview: None,
                 error: None,
                 exit: None,
+                flag: None,
             },
         },
         &mut ids,
@@ -246,7 +247,7 @@ fn replay_walks_entries_into_full_message_updates() -> TestResult {
     let entries = vec![
         Entry::Message {
             id: "e1".to_owned(),
-            message: AgentMessage::host_user(UserContent::Text("fix the bug".to_owned()), 0),
+            message: AgentMessage::user_input(UserContent::Text("fix the bug".to_owned()), 0),
             terminate: None,
             parent_id: None,
             seq: 1,
@@ -272,6 +273,38 @@ fn replay_walks_entries_into_full_message_updates() -> TestResult {
     let second = serde_json::to_value(&updates[1])?;
     assert_eq!(second["sessionUpdate"], "_yi/compaction");
     assert_eq!(second["summary"], "earlier work");
+    Ok(())
+}
+
+/// Dies with host notices sent as `user_message`: a stock client drew "[subagent writer
+/// finished]" as if the user had typed it, live and on replay.
+#[test]
+fn a_host_notice_is_never_a_user_message() -> TestResult {
+    let notice = AgentMessage::host_user(
+        UserContent::Text("[subagent writer finished]".to_owned()),
+        0,
+    );
+    let live = to_updates(
+        &AgentEvent::MessageStart {
+            message: notice.clone(),
+        },
+        &mut IdMap::new(1000),
+    );
+    let entry = Entry::Message {
+        id: "e1".to_owned(),
+        message: notice,
+        terminate: None,
+        parent_id: None,
+        seq: 1,
+        timestamp: 0,
+    };
+    let replayed = replay_updates(&[entry], &mut IdMap::new(1000));
+    for update in live.iter().chain(&replayed) {
+        let json = serde_json::to_value(update)?;
+        assert_eq!(json["sessionUpdate"], "_yi/host_notice", "{json}");
+        assert_eq!(json["text"], "[subagent writer finished]", "{json}");
+    }
+    assert_eq!((live.len(), replayed.len()), (1, 1));
     Ok(())
 }
 
@@ -388,6 +421,7 @@ fn child_update() -> yi_types::subagent::ChildUpdate {
         answer_preview: None,
         error: None,
         exit: None,
+        flag: None,
     }
 }
 

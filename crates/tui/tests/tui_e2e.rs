@@ -2154,6 +2154,7 @@ fn a_card_adopted_after_the_first_tool_event_names_it() -> TestResult {
             answer_preview: None,
             error: None,
             exit: None,
+            flag: None,
         },
         session: yi_runtime::ChildFeed::of(session),
     }];

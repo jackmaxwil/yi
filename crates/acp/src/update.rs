@@ -6,7 +6,7 @@ use yi_types::acp::{
 use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::goal::Goal;
-use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
+use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
 use yi_types::subagent::ChildId;
 
 pub fn extension<K: Into<String>>(
@@ -174,6 +174,20 @@ fn user_blocks(content: &UserContent) -> Vec<AcpContentBlock> {
     }
 }
 
+fn user_update(
+    content: &UserContent,
+    attribution: Attribution,
+    ids: &mut IdMap,
+) -> AcpSessionUpdate {
+    match attribution {
+        Attribution::User => AcpSessionUpdate::UserMessage {
+            message_id: ids.allocate(),
+            content: user_blocks(content),
+        },
+        Attribution::Unproven => extension_of("host_notice", content, None),
+    }
+}
+
 /// Wraps a Custom message as a `_yi/<custom_type>` extension update (C9).
 fn extension_of(
     custom_type: &str,
@@ -248,10 +262,11 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
                 ids.allocate();
                 Vec::new()
             }
-            AgentMessage::User { content, .. } => vec![AcpSessionUpdate::UserMessage {
-                message_id: ids.allocate(),
-                content: user_blocks(content),
-            }],
+            AgentMessage::User {
+                content,
+                attribution,
+                ..
+            } => vec![user_update(content, *attribution, ids)],
             AgentMessage::Custom {
                 custom_type,
                 content,
@@ -407,12 +422,11 @@ pub fn replay_updates(entries: &[Entry], ids: &mut IdMap) -> Vec<AcpSessionUpdat
                         }],
                     });
                 }
-                AgentMessage::User { content, .. } => {
-                    updates.push(AcpSessionUpdate::UserMessage {
-                        message_id: ids.allocate(),
-                        content: user_blocks(content),
-                    });
-                }
+                AgentMessage::User {
+                    content,
+                    attribution,
+                    ..
+                } => updates.push(user_update(content, *attribution, ids)),
                 AgentMessage::Custom {
                     custom_type,
                     content,

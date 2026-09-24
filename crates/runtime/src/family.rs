@@ -3,7 +3,7 @@
 use serde_json::Value;
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content};
-use yi_types::subagent::{ChildExit, ChildStatus, LoopSignal};
+use yi_types::subagent::{ChildExit, ChildFlag, ChildStatus, ChildUpdate, LoopSignal};
 
 /// A running member with no new record for this long is `stuck` with note `idle Ns`.
 pub const STUCK_IDLE_MS: u64 = 300_000;
@@ -216,6 +216,17 @@ pub fn state_from_records(
         }
         state => (state, error.map(cut), idle_s),
     }
+}
+
+pub fn flagged(mut update: ChildUpdate, views: &[MemberView]) -> ChildUpdate {
+    let view = views.iter().find(|view| view.name == update.name);
+    let note = || view.and_then(|view| view.note.clone()).unwrap_or_default();
+    update.flag = match view.map(|view| view.state) {
+        Some(MemberState::NeedsYou) => Some(ChildFlag::NeedsYou { note: note() }),
+        Some(MemberState::Stuck) => Some(ChildFlag::Stuck { note: note() }),
+        _ => None,
+    };
+    update
 }
 
 /// One stuck notice per episode (plan section 7.5): a member is latched by name when first

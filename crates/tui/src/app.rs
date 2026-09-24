@@ -52,6 +52,10 @@ pub enum Command {
     Slash(String),
     StopChild(String),
     ChildHistory(String),
+    Answer {
+        child_id: String,
+        text: String,
+    },
     Abort,
     Shutdown,
 }
@@ -206,10 +210,12 @@ pub struct App {
 
 pub use crate::frame::next_spinner_wake;
 
+mod asks;
 mod bridge;
 mod children;
 mod stream;
 
+pub(crate) use asks::mail_source;
 pub use bridge::forward;
 pub(crate) use bridge::spawn_runtime_bridge;
 
@@ -713,10 +719,11 @@ impl App {
                 custom_type,
                 content,
                 display: true,
+                details,
                 ..
             } => {
                 let cell = Cell::Advisory {
-                    source: custom_type.clone(),
+                    source: asks::mail_source(custom_type, details.as_ref()),
                     text: user_text(content),
                 };
                 self.commit_cell(&cell);
@@ -753,10 +760,13 @@ impl App {
         }
         match event {
             AgentEvent::MessageStart {
-                message: AgentMessage::User { content, .. },
-            } => self.commit_cell(&Cell::User {
-                text: user_text(&content),
-            }),
+                message:
+                    AgentMessage::User {
+                        content,
+                        attribution,
+                        ..
+                    },
+            } => self.commit_cell(&crate::port::user_cell(user_text(&content), attribution)),
             AgentEvent::MessageEnd { message } => self.reduce_message_end(&message),
             AgentEvent::ToolExecutionEnd {
                 tool_name,

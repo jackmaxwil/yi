@@ -319,6 +319,14 @@ impl SessionPort for Arc<AgentSession> {
     }
 }
 
+/// Invariant: only what the human typed draws as theirs; the host's words draw as a notice.
+pub(crate) fn user_cell(text: String, attribution: yi_types::message::Attribution) -> Cell {
+    match attribution {
+        yi_types::message::Attribution::User => Cell::User { text },
+        yi_types::message::Attribution::Unproven => Cell::Notice { text },
+    }
+}
+
 impl App {
     /// The model's context and the screen must agree about what was said.
     pub fn replay_entries(&mut self, entries: &[Entry]) {
@@ -326,7 +334,19 @@ impl App {
             .iter()
             .filter_map(|entry| match entry {
                 Entry::Message { message, .. } => match message {
-                    AgentMessage::User { content, .. } => Some(Cell::User {
+                    AgentMessage::User {
+                        content,
+                        attribution,
+                        ..
+                    } => Some(user_cell(user_text(content), *attribution)),
+                    AgentMessage::Custom {
+                        custom_type,
+                        content,
+                        display: true,
+                        details,
+                        ..
+                    } => Some(Cell::Advisory {
+                        source: crate::app::mail_source(custom_type, details.as_ref()),
                         text: user_text(content),
                     }),
                     AgentMessage::Assistant { content, .. } => {

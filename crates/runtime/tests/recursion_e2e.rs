@@ -1237,8 +1237,132 @@ async fn a_childs_question_is_a_request_its_parent_answers_with_one_call() -> Te
         "{transcript}"
     );
     assert!(!transcript.contains("produced no output"), "{transcript}");
+    assert!(
+        !presented_mail(&child.session.messages()).contains("notes.md"),
+        "the reply the ask returned is never presented a second time"
+    );
     assert_eq!(host.status()["members"][0]["state"], "finished");
     Ok(())
+}
+
+fn presented_mail(messages: &[AgentMessage]) -> String {
+    messages
+        .iter()
+        .filter(|message| {
+            matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == "agent_message")
+        })
+        .map(|message| serde_json::to_string(message).unwrap_or_default())
+        .collect()
+}
+
+/// The id of the question `writer` is blocked on, once its parent can see it.
+async fn asked_id(host: &SubagentHost) -> Result<String, Box<dyn Error>> {
+    for _ in 0..POLL_ATTEMPTS {
+        let note = host.status()["members"][0]["note"].clone();
+        if let Some(id) = note
+            .as_str()
+            .and_then(|note| note.strip_prefix("asks "))
+            .and_then(|rest| rest.split(':').next())
+        {
+            return Ok(id.to_owned());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    Err("writer never asked".into())
+}
+
+/// Dies with no human road to a child's question, and with both answers landing: the parent's
+/// second reply to an answered request was presented to the child as fresh mail.
+#[tokio::test]
+async fn the_humans_answer_resolves_a_question_and_the_parents_is_refused() -> TestResult {
+    let parent = parent_session(&["writer asks for a file name", "answered"]);
+    let (_root, host) = asking_family(&parent)?;
+    host.spawn(
+        "write a greeting file".to_owned(),
+        kwargs(&[("name", "writer")]),
+    )?;
+    let id = asked_id(&host).await?;
+    let flag = host.children_view().pop().ok_or("no child")?.update.flag;
+    assert!(
+        matches!(&flag, Some(yi_types::subagent::ChildFlag::NeedsYou { note }) if note.contains("Which file name?")),
+        "the card's update carries the question: {flag:?}"
+    );
+    let sent = host.answer("writer", "notes.md")?;
+    assert_eq!(state_of(&sent), "answered", "{sent:?}");
+    let second = json!({"target": "writer", "message": "hello.txt", "reply_to": id});
+    let refused = host.send("parent", second.as_object().ok_or("second")?);
+    let refused = refused
+        .err()
+        .ok_or("the parent's second answer was delivered")?;
+    assert!(
+        refused.contains("already answered by the human"),
+        "{refused}"
+    );
+    for _ in 0..POLL_ATTEMPTS {
+        if host.status()["members"][0]["state"] == "finished" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    let child = host.children_view().pop().ok_or("no child")?;
+    let transcript = serde_json::to_string(&child.session.messages())?;
+    assert!(transcript.contains("answered: notes.md"), "{transcript}");
+    assert!(
+        presented_mail(&child.session.messages()).is_empty(),
+        "neither answer is presented as mail"
+    );
+    // A reply to a request nobody waits on any more is history: it wakes no finished child.
+    let stray = json!({"target": "writer", "message": "late", "reply_to": "writer-99"});
+    let stray = host.send("parent", stray.as_object().ok_or("stray")?)?;
+    assert_ne!(state_of(&stray), "woken", "{stray:?}");
+    assert_eq!(host.status()["members"][0]["state"], "finished");
+    Ok(())
+}
+
+/// Dies with the human told nothing when the parent answered first: the human's answer must be
+/// refused by name, never sent as a second reply.
+#[tokio::test]
+async fn the_parents_answer_first_refuses_the_humans() -> TestResult {
+    let parent = parent_session(&["writer asks for a file name", "answered"]);
+    let (_root, host) = asking_family(&parent)?;
+    host.spawn(
+        "write a greeting file".to_owned(),
+        kwargs(&[("name", "writer")]),
+    )?;
+    let id = asked_id(&host).await?;
+    let answer = json!({"target": "writer", "message": "notes.md", "reply_to": id});
+    host.send("parent", answer.as_object().ok_or("answer")?)?;
+    let refused = host
+        .answer("writer", "hello.txt")
+        .err()
+        .ok_or("the human's answer was sent")?;
+    assert!(
+        refused.contains(&format!("{id} was already answered by \"parent\"")),
+        "{refused}"
+    );
+    Ok(())
+}
+
+/// Dies with the ask deaf to its session: a parent's `cancel` left the child blocked on its
+/// question for the whole 300 s wait.
+#[tokio::test]
+async fn a_cancel_ends_a_childs_open_question() -> TestResult {
+    let parent = parent_session(&["writer asks for a file name", "answered"]);
+    let (_root, host) = asking_family(&parent)?;
+    host.spawn(
+        "write a greeting file".to_owned(),
+        kwargs(&[("name", "writer")]),
+    )?;
+    asked_id(&host).await?;
+    let cancel = json!({"target": "writer", "message": "stop", "kind": "cancel"});
+    host.send("parent", cancel.as_object().ok_or("cancel")?)?;
+    for _ in 0..POLL_ATTEMPTS {
+        if host.status()["members"][0]["state"] != "needs_you" {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    Err("the cancelled child still waits on its question".into())
 }
 
 /// Dies with the headless hold read off plan children only: in `mbx-detach` `yi ask` exited 0

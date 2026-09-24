@@ -209,5 +209,6 @@ when it changes rather than editing them by hand.
 - [D230](adr/d230.md) - the mailbox delivers in order and no run ends owing a turn
 - [D232](adr/d232.md) - one `rlm` surface, and a call the cell never awaits runs once after it
 - [D233](adr/d233.md) - asking, receiving and a headless run's children go through the mailbox
+- [D234](adr/d234.md) - the human sees a child's question and answers it
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

@@ -51,7 +51,7 @@ pub(crate) struct ChildRecord {
     pub(crate) phase: crate::family::Phase,
     pub(crate) lease: yi_types::lease::Lease,
     pub(crate) parent_close: yi_types::lease::ParentClose,
-    activity: ChildActivity,
+    pub(crate) activity: ChildActivity,
     /// Where this incarnation's own turns start in the kept transcript: 0 for every child but
     /// a respawned service, whose predecessor's turns were billed to the lease that ended.
     pub(crate) billed_from: usize,
@@ -498,13 +498,14 @@ impl SubagentHost {
     }
 
     pub fn children_view(&self) -> Vec<ChildView> {
+        let states = self.states();
         self.children
             .lock()
             .map(|children| {
                 let mut view: Vec<ChildView> = children
                     .iter()
                     .map(|(id, record)| ChildView {
-                        update: record.update(id),
+                        update: crate::family::flagged(record.update(id), &states),
                         session: ChildFeed::of(Arc::clone(&record.session)),
                     })
                     .collect();
@@ -514,13 +515,15 @@ impl SubagentHost {
             .unwrap_or_default()
     }
 
-    fn publish(&self, child_id: &str) {
+    pub(crate) fn publish(&self, child_id: &str) {
         let update = self
             .children
             .lock()
             .ok()
             .and_then(|children| children.get(child_id).map(|record| record.update(child_id)));
         if let Some(update) = update {
+            let views = self.member_states(Some(&update.name));
+            let update = crate::family::flagged(update, &views);
             let _ = self.options.events.send(AgentEvent::ChildUpdate { update });
         }
     }
@@ -737,6 +740,10 @@ impl SubagentHost {
 
     /// every child's state as its own records show it (D165).
     pub fn states(&self) -> Vec<crate::family::MemberView> {
+        self.member_states(None)
+    }
+
+    fn member_states(&self, only: Option<&str>) -> Vec<crate::family::MemberView> {
         let now = yi_session::now_ms();
         let asking = self
             .mail
@@ -748,6 +755,7 @@ impl SubagentHost {
             .map(|children| {
                 let mut views: Vec<crate::family::MemberView> = children
                     .values()
+                    .filter(|record| only.is_none_or(|name| record.session_name == name))
                     .map(|record| {
                         let recent = record
                             .session
