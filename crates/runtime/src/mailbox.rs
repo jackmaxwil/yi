@@ -7,6 +7,7 @@ use yi_types::mail::{Delivery, Kind, Receipt};
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::subagent::{ChildResult, Discovery};
 
+use crate::family::Cause;
 use crate::mail::{Desk, Draft};
 use crate::subagent::{
     ChildExit, ChildRecord, INTERRUPTED, PARENT_NAME, Step, SubagentHost, last_assistant_text,
@@ -68,6 +69,19 @@ pub(crate) fn context_block(kwargs: &Map<String, Value>) -> Result<Option<String
     Ok(Some(block))
 }
 
+fn presented_when(state: Delivery) -> &'static str {
+    match state {
+        Delivery::Queued => {
+            "in its running turn, at the next message boundary, after any message queued before it"
+        }
+        Delivery::Woken => "now: it is the first message of the turn it started",
+        Delivery::Inboxed => {
+            "when its next turn starts: it is idle and this message wakes nothing (followup=True wakes it)"
+        }
+        Delivery::Answered => "never: it is the reply its request's call returned",
+    }
+}
+
 fn receipt(target: &str, state: &str) -> Value {
     json!({"target": target, "state": state})
 }
@@ -102,6 +116,7 @@ pub fn register_child_messaging(
     });
     let (sender, own) = (link.clone(), Arc::clone(local));
     registry.register("agent_message.request", move |payload| {
+        own.waited_on(true);
         let parsed = Draft::from_payload(&payload);
         let timeout = timeout_of(&payload);
         let sender = sender.clone();
@@ -125,8 +140,36 @@ pub fn register_child_messaging(
     });
 }
 
-/// What a child needs to reach the family it was spawned into: its own name,
-/// and the parent host's router (a `Weak`, so the family is not a cycle).
+pub fn register_receive(
+    session: &crate::session::AgentSession,
+    host: &Arc<SubagentHost>,
+    registry: &mut crate::kernel::HostRegistry,
+) {
+    let (take, host) = (session.mail_hook(), Arc::clone(host));
+    registry.register("rlm.receive", move |payload| {
+        let asked = timeout_of(&payload);
+        let clamped = asked.clamp(WAIT_MIN_MS, WAIT_MAX_MS);
+        let (take, host) = (Arc::clone(&take), Arc::clone(&host));
+        Box::pin(async move {
+            let started = std::time::Instant::now();
+            let deadline = std::time::Duration::from_millis(clamped);
+            loop {
+                let envelopes = take();
+                if !envelopes.is_empty() || started.elapsed() >= deadline {
+                    host.waited_on(!envelopes.is_empty());
+                    let mut reply = Map::new();
+                    reply.insert("envelopes".to_owned(), Value::Array(envelopes));
+                    reply.insert("timeout_ms".to_owned(), Value::from(clamped));
+                    reply.insert("clamped".to_owned(), Value::Bool(clamped != asked));
+                    return Ok(reply);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(WAIT_POLL_MS)).await;
+            }
+        })
+    });
+}
+
+/// A child's own name and a `Weak` to its parent host's router, so the family is no cycle.
 #[derive(Clone)]
 pub struct ParentLink {
     pub child_name: String,
@@ -149,6 +192,25 @@ impl ParentLink {
             .upgrade()
             .ok_or_else(|| "the parent session is gone".to_owned())?;
         host.route_mail(&self.child_name, target, draft)
+    }
+
+    pub fn ask(&self, question: &str, cancelled: &yi_tools::CancelFlag) -> Result<String, String> {
+        let host = self.host.upgrade().ok_or("the parent session is gone")?;
+        let runtime = tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
+        runtime.block_on(async {
+            let stopped = async {
+                while !cancelled() && !host.cancelled_member(&self.child_name) {
+                    tokio::time::sleep(std::time::Duration::from_millis(WAIT_POLL_MS)).await;
+                }
+            };
+            let asked = host.request(&self.child_name, PARENT_NAME, question, WAIT_MAX_MS);
+            tokio::select! {
+                answer = asked => answer.map(|reply| {
+                    reply.get("reply").and_then(Value::as_str).unwrap_or_default().to_owned()
+                }),
+                () = stopped => Err("the run was stopped before the parent answered".to_owned()),
+            }
+        })
     }
 
     pub fn roster(&self) -> Map<String, Value> {
@@ -198,7 +260,13 @@ impl SubagentHost {
             return Err(format!("agent \"{from}\" cannot send to itself"));
         }
         draft.admit(from)?;
+        let (answer, hint) = match self.as_answer(from, target, draft) {
+            Ok(answer) => (answer, None),
+            Err(hint) => (None, Some(hint)),
+        };
+        let draft = answer.as_ref().unwrap_or(draft);
         let mut desk = self.mail.lock().map_err(|_| "mail state poisoned")?;
+        desk.refuse_second_answer(target, draft)?;
         let receipts = match target {
             "parent" if from == PARENT_NAME => {
                 return Err("the parent has no parent to message".to_owned());
@@ -227,6 +295,10 @@ impl SubagentHost {
             }
             name => vec![self.deliver_to_child(&mut desk, from, name, draft)?],
         };
+        let mut receipts = receipts;
+        if let (Some(hint), Some(Value::Object(row))) = (hint, receipts.first_mut()) {
+            row.insert("hint".to_owned(), Value::String(hint));
+        }
         let mut reply = Map::new();
         reply.insert("receipts".to_owned(), Value::Array(receipts));
         Ok(reply)
@@ -244,8 +316,6 @@ impl SubagentHost {
             .unwrap_or_else(|| target.to_owned())
     }
 
-    /// The parent's turn is the report hook's to queue or start, and the hook says nothing
-    /// back, so this receipt keeps the word it always carried.
     fn deliver_to_parent(
         &self,
         desk: &mut Desk,
@@ -258,30 +328,35 @@ impl SubagentHost {
             && let Some(record) = children.get_mut(&key)
         {
             incarnation = record.standing.incarnation();
-            let mut moved = record.step(Step::Replied);
-            if draft.kind == Kind::Failure {
+            record.step(Step::Replied);
+            let cause = match draft.kind {
+                Kind::Progress => Cause::Progress,
+                Kind::Request => Cause::Asked,
                 // The child's own verdict on its work: `wait` reports it failed from here on.
-                moved |= record.step(Step::Failed(draft.text.clone()));
-            }
-            if moved {
-                children.touch(&key);
-            }
+                Kind::Failure if record.step(Step::Failed(draft.text.clone())) => Cause::Failed,
+                _ => Cause::Mail,
+            };
+            // A waiter blocked on the family returns on each envelope, so its cell reads it.
+            children.touch(&key, cause);
         }
         let envelope = desk.seal((from, PARENT_NAME), (incarnation, None), draft);
         if let Some(store) = (self.options.store)() {
             crate::mail::inbox(&store, &envelope)?;
         }
-        desk.resolve(&envelope);
-        if envelope.kind != Kind::Progress {
-            (self.options.report)(crate::mail::present(&envelope));
+        let answered = desk.resolve(&envelope);
+        if answered && let Some(store) = (self.options.store)() {
+            crate::mail::mark_read(&store, vec![Value::String(envelope.id.0.clone())]);
         }
-        let mut row = receipt(PARENT_NAME, "delivered");
+        if !answered {
+            let wakes = envelope.kind != Kind::Progress;
+            (self.options.report)(crate::mail::present(&envelope), wakes);
+        }
+        let state = if answered { "answered" } else { "delivered" };
+        let mut row = receipt(PARENT_NAME, state);
         row["id"] = Value::String(envelope.id.0);
         Ok(row)
     }
 
-    /// Invariant: the receipt is read off the delivery attempt: `queued` where a running turn
-    /// will drain it, `woken` where this send started the turn, `inboxed` where neither.
     fn deliver_to_child(
         &self,
         desk: &mut Desk,
@@ -289,17 +364,22 @@ impl SubagentHost {
         target: &str,
         draft: &Draft,
     ) -> Result<Value, String> {
-        let children = self
+        let mut children = self
             .children
             .lock()
             .map_err(|_| "subagent state poisoned".to_owned())?;
-        let record = Self::key_of(&children, target)
-            .ok()
-            .and_then(|key| children.get(&key));
+        let key = Self::key_of(&children, target);
+        if let Err(error) = &key
+            && error.contains(crate::subagent::AMBIGUOUS)
+        {
+            return Err(error.clone());
+        }
+        let key = key.ok();
+        let record = key.as_ref().and_then(|key| children.get(key));
         let (name, store) = match record {
-            Some(record) => (record.session_name.as_str(), record.session.store()),
+            Some(record) => (record.session_name.clone(), record.session.store()),
             // A reaped child's chain is kept (D210), and that is where its inbox lives.
-            None => (target, self.kept_transcript(target)),
+            None => (target.to_owned(), self.kept_transcript(target)),
         };
         let Some(store) = store else {
             let known: Vec<&str> = children
@@ -319,50 +399,49 @@ impl SubagentHost {
             let key = Self::key_of(&children, name).ok()?;
             children.get(&key)?.standing.incarnation()
         };
-        let between = (incarnation_of(from), incarnation_of(name));
-        let envelope = desk.seal((from, name), between, draft);
+        let between = (incarnation_of(from), incarnation_of(&name));
+        let envelope = desk.seal((from, &name), between, draft);
         crate::mail::inbox(&store, &envelope)?;
-        desk.resolve(&envelope);
+        let answered = desk.resolve(&envelope);
         let message = crate::mail::present(&envelope);
-        let wakes = draft.followup || !matches!(envelope.kind, Kind::Inform | Kind::Progress);
-        let state = match record {
-            _ if envelope.kind == Kind::Progress => Delivery::Inboxed,
+        // `followup` only wakes an idle receiver; a late reply wakes nobody, its asker returned.
+        let wakes = envelope.kind != Kind::Cancel
+            && (draft.followup
+                || !matches!(envelope.kind, Kind::Inform | Kind::Progress | Kind::Reply));
+        let (state, presented) = match record {
+            _ if answered => {
+                crate::mail::mark_read(&store, vec![Value::String(envelope.id.0.clone())]);
+                (Delivery::Answered, presented_when(Delivery::Answered))
+            }
             // A revoked child is admitted no new work; its inbox still keeps the message.
-            Some(record) if record.lease.revoked.is_some() && envelope.kind != Kind::Cancel => {
-                Delivery::Inboxed
-            }
-            // A cancel starts no turn: the flag ends a live one at its next message boundary,
-            // and the word comes back from the push that settled it, never a status read.
-            Some(record) if envelope.kind == Kind::Cancel => {
-                record.session.cancel();
-                if record.session.follow_up_message(message) {
-                    Delivery::Queued
-                } else {
-                    Delivery::Inboxed
-                }
-            }
-            Some(record) if wakes => {
-                if record.session.deliver(message) {
-                    Delivery::Woken
-                } else {
-                    Delivery::Queued
-                }
-            }
-            // A plain send never starts a turn: a live one drains the queue at its own
-            // boundary, and otherwise the next turn anyone starts presents it.
+            Some(record) if record.lease.revoked.is_some() && envelope.kind != Kind::Cancel => (
+                Delivery::Inboxed,
+                "never: its lease is revoked, and its inbox keeps the message",
+            ),
+            // A cancel starts no turn: the flag ends a live one at its next message boundary.
             Some(record) => {
-                if record.session.follow_up_message(message) {
-                    Delivery::Queued
-                } else {
-                    Delivery::Inboxed
+                if envelope.kind == Kind::Cancel {
+                    record.session.cancel();
                 }
+                let state = record.session.deliver(message, wakes);
+                (state, presented_when(state))
             }
-            None => Delivery::Inboxed,
+            None => (
+                Delivery::Inboxed,
+                "never: it is gone, and its kept transcript holds the message",
+            ),
         };
+        if let (Delivery::Woken, Some(key)) = (state, &key)
+            && let Some(record) = children.get_mut(key)
+            && record.step(Step::Resumed)
+        {
+            children.touch(key, Cause::Started);
+        }
         let row = Receipt {
-            target: name.to_owned(),
+            target: name,
             id: envelope.id,
             state,
+            presented: presented.to_owned(),
         };
         serde_json::to_value(row).map_err(|error| error.to_string())
     }
@@ -390,63 +469,153 @@ impl SubagentHost {
     }
 
     /// B13 wait with a per-caller cursor (§7.5): nothing shared is drained, so no waiter steals.
-    pub async fn wait(&self, timeout_ms: u64, cursor: Option<u64>) -> Map<String, Value> {
-        self.wait_for(timeout_ms, cursor, false).await
+    pub async fn wait(
+        &self,
+        timeout_ms: u64,
+        cursor: Option<u64>,
+    ) -> Result<Map<String, Value>, String> {
+        let reply = self.wait_for(timeout_ms, cursor, false).await?;
+        Ok(self.shown_by(reply, &Map::new()))
     }
 
     pub(crate) async fn wait_for(
         &self,
         timeout_ms: u64,
         cursor: Option<u64>,
-        named: bool,
-    ) -> Map<String, Value> {
+        bare: bool,
+    ) -> Result<Map<String, Value>, String> {
         let clamped = timeout_ms.clamp(WAIT_MIN_MS, WAIT_MAX_MS);
         let deadline = std::time::Instant::now()
             .checked_add(std::time::Duration::from_millis(clamped))
             .unwrap_or_else(std::time::Instant::now);
         let since = cursor.unwrap_or(0);
+        let mut polls = 0_u32;
         loop {
-            let (epoch, changed, live) = self.changed_since(since);
-            let quiet = named && changed.is_empty() && live;
-            if (epoch > since && !quiet) || std::time::Instant::now() >= deadline {
-                let mut states = Map::new();
-                let mut notes = Map::new();
-                for view in self.states() {
-                    states.insert(
-                        view.name.clone(),
-                        Value::String(view.state.as_str().to_owned()),
-                    );
-                    if let Some(note) = view.note {
-                        notes.insert(view.name, Value::String(note));
-                    }
+            if polls.is_multiple_of(10) {
+                self.mark_stuck();
+            }
+            polls = polls.wrapping_add(1);
+            let (epoch, moved, live) = self.changed_since(since);
+            let quiet = bare && moved.is_empty() && live;
+            let moved_on = epoch > since && !quiet;
+            let at_once = self.at_once(epoch, moved_on)?;
+            let timed_out = std::time::Instant::now() >= deadline;
+            if moved_on || at_once.is_some() || timed_out {
+                if bare {
+                    self.saw(None);
                 }
-                let mut reply = Map::new();
-                reply.insert("cursor".to_owned(), Value::from(epoch));
-                reply.insert("changed".to_owned(), json!(changed));
-                reply.insert("states".to_owned(), Value::Object(states));
-                reply.insert("notes".to_owned(), Value::Object(notes));
-                reply.insert("updated".to_owned(), json!(changed));
-                reply.insert("timeout_ms".to_owned(), Value::from(clamped));
-                reply.insert("clamped".to_owned(), Value::Bool(clamped != timeout_ms));
-                return reply;
+                // Invariant: an at-once `asks` or `settled` never counts toward the repeat breaker.
+                if at_once.is_none() {
+                    self.waited_on(false);
+                }
+                let state = at_once.unwrap_or(if moved_on { "moved" } else { "timeout" });
+                return Ok(self.wait_reply(state, epoch, &moved, clamped != timeout_ms, clamped));
             }
             tokio::time::sleep(std::time::Duration::from_millis(WAIT_POLL_MS)).await;
         }
     }
 
-    fn changed_since(&self, since: u64) -> (u64, Vec<String>, bool) {
-        let Ok(children) = self.children.lock() else {
-            return (since, Vec::new(), false);
+    fn at_once(&self, epoch: u64, moved_on: bool) -> Result<Option<&'static str>, String> {
+        let mut asks: Vec<(String, String)> = self
+            .mail
+            .lock()
+            .map(|desk| desk.asking().into_iter().collect())
+            .unwrap_or_default();
+        asks.sort();
+        let settled = self
+            .children
+            .lock()
+            .is_ok_and(|children| children.values().all(|record| record.exit.is_some()));
+        let (state, said) = match asks.first() {
+            Some((child, note)) => {
+                let id = note
+                    .strip_prefix("asks ")
+                    .and_then(|rest| rest.split_once(':'));
+                let id = id.map_or("", |(id, _)| id);
+                let said = format!(
+                    "{child} is asking you {id}: answer it with rlm.send({child:?}, text, reply_to={id:?})"
+                );
+                ("asks", said)
+            }
+            None if settled => (
+                "settled",
+                "the family is settled: nothing is running; stop waiting".to_owned(),
+            ),
+            None => return Ok(None),
         };
-        let mut moved: Vec<String> = children
-            .values()
-            .filter(|record| record.changed_at_epoch > since)
-            .map(|record| record.session_name.clone())
+        let seen = format!("{state} {asks:?}");
+        let mut told = self.told.lock().map_err(|_| "wait state poisoned")?;
+        if !moved_on
+            && told
+                .as_ref()
+                .is_some_and(|(was, at)| *was == seen && *at == epoch)
+        {
+            return Err(said);
+        }
+        *told = Some((seen, epoch));
+        Ok(Some(state))
+    }
+
+    fn wait_reply(
+        &self,
+        state: &str,
+        epoch: u64,
+        moved: &std::collections::BTreeMap<String, Cause>,
+        clamped: bool,
+        timeout_ms: u64,
+    ) -> Map<String, Value> {
+        let changed: Vec<&str> = moved.keys().map(String::as_str).collect();
+        let mut causes: Map<String, Value> = moved
+            .iter()
+            .map(|(name, cause)| (name.clone(), Value::from(cause.as_str())))
             .collect();
+        if state == "asks" {
+            let asking = self.mail.lock().map(|desk| desk.asking());
+            for name in asking.unwrap_or_default().into_keys() {
+                causes.insert(name, Value::from("asks"));
+            }
+        }
+        let mut states = Map::new();
+        let mut notes = Map::new();
+        for view in self.states() {
+            states.insert(
+                view.name.clone(),
+                Value::String(view.state.as_str().to_owned()),
+            );
+            if let Some(note) = view.note {
+                notes.insert(view.name, Value::String(note));
+            }
+        }
+        let mut reply = Map::new();
+        reply.insert("state".to_owned(), Value::from(state));
+        if state == "settled" {
+            let finished: Vec<&String> = states.keys().collect();
+            reply.insert("finished".to_owned(), json!(finished));
+        }
+        reply.insert("cursor".to_owned(), Value::from(epoch));
+        reply.insert("changed".to_owned(), json!(changed));
+        reply.insert("causes".to_owned(), Value::Object(causes));
+        reply.insert("states".to_owned(), Value::Object(states));
+        reply.insert("notes".to_owned(), Value::Object(notes));
+        reply.insert("updated".to_owned(), json!(changed));
+        reply.insert("timeout_ms".to_owned(), Value::from(timeout_ms));
+        reply.insert("clamped".to_owned(), Value::Bool(clamped));
+        reply
+    }
+
+    fn changed_since(&self, since: u64) -> (u64, std::collections::BTreeMap<String, Cause>, bool) {
+        let Ok(children) = self.children.lock() else {
+            return (since, std::collections::BTreeMap::new(), false);
+        };
         let (gone, whole) = children.removed_since(since);
-        moved.extend(gone);
-        moved.sort();
-        moved.dedup();
+        let mut moved: std::collections::BTreeMap<String, Cause> =
+            gone.into_iter().map(|name| (name, Cause::Reaped)).collect();
+        moved.extend(
+            children
+                .values()
+                .filter(|record| record.changed_at_epoch > since)
+                .map(|record| (record.session_name.clone(), record.cause)),
+        );
         let live = whole && children.values().any(|record| record.exit.is_none());
         (children.epoch, moved, live)
     }
@@ -481,7 +650,7 @@ impl SubagentHost {
             .get(&key)
             .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
         record.session.abort();
-        children.touch(&key);
+        children.touch(&key, Cause::Interrupted);
         let mut reply = Map::new();
         reply.insert("interrupted".to_owned(), Value::String(key));
         Ok(reply)
@@ -495,17 +664,18 @@ impl SubagentHost {
         schema: Option<&Value>,
     ) -> Result<Map<String, Value>, String> {
         let (name, check, text) = {
-            let children = self
+            let mut children = self
                 .children
                 .lock()
                 .map_err(|_| "subagent state poisoned")?;
             let key = Self::key_of(&children, target)?;
             let record = children
-                .get(&key)
+                .get_mut(&key)
                 .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
             if record.exit.is_none() {
                 return Err(format!("child \"{target}\" is still running"));
             }
+            record.seen = record.changed_at_epoch;
             if let Some(error) = &record.error {
                 return Err(format!("child \"{target}\" failed: {error}"));
             }
@@ -547,7 +717,10 @@ impl SubagentHost {
                     result.discoveries.len()
                 ));
             }
-            crate::goal::run_check(&check, crate::goal::DEFAULT_CHECK_TIMEOUT_MS).map_err(
+            let cwd = self
+                .cwd_of(&name)
+                .unwrap_or_else(|| self.options.cwd.clone());
+            crate::goal::run_check(&check, &cwd, crate::goal::DEFAULT_CHECK_TIMEOUT_MS).map_err(
                 |evidence| {
                     format!("child \"{target}\" result held back; its check is red: {evidence}")
                 },
@@ -591,8 +764,8 @@ impl SubagentHost {
                 adjudged
                     .entry(id)
                     .or_insert_with(|| {
-                        crate::goal::run_check(&check, crate::goal::DISCOVERY_CHECK_TIMEOUT_MS)
-                            .err()
+                        let timeout = crate::goal::DISCOVERY_CHECK_TIMEOUT_MS;
+                        crate::goal::run_check(&check, &self.options.cwd, timeout).err()
                     })
                     .clone()
                     .map(|evidence| (id, evidence))
@@ -622,13 +795,16 @@ impl SubagentHost {
                 }
                 None => format!("deferred discovery from {child}: {}", row.text),
             };
-            (self.options.report)(AgentMessage::Custom {
-                custom_type: "discovery".to_owned(),
-                content: UserContent::Text(text),
-                display: true,
-                details: Some(details),
-                timestamp: yi_session::now_ms(),
-            });
+            (self.options.report)(
+                AgentMessage::Custom {
+                    custom_type: "discovery".to_owned(),
+                    content: UserContent::Text(text),
+                    display: true,
+                    details: Some(details),
+                    timestamp: yi_session::now_ms(),
+                },
+                true,
+            );
         }
         Ok(())
     }
@@ -681,6 +857,8 @@ impl SubagentHost {
             (key, record)
         };
         if record.exit.is_none() {
+            // Cancelled first, so the settle of the aborted run starts none for mail it queued.
+            record.session.cancel();
             record.session.abort();
             // A lane refusal stays the cause of a plain removal; a repossession names itself.
             let cause = match exit {
@@ -734,19 +912,32 @@ impl SubagentHost {
         {
             reaped.insert(name.clone(), store);
         }
-        (self.options.report)(AgentMessage::Custom {
-            custom_type: "reap".to_owned(),
-            content: UserContent::Text(format!(
-                "<reaped_child from=\"{name}\">\n{body}\n</reaped_child>"
-            )),
-            display: true,
-            details: Some(json!({
-                "child": name,
-                "status": crate::family::read_exit(record.exit).status.as_str(),
-                "error": record.error,
-            })),
-            timestamp: yi_session::now_ms(),
+        let block = format!("<reaped_child from=\"{name}\">\n{body}\n</reaped_child>");
+        let harvested = self.harvests.lock().is_ok_and(|mut held| {
+            held.get_mut(&name)
+                .map(|slot| *slot = Some(block.clone()))
+                .is_some()
         });
+        if harvested {
+            return Ok(Harvest {
+                name,
+                produced: answer.is_some(),
+            });
+        }
+        (self.options.report)(
+            AgentMessage::Custom {
+                custom_type: "reap".to_owned(),
+                content: UserContent::Text(block),
+                display: true,
+                details: Some(json!({
+                    "child": name,
+                    "status": crate::family::read_exit(record.exit).status.as_str(),
+                    "error": record.error,
+                })),
+                timestamp: yi_session::now_ms(),
+            },
+            true,
+        );
         Ok(Harvest {
             name,
             produced: answer.is_some(),
@@ -754,8 +945,7 @@ impl SubagentHost {
     }
 }
 
-/// What a reap found: the child's name and whether it left any product to point a terminal
-/// record at; how its worktree went is the engine's journaled disposition, not the reap's.
+/// A reap's name and whether it left a product; its worktree's fate is the engine's disposition.
 pub struct Harvest {
     pub name: String,
     pub produced: bool,
@@ -889,10 +1079,10 @@ mod tests {
                 )
             }),
             factory: Arc::new(|_build| Err("no child in this test".to_owned())),
-            notice: Arc::new(|_text: &str| {}),
+            notice: Arc::new(|_text: &str, _| {}),
             events,
             parent_messages: Arc::new(Vec::new),
-            report: Arc::new(move |message| {
+            report: Arc::new(move |message, _| {
                 if let Ok(mut queue) = sink.lock() {
                     queue.push(message);
                 }

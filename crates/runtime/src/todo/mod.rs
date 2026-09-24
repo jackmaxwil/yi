@@ -112,6 +112,8 @@ pub enum TodoError {
     NoSuchLabel { label: String, known: String },
     #[error("{needle:?} is a prefix of more than one todo: {candidates}; name one by id")]
     Ambiguous { needle: String, candidates: String },
+    #[error("done names no item and several are running: {running}; name one by id")]
+    ManyRunning { running: String },
     #[error("no phase named {phase:?}; the list holds: {known}")]
     NoSuchPhase { phase: String, known: String },
     #[error("todo {label:?} is already in the list; labels are unique")]
@@ -206,6 +208,37 @@ impl TodoStore {
         if let Ok(mut slot) = self.carry.lock() {
             *slot = Some(carry);
         }
+    }
+
+    /// A done that names no item means the one running item; several running is ambiguous.
+    pub fn aim(&self, op: Op) -> Result<Op, TodoError> {
+        let Op::Done {
+            target: Target::All,
+            evidence,
+        } = op
+        else {
+            return Ok(op);
+        };
+        self.resync();
+        let list = self.list();
+        let running: Vec<&TodoItem> = list
+            .items()
+            .filter(|item| item.state == TodoStateName::Running)
+            .collect();
+        let target = match running.as_slice() {
+            [] => Target::All,
+            [one] => Target::Label(one.label.clone()),
+            many => {
+                return Err(TodoError::ManyRunning {
+                    running: many
+                        .iter()
+                        .map(|item| named(item))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                });
+            }
+        };
+        Ok(Op::Done { target, evidence })
     }
 
     pub fn carry(&self, op: &Op) -> Option<Result<String, String>> {

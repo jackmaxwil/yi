@@ -29,16 +29,16 @@ except Exception:
     pass
 
 try:
-    import rlm as _yi_rlm_module
-    rlm = _yi_rlm_module.rlm
-    fetch = _yi_rlm_module.fetch
-    bash = _yi_rlm_module.bash
+    import rlm
     import rlm.mcp as mcp
+    fetch, bash = rlm.fetch, rlm.bash
 except Exception as _yi_rlm_error:
     _RLM_IMPORT_ERROR = str(_yi_rlm_error)
 
     class _YiMissingRlm:
-        def _raise_missing(self):
+        def __getattr__(self, name):
+            if name.startswith("_"):
+                raise AttributeError(name)
             raise RuntimeError(
                 "yi-runtime is not installed in this IPython kernel. "
                 "Remove ~/.yi/kernel-venv-* so yi can rebuild it, or set "
@@ -46,20 +46,8 @@ except Exception as _yi_rlm_error:
                 f"Import error: {_RLM_IMPORT_ERROR}"
             )
 
-        async def run(self, prompt, **kwargs):
-            self._raise_missing()
-
-        async def find_models(self, query="", limit=8):
-            self._raise_missing()
-
-        async def list_subagents(self):
-            self._raise_missing()
-
-        async def delete_subagent(self, target):
-            self._raise_missing()
-
-        async def __call__(self, prompt, **kwargs):
-            return await self.run(prompt, **kwargs)
+        def __call__(self, *args, **kwargs):
+            return self.run(*args, **kwargs)
 
     rlm = _YiMissingRlm()
 
@@ -349,6 +337,8 @@ pub struct KernelService {
     sandbox: tokio::sync::Mutex<Option<yi_tools::Sandbox>>,
     manager: tokio::sync::Mutex<Option<Arc<KernelManager>>>,
     last_error: Mutex<Option<String>>,
+    on_death: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    died: std::sync::atomic::AtomicBool,
 }
 
 impl KernelService {
@@ -358,6 +348,32 @@ impl KernelService {
             options,
             manager: tokio::sync::Mutex::new(None),
             last_error: Mutex::new(None),
+            on_death: Mutex::new(None),
+            died: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub fn on_death(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        if let Ok(mut slot) = self.on_death.lock() {
+            *slot = Some(hook);
+        }
+    }
+
+    pub fn take_death(&self) -> bool {
+        self.died.swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn died_under(&self, manager: &Arc<KernelManager>, cancelled: &CancelFlag) {
+        let ours = self
+            .manager
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|held| Arc::ptr_eq(held, manager));
+        let hook = self.on_death.lock().ok().and_then(|slot| slot.clone());
+        if let (true, false, false, Some(hook)) = (ours, cancelled(), manager.is_running(), hook) {
+            self.died.store(true, std::sync::atomic::Ordering::SeqCst);
+            hook();
         }
     }
 
@@ -635,7 +651,10 @@ impl KernelService {
                     self.kill().await;
                     kernel_restarted = true;
                 }
-                Err(error) => return Err(error.to_string()),
+                Err(error) => {
+                    self.died_under(&manager, cancelled).await;
+                    return Err(error.to_string());
+                }
             }
         }
     }

@@ -52,6 +52,14 @@ class Mail(unittest.TestCase):
         asyncio.run(mail.inbox("tests", limit=1))
         self.assertEqual((self.sent[1][1]["url"], self.sent[1][1]["limit"]), ("history://tests/since/0/custom/agent_message", 1))
 
+    def test_receive_waits_on_the_host_and_hands_back_the_envelopes(self) -> None:
+        """Dies with receive gone: beta, told to wait for alpha, polled the filesystem instead."""
+        self.replies["rlm.receive"] = {"envelopes": [{"id": "alpha-1", "from": "alpha", "body": "391"}]}
+        got = asyncio.run(mail.receive(timeout=5))
+        self.assertEqual([(env["from"], env["body"]) for env in got], [("alpha", "391")])
+        self.assertEqual(self.sent[0], ("rlm.receive", {"timeout_ms": 5000}))
+        self.assertIn("receive", rlm.__all__)
+
 
 if __name__ == "__main__":
     unittest.main()

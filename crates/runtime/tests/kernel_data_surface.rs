@@ -112,6 +112,59 @@ fn the_fetch_and_bash_contract_holds_against_a_stubbed_host() -> TestResult {
     Ok(())
 }
 
+/// The ipython description named `rlm.status()` while `rlm.__all__` left it out: every
+/// `rlm.<name>` the model reads is a public name of the package its kernel imports.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the contract under test is a real python process importing the shipped package"
+)]
+#[test]
+fn every_rlm_name_the_model_reads_is_public_in_the_package() -> TestResult {
+    let tool = yi_runtime::kernel::ipython_tool(service());
+    let text = [
+        tool.description(),
+        yi_runtime::identity_fragment(),
+        yi_runtime::doctrine_fragment(),
+    ]
+    .join("\n");
+    let pieces: Vec<&str> = text.split("rlm.").collect();
+    let mut named = std::collections::BTreeSet::new();
+    for pair in pieces.windows(2) {
+        let [before, after] = pair else { continue };
+        if before
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
+        {
+            continue;
+        }
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            named.insert(name);
+        }
+    }
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/yi_runtime/src");
+    let output = std::process::Command::new("python3")
+        .args(["-c", "import json, rlm; print(json.dumps(rlm.__all__))"])
+        .env("PYTHONPATH", &src)
+        .current_dir(std::env::temp_dir())
+        .output()?;
+    let public: Vec<String> = serde_json::from_slice(&output.stdout)?;
+    let missing: Vec<&String> = named.iter().filter(|name| !public.contains(name)).collect();
+    assert!(
+        named.len() > 5,
+        "the model-facing text names rlm: {named:?}"
+    );
+    assert!(
+        missing.is_empty(),
+        "named but not in rlm.__all__: {missing:?}"
+    );
+    Ok(())
+}
+
 struct NoChildren;
 
 impl Delegate for NoChildren {
@@ -223,6 +276,91 @@ async fn a_live_kernel_fetches_its_own_variables_and_runs_bash_handles() -> Test
     let (whole, next) = service.read_variable(&long, None).await?.ok_or("long")?;
     assert!(whole.ends_with("[... truncated: 8192 of 9002 chars ...]") && next.is_none());
     service.dispose().await;
+    Ok(())
+}
+
+/// Six of eight dogfood trials called `rlm.status()` or `rlm.send(...)` without `await`: a send
+/// is a task from the moment it is made and goes out at the cell's next await; any other call
+/// nobody took runs once after the cell, and each is named with its value.
+#[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn a_live_kernel_runs_each_rlm_call_once_awaited_or_not() -> TestResult {
+    let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut registry = HostRegistry::default();
+    registry.register("rlm.status", |_payload| {
+        Box::pin(async {
+            let reply = serde_json::json!({"members": [{"name": "kid", "state": "running"}]});
+            reply.as_object().cloned().ok_or_else(|| "reply".to_owned())
+        })
+    });
+    registry.register("rlm.wait", |_payload| {
+        Box::pin(async {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            Ok(serde_json::Map::new())
+        })
+    });
+    let seen = Arc::clone(&sent);
+    registry.register("agent_message.send", move |payload| {
+        if let Ok(mut seen) = seen.lock() {
+            seen.push(payload.get("message").cloned());
+        }
+        Box::pin(async { Ok(serde_json::Map::new()) })
+    });
+    let service = service_with(registry);
+    let outcome = cell(
+        &service,
+        concat!(
+            "import sys, time\n",
+            "print('one', rlm is sys.modules['rlm'], fetch is rlm.fetch, bash is rlm.bash)\n",
+            "print('bare', rlm.status())\n",
+            "rlm.send('kid', 'sent bare')\n",
+            "cs = [rlm.send(n, 'gathered') for n in ('a', 'b')]\nawait asyncio.gather(*cs)\n",
+            "gate = asyncio.Semaphore(1)\n",
+            "async def bounded(c):\n    async with gate:\n        return await c\n",
+            "both = await asyncio.gather(*(bounded(rlm.status(n)) for n in ('kid', 'kid')))\n",
+            "print('bounded', len(both))\n",
+            "c = rlm.status()\nprint('stored', (await c)[0]['state'])\n",
+            "print('chosen', (await (rlm.status('kid') if c else rlm.status('x'))).state)\n",
+            "h = rlm.RLMSpawnHandle('sub-1', 'kid', '/tmp', 'faux/faux-1')\nprint('live', h.state)\n",
+            "r = await rlm.bash(\n    'printf hi'\n).wait()\nprint('handle', r['exit_code'], r['output'])\n",
+            "rlm.bash(\n    'printf lo'\n).wait()\n",
+            "async def quick():\n    t = time.monotonic()\n    s = rlm.status()\n    await s\n",
+            "    return time.monotonic() - t\n",
+            "async def slow():\n    w = rlm.wait(2)\n    await w\n",
+            "took, _ = await asyncio.gather(quick(), slow())\nprint('quick', took < 1)\n",
+        ),
+    )
+    .await?;
+    service.dispose().await;
+    let printed = format!("{}\n{}", outcome.result.stdout, outcome.result.stderr);
+    let status = "[{'name': 'kid', 'state': 'running'}]";
+    for line in [
+        "one True True True",
+        "bare <coroutine object status at 0x",
+        "bounded 2",
+        "stored running",
+        "chosen running",
+        "live running",
+        "handle 0 hi",
+        "quick True",
+        "rlm.send() was not awaited, so the cell got a task, not its value",
+        &format!(
+            "rlm.status() was not awaited, so the cell got a coroutine object, not its value; it ran once after the cell and returned {status}"
+        ),
+        "BashHandle.wait() was not awaited",
+        "'output': 'lo'",
+    ] {
+        assert!(printed.contains(line), "missing {line:?}: {printed}");
+    }
+    assert!(!printed.contains("never awaited"), "{printed}");
+    let sent = sent.lock().map_err(|error| error.to_string())?.clone();
+    let [bare, a, b] =
+        ["sent bare", "gathered", "gathered"].map(|text| Some(serde_json::json!(text)));
+    assert_eq!(
+        sent,
+        [bare, a, b],
+        "the bare send went out at the cell's first await: {printed}"
+    );
     Ok(())
 }
 

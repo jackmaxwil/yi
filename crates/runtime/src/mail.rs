@@ -1,8 +1,7 @@
-//! Envelopes between family members: ids and per-pair order, the durable inbox, and the
-//! waiters a request parks on (D214).
+//! Family envelopes: ids and per-pair order, the durable inbox, and request waiters (D214).
 use std::collections::HashMap;
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use tokio::sync::oneshot;
 use yi_types::mail::{Envelope, Kind, MailId};
 use yi_types::message::{AgentMessage, UserContent};
@@ -10,12 +9,18 @@ use yi_types::message::{AgentMessage, UserContent};
 use crate::subagent::{PARENT_NAME, SubagentHost};
 
 pub(crate) const INBOX_ENTRY: &str = "agent_message";
+const READ_ENTRY: &str = "agent_message_read";
+pub(crate) const HUMAN_ANSWER: &str = "human_answer";
+pub(crate) const HUMAN: &str = "human";
+pub(crate) const FINAL_TEXT: &str = "final_text";
+const CHASE: &str = "[host] request";
+const CHASED: &str = "is still open and your turn ended without answering it";
 pub(crate) const BODY_CAP: usize = crate::mailbox::CONTEXT_TOTAL_CAP;
+const HEAD_BYTES: usize = 4096;
 /// Requests one sender may have waiting at once; a flood refuses instead of growing the map.
 const MAX_OUTSTANDING: usize = 16;
 
-/// What a sender may say about its own message. Who sent it, to whom and in what order is
-/// the host's to fill at [`Desk::seal`], never the payload's.
+/// What a sender may say of its message; who, to whom and in what order [`Desk::seal`] fills.
 #[derive(Default)]
 pub(crate) struct Draft {
     pub(crate) text: String,
@@ -27,6 +32,7 @@ pub(crate) struct Draft {
     reference: Option<yi_types::url::Url>,
     /// Minted by [`SubagentHost::request`] so its waiter stands before the envelope exists.
     id: Option<MailId>,
+    pub(crate) answered_by: Option<&'static str>,
 }
 
 impl Draft {
@@ -78,6 +84,7 @@ impl Draft {
             deadline_ms: payload.get("deadline_ms").and_then(Value::as_u64),
             reference,
             id: None,
+            answered_by: None,
         };
         Ok((target, draft))
     }
@@ -110,10 +117,12 @@ struct Waiter {
     sender: String,
     respondent: String,
     reply: oneshot::Sender<Result<Envelope, String>>,
+    asked: String,
+    opened: u64,
+    shown: bool,
 }
 
-/// The host's mail state under one lock, held across a whole routing so that the order `seq`
-/// is handed out in is the order the queues are pushed in.
+/// Mail state under one lock held across a routing, so `seq` order is queue order.
 #[derive(Default)]
 pub(crate) struct Desk {
     // ponytail: ids restart with the host, as its children do; seed from the inbox if a
@@ -121,6 +130,8 @@ pub(crate) struct Desk {
     minted: u64,
     seqs: HashMap<(String, String), u64>,
     waiters: HashMap<MailId, Waiter>,
+    answered: HashMap<MailId, String>,
+    nudged: std::collections::HashSet<MailId>,
 }
 
 impl Desk {
@@ -160,14 +171,14 @@ impl Desk {
             deadline_ms: draft.deadline_ms,
             body: draft.text.clone(),
             reference: draft.reference.clone(),
+            answered_by: draft.answered_by.map(str::to_owned),
         }
     }
 
-    /// Invariant: only a reply from the respondent the request named, addressed back to the
-    /// sender that asked, resolves a waiter; any other reply is history and nothing more.
-    pub(crate) fn resolve(&mut self, envelope: &Envelope) {
+    /// Invariant: only the named respondent's reply to the asking sender resolves a waiter.
+    pub(crate) fn resolve(&mut self, envelope: &Envelope) -> bool {
         let Some(id) = envelope.in_reply_to.as_ref() else {
-            return;
+            return false;
         };
         let answers = self.waiters.get(id).is_some_and(|waiter| {
             envelope.kind == Kind::Reply
@@ -175,12 +186,88 @@ impl Desk {
                 && waiter.sender == envelope.to
         });
         if answers && let Some(waiter) = self.waiters.remove(id) {
+            let who = match envelope.answered_by.as_deref() {
+                Some(HUMAN) => "the human".to_owned(),
+                Some(_) => format!("\"{}\"'s final text", envelope.from),
+                None => format!("\"{}\"", envelope.from),
+            };
+            self.answered.insert(id.clone(), who);
             let _the_requester_may_have_timed_out = waiter.reply.send(Ok(envelope.clone()));
+            return true;
         }
+        false
+    }
+
+    /// Invariant: the first answer to a request wins; a later one is refused, naming who won.
+    pub(crate) fn refuse_second_answer(&self, to: &str, draft: &Draft) -> Result<(), String> {
+        let Some(id) = draft.reply_to.as_ref() else {
+            return Ok(());
+        };
+        if let Some(who) = self.answered.get(id) {
+            return Err(format!(
+                "{id} was already answered by {who}; nothing was sent"
+            ));
+        }
+        let open = self
+            .waiters
+            .get(id)
+            .is_some_and(|waiter| waiter.sender == to && waiter.respondent == PARENT_NAME);
+        if draft.answered_by == Some(HUMAN) && !open {
+            return Err(format!(
+                "{id} is no longer open: it timed out or \"{to}\" stopped asking; nothing was sent"
+            ));
+        }
+        Ok(())
     }
 }
 
 impl Desk {
+    fn only_request(&self, asker: &str, respondent: &str) -> Option<(MailId, bool)> {
+        let mut open = self
+            .waiters
+            .iter()
+            .filter(|(_, waiter)| waiter.sender == asker && waiter.respondent == respondent);
+        let (id, waiter) = open.next()?;
+        open.next().is_none().then(|| (id.clone(), waiter.shown))
+    }
+
+    pub(crate) fn asking(&self) -> HashMap<String, String> {
+        self.oldest_asks()
+            .into_values()
+            .map(|(id, waiter)| {
+                let note = format!("asks {id}: {}", waiter.asked);
+                (waiter.sender.clone(), note)
+            })
+            .collect()
+    }
+
+    pub(crate) fn show<'a>(&mut self, notes: impl IntoIterator<Item = &'a str>) {
+        for note in notes {
+            let id = note
+                .strip_prefix("asks ")
+                .and_then(|rest| rest.split_once(':'));
+            let open = id.and_then(|(id, _)| self.waiters.get_mut(&MailId(id.to_owned())));
+            if let Some(waiter) = open {
+                waiter.shown = true;
+            }
+        }
+    }
+
+    fn oldest_asks(&self) -> HashMap<&str, (&MailId, &Waiter)> {
+        let mut oldest: HashMap<&str, (&MailId, &Waiter)> = HashMap::new();
+        let asked = self
+            .waiters
+            .iter()
+            .filter(|(_, waiter)| waiter.respondent == PARENT_NAME);
+        for (id, waiter) in asked {
+            let slot = oldest.entry(waiter.sender.as_str()).or_insert((id, waiter));
+            if waiter.opened < slot.1.opened {
+                *slot = (id, waiter);
+            }
+        }
+        oldest
+    }
+
     /// A terminated respondent answers nothing, so its waiters are refused at once with the
     /// termination named; a timeout would say the wrong thing a long time later.
     pub(crate) fn drop_respondent(&mut self, respondent: &str, how: &str) {
@@ -199,8 +286,7 @@ impl Desk {
     }
 }
 
-/// Invariant: the inbox entry is written before any delivery, and a refused write refuses the
-/// send, so a receipt never names an envelope the receiver's store does not hold.
+/// Invariant: the inbox entry is written before any delivery, and a refused write refuses it.
 pub(crate) fn inbox(store: &yi_session::SharedSession, envelope: &Envelope) -> Result<(), String> {
     let data = serde_json::to_value(envelope).map_err(|error| error.to_string())?;
     yi_session::lock_session(store)
@@ -214,8 +300,7 @@ pub(crate) fn inbox(store: &yi_session::SharedSession, envelope: &Envelope) -> R
         })
 }
 
-/// Invariant: an agent's words reach another agent inside this element and never as bare
-/// user text; the envelope rides in `details`. A request names the call that answers it.
+/// Invariant: agent words travel inside this element, never as bare user text.
 pub(crate) fn present(envelope: &Envelope) -> AgentMessage {
     let Envelope { id, from, body, .. } = envelope;
     let mut tag = format!("<agent_message from=\"{from}\"");
@@ -247,14 +332,126 @@ pub(crate) fn present(envelope: &Envelope) -> AgentMessage {
     }
 }
 
-/// Retires a request's waiter on every way out: a reply, a timeout, a refused send, or the
-/// requesting cell cancelled mid-wait.
-struct Parked<'a>(&'a SubagentHost, MailId);
+pub(crate) fn envelope_id(message: &AgentMessage) -> Option<&str> {
+    match message {
+        AgentMessage::Custom {
+            custom_type,
+            details: Some(details),
+            ..
+        } if custom_type == INBOX_ENTRY => details.get("id").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+pub(crate) fn progress_from(message: &AgentMessage) -> Option<&str> {
+    let details = match message {
+        AgentMessage::Custom {
+            custom_type,
+            details: Some(details),
+            ..
+        } if custom_type == INBOX_ENTRY => details,
+        _ => return None,
+    };
+    if details.get("kind")? != "progress" {
+        return None;
+    }
+    details.get("from")?.as_str()
+}
+
+fn shown(entries: &[yi_types::entry::Entry]) -> std::collections::HashSet<&str> {
+    use yi_types::entry::Entry;
+    entries
+        .iter()
+        .flat_map(|entry| match entry {
+            Entry::Message { message, .. } => envelope_id(message).into_iter().collect(),
+            Entry::Custom {
+                custom_type,
+                data: Some(Value::Array(ids)),
+                ..
+            } if custom_type == READ_ENTRY => ids.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+fn presented(store: &yi_session::SharedSession, id: &MailId) -> bool {
+    let query = yi_session::EntryQuery::default();
+    let entries = yi_session::lock_session(store).find_entries_on_branch(
+        "main",
+        &query,
+        &yi_session::BranchBounds::default(),
+    );
+    entries.is_ok_and(|entries| shown(&entries).contains(id.0.as_str()))
+}
+
+/// Invariant: an inbox entry with no presented message entry is queued again; `progress` never.
+pub(crate) fn unread(entries: &[yi_types::entry::Entry]) -> Vec<AgentMessage> {
+    use yi_types::entry::Entry;
+    let shown = shown(entries);
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Custom {
+                custom_type, data, ..
+            } if custom_type == INBOX_ENTRY => {
+                serde_json::from_value::<Envelope>(data.clone()?).ok()
+            }
+            _ => None,
+        })
+        .filter(|envelope| {
+            envelope.kind != Kind::Progress && !shown.contains(envelope.id.0.as_str())
+        })
+        .map(|envelope| present(&envelope))
+        .collect()
+}
+
+pub(crate) fn received(
+    store: Option<yi_session::SharedSession>,
+    taken: Vec<AgentMessage>,
+) -> Vec<Value> {
+    let envelopes: Vec<Value> = taken
+        .into_iter()
+        .filter_map(|message| match message {
+            AgentMessage::Custom { details, .. } => details,
+            _ => None,
+        })
+        .collect();
+    let ids: Vec<Value> = envelopes
+        .iter()
+        .filter_map(|envelope| envelope.get("id").cloned())
+        .collect();
+    if let Some(store) = store.filter(|_| !ids.is_empty()) {
+        mark_read(&store, ids);
+    }
+    envelopes
+}
+
+pub(crate) fn mark_read(store: &yi_session::SharedSession, ids: Vec<Value>) {
+    let _refused_read_mark_rereads_after_a_crash =
+        yi_session::lock_session(store).append_custom("main", READ_ENTRY, Some(Value::Array(ids)));
+}
+
+pub(crate) fn is_chase(message: &AgentMessage) -> bool {
+    let text = message.plain_text();
+    text.starts_with(CHASE) && text.contains(CHASED)
+}
+
+fn pickled(text: &str) -> Vec<u8> {
+    let length = u32::try_from(text.len()).unwrap_or(u32::MAX).to_le_bytes();
+    [&[0x80, 2, b'X'][..], &length, text.as_bytes(), b"."].concat()
+}
+
+/// Retires a waiter on every way out: a reply, a timeout, a refused send or a cancelled cell.
+struct Parked<'a>(&'a SubagentHost, MailId, Option<String>);
 
 impl Drop for Parked<'_> {
     fn drop(&mut self) {
         if let Ok(mut desk) = self.0.mail.lock() {
             desk.waiters.remove(&self.1);
+            desk.nudged.remove(&self.1);
+        }
+        if let Some(asker) = &self.2 {
+            self.0.publish_member(asker);
         }
     }
 }
@@ -288,11 +485,21 @@ impl SubagentHost {
                 sender: from.to_owned(),
                 respondent: respondent.clone(),
                 reply: sender,
+                asked: text
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(120)
+                    .collect(),
+                opened: desk.minted,
+                shown: false,
             };
             desk.waiters.insert(id.clone(), waiter);
             (id, reply)
         };
-        let _parked = Parked(self, id.clone());
+        let asks_parent = (respondent == PARENT_NAME).then(|| from.to_owned());
+        let _parked = Parked(self, id.clone(), asks_parent.clone());
         let draft = Draft {
             kind: Kind::Request,
             deadline_ms: Some(yi_session::now_ms().saturating_add(timeout_ms)),
@@ -300,6 +507,12 @@ impl SubagentHost {
             ..Draft::plain(text, false)
         };
         let mut sent = self.route_mail(from, target, &draft)?;
+        if from == PARENT_NAME {
+            self.waited_on(false);
+        }
+        if let Some(asker) = &asks_parent {
+            self.publish_member(asker);
+        }
         let wait = std::time::Duration::from_millis(timeout_ms);
         let answer = match tokio::time::timeout(wait, reply).await {
             Ok(Ok(Ok(answer))) => Some(answer),
@@ -317,5 +530,302 @@ impl SubagentHost {
             serde_json::to_value(&answer).unwrap_or_default(),
         );
         Ok(sent)
+    }
+}
+
+impl SubagentHost {
+    pub fn answer(
+        &self,
+        child: &str,
+        question: &str,
+        text: &str,
+    ) -> Result<Map<String, Value>, String> {
+        let name = self.member_name(child);
+        let draft = Draft {
+            kind: Kind::Reply,
+            reply_to: Some(MailId(question.to_owned())),
+            answered_by: Some(HUMAN),
+            ..Draft::plain(text, false)
+        };
+        let mut sent = self.route_mail(PARENT_NAME, &name, &draft)?;
+        let told = json!({"id": sent["receipts"][0]["id"], "from": PARENT_NAME, "to": name,
+            "kind": "reply", "inReplyTo": question, "answeredBy": "human", "body": text});
+        if let Some(store) = (self.options.store)() {
+            let _the_told_message_still_reaches_the_model = yi_session::lock_session(&store)
+                .append_custom("main", HUMAN_ANSWER, Some(told.clone()));
+        }
+        let words = format!("The human answered {name}'s question {question} for you: {text}");
+        let message = AgentMessage::Custom {
+            custom_type: HUMAN_ANSWER.to_owned(),
+            content: UserContent::Text(words),
+            display: true,
+            details: Some(told),
+            timestamp: yi_session::now_ms(),
+        };
+        (self.options.report)(message, false);
+        sent.insert("answers".to_owned(), Value::String(question.to_owned()));
+        Ok(sent)
+    }
+
+    pub fn answer_told(&self, child: &str, question: &str, text: &str) -> String {
+        match self.answer(child, question, text) {
+            Ok(sent) => {
+                let target = sent["receipts"][0]["target"].as_str().unwrap_or(child);
+                format!("you → {target} (answering {question}): {text}")
+            }
+            Err(refusal) => refusal,
+        }
+    }
+
+    /// Invariant: an ending owing a request steers once, then sends its final text. True if woken.
+    pub(crate) fn chase_open_requests(
+        &self,
+        name: &str,
+        session: &crate::session::AgentSession,
+        messages: &[AgentMessage],
+    ) -> bool {
+        let owed: Vec<(MailId, String, bool)> = match self.mail.lock() {
+            Ok(mut desk) => {
+                let open: Vec<(MailId, String)> = desk
+                    .waiters
+                    .iter()
+                    .filter(|(_, waiter)| waiter.respondent == name)
+                    .map(|(id, waiter)| (id.clone(), waiter.sender.clone()))
+                    .collect();
+                open.into_iter()
+                    .map(|(id, asker)| {
+                        let first = desk.nudged.insert(id.clone());
+                        (id, asker, first)
+                    })
+                    .collect()
+            }
+            Err(_) => return false,
+        };
+        let mut steered = false;
+        for (id, asker, first) in owed {
+            if first {
+                let steer = format!(
+                    "{CHASE} {id} from \"{asker}\" {CHASED}. Answer it now with rlm.send(\"{asker}\", text, reply_to=\"{id}\"); if this turn also ends without that call, its final text is sent as your reply."
+                );
+                let woke = session.deliver(crate::session::user_message(&steer), true);
+                steered |= woke == yi_types::mail::Delivery::Woken;
+                continue;
+            }
+            let text = crate::subagent::last_assistant_text(messages)
+                .unwrap_or_else(|| "(the turn ended with no text)".to_owned());
+            let (text, reference) = self.kept_whole(name, &id, text);
+            let draft = Draft {
+                kind: Kind::Reply,
+                reply_to: Some(id),
+                answered_by: Some(FINAL_TEXT),
+                reference,
+                ..Draft::plain(&text, false)
+            };
+            let _a_requester_gone_since_is_nobody_to_tell = self.route_mail(name, &asker, &draft);
+        }
+        steered
+    }
+
+    /// Incident: a final text over the body cap was dropped; it is kept whole, its head sent.
+    fn kept_whole(
+        &self,
+        owner: &str,
+        id: &MailId,
+        text: String,
+    ) -> (String, Option<yi_types::url::Url>) {
+        if text.len() <= BODY_CAP {
+            return (text, None);
+        }
+        let name = format!("reply-{id}");
+        let dir = crate::wiring::family_dir_of(&self.options.parent_session_dir);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "rlm.put's `at` is float seconds"
+        )]
+        let at = yi_session::now_ms() as f64 / 1000.0;
+        let sidecar = serde_json::json!({"name": name, "owner": owner, "at": at,
+            "bytes": text.len(), "type": "str", "serializer": "pickle", "text": text});
+        let kept = std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(dir.join(format!("{name}.dill")), pickled(&text)))
+            .and_then(|()| std::fs::write(dir.join(format!("{name}.json")), sidecar.to_string()));
+        let cut = text
+            .char_indices()
+            .map(|(at, _)| at)
+            .take_while(|at| *at <= HEAD_BYTES)
+            .last()
+            .unwrap_or(0);
+        let head = text.get(..cut).unwrap_or_default();
+        match kept {
+            Ok(()) => (
+                format!(
+                    "{head}\n[... {} bytes in all: rlm.get({name:?}) or fetch family://{name}]",
+                    text.len()
+                ),
+                format!("family://{name}").parse().ok(),
+            ),
+            Err(error) => (
+                format!(
+                    "{head}\n[... {} bytes in all; the rest could not be kept: {error}]",
+                    text.len()
+                ),
+                None,
+            ),
+        }
+    }
+
+    /// A plain send answers a child's one open question once its sender was shown it.
+    pub(crate) fn as_answer(
+        &self,
+        from: &str,
+        target: &str,
+        draft: &Draft,
+    ) -> Result<Option<Draft>, String> {
+        if draft.kind != Kind::Inform || matches!(target, "parent" | "all") {
+            return Ok(None);
+        }
+        let asker = self.member_name(target);
+        let open = self
+            .mail
+            .lock()
+            .ok()
+            .and_then(|desk| desk.only_request(&asker, from));
+        let Some((id, shown)) = open else {
+            return Ok(None);
+        };
+        let store = match from {
+            PARENT_NAME => (self.options.store)(),
+            sender => self.transcript(sender),
+        };
+        if !shown && !store.is_some_and(|store| presented(&store, &id)) {
+            return Err(format!(
+                "\"{asker}\" has request {id} open to you, and this send does not answer it: answer with rlm.send(\"{asker}\", text, reply_to=\"{id}\")"
+            ));
+        }
+        Ok(Some(Draft {
+            kind: Kind::Reply,
+            reply_to: Some(id),
+            reference: draft.reference.clone(),
+            ..Draft::plain(&draft.text, draft.followup)
+        }))
+    }
+
+    pub fn open_requests(&self) -> Vec<(String, String, String)> {
+        let Ok(desk) = self.mail.lock() else {
+            return Vec::new();
+        };
+        let mut open: Vec<(String, String, String)> = desk
+            .waiters
+            .iter()
+            .map(|(id, waiter)| {
+                (
+                    id.0.clone(),
+                    waiter.sender.clone(),
+                    waiter.respondent.clone(),
+                )
+            })
+            .collect();
+        open.sort();
+        open
+    }
+
+    pub(crate) fn cancelled_member(&self, name: &str) -> bool {
+        self.children.lock().is_ok_and(|children| {
+            Self::key_of(&children, name)
+                .ok()
+                .and_then(|key| children.get(&key))
+                .is_some_and(|record| record.session.cancelled())
+        })
+    }
+
+    pub(crate) fn publish_all(&self) {
+        let keys: Vec<String> = self
+            .children
+            .lock()
+            .map(|children| children.keys().cloned().collect())
+            .unwrap_or_default();
+        for key in keys {
+            self.publish(&key);
+        }
+    }
+
+    fn publish_member(&self, name: &str) {
+        let key = self
+            .children
+            .lock()
+            .ok()
+            .and_then(|children| Self::key_of(&children, name).ok());
+        if let Some(key) = key {
+            self.publish(&key);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Desk, Draft, Kind, MailId, PARENT_NAME, Waiter, oneshot};
+
+    type Answer = oneshot::Receiver<Result<yi_types::mail::Envelope, String>>;
+
+    fn ask(desk: &mut Desk) -> (MailId, Answer) {
+        let id = desk.mint("writer");
+        let (reply, answer) = oneshot::channel();
+        let waiter = Waiter {
+            sender: "writer".to_owned(),
+            respondent: PARENT_NAME.to_owned(),
+            reply,
+            asked: format!("question {id}"),
+            opened: desk.minted,
+            shown: false,
+        };
+        desk.waiters.insert(id.clone(), waiter);
+        (id, answer)
+    }
+
+    fn reply(id: &MailId, by_human: bool) -> Draft {
+        Draft {
+            kind: Kind::Reply,
+            reply_to: Some(id.clone()),
+            answered_by: by_human.then_some(super::HUMAN),
+            ..Draft::plain("notes.md", false)
+        }
+    }
+
+    fn answered(desk: &mut Desk, id: &MailId, by_human: bool) -> bool {
+        let envelope = desk.seal((PARENT_NAME, "writer"), (None, None), &reply(id, by_human));
+        desk.resolve(&envelope)
+    }
+
+    /// Dies with the card showing one of a child's questions and the reply box resolving another.
+    #[test]
+    fn the_card_shows_the_oldest_question_and_an_answer_resolves_the_one_it_names() {
+        let mut desk = Desk::default();
+        let asked: Vec<(MailId, Answer)> = (0..8).map(|_| ask(&mut desk)).collect();
+        let note = desk.asking().remove("writer").unwrap_or_default();
+        assert!(note.starts_with("asks writer-1: "), "{note}");
+        assert!(answered(&mut desk, &asked[7].0, true));
+        assert!(
+            desk.waiters.contains_key(&asked[0].0),
+            "writer-1 is still open"
+        );
+    }
+
+    /// Dies with answers keyed by child: a late reply to an earlier question went out as mail.
+    #[test]
+    fn a_late_answer_is_refused_by_the_question_it_names() {
+        let mut desk = Desk::default();
+        let (first, _first) = ask(&mut desk);
+        assert!(answered(&mut desk, &first, true));
+        let (second, _second) = ask(&mut desk);
+        assert!(answered(&mut desk, &second, false));
+        let late = desk.refuse_second_answer("writer", &reply(&first, false));
+        let expected = format!("{first} was already answered by the human; nothing was sent");
+        assert_eq!(late, Err(expected));
+        let (third, _third) = ask(&mut desk);
+        desk.waiters.remove(&third);
+        let closed = desk.refuse_second_answer("writer", &reply(&third, true));
+        assert!(
+            closed.is_err_and(|refusal| refusal.starts_with(&format!("{third} is no longer open"))),
+            "the human's answer to a closed question is refused by its own id"
+        );
     }
 }

@@ -100,10 +100,10 @@ fn host_with(root: &Scratch, gate: Arc<dyn Fn() + Send + Sync>) -> (Arc<Subagent
                 provider,
             ))
         }),
-        notice: Arc::new(|_| {}),
+        notice: Arc::new(|_, _| {}),
         events,
         parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_| {}),
+        report: Arc::new(|_, _| {}),
         attribute: Arc::new(|_| {}),
         store: Arc::new(|| None),
         plans_dir: root.join(".yi/plans"),

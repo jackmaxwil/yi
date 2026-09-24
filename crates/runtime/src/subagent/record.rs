@@ -56,6 +56,8 @@ pub(crate) enum Step<'a> {
     Exit(ChildExit, Option<String>),
     /// A service's next incarnation took the record: the run before it is no ending.
     Respawn,
+    /// Another run started on a concluded record: it is live again until its own ending.
+    Resumed,
 }
 
 /// A child's own `failure` is the only producer of this class so far (D215).
@@ -97,6 +99,7 @@ impl ChildRecord {
             answer_preview: self.answer_preview.clone(),
             error: self.error.clone(),
             exit: self.exit,
+            flag: None,
         }
     }
 
@@ -131,6 +134,12 @@ impl ChildRecord {
                 self.activity = ChildActivity::Waiting;
                 true
             }
+            Step::Resumed if self.exit.is_some() => {
+                (self.exit, self.error, self.replied) = (None, None, false);
+                self.phase = Phase::Live;
+                true
+            }
+            Step::Resumed => false,
             Step::Replied => !std::mem::replace(&mut self.replied, true),
             Step::Held(reason) => {
                 self.error = Some(reason);

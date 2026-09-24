@@ -296,7 +296,8 @@ class Todo:
         """Wait for this todo's child and return its answer (``rlm.result``).
 
         A child the host calls stuck is still waited on: one long tool call is not a
-        failure, and neither is one that asked you something and kept working.
+        failure. One asking you something raises with its question, since your answer is
+        what it waits on.
 
             answer = await todo.result(timeout=120)
         """
@@ -306,7 +307,9 @@ class Todo:
         loop = asyncio.get_running_loop()
         deadline, cursor = loop.time() + timeout, 0
         while (remaining := deadline - loop.time()) > 0:
-            reply = await rlm.wait(timeout=min(remaining, WAIT_SECONDS), cursor=cursor)
+            reply = await rlm._watch(min(remaining, WAIT_SECONDS), cursor)
+            if reply is None:
+                continue
             cursor = reply.get("cursor", cursor)
             state = (reply.get("states") or {}).get(child)
             if state is None:
@@ -318,6 +321,12 @@ class Todo:
                     # needs_you also names a child still running with a question for you.
                     if state != "needs_you" or "still running" not in str(error):
                         raise
+                    note = (reply.get("notes") or {}).get(child)
+                    if isinstance(note, str) and note.startswith("asks "):
+                        raise PlanError(
+                            f"child {child} {note}; answer it with rlm.send({child!r}, text, "
+                            "reply_to=<that id>), then call result() again"
+                        ) from error
         raise TimeoutError(f"child {child} did not finish within {timeout}s")
 
     async def cancel(self) -> "Todo":
@@ -590,6 +599,7 @@ class Run:
         self._cancelled = False
         self._waiting: asyncio.Task | None = None
         self._states: dict[str, str] = {}
+        self._notes: dict[str, Any] = {}
         self._reaped = False
         # Cursor 0, not a bare wait: the model's own bare waits may have seen a child end already.
         self._cursor = 0
@@ -656,15 +666,15 @@ class Run:
 
         A returned coroutine goes to ``done`` (the contract decides), a raised one
         to ``fail``. The engine submits and accepts, refuses or fails a delegated
-        todo when its child ends, so the state is read, never written; a stuck or
-        reaped child is waited on, and only a child asking you something blocks its todo.
+        todo when its child ends, so the state is read, never written; a stuck, reaped or
+        asking child is waited on, and only a child that blocked a todo on you blocks it.
 
             settled = await run.settle()
         """
         tasks = {self.plan._tasks[label]: label for label in self.active if label in self.plan._tasks}
         children = {todo.label: todo.child for todo in self.active.values() if todo.child}
         if children and self._waiting is None:
-            self._waiting = asyncio.ensure_future(rlm.wait(timeout=self._remaining(), cursor=self._cursor))
+            self._waiting = asyncio.ensure_future(rlm._watch(self._remaining(), self._cursor))
         stop = asyncio.ensure_future(self._stop.wait())
         waiters = [*tasks, stop, *([self._waiting] if self._waiting else [])]
         # A reaped child, or one whose finish the engine has not settled, is re-read on a short poll.
@@ -682,14 +692,19 @@ class Run:
             settled.append(todo)
         if self._waiting in done:
             reply, self._waiting = self._waiting.result(), None
+            if reply is None:
+                return settled
             self._cursor = reply.get("cursor", self._cursor)
             self._states = reply.get("states") or {}
+            self._notes = reply.get("notes") or {}
         elif not self._reaped:
             return settled
         self._reaped = False
         for label, child in children.items():
             state = self._states.get(child)
-            if state in ("queued", "running", "stuck"):
+            # A child asking a question keeps working on the answer; only a todo it blocked stops.
+            asking = state == "needs_you" and str(self._notes.get(child) or "").startswith("asks ")
+            if state in ("queued", "running", "stuck") or asking:
                 continue
             todo = self.active[label]
             now = await todo.state()

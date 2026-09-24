@@ -319,14 +319,40 @@ impl SessionPort for Arc<AgentSession> {
     }
 }
 
+/// Invariant: only what the human typed draws as theirs; the host's words draw as a notice.
+pub(crate) fn user_cell(text: String, typed: bool) -> Cell {
+    if typed {
+        Cell::User { text }
+    } else {
+        Cell::Notice { text }
+    }
+}
+
 impl App {
     /// The model's context and the screen must agree about what was said.
     pub fn replay_entries(&mut self, entries: &[Entry]) {
         let cells: Vec<Cell> = entries
             .iter()
             .filter_map(|entry| match entry {
-                Entry::Message { message, .. } => match message {
-                    AgentMessage::User { content, .. } => Some(Cell::User {
+                Entry::Message {
+                    message, timestamp, ..
+                } => match message {
+                    AgentMessage::User {
+                        content,
+                        attribution,
+                        ..
+                    } => Some(user_cell(
+                        user_text(content),
+                        attribution.reads_as_typed(*timestamp),
+                    )),
+                    AgentMessage::Custom {
+                        custom_type,
+                        content,
+                        display: true,
+                        details,
+                        ..
+                    } => Some(Cell::Advisory {
+                        source: crate::app::mail_source(custom_type, details.as_ref()),
                         text: user_text(content),
                     }),
                     AgentMessage::Assistant { content, .. } => {

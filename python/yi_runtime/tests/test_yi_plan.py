@@ -198,6 +198,34 @@ class Plans(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("done", host.sent, "a verdict the engine left is never re-sent")
                 yi.plan._RUNS.clear()
 
+    async def test_a_live_asking_child_keeps_its_todo_running(self) -> None:
+        """Dies with settle blocking the todo on `needs_you`: the child kept working, its product
+        was never submitted, and unblocking the todo would have dispatched a fresh child."""
+        host = FakeHost()
+        plan = await Plan.create("ship it")
+        todo = await plan.todo(key="t", delegate=Writer(accept=contract(cmd("true", critical=True))))
+        child = f"{plan.id}/t"
+        host.children[child] = "needs_you"
+        host.notes[child] = "asks t-1: Which file name?"
+        host.results[child] = {"text": "{}", "json": {}}
+        asyncio.get_running_loop().call_later(0.1, host.children.__setitem__, child, "finished")
+        run = await asyncio.wait_for(plan.run(budget=30), timeout=5)
+        self.assertEqual((run.outcome, todo._doc["state"]), ("verified_success", "done"))
+        self.assertNotIn("block", host.sent, "an asking child's todo is never blocked")
+
+    async def test_a_todo_whose_child_asks_raises_its_question(self) -> None:
+        """Dies with the loop: the next wait slept up to 300 s while this cell was the only
+        answerer, and the child's ask timed out onto its default."""
+        host = FakeHost()
+        plan = await Plan.create("ship it")
+        todo = await plan.todo(key="t", delegate=Writer(accept=contract(cmd("true", critical=True))))
+        child = f"{plan.id}/t"
+        host.children[child] = "needs_you"
+        host.notes[child] = "asks t-1: Which file name?"
+        host.results[child] = RuntimeError(f"{child} is still running")
+        with self.assertRaisesRegex(PlanError, "asks t-1: Which file name.*reply_to"):
+            await asyncio.wait_for(todo.result(timeout=5), timeout=5)
+
     async def test_a_child_asking_you_something_is_collected_not_raised(self) -> None:
         """Dies with the control: hand `rlm.result` a `needs_you` child once and it raises."""
         host = FakeHost()

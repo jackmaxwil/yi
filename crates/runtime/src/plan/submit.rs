@@ -6,7 +6,7 @@ use std::sync::{Arc, PoisonError};
 
 use serde_json::{Value, json};
 use yi_types::plan::contract::{Outcome as ContractOutcome, Verdict, VerificationToken};
-use yi_types::plan::doc::{PlanId, TodoLabel, TodoState, TouchCount};
+use yi_types::plan::doc::{AttemptId, PlanId, TodoLabel, TodoState, TouchCount};
 use yi_types::plan::ledger::{EffectId, RequestId};
 
 use std::path::Path;
@@ -38,8 +38,7 @@ struct SubmitRun {
     generation: u64,
 }
 
-/// A `local://` output read inside the candidate's own checkout, never the parent's, so the
-/// token digests the candidate's bytes (section 6.6); every other scheme goes to the resolver.
+/// A `local://` output is read in the candidate's checkout, so the token digests its bytes.
 struct LaneResolver<'a> {
     root: &'a Path,
     fallback: Option<&'a dyn OutputResolve>,
@@ -378,6 +377,7 @@ impl PlanEngine {
         }
         if let Some(Value::String(lost)) = lost {
             let dropped = drop_staging(self.pool(label)?, &lost)
+                .map(drop)
                 .map_err(|error| verification(label, error.to_string()));
             args["abandoned"] = json!({"staging": lost, "pin": pin_of(&dropped)});
         }
@@ -390,5 +390,46 @@ impl PlanEngine {
             None,
         )?;
         Ok(session)
+    }
+
+    /// Staging a crash left between intent and prepare; the caller holds the lease spanning it.
+    pub(super) fn drop_left_staging(&self, root: &PlanId) -> Vec<String> {
+        let records = self.store.journal(root).read().map(|read| read.records);
+        let mut left: Vec<(&PlanId, &TodoLabel, Option<AttemptId>, String)> = Vec::new();
+        for record in records.iter().flatten() {
+            let Some(label) = record.record.todo.as_ref() else {
+                continue;
+            };
+            let key = (&record.record.plan, label, record.attempt);
+            let op = record.record.op.as_str();
+            if [
+                KIND_INTEGRATION_INTENT,
+                KIND_INTEGRATION_PREPARED,
+                KIND_DISPOSITION,
+            ]
+            .contains(&op)
+            {
+                left.retain(|(plan, todo, attempt, _)| (*plan, *todo, *attempt) != key);
+            }
+            if op == KIND_INTEGRATION_INTENT
+                && let Some(Value::String(staging)) = record.args.get("staging")
+            {
+                left.push((key.0, key.1, key.2, staging.clone()));
+            }
+        }
+        let mut said = Vec::new();
+        for (plan, label, _, staging) in left {
+            let dropped = self.pool(label).and_then(|pool| {
+                drop_staging(pool, &staging).map_err(|e| verification(label, e.to_string()))
+            });
+            match dropped {
+                Ok(true) => said.push(format!(
+                    "dropped staging {staging} of {plan}/{label}: a crash left it between integration intent and prepare"
+                )),
+                Ok(false) => {}
+                Err(error) => said.push(format!("staging {staging} of {plan}/{label} was not dropped: {error}")),
+            }
+        }
+        said
     }
 }

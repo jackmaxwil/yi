@@ -420,6 +420,27 @@ fn one_path_for_both_capture_sinks_is_refused() -> TestResult {
     Ok(())
 }
 
+/// Dies with the cassette dropped on the console road: `yi console --faux` reused a listening
+/// daemon that never saw the cassette, so the scripted family met a real model.
+#[test]
+fn a_cassette_is_refused_where_it_cannot_reach_the_model() -> TestResult {
+    let dir = Scratch::new("yi-faux-console")?;
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(&cassette, "")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the flag contract is the spawned binary's argument parser"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args(["console", "--faux", &cassette.display().to_string()])
+        .env("HOME", dir.home()?)
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("--faux runs in-process only"), "{stderr}");
+    Ok(())
+}
+
 /// A paced `type` step holds the outer loop for its whole duration, and the
 /// wall clock is read there: without a check inside the step, a long paced
 /// line ran to completion past the deadline meant to bound it. Counting the

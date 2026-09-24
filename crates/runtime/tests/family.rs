@@ -51,25 +51,9 @@ fn custom(custom_type: &str, details: serde_json::Value) -> AgentMessage {
 }
 
 #[test]
-fn a_child_that_ended_on_ask_user_needs_you() -> TestResult {
-    let mut args = Map::new();
-    args.insert(
-        "question".to_owned(),
-        json!("Which port does the proxy use?"),
-    );
-    let messages = vec![faux_assistant_message(
-        vec![faux_tool_call("q1", "ask_user", args)],
-        StopReason::ToolUse,
-    )];
-    let (state, note, _) = state_from_records(DONE, None, &messages, &[], 1_000_000);
-    assert_eq!(state, MemberState::NeedsYou);
-    assert_eq!(note.as_deref(), Some("Which port does the proxy use?"));
-    let done = vec![faux_assistant_message(
-        vec![faux_text("done")],
-        StopReason::Stop,
-    )];
+fn an_ended_child_reads_finished_or_names_its_error() -> TestResult {
     assert_eq!(
-        state_from_records(DONE, None, &done, &[], 1_000_000).0,
+        state_from_records(DONE, None, &[], 1_000_000).0,
         MemberState::Finished
     );
     assert_eq!(
@@ -81,7 +65,6 @@ fn a_child_that_ended_on_ask_user_needs_you() -> TestResult {
                 Phase::Live
             ),
             Some("boom"),
-            &[],
             &[],
             0
         )
@@ -101,7 +84,7 @@ fn a_running_child_is_stuck_on_a_loop_record_or_five_idle_minutes() -> TestResul
     )?;
     let recent = recent_entries(&session);
     let now = yi_session::now_ms();
-    let (state, note, _) = state_from_records(LIVE, None, &[], &recent, now);
+    let (state, note, _) = state_from_records(LIVE, None, &recent, now);
     assert_eq!(
         (state, note.as_deref()),
         (MemberState::Stuck, Some("repeat_break"))
@@ -120,9 +103,9 @@ fn a_running_child_is_stuck_on_a_loop_record_or_five_idle_minutes() -> TestResul
             _ => 0,
         })
         .unwrap_or(0);
-    let (state, _, _) = state_from_records(LIVE, None, &[], &recent, stamped + 1_000);
+    let (state, _, _) = state_from_records(LIVE, None, &recent, stamped + 1_000);
     assert_eq!(state, MemberState::Running);
-    let (state, note, idle) = state_from_records(LIVE, None, &[], &recent, stamped + STUCK_IDLE_MS);
+    let (state, note, idle) = state_from_records(LIVE, None, &recent, stamped + STUCK_IDLE_MS);
     assert_eq!(state, MemberState::Stuck);
     assert_eq!(note.as_deref(), Some("idle 300s"));
     assert_eq!(idle, 300);
@@ -160,14 +143,14 @@ fn stuck_reads_the_typed_signal() -> TestResult {
     ] {
         let session = store("typed");
         yi_session::lock_session(&session).append_message("main", custom(name, details.clone()))?;
-        let (state, note, _) = state_from_records(LIVE, None, &[], &recent_entries(&session), now);
+        let (state, note, _) = state_from_records(LIVE, None, &recent_entries(&session), now);
         assert_eq!(
             (state == MemberState::Stuck, note.as_deref()),
             (stuck.is_some(), stuck),
             "{name} {details}"
         );
     }
-    let (state, _, _) = state_from_records((None, Phase::Queued), None, &[], &[], now);
+    let (state, _, _) = state_from_records((None, Phase::Queued), None, &[], now);
     assert_eq!(state, MemberState::Queued, "admitted, not yet polled");
     Ok(())
 }
@@ -238,7 +221,7 @@ fn newest_ms(session: &yi_session::SharedSession) -> u64 {
 /// A running member as its records show it at the injected clock.
 fn member(name: &str, session: &yi_session::SharedSession, now_ms: u64) -> MemberView {
     let recent = recent_entries(session);
-    let (state, note, idle_s) = state_from_records(LIVE, None, &[], &recent, now_ms);
+    let (state, note, idle_s) = state_from_records(LIVE, None, &recent, now_ms);
     MemberView {
         name: name.to_owned(),
         state,

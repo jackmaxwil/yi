@@ -52,6 +52,11 @@ pub enum Command {
     Slash(String),
     StopChild(String),
     ChildHistory(String),
+    Answer {
+        child_id: String,
+        question: String,
+        text: String,
+    },
     Abort,
     Shutdown,
 }
@@ -168,6 +173,7 @@ pub struct App {
     pub(crate) last_esc_at: Option<Instant>,
     pub(crate) ctrl_c_at: Option<Instant>,
     pub(crate) focused: Option<String>,
+    pub(crate) reply_bound: Option<asks::ReplyTarget>,
     pub(crate) hud_hidden: bool,
     seen_turn: bool,
     /// Incident: a submitted prompt reaches the runtime thread over a channel, so the UI can
@@ -206,10 +212,12 @@ pub struct App {
 
 pub use crate::frame::next_spinner_wake;
 
+mod asks;
 mod bridge;
 mod children;
 mod stream;
 
+pub(crate) use asks::mail_source;
 pub use bridge::forward;
 pub(crate) use bridge::spawn_runtime_bridge;
 
@@ -270,6 +278,7 @@ impl App {
             last_esc_at: None,
             ctrl_c_at: None,
             focused: None,
+            reply_bound: None,
             hud_hidden: false,
             seen_turn: false,
             submitted_turns: 0,
@@ -713,10 +722,11 @@ impl App {
                 custom_type,
                 content,
                 display: true,
+                details,
                 ..
             } => {
                 let cell = Cell::Advisory {
-                    source: custom_type.clone(),
+                    source: asks::mail_source(custom_type, details.as_ref()),
                     text: user_text(content),
                 };
                 self.commit_cell(&cell);
@@ -753,10 +763,16 @@ impl App {
         }
         match event {
             AgentEvent::MessageStart {
-                message: AgentMessage::User { content, .. },
-            } => self.commit_cell(&Cell::User {
-                text: user_text(&content),
-            }),
+                message:
+                    AgentMessage::User {
+                        content,
+                        attribution,
+                        ..
+                    },
+            } => self.commit_cell(&crate::port::user_cell(
+                user_text(&content),
+                attribution == yi_types::message::Attribution::User,
+            )),
             AgentEvent::MessageEnd { message } => self.reduce_message_end(&message),
             AgentEvent::ToolExecutionEnd {
                 tool_name,

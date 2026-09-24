@@ -114,6 +114,12 @@ fn responds_per_command_streams_events_and_persists_v4() -> TestResult {
         .filter_map(|line| line["message"]["role"].as_str())
         .collect();
     assert_eq!(entry_roles, vec!["user", "assistant"]);
+    // An rpc prompt crossed the process boundary: host-minted, it replayed as a host notice.
+    let typed = lines
+        .iter()
+        .find(|line| line["message"]["role"] == "user")
+        .ok_or("no user entry")?;
+    assert_eq!(typed["message"]["attribution"], "user", "{typed}");
     assert!(
         lines
             .iter()

@@ -3,7 +3,7 @@
 use serde_json::Value;
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content};
-use yi_types::subagent::{ChildExit, ChildStatus, LoopSignal};
+use yi_types::subagent::{ChildExit, ChildFlag, ChildStatus, ChildUpdate, LoopSignal};
 
 /// A running member with no new record for this long is `stuck` with note `idle Ns`.
 pub const STUCK_IDLE_MS: u64 = 300_000;
@@ -33,6 +33,56 @@ impl MemberState {
             Self::NeedsYou => "needs_you",
             Self::Stuck => "stuck",
             Self::RepossessionPending => "repossession_pending",
+        }
+    }
+}
+
+/// Why a member's record last moved, which `wait` names beside the member's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    Spawned,
+    Started,
+    Mail,
+    Progress,
+    Asked,
+    Finished,
+    Failed,
+    Interrupted,
+    Reaped,
+    Respawned,
+    Revoked,
+    Held,
+    Settled,
+    Stuck,
+}
+
+impl Cause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Spawned => "spawned",
+            Self::Started => "started",
+            Self::Mail => "mail",
+            Self::Progress => "progress",
+            Self::Asked => "asked",
+            Self::Finished => "finished",
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
+            Self::Reaped => "reaped",
+            Self::Respawned => "respawned",
+            Self::Revoked => "revoked",
+            Self::Held => "held",
+            Self::Settled => "settled",
+            Self::Stuck => "stuck",
+        }
+    }
+
+    pub fn ended(exit: ChildExit) -> Self {
+        match exit {
+            ChildExit::Completed => Self::Finished,
+            ChildExit::Interrupted => Self::Interrupted,
+            ChildExit::Reaped => Self::Reaped,
+            ChildExit::Repossessed => Self::Revoked,
+            ChildExit::Failed { .. } | ChildExit::Other => Self::Failed,
         }
     }
 }
@@ -95,26 +145,6 @@ fn cut(text: &str) -> String {
     }
 }
 
-/// The question a member ended its turn on, when its last assistant message called `ask_user`.
-pub fn pending_question(messages: &[AgentMessage]) -> Option<String> {
-    let last = messages
-        .iter()
-        .rev()
-        .find(|message| matches!(message, AgentMessage::Assistant { .. }))?;
-    let AgentMessage::Assistant { content, .. } = last else {
-        return None;
-    };
-    content.iter().find_map(|block| match block {
-        Content::ToolCall {
-            name, arguments, ..
-        } if name == "ask_user" => Some(cut(arguments
-            .get("question")
-            .and_then(Value::as_str)
-            .unwrap_or("asked a question"))),
-        _ => None,
-    })
-}
-
 /// A stuck or waiting signal in one recent record. `stuck` is the loop's typed `signal`,
 /// never a record's name: a renamed or look-alike record cannot make or hide a stuck child.
 fn signal_of(entry: &Entry) -> Option<(MemberState, String)> {
@@ -155,22 +185,17 @@ fn timestamp_of(entry: &Entry) -> u64 {
     }
 }
 
-/// The state a member's newest records show: `needs_you` after `ask_user` or a todo blocked
-/// on the user, `stuck` after a re-drive in them or [`STUCK_IDLE_MS`] idle; the note says which.
+/// The state a member's newest records show: `needs_you` after a todo blocked on the user,
+/// `stuck` after a re-drive in them or [`STUCK_IDLE_MS`] idle; the note says which.
 pub fn state_from_records(
     (exit, phase): (Option<ChildExit>, Phase),
     error: Option<&str>,
-    messages: &[AgentMessage],
     recent: &[Entry],
     now_ms: u64,
 ) -> (MemberState, Option<String>, u64) {
     let newest = recent.iter().map(timestamp_of).max().unwrap_or(now_ms);
     let idle_s = now_ms.saturating_sub(newest) / 1000;
     match read_exit(exit).state {
-        MemberState::Finished => match pending_question(messages) {
-            Some(question) => (MemberState::NeedsYou, Some(question), idle_s),
-            None => (MemberState::Finished, None, idle_s),
-        },
         MemberState::Running if phase == Phase::Queued => (MemberState::Queued, None, idle_s),
         MemberState::Running if phase == Phase::Failed => {
             (MemberState::Failed, error.map(cut), idle_s)
@@ -193,6 +218,17 @@ pub fn state_from_records(
         }
         state => (state, error.map(cut), idle_s),
     }
+}
+
+pub fn flagged(mut update: ChildUpdate, views: &[MemberView]) -> ChildUpdate {
+    let view = views.iter().find(|view| view.name == update.name);
+    let note = || view.and_then(|view| view.note.clone()).unwrap_or_default();
+    update.flag = match view.map(|view| view.state) {
+        Some(MemberState::NeedsYou) => Some(ChildFlag::NeedsYou { note: note() }),
+        Some(MemberState::Stuck) => Some(ChildFlag::Stuck { note: note() }),
+        _ => None,
+    };
+    update
 }
 
 /// One stuck notice per episode (plan section 7.5): a member is latched by name when first

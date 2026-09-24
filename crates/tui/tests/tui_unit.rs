@@ -2146,6 +2146,7 @@ fn a_multibyte_error_never_panics_the_task_cell() -> TestResult {
         spawn: None,
         answer: None,
         activity: yi_types::subagent::ChildActivity::Waiting,
+        flag: None,
     };
     let lines = cell.lines(120, &theme(), yi_tui::cell::TranscriptMode::Normal, 0);
     let joined: String = lines.iter().map(flat).collect();
