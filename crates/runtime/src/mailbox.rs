@@ -474,7 +474,8 @@ impl SubagentHost {
         timeout_ms: u64,
         cursor: Option<u64>,
     ) -> Result<Map<String, Value>, String> {
-        self.wait_for(timeout_ms, cursor, false).await
+        let reply = self.wait_for(timeout_ms, cursor, false).await?;
+        Ok(self.shown_by(reply, &Map::new()))
     }
 
     pub(crate) async fn wait_for(
@@ -568,16 +569,9 @@ impl SubagentHost {
             .iter()
             .map(|(name, cause)| (name.clone(), Value::from(cause.as_str())))
             .collect();
-        let asking = self
-            .mail
-            .lock()
-            .map(|mut desk| {
-                desk.show_asking();
-                desk.asking()
-            })
-            .unwrap_or_default();
         if state == "asks" {
-            for name in asking.into_keys() {
+            let asking = self.mail.lock().map(|desk| desk.asking());
+            for name in asking.unwrap_or_default().into_keys() {
                 causes.insert(name, Value::from("asks"));
             }
         }

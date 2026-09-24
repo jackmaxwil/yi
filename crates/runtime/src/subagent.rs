@@ -822,11 +822,28 @@ impl SubagentHost {
         self.status_of(None)
     }
 
-    fn status_shown(&self, name: Option<&str>) -> Map<String, Value> {
-        if let Ok(mut desk) = self.mail.lock() {
-            desk.show_asking();
+    fn status_read(&self, payload: &Map<String, Value>) -> Map<String, Value> {
+        let reply = self.status_of(payload.get("name").and_then(Value::as_str));
+        self.shown_by(reply, payload)
+    }
+
+    pub(crate) fn shown_by(
+        &self,
+        reply: Map<String, Value>,
+        ask: &Map<String, Value>,
+    ) -> Map<String, Value> {
+        let quiet = ask.get("quiet").and_then(Value::as_bool) == Some(true);
+        let notes = match (reply.get("members"), reply.get("notes")) {
+            (Some(Value::Array(members)), _) => {
+                members.iter().filter_map(|m| m.get("note")).collect()
+            }
+            (_, Some(Value::Object(notes))) => notes.values().collect(),
+            _ => Vec::new(),
+        };
+        if !quiet && let Ok(mut desk) = self.mail.lock() {
+            desk.show(notes.into_iter().filter_map(Value::as_str));
         }
-        self.status_of(name)
+        reply
     }
 
     fn status_of(&self, name: Option<&str>) -> Map<String, Value> {
@@ -991,7 +1008,7 @@ impl SubagentHost {
                 if given.is_none() {
                     seen.fetch_max(epoch, std::sync::atomic::Ordering::Relaxed);
                 }
-                Ok(reply)
+                Ok(host.shown_by(reply, &payload))
             })
         });
         self.register_stops(registry);
@@ -1039,7 +1056,7 @@ impl SubagentHost {
         });
         let host = Arc::clone(self);
         registry.register("rlm.status", move |payload| {
-            let reply = host.status_shown(payload.get("name").and_then(Value::as_str));
+            let reply = host.status_read(&payload);
             Box::pin(async move { Ok(reply) })
         });
         let host = Arc::clone(self);

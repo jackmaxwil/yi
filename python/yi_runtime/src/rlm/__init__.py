@@ -9,6 +9,7 @@ one the cell never starts runs once after the cell, which prints its value with 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import inspect
 import json
@@ -45,6 +46,8 @@ _MAIL: list[Any] = []
 _EAGER = frozenset({"send", "followup", "interrupt", "revoke"})
 # The host's refusal of a wait repeated at an `asks` or `settled` state nothing has moved.
 _REPEATED = ("is asking you", "stop waiting")
+# A helper's own read: the host counts a question it quotes as shown only to the model.
+_QUIET = contextvars.ContextVar("rlm_quiet", default=False)
 
 
 def _call_type() -> type:
@@ -159,11 +162,14 @@ async def _watch(timeout: float, cursor: int | None) -> "Reply | None":
     """``wait`` for a helper watching one child. The host refuses a wait repeated at an
     ``asks`` or ``settled`` state; the helper pauses on it and gets None, since it waits on
     its own child, not on that state."""
+    quiet = _QUIET.set(True)
     try:
         return await wait(timeout=timeout, cursor=cursor)
     except RuntimeError as error:
         if not any(mark in str(error) for mark in _REPEATED):
             raise
+    finally:
+        _QUIET.reset(quiet)
     await asyncio.sleep(max(0.0, min(0.5, timeout)))
     return None
 
@@ -202,6 +208,10 @@ def _public(fn: Any) -> Any:
     return _handed_out(fn) if inspect.iscoroutinefunction(fn) else fn
 
 
+def _quiet(payload: dict[str, Any]) -> dict[str, Any]:
+    return {**payload, "quiet": True} if _QUIET.get() else payload
+
+
 def _check_schema(schema: dict[str, Any] | None) -> None:
     if schema is not None and not isinstance(schema, dict):
         raise TypeError(f"schema must be a dict or None, got {type(schema).__name__}")
@@ -218,7 +228,11 @@ class RLMSpawnHandle:
     @property
     def state(self) -> str:
         """This child's state now, asked of the host: ``(await rlm.status(name)).state``."""
-        read = status.__wrapped__(self.name)
+        async def quietly() -> Reply:
+            _QUIET.set(True)
+            return await status.__wrapped__(self.name)
+
+        read = quietly()
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -698,7 +712,7 @@ async def status(name: str | None = None) -> "list[Reply] | Reply":
             print(m["name"], m.state)
         if (await rlm.status("counter")).tools >= 1: ...
     """
-    payload = await host_request("rlm.status", {} if name is None else {"name": name})
+    payload = await host_request("rlm.status", _quiet({} if name is None else {"name": name}))
     members = payload.get("members")
     if not isinstance(members, list):
         raise RuntimeError("rlm.status returned an invalid member list")
@@ -710,7 +724,7 @@ async def status(name: str | None = None) -> "list[Reply] | Reply":
     named = named or [entry for entry in entries if str(entry.get("name")).endswith(f"/{name}")]
     if len(named) == 1:
         return named[0]
-    roster = (await host_request("rlm.status", {})).get("members") or []
+    roster = (await host_request("rlm.status", {"quiet": True})).get("members") or []
     known = ", ".join(repr(member.get("name")) for member in roster if isinstance(member, dict))
     raise KeyError(f"no one child named {name!r}; the children are: {known or 'none'}")
 
@@ -749,7 +763,7 @@ async def wait(timeout: float = 300.0, cursor: int | None = None) -> dict[str, A
     payload: dict[str, Any] = {"timeout_ms": int(timeout * 1000)}
     if cursor is not None:
         payload["cursor"] = cursor
-    reply = await host_request("rlm.wait", payload)
+    reply = await host_request("rlm.wait", _quiet(payload))
     return Reply(reply, "rlm.wait", 'r = await rlm.wait(300); print(r["state"], r.changed)')
 
 
