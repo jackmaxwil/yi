@@ -216,5 +216,6 @@ when it changes rather than editing them by hand.
 - [D236](adr/d236.md) - the mailbox's leftovers close
 - [D237](adr/d237.md) - tool ergonomics and harness fixes
 - [D238](adr/d238.md) - the last rung of the kernel toolchain is a pinned, verified uv, not a piped...
+- [D239](adr/d239.md) - one process owns a session's kernel snapshot (amends K10)
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

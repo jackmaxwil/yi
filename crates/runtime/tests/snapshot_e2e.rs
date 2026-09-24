@@ -288,3 +288,36 @@ async fn post_compaction_sync_prunes_and_reports_names() -> TestResult {
     service.dispose().await;
     Ok(())
 }
+
+/// Incident: two processes continuing one session each wrote its snapshot, so the second
+/// revived the first's names and its flush replaced the first's file.
+#[tokio::test]
+async fn a_second_process_on_one_session_leaves_its_snapshot_alone() -> TestResult {
+    let dir = Scratch::new("yi-snap-owner")?;
+    let notices = Arc::new(Mutex::new(Vec::new()));
+    let owner = service(&dir, &notices);
+    cell(&owner, "owner = 1").await?;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let saved = || -> Result<Vec<String>, Box<dyn Error>> {
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("kernel-state.json"))?)?;
+        Ok(serde_json::from_value(manifest["savedNames"].clone())?)
+    };
+    assert!(saved()?.contains(&"owner".to_owned()));
+
+    let second = service(&dir, &notices);
+    let outcome = cell(&second, "intruder = 2\nprint('owner' in globals())").await?;
+    second.dispose().await;
+    let after = saved()?;
+    assert!(
+        after.contains(&"owner".to_owned()) && !after.contains(&"intruder".to_owned()),
+        "the second process rewrote the owner's snapshot: {after:?}"
+    );
+    assert!(
+        outcome.result.stdout.contains("False"),
+        "the second process revived state it does not own: {}",
+        outcome.result.stdout
+    );
+    owner.dispose().await;
+    Ok(())
+}
