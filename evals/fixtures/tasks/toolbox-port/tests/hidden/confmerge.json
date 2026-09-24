@@ -1,0 +1,519 @@
+[
+ {
+  "id": "merge-two",
+  "args": [
+   "base.ini",
+   "host.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n",
+   "host.ini": "host = web-01.internal\n[service.web]\nport = 9090\nflags += --verbose\n!unset motd\n[paths]\n!unset tmp\ncache = ${data}/cache#1\n"
+  },
+  "exit": 0,
+  "stdout": "[global]\nhost = web-01.internal\nname = orchard\nroot = /srv/orchard\n\n[paths]\ncache = \"/srv/orchard/data/cache#1\"\ndata = /srv/orchard/data\nlogs = /srv/orchard/data/logs\n\n[service.web]\nflags = --fast --safe --quiet --verbose\nport = 9090\nurl = http://web-01.internal:9090/\n",
+  "files_after": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n",
+   "host.ini": "host = web-01.internal\n[service.web]\nport = 9090\nflags += --verbose\n!unset motd\n[paths]\n!unset tmp\ncache = ${data}/cache#1\n"
+  }
+ },
+ {
+  "id": "order-matters",
+  "args": [
+   "host.ini",
+   "base.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n",
+   "host.ini": "host = web-01.internal\n[service.web]\nport = 9090\nflags += --verbose\n!unset motd\n[paths]\n!unset tmp\ncache = ${data}/cache#1\n"
+  },
+  "exit": 0,
+  "stdout": "[global]\nhost = web-01.internal\nname = orchard\nroot = /srv/orchard\n\n[paths]\ncache = \"/srv/orchard/data/cache#1\"\ndata = /srv/orchard/data\nlogs = /srv/orchard/data/logs\ntmp = /tmp/orchard scratch\n\n[service.web]\nflags = --fast --safe --quiet\nmotd = literal ${name} costs $5\nport = 8080\nurl = http://web-01.internal:8080/\n",
+  "files_after": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n",
+   "host.ini": "host = web-01.internal\n[service.web]\nport = 9090\nflags += --verbose\n!unset motd\n[paths]\n!unset tmp\ncache = ${data}/cache#1\n"
+  }
+ },
+ {
+  "id": "set-and-get",
+  "args": [
+   "--set",
+   "global.name=grove",
+   "--get",
+   "paths.logs",
+   "base.ini",
+   "host.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n",
+   "host.ini": "host = web-01.internal\n[service.web]\nport = 9090\nflags += --verbose\n!unset motd\n[paths]\n!unset tmp\ncache = ${data}/cache#1\n"
+  },
+  "exit": 0,
+  "stdout": "/srv/grove/data/logs\n",
+  "files_after": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n",
+   "host.ini": "host = web-01.internal\n[service.web]\nport = 9090\nflags += --verbose\n!unset motd\n[paths]\n!unset tmp\ncache = ${data}/cache#1\n"
+  }
+ },
+ {
+  "id": "undefined",
+  "args": [
+   "base.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n"
+  },
+  "exit": 4,
+  "stdout": "",
+  "files_after": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n"
+  }
+ },
+ {
+  "id": "cycle",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[x]\na = ${b}\nb = ${c}/1\nc = ${x.a}\n"
+  },
+  "exit": 3,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[x]\na = ${b}\nb = ${c}/1\nc = ${x.a}\n"
+  }
+ },
+ {
+  "id": "syntax",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[x]\nthis is not an assignment\n"
+  },
+  "exit": 2,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[x]\nthis is not an assignment\n"
+  }
+ },
+ {
+  "id": "quoting-out",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[x]\nempty =\nspaced = \"  padded  \"\nhash = \"a # b\"\nplain = a#b\ntab = \"one\\ttwo\"\ndollar = cost $$5 and $x\n"
+  },
+  "exit": 0,
+  "stdout": "[x]\ndollar = cost $5 and $x\nempty = \"\"\nhash = \"a # b\"\nplain = \"a#b\"\nspaced = \"  padded  \"\ntab = \"one\\ttwo\"\n",
+  "files_after": {
+   "a.ini": "[x]\nempty =\nspaced = \"  padded  \"\nhash = \"a # b\"\nplain = a#b\ntab = \"one\\ttwo\"\ndollar = cost $$5 and $x\n"
+  }
+ },
+ {
+  "id": "append-then-unset-then-append",
+  "args": [
+   "a.ini",
+   "b.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\nk = one\nk += two\n",
+   "b.ini": "[s]\n!unset k\nk += three\nk += four\n"
+  },
+  "exit": 0,
+  "stdout": "[s]\nk = three four\n",
+  "files_after": {
+   "a.ini": "[s]\nk = one\nk += two\n",
+   "b.ini": "[s]\n!unset k\nk += three\nk += four\n"
+  }
+ },
+ {
+  "id": "append-to-empty",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\nk =\nk += x\nj += y\nj +=\n"
+  },
+  "exit": 0,
+  "stdout": "[s]\nj = y\nk = x\n",
+  "files_after": {
+   "a.ini": "[s]\nk =\nk += x\nj += y\nj +=\n"
+  }
+ },
+ {
+  "id": "append-keeps-literal-flag",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\nk = '${raw}'\nk += ${more}\nj = plain\nj += '${x}'\nx = 1\n"
+  },
+  "exit": 0,
+  "stdout": "[s]\nj = plain 1\nk = ${raw} ${more}\nx = 1\n",
+  "files_after": {
+   "a.ini": "[s]\nk = '${raw}'\nk += ${more}\nj = plain\nj += '${x}'\nx = 1\n"
+  }
+ },
+ {
+  "id": "same-section-before-global",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "v = outer\nonly = global-only\n[s]\nv = inner\na = ${v} ${only} ${global.v}\n"
+  },
+  "exit": 0,
+  "stdout": "[global]\nonly = global-only\nv = outer\n\n[s]\na = inner global-only outer\nv = inner\n",
+  "files_after": {
+   "a.ini": "v = outer\nonly = global-only\n[s]\nv = inner\na = ${v} ${only} ${global.v}\n"
+  }
+ },
+ {
+  "id": "dotted-section-ref",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[a.b]\nc = deep\n[a]\nb = shallow\n[z]\nr = ${a.b.c} ${a.b}\n"
+  },
+  "exit": 0,
+  "stdout": "[a]\nb = shallow\n\n[a.b]\nc = deep\n\n[z]\nr = deep shallow\n",
+  "files_after": {
+   "a.ini": "[a.b]\nc = deep\n[a]\nb = shallow\n[z]\nr = ${a.b.c} ${a.b}\n"
+  }
+ },
+ {
+  "id": "explicit-global-section",
+  "args": [
+   "a.ini",
+   "b.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "k = 1\n[t]\nx = ${k}\n",
+   "b.ini": "[global]\nk = 2\n"
+  },
+  "exit": 0,
+  "stdout": "[global]\nk = 2\n\n[t]\nx = 2\n",
+  "files_after": {
+   "a.ini": "k = 1\n[t]\nx = ${k}\n",
+   "b.ini": "[global]\nk = 2\n"
+  }
+ },
+ {
+  "id": "comment-rules",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\nurl = http://h/a;b#c ; real comment\nsemi = a ;b\n; whole line\n   # indented comment\nq = \"keep # this\" # drop this\n[t] ; trailing\nz = 1\n"
+  },
+  "exit": 0,
+  "stdout": "[s]\nq = \"keep # this\"\nsemi = a\nurl = \"http://h/a;b#c\"\n\n[t]\nz = 1\n",
+  "files_after": {
+   "a.ini": "[s]\nurl = http://h/a;b#c ; real comment\nsemi = a ;b\n; whole line\n   # indented comment\nq = \"keep # this\" # drop this\n[t] ; trailing\nz = 1\n"
+  }
+ },
+ {
+  "id": "continuation-eats-a-header",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\nk = one \\\n[not-a-section]\nj = two \\\n\n"
+  },
+  "exit": 0,
+  "stdout": "[s]\nj = two\nk = one [not-a-section]\n",
+  "files_after": {
+   "a.ini": "[s]\nk = one \\\n[not-a-section]\nj = two \\\n\n"
+  }
+ },
+ {
+  "id": "continuation-at-eof",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\nk = one \\"
+  },
+  "exit": 2,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[s]\nk = one \\"
+  }
+ },
+ {
+  "id": "escapes",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\nk = \"a\\\"b\\\\c\\nd\"\nsingle = 'it is \"raw\" \\n'\n"
+  },
+  "exit": 0,
+  "stdout": "[s]\nk = \"a\\\"b\\\\c\\nd\"\nsingle = \"it is \\\"raw\\\" \\\\n\"\n",
+  "files_after": {
+   "a.ini": "[s]\nk = \"a\\\"b\\\\c\\nd\"\nsingle = 'it is \"raw\" \\n'\n"
+  }
+ },
+ {
+  "id": "bad-escape",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\nk = \"a\\qb\"\n"
+  },
+  "exit": 2,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[s]\nk = \"a\\qb\"\n"
+  }
+ },
+ {
+  "id": "unterminated",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\nok = 1\nk = \"abc\n"
+  },
+  "exit": 2,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[s]\nok = 1\nk = \"abc\n"
+  }
+ },
+ {
+  "id": "text-after-quote",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\nk = \"abc\" def\n"
+  },
+  "exit": 2,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[s]\nk = \"abc\" def\n"
+  }
+ },
+ {
+  "id": "dollar-rules",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\na = $${x} $$ $ $5\nx = 1\nb = ${x}${x}$${x}\n"
+  },
+  "exit": 0,
+  "stdout": "[s]\na = ${x} $ $ $5\nb = 11${x}\nx = 1\n",
+  "files_after": {
+   "a.ini": "[s]\na = $${x} $$ $ $5\nx = 1\nb = ${x}${x}$${x}\n"
+  }
+ },
+ {
+  "id": "unterminated-ref",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\na = ${x\nx = 1\n"
+  },
+  "exit": 4,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[s]\na = ${x\nx = 1\n"
+  }
+ },
+ {
+  "id": "self-cycle",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\npath = ${path}:/bin\n"
+  },
+  "exit": 3,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[s]\npath = ${path}:/bin\n"
+  }
+ },
+ {
+  "id": "cycle-beats-undefined",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[a]\nk = ${nope}\n[z]\np = ${q}\nq = ${p}\n"
+  },
+  "exit": 3,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[a]\nk = ${nope}\n[z]\np = ${q}\nq = ${p}\n"
+  }
+ },
+ {
+  "id": "result-is-not-rescanned",
+  "args": [
+   "--set",
+   "s.x=$${y}",
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\ny = 1\nz = ${x}\n"
+  },
+  "exit": 0,
+  "stdout": "[s]\nx = ${y}\ny = 1\nz = ${y}\n",
+  "files_after": {
+   "a.ini": "[s]\ny = 1\nz = ${x}\n"
+  }
+ },
+ {
+  "id": "set-order-and-new-section",
+  "args": [
+   "--set",
+   "new.sec.k=a=b",
+   "--set",
+   "new.sec.k=${global.n}!",
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "n = 7\n"
+  },
+  "exit": 0,
+  "stdout": "[global]\nn = 7\n\n[new.sec]\nk = 7!\n",
+  "files_after": {
+   "a.ini": "n = 7\n"
+  }
+ },
+ {
+  "id": "get-missing",
+  "args": [
+   "--get",
+   "s.nope",
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\nk = 1\n"
+  },
+  "exit": 4,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[s]\nk = 1\n"
+  }
+ },
+ {
+  "id": "get-raw-value",
+  "args": [
+   "--get",
+   "s.k",
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\nk = \"  two  words  \"\n"
+  },
+  "exit": 0,
+  "stdout": "  two  words  \n",
+  "files_after": {
+   "a.ini": "[s]\nk = \"  two  words  \"\n"
+  }
+ },
+ {
+  "id": "missing-file",
+  "args": [
+   "nope.ini"
+  ],
+  "stdin": "",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "no-files",
+  "args": [
+   "--set",
+   "a.b=c"
+  ],
+  "stdin": "",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "empty-sections-vanish",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[gone]\nk = 1\n!unset k\n[B]\nk = 1\n[a]\nk = 2\n[_]\nk = 3\n"
+  },
+  "exit": 0,
+  "stdout": "[B]\nk = 1\n\n[_]\nk = 3\n\n[a]\nk = 2\n",
+  "files_after": {
+   "a.ini": "[gone]\nk = 1\n!unset k\n[B]\nk = 1\n[a]\nk = 2\n[_]\nk = 3\n"
+  }
+ },
+ {
+  "id": "bad-key",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s]\nmy key = 1\n"
+  },
+  "exit": 2,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[s]\nmy key = 1\n"
+  }
+ },
+ {
+  "id": "bad-section",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[s t]\nk = 1\n"
+  },
+  "exit": 2,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[s t]\nk = 1\n"
+  }
+ }
+]

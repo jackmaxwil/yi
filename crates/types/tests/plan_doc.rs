@@ -58,6 +58,11 @@ fn todo(label: &str, after: &[&str], state: TodoState) -> Result<Todo, DocError>
         subplan: None,
         retries: RetryCount::default(),
         children: Vec::new(),
+        note: None,
+        attempt: yi_types::plan::doc::AttemptId::FIRST,
+        refusals: 0,
+        contract: None,
+        contract_hash: None,
         extra: Map::new(),
     })
 }
@@ -65,7 +70,14 @@ fn todo(label: &str, after: &[&str], state: TodoState) -> Result<Todo, DocError>
 #[test]
 fn ready_finished_and_validate() -> TestResult {
     let plan = plan_with(vec![
-        todo("a", &[], TodoState::Done { output: None })?,
+        todo(
+            "a",
+            &[],
+            TodoState::Done {
+                output: None,
+                resolution: None,
+            },
+        )?,
         todo("b", &["a"], TodoState::Pending)?,
         todo("c", &["b"], TodoState::Pending)?,
     ])?;
@@ -79,7 +91,14 @@ fn ready_finished_and_validate() -> TestResult {
     assert!(plan.validate().is_empty());
 
     let done = plan_with(vec![
-        todo("a", &[], TodoState::Done { output: None })?,
+        todo(
+            "a",
+            &[],
+            TodoState::Done {
+                output: None,
+                resolution: None,
+            },
+        )?,
         todo("b", &[], TodoState::Abandoned)?,
         todo(
             "c",
@@ -129,6 +148,7 @@ fn frontmatter_round_trips() -> TestResult {
             &[],
             TodoState::Done {
                 output: Some("kernel://main/seam".parse()?),
+                resolution: None,
             },
         )?,
         todo(
@@ -147,7 +167,7 @@ fn frontmatter_round_trips() -> TestResult {
         },
     };
     let json = serde_json::to_string(&plan)?;
-    assert!(json.contains("\"format\":1"));
+    assert!(json.contains("\"format\":2"));
     assert!(json.contains("\"parent\":\"root/Some parent todo\""));
     let back: Plan = serde_json::from_str(&json)?;
     assert_eq!(back, plan);
@@ -159,9 +179,10 @@ fn frontmatter_round_trips() -> TestResult {
 #[test]
 fn unknown_tags_round_trip_byte_identically() -> TestResult {
     let json = concat!(
-        "{\"format\":1,\"plan\":\"p\",\"goal\":\"g\",\"version\":1,",
+        "{\"format\":2,\"plan\":\"p\",\"goal\":\"g\",\"version\":1,",
         "\"touched\":1,\"tier\":\"quarantine\",\"state\":\"parked\",",
-        "\"todos\":[{\"label\":\"a\",\"state\":\"quarantined\"}]}"
+        "\"intent\":null,\"constraints\":[],\"examples\":[],\"shape\":null,\"placement\":null,",
+        "\"todos\":[{\"label\":\"a\",\"state\":\"quarantined\",\"attempt\":1,\"refusals\":0}]}"
     );
     let plan: Plan = serde_json::from_str(json)?;
     assert_eq!(plan.state, PlanState::Other("parked".to_owned()));
@@ -286,7 +307,14 @@ fn a_terminal_record_keeps_the_owners_kernel_and_refuses_a_childs() -> TestResul
 #[test]
 fn children_round_trip_and_stay_out_of_a_flat_row() -> TestResult {
     let mut parent = todo("parent", &[], TodoState::Pending)?;
-    parent.children = vec![todo("child", &[], TodoState::Done { output: None })?];
+    parent.children = vec![todo(
+        "child",
+        &[],
+        TodoState::Done {
+            output: None,
+            resolution: None,
+        },
+    )?];
     let flat = todo("flat", &[], TodoState::Pending)?;
     let plan = plan_with(vec![parent, flat])?;
     let json = serde_json::to_string(&plan)?;
@@ -300,5 +328,63 @@ fn children_round_trip_and_stay_out_of_a_flat_row() -> TestResult {
     assert_eq!(back, plan);
     let progress = yi_types::plan::doc::progress(&back.todos);
     assert_eq!((progress.done, progress.total), (1, 3));
+    Ok(())
+}
+
+#[test]
+fn a_format_one_document_reads_only_through_the_legacy_parser() -> TestResult {
+    let json = concat!(
+        "{\"format\":1,\"plan\":\"p\",\"goal\":\"g\",\"version\":1,",
+        "\"tier\":\"root\",\"state\":\"active\",",
+        "\"todos\":[{\"label\":\"a\",\"state\":\"pending\"}]}"
+    );
+    assert!(
+        serde_json::from_str::<Plan>(json).is_err(),
+        "format 1 is refused after import"
+    );
+    let plan = Plan::parse_legacy(json)?;
+    assert_eq!(plan.todos.first().map(|todo| todo.attempt.get()), Some(1));
+    assert!(Plan::parse_legacy(&json.replace("\"format\":1", "\"format\":2")).is_err());
+    Ok(())
+}
+
+// Dies with the `try_from` on `TodoSpec`: parse the fields straight and a worktree todo with
+// no contract is declarable on every op, then never submitted and never completed.
+#[test]
+fn an_uncontracted_worktree_spec_is_refused_at_parse_and_a_stored_todo_is_not() -> TestResult {
+    use yi_types::plan::op::{Op, TodoSpec};
+    let delegation = serde_json::json!({
+        "spec": {"role": "writer", "isolation": "worktree"},
+        "accept": {"stated": "the contract decides"}
+    });
+    let bare = serde_json::json!({"label": "build it apart", "delegation": delegation});
+    let refused = serde_json::from_value::<TodoSpec>(bare.clone());
+    let text = refused
+        .as_ref()
+        .err()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    assert!(
+        text.contains("todo build it apart: a worktree delegation needs a `contract`"),
+        "{refused:?}"
+    );
+    let tagged = serde_json::json!({"op": "append", "todos": [bare.clone()]});
+    assert!(serde_json::from_value::<Op>(tagged).is_err());
+    let mut contracted = bare.clone();
+    contracted["contract"] = serde_json::json!({
+        "class": "writer",
+        "items": [{"id": "green", "critical": true, "weight": 100, "decider": {"cmd": {
+            "checker": {"digest": "sha256:c827887362974b2cb2878a9d3d3cf125df0a17b52eb4e92fefa70a11fe8b4b48", "media_type": "text/plain", "length": 4},
+            "timeout_ms": 1000
+        }}}],
+        "threshold": 1000,
+        "min_coverage": 1000
+    });
+    let spec = serde_json::from_value::<TodoSpec>(contracted);
+    assert!(spec.is_ok(), "{spec:?}");
+    // A stored todo is history: the same shape with a state reads as it was written.
+    let mut stored = bare;
+    stored["state"] = serde_json::json!("pending");
+    assert!(serde_json::from_value::<Todo>(stored).is_ok());
     Ok(())
 }

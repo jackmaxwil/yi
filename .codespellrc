@@ -5,6 +5,9 @@
 # sessions under crates/tui/tests/fixtures/sessions are transcripts of what was
 # said, not prose this repo can correct, so they are skipped whole, as are the documents
 # under crates/runtime/tests/fixtures/documents, which a converter wrote (RTF's `\pard`).
+# The framed incident dataset is a hex dump of generated frames, so its ASCII column is
+# payload bytes rather than prose: a byte after a word reads as a misspelling of it.
+# `regraded` is what the archive's incident reviews do to a severity.
 [codespell]
-skip = ./target,./vendor,./Cargo.lock,./.git,./python/.venv,./ref,./evals/arc/runs,./crates/tui/tests/fixtures/sessions,./crates/runtime/tests/fixtures/documents
-ignore-words-list = ratatui,advices,unparseable,disjointness,modle,iterm
+skip = ./target,./vendor,./Cargo.lock,./.git,./python/.venv,./ref,./evals/arc/runs,./crates/tui/tests/fixtures/sessions,./crates/runtime/tests/fixtures/documents,./evals/fixtures/tasks/fleet-forensics/environment/app/incidents/framed
+ignore-words-list = ratatui,advices,unparseable,disjointness,modle,iterm,regraded

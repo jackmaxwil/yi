@@ -1,0 +1,47 @@
+[
+  {
+    "expected": {
+      "result": 3
+    },
+    "input": {
+      "a": 1,
+      "b": 2,
+      "op": "sum"
+    }
+  },
+  {
+    "expected": {
+      "a": 1,
+      "b": 2
+    },
+    "input": {
+      "op": "pair"
+    }
+  },
+  {
+    "expected": {
+      "result": 7
+    },
+    "input": {
+      "op": "spaced"
+    }
+  },
+  {
+    "expected": {
+      "result": 5
+    },
+    "input": {
+      "a": 2,
+      "b": 3,
+      "op": "wrong"
+    }
+  },
+  {
+    "expected": {
+      "result": 1
+    },
+    "input": {
+      "op": "chatty"
+    }
+  }
+]

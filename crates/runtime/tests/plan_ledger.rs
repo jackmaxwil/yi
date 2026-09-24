@@ -4,6 +4,8 @@
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+#[path = "support/family.rs"]
+mod support;
 
 use std::error::Error;
 use std::sync::{Arc, Mutex};
@@ -24,10 +26,11 @@ type TestResult = Result<(), Box<dyn Error>>;
 struct Recorder(Mutex<Vec<PlanOpRecord>>);
 
 impl OpSink for Recorder {
-    fn record(&self, record: PlanOpRecord) {
-        if let Ok(mut seen) = self.0.lock() {
-            seen.push(record);
-        }
+    fn record(&self, record: PlanOpRecord) -> Result<(), String> {
+        self.0
+            .lock()
+            .map(|mut seen| seen.push(record))
+            .map_err(|_| "poisoned".to_owned())
     }
 }
 
@@ -45,8 +48,6 @@ impl Delegate for Nobody {
     fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 fn spec(label: &str, after: &[&str]) -> Result<TodoSpec, Box<dyn Error>> {
@@ -57,6 +58,7 @@ fn spec(label: &str, after: &[&str]) -> Result<TodoSpec, Box<dyn Error>> {
             .map(|edge| TodoLabel::new(*edge))
             .collect::<Result<Vec<_>, _>>()?,
         delegation: None,
+        contract: None,
         children: Vec::new(),
     })
 }
@@ -66,6 +68,8 @@ fn owner(op: Op) -> OpRequest {
         plan: None,
         actor: Actor::Owner,
         op,
+        request_id: None,
+        expected_revision: None,
     }
 }
 
@@ -119,6 +123,11 @@ fn plan_with(edges: &[(&str, &[&str])]) -> Result<Plan, Box<dyn Error>> {
             subplan: None,
             retries: yi_types::plan::doc::RetryCount(0),
             children: Vec::new(),
+            note: None,
+            attempt: yi_types::plan::doc::AttemptId::FIRST,
+            refusals: 0,
+            contract: None,
+            contract_hash: None,
             extra: serde_json::Map::new(),
         });
     }
@@ -244,6 +253,7 @@ fn the_lint_reads_the_file_and_never_refuses_anything() -> TestResult {
     if let Some(todo) = plan.todos.get_mut(0) {
         todo.state = TodoState::Done {
             output: Some("agent://measured/a".parse::<Url>()?),
+            resolution: None,
         };
     }
     if let Some(todo) = plan.todos.get_mut(1) {
@@ -260,7 +270,10 @@ fn the_lint_reads_the_file_and_never_refuses_anything() -> TestResult {
 fn the_directive_names_what_is_load_bearing_and_what_may_compress() -> TestResult {
     let mut plan = plan_with(&[("cut the seam", &[]), ("wire it", &[]), ("ship it", &[])])?;
     if let Some(todo) = plan.todos.get_mut(0) {
-        todo.state = TodoState::Done { output: None };
+        todo.state = TodoState::Done {
+            output: None,
+            resolution: None,
+        };
     }
     if let Some(todo) = plan.todos.get_mut(1) {
         todo.state = TodoState::Running {
@@ -283,7 +296,10 @@ fn the_directive_names_what_is_load_bearing_and_what_may_compress() -> TestResul
 fn a_finished_plan_directs_the_summarizer_at_nothing() -> TestResult {
     let mut plan = plan_with(&[("cut the seam", &[])])?;
     if let Some(todo) = plan.todos.get_mut(0) {
-        todo.state = TodoState::Done { output: None };
+        todo.state = TodoState::Done {
+            output: None,
+            resolution: None,
+        };
     }
     assert_eq!(yi_runtime::plan::compaction_directive(&plan), None);
     Ok(())
@@ -308,5 +324,42 @@ fn the_plan_directive_leads_whatever_slash_compact_asked_for() -> TestResult {
         .find("keep the auth trace")
         .ok_or("the one-shot half survives")?;
     assert!(ledger < asked, "the caller's own words come last: {merged}");
+    Ok(())
+}
+
+/// Dies with `return_lease` at the record's release: keep the reservation after the reap and a
+/// parent's budget only ever shrinks, so its third child is refused tokens nobody holds.
+#[tokio::test]
+async fn reap_records_the_unspent_lease() -> TestResult {
+    use yi_types::lease::LeaseRecord;
+    let root = Scratch::new("yi-lease-return")?;
+    let store = support::memory_store("lease-return");
+    let family = support::family(root.to_path_buf(), std::env::temp_dir(), store, None);
+    family
+        .host
+        .set_grant(yi_runtime::Wall::default(), Some(5_000));
+    let spawn = |name: &str, tokens: u64| {
+        let mut asked = serde_json::Map::new();
+        asked.insert("name".to_owned(), name.into());
+        asked.insert("tokens".to_owned(), tokens.into());
+        family.host.spawn("work".to_owned(), asked)
+    };
+    spawn("first", 4_000)?;
+    assert!(family.reaches("first", "finished").await);
+    assert!(
+        spawn("early", 4_000).is_err(),
+        "a finished child still holds its lease"
+    );
+    family.host.reap("first")?;
+    let journal = family.journal();
+    let [LeaseRecord::Returned(back)] = &journal[..] else {
+        return Err(format!("the reap records the lease once: {journal:?}").into());
+    };
+    assert_eq!((back.spent, back.unspent), (120, Some(3_880)));
+    let refused = spawn("greedy", 4_881)
+        .err()
+        .ok_or("spent tokens were leased again")?;
+    assert!(refused.contains("4880 of its 5000"), "{refused}");
+    spawn("second", 4_880)?;
     Ok(())
 }

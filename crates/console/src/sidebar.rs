@@ -216,10 +216,13 @@ fn child_rows(
             .filter(|c| !c.is_control())
             .take(NAME_WIDTH.saturating_sub(3))
             .collect();
-        let glyph = match child.status {
-            yi_types::subagent::ChildStatus::Running => "◐",
-            yi_types::subagent::ChildStatus::Completed => "○",
-            yi_types::subagent::ChildStatus::Error => "✕",
+        use yi_types::subagent::{ChildFlag, ChildStatus};
+        let glyph = match (child.status, &child.flag) {
+            (ChildStatus::Running, Some(ChildFlag::NeedsYou { .. })) => "?",
+            (ChildStatus::Running, Some(ChildFlag::Stuck { .. })) => "!",
+            (ChildStatus::Running, _) => "◐",
+            (ChildStatus::Completed, _) => "○",
+            (ChildStatus::Error, _) => "✕",
         };
         let hue = app.accent_of(child.id.as_str(), &child.name);
         let tile = tile_span(app, name_tile(&child.name), hue);

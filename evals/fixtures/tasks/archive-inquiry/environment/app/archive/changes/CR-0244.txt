@@ -1,0 +1,89 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0244
+Title: Budget amendment, North Sluice gate refit
+Site: North Sluice
+Requested by: Petra Vosk
+Implemented: 2031-06-12
+
+Outcome: COMPLETED
+
+Description
+-----------
+
+the finance office reminded everyone that permits for confined spaces must be closed
+out the same day. the asset planning group reminded everyone that permits for confined
+spaces must be closed out the same day.
+
+Following tender, and under the delegation given by the board, the approved budget for
+the North Sluice gate refit is amended from 184,000 to 171,250. No other budget line
+is affected.
+
+Risk and rollback plan
+----------------------
+
+A rollback was prepared but was not needed.
+
+No complaints were received from neighbours of Low Fennick during the works, and the
+liaison log has been closed. Sampling results for the quarter were within the expected
+band at every point except one, which is being resampled.
+
+Verification
+------------
+
+Ysolde Quint reported that the duty pump at Eastmere Intake had been inspected and
+found serviceable, with minor wear noted on the seals. Members of the safety committee
+asked for the seasonal demand figures to be circulated before the next meeting. the
+networks team reminded everyone that permits for confined spaces must be closed out
+the same day. Sampling results for the quarter were within the expected band at every
+point except one, which is being resampled. Flooding on the lane to Brackwater Lock
+delayed the delivery by a day; no cost was incurred by the cooperative.
+
+Annex A. Follow-up from the last period
+---------------------------------------
+
+Ansel Brightwater confirmed that spares for the level sensor are held at the central
+store and that the reorder level is 21 units. The draft drawing register for
+Brackwater Lock is 38 percent complete and will be issued once the as-built survey is
+checked. Tamsin Orrel raised the question of lone working at Tolland Sluice and was
+referred to the existing guidance held by the safety committee. The handover notes
+between shifts were sampled by the safety committee and found complete in all but 16
+cases.
+
+Ysolde Quint thanked the control room for covering the holiday rota at short notice.
+The contractor's method statement for work at Tolland Sluice was reviewed by the field
+crews and returned with 22 comments. The telemetry link to Cindergate Station dropped
+twice in the period; both outages were under 34 minutes and no alarms were missed. The
+telemetry link to Brackwater Lock dropped twice in the period; both outages were under
+38 minutes and no alarms were missed. Oona Farrow raised the question of lone working
+at Merrow Basin and was referred to the existing guidance held by the control room.
+
+the asset planning group reminded everyone that permits for confined spaces must be
+closed out the same day. The telemetry link to Brackwater Lock dropped twice in the
+period; both outages were under 6 minutes and no alarms were missed. Vegetation
+clearance around the flow meter at Tolland Sluice was completed and the area
+photographed for the asset record. Hollis Wray thanked the control room for covering
+the holiday rota at short notice.
+
+Annex B. Follow-up from the last period
+---------------------------------------
+
+Lucan Marsh thanked the safety committee for covering the holiday rota at short
+notice. Flooding on the lane to Harrow Weir delayed the delivery by a day; no cost was
+incurred by the cooperative. A minor oil weep from the penstock actuator at Cindergate
+Station was cleaned up and a drip tray fitted pending the next service.
+
+the control room reminded everyone that permits for confined spaces must be closed out
+the same day. Tamsin Orrel raised the question of lone working at Eastmere Intake and
+was referred to the existing guidance held by the control room. The telemetry link to
+Harrow Weir dropped twice in the period; both outages were under 30 minutes and no
+alarms were missed. Bram Ketteridge raised the question of lone working at Brackwater
+Lock and was referred to the existing guidance held by the field crews. The telemetry
+link to Tolland Sluice dropped twice in the period; both outages were under 15 minutes
+and no alarms were missed.
+
+Bram Ketteridge raised the question of lone working at Harrow Weir and was referred to
+the existing guidance held by the networks team. Members of the field crews asked for
+the seasonal demand figures to be circulated before the next meeting. Sampling results
+for the quarter were within the expected band at every point except one, which is
+being resampled. the control room reminded everyone that permits for confined spaces
+must be closed out the same day.

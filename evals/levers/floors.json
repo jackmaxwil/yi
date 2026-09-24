@@ -1,0 +1,4 @@
+{
+ "fixtures": {"pass_min": 1.0, "reward_min": 1.0, "tolerance": 0.0,
+  "tasks": ["answer-echo", "block-on-user", "clean-workspace", "edit-file", "five-items", "search-loop", "seen-red"]}
+}

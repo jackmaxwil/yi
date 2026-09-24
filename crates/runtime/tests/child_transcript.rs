@@ -78,9 +78,9 @@ fn host(answer: Option<&'static str>) -> std::io::Result<(Scratch, Arc<SubagentH
                 provider,
             ))
         }),
-        notice: Arc::new(|_| {}),
+        notice: Arc::new(|_, _| {}),
         events,
-        report: Arc::new(|_| {}),
+        report: Arc::new(|_, _| {}),
         parent_messages: Arc::new(Vec::new),
         attribute: Arc::new(|_| {}),
         store: Arc::new(|| None),

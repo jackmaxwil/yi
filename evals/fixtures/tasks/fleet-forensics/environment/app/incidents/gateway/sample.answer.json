@@ -1,0 +1,13 @@
+{
+ "blast_radius": 6,
+ "chain": [
+  "R-88ce80",
+  "R-90fb49",
+  "R-7aed51",
+  "R-14ba73",
+  "R-72ed8d"
+ ],
+ "root_attempt": 1,
+ "root_error": "LeaseExpired",
+ "root_request": "R-72ed8d"
+}

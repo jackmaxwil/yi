@@ -2,7 +2,9 @@ use super::doc::DocError;
 use crate::url::Url;
 use serde::{Deserialize, Serialize};
 
-pub const PLAN_FORMAT: u32 = 1;
+pub const PLAN_FORMAT: u32 = 2;
+/// The frontmatter document format the importer still reads (plan section 5.5, two releases).
+pub const LEGACY_PLAN_FORMAT: u32 = 1;
 pub const PLAN_ID_MAX: usize = 96;
 pub const SLUG_MAX: usize = 40;
 pub const TODO_LABEL_MAX: usize = 80;
@@ -10,6 +12,10 @@ pub const GOAL_TEXT_MAX: usize = 512;
 /// Big content travels by URL, never inline; 1 KiB keeps even a plan of forty
 /// noted delegations inside the 32 KiB frontmatter budget.
 pub const INLINE_NOTE_MAX_BYTES: usize = 1024;
+/// One paragraph the program or the owner wrote about the plan.
+pub const INTENT_MAX_BYTES: usize = 2048;
+/// Prose imported from a format-1 body section; a longer section is an artifact reference.
+pub const NOTE_MAX_BYTES: usize = 4096;
 
 /// Slug identity of one plan file: lowercase alphanumerics and `-`, with one
 /// optional `.` separating a sub-plan from its parent id.
@@ -317,7 +323,7 @@ impl TouchCount {
 }
 
 /// Root-plan delegation fuse in the [`crate::plan::doc::TokenBudget`] unit family: charging
-/// is the only way up, and a user edit of the plan file the only way down.
+/// is the only way up, and the confirmed `fuse_reset` op the only way down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
 pub struct Spawns(u32);
 
@@ -330,7 +336,7 @@ impl Spawns {
         self.0 == 0
     }
 
-    pub fn get(self) -> u32 {
+    pub const fn get(self) -> u32 {
         self.0
     }
 }
@@ -439,3 +445,50 @@ impl From<ProbeCommand> for String {
         probe.0
     }
 }
+
+macro_rules! bounded_text {
+    ($name:ident, $cap:ident, $empty:ident, $long:ident) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(try_from = "String", into = "String")]
+        pub struct $name(String);
+
+        impl $name {
+            /// # Errors
+            /// Blank, or over the byte cap.
+            pub fn new(text: impl Into<String>) -> Result<Self, DocError> {
+                let text = text.into();
+                if text.trim().is_empty() {
+                    return Err(DocError::$empty);
+                }
+                if text.len() > $cap {
+                    return Err(DocError::$long {
+                        bytes: text.len(),
+                        max: $cap,
+                    });
+                }
+                Ok(Self(text))
+            }
+
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = DocError;
+
+            fn try_from(text: String) -> Result<Self, Self::Error> {
+                Self::new(text)
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(text: $name) -> Self {
+                text.0
+            }
+        }
+    };
+}
+
+bounded_text!(Intent, INTENT_MAX_BYTES, IntentEmpty, IntentTooLong);
+bounded_text!(Note, NOTE_MAX_BYTES, NoteEmpty, NoteTooLong);

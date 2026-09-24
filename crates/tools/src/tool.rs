@@ -147,10 +147,21 @@ pub fn detail_text(text: &str) -> Value {
 }
 
 pub fn require_str<'a>(input: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {
-    input
-        .get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("missing required string argument: {key}"))
+    match input.get(key) {
+        Some(Value::String(text)) => Ok(text),
+        // Incident: nine F0e `write` calls passed a JSON object as `content` for a .json path
+        // and read "missing" as absent; the value was there and wrong-typed (#472).
+        Some(value) => Err(format!(
+            "{key} is {}, not a string; pass the text itself (json.dumps(obj, indent=2) for JSON)",
+            match value {
+                Value::Object(_) => "a JSON object",
+                Value::Array(_) => "an array",
+                Value::Null => "null",
+                _ => "a number or boolean",
+            }
+        )),
+        None => Err(format!("missing required string argument: {key}")),
+    }
 }
 
 pub fn resolve_path(context: &ToolContext, path: &str) -> PathBuf {

@@ -1,0 +1,82 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0229
+Title: Replace valve V-141
+Site: Tolland Sluice
+Requested by: Ansel Brightwater
+Implemented: 2031-04-18
+
+Outcome: COMPLETED
+
+Description
+-----------
+
+the field crews will coordinate with Petra Vosk on the training calendar, which
+currently shows 31 open places. No complaints were received from neighbours of Harrow
+Weir during the works, and the liaison log has been closed.
+
+Valve V-141 on the bypass line was replaced on 2031-04-18 and returned to service the
+same day.
+
+Risk and rollback plan
+----------------------
+
+The rollback plan was rehearsed on the test rig beforehand.
+
+A minor oil weep from the control panel at Osier Bank was cleaned up and a drip tray
+fitted pending the next service. the field crews reminded everyone that permits for
+confined spaces must be closed out the same day.
+
+Verification
+------------
+
+Hollis Wray noted that the calibration certificate for the dosing skid expires next
+quarter and has booked the visit. An energy audit of Eastmere Intake suggested that
+running the inlet screen off-peak would reduce cost without affecting service.
+Flooding on the lane to Pike Hollow delayed the delivery by a day; no cost was
+incurred by the cooperative.
+
+Annex A. Stores and spares
+--------------------------
+
+It was noted that access to Osier Bank remains difficult after heavy rain and that the
+track will be regraded when crews allow. The draft drawing register for Tolland Sluice
+is 23 percent complete and will be issued once the as-built survey is checked. Petra
+Vosk raised the question of lone working at Cindergate Station and was referred to the
+existing guidance held by the safety committee. Vegetation clearance around the inlet
+screen at Brackwater Lock was completed and the area photographed for the asset
+record. the networks team reminded everyone that permits for confined spaces must be
+closed out the same day.
+
+Annex B. Follow-up from the last period
+---------------------------------------
+
+No complaints were received from neighbours of Osier Bank during the works, and the
+liaison log has been closed. Lucan Marsh confirmed that spares for the inlet screen
+are held at the central store and that the reorder level is 11 units. The handover
+notes between shifts were sampled by the safety committee and found complete in all
+but 37 cases.
+
+Oona Farrow noted that the calibration certificate for the surge vessel expires next
+quarter and has booked the visit. the networks team will coordinate with Ysolde Quint
+on the training calendar, which currently shows 10 open places. Sampling results for
+the quarter were within the expected band at every point except one, which is being
+resampled. Ansel Brightwater reported that the level sensor at Cindergate Station had
+been inspected and found serviceable, with minor wear noted on the seals. Sampling
+results for the quarter were within the expected band at every point except one, which
+is being resampled.
+
+Annex C. Training and rota
+--------------------------
+
+The handover notes between shifts were sampled by the networks team and found complete
+in all but 21 cases. Sampling results for the quarter were within the expected band at
+every point except one, which is being resampled. The handover notes between shifts
+were sampled by the field crews and found complete in all but 30 cases. Oona Farrow
+thanked the control room for covering the holiday rota at short notice. Sampling
+results for the quarter were within the expected band at every point except one, which
+is being resampled.
+
+The stores count showed 37 discrepancies, all traced to items issued to vans without a
+ticket. Ansel Brightwater confirmed that spares for the flow meter are held at the
+central store and that the reorder level is 8 units. The handover notes between shifts
+were sampled by the control room and found complete in all but 39 cases.
