@@ -202,12 +202,12 @@ impl ProviderStream {
                 openai_responses::stream(model, context, &options, self.key())
             }
             ProviderApi::Faux => {
-                let (sender, receiver) = tokio::sync::mpsc::channel(64);
                 let events = self
                     .faux
                     .lock()
                     .map(|mut faux| faux.stream())
                     .unwrap_or_default();
+                let (sender, receiver) = tokio::sync::mpsc::channel(events.len().max(1));
                 for event in events {
                     let _ = sender.try_send(event);
                 }

@@ -1,9 +1,9 @@
 """Yi's kernel-side runtime shim (module name `rlm`).
 
-Every call here returns a task already running on the kernel loop: ``await rlm.status()``
-gets its value, and an un-awaited ``rlm.send(...)`` is sent the moment the cell next yields
-to the loop. A call the cell never awaits is named after the cell with its value, so
-``print(rlm.status())`` shows a pending task and then, one line later, the value.
+A mail call (``send``, ``followup``, ``interrupt``, ``revoke``) returns a task already
+running on the kernel loop, so an un-awaited ``rlm.send(...)`` goes out the moment the cell
+next yields. Every other call returns a coroutine: ``await rlm.status()`` gets its value, and
+one the cell never starts runs once after the cell, which prints its value with a note.
 """
 
 from __future__ import annotations
@@ -40,15 +40,20 @@ HOST_COMM_TARGET = "host.request"
 _PUBLIC: list[str] = []
 _UNSETTLED: list[Any] = []
 _CALL: list[type] = []
+_MAIL: list[Any] = []
+# Mail verbs whose effect is the point run at once; a spawn or a wait waits for its await.
+_EAGER = frozenset({"send", "followup", "interrupt", "revoke"})
+# The host's refusal of a wait repeated at an `asks` or `settled` state nothing has moved.
+_REPEATED = ("is asking you", "stop waiting")
 
 
 def _call_type() -> type:
-    """The task class an rlm call returns, built on whatever ``asyncio.Task`` is at first use
+    """The task class a mail call returns, built on whatever ``asyncio.Task`` is at first use
     (the kernel's ``nest_asyncio`` replaces it)."""
     if not _CALL:
 
         class RLMCall(asyncio.Task):  # type: ignore[misc, valid-type]
-            """An rlm call already running. Awaiting it, gathering or waiting on it, or reading
+            """A mail call already running. Awaiting it, gathering or waiting on it, or reading
             its result takes it, and only a call nobody took is named after the cell."""
 
             taken = False
@@ -71,58 +76,128 @@ def _call_type() -> type:
     return _CALL[0]
 
 
-def _settle(*_: Any) -> None:
-    """IPython's post_run_cell hook: name each rlm call the cell never took, with its value.
+def _unsettled(call: Any, owned: set[Any]) -> bool:
+    if isinstance(call, asyncio.Task):
+        return not call.taken
+    return inspect.getcoroutinestate(call) == inspect.CORO_CREATED and call not in owned
 
-    It starts nothing, since every call already runs as a task; one still running is waited
-    for, so its value prints under the cell that made it.
+
+def _settle(*_: Any) -> None:
+    """IPython's post_run_cell hook: finish each rlm call the cell never took and name it.
+
+    A mail task still running is waited for; a coroutine never started runs once here.
+    Invariant: an interrupt while one runs cancels it and every call after it, never leaving
+    them to run on unreported.
     """
     pending, _UNSETTLED[:] = _UNSETTLED[:], []
     loop = asyncio.get_event_loop()
-    for task in [task for task in pending if not task.taken]:
-        name = task.get_coro().__qualname__
+    owned = {task.get_coro() for task in asyncio.all_tasks(loop)}
+    calls = [call for call in pending if _unsettled(call, owned)]
+    for at, call in enumerate(calls):
+        eager = isinstance(call, asyncio.Task)
+        name = (call.get_coro() if eager else call).__qualname__
         label = f"{name}()" if "." in name else f"rlm.{name}()"
+        calls[at] = task = asyncio.ensure_future(call, loop=loop)
         try:
             said = f"returned {loop.run_until_complete(task)!r}"
         except Exception as error:
             said = f"raised {type(error).__name__}: {error}"
+        except BaseException:
+            for rest in calls[at:]:
+                if isinstance(rest, asyncio.Task):
+                    rest.cancel()
+                else:
+                    rest.close()
+            raise
+        got, ran = ("a task", "as the cell went on") if eager else ("a coroutine object", "once after the cell")
         print(
-            f"{label} was not awaited, so the cell got a task, not its value; it ran as the "
-            f"cell went on and {said}. Put `await` before the call to use it in the cell."
+            f"{label} was not awaited, so the cell got {got}, not its value; it ran {ran} and "
+            f"{said}. Put `await` before the call to use it in the cell."
         )
 
 
 def _handed_out(fn: Any) -> Any:
-    """``fn`` returns a task already scheduled on the running loop; in a kernel it is also
-    recorded for ``_settle``. With no running loop it returns the coroutine."""
+    """A mail verb's call is a task scheduled on the running loop; any other call is its
+    coroutine. In a kernel either is recorded for ``_settle``."""
 
     @functools.wraps(fn)
     def call(*args: Any, **kwargs: Any) -> Any:
-        coro = fn(*args, **kwargs)
+        made = fn(*args, **kwargs)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            return coro
-        task = _call_type()(coro, loop=loop)
+            loop = None
+        if loop is not None and fn.__name__ in _EAGER:
+            made = _call_type()(made, loop=loop)
+            _MAIL[:] = [*(task for task in _MAIL if not task.done()), made]
+        elif loop is not None:
+            made = _after_mail(made)
         shell = get_ipython() if get_ipython is not None else None
         if shell is not None:
             if _settle not in shell.events.callbacks["post_run_cell"]:
                 shell.events.register("post_run_cell", _settle)
-            _UNSETTLED.append(task)
-        return task
+            _UNSETTLED.append(made)
+        return made
 
     return getattr(inspect, "markcoroutinefunction", lambda marked: marked)(call)
 
 
-async def _calm(reply: dict[str, Any], remaining: float) -> None:
-    """A helper watching one child pauses on a wait that returned only because another child
-    asks or nothing is live, instead of spinning on it until its own deadline."""
-    if reply.get("state") in ("asks", "settled"):
-        await asyncio.sleep(max(0.0, min(0.5, remaining)))
+def _after_mail(coro: Any) -> Any:
+    """``coro`` behind the mail calls made before it, which a first await would overtake."""
+
+    async def behind() -> Any:
+        if any(not task.done() for task in _MAIL):
+            await asyncio.sleep(0)
+        return await coro
+
+    made = behind()
+    made.__qualname__ = coro.__qualname__
+    return made
+
+
+async def _watch(timeout: float, cursor: int | None) -> "Reply | None":
+    """``wait`` for a helper watching one child. The host refuses a wait repeated at an
+    ``asks`` or ``settled`` state; the helper pauses on it and gets None, since it waits on
+    its own child, not on that state."""
+    try:
+        return await wait(timeout=timeout, cursor=cursor)
+    except RuntimeError as error:
+        if not any(mark in str(error) for mark in _REPEATED):
+            raise
+    await asyncio.sleep(max(0.0, min(0.5, timeout)))
+    return None
+
+
+class Reply(dict):
+    """A reply that reads by key or by attribute: ``r["changed"]`` or ``r.changed``."""
+
+    def __init__(self, data: dict[str, Any], call: str, example: str) -> None:
+        super().__init__(data)
+        self._call, self._example = call, example
+
+    def _misuse(self, how: str) -> TypeError:
+        keys = ", ".join(self.keys())
+        return TypeError(f"{self._call} returns a dict ({keys}), which cannot be {how}; read it by key, e.g. {self._example}")
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(f"{self._call}'s reply has no {name!r}; its keys are {', '.join(self.keys())}") from None
+
+    def __getitem__(self, key: Any) -> Any:
+        if isinstance(key, int):
+            raise self._misuse("indexed by position")
+        return super().__getitem__(key)
+
+    def __iter__(self) -> Any:
+        raise self._misuse("unpacked or iterated (use .keys() or .items())")
 
 
 def _public(fn: Any) -> Any:
-    """One function of the ``rlm`` surface: listed in ``__all__``, its call a running task."""
+    """One function of the ``rlm`` surface: listed in ``__all__``, its call recorded."""
     _PUBLIC.append(fn.__name__)
     return _handed_out(fn) if inspect.iscoroutinefunction(fn) else fn
 
@@ -179,7 +254,9 @@ class RLMSpawnHandle:
             remaining = min(timeout, deadline - loop.time())
             if remaining <= 0:
                 break
-            reply = await wait(timeout=remaining, cursor=cursor)
+            reply = await _watch(remaining, cursor)
+            if reply is None:
+                continue
             states = reply.get("states")
             if not isinstance(states, dict):
                 raise RuntimeError("rlm.wait returned an invalid state map")
@@ -213,7 +290,6 @@ class RLMSpawnHandle:
                             f"child {self.name} {note}; answer it with rlm.send({self.name!r}, "
                             "text, reply_to=<that id>), then call result() again"
                         ) from error
-            await _calm(reply, deadline - loop.time())
         raise TimeoutError(f"child {self.name} did not finish within {timeout}s")
 
     @_handed_out
@@ -537,7 +613,8 @@ async def send(
     store; nothing is running to read it), and ``presented`` says when the target's
     model reads it. ``reply_to=<id>`` answers a request: the waiting call returns it
     (``answered``), and a request already answered refuses it. A plain send to a
-    child with exactly one question open to you is that question's answer.
+    child with exactly one question open to you, once you were shown it, is that
+    question's answer; before that it stays mail and its receipt carries a ``hint``.
     ``kind`` is ``inform`` (the default), ``progress``, ``failure`` or ``cancel``.
     A body over 16 KiB is refused, never trimmed: ``put`` it and pass
     ``ref="family://<name>"``.
@@ -566,13 +643,18 @@ async def receive(timeout: float = 300.0) -> list[dict[str, Any]]:
     Envelopes come in send order, each ``{id, from, to, kind, conversation, inReplyTo,
     seq, sentAt, body, ref}``; answer a ``request`` with ``send(env["from"], text,
     reply_to=env["id"])``. What this returns is never presented to you again. An empty
-    list means ``timeout`` seconds passed; the host clamps it to 1 to 300 seconds.
+    list means ``timeout`` seconds passed; the host clamps it to 1 to 300 seconds. An
+    envelope reads by key or attribute::
+
+        for env in await rlm.receive(60):
+            print(env["from"], env.body)
     """
     payload = await host_request("rlm.receive", {"timeout_ms": int(timeout * 1000)})
     envelopes = payload.get("envelopes")
     if not isinstance(envelopes, list):
         raise RuntimeError("rlm.receive returned an invalid envelope list")
-    return envelopes
+    example = 'for env in await rlm.receive(60): print(env["from"], env.body)'
+    return [Reply(env, "rlm.receive", example) if isinstance(env, dict) else env for env in envelopes]
 
 
 @_public
@@ -593,7 +675,11 @@ async def status(name: str | None = None) -> list[dict[str, Any]]:
     ``stuck`` (a repeat break, a length re-drive at rung two or more, a let-go
     intercept, or five idle minutes; ``note`` names which) and ``repossession_pending``
     (``revoke`` took its lease back but the stop, settle or record failed; everything it
-    held is kept and the host retries). ``name`` keeps one.
+    held is kept and the host retries). ``name`` keeps one. An entry reads by key or
+    attribute::
+
+        for m in await rlm.status():
+            print(m["name"], m.state)
     """
     payload = await host_request("rlm.status", {} if name is None else {"name": name})
     members = payload.get("members")
@@ -601,7 +687,8 @@ async def status(name: str | None = None) -> list[dict[str, Any]]:
         raise RuntimeError("rlm.status returned an invalid member list")
     if name is not None:
         members = [member for member in members if member.get("name") == name]
-    return members
+    example = 'for m in await rlm.status(): print(m["name"], m.state)'
+    return [Reply(member, "rlm.status", example) if isinstance(member, dict) else member for member in members]
 
 
 @_public
@@ -624,18 +711,22 @@ async def wait(timeout: float = 300.0, cursor: int | None = None) -> dict[str, A
     ``mail``, ``finished``, ``asked``, ``reaped`` and the like), ``states`` (every
     registered child by name: ``running``, ``finished``, ``failed``, ``needs_you``
     or ``stuck``) and ``notes``. With no cursor the host keeps your last one: the first call
-    answers at once with the family as it stands, each later one blocks until a
-    child moves, so ``await rlm.wait(300)`` in a loop waits instead of spinning.
+    answers at once with the family as it stands, each later one blocks until a child moves.
     ``state`` says why it returned: ``moved``, ``timeout``, ``asks`` (a child waits on
-    your answer, cause ``asks``; the wait returns at once until you answer it) or
-    ``settled`` (nothing in the family is live; at once, with ``finished``).
-    The host clamps the timeout and says so in the reply (``clamped``), so a
-    caller is never silently given a different one.
+    your answer, cause ``asks``) or ``settled`` (nothing in the family is live, with
+    ``finished``). ``asks`` and ``settled`` return at once, once: a wait repeated at the
+    same state with nothing moved raises RuntimeError naming it, so answer the question, or
+    stop waiting on a family with nothing running. The host clamps the timeout and says so
+    in the reply (``clamped``). The reply reads by key or attribute::
+
+        r = await rlm.wait(300)
+        print(r["state"], r.changed, r.states)
     """
     payload: dict[str, Any] = {"timeout_ms": int(timeout * 1000)}
     if cursor is not None:
         payload["cursor"] = cursor
-    return await host_request("rlm.wait", payload)
+    reply = await host_request("rlm.wait", payload)
+    return Reply(reply, "rlm.wait", 'r = await rlm.wait(300); print(r["state"], r.changed)')
 
 
 @_public
@@ -721,7 +812,7 @@ async def result(
             remaining = min(timeout, deadline - loop.time())
             if remaining <= 0 or "still running" not in str(error):
                 raise
-        await _calm(await wait(timeout=remaining), remaining)
+        await _watch(remaining, None)
 
 
 def _worktree_target(target: "str | RLMSubagent") -> str:

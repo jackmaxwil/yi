@@ -102,19 +102,23 @@ pub struct RuntimeWiring {
     pub kernels: Arc<crate::fetch::KernelServiceMap>,
 }
 
+pub(crate) fn family_dir_of(rlm_dir: &std::path::Path) -> PathBuf {
+    let mut dir = rlm_dir;
+    while dir
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with("sub-"))
+        && let Some(parent) = dir.parent()
+    {
+        dir = parent;
+    }
+    dir.join("family")
+}
+
 impl RuntimeWiring {
     /// the root session's `family/` directory, shared by every member; a child's (D164)
     /// `rlm_dir` sits under the root's as `sub-*`, so the root is the first non-`sub-` ancestor.
     pub fn family_dir(&self) -> PathBuf {
-        let mut dir = self.rlm_dir.as_path();
-        while dir
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with("sub-"))
-            && let Some(parent) = dir.parent()
-        {
-            dir = parent;
-        }
-        dir.join("family")
+        family_dir_of(&self.rlm_dir)
     }
 
     /// The kernel's snapshot, `RLM_SESSION_DIR` and writable root. Incident: the root's was

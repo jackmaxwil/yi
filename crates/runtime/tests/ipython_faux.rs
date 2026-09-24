@@ -123,7 +123,7 @@ async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Bo
     Ok(())
 }
 
-/// Six of eight dogfood trials called `rlm` without `await`: such a spawn runs once, as a task.
+/// Six of eight dogfood trials called `rlm` without `await`: such a spawn runs once, after the cell.
 #[tokio::test]
 async fn an_unawaited_spawn_runs_once_after_the_cell_and_says_so() -> Result<(), Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None, None));
@@ -187,10 +187,10 @@ async fn an_unawaited_spawn_runs_once_after_the_cell_and_says_so() -> Result<(),
         }
     }
     let cell = texts.first().ok_or("the ipython call produced no result")?;
-    let note = cell.find("rlm.run() was not awaited, so the cell got a task");
+    let note = cell.find("rlm.run() was not awaited, so the cell got a coroutine object");
     assert!(
-        cell.find("<RLMCall pending ") < note && note < cell.find("RLMSpawnHandle(name='x'"),
-        "the cell prints the running task, then the note with the spawned handle: {cell}"
+        cell.find("<coroutine object ") < note && note < cell.find("RLMSpawnHandle(name='x'"),
+        "the cell prints the coroutine, then the note with the spawned handle: {cell}"
     );
     assert_eq!(
         spawns.load(std::sync::atomic::Ordering::SeqCst),

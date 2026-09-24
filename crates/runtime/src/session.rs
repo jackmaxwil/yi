@@ -72,6 +72,7 @@ struct Shared {
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
     deadline: OnceLock<Deadline>,
+    turn_time: Mutex<(Option<std::time::Instant>, Option<Duration>)>,
     cancelled: std::sync::atomic::AtomicBool,
 }
 
@@ -172,6 +173,7 @@ impl AgentSession {
                 coupling: Mutex::new(None),
                 waits: Mutex::new(None),
                 deadline: OnceLock::new(),
+                turn_time: Mutex::new((None, None)),
                 cancelled: false.into(),
             }),
             config,
@@ -529,14 +531,9 @@ impl AgentSession {
             .into_iter()
             .map(|tool| {
                 let shared = Arc::clone(&self.shared);
-                // The deadline cancels like Esc: bash dies, the kernel cell is interrupted.
-                let cancelled: yi_tools::CancelFlag = Arc::new(move || {
-                    shared.signal.is_fired()
-                        || shared
-                            .deadline
-                            .get()
-                            .is_some_and(|deadline| deadline.passed(Duration::ZERO))
-                });
+                // The deadline cancels like Esc, a last word early: bash dies, the cell stops.
+                let cancelled: yi_tools::CancelFlag =
+                    Arc::new(move || shared.signal.is_fired() || shared.last_word_due());
                 Arc::new(
                     crate::tools::ToolAdapter::new(
                         tool,

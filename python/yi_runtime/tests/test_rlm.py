@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import pathlib
 import pydoc
 import tempfile
@@ -446,12 +447,50 @@ class AwaitLaterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls, ["agent_message.send", "agent_message.send", "rlm.status"])
 
     async def test_only_a_call_nobody_took_is_left_to_report(self) -> None:
-        bare, gathered, awaited = rlm.status(), rlm.status(), rlm.status()
+        bare, gathered, awaited = (rlm.send("kid", word) for word in ("a", "b", "c"))
         await asyncio.gather(gathered)
         await awaited
         await asyncio.sleep(0.1)
         self.assertEqual([bare.taken, gathered.taken, awaited.taken], [False, True, True])
-        self.assertEqual(bare.result(), [KID])
+        self.assertEqual(bare.result(), {"members": [KID]})
+
+    async def test_a_semaphore_throttles_spawns_made_up_front(self) -> None:
+        """Dies with every call a task at once: ``calls = [rlm.run(p) ...]`` then ``async with
+        sem: await c`` spawned all of them together, and the child cap refused the rest."""
+        gate, live, peak = asyncio.Semaphore(1), [0], [0]
+
+        async def counted(kind, payload=None):
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+            await asyncio.sleep(0.02)
+            live[0] -= 1
+            return {"rlm_child_id": "sub-1", "name": "kid", "session_dir": "/tmp", "model": "faux/faux-1"}
+
+        with mock.patch.object(rlm, "host_request", counted):
+            calls = [rlm.run(prompt) for prompt in ("x", "y", "z")]
+            await asyncio.sleep(0.05)
+            for call in calls:
+                async with gate:
+                    await call
+        self.assertEqual(peak, [1])
+
+    async def test_an_interrupt_after_the_cell_cancels_the_calls_left(self) -> None:
+        """Dies with ``except Exception`` in ``_settle``: a KeyboardInterrupt skipped the rest,
+        and the popped calls ran on unreported."""
+        loop = asyncio.new_event_loop()
+
+        async def interrupted():
+            raise KeyboardInterrupt
+
+        async def later():
+            return 1
+
+        first, rest = interrupted(), later()
+        rlm._UNSETTLED[:] = [first, rest]
+        with mock.patch.object(asyncio, "get_event_loop", lambda: loop):
+            await asyncio.to_thread(self.assertRaises, KeyboardInterrupt, rlm._settle)
+        self.assertEqual(inspect.getcoroutinestate(rest), inspect.CORO_CLOSED)
+        loop.close()
 
     async def test_two_tasks_awaiting_stored_calls_do_not_wait_on_each_other(self) -> None:
         loop = asyncio.get_running_loop()
@@ -483,3 +522,45 @@ class SurfaceTests(unittest.TestCase):
         self.assertEqual(bare, [])
         text = pydoc.render_doc(rlm, renderer=pydoc.plaintext)
         self.assertEqual([name for name in sorted(defined) if f"{name}(" not in text], [])
+
+
+class ReplyTests(unittest.IsolatedAsyncioTestCase):
+    """The paid rerun's r1-r3: five guesses at rlm.wait's shape died unpacking or indexing it."""
+
+    async def test_a_wait_reply_reads_by_attribute_and_names_its_keys_when_misread(self) -> None:
+        async def fake_host_request(kind, payload=None):
+            return _wait_reply("running")
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            reply = await rlm.wait(1)
+        self.assertEqual((reply.changed, reply["cursor"]), (["n"], 1))
+        self.assertEqual(reply, _wait_reply("running"))
+        with self.assertRaises(TypeError) as unpacked:
+            changed, states = reply
+        self.assertIn("cursor, changed", str(unpacked.exception))
+        self.assertIn('r["state"]', str(unpacked.exception))
+        with self.assertRaises(TypeError):
+            reply[0]
+        with self.assertRaises(AttributeError):
+            reply.nothing
+        self.assertEqual(repr(reply), repr(_wait_reply("running")))
+        self.assertEqual(json.loads(json.dumps(reply)), _wait_reply("running"))
+
+    async def test_a_helper_pauses_on_a_repeat_the_host_refused(self) -> None:
+        """Dies with the refusal of a repeated ``asks`` or ``settled`` wait ending the helper
+        that watches one child while another asks."""
+        seen: list[int] = []
+
+        async def fake_host_request(kind, payload=None):
+            if kind == "rlm.wait":
+                seen.append(payload.get("cursor", -1))
+                if len(seen) == 1:
+                    raise RuntimeError('other is asking you parent-1: answer it with rlm.send("other", ...)')
+                return _wait_reply("finished")
+            if kind == "rlm.result":
+                return {"text": "done"}
+            return {}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            self.assertEqual(await _handle().result(timeout=5), {"text": "done"})
+        self.assertEqual(len(seen), 2)

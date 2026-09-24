@@ -13,7 +13,7 @@ use super::acceptance::{Phase, is_worktree, phase_of};
 use super::ops::{Actor, ENGINE_AGENT, Op, OpRequest, Outcome, PlanEngine, PlanOpError, agent_url};
 use super::state::{KIND_LEFT, SUBMITTED_KEY, reduce, root_of};
 use crate::goal::DeliverFn;
-use crate::subagent::{FinishFn, SubagentHost, last_assistant_text};
+use crate::subagent::{FinishFn, SubagentHost};
 
 const CAUSE_CHARS: usize = 500;
 
@@ -418,7 +418,7 @@ impl SubagentHost {
     fn answer_of(&self, name: &str) -> Option<String> {
         let children = self.children.lock().ok()?;
         let key = Self::key_of(&children, name).ok()?;
-        last_assistant_text(&children.get(&key)?.session.messages())
+        crate::subagent::answer_text(&children.get(&key)?.session.messages())
     }
 }
 
@@ -861,7 +861,8 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with every wait counted: an empty family's wait exempted a repeat forever.
+    /// Dies with every wait counted: an empty family's wait exempted a repeat forever, and a
+    /// settled family's at-once reply exempted a model looping on `rlm.wait` while it settled.
     #[tokio::test]
     async fn only_a_wait_on_a_live_family_counts_for_the_breaker() -> TestResult {
         let rig = hooked(vec![reply("the seam is cut")])?;
@@ -871,6 +872,11 @@ mod tests {
         rig.host.spawn("cut".to_owned(), serde_json::Map::new())?;
         drop(rig.host.wait(1_000, None).await);
         assert_eq!(counted(), 1, "a live child is waited on");
+        let _settling = super::Settling::hold(&rig.host);
+        assert!(ended(&rig.host).await, "child never completed");
+        let settled = rig.host.wait(1_000, None).await?;
+        assert_eq!(settled["state"], "settled", "{settled:?}");
+        assert_eq!(counted(), 1, "an at-once settled reply is no wait");
         Ok(())
     }
 
@@ -940,6 +946,73 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         assert!(!rig.host.in_tool(&name), "a stopped run is in no tool");
+        Ok(())
+    }
+
+    /// Dies with the chase turn harvested: a plan child answered its brief, a request to it
+    /// was still open, and the steered turn's "Still nothing to add." became the product.
+    #[tokio::test]
+    async fn a_chased_plan_child_keeps_its_briefs_answer() -> TestResult {
+        let ask = serde_json::Map::from_iter([("question".to_owned(), "which region?".into())]);
+        let rig = hooked(vec![
+            yi_ai::faux::faux_assistant_message(
+                vec![yi_ai::faux::faux_tool_call("ask-1", "ask_user", ask)],
+                yi_types::message::StopReason::ToolUse,
+            ),
+            reply("the seam is cut and holds"),
+            reply("Still nothing to add."),
+            reply("Nothing more."),
+        ])?;
+        let out = rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![delegated("cut the seam")?],
+        }))?;
+        let (host, mut child, mut question) = (std::sync::Arc::clone(&rig.host), None, None);
+        for _ in 0..400 {
+            child = host.children_view().pop().map(|view| view.update.name);
+            question = host
+                .open_requests()
+                .into_iter()
+                .find(|open| open.2 == "parent");
+            if question.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let (child, (id, ..)) = (child.ok_or("no child")?, question.ok_or("no question")?);
+        let asking = (std::sync::Arc::clone(&host), child.clone());
+        let request = tokio::spawn(async move {
+            asking
+                .0
+                .request("parent", &asking.1, "total?", 20_000)
+                .await
+        });
+        while !host.open_requests().iter().any(|open| open.2 == child) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let answer = serde_json::json!({"target": child, "message": "eu", "reply_to": id});
+        host.send("parent", answer.as_object().ok_or("answer")?)?;
+        let todo = settled(&rig, &out.plan.id, "cut the seam").await?;
+        let TodoState::Done {
+            output: Some(output),
+            ..
+        } = &todo.state
+        else {
+            return Err(format!("expected Done with a product, got {:?}", todo.state).into());
+        };
+        let digest = output.to_string();
+        let digest = digest.rsplit('/').next().ok_or("no digest")?;
+        let digest = yi_types::plan::canonical::Digest::parse(digest)?;
+        let stored = rig.engine.store().artifacts(&out.plan.id).get(&digest)?;
+        assert_eq!(
+            stored, b"the seam is cut and holds",
+            "the brief's answer is the product"
+        );
+        let reply = request.await??;
+        assert_eq!(
+            reply["envelope"]["body"], "Still nothing to add.",
+            "{reply:?}"
+        );
         Ok(())
     }
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::subagent::{ChildExit, FailClass};
 
-use super::{INTERRUPTED, Standing, Step, SubagentHost, last_assistant_text, preview};
+use super::{INTERRUPTED, Standing, Step, SubagentHost, preview};
 use crate::family::Cause;
 use crate::session::AgentSession;
 
@@ -162,7 +162,7 @@ impl SubagentHost {
             // An idle service has not ended: it waits on its inbox and there is nothing to reap.
             ChildExit::Completed if service => return,
             ChildExit::Completed => {
-                let answer = last_assistant_text(&messages)
+                let answer = super::answer_text(&messages)
                     .map(|text| preview(&text))
                     .unwrap_or_else(|| "(no final answer text)".to_owned());
                 let silent = if replied {

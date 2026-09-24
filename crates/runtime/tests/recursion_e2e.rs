@@ -606,7 +606,7 @@ async fn agent_messages_route_by_name_and_broadcast_with_receipts() -> TestResul
         assert!(child_sees(&harness, name, "[task from parent]").await);
     }
 
-    harness.host.wait(0, None).await;
+    harness.host.wait(0, None).await?;
     let inboxed = harness
         .host
         .route("parent", "beta", "no rush", false)
@@ -1102,7 +1102,7 @@ async fn an_envelope_a_crash_left_unpresented_is_presented_once_after_it() -> Te
 async fn a_woken_childs_turn_is_a_run_the_parent_can_wait_on() -> TestResult {
     let harness = harness(0, 1, "the file is greeting.txt")?;
     finished(&harness, "asker").await?;
-    let cursor = harness.host.wait(1_000, Some(0)).await["cursor"]
+    let cursor = harness.host.wait(1_000, Some(0)).await?["cursor"]
         .as_u64()
         .ok_or("cursor")?;
     let sent = harness
@@ -1111,10 +1111,10 @@ async fn a_woken_childs_turn_is_a_run_the_parent_can_wait_on() -> TestResult {
     assert_eq!(state_of(&sent), "woken");
     let members = harness.host.status()["members"].clone();
     assert_eq!(members[0]["state"], "running", "{members}");
-    let started = harness.host.wait(1_000, Some(cursor)).await;
+    let started = harness.host.wait(1_000, Some(cursor)).await?;
     let cursor = started["cursor"].as_u64().ok_or("cursor")?;
     let wait = harness.host.wait(60_000, Some(cursor));
-    let ended = json!(tokio::time::timeout(std::time::Duration::from_secs(10), wait).await?);
+    let ended = json!(tokio::time::timeout(std::time::Duration::from_secs(10), wait).await??);
     assert_eq!(ended["states"]["asker"], "finished", "{ended}");
     assert_eq!(ended["causes"]["asker"], "finished", "{ended}");
     for _ in 0..POLL_ATTEMPTS {
@@ -1553,7 +1553,7 @@ async fn wait_names_why_each_child_moved() -> TestResult {
             "reaped" => drop(harness.host.delete("kid")?),
             _ => {}
         }
-        let reply = harness.host.wait(2_000, Some(cursor)).await;
+        let reply = harness.host.wait(2_000, Some(cursor)).await?;
         cursor = reply["cursor"].as_u64().ok_or("cursor")?;
         moved.push(json!(reply)["causes"]["kid"].clone());
     }
@@ -1701,7 +1701,7 @@ async fn a_child_reports_upward_and_the_parent_waits_for_it() -> TestResult {
         .map_err(|error| error.to_string())?;
     assert!(child_sees(&harness, "scout", "[task from parent]").await);
     // Reads past the terminal transition so the wait below observes the report only.
-    let settled = harness.host.wait(0, None).await;
+    let settled = harness.host.wait(0, None).await?;
     let cursor = settled["cursor"].as_u64();
 
     let link = yi_runtime::ParentLink {
@@ -1719,16 +1719,15 @@ async fn a_child_reports_upward_and_the_parent_waits_for_it() -> TestResult {
         "a child's report reaches the parent as provenanced data: {inbox:?}"
     );
 
-    let woken = harness.host.wait(60_000, cursor).await;
+    let woken = harness.host.wait(60_000, cursor).await?;
     assert_eq!(woken["updated"], serde_json::json!(["scout"]));
     let quiet = harness.host.wait(0, woken["cursor"].as_u64()).await;
-    assert_eq!(
-        quiet["updated"],
-        serde_json::json!([]),
+    assert!(
+        quiet.is_err_and(|said| said.contains("settled")),
         "an update is behind the cursor it was read at, not reported forever"
     );
-    assert_eq!(quiet["timeout_ms"], 1000, "the clamp is applied");
-    assert_eq!(quiet["clamped"], true, "and reported");
+    assert_eq!(settled["timeout_ms"], 1000, "the clamp is applied");
+    assert_eq!(settled["clamped"], true, "and reported");
     Ok(())
 }
 
@@ -3421,6 +3420,7 @@ async fn two_waiters_observe_their_own_child_completion() -> TestResult {
         harness.host.wait(1_000, None),
         harness.host.wait(1_000, None)
     );
+    let (first, second) = (first?, second?);
     for reply in [&first, &second] {
         assert_eq!(
             reply["changed"],
@@ -3436,6 +3436,7 @@ async fn two_waiters_observe_their_own_child_completion() -> TestResult {
         harness.host.wait(1_000, None),
         harness.host.wait(1_000, None)
     );
+    let (first, second) = (first?, second?);
     for reply in [&first, &second] {
         assert_eq!(reply["changed"], json!(["solo"]), "{reply:?}");
         assert_eq!(reply["updated"], reply["changed"]);
@@ -3444,8 +3445,10 @@ async fn two_waiters_observe_their_own_child_completion() -> TestResult {
     }
     let cursor = first["cursor"].as_u64().ok_or("cursor missing")?;
     let quiet = harness.host.wait(1_000, Some(cursor)).await;
-    assert_eq!(quiet["changed"], json!([]), "nothing moved past the cursor");
-    assert_eq!(quiet["states"]["solo"], json!("finished"));
+    assert!(
+        quiet.is_err_and(|said| said.contains("settled")),
+        "nothing moved past the cursor, and the family is settled"
+    );
     Ok(())
 }
 
@@ -3475,14 +3478,14 @@ async fn a_delete_wakes_a_waiter_with_the_child_gone() -> TestResult {
     assert!(wait_for_status(&harness.host, &child_id, "running").await);
     // Its start and its first tool call move the epoch too; the cursor is taken after them.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    let seen = harness.host.wait(0, None).await;
+    let seen = harness.host.wait(0, None).await?;
     let cursor = seen["cursor"].as_u64();
     let host = Arc::clone(&harness.host);
     let waiter = tokio::spawn(async move { host.wait(300_000, cursor).await });
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     let started = std::time::Instant::now();
     harness.host.delete("gone")?;
-    let woken = waiter.await.map_err(|error| error.to_string())?;
+    let woken = waiter.await.map_err(|error| error.to_string())??;
     assert!(
         started.elapsed() < std::time::Duration::from_secs(5),
         "a delete wakes the waiter, not the deadline"
@@ -3517,10 +3520,10 @@ async fn late_wait_observes_already_completed_child() -> TestResult {
         .ok_or("missing child id")?
         .to_owned();
     assert!(wait_for_status(&harness.host, &child_id, "completed").await);
-    let collected = harness.host.wait(1_000, None).await;
+    let collected = harness.host.wait(1_000, None).await?;
     assert_eq!(collected["changed"], json!(["early"]));
     let started = std::time::Instant::now();
-    let late = harness.host.wait(300_000, None).await;
+    let late = harness.host.wait(300_000, None).await?;
     assert!(
         started.elapsed() < std::time::Duration::from_secs(5),
         "a late waiter returns at once, not at the deadline"
@@ -4309,7 +4312,7 @@ async fn a_failure_from_a_child_reads_failed_in_wait() -> TestResult {
     payload.insert("message".to_owned(), json!("the fixture is missing"));
     payload.insert("kind".to_owned(), json!("failure"));
     harness.host.send("sorry", &payload)?;
-    let waited = harness.host.wait(1_000, None).await;
+    let waited = harness.host.wait(1_000, None).await?;
     assert_eq!(waited["states"]["sorry"], json!("failed"), "{waited:?}");
     assert_eq!(waited["notes"]["sorry"], json!("the fixture is missing"));
     Ok(())

@@ -94,13 +94,19 @@ and the other is refused by name.
 Landed as 0.297.0 (D235, #499) from a paid confirmation of M1-M3 at 9f29fa88.
 
 - A member whose turn ends with a request to it open is steered once; a second such
-  ending sends its final text as the reply, marked `final_text`.
-- A plain send to a child with exactly one request open to the sender answers it, and
-  `rlm.wait` returns at once while a child asks its caller or nothing is live.
-- Every `rlm` call is a task scheduled when it is made; the after-cell hook only reports.
-- The wind-down runs one last turn without tools, `yi ask` gives it a grace past the
-  deadline and then stops the session, and a run with no final answer exits 1.
+  ending sends its final text as the reply, marked `final_text`, kept whole on the
+  blackboard with a ref when it is over the body cap. The chase turn is never the harvest.
+- A plain send to a child with exactly one request open to the sender answers it once the
+  sender was shown it, and `rlm.wait` returns at once, once, while a child asks its caller
+  or nothing is live; a repeat at that state refuses and names it.
+- Mail calls are tasks scheduled when made; spawns and waits stay coroutines, so a
+  semaphore still throttles them. Wait, status and receive replies read by attribute.
+- The wind-down runs one last turn without tools, started early enough that `yi ask`
+  answers and shuts down inside `--deadline`; outside `--eval` only a run with no text
+  at all exits 1, and an eval run with no final answer exits 0 and says `no_answer`.
 - A receipt says when its message is presented.
+- Review fixes (#499): the seven findings of the read-only review, and the paid rerun at
+  06a40d3e's reply-shape guesses, `done` with no id, and the fanout and steer scenarios.
 
 ## Verification
 

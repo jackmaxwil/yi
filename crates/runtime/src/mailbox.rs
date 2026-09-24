@@ -261,7 +261,10 @@ impl SubagentHost {
             return Err(format!("agent \"{from}\" cannot send to itself"));
         }
         draft.admit(from)?;
-        let answer = self.as_answer(from, target, draft);
+        let (answer, hint) = match self.as_answer(from, target, draft) {
+            Ok(answer) => (answer, None),
+            Err(hint) => (None, Some(hint)),
+        };
         let draft = answer.as_ref().unwrap_or(draft);
         let mut desk = self.mail.lock().map_err(|_| "mail state poisoned")?;
         desk.refuse_second_answer(target, draft)?;
@@ -293,6 +296,10 @@ impl SubagentHost {
             }
             name => vec![self.deliver_to_child(&mut desk, from, name, draft)?],
         };
+        let mut receipts = receipts;
+        if let (Some(hint), Some(Value::Object(row))) = (hint, receipts.first_mut()) {
+            row.insert("hint".to_owned(), Value::String(hint));
+        }
         let mut reply = Map::new();
         reply.insert("receipts".to_owned(), Value::Array(receipts));
         Ok(reply)
@@ -459,7 +466,11 @@ impl SubagentHost {
     }
 
     /// B13 wait with a per-caller cursor (§7.5): nothing shared is drained, so no waiter steals.
-    pub async fn wait(&self, timeout_ms: u64, cursor: Option<u64>) -> Map<String, Value> {
+    pub async fn wait(
+        &self,
+        timeout_ms: u64,
+        cursor: Option<u64>,
+    ) -> Result<Map<String, Value>, String> {
         self.wait_for(timeout_ms, cursor, false).await
     }
 
@@ -468,8 +479,7 @@ impl SubagentHost {
         timeout_ms: u64,
         cursor: Option<u64>,
         bare: bool,
-    ) -> Map<String, Value> {
-        self.waited_on(false);
+    ) -> Result<Map<String, Value>, String> {
         let clamped = timeout_ms.clamp(WAIT_MIN_MS, WAIT_MAX_MS);
         let deadline = std::time::Instant::now()
             .checked_add(std::time::Duration::from_millis(clamped))
@@ -478,65 +488,114 @@ impl SubagentHost {
         loop {
             let (epoch, moved, live) = self.changed_since(since);
             let quiet = bare && moved.is_empty() && live;
-            // Invariant: a wait never blocks on a child asking its caller, or on nothing live.
-            let asks: Vec<String> = self
-                .mail
-                .lock()
-                .map(|desk| desk.asking().into_keys().collect())
-                .unwrap_or_default();
-            let settled = self
-                .children
-                .lock()
-                .is_ok_and(|children| children.values().all(|record| record.exit.is_some()));
             let moved_on = epoch > since && !quiet;
+            let at_once = self.at_once(epoch, moved_on)?;
             let timed_out = std::time::Instant::now() >= deadline;
-            if moved_on || !asks.is_empty() || settled || timed_out {
+            if moved_on || at_once.is_some() || timed_out {
                 if bare {
                     self.saw(None);
                 }
-                let changed: Vec<&str> = moved.keys().map(String::as_str).collect();
-                let mut causes: Map<String, Value> = moved
-                    .iter()
-                    .map(|(name, cause)| (name.clone(), Value::from(cause.as_str())))
-                    .collect();
-                for name in &asks {
-                    causes.insert(name.clone(), Value::from("asks"));
+                // Invariant: an at-once `asks` or `settled` never counts toward the repeat breaker.
+                if at_once.is_none() {
+                    self.waited_on(false);
                 }
-                let state = match () {
-                    () if !asks.is_empty() => "asks",
-                    () if settled => "settled",
-                    () if moved_on => "moved",
-                    () => "timeout",
-                };
-                let mut states = Map::new();
-                let mut notes = Map::new();
-                for view in self.states() {
-                    states.insert(
-                        view.name.clone(),
-                        Value::String(view.state.as_str().to_owned()),
-                    );
-                    if let Some(note) = view.note {
-                        notes.insert(view.name, Value::String(note));
-                    }
-                }
-                let mut reply = Map::new();
-                reply.insert("state".to_owned(), Value::from(state));
-                if settled {
-                    let finished: Vec<&String> = states.keys().collect();
-                    reply.insert("finished".to_owned(), json!(finished));
-                }
-                reply.insert("cursor".to_owned(), Value::from(epoch));
-                reply.insert("changed".to_owned(), json!(changed));
-                reply.insert("causes".to_owned(), Value::Object(causes));
-                reply.insert("states".to_owned(), Value::Object(states));
-                reply.insert("notes".to_owned(), Value::Object(notes));
-                reply.insert("updated".to_owned(), json!(changed));
-                reply.insert("timeout_ms".to_owned(), Value::from(clamped));
-                reply.insert("clamped".to_owned(), Value::Bool(clamped != timeout_ms));
-                return reply;
+                let state = at_once.unwrap_or(if moved_on { "moved" } else { "timeout" });
+                return Ok(self.wait_reply(state, epoch, &moved, clamped != timeout_ms, clamped));
             }
             tokio::time::sleep(std::time::Duration::from_millis(WAIT_POLL_MS)).await;
         }
+    }
+
+    fn at_once(&self, epoch: u64, moved_on: bool) -> Result<Option<&'static str>, String> {
+        let mut asks: Vec<(String, String)> = self
+            .mail
+            .lock()
+            .map(|desk| desk.asking().into_iter().collect())
+            .unwrap_or_default();
+        asks.sort();
+        let settled = self
+            .children
+            .lock()
+            .is_ok_and(|children| children.values().all(|record| record.exit.is_some()));
+        let (state, said) = match asks.first() {
+            Some((child, note)) => {
+                let id = note
+                    .strip_prefix("asks ")
+                    .and_then(|rest| rest.split_once(':'));
+                let id = id.map_or("", |(id, _)| id);
+                let said = format!(
+                    "{child} is asking you {id}: answer it with rlm.send({child:?}, text, reply_to={id:?})"
+                );
+                ("asks", said)
+            }
+            None if settled => (
+                "settled",
+                "the family is settled: nothing is running; stop waiting".to_owned(),
+            ),
+            None => return Ok(None),
+        };
+        let seen = format!("{state} {asks:?}");
+        let mut told = self.told.lock().map_err(|_| "wait state poisoned")?;
+        if !moved_on
+            && told
+                .as_ref()
+                .is_some_and(|(was, at)| *was == seen && *at == epoch)
+        {
+            return Err(said);
+        }
+        *told = Some((seen, epoch));
+        Ok(Some(state))
+    }
+
+    fn wait_reply(
+        &self,
+        state: &str,
+        epoch: u64,
+        moved: &std::collections::BTreeMap<String, Cause>,
+        clamped: bool,
+        timeout_ms: u64,
+    ) -> Map<String, Value> {
+        let changed: Vec<&str> = moved.keys().map(String::as_str).collect();
+        let mut causes: Map<String, Value> = moved
+            .iter()
+            .map(|(name, cause)| (name.clone(), Value::from(cause.as_str())))
+            .collect();
+        if state == "asks" {
+            let asking = self
+                .mail
+                .lock()
+                .map(|desk| desk.asking())
+                .unwrap_or_default();
+            for name in asking.into_keys() {
+                causes.insert(name, Value::from("asks"));
+            }
+        }
+        let mut states = Map::new();
+        let mut notes = Map::new();
+        for view in self.states() {
+            states.insert(
+                view.name.clone(),
+                Value::String(view.state.as_str().to_owned()),
+            );
+            if let Some(note) = view.note {
+                notes.insert(view.name, Value::String(note));
+            }
+        }
+        let mut reply = Map::new();
+        reply.insert("state".to_owned(), Value::from(state));
+        if state == "settled" {
+            let finished: Vec<&String> = states.keys().collect();
+            reply.insert("finished".to_owned(), json!(finished));
+        }
+        reply.insert("cursor".to_owned(), Value::from(epoch));
+        reply.insert("changed".to_owned(), json!(changed));
+        reply.insert("causes".to_owned(), Value::Object(causes));
+        reply.insert("states".to_owned(), Value::Object(states));
+        reply.insert("notes".to_owned(), Value::Object(notes));
+        reply.insert("updated".to_owned(), json!(changed));
+        reply.insert("timeout_ms".to_owned(), Value::from(timeout_ms));
+        reply.insert("clamped".to_owned(), Value::Bool(clamped));
+        reply
     }
 
     fn changed_since(&self, since: u64) -> (u64, std::collections::BTreeMap<String, Cause>, bool) {

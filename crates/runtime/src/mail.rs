@@ -14,7 +14,10 @@ const READ_ENTRY: &str = "agent_message_read";
 pub(crate) const HUMAN_ANSWER: &str = "human_answer";
 pub(crate) const HUMAN: &str = "human";
 pub(crate) const FINAL_TEXT: &str = "final_text";
+const CHASE: &str = "[host] request";
+const CHASED: &str = "is still open and your turn ended without answering it";
 pub(crate) const BODY_CAP: usize = crate::mailbox::CONTEXT_TOTAL_CAP;
+const HEAD_BYTES: usize = 4096;
 /// Requests one sender may have waiting at once; a flood refuses instead of growing the map.
 const MAX_OUTSTANDING: usize = 16;
 
@@ -324,10 +327,9 @@ pub(crate) fn envelope_id(message: &AgentMessage) -> Option<&str> {
     }
 }
 
-/// Invariant: an inbox entry with no presented message entry is queued again; `progress` never.
-pub(crate) fn unread(entries: &[yi_types::entry::Entry]) -> Vec<AgentMessage> {
+fn shown(entries: &[yi_types::entry::Entry]) -> std::collections::HashSet<&str> {
     use yi_types::entry::Entry;
-    let shown: std::collections::HashSet<&str> = entries
+    entries
         .iter()
         .flat_map(|entry| match entry {
             Entry::Message { message, .. } => envelope_id(message).into_iter().collect(),
@@ -338,7 +340,23 @@ pub(crate) fn unread(entries: &[yi_types::entry::Entry]) -> Vec<AgentMessage> {
             } if custom_type == READ_ENTRY => ids.iter().filter_map(Value::as_str).collect(),
             _ => Vec::new(),
         })
-        .collect();
+        .collect()
+}
+
+fn presented(store: &yi_session::SharedSession, id: &MailId) -> bool {
+    let query = yi_session::EntryQuery::default();
+    let entries = yi_session::lock_session(store).find_entries_on_branch(
+        "main",
+        &query,
+        &yi_session::BranchBounds::default(),
+    );
+    entries.is_ok_and(|entries| shown(&entries).contains(id.0.as_str()))
+}
+
+/// Invariant: an inbox entry with no presented message entry is queued again; `progress` never.
+pub(crate) fn unread(entries: &[yi_types::entry::Entry]) -> Vec<AgentMessage> {
+    use yi_types::entry::Entry;
+    let shown = shown(entries);
     entries
         .iter()
         .filter_map(|entry| match entry {
@@ -380,6 +398,16 @@ pub(crate) fn received(
 pub(crate) fn mark_read(store: &yi_session::SharedSession, ids: Vec<Value>) {
     let _refused_read_mark_rereads_after_a_crash =
         yi_session::lock_session(store).append_custom("main", READ_ENTRY, Some(Value::Array(ids)));
+}
+
+pub(crate) fn is_chase(message: &AgentMessage) -> bool {
+    let text = message.plain_text();
+    text.starts_with(CHASE) && text.contains(CHASED)
+}
+
+fn pickled(text: &str) -> Vec<u8> {
+    let length = u32::try_from(text.len()).unwrap_or(u32::MAX).to_le_bytes();
+    [&[0x80, 2, b'X'][..], &length, text.as_bytes(), b"."].concat()
 }
 
 /// Retires a waiter on every way out: a reply, a timeout, a refused send or a cancelled cell.
@@ -517,8 +545,7 @@ impl SubagentHost {
         }
     }
 
-    /// Invariant: a turn that ends owing a request steers its member once to answer; the next
-    /// such ending sends its final text as the reply, marked `final_text`. True if it woke.
+    /// Invariant: an ending owing a request steers once, then sends its final text. True if woken.
     pub(crate) fn chase_open_requests(
         &self,
         name: &str,
@@ -546,7 +573,7 @@ impl SubagentHost {
         for (id, asker, first) in owed {
             if first {
                 let steer = format!(
-                    "[host] request {id} from \"{asker}\" is still open and your turn ended without answering it. Answer it now with rlm.send(\"{asker}\", text, reply_to=\"{id}\"); if this turn also ends without that call, its final text is sent as your reply."
+                    "{CHASE} {id} from \"{asker}\" {CHASED}. Answer it now with rlm.send(\"{asker}\", text, reply_to=\"{id}\"); if this turn also ends without that call, its final text is sent as your reply."
                 );
                 let woke = session.deliver(crate::session::user_message(&steer), true);
                 steered |= woke == yi_types::mail::Delivery::Woken;
@@ -554,10 +581,12 @@ impl SubagentHost {
             }
             let text = crate::subagent::last_assistant_text(messages)
                 .unwrap_or_else(|| "(the turn ended with no text)".to_owned());
+            let (text, reference) = self.kept_whole(name, &id, text);
             let draft = Draft {
                 kind: Kind::Reply,
                 reply_to: Some(id),
                 answered_by: Some(FINAL_TEXT),
+                reference,
                 ..Draft::plain(&text, false)
             };
             let _a_requester_gone_since_is_nobody_to_tell = self.route_mail(name, &asker, &draft);
@@ -565,19 +594,87 @@ impl SubagentHost {
         steered
     }
 
-    /// A plain send to a child with exactly one request open to its sender answers it.
-    pub(crate) fn as_answer(&self, from: &str, target: &str, draft: &Draft) -> Option<Draft> {
+    /// Incident: a final text over the body cap was dropped; it is kept whole, its head sent.
+    fn kept_whole(
+        &self,
+        owner: &str,
+        id: &MailId,
+        text: String,
+    ) -> (String, Option<yi_types::url::Url>) {
+        if text.len() <= BODY_CAP {
+            return (text, None);
+        }
+        let name = format!("reply-{id}");
+        let dir = crate::wiring::family_dir_of(&self.options.parent_session_dir);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "rlm.put's `at` is float seconds"
+        )]
+        let at = yi_session::now_ms() as f64 / 1000.0;
+        let sidecar = serde_json::json!({"name": name, "owner": owner, "at": at,
+            "bytes": text.len(), "type": "str", "serializer": "pickle", "text": text});
+        let kept = std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(dir.join(format!("{name}.dill")), pickled(&text)))
+            .and_then(|()| std::fs::write(dir.join(format!("{name}.json")), sidecar.to_string()));
+        let cut = text
+            .char_indices()
+            .map(|(at, _)| at)
+            .take_while(|at| *at <= HEAD_BYTES)
+            .last()
+            .unwrap_or(0);
+        let head = text.get(..cut).unwrap_or_default();
+        match kept {
+            Ok(()) => (
+                format!(
+                    "{head}\n[... {} bytes in all: rlm.get({name:?}) or fetch family://{name}]",
+                    text.len()
+                ),
+                format!("family://{name}").parse().ok(),
+            ),
+            Err(error) => (
+                format!(
+                    "{head}\n[... {} bytes in all; the rest could not be kept: {error}]",
+                    text.len()
+                ),
+                None,
+            ),
+        }
+    }
+
+    /// A plain send answers a child's one open question once its sender was shown it.
+    pub(crate) fn as_answer(
+        &self,
+        from: &str,
+        target: &str,
+        draft: &Draft,
+    ) -> Result<Option<Draft>, String> {
         if draft.kind != Kind::Inform || matches!(target, "parent" | "all") {
-            return None;
+            return Ok(None);
         }
         let asker = self.member_name(target);
-        let id = self.mail.lock().ok()?.only_request(&asker, from)?;
-        Some(Draft {
+        let open = self
+            .mail
+            .lock()
+            .ok()
+            .and_then(|desk| desk.only_request(&asker, from));
+        let Some(id) = open else {
+            return Ok(None);
+        };
+        let store = match from {
+            PARENT_NAME => (self.options.store)(),
+            sender => self.transcript(sender),
+        };
+        if !store.is_some_and(|store| presented(&store, &id)) {
+            return Err(format!(
+                "\"{asker}\" has request {id} open to you, and this send does not answer it: answer with rlm.send(\"{asker}\", text, reply_to=\"{id}\")"
+            ));
+        }
+        Ok(Some(Draft {
             kind: Kind::Reply,
             reply_to: Some(id),
             reference: draft.reference.clone(),
             ..Draft::plain(&draft.text, draft.followup)
-        })
+        }))
     }
 
     pub fn open_requests(&self) -> Vec<(String, String, String)> {

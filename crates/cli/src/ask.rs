@@ -11,10 +11,12 @@ use super::{
 
 const HOLD_POLL: Duration = Duration::from_millis(500);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
-const LAST_WORD_GRACE: Duration = Duration::from_secs(90);
 
 pub(super) fn run(args: &Args) -> i32 {
     use std::io::IsTerminal;
+    let deadline = args
+        .deadline
+        .and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)));
     let interactive = std::io::stdin().is_terminal();
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -26,8 +28,7 @@ pub(super) fn run(args: &Args) -> i32 {
             return 1;
         }
     };
-    // Session wiring spawns runtime tasks (the H4 scheduler timer), so the
-    // runtime context must exist before build_session.
+    // Session wiring spawns runtime tasks, so the runtime context must exist before it.
     let (session, host) = {
         let _guard = runtime.enter();
         let asker: Option<yi_runtime::Asker> =
@@ -60,9 +61,11 @@ pub(super) fn run(args: &Args) -> i32 {
         None => None,
     };
     let lane = session.lane();
-    let ends = args
-        .deadline
-        .and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)));
+    let reserve = args.deadline.map_or(SHUTDOWN_GRACE, |secs| {
+        SHUTDOWN_GRACE.min(Duration::from_secs(secs) / 16)
+    });
+    let ends = deadline.and_then(|at| at.checked_sub(reserve));
+    let eval = args.eval;
     let code = runtime.block_on(async move {
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))
@@ -71,26 +74,32 @@ pub(super) fn run(args: &Args) -> i32 {
             eprintln!("error: session busy");
             return 1;
         }
-        stream(&session, &host, json, schema.as_ref(), ends).await
+        let modes = Modes { json, eval };
+        stream(&session, &host, modes, schema.as_ref(), (ends, deadline)).await
     });
     release_lane(lane.as_deref());
-    runtime.shutdown_timeout(SHUTDOWN_GRACE);
+    runtime.shutdown_timeout(left(deadline));
     code
+}
+
+#[derive(Clone, Copy)]
+struct Modes {
+    json: bool,
+    eval: bool,
+}
+
+fn left(deadline: Option<Instant>) -> Duration {
+    deadline.map_or(SHUTDOWN_GRACE, |at| {
+        at.saturating_duration_since(Instant::now()) / 2
+    })
 }
 
 fn holds(working: bool, ends: Option<Instant>) -> bool {
     working && ends.is_none_or(|at| Instant::now() < at)
 }
 
-fn patience(holding: bool, ends: Option<(Instant, Duration)>) -> Option<Duration> {
-    let left = ends.map(|(at, grace)| {
-        let at = if holding {
-            at
-        } else {
-            at.checked_add(grace).unwrap_or(at)
-        };
-        at.saturating_duration_since(Instant::now())
-    });
+fn patience(holding: bool, ends: Option<Instant>) -> Option<Duration> {
+    let left = ends.map(|at| at.saturating_duration_since(Instant::now()));
     match (holding, left) {
         (true, left) => Some(left.map_or(HOLD_POLL, |left| left.min(HOLD_POLL))),
         (false, left) => left,
@@ -100,20 +109,20 @@ fn patience(holding: bool, ends: Option<(Instant, Duration)>) -> Option<Duration
 async fn stream(
     session: &yi_runtime::AgentSession,
     host: &yi_runtime::SubagentHost,
-    json: bool,
+    modes: Modes,
     schema: Option<&yi_runtime::schema::Schema>,
-    ends: Option<Instant>,
+    (ends, deadline): (Option<Instant>, Option<Instant>),
 ) -> i32 {
     let held = || host.holds_owner();
     let working = || host.holds_owner() || session.status() != Status::Idle;
-    let ends = ends.map(|at| (at, LAST_WORD_GRACE));
-    let code = follow(session.subscribe(), [&held, &working], json, schema, ends).await;
+    let code = follow(session.subscribe(), [&held, &working], modes, schema, ends).await;
     // Incident: nothing drove the runtime after the deadline, so a looping cell outlived it.
     if session.status() != Status::Idle {
         session.abort();
         let _still_busy_is_left_to_the_shutdown =
-            tokio::time::timeout(SHUTDOWN_GRACE, session.wait_idle()).await;
+            tokio::time::timeout(left(deadline), session.wait_idle()).await;
     }
+    let json = modes.json;
     let status = host.status();
     let members = status.get("members").and_then(serde_json::Value::as_array);
     let services: Vec<String> = members
@@ -188,12 +197,13 @@ fn leftovers(family: &Family<'_>, undelivered: usize) -> Option<(String, serde_j
 async fn follow(
     mut events: tokio::sync::broadcast::Receiver<AgentEvent>,
     [held, working]: [&dyn Fn() -> bool; 2],
-    json: bool,
+    Modes { json, eval }: Modes,
     schema: Option<&yi_runtime::schema::Schema>,
-    ends: Option<(Instant, Duration)>,
+    ends: Option<Instant>,
 ) -> i32 {
     let (mut answer, mut exit) = (String::new(), 0);
-    let (mut holding, mut ended, mut answered) = (false, false, false);
+    let (mut holding, mut ended) = (false, false);
+    let (mut last_stop, mut said_anything) = (None, false);
     loop {
         let next = match patience(holding, ends) {
             None => events.recv().await,
@@ -203,7 +213,7 @@ async fn follow(
             }
             Some(wait) => match tokio::time::timeout(wait, events.recv()).await {
                 Ok(next) => next,
-                Err(_) if holds(holding && working(), ends.map(|(at, _)| at)) => continue,
+                Err(_) if holds(holding && working(), ends) => continue,
                 Err(_) => {
                     ended = true;
                     break;
@@ -232,10 +242,20 @@ async fn follow(
             }
         }
         if let AgentEvent::MessageEnd {
-            message: message @ AgentMessage::Assistant { stop_reason, .. },
+            message:
+                AgentMessage::Assistant {
+                    stop_reason,
+                    content,
+                    ..
+                },
         } = &event
         {
-            answered = *stop_reason == StopReason::Stop && !message.plain_text().trim().is_empty();
+            use yi_types::message::Content;
+            let text = content.iter().any(
+                |block| matches!(block, Content::Text { text, .. } if !text.trim().is_empty()),
+            );
+            said_anything |= text;
+            last_stop = Some((*stop_reason, text));
         }
         match &event {
             AgentEvent::MessageEnd {
@@ -269,11 +289,18 @@ async fn follow(
     } else if ended && !json {
         println!();
     }
-    if ended && !answered && exit == 0 {
-        eprintln!("error: the run ended without a final answer");
+    let final_answer = matches!(last_stop, Some((StopReason::Stop, true)));
+    if ended && eval && !final_answer {
+        let stop = last_stop.map(|(stop, _)| stop);
+        eprintln!("warning: the run ended without a final answer");
         if json {
-            println!("{}", serde_json::json!({"type": "no_answer"}));
+            println!(
+                "{}",
+                serde_json::json!({"type": "no_answer", "lastStop": stop, "saidAnything": said_anything})
+            );
         }
+    } else if ended && !said_anything && exit == 0 {
+        eprintln!("error: the run ended with no assistant text at all");
         exit = 1;
     }
     exit
@@ -347,7 +374,7 @@ mod tests {
     }
 
     /// Dies with the deadline read only while holding: a Steer's owner turn ran unbounded.
-    /// A run the deadline ends with no final answer exits nonzero and says so.
+    /// A run the deadline ends with no assistant text at all exits nonzero and says so.
     #[test]
     fn a_steered_turn_past_the_deadline_ends_the_run() -> Result<(), Box<dyn std::error::Error>> {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -360,12 +387,43 @@ mod tests {
         events.send(AgentEvent::AgentStart)?;
         let always = || true;
         let ends = Instant::now().checked_add(Duration::from_millis(50));
-        let ends = ends.map(|at| (at, Duration::ZERO));
-        let run = super::follow(receiver, [&always, &always], true, None, ends);
+        let modes = super::Modes {
+            json: true,
+            eval: false,
+        };
+        let run = super::follow(receiver, [&always, &always], modes, None, ends);
         let ran =
             runtime.block_on(async { tokio::time::timeout(Duration::from_secs(5), run).await });
         assert_eq!(ran.ok(), Some(1), "the steered turn outlived the deadline");
         drop(events);
+        Ok(())
+    }
+
+    /// Dies with a final answer demanded of every run: a length stop with text exited 1, and
+    /// an eval run with none exited 1, which harbor reads as the agent crashing.
+    #[test]
+    fn only_a_run_with_no_text_at_all_exits_nonzero_and_never_under_eval()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+        use yi_types::message::StopReason;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let never = || false;
+        let cut = faux_assistant_message(vec![faux_text("half an answer")], StopReason::Length);
+        let call = faux_tool_call("c1", "bash", serde_json::Map::new());
+        let call = faux_assistant_message(vec![call], StopReason::ToolUse);
+        let cases = [(cut, false, 0), (call.clone(), false, 1), (call, true, 0)];
+        for (message, eval, code) in cases {
+            let (events, receiver) = tokio::sync::broadcast::channel(8);
+            events.send(AgentEvent::MessageEnd { message })?;
+            events.send(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            })?;
+            let modes = super::Modes { json: true, eval };
+            let run = super::follow(receiver, [&never, &never], modes, None, None);
+            assert_eq!(runtime.block_on(run), code, "eval {eval}");
+        }
         Ok(())
     }
 }
