@@ -153,6 +153,13 @@ the `+` to run it, and re-issue if this line landed in the file by mistake."
     )
 }
 
+pub fn near_miss_header_warning(line: u64, written: &str, read_as: &str) -> String {
+    format!(
+        "line {line}: read the hunk header `{written}` as `{read_as}`, one stray mark removed. \
+Write headers in that form."
+    )
+}
+
 pub const BARE_RANGE_AUTO_PUT_WARNING: &str =
     "Recovered a bare `N.=M:` header as `PUT N.=M:`. Prefix replacement ranges with `PUT`.";
 

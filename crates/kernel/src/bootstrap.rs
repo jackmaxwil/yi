@@ -3,6 +3,11 @@ use std::path::{Component, Path, PathBuf};
 use sha2::{Digest, Sha256};
 use yi_types::kernel::BootstrapVersion;
 
+pub(crate) use crate::lock::acquire_bootstrap_lock;
+pub use crate::lock::{
+    lock_is_stale, lock_missing_pid_is_stale, process_is_running, read_lock_pid, remove_stale_venvs,
+};
+
 pub const BOOTSTRAP_SCHEMA: u64 = 1;
 const PYTHON_VERSION: &str = "3.11";
 const IPYKERNEL_REQUIREMENT: &str = "ipykernel";
@@ -64,9 +69,6 @@ fn document_probe_hash() -> String {
 const UV_INSTALL_COMMAND: &str = "curl -LsSf https://astral.sh/uv/install.sh | sh";
 pub const RUNTIME_READY_CHECK: &str = "import inspect; import rlm; import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = [\"create_memory\",\"update_memory\",\"delete_memory\",\"create_skill\",\"update_skill\",\"delete_skill\",\"create_subagent\",\"update_subagent\",\"delete_subagent\",\"create_prompt_note\",\"update_prompt_note\",\"delete_prompt_note\",\"record_refinement\"]; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert callable(rlm); assert all(hasattr(rlm, _name) for _name in rlm.__all__); assert not hasattr(rlm, 'rlm'); assert all(callable(getattr(rlm.harness, _method, None)) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert not inspect.iscoroutinefunction(rlm.bash); assert hasattr(rlm.BashHandle, '__await__'); assert not hasattr(rlm, 'background'); from pathlib import Path as _P; assert rlm.RLMSubagent(rlm_child_id='c', active_session_id=None, session_id=None, session_name='kid', session_dir=_P('.'), status='idle').name == 'kid'";
 const BOOTSTRAP_VERSION_FILE: &str = ".bootstrap-version";
-const BOOTSTRAP_LOCK_NAME: &str = ".bootstrap.lock";
-const BOOTSTRAP_LOCK_RETRY_MS: u64 = 100;
-const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS: u128 = 30_000;
 /// `python/yi_runtime` and `python/skills`, deflated by `build.rs`.
 const PYTHON_EMBED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/python.zz"));
 const PYTHON_STAMP_FILE: &str = ".stamp";
@@ -200,11 +202,16 @@ fn replace_dir(staging: &Path, target: &Path) -> Result<(), String> {
 /// Writes the embedded runtime to `<home>/.yi/python`, whole or not at all: a sibling temp
 /// dir is filled and stamped, then renamed over whatever was there.
 pub fn unpack_embedded_python(home: &Path) -> Result<PathBuf, String> {
-    let data = miniz_oxide::inflate::decompress_to_vec_zlib(PYTHON_EMBED)
-        .map_err(|error| format!("embedded python archive: {error}"))?;
     let parent = home.join(".yi");
     std::fs::create_dir_all(&parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     let target = parent.join("python");
+    // Incident: parallel first boots each replaced the tree while another hashed or installed it.
+    let _lock = acquire_bootstrap_lock(&target)?;
+    if home_tree_current(&target) {
+        return Ok(target);
+    }
+    let data = miniz_oxide::inflate::decompress_to_vec_zlib(PYTHON_EMBED)
+        .map_err(|error| format!("embedded python archive: {error}"))?;
     let staging = parent.join(format!("python.tmp-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
     let result = unpack_entries(&data, &staging)
@@ -358,7 +365,7 @@ fn resolve_writable_venv_dir(options: &BootstrapOptions) -> Result<PathBuf, Stri
     clippy::disallowed_methods,
     reason = "bootstrap owns its subprocess probes and uv runs (design K1)"
 )]
-fn command(program: &Path) -> std::process::Command {
+pub(crate) fn command(program: &Path) -> std::process::Command {
     std::process::Command::new(program)
 }
 
@@ -701,90 +708,6 @@ fn write_bootstrap_version(
         .map_err(|error| error.to_string())
 }
 
-fn bootstrap_lock_dir(venv: &Path) -> PathBuf {
-    let name = venv
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    venv.with_file_name(format!("{name}{BOOTSTRAP_LOCK_NAME}"))
-}
-
-#[cfg(unix)]
-pub fn process_is_running(pid: u32) -> std::io::Result<bool> {
-    // kill -0 as the shell's builtin: slim images ship no kill(1), whose ENOENT read as dead.
-    command(Path::new("/bin/sh"))
-        .args(["-c", r#"kill -0 "$1""#, "kill", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-}
-
-#[cfg(not(unix))]
-pub fn process_is_running(_pid: u32) -> std::io::Result<bool> {
-    Ok(true)
-}
-
-/// A probe that could not run says nothing of the holder: the lock's age decides, as for no pid.
-pub fn lock_is_stale(lock_dir: &Path, probe: Option<std::io::Result<bool>>) -> bool {
-    match probe {
-        Some(Ok(running)) => !running,
-        Some(Err(_)) | None => lock_missing_pid_is_stale(lock_dir),
-    }
-}
-
-pub fn read_lock_pid(lock_dir: &Path) -> Option<u32> {
-    let raw = std::fs::read_to_string(lock_dir.join("pid")).ok()?;
-    let pid: u32 = raw.trim().parse().ok()?;
-    (pid > 0).then_some(pid)
-}
-
-pub fn lock_missing_pid_is_stale(lock_dir: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(lock_dir) else {
-        return false;
-    };
-    let Ok(modified) = meta.modified() else {
-        return false;
-    };
-    modified
-        .elapsed()
-        .map(|age| age.as_millis() > BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS)
-        .unwrap_or(false)
-}
-
-struct BootstrapLock {
-    dir: PathBuf,
-}
-
-impl Drop for BootstrapLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-fn acquire_bootstrap_lock(venv: &Path) -> Result<BootstrapLock, String> {
-    let lock_dir = bootstrap_lock_dir(venv);
-    if let Some(parent) = lock_dir.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    loop {
-        match std::fs::create_dir(&lock_dir) {
-            Ok(()) => {
-                let _ = std::fs::write(lock_dir.join("pid"), format!("{}\n", std::process::id()));
-                return Ok(BootstrapLock { dir: lock_dir });
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                if lock_is_stale(&lock_dir, read_lock_pid(&lock_dir).map(process_is_running)) {
-                    let _ = std::fs::remove_dir_all(&lock_dir);
-                    continue;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(BOOTSTRAP_LOCK_RETRY_MS));
-            }
-            Err(error) => return Err(format!("{}: {error}", lock_dir.display())),
-        }
-    }
-}
-
 fn kernel_ready(python: &Path, venv: &Path, runtime_identity: &str) -> bool {
     let version = read_bootstrap_version(venv);
     if !bootstrap_version_current(version.as_ref(), runtime_identity) {
@@ -801,6 +724,9 @@ fn kernel_ready(python: &Path, venv: &Path, runtime_identity: &str) -> bool {
     {
         let _record_refreshed =
             write_bootstrap_version(venv, runtime_identity, document_formats_of(python));
+    }
+    if live {
+        crate::lock::restart_sweep_clock(venv);
     }
     live
 }
@@ -927,6 +853,11 @@ pub fn ensure_kernel_python(options: &BootstrapOptions) -> Result<PathBuf, Strin
         &options.runtime_source_dir,
         Some(&options.skills_source_dir),
     )?;
+    let sweep = options.venv_dir.is_none() && env_path("YI_KERNEL_VENV").is_none();
+    if sweep {
+        let current = venv.clone();
+        std::thread::spawn(move || remove_stale_venvs(&current));
+    }
     if kernel_ready(&python, &venv, &runtime_identity) {
         return Ok(python);
     }
@@ -952,6 +883,7 @@ pub fn ensure_kernel_python(options: &BootstrapOptions) -> Result<PathBuf, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lock::bootstrap_lock_dir;
     use crate::scratch::Scratch;
 
     fn version(runtime: &str) -> BootstrapVersion {
@@ -1043,6 +975,34 @@ mod tests {
             document_converter(&home).1,
             Vec::<String>::new(),
             "a venv built without the converter claims no format"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_ready_boot_keeps_its_venv_out_of_the_sweep() -> Result<(), String> {
+        let root = Scratch::new("yi-kernel-used").map_err(|error| error.to_string())?;
+        let venv = root.join("kernel-venv-aaaa0000");
+        let python = venv.join("bin").join("python");
+        std::fs::create_dir_all(venv.join("bin")).map_err(|error| error.to_string())?;
+        std::fs::write(&python, "#!/bin/sh\nexit 0\n").map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&python, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+        write_bootstrap_version(&venv, "sha256:old", Vec::new())?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the sweep reads real directory ages"
+        )]
+        let days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86_400);
+        std::fs::File::open(&venv)
+            .and_then(|dir| dir.set_modified(days_ago))
+            .map_err(|error| error.to_string())?;
+        assert!(kernel_ready(&python, &venv, "sha256:old"));
+        let removed = remove_stale_venvs(&root.join("kernel-venv-cccc0000"));
+        assert!(
+            removed.is_empty() && venv.is_dir(),
+            "a venv booted now was swept"
         );
         Ok(())
     }
