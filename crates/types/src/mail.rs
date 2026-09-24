@@ -62,6 +62,9 @@ pub struct Envelope {
     pub body: String,
     #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
     pub reference: Option<Url>,
+    /// `human` on a parent's reply the human wrote from the reply box; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_by: Option<String>,
 }
 
 /// What the host did with an accepted envelope, every one written to the inbox first:

@@ -54,6 +54,7 @@ pub enum Command {
     ChildHistory(String),
     Answer {
         child_id: String,
+        question: String,
         text: String,
     },
     Abort,
@@ -172,6 +173,7 @@ pub struct App {
     pub(crate) last_esc_at: Option<Instant>,
     pub(crate) ctrl_c_at: Option<Instant>,
     pub(crate) focused: Option<String>,
+    pub(crate) reply_bound: Option<asks::ReplyTarget>,
     pub(crate) hud_hidden: bool,
     seen_turn: bool,
     /// Incident: a submitted prompt reaches the runtime thread over a channel, so the UI can
@@ -276,6 +278,7 @@ impl App {
             last_esc_at: None,
             ctrl_c_at: None,
             focused: None,
+            reply_bound: None,
             hud_hidden: false,
             seen_turn: false,
             submitted_turns: 0,
@@ -766,7 +769,10 @@ impl App {
                         attribution,
                         ..
                     },
-            } => self.commit_cell(&crate::port::user_cell(user_text(&content), attribution)),
+            } => self.commit_cell(&crate::port::user_cell(
+                user_text(&content),
+                attribution == yi_types::message::Attribution::User,
+            )),
             AgentEvent::MessageEnd { message } => self.reduce_message_end(&message),
             AgentEvent::ToolExecutionEnd {
                 tool_name,

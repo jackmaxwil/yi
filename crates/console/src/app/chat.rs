@@ -479,11 +479,15 @@ impl App {
                 "_yi/slash",
                 json!({"sessionId": id, "line": line}),
             ),
-            Command::Answer { child_id, text } => self.send_request(
+            Command::Answer {
+                child_id,
+                question,
+                text,
+            } => self.send_request(
                 outbound,
                 RequestKind::Slash(session.clone()),
                 "_yi/child_answer",
-                json!({"sessionId": id, "childId": child_id, "text": text}),
+                json!({"sessionId": id, "childId": child_id, "questionId": question, "text": text}),
             ),
             // The worker summarises what it rewound; shutdown is the console's own.
             Command::SummarizeBranch(_) | Command::Shutdown => {}

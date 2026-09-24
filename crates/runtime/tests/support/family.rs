@@ -131,7 +131,7 @@ pub fn family(
         }),
         events: events.clone(),
         parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message| {}),
+        report: Arc::new(|_message, _| {}),
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(move || {
             (!plug.load(std::sync::atomic::Ordering::SeqCst)).then(|| journal.clone())

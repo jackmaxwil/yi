@@ -733,12 +733,7 @@ fn subagent_host(
         cwd: wiring.cwd.clone(),
         home: wiring.home.clone(),
         lane_slots: wiring.lane_slots,
-        report: {
-            let deliver = session.heartbeat_hook();
-            Arc::new(move |message| {
-                deliver(message, yi_types::schedule::DeliveryMode::Steer);
-            })
-        },
+        report: session.deliver_hook(),
         attribute: session.attribution_handle(),
         store: session.store_handle(),
         plans_dir: plans_dir.to_path_buf(),

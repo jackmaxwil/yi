@@ -17,6 +17,7 @@ pub fn handle_terminal_event(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
     ct_event: CtEvent,
 ) {
+    app.bind_reply();
     match ct_event {
         CtEvent::Paste(text) => {
             if !app.composer.search_active() {
@@ -179,8 +180,13 @@ pub(crate) fn handle_action(
                     handle_slash(app, &command);
                     return;
                 }
-                if let Some((child_id, _)) = app.reply_target() {
-                    let _ = cmd_tx.send(Command::Answer { child_id, text });
+                if let Some(bound) = app.reply_bound.take() {
+                    let (child_id, question) = (bound.child_id, bound.question);
+                    let _ = cmd_tx.send(Command::Answer {
+                        child_id,
+                        question,
+                        text,
+                    });
                     return;
                 }
                 if app.running {

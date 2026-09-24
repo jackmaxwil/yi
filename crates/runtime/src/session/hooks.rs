@@ -89,6 +89,13 @@ impl AgentSession {
         })
     }
 
+    pub fn deliver_hook(&self) -> Arc<dyn Fn(AgentMessage, bool) + Send + Sync> {
+        let parts = self.parts();
+        Arc::new(move |message, wakes| {
+            run::enqueue(&parts, Queued::new(message, wakes, None));
+        })
+    }
+
     pub fn mail_hook(&self) -> Arc<dyn Fn() -> Vec<serde_json::Value> + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || {

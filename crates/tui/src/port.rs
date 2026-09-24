@@ -320,10 +320,11 @@ impl SessionPort for Arc<AgentSession> {
 }
 
 /// Invariant: only what the human typed draws as theirs; the host's words draw as a notice.
-pub(crate) fn user_cell(text: String, attribution: yi_types::message::Attribution) -> Cell {
-    match attribution {
-        yi_types::message::Attribution::User => Cell::User { text },
-        yi_types::message::Attribution::Unproven => Cell::Notice { text },
+pub(crate) fn user_cell(text: String, typed: bool) -> Cell {
+    if typed {
+        Cell::User { text }
+    } else {
+        Cell::Notice { text }
     }
 }
 
@@ -333,12 +334,17 @@ impl App {
         let cells: Vec<Cell> = entries
             .iter()
             .filter_map(|entry| match entry {
-                Entry::Message { message, .. } => match message {
+                Entry::Message {
+                    message, timestamp, ..
+                } => match message {
                     AgentMessage::User {
                         content,
                         attribution,
                         ..
-                    } => Some(user_cell(user_text(content), *attribution)),
+                    } => Some(user_cell(
+                        user_text(content),
+                        attribution.reads_as_typed(*timestamp),
+                    )),
                     AgentMessage::Custom {
                         custom_type,
                         content,

@@ -486,7 +486,7 @@ pub(super) mod tests {
             notice: Arc::new(move |text: &str, _| notice(text.to_owned())),
             events,
             parent_messages: Arc::new(Vec::new),
-            report: Arc::new(move |message| report(message)),
+            report: Arc::new(move |message, _| report(message)),
             attribute: Arc::new(|_usage| {}),
             store: Arc::new(|| None),
             plans_dir: root.join(crate::plan::PLANS_DIR),
@@ -1087,7 +1087,7 @@ pub(super) mod tests {
             notice,
             events,
             parent_messages: Arc::new(Vec::new),
-            report: Arc::new(|_message| {}),
+            report: Arc::new(|_message, _| {}),
             attribute: Arc::new(|_usage| {}),
             store: Arc::new(|| None),
         }));
