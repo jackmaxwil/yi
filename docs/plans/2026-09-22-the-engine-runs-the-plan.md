@@ -214,3 +214,16 @@ after G4: `evals/surface.py` 12 trials against the named scenarios, and the four
 directed activation tasks under `evals/fixtures/tasks/*` with the same driver as F0e;
 the target is zero owner `start`/`submit`/`done` on delegated todos and zero plan-tool
 refusals in the confirmation.
+
+Measured (docs/eval-ledger.md rows 0057-0059, recorded 2026-09-23): the confirmations
+ran after G2 (059ba86b, $2.08), after G4 (d4f8e62d, $2.49) and after G5 (e15ab4d1,
+$2.00). G2b and G5 are stages this plan did not name; each came from the previous
+confirmation's failure classes. The targets above were not all met. Owner steps on
+delegated todos fell 93, 13, 4 and never reached zero; plan-tool isError was 52.2,
+46.5 and 23.9 percent; G0's declaration refusals for a missing contract were 58, 7
+and 2; the todo tool still refused in `plan-fanout` in the last run; G4's `edit-file`
+check was never run as written (a `plan-covered-write` scenario carried the verdict
+line on 3 of 3, then 4 of 4 covered writes); and the parent ran `check.py` or
+`pytest` itself in 3 of 4, 8 of 8 and 8 of 8 directed trials, which G2's eval line
+says it never does. Directed
+rewards were 1/4, 1/4 (3/4 with `--here`) and 4/8.
