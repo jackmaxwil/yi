@@ -17,6 +17,7 @@ sha2 = { workspace = true }
 tokio = { workspace = true }
 zeromq = { workspace = true }
 thiserror = { workspace = true }
+ureq = { workspace = true }
 
 [build-dependencies]
 miniz_oxide = { workspace = true }
