@@ -50,6 +50,8 @@ pub struct LoopConfig {
     pub waiting: Option<std::sync::Arc<WaitingFn>>,
     /// Asked once when a stop ends a turn on tool calls: Some runs one last turn, tool-less.
     pub last_word: Option<Box<InterceptFn>>,
+    /// Polled while a request streams: true aborts it, and the last word follows.
+    pub last_word_due: Option<Box<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl LoopConfig {
@@ -69,6 +71,7 @@ impl LoopConfig {
             intercept_stop: None,
             waiting: None,
             last_word: None,
+            last_word_due: None,
         }
     }
 }

@@ -356,7 +356,7 @@ impl Delegate for SessionDelegate {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::num::NonZeroUsize;
     use std::sync::Mutex;
@@ -374,7 +374,7 @@ pub(super) mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    fn faux_model() -> Model {
+    pub(crate) fn faux_model() -> Model {
         let zero = || serde_json::Number::from(0u64);
         Model {
             id: "faux-1".to_owned(),
