@@ -324,12 +324,18 @@ posts `scripts/live_report.py run.json` as one PR comment; without the
 
 `scripts/live_ledger.py baseline run.json` reads the last ten records from the
 `telemetry` branch with the run's model and mode (its `+routing{…}` label; a
-record written before `mode` was recorded counts as plain `live`) — medians of
-ttft p50, cache hit rate and cost per scenario, plus every error class seen.
+record written before `mode` was recorded counts as plain `live`): the median and
+the worst run of ttft p50, the warm-turn cache hit rate of `cache-warm` (its row's
+`warmRead` over `warmRead + warmInput`) and cost per scenario, plus every error
+class seen. The whole-run hit rate is reported, not ratcheted: it moves with how
+many cold requests the model happens to take (#480).
 The three workflows that run the flash suite pin one upstream through
 `EVAL_ROUTING` (DeepInfra: Relace drops the whole cache on a prefix a few tokens
 past a 256-token page, and Sail Research's ttft p50 sat over the 3 s band), and
-`evals/selftest.py` holds them to one value. `judge run.json baseline.json` names each band the
-run breaks and each ratchet it loses; `live_report.py` prints the verdict at the
+`evals/selftest.py` holds them to one value. `judge run.json baseline.json [again.json …]` names each band the
+first run breaks and each ratchet every run lost. A ratchet's bound is the median's
+ratchet or the worst run in the history, whichever is further, and the PR lane runs
+the suite again, three runs at most, while `again baseline.json run.json …` says a
+ratchet still holds, so one draw of an upstream never speaks for its median; `live_report.py` prints the verdict at the
 top of the PR comment. Postmerge runs the suite on main and `append`s the record
 to the branch, so a PR is always judged against what main did last.

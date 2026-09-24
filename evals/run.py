@@ -300,7 +300,8 @@ def cache_check(spec, binary, model, out):
                 time.sleep(spec.get("settleSec", 3))
     warm_read = sum(turn["cacheRead"] or 0 for turn in turns[1:])
     row = {"task": spec["id"], "reward": 1 if warm_read else 0, "exit": exit_code, "timedOut": timed_out,
-           "wallSec": round(time.monotonic() - started, 2), "requests": len(turns)}
+           "wallSec": round(time.monotonic() - started, 2), "requests": len(turns),
+           "warmRead": warm_read, "warmInput": sum(turn["input"] or 0 for turn in turns[1:])}
     for key in (*yi_usage.TOKEN_KEYS, "nAssistantMessages", "costUnknownTurns"):
         row[key] = sum(turn.get(key) or 0 for turn in turns)
     costs = [turn.get("costUsd") for turn in turns]
