@@ -303,7 +303,8 @@ def cache_check(spec, binary, model, out):
                 time.sleep(spec.get("settleSec", 3))
     warm_read = sum(turn["cacheRead"] or 0 for turn in turns[1:])
     row = {"task": spec["id"], "reward": 1 if warm_read else 0, "exit": exit_code, "timedOut": timed_out,
-           "wallSec": round(time.monotonic() - started, 2), "requests": len(turns)}
+           "wallSec": round(time.monotonic() - started, 2), "requests": len(turns),
+           "warmRead": warm_read, "warmInput": sum(turn["input"] or 0 for turn in turns[1:])}
     for key in (*yi_usage.TOKEN_KEYS, "nAssistantMessages", "costUnknownTurns"):
         row[key] = sum(turn.get(key) or 0 for turn in turns)
     costs = [turn.get("costUsd") for turn in turns]
@@ -371,7 +372,7 @@ def run_live(args):
         except json.JSONDecodeError:
             rollup = {}
     counts = {status: sum(1 for row in rows if row["status"] == status) for status in ("pass", "fail", "inconclusive")}
-    record = {"suite": suite, "model": args.model, "configFp": fingerprint, "capUsd": args.cap_usd,
+    record = {"suite": suite, "model": args.model, "mode": mode, "configFp": fingerprint, "capUsd": args.cap_usd,
               "spentUsd": round(spent, 6), "budgetHit": budget_hit, "counts": counts, "rows": rows, "telemetry": rollup}
     (out / "run.json").write_text(json.dumps(record, indent=1, sort_keys=True))
     print(json.dumps({"out": str(out), "counts": counts, "spentUsd": record["spentUsd"]}, sort_keys=True))

@@ -225,7 +225,7 @@ pub struct Converter {
 #[derive(Clone)]
 pub struct Documents {
     pub home: PathBuf,
-    /// Asked on every read and every description, so a venv built mid-session shows up.
+    /// Asked on every read, so a venv built mid-session converts; the description asks once.
     pub converter: Arc<dyn Fn() -> Converter + Send + Sync>,
     pub timeout: Duration,
 }

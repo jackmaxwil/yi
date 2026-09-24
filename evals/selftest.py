@@ -11,6 +11,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -174,6 +175,10 @@ def check_eval_config():
         source = (ROOT / name).read_text()
         assert "eval_config(" in source and '"enabled"' not in source, f"{name} writes its own config"
         assert "routing_label(" in source, f"{name}'s fingerprint cannot tell two routings apart"
+    # The ledger judges a PR's live run by main's runs of the same routing: one pin, three workflows.
+    pins = {name: re.findall(r"^\s*EVAL_ROUTING: (.+)$", (ROOT.parent / ".forgejo" / "workflows" / name).read_text(), re.M)
+            for name in ("pr.yml", "postmerge.yml", "tracking-hygiene.yml")}
+    assert len({pin for found in pins.values() for pin in found}) == 1 and all(pins.values()), pins
     # The fixtures lane leaves a caller's --home config alone, so a label there names a routing never sent.
     with tempfile.TemporaryDirectory() as home:
         done = subprocess.run(

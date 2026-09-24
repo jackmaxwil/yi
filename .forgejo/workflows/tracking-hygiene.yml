@@ -63,6 +63,7 @@ jobs:
       - name: three flash runs, appended for variance
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          EVAL_ROUTING: '{"order":["deepinfra"],"allow_fallbacks":false}'
         run: |
           set -euo pipefail
           if [ -z "${OPENROUTER_API_KEY:-}" ]; then echo "skip: no OPENROUTER_API_KEY"; exit 0; fi

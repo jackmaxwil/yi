@@ -33,7 +33,7 @@ fn started(cwd: &Path, home: &Path) -> Host {
 
 #[test]
 fn slots_assemble_in_rank_order_and_attach_is_idempotent() -> TestResult {
-    let mut state = PromptState::new("nonce".to_owned());
+    let mut state = PromptState::default();
     assert!(state.attach(Slot::new(Rank::Schema, "schema"), "SCHEMA".to_owned()));
     assert!(state.attach(Slot::new(Rank::Identity, "identity"), "ID".to_owned()));
     assert!(state.attach(Slot::new(Rank::Mode, "permission"), "MODE".to_owned()));
@@ -53,7 +53,7 @@ fn slots_assemble_in_rank_order_and_attach_is_idempotent() -> TestResult {
 
 #[test]
 fn the_yard_is_a_third_block_and_external_text_cannot_close_its_fence() -> TestResult {
-    let mut state = PromptState::new("abc123".to_owned());
+    let mut state = PromptState::default();
     state.attach(Slot::new(Rank::Identity, "identity"), "ID".to_owned());
     state.attach_external(
         "AGENTS.md",
@@ -64,7 +64,16 @@ fn the_yard_is_a_third_block_and_external_text_cannot_close_its_fence() -> TestR
     let blocks: Vec<&str> = assembled.split(SYSTEM_BLOCK_SEPARATOR).collect();
     assert_eq!(blocks.len(), 2, "identity plus the yard: {assembled:?}");
     let yard = blocks[1];
-    assert!(yard.starts_with("<<<yi-external abc123 source=\"AGENTS.md\" trust=\"untrusted\">>>"));
+    let id = yard
+        .strip_prefix("<<<yi-external ")
+        .and_then(|rest| rest.split_once(' '))
+        .map(|(id, _)| id)
+        .ok_or("no fence header")?;
+    assert_eq!(id.len(), 16, "{yard}");
+    assert!(
+        yard.ends_with(&format!("\n<<<end-yi-external {id}>>>")),
+        "{yard}"
+    );
     assert_eq!(
         yard.matches("<<<end-yi-external").count(),
         1,
@@ -76,7 +85,7 @@ fn the_yard_is_a_third_block_and_external_text_cannot_close_its_fence() -> TestR
 
 #[test]
 fn granted_entries_sort_before_untrusted_ones() -> TestResult {
-    let mut state = PromptState::new("n".to_owned());
+    let mut state = PromptState::default();
     state.attach_external("z-untrusted", Trust::Untrusted, "u");
     state.attach_external("a-granted", Trust::Granted, "g");
     let assembled = state.assemble();

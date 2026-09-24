@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
 
@@ -75,16 +75,16 @@ impl<'a> View<'a> {
 
 pub struct HashlineReadTool {
     pub state: SharedHashline,
-    /// The formats last described and the text built from them; the text is leaked because the
-    /// trait hands out `&str`, and it is rebuilt only when the venv's format list changes.
-    description: Mutex<(Vec<String>, &'static str)>,
+    /// Invariant: decided the first time the session sends its tools, then held, so a venv
+    /// landing mid-session never rewrites the tool table and the cached prefix behind it.
+    description: OnceLock<String>,
 }
 
 impl HashlineReadTool {
     pub fn new(state: SharedHashline) -> Self {
         Self {
             state,
-            description: Mutex::new((Vec::new(), READ_DESCRIPTION)),
+            description: OnceLock::new(),
         }
     }
 }
@@ -99,18 +99,11 @@ impl Tool for HashlineReadTool {
     }
 
     fn description(&self) -> &str {
-        let formats = documents(&self.state)
-            .map_or_else(Vec::new, |documents| (documents.converter)().formats);
-        let mut cached = self
-            .description
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cached.0 != formats {
-            let text: &'static str =
-                Box::leak(crate::document::describe(READ_DESCRIPTION, &formats).into_boxed_str());
-            *cached = (formats, text);
-        }
-        cached.1
+        self.description.get_or_init(|| {
+            let formats = documents(&self.state)
+                .map_or_else(Vec::new, |documents| (documents.converter)().formats);
+            crate::document::describe(READ_DESCRIPTION, &formats)
+        })
     }
 
     fn schema(&self) -> Value {
