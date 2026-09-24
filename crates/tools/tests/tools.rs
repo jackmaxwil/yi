@@ -932,6 +932,7 @@ impl yi_tools::KernelBridge for OneCell {
         Ok(yi_tools::KernelCellOutcome {
             result: self.0.clone(),
             kernel_restarted: false,
+            notes: Vec::new(),
         })
     }
 }

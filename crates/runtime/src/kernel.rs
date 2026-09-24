@@ -215,6 +215,8 @@ pub struct KernelService {
     last_error: Mutex<Option<String>>,
     on_death: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     died: std::sync::atomic::AtomicBool,
+    names: Mutex<Option<Vec<String>>>,
+    restarted: Mutex<Option<String>>,
 }
 
 impl KernelService {
@@ -226,6 +228,8 @@ impl KernelService {
             last_error: Mutex::new(None),
             on_death: Mutex::new(None),
             died: std::sync::atomic::AtomicBool::new(false),
+            names: Mutex::new(None),
+            restarted: Mutex::new(None),
         }
     }
 
@@ -253,18 +257,22 @@ impl KernelService {
         }
     }
 
-    /// The environment line's fact: `ready`, `booting`, `idle`, or the last boot error.
+    /// The environment line's fact: `ready`, `booting`, `idle` or the boot error, then any restart.
     pub fn state(&self) -> String {
-        let Ok(slot) = self.manager.try_lock() else {
-            return "booting".to_owned();
+        let mut state = match self.manager.try_lock() {
+            Err(_) => "booting".to_owned(),
+            Ok(slot) if slot.as_ref().is_some_and(|manager| manager.is_running()) => {
+                "ready".to_owned()
+            }
+            Ok(_) => match self.last_error.lock().ok().and_then(|error| error.clone()) {
+                Some(error) => format!("unavailable: {}", error.lines().next().unwrap_or_default()),
+                None => "idle (boots on the first ipython call)".to_owned(),
+            },
         };
-        if slot.as_ref().is_some_and(|manager| manager.is_running()) {
-            return "ready".to_owned();
+        if let Some(restarted) = self.restarted.lock().ok().and_then(|slot| slot.clone()) {
+            state.push_str(&format!(" · {restarted}"));
         }
-        match self.last_error.lock().ok().and_then(|error| error.clone()) {
-            Some(error) => format!("unavailable: {}", error.lines().next().unwrap_or_default()),
-            None => "idle (boots on the first ipython call)".to_owned(),
-        }
+        state
     }
 
     pub async fn set_sandbox(&self, sandbox: Option<yi_tools::Sandbox>) {
@@ -416,6 +424,9 @@ impl KernelService {
     }
 
     pub async fn kill(&self) {
+        if let Ok(mut restarted) = self.restarted.lock() {
+            *restarted = None;
+        }
         let manager = self.manager.lock().await.take();
         if let Some(manager) = manager {
             manager.dispose().await;
@@ -474,18 +485,40 @@ impl KernelService {
         }
     }
 
+    async fn restart_note(&self, manager: &KernelManager) -> String {
+        let before = self.names.lock().ok().and_then(|names| names.clone());
+        let now = manager.list_namespace_names().await.unwrap_or_default();
+        let lost: Option<Vec<String>> = before.map(|names| {
+            names
+                .into_iter()
+                .filter(|name| !now.contains(name))
+                .collect()
+        });
+        if let Ok(mut slot) = self.restarted.lock() {
+            *slot = Some(match &lost {
+                Some(names) => format!("restarted; {} names lost", names.len()),
+                None => "restarted; in-memory state lost".to_owned(),
+            });
+        }
+        crate::kernel_bootstrap::restart_note(lost.as_deref())
+    }
+
     async fn execute_async(
         &self,
         code: &str,
         cancelled: &CancelFlag,
     ) -> Result<KernelCellOutcome, String> {
         let mut kernel_restarted = false;
+        let mut notes = Vec::new();
         let ceiling = self
             .options
             .cell_ceiling
             .unwrap_or(std::time::Duration::from_secs(yi_tools::MAX_TIMEOUT_SECS));
         loop {
             let manager = self.ensure().await?;
+            if kernel_restarted && notes.is_empty() {
+                notes.push(self.restart_note(&manager).await);
+            }
             let abort = AbortFlag::default();
             let watcher = {
                 let abort = abort.clone();
@@ -513,13 +546,18 @@ impl KernelService {
             watcher.abort();
             match outcome {
                 Ok(result) => {
+                    if result.status != yi_types::kernel::ExecuteStatus::Aborted
+                        && let Some(names) = manager.list_namespace_names().await
+                        && let Ok(mut slot) = self.names.lock()
+                    {
+                        *slot = Some(names);
+                    }
                     return Ok(KernelCellOutcome {
                         result,
                         kernel_restarted,
+                        notes,
                     });
                 }
-                // Headless busy recovery: kill + fresh kernel + restart notice
-                // into model context; no UI to ask yet.
                 Err(ExecuteError::BusyAfterInterrupt) => {
                     if cancelled() {
                         return Err(ExecuteError::BusyAfterInterrupt.to_string());
