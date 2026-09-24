@@ -279,8 +279,9 @@ async fn a_live_kernel_fetches_its_own_variables_and_runs_bash_handles() -> Test
     Ok(())
 }
 
-/// Six of eight dogfood trials called `rlm.status()` or `rlm.send(...)` without `await`: such a
-/// call runs once after the cell, and every awaited form runs where it is awaited.
+/// Six of eight dogfood trials called `rlm.status()` or `rlm.send(...)` without `await`: every
+/// call is a task running from the moment it is made, so an un-awaited send goes out at the
+/// cell's next await, and the one nobody took is named after the cell with its value.
 #[tokio::test]
 #[ignore = "tier-2 journey: `just journeys`"]
 async fn a_live_kernel_runs_each_rlm_call_once_awaited_or_not() -> TestResult {
@@ -334,15 +335,15 @@ async fn a_live_kernel_runs_each_rlm_call_once_awaited_or_not() -> TestResult {
     let status = "[{'name': 'kid', 'state': 'running'}]";
     for line in [
         "one True True True",
-        "bare <coroutine object status at 0x",
+        "bare <RLMCall pending",
         "bounded 2",
         "stored running",
         "chosen 1",
         "handle 0 hi",
         "quick True",
-        "rlm.send() was not awaited, so the cell got a coroutine object, not its value",
+        "rlm.send() was not awaited, so the cell got a task, not its value",
         &format!(
-            "rlm.status() was not awaited, so the cell got a coroutine object, not its value; it ran once after the cell and returned {status}"
+            "rlm.status() was not awaited, so the cell got a task, not its value; it ran as the cell went on and returned {status}"
         ),
         "BashHandle.wait() was not awaited",
         "'output': 'lo'",
@@ -351,9 +352,13 @@ async fn a_live_kernel_runs_each_rlm_call_once_awaited_or_not() -> TestResult {
     }
     assert!(!printed.contains("never awaited"), "{printed}");
     let sent = sent.lock().map_err(|error| error.to_string())?.clone();
-    let [a, b, bare] =
-        ["gathered", "gathered", "sent bare"].map(|text| Some(serde_json::json!(text)));
-    assert_eq!(sent, [a, b, bare], "{printed}");
+    let [bare, a, b] =
+        ["sent bare", "gathered", "gathered"].map(|text| Some(serde_json::json!(text)));
+    assert_eq!(
+        sent,
+        [bare, a, b],
+        "the bare send went out at the cell's first await: {printed}"
+    );
     Ok(())
 }
 

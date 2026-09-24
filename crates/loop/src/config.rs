@@ -48,6 +48,8 @@ pub struct LoopConfig {
     /// empty steering queue. Some forces one more turn carrying the message.
     pub intercept_stop: Option<Box<InterceptFn>>,
     pub waiting: Option<std::sync::Arc<WaitingFn>>,
+    /// Asked once when a stop ends a turn on tool calls: Some runs one last turn, tool-less.
+    pub last_word: Option<Box<InterceptFn>>,
 }
 
 impl LoopConfig {
@@ -66,6 +68,7 @@ impl LoopConfig {
             first_turn_tool_choice: None,
             intercept_stop: None,
             waiting: None,
+            last_word: None,
         }
     }
 }

@@ -27,6 +27,7 @@ fn a_receipt_spells_its_state_in_lower_case() -> TestResult {
         target: "tests".to_owned(),
         id: MailId("main-17".to_owned()),
         state: Delivery::Inboxed,
+        presented: String::new(),
     };
     assert_eq!(
         serde_json::to_string(&receipt)?,

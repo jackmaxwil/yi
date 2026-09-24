@@ -717,6 +717,7 @@ pub async fn run_loop<S: StreamFn>(
     let mut recent: VecDeque<String> = VecDeque::with_capacity(REPEAT_WINDOW);
     let mut repeating: u32 = 0;
     let mut steered = false;
+    let mut last_word_said = false;
     let mut tool_choice = config.first_turn_tool_choice.clone();
     let mut pending: Vec<AgentMessage> = config
         .get_steering_messages
@@ -866,6 +867,16 @@ pub async fn run_loop<S: StreamFn>(
             if let Some(should_stop) = &config.should_stop_after_turn
                 && should_stop(&snapshot)
             {
+                let word = config.last_word.as_ref().filter(|_| has_more_tool_calls);
+                if let Some(word) = word
+                    .filter(|_| !last_word_said)
+                    .and_then(|word| word(&snapshot))
+                {
+                    last_word_said = true;
+                    tool_choice = Some(ToolChoice::None);
+                    pending = vec![word];
+                    continue;
+                }
                 emit(AgentEvent::AgentEnd {
                     messages: collected.clone(),
                 });

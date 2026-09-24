@@ -69,6 +69,19 @@ pub(crate) fn context_block(kwargs: &Map<String, Value>) -> Result<Option<String
     Ok(Some(block))
 }
 
+fn presented_when(state: Delivery) -> &'static str {
+    match state {
+        Delivery::Queued => {
+            "in its running turn, at the next message boundary, after any message queued before it"
+        }
+        Delivery::Woken => "now: it is the first message of the turn it started",
+        Delivery::Inboxed => {
+            "when its next turn starts: it is idle and this message wakes nothing (followup=True wakes it)"
+        }
+        Delivery::Answered => "never: it is the reply its request's call returned",
+    }
+}
+
 fn receipt(target: &str, state: &str) -> Value {
     json!({"target": target, "state": state})
 }
@@ -248,6 +261,8 @@ impl SubagentHost {
             return Err(format!("agent \"{from}\" cannot send to itself"));
         }
         draft.admit(from)?;
+        let answer = self.as_answer(from, target, draft);
+        let draft = answer.as_ref().unwrap_or(draft);
         let mut desk = self.mail.lock().map_err(|_| "mail state poisoned")?;
         desk.refuse_second_answer(target, draft)?;
         let receipts = match target {
@@ -322,7 +337,7 @@ impl SubagentHost {
         if let Some(store) = (self.options.store)() {
             crate::mail::inbox(&store, &envelope)?;
         }
-        let answered = desk.resolve(&envelope, draft.by_human);
+        let answered = desk.resolve(&envelope);
         if answered && let Some(store) = (self.options.store)() {
             crate::mail::mark_read(&store, vec![Value::String(envelope.id.0.clone())]);
         }
@@ -374,30 +389,37 @@ impl SubagentHost {
         let between = (incarnation_of(from), incarnation_of(&name));
         let envelope = desk.seal((from, &name), between, draft);
         crate::mail::inbox(&store, &envelope)?;
-        let answered = desk.resolve(&envelope, draft.by_human);
+        let answered = desk.resolve(&envelope);
         let message = crate::mail::present(&envelope);
         // `followup` only wakes an idle receiver; a late reply wakes nobody, its asker returned.
         let wakes = envelope.kind != Kind::Cancel
             && (draft.followup
                 || !matches!(envelope.kind, Kind::Inform | Kind::Progress | Kind::Reply));
-        let state = match record {
+        let (state, presented) = match record {
             _ if answered => {
                 crate::mail::mark_read(&store, vec![Value::String(envelope.id.0.clone())]);
-                Delivery::Answered
+                (Delivery::Answered, presented_when(Delivery::Answered))
             }
-            _ if envelope.kind == Kind::Progress => Delivery::Inboxed,
+            _ if envelope.kind == Kind::Progress => {
+                (Delivery::Inboxed, "never: progress stays in the inbox")
+            }
             // A revoked child is admitted no new work; its inbox still keeps the message.
-            Some(record) if record.lease.revoked.is_some() && envelope.kind != Kind::Cancel => {
-                Delivery::Inboxed
-            }
+            Some(record) if record.lease.revoked.is_some() && envelope.kind != Kind::Cancel => (
+                Delivery::Inboxed,
+                "never: its lease is revoked, and its inbox keeps the message",
+            ),
             // A cancel starts no turn: the flag ends a live one at its next message boundary.
             Some(record) => {
                 if envelope.kind == Kind::Cancel {
                     record.session.cancel();
                 }
-                record.session.deliver(message, wakes)
+                let state = record.session.deliver(message, wakes);
+                (state, presented_when(state))
             }
-            None => Delivery::Inboxed,
+            None => (
+                Delivery::Inboxed,
+                "never: it is gone, and its kept transcript holds the message",
+            ),
         };
         if let (Delivery::Woken, Some(key)) = (state, &key)
             && let Some(record) = children.get_mut(key)
@@ -409,6 +431,7 @@ impl SubagentHost {
             target: name,
             id: envelope.id,
             state,
+            presented: presented.to_owned(),
         };
         serde_json::to_value(row).map_err(|error| error.to_string())
     }
@@ -455,15 +478,36 @@ impl SubagentHost {
         loop {
             let (epoch, moved, live) = self.changed_since(since);
             let quiet = bare && moved.is_empty() && live;
-            if (epoch > since && !quiet) || std::time::Instant::now() >= deadline {
+            // Invariant: a wait never blocks on a child asking its caller, or on nothing live.
+            let asks: Vec<String> = self
+                .mail
+                .lock()
+                .map(|desk| desk.asking().into_keys().collect())
+                .unwrap_or_default();
+            let settled = self
+                .children
+                .lock()
+                .is_ok_and(|children| children.values().all(|record| record.exit.is_some()));
+            let moved_on = epoch > since && !quiet;
+            let timed_out = std::time::Instant::now() >= deadline;
+            if moved_on || !asks.is_empty() || settled || timed_out {
                 if bare {
                     self.saw(None);
                 }
                 let changed: Vec<&str> = moved.keys().map(String::as_str).collect();
-                let causes: Map<String, Value> = moved
+                let mut causes: Map<String, Value> = moved
                     .iter()
                     .map(|(name, cause)| (name.clone(), Value::from(cause.as_str())))
                     .collect();
+                for name in &asks {
+                    causes.insert(name.clone(), Value::from("asks"));
+                }
+                let state = match () {
+                    () if !asks.is_empty() => "asks",
+                    () if settled => "settled",
+                    () if moved_on => "moved",
+                    () => "timeout",
+                };
                 let mut states = Map::new();
                 let mut notes = Map::new();
                 for view in self.states() {
@@ -476,6 +520,11 @@ impl SubagentHost {
                     }
                 }
                 let mut reply = Map::new();
+                reply.insert("state".to_owned(), Value::from(state));
+                if settled {
+                    let finished: Vec<&String> = states.keys().collect();
+                    reply.insert("finished".to_owned(), json!(finished));
+                }
                 reply.insert("cursor".to_owned(), Value::from(epoch));
                 reply.insert("changed".to_owned(), json!(changed));
                 reply.insert("causes".to_owned(), Value::Object(causes));

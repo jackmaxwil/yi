@@ -3454,7 +3454,16 @@ async fn two_waiters_observe_their_own_child_completion() -> TestResult {
 /// while `states` already lacked the child.
 #[tokio::test]
 async fn a_delete_wakes_a_waiter_with_the_child_gone() -> TestResult {
-    let harness = harness(0, 1, "done")?;
+    // A family with nothing live answers a wait at once; this one holds its child in a call.
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "done",
+        tool_command: Some("sleep 30"),
+        cwd: None,
+        wake_parent: None,
+    })?;
     let reply = harness
         .host
         .spawn("finish now".to_owned(), kwargs(&[("name", "gone")]))
@@ -3463,9 +3472,11 @@ async fn a_delete_wakes_a_waiter_with_the_child_gone() -> TestResult {
         .as_str()
         .ok_or("missing child id")?
         .to_owned();
-    assert!(wait_for_status(&harness.host, &child_id, "completed").await);
-    let settled = harness.host.wait(0, None).await;
-    let cursor = settled["cursor"].as_u64();
+    assert!(wait_for_status(&harness.host, &child_id, "running").await);
+    // Its start and its first tool call move the epoch too; the cursor is taken after them.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let seen = harness.host.wait(0, None).await;
+    let cursor = seen["cursor"].as_u64();
     let host = Arc::clone(&harness.host);
     let waiter = tokio::spawn(async move { host.wait(300_000, cursor).await });
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;

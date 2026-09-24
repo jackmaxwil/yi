@@ -325,6 +325,7 @@ class Todo:
                             f"child {child} {note}; answer it with rlm.send({child!r}, text, "
                             "reply_to=<that id>), then call result() again"
                         ) from error
+            await rlm._calm(reply, remaining)
         raise TimeoutError(f"child {child} did not finish within {timeout}s")
 
     async def cancel(self) -> "Todo":
@@ -688,6 +689,7 @@ class Run:
             else:
                 await self._complete(todo, task.result())
             settled.append(todo)
+        reply: dict[str, Any] = {}
         if self._waiting in done:
             reply, self._waiting = self._waiting.result(), None
             self._cursor = reply.get("cursor", self._cursor)
@@ -715,6 +717,8 @@ class Run:
                 self._left.add((label, todo._doc.get("attempt")))
             self.active.pop(label)
             settled.append(todo)
+        if not settled:
+            await rlm._calm(reply, self._remaining())
         return settled
 
     async def _drive(self) -> "Run":

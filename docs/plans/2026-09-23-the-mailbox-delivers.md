@@ -1,4 +1,4 @@
-# The mailbox delivers: M1-M3
+# The mailbox delivers: M1-M4
 
 ```
 status:  planned 2026-09-23. Lands as docs/plans/2026-09-23-the-mailbox-delivers.md in
@@ -88,6 +88,19 @@ and the other is refused by name.
   functions, and a sync form of every call when it is not awaited.
 - Item 9, after M2: cards show `MemberState` and the question, a reply box sends a
   `reply` envelope, replay keeps `agent_message`, and ACP marks host notices as host.
+
+## M4. Every request answered, every run ends with an answer: done
+
+Landed as 0.297.0 (D235, #499) from a paid confirmation of M1-M3 at 9f29fa88.
+
+- A member whose turn ends with a request to it open is steered once; a second such
+  ending sends its final text as the reply, marked `final_text`.
+- A plain send to a child with exactly one request open to the sender answers it, and
+  `rlm.wait` returns at once while a child asks its caller or nothing is live.
+- Every `rlm` call is a task scheduled when it is made; the after-cell hook only reports.
+- The wind-down runs one last turn without tools, `yi ask` gives it a grace past the
+  deadline and then stops the session, and a run with no final answer exits 1.
+- A receipt says when its message is presented.
 
 ## Verification
 

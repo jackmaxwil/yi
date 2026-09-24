@@ -11,6 +11,8 @@ use super::{
     store_of,
 };
 
+const LAST_WORD: &str = "[deadline] Time is up: no more tool calls. Write your final answer now from what you have, and say plainly what is unfinished.";
+
 /// Invariant: asked under the session's status lock when a turn would present the message, so
 /// it may lock a host's roster but nothing that waits on this session; false drops it unread.
 pub type StillNews = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -230,6 +232,13 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     // Not the interrupt: the turn in flight ends and settles, and no request follows.
     let stop = Arc::clone(&shared);
     config.should_stop_after_turn = Some(Box::new(move |_| stop.winding_down()));
+    // Incident: the wind-down ended three confirmation runs on a tool call, with no answer.
+    let clock = Arc::clone(&shared);
+    config.last_word = Some(Box::new(move |_| {
+        let cancelled = clock.cancelled.load(std::sync::atomic::Ordering::SeqCst);
+        let out_of_time = clock.deadline.get().is_some_and(|at| at.winding_down());
+        (out_of_time && !cancelled).then(|| super::user_message(LAST_WORD))
+    }));
     let emit_shared = Arc::clone(&shared);
     let mut emit = move |event: AgentEvent| {
         if let AgentEvent::MessageEnd { message } = &event {

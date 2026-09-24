@@ -210,5 +210,6 @@ when it changes rather than editing them by hand.
 - [D232](adr/d232.md) - one `rlm` surface, and a call the cell never awaits runs once after it
 - [D233](adr/d233.md) - asking, receiving and a headless run's children go through the mailbox
 - [D234](adr/d234.md) - the human sees a child's question and answers it
+- [D235](adr/d235.md) - every open request is answered or chased, and every run ends with an answer
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
