@@ -217,6 +217,8 @@ pub struct KernelService {
     died: std::sync::atomic::AtomicBool,
     names: Mutex<Option<Vec<String>>>,
     restarted: Mutex<Option<String>>,
+    surface: Mutex<Option<String>>,
+    surface_shown: std::sync::atomic::AtomicBool,
 }
 
 impl KernelService {
@@ -230,6 +232,8 @@ impl KernelService {
             died: std::sync::atomic::AtomicBool::new(false),
             names: Mutex::new(None),
             restarted: Mutex::new(None),
+            surface: Mutex::new(None),
+            surface_shown: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -271,6 +275,9 @@ impl KernelService {
         };
         if let Some(restarted) = self.restarted.lock().ok().and_then(|slot| slot.clone()) {
             state.push_str(&format!(" · {restarted}"));
+        }
+        if !self.surface_shown.load(std::sync::atomic::Ordering::SeqCst) {
+            state.push_str(&format!(" · {}", crate::kernel_bootstrap::surface_line()));
         }
         state
     }
@@ -419,6 +426,17 @@ impl KernelService {
         if let (Some(restore), Some(on_restore)) = (pending_restore, &self.options.on_restore) {
             on_restore(&restore);
         }
+        if self.surface.lock().is_ok_and(|table| table.is_none())
+            && let Ok(table) = manager
+                .execute(
+                    crate::kernel_bootstrap::SURFACE_CODE,
+                    ExecuteOptions::default(),
+                )
+                .await
+            && let Ok(mut slot) = self.surface.lock()
+        {
+            *slot = Some(table.stdout.trim_end().to_owned()).filter(|table| !table.is_empty());
+        }
         *slot = Some(Arc::clone(&manager));
         Ok(manager)
     }
@@ -551,6 +569,14 @@ impl KernelService {
                         && let Ok(mut slot) = self.names.lock()
                     {
                         *slot = Some(names);
+                    }
+                    let first = !self
+                        .surface_shown
+                        .swap(true, std::sync::atomic::Ordering::SeqCst);
+                    if let Some(table) = self.surface.lock().ok().and_then(|table| table.clone())
+                        && first
+                    {
+                        notes.push(crate::kernel_bootstrap::surface_note(&table));
                     }
                     return Ok(KernelCellOutcome {
                         result,

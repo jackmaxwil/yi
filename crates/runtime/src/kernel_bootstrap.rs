@@ -157,6 +157,44 @@ pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> S
     lines.join("\n")
 }
 
+pub const SURFACE_CODE: &str = r#"
+def _yi_surface():
+    import inspect
+    rows = []
+    for name in getattr(rlm, "__all__", []):
+        obj = getattr(rlm, name, None)
+        if inspect.isclass(obj) or not callable(obj):
+            continue
+        try:
+            sig = inspect.signature(obj)
+        except (TypeError, ValueError):
+            continue
+        empty = inspect.Parameter.empty
+        params = [p.replace(annotation=empty) for p in sig.parameters.values()]
+        sig = sig.replace(parameters=params, return_annotation=empty)
+        rows.append(("await " if inspect.iscoroutinefunction(obj) else "") + f"rlm.{name}{sig}")
+    print("\n".join(rows))
+_yi_surface()
+del _yi_surface
+"#;
+
+const OFFERED_BY_RLM: &[&str] = &[
+    "run", "send", "request", "wait", "result", "bash", "fetch", "put", "get",
+];
+const OFFERED_BY_YI: &[&str] = &["Plan", "Todo", "Run", "fork_join"];
+
+pub fn surface_line() -> String {
+    format!(
+        "rlm: {} · yi: {} · help(rlm) and help(yi) are exact",
+        OFFERED_BY_RLM.join(", "),
+        OFFERED_BY_YI.join(", ")
+    )
+}
+
+pub fn surface_note(table: &str) -> String {
+    format!("[rlm, shown once per session; help(rlm) and help(yi) are exact]\n{table}")
+}
+
 pub fn restart_note(lost: Option<&[String]>) -> String {
     match lost {
         None => "[IPython kernel was restarted; in-memory state was lost]".to_owned(),
