@@ -319,6 +319,16 @@ class StatusTests(unittest.IsolatedAsyncioTestCase):
                 await rlm.status("counter")
         self.assertIn("'a', 'd'", str(unknown.exception))
 
+    async def test_status_names_a_plan_child_by_its_todo_label(self) -> None:
+        """Dies with only the full ``<plan>/<todo>`` name matched: the host resolves the label,
+        and the entry it returns under the full name was refused as unknown."""
+
+        async def fake_host_request(kind, payload):
+            return {"members": [{"name": "audit/ledger", "state": "running"}]}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            self.assertEqual((await rlm.status("ledger")).name, "audit/ledger")
+
     async def test_a_handle_reads_its_state_from_the_host(self) -> None:
         """Dies with no ``state`` on a spawn handle (the final confirmation's r2 fanout)."""
 

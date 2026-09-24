@@ -440,7 +440,7 @@ pub(crate) mod tests {
         pins: Arc<FetchLog>,
         pub(in crate::plan) reports: Sink<AgentMessage>,
         /// The host's own lifecycle notices, which a child the engine took never sends.
-        notices: Sink<String>,
+        pub(in crate::plan) notices: Sink<String>,
         /// The engine's lines to the owner.
         pub(in crate::plan) said: Sink<AgentMessage>,
         pub(in crate::plan) cwd: Scratch,

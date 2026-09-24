@@ -893,8 +893,8 @@ async fn the_host_names_the_sender_and_a_kind_keeps_its_direction() -> TestResul
     let reports = harness.entries.lock().map_err(|_| "poisoned")?.len();
     assert_eq!(
         reports,
-        entries.len(),
-        "progress is inboxed and never becomes a turn message"
+        entries.len() + 1,
+        "progress is reported to the parent"
     );
     Ok(())
 }

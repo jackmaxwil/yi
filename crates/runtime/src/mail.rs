@@ -1,5 +1,4 @@
-//! Envelopes between family members: ids and per-pair order, the durable inbox, and the
-//! waiters a request parks on (D214).
+//! Family envelopes: ids and per-pair order, the durable inbox, and request waiters (D214).
 use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
@@ -343,6 +342,21 @@ pub(crate) fn envelope_id(message: &AgentMessage) -> Option<&str> {
         } if custom_type == INBOX_ENTRY => details.get("id").and_then(Value::as_str),
         _ => None,
     }
+}
+
+pub(crate) fn progress_from(message: &AgentMessage) -> Option<&str> {
+    let details = match message {
+        AgentMessage::Custom {
+            custom_type,
+            details: Some(details),
+            ..
+        } if custom_type == INBOX_ENTRY => details,
+        _ => return None,
+    };
+    if details.get("kind")? != "progress" {
+        return None;
+    }
+    details.get("from")?.as_str()
 }
 
 fn shown(entries: &[yi_types::entry::Entry]) -> std::collections::HashSet<&str> {
