@@ -68,7 +68,7 @@ pub enum Effect {
         slot: Slot,
     },
     /// Environment-sourced text. Never enters the trusted prefix: it renders in
-    /// the yard behind a nonce fence, labeled with source and trust.
+    /// the yard behind a fence named by its hash, labeled with source and trust.
     AttachExternal {
         source: String,
         trust: Trust,
@@ -154,7 +154,7 @@ impl Host {
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             extensions: Vec::new(),
-            state: PromptState::new(session_nonce(&cwd)),
+            state: PromptState::default(),
             started: false,
             turn: 0,
             tool_calls_this_turn: 0,
@@ -303,15 +303,4 @@ fn record(store: Option<&yi_session::SharedSession>, key: &str, value: &Value) {
     let line = serde_json::json!({"key": key, "value": value});
     let _telemetry_is_never_load_bearing =
         yi_session::lock_session(store).append_custom("main", RECORD_ENTRY, Some(line));
-}
-
-/// Unguessable by anything authored before the session existed, and stable for
-/// its lifetime: a fresh nonce per request would rewrite the yard every turn.
-fn session_nonce(cwd: &std::path::Path) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    yi_session::now_ms().hash(&mut hasher);
-    std::process::id().hash(&mut hasher);
-    cwd.hash(&mut hasher);
-    format!("{:012x}", hasher.finish())
 }

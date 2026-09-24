@@ -207,6 +207,7 @@ when it changes rather than editing them by hand.
 - [D228](adr/d228.md) - a contract's checker runs after every covered write
 - [D229](adr/d229.md) - the classes the final confirmation found are removed at their decision
 - [D230](adr/d230.md) - the mailbox delivers in order and no run ends owing a turn
+- [D231](adr/d231.md) - the cached prefix holds still across requests and sessions
 - [D232](adr/d232.md) - one `rlm` surface, and a call the cell never awaits runs once after it
 - [D233](adr/d233.md) - asking, receiving and a headless run's children go through the mailbox
 - [D234](adr/d234.md) - the human sees a child's question and answers it

@@ -384,7 +384,7 @@ fn the_assembled_prefix_is_stable_across_a_turn_and_a_yard_change() -> TestResul
     use yi_runtime::ext::{PromptState, Rank, Slot, Trust};
     use yi_types::model::SYSTEM_BLOCK_SEPARATOR;
 
-    let mut state = PromptState::new("cafe1234".to_owned());
+    let mut state = PromptState::default();
     state.attach(
         Slot::new(Rank::Identity, "identity"),
         identity_fragment().to_owned(),
@@ -515,7 +515,7 @@ fn frozen_block(cwd: &std::path::Path, home: &std::path::Path) -> Result<String,
 }
 
 /// Block 0 only: block 1 is machine-dependent by design (the skills catalog)
-/// and block 2 carries a per-session nonce. Two renders in one process share
+/// and block 2 is the repository's own text. Two renders in one process share
 /// every ambient value, so invariance and a residue scan both have to run.
 #[test]
 fn the_frozen_prefix_is_location_invariant_and_residue_free() -> TestResult {
@@ -600,6 +600,39 @@ fn the_frozen_prefix_is_location_invariant_and_residue_free() -> TestResult {
         return Ok(());
     }
     Err(violations.join("\n").into())
+}
+
+/// Incident: a per-session fence nonce sat ahead of the tool table, so a new session reused
+/// at most about 7k cached tokens of another's prefix. Same repo and HOME, same bytes.
+#[test]
+fn two_fresh_sessions_send_the_same_system_prompt_and_tools() -> TestResult {
+    use yi_runtime::ext::{ExtOptions, install};
+
+    let root = Scratch::new("yi-twin")?;
+    let (cwd, home) = (root.join("repo"), root.join("home"));
+    std::fs::create_dir_all(cwd.join(".git"))?;
+    std::fs::create_dir_all(&home)?;
+    std::fs::write(cwd.join("AGENTS.md"), "run the repo's own gate\n")?;
+    let session = || -> Result<(String, String), Box<dyn Error>> {
+        let mut host = install(ExtOptions {
+            cwd: cwd.clone(),
+            home: home.clone(),
+            mode: PermissionMode::Auto,
+            user_system: String::new(),
+            schema_instruction: None,
+            context_window: 128_000,
+        });
+        host.start(None, false);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        Ok((
+            host.system_prompt(),
+            serde_json::to_string(&session_tool_defs()?)?,
+        ))
+    };
+    let (first, second) = (session()?, session()?);
+    assert!(first.0.contains("<<<yi-external "), "{}", first.0);
+    assert_eq!(first, second);
+    Ok(())
 }
 
 /// Read by scripts/guardrails/check_request_budget.py, which owns the ratchet
