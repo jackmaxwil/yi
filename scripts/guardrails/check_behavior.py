@@ -9,8 +9,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, BASE, fail
 
 f = BASE / "behavior_baseline.json"
+# --workspace, not -p: features then unify as in the test lane, so both reuse one build of
+# the stack; -p yi-runtime compiled a second copy of 67 crates and relinked every binary.
 out = subprocess.run(
-    ["cargo", "test", "-q", "-p", "yi-runtime", "--test", "behavior", "--", "--nocapture"],
+    ["cargo", "test", "-q", "--workspace", "--test", "behavior", "--", "--nocapture"],
     cwd=ROOT, capture_output=True, text=True)
 if out.returncode != 0:
     fail([f"behavior harness failed:\n{out.stdout}{out.stderr}"], "behavior")
