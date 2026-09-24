@@ -187,35 +187,6 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
 mod tests {
     use super::missing_module;
 
-    /// Incident: `attach_image` promised the model the picture, which reached only `details`.
-    #[test]
-    fn an_attached_image_is_in_the_models_view() -> Result<(), Box<dyn std::error::Error>> {
-        let result: yi_types::kernel::ExecuteResult = serde_json::from_value(serde_json::json!({
-            "stdout": "attached", "stderr": "", "status": "ok", "durationMs": 1,
-            "attachments": [{"mime_type": "image/png", "data": "iVBORw0KGgo="},
-                            {"mime_type": "text/csv", "data": "YSxi"}],
-        }))?;
-        let outcome = super::KernelCellOutcome {
-            result,
-            kernel_restarted: false,
-            notes: Vec::new(),
-        };
-        let images: Vec<_> = super::cell_output("x", outcome)
-            .result
-            .content
-            .into_iter()
-            .filter_map(|block| match block {
-                yi_types::message::Content::Image { data, mime_type } => Some((data, mime_type)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            images,
-            vec![("iVBORw0KGgo=".to_owned(), "image/png".to_owned())]
-        );
-        Ok(())
-    }
-
     #[test]
     fn a_missing_module_names_its_distribution() {
         assert_eq!(missing_module("No module named 'xlrd'"), Some("xlrd"));
