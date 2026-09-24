@@ -1,0 +1,137 @@
+{
+  "id": "unserved-output-today-passes",
+  "description": "The implicit pass this stage closes. A delegation declares an output schema and done names an output; the resolver answers Ok(None) because no backend serves that scheme, so today the validation is skipped and done succeeds. This fixture asserts the refusal, so it is red on the tree as it stands and green once F0c lands. The second todo is the mirror case, an unserved schema document rather than an unserved product.",
+  "decisions": [
+    "The red is the point. The fixture is written against the behaviour F0c owes, not the behaviour the tree has, and its name records which of the two it is.",
+    "Ok(None) means resolved but unserved: the referent may exist and its bytes are not here to adjudicate. That is exactly the case where a pass is unfounded, so it is a refusal with an infrastructure reason, not a product failure, and it charges no refusal against the todo.",
+    "An unserved schema and an unserved product refuse with different reasons. The first is the criterion being unavailable and the second is the evidence being unavailable, and a caller repairs them differently.",
+    "kernel://main/... is the scheme with no backend in a unit test. A fixture that reached for a live kernel to produce Ok(None) would be testing the kernel."
+  ],
+  "prompt": "Build the tarball and hand back the build report the schema describes.",
+  "eagerInit": true,
+  "goal": "Build the tarball and hand back a schema-shaped build report",
+  "plan": "build-the-tarball-and-hand-back",
+  "artifacts": {
+    "report-schema": {
+      "digest": "sha256:7d2ab4e883d3c448facf56243baab07471d57bab34f8fc5fa6a986352e010eba",
+      "media_type": "application/schema+json",
+      "length": 124,
+      "text": "{\n  \"properties\": {\n    \"built\": {\n      \"type\": \"boolean\"\n    }\n  },\n  \"required\": [\n    \"built\"\n  ],\n  \"type\": \"object\"\n}\n"
+    }
+  },
+  "steps": [
+    {
+      "op": "init",
+      "actor": "agent://main",
+      "args": {
+        "goal": "Build the tarball and hand back a schema-shaped build report",
+        "todos": [
+          {
+            "label": "Build the tarball",
+            "delegation": {
+              "spec": {
+                "role": "builder"
+              },
+              "accept": {
+                "command": "make dist"
+              },
+              "output": {
+                "schema": "local://schema/report.json"
+              }
+            }
+          },
+          {
+            "label": "Build the docs",
+            "delegation": {
+              "spec": {
+                "role": "builder"
+              },
+              "accept": {
+                "command": "make docs"
+              },
+              "output": {
+                "schema": "kernel://main/report_schema"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": {
+        "label": "Build the tarball"
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "serve": {
+        "local://schema/report.json": "report-schema"
+      },
+      "unserved": [
+        "kernel://main/build_report"
+      ],
+      "args": {
+        "label": "Build the tarball",
+        "output": "kernel://main/build_report"
+      },
+      "expect": {
+        "ok": false,
+        "error": "unserved product",
+        "todos": [
+          {
+            "label": "Build the tarball",
+            "state": "running",
+            "refusals": 0
+          }
+        ]
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": {
+        "label": "Build the docs"
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "serve": {
+        "local://build/docs.json": "report-schema"
+      },
+      "unserved": [
+        "kernel://main/report_schema"
+      ],
+      "args": {
+        "label": "Build the docs",
+        "output": "local://build/docs.json"
+      },
+      "expect": {
+        "ok": false,
+        "error": "unserved schema",
+        "todos": [
+          {
+            "label": "Build the docs",
+            "state": "running",
+            "refusals": 0
+          }
+        ]
+      }
+    }
+  ],
+  "final": {
+    "planCount": 1
+  }
+}

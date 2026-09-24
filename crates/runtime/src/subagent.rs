@@ -24,6 +24,14 @@ pub(crate) struct ChildRecord {
     pub(crate) session_name: String,
     session_dir: PathBuf,
     pub(crate) worktree: Option<crate::lane::Lane>,
+    /// The worker share of the lane pool this child's checkout was taken from; dropped with
+    /// the lane, so a settled child stops holding a slot nobody is standing in.
+    pub(crate) lane_permit: Option<crate::plan::capacity::Permit>,
+    /// How the worktree goes at reap, once the engine has journaled it (plan section 6.6).
+    pub(crate) disposition: Option<yi_types::plan::op::Choice>,
+    /// Dispatched by the plan engine: its worktree goes through `submit` or a journaled
+    /// disposition, never the kernel's merge or discard.
+    pub(crate) managed: bool,
     pub(crate) status: ChildStatus,
     activity: ChildActivity,
     tool_use_count: u64,
@@ -33,10 +41,42 @@ pub(crate) struct ChildRecord {
     /// L3: set makes this a protocol child — its answer must decode as a
     /// [`yi_types::subagent::ChildResult`] and this check must be green.
     pub(crate) check: Option<String>,
-    /// B13 wait: reports and terminal transitions the parent has not collected.
-    pub(crate) pending: u64,
     pub(crate) replied: bool,
+    pub(crate) changed_at_epoch: u64,
     pub(crate) session: Arc<AgentSession>,
+}
+
+/// One lock for the records and the epoch they move under, so the two are never seen apart.
+#[derive(Default)]
+pub(crate) struct Children {
+    records: HashMap<String, ChildRecord>,
+    pub(crate) epoch: u64,
+}
+
+impl Children {
+    /// A reaped record still moves the epoch, so an older cursor wakes and re-reads `states`.
+    pub(crate) fn touch(&mut self, key: &str) -> u64 {
+        self.epoch = self.epoch.saturating_add(1);
+        let epoch = self.epoch;
+        if let Some(record) = self.records.get_mut(key) {
+            record.changed_at_epoch = epoch;
+        }
+        epoch
+    }
+}
+
+impl std::ops::Deref for Children {
+    type Target = HashMap<String, ChildRecord>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.records
+    }
+}
+
+impl std::ops::DerefMut for Children {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.records
+    }
 }
 
 impl ChildRecord {
@@ -107,7 +147,12 @@ pub struct SubagentHostOptions {
 
 pub struct SubagentHost {
     pub(crate) options: SubagentHostOptions,
-    pub(crate) children: Mutex<HashMap<String, ChildRecord>>,
+    /// The split of the lane pool this host's workers draw on, shared with the plan engine's
+    /// verification reserve so both shares are counted over one pool (section 7.6).
+    pub(crate) capacity: Arc<crate::plan::capacity::Capacity>,
+    /// The run's end (D177): every settle, merge and discard of a lane is bounded by it.
+    deadline: Mutex<Option<std::time::Instant>>,
+    pub(crate) children: Mutex<Children>,
     /// Invariant: a reap pin names `history://<child>`, and a child's file lives
     /// under a `sub-*` directory no session repo scans, so it is kept by name here.
     pub(crate) reaped: Mutex<HashMap<String, yi_session::SharedSession>>,
@@ -116,7 +161,16 @@ pub struct SubagentHost {
 impl SubagentHost {
     /// A child lane branches from the parent's own HEAD, so its merge lands back in
     /// the parent's checkout rather than on `main`.
-    fn claim_child_lane(&self, child_id: &str) -> Result<crate::lane::Lane, String> {
+    fn claim_child_lane(
+        &self,
+        child_id: &str,
+    ) -> Result<(crate::lane::Lane, crate::plan::capacity::Permit), String> {
+        // The worker share, never the whole pool: a lane the workers take here is one the
+        // engine cannot verify a candidate in (plan section 7.6).
+        let permit = self
+            .capacity
+            .reserve(crate::plan::capacity::Purpose::Worker)
+            .map_err(|error| error.to_string())?;
         let pool = crate::lane::Pool::open(
             &self.options.home,
             &self.options.cwd,
@@ -128,11 +182,13 @@ impl SubagentHost {
             &["rev-parse", "--verify", "HEAD^{commit}"],
         )
         .map_err(|error| error.to_string())?;
-        pool.claim(
-            child_id,
-            crate::lane::ClaimBase::Commit(head.trim().to_owned()),
-        )
-        .map_err(|error| error.to_string())
+        let lane = pool
+            .claim(
+                child_id,
+                crate::lane::ClaimBase::Commit(head.trim().to_owned()),
+            )
+            .map_err(|error| error.to_string())?;
+        Ok((lane, permit))
     }
 }
 
@@ -390,10 +446,28 @@ fn fold_event(record: &mut ChildRecord, event: &AgentEvent) -> bool {
 impl SubagentHost {
     pub fn new(options: SubagentHostOptions) -> Self {
         Self {
+            capacity: crate::plan::capacity::Capacity::for_slots(options.lane_slots),
             options,
-            children: Mutex::new(HashMap::new()),
+            deadline: Mutex::new(None),
+            children: Mutex::new(Children::default()),
             reaped: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The lane split, shared with the plan engine so verification and workers count one pool.
+    pub fn capacity(&self) -> Arc<crate::plan::capacity::Capacity> {
+        Arc::clone(&self.capacity)
+    }
+
+    /// The run's end, read by every lane settle this host runs (D177).
+    pub fn set_deadline(&self, ends: Option<std::time::Instant>) {
+        if let Ok(mut slot) = self.deadline.lock() {
+            *slot = ends;
+        }
+    }
+
+    pub fn deadline(&self) -> Option<std::time::Instant> {
+        self.deadline.lock().ok().and_then(|slot| *slot)
     }
 
     pub fn children_view(&self) -> Vec<ChildView> {
@@ -537,9 +611,12 @@ impl SubagentHost {
                     self.options.depth.saturating_add(1)
                 ));
             }
-            let worktree = match isolation {
-                Isolation::None => None,
-                Isolation::Worktree => Some(self.claim_child_lane(&child_id)?),
+            let (worktree, lane_permit) = match isolation {
+                Isolation::None => (None, None),
+                Isolation::Worktree => {
+                    let (lane, permit) = self.claim_child_lane(&child_id)?;
+                    (Some(lane), Some(permit))
+                }
             };
             let child = (self.options.factory)(ChildBuild {
                 model: model.clone(),
@@ -575,6 +652,9 @@ impl SubagentHost {
                     session_name: session_name.clone(),
                     session_dir: session_dir.clone(),
                     worktree,
+                    lane_permit,
+                    disposition: None,
+                    managed: false,
                     status: ChildStatus::Running,
                     activity: ChildActivity::Waiting,
                     tool_use_count: 0,
@@ -582,11 +662,12 @@ impl SubagentHost {
                     answer_preview: None,
                     error: None,
                     check,
-                    pending: 0,
                     replied: false,
+                    changed_at_epoch: 0,
                     session: Arc::clone(&session),
                 },
             );
+            children.touch(&child_id);
             self.watch(child_id.clone(), &session);
             let host = Arc::clone(self);
             let task_child_id = child_id.clone();
@@ -680,9 +761,9 @@ impl SubagentHost {
             record.status = status;
             record.activity = ChildActivity::Waiting;
             record.error = error.clone();
-            record.pending = record.pending.saturating_add(1);
             replied = record.replied;
             reaped = false;
+            children.touch(&child_id);
         }
         if reaped {
             return;
@@ -849,8 +930,11 @@ impl SubagentHost {
             .lock()
             .map_err(|_| "subagent state poisoned")?;
         let key = Self::key_of(&children, target)?;
+        // A worktree goes only through a recorded disposition: merge, discard, or the
+        // engine's dispose seam, never a delete that drops the only copy of its work.
         if let Some(record) = children.get(&key)
             && let Some(tree) = &record.worktree
+            && record.disposition.is_none()
         {
             return Err(format!(
                 "child \"{target}\" holds the worktree {}; merge or discard it first",
@@ -860,12 +944,25 @@ impl SubagentHost {
         let Some(record) = children.remove(&key) else {
             return Err(format!("No RLM child matches \"{target}\""));
         };
+        children.touch(&key);
+        drop(children);
         if record.status == ChildStatus::Running {
             record.session.abort();
         }
         Self::dispose_child_kernel(&record.session);
+        // A lane that cannot settle goes back on the record with its slot, and the delete fails.
+        let (mut record, settled) = self.settle_or_restore(&key, record)?;
+        drop(record.lane_permit.take());
         let mut reply = Map::new();
         reply.insert("subagent".to_owned(), child_entry(&key, &record));
+        if let Some((choice, candidate)) = settled {
+            let mut disposition = candidate.as_reply();
+            disposition.insert(
+                "choice".to_owned(),
+                serde_json::to_value(choice).map_err(|error| error.to_string())?,
+            );
+            reply.insert("disposition".to_owned(), Value::Object(disposition));
+        }
         Ok(reply)
     }
 
@@ -915,8 +1012,9 @@ impl SubagentHost {
                 .get("timeout_ms")
                 .and_then(Value::as_u64)
                 .unwrap_or(WAIT_MAX_MS);
+            let cursor = payload.get("cursor").and_then(Value::as_u64);
             let host = Arc::clone(&host);
-            Box::pin(async move { Ok(host.wait(timeout).await) })
+            Box::pin(async move { Ok(host.wait(timeout, cursor).await) })
         });
         let host = Arc::clone(self);
         registry.register("rlm.interrupt", move |payload| {

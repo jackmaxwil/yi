@@ -1,0 +1,101 @@
+{
+  "id": "legacy-stated-unverified",
+  "description": "A format-1 plan imported at F0c: its done todo carries Check::Stated, a child's word, with no verdict anywhere. The import marks it LegacyUnverified, which displays as history and is never evidence. A later set that asks for done on the todo still pending is refused all the same, so the legacy row buys the plan nothing.",
+  "decisions": [
+    "LegacyUnverified is a third Resolution, not a missing one. Reading it as VerifiedDone would let one import launder every unchecked claim in a year of plans into verified work; reading it as no resolution at all would lose the history the user asked to keep.",
+    "The imported Check::Stated is kept on the delegation as compatibility input (section 5.5). It is not converted into a contract: a contract synthesized from prose is a specification failure with a digest on it.",
+    "The import writes one genesis record carrying the converted plan inline, so the reducer rebuilds the checkpoint from the journal alone. The original markdown is kept as an artifact by digest; nothing rewrites the user's file.",
+    "The second todo has no contract, so the set's done row is refused for want of a verdict, not for want of a contract. The two refusals read differently and this fixture pins the first one."
+  ],
+  "prompt": "Import the old logrotate plan and carry on from where it stopped.",
+  "eagerInit": true,
+  "goal": "Ship logrotate-lite with a packaged tarball",
+  "plan": "ship-logrotate-lite-with-a-packaged",
+  "artifacts": {
+    "legacy-md": {
+      "digest": "sha256:eafa22e9b6d0584ee267adf3e3ce1bc9a11e51252cf3f5b9d29e2a4baa8bb64b",
+      "media_type": "text/markdown",
+      "length": 734,
+      "text": "---\n{\n  \"format\": 1,\n  \"plan\": \"ship-logrotate-lite-with-a-packaged\",\n  \"goal\": \"Ship logrotate-lite with a packaged tarball\",\n  \"version\": 1,\n  \"touched\": 9,\n  \"tier\": \"root\",\n  \"spawns\": 1,\n  \"state\": \"active\",\n  \"todos\": [\n    {\n      \"label\": \"Write the Makefile dist target\",\n      \"state\": \"done\",\n      \"delegation\": {\n        \"spec\": {\"role\": \"builder\"},\n        \"accept\": {\"stated\": \"make dist writes the tarball and the checksum beside it\"}\n      }\n    },\n    {\n      \"label\": \"Drive the whole build through make dist\",\n      \"state\": \"pending\",\n      \"after\": [\"Write the Makefile dist target\"]\n    }\n  ]\n}\n---\n\n## Write the Makefile dist target\n\nThe child said the target was written and the tarball built. Nobody ran it.\n"
+    }
+  },
+  "steps": [
+    {
+      "op": "import",
+      "actor": "agent://main",
+      "serve": {
+        "local://.yi/plans/ship-logrotate-lite-with-a-packaged.md": "legacy-md"
+      },
+      "args": {
+        "source": "local://.yi/plans/ship-logrotate-lite-with-a-packaged.md"
+      },
+      "expect": {
+        "ok": true,
+        "journal": [
+          "import"
+        ],
+        "todos": [
+          {
+            "label": "Write the Makefile dist target",
+            "state": "done",
+            "resolution": "legacy_unverified",
+            "delegated": true,
+            "attempt": 1
+          },
+          {
+            "label": "Drive the whole build through make dist",
+            "state": "pending"
+          }
+        ]
+      }
+    },
+    {
+      "op": "set",
+      "actor": "agent://main",
+      "args": {
+        "rows": [
+          {
+            "spec": {
+              "label": "Drive the whole build through make dist"
+            },
+            "state": "done"
+          }
+        ]
+      },
+      "expect": {
+        "ok": false,
+        "error": "no verified completion for \"Drive the whole build through make dist\"",
+        "todos": [
+          {
+            "label": "Drive the whole build through make dist",
+            "state": "pending"
+          }
+        ]
+      }
+    },
+    {
+      "op": "view",
+      "actor": "agent://main",
+      "args": {
+        "full": true
+      },
+      "expect": {
+        "ok": true,
+        "todos": [
+          {
+            "label": "Write the Makefile dist target",
+            "state": "done",
+            "resolution": "legacy_unverified"
+          },
+          {
+            "label": "Drive the whole build through make dist",
+            "state": "pending"
+          }
+        ]
+      }
+    }
+  ],
+  "final": {
+    "planCount": 1
+  }
+}

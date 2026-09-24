@@ -2,31 +2,14 @@ use std::collections::HashSet;
 
 use serde_json::Map;
 use yi_types::plan::doc::{
-    AgentId, Plan, PlanIssue, PlanState, RetryCount, SPAWN_CAP, Todo, TodoLabel, TodoState,
-    TodoStateName, terminal_durability,
+    AgentId, Plan, PlanIssue, PlanState, RetryCount, Todo, TodoLabel, TodoState, TodoStateName,
+    terminal_durability,
 };
 use yi_types::url::{Durability, Url};
 
-use super::ops::{Actor, OWNER_AGENT, PlanOpError, TodoSpec};
+use super::ops::{Actor, OWNER_AGENT, Op, PlanOpError, TodoSpec};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum OpKind {
-    Init,
-    Append,
-    Drop,
-    Block,
-    Unblock,
-    Reorder,
-    AddEdge,
-    Start,
-    Done,
-    Fail,
-    Retry,
-    Decompose,
-    Supersede,
-    Set,
-    View,
-}
+pub use yi_types::plan::op::{ALL_OPS, OpKind, op_name};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
@@ -77,6 +60,11 @@ pub const STEPS: &[Step] = &[
         to: TodoStateName::Running,
     },
     Step {
+        from: TodoStateName::Running,
+        op: OpKind::Accept,
+        to: TodoStateName::Done,
+    },
+    Step {
         from: TodoStateName::Blocked,
         op: OpKind::Unblock,
         to: TodoStateName::Pending,
@@ -92,6 +80,11 @@ pub const STEPS: &[Step] = &[
         to: TodoStateName::Blocked,
     },
     Step {
+        from: TodoStateName::Blocked,
+        op: OpKind::Accept,
+        to: TodoStateName::Done,
+    },
+    Step {
         from: TodoStateName::Done,
         op: OpKind::AddEdge,
         to: TodoStateName::Done,
@@ -105,6 +98,11 @@ pub const STEPS: &[Step] = &[
         from: TodoStateName::Failed,
         op: OpKind::AddEdge,
         to: TodoStateName::Failed,
+    },
+    Step {
+        from: TodoStateName::Failed,
+        op: OpKind::Accept,
+        to: TodoStateName::Done,
     },
 ];
 
@@ -136,49 +134,25 @@ pub(super) fn check_plan_state(plan: &Plan, op: OpKind) -> Result<(), PlanOpErro
     }
 }
 
-pub(super) fn op_name(op: OpKind) -> &'static str {
-    match op {
-        OpKind::Init => "init",
-        OpKind::Append => "append",
-        OpKind::Drop => "drop",
-        OpKind::Block => "block",
-        OpKind::Unblock => "unblock",
-        OpKind::Reorder => "reorder",
-        OpKind::AddEdge => "add_edge",
-        OpKind::Start => "start",
-        OpKind::Done => "done",
-        OpKind::Fail => "fail",
-        OpKind::Retry => "retry",
-        OpKind::Decompose => "decompose",
-        OpKind::Supersede => "supersede",
-        OpKind::Set => "set",
-        OpKind::View => "view",
-    }
-}
-
-pub(super) fn check_actor(actor: &Actor, op: OpKind) -> Result<(), PlanOpError> {
+/// Invariant: authority is a channel (plan section 5.6). `User` is minted only by the confirmed
+/// path, so the ops it alone may apply are the ones the owner is refused here.
+pub(super) fn check_actor(actor: &Actor, op: &Op) -> Result<(), PlanOpError> {
+    let kind = op.kind();
     let allowed = match actor {
-        Actor::Owner => true,
-        Actor::User(_) | Actor::Host => matches!(op, OpKind::Unblock | OpKind::View),
-        Actor::Child(_) => matches!(op, OpKind::View),
+        Actor::Owner => match op {
+            Op::FuseReset | Op::Resolve { .. } | Op::Accept { .. } => false,
+            Op::Repair { resolutions } => resolutions.is_empty(),
+            _ => true,
+        },
+        Actor::User(_) => true,
+        Actor::Host => matches!(kind, OpKind::Unblock | OpKind::Reconcile),
+        Actor::Child(_) => matches!(kind, OpKind::View | OpKind::Submit),
     };
     if allowed {
         Ok(())
     } else {
-        Err(PlanOpError::NotOwner { op })
+        Err(PlanOpError::NotOwner { op: kind })
     }
-}
-
-pub(super) fn charge_spawn(plan: &mut Plan) -> Result<(), PlanOpError> {
-    let spent = plan.spawns();
-    if spent >= SPAWN_CAP {
-        return Err(PlanOpError::SpawnCeilingExhausted {
-            spent,
-            cap: SPAWN_CAP,
-        });
-    }
-    plan.charge_spawn();
-    Ok(())
 }
 
 /// Invariant: a cap is refused and reported, never silently applied: a saturating counter
@@ -224,18 +198,56 @@ pub(super) fn ready_labels(plan: &Plan) -> Vec<TodoLabel> {
         .collect()
 }
 
-pub(super) fn admissible(plan: &Plan, slots: usize) -> Vec<TodoLabel> {
-    let mut slots = slots;
-    let mut out = Vec::new();
-    for todo in plan.ready() {
-        if todo.delegation.is_none() {
-            out.push(todo.label.clone());
-        } else if slots > 0 {
-            slots = slots.saturating_sub(1);
-            out.push(todo.label.clone());
-        }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub label: TodoLabel,
+    pub position: usize,
+    pub delegated_ready: usize,
+    pub slots: usize,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} is delegated ready todo {} of {}; {} slot(s) free",
+            self.label, self.position, self.delegated_ready, self.slots
+        )
     }
-    out
+}
+
+pub fn admit(plan: &Plan, label: &TodoLabel, slots: usize) -> Result<(), Refusal> {
+    let ready = plan.ready();
+    let delegated: Vec<&Todo> = ready
+        .iter()
+        .copied()
+        .filter(|todo| todo.delegation.is_some())
+        .collect();
+    let Some(todo) = ready.iter().find(|todo| &todo.label == label) else {
+        return Err(Refusal {
+            label: label.clone(),
+            position: 0,
+            delegated_ready: delegated.len(),
+            slots,
+        });
+    };
+    if todo.delegation.is_none() {
+        return Ok(());
+    }
+    let position = delegated
+        .iter()
+        .position(|todo| &todo.label == label)
+        .map_or(0, |index| index.saturating_add(1));
+    if position <= slots {
+        Ok(())
+    } else {
+        Err(Refusal {
+            label: label.clone(),
+            position,
+            delegated_ready: delegated.len(),
+            slots,
+        })
+    }
 }
 
 pub(super) fn validate_plan(plan: &Plan) -> Result<(), PlanOpError> {
@@ -246,9 +258,11 @@ pub(super) fn validate_plan(plan: &Plan) -> Result<(), PlanOpError> {
         Some(PlanIssue::SlugCollision { second, .. }) => {
             Err(PlanOpError::LabelNotUnique { label: second })
         }
-        Some(issue @ (PlanIssue::UnresolvedEdge { .. } | PlanIssue::Cycle { .. })) => {
-            Err(PlanOpError::Invalid { issue })
-        }
+        Some(
+            issue @ (PlanIssue::UnresolvedEdge { .. }
+            | PlanIssue::Cycle { .. }
+            | PlanIssue::Contract { .. }),
+        ) => Err(PlanOpError::Invalid { issue }),
     }
 }
 
@@ -308,6 +322,11 @@ pub(super) fn new_todo(spec: TodoSpec) -> Todo {
         subplan: None,
         retries: RetryCount::default(),
         children: spec.children,
+        note: None,
+        attempt: yi_types::plan::doc::AttemptId::FIRST,
+        refusals: 0,
+        contract: spec.contract,
+        contract_hash: None,
         extra: Map::new(),
     }
 }
@@ -370,23 +389,7 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    const OPS: [OpKind; 15] = [
-        OpKind::Init,
-        OpKind::Append,
-        OpKind::Drop,
-        OpKind::Block,
-        OpKind::Unblock,
-        OpKind::Reorder,
-        OpKind::AddEdge,
-        OpKind::Start,
-        OpKind::Done,
-        OpKind::Fail,
-        OpKind::Retry,
-        OpKind::Decompose,
-        OpKind::Supersede,
-        OpKind::Set,
-        OpKind::View,
-    ];
+    const OPS: [OpKind; 22] = ALL_OPS;
 
     fn named_states() -> Result<Vec<(TodoStateName, TodoState)>, Box<dyn std::error::Error>> {
         Ok(vec![
@@ -404,7 +407,13 @@ mod tests {
                     note: String::new(),
                 },
             ),
-            (TodoStateName::Done, TodoState::Done { output: None }),
+            (
+                TodoStateName::Done,
+                TodoState::Done {
+                    output: None,
+                    resolution: None,
+                },
+            ),
             (
                 TodoStateName::Failed,
                 TodoState::Failed {
@@ -456,7 +465,13 @@ mod tests {
             Some(TodoStateName::Pending)
         );
         assert_eq!(
-            step(&TodoState::Done { output: None }, OpKind::AddEdge),
+            step(
+                &TodoState::Done {
+                    output: None,
+                    resolution: None
+                },
+                OpKind::AddEdge
+            ),
             Some(TodoStateName::Done)
         );
         assert_eq!(step(&TodoState::Pending, OpKind::Done), None);
@@ -482,6 +497,9 @@ mod tests {
                                 Some(TodoStateName::Pending)
                             }
                             OpKind::AddEdge => Some(name.clone()),
+                            OpKind::Accept if name == TodoStateName::Failed => {
+                                Some(TodoStateName::Done)
+                            }
                             OpKind::Init
                             | OpKind::Append
                             | OpKind::Drop
@@ -495,7 +513,14 @@ mod tests {
                             | OpKind::Decompose
                             | OpKind::Supersede
                             | OpKind::Set
-                            | OpKind::View => None,
+                            | OpKind::View
+                            | OpKind::FuseReset
+                            | OpKind::Repair
+                            | OpKind::Import
+                            | OpKind::Reconcile
+                            | OpKind::Submit
+                            | OpKind::Resolve
+                            | OpKind::Accept => None,
                         };
                         assert_eq!(step(&state, op), expected, "{name} x {op:?}");
                     }
@@ -529,6 +554,69 @@ mod tests {
             }
             other => return Err(format!("expected a cap refusal, got {other:?}").into()),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn admit_refuses_the_ninth_delegated_start_with_the_count() -> TestResult {
+        use yi_types::plan::doc::{Check, Delegation, GoalText, PlanId, PlanTier, SpawnSpec};
+        let delegation = Delegation {
+            spec: SpawnSpec {
+                role: None,
+                model: None,
+                effort: None,
+                tools: Vec::new(),
+                isolation: None,
+                budget: None,
+                wall: None,
+                extra: Map::new(),
+            },
+            accept: Check::Stated("it works".to_owned()),
+            output: None,
+            context: Vec::new(),
+            note: None,
+            extra: Map::new(),
+        };
+        let mut todos = Vec::new();
+        for index in 1..=9 {
+            let mut todo = Todo::pending(TodoLabel::new(format!("job {index}"))?);
+            todo.delegation = Some(delegation.clone());
+            todos.push(todo);
+        }
+        todos.push(Todo::pending(TodoLabel::new("inline note")?));
+        let plan = yi_types::plan::doc::Plan::opening(
+            PlanId::new("wide")?,
+            GoalText::new("nine delegated jobs")?,
+            PlanTier::Root,
+            todos,
+        );
+        for index in 1..=8 {
+            admit(&plan, &TodoLabel::new(format!("job {index}"))?, 8)
+                .map_err(|refusal| format!("job {index}: {refusal}"))?;
+        }
+        let refused = admit(&plan, &TodoLabel::new("job 9")?, 8);
+        assert_eq!(
+            refused,
+            Err(Refusal {
+                label: TodoLabel::new("job 9")?,
+                position: 9,
+                delegated_ready: 9,
+                slots: 8,
+            })
+        );
+        admit(&plan, &TodoLabel::new("inline note")?, 0)
+            .map_err(|refusal| format!("inline: {refusal}"))?;
+        let refused: Vec<TodoLabel> = plan
+            .ready()
+            .into_iter()
+            .filter(|todo| admit(&plan, &todo.label, 8).is_err())
+            .map(|todo| todo.label.clone())
+            .collect();
+        assert_eq!(
+            refused,
+            vec![TodoLabel::new("job 9")?],
+            "eight delegated and the inline one pass; the ninth delegated is refused, never reordered"
+        );
         Ok(())
     }
 }

@@ -1,8 +1,14 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use serde_json::{Map, Value, json};
+use yi_runtime::Wall;
+use yi_runtime::fetch::Resolver;
+use yi_runtime::plan::authority::{Submission, Unhosted, cli_args, submit};
 use yi_runtime::plan::ledger::{self, Report};
-use yi_runtime::plan::ops::dispatch_width;
+use yi_runtime::plan::ops::{Actor, PlanEngine, dispatch_width};
+use yi_runtime::plan::snapshot::shadow_tree;
 use yi_runtime::plan::store::PlanStore;
 use yi_types::plan::doc::{Plan, PlanId, PlanState};
 use yi_types::plan::ledger::PlanOpRecord;
@@ -14,15 +20,25 @@ pub struct Options {
     pub json: bool,
 }
 
+struct Reply {
+    plan: String,
+    revision: u64,
+    text: String,
+    notices: Vec<String>,
+}
+
 pub fn run(subcommand: &str, options: &Options) -> i32 {
     let (verb, id) = split(subcommand);
     match verb {
         "lint" => with_plan(options, id, |plan| lint(plan, options)),
         "report" => with_plan(options, id, |plan| report(plan, options)),
-        _ => {
-            eprintln!("usage: yi plan lint [<plan>] | yi plan report [<plan>]");
+        "" => {
+            eprintln!(
+                "usage: yi plan lint|report [<plan>] | yi plan fuse reset [<plan>] | yi plan repair [<plan>] [<json>] | yi plan accept [<plan>] <json> | yi plan resolve [<plan>] <json> | yi plan <op> [<plan>] [<json args>]"
+            );
             2
         }
+        _ => apply(subcommand, options),
     }
 }
 
@@ -36,6 +52,86 @@ fn dir(options: &Options) -> PathBuf {
         .plans_dir
         .clone()
         .unwrap_or_else(|| options.cwd.join(yi_runtime::plan::PLANS_DIR))
+}
+
+/// Invariant: this process holds no human's prompt, so every op applies here as the owner and
+/// an administrative one is refused; the daemon socket cannot carry the answer, so none is dialed.
+fn apply(line: &str, options: &Options) -> i32 {
+    let reply = cli_args(line).and_then(|mut args| {
+        import_source(&mut args, options);
+        let plans = dir(options);
+        let store = PlanStore::open(plans.clone()).map_err(|error| error.to_string())?;
+        let resolver =
+            Resolver::new(options.cwd.clone(), Wall::default()).with_plans_dir(plans.clone());
+        let mut engine = PlanEngine::new(store, Arc::new(Unhosted))
+            .with_cwd(options.cwd.clone())
+            .with_output_resolve(Arc::new(resolver));
+        // The same snapshot the session mints (plan section 6.5): a contracted `done` from the
+        // CLI reads the shadow gitdir tree, not a walk of the whole workspace.
+        if let Some(snapshotter) = std::env::var_os("HOME")
+            .and_then(|home| shadow_tree(&PathBuf::from(home), &options.cwd, &plans))
+        {
+            engine = engine.with_snapshotter(snapshotter);
+        }
+        let submission = Submission {
+            args,
+            request_id: None,
+            expected_revision: None,
+        };
+        match submit(&engine, &Actor::Owner, None, submission) {
+            Ok(applied) => Ok(Reply {
+                plan: applied.outcome.plan.id.as_str().to_owned(),
+                revision: applied.outcome.plan.touched.0,
+                text: applied.text(),
+                notices: applied.outcome.notices,
+            }),
+            Err(error) => Err(error.to_string()),
+        }
+    });
+    let reply = match reply {
+        Ok(reply) => reply,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
+    if options.json {
+        println!(
+            "{}",
+            json!({
+                "plan": reply.plan,
+                "revision": reply.revision,
+                "text": reply.text,
+                "notices": reply.notices,
+            })
+        );
+        return 0;
+    }
+    for notice in &reply.notices {
+        println!("{notice}");
+    }
+    println!("{}", reply.text);
+    0
+}
+
+/// `yi plan import <id>` reads `<plans dir>/<id>.md`, the file a format-1 read names;
+/// `yi plan import local://<path>` names the file itself, as the missing-journal notice prints.
+fn import_source(args: &mut Map<String, Value>, options: &Options) {
+    if args.get("op") != Some(&Value::String("import".to_owned())) || args.contains_key("source") {
+        return;
+    }
+    let Some(Value::String(word)) = args.remove("plan") else {
+        return;
+    };
+    let source = if word.contains("://") {
+        word
+    } else {
+        format!(
+            "local://{}",
+            dir(options).join(format!("{word}.md")).display()
+        )
+    };
+    args.insert("source".to_owned(), Value::String(source));
 }
 
 /// Named, or the one Active root — the same resolution the tool's own unnamed
@@ -54,7 +150,7 @@ fn with_plan(options: &Options, id: Option<&str>, run: impl FnOnce(&Plan) -> i32
             roots.into_iter().find(|id| {
                 store
                     .read(id)
-                    .is_ok_and(|file| file.plan.state == PlanState::Active)
+                    .is_ok_and(|plan| plan.state == PlanState::Active)
             })
         }),
     };
@@ -63,7 +159,7 @@ fn with_plan(options: &Options, id: Option<&str>, run: impl FnOnce(&Plan) -> i32
         return 1;
     };
     match store.read(&chosen) {
-        Ok(file) => run(&file.plan),
+        Ok(plan) => run(&plan),
         Err(error) => {
             eprintln!("error: {error}");
             1
@@ -101,8 +197,7 @@ fn lint(plan: &Plan, options: &Options) -> i32 {
             None => println!("{}: {}", finding.rule, finding.detail),
         }
     }
-    // Advisory, never a verdict (D50): a lint that could fail a build would be
-    // a second adjudicator beside the step table.
+    // Advisory, never a verdict (D50): a failing lint would adjudicate beside the step table.
     0
 }
 
@@ -134,12 +229,15 @@ fn report(plan: &Plan, options: &Options) -> i32 {
     }
     for todo in &measured.todos {
         println!(
-            "  {:<40} run {:>7} ms  wait {:>7} ms  blocked {:>7} ms  retries {}",
+            "  {:<40} run {:>7} ms  wait {:>7} ms  blocked {:>7} ms  retries {}{}",
             todo.label.as_str(),
             todo.running_ms,
             todo.waiting_ms,
             todo.blocked_ms,
-            todo.retries
+            todo.retries,
+            todo.resolution
+                .map(|resolution| format!("  {resolution}"))
+                .unwrap_or_default()
         );
     }
     0
@@ -161,6 +259,7 @@ fn as_json(plan: &Plan, measured: &Report) -> serde_json::Value {
             "blockedMs": todo.blocked_ms,
             "retries": todo.retries,
             "ended": todo.ended.as_ref().map(yi_types::plan::doc::TodoStateName::as_str),
+            "resolution": todo.resolution.map(|resolution| resolution.to_string()),
         })).collect::<Vec<_>>(),
     })
 }

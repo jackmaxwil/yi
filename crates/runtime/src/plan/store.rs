@@ -1,18 +1,37 @@
+//! The plan store (plan section 5.1): `<dir>/<id>/plan.json` checkpoints the root's `ops.jsonl`.
+
 use std::ffi::OsStr;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use yi_types::plan::doc::{AgentId, DocError, GoalText, Plan, PlanId, TodoLabel, TodoState};
+use serde_json::Value;
+use yi_types::plan::PLAN_SCHEMA;
+use yi_types::plan::canonical::{Digest, sorted};
+use yi_types::plan::doc::{DocError, GoalText, JournalMark, Plan, PlanId};
+use yi_types::plan::ledger::{AttemptId, JournalRecord, PlanOpRecord, RequestId, Seq};
 
-/// Invariant: the frontmatter byte cap is checked before the atomic replace and never trimmed
-/// after — refused or reported, never silently applied — so a file on disk is always whole.
-pub const FRONTMATTER_CAP_BYTES: usize = 32 * 1024;
+use super::artifact::{ArtifactError, Artifacts};
+use super::journal::{Clock, Damage, Fs, Journal, JournalError, RealFs, SystemClock, has_record};
+use super::state::{KIND_IMPORT, ReduceError, RootState, apply, reduce, root_of};
 
+/// Invariant: the checkpoint byte cap is checked before the atomic replace and never trimmed
+/// after: refused or reported, never silently applied, so a file on disk is always whole.
+pub const PLAN_CAP_BYTES: usize = 32 * 1024;
+
+pub const CHECKPOINT_NAME: &str = "plan.json";
+pub const JOURNAL_NAME: &str = "ops.jsonl";
+const GITIGNORE: &str = "*/ops.jsonl\n";
+const SCHEMA_DIR: &str = "schemas";
+const SCHEMA_NAME: &str = "plan.schema.json";
 const LEASE_NAME: &str = ".lease";
 const LEASE_PID_NAME: &str = "pid";
 const LEASE_HOLD_PREFIX: &str = "hold.";
 const LEASE_ATTEMPTS: u8 = 8;
 const ALLOCATE_SUFFIX_MAX: u32 = 9_999;
+const TEMP_PREFIX: &str = ".plan.";
+const TEMP_SUFFIX: &str = ".tmp";
 
 /// Invariant: unique per call within a process, so a temp path and a lease
 /// hold each name one write and one holder rather than the whole process.
@@ -34,21 +53,22 @@ pub enum StoreError {
     },
     #[error("no plan {id} at {path}")]
     Missing { id: PlanId, path: PathBuf },
-    #[error("{path}: {source}")]
-    Document {
-        path: PathBuf,
-        source: DocumentError,
-    },
+    #[error("plan {id} is a format-1 document at {path}; read-only until `yi plan import {id}`")]
+    NeedsImport { id: PlanId, path: PathBuf },
+    #[error("{path}: {detail}")]
+    Schema { path: PathBuf, detail: String },
+    #[error("{path}: {detail}")]
+    Domain { path: PathBuf, detail: String },
     #[error("plan {id} did not serialize: {source}")]
     Serialize {
         id: PlanId,
         source: serde_json::Error,
     },
     #[error(
-        "plan {id} frontmatter is {bytes} bytes, {over} over the {cap} cap; nothing was written",
+        "plan {id} is {bytes} bytes, {over} over the {cap} cap; nothing was written",
         over = bytes.saturating_sub(*cap)
     )]
-    FrontmatterOverCap {
+    PlanOverCap {
         id: PlanId,
         bytes: usize,
         cap: usize,
@@ -59,108 +79,44 @@ pub enum StoreError {
     Id { source: DocError },
     #[error("every id from {slug} through {slug}-{tried} is taken")]
     AllocateExhausted { slug: PlanId, tried: u32 },
-}
-
-/// Invariant: the frontmatter is JSON between two `---` lines, so the one
-/// parser behind a user-editable file is serde_json and nothing hand-rolled.
-#[derive(Debug, thiserror::Error)]
-pub enum DocumentError {
-    #[error("no opening --- delimiter: {head}")]
-    NoFrontmatter { head: String },
-    #[error("frontmatter opened at line 1 is unclosed after {lines} lines")]
-    OpenFrontmatter { lines: usize },
-    #[error("frontmatter: {0}")]
-    Json(#[from] serde_json::Error),
-}
-
-pub fn split_frontmatter(document: &str) -> Result<(&str, &str), DocumentError> {
-    let mut offset = 0usize;
-    let mut opened = false;
-    let mut start = 0usize;
-    let mut count = 0usize;
-    for raw in document.split_inclusive('\n') {
-        count = count.saturating_add(1);
-        let closing = raw.trim_end() == "---";
-        if !opened {
-            if !closing {
-                return Err(DocumentError::NoFrontmatter {
-                    head: raw.trim_end().to_string(),
-                });
-            }
-            opened = true;
-            start = offset.saturating_add(raw.len());
-        } else if closing {
-            let body = offset.saturating_add(raw.len());
-            return Ok((
-                document.get(start..offset).unwrap_or(""),
-                document.get(body..).unwrap_or(""),
-            ));
-        }
-        offset = offset.saturating_add(raw.len());
-    }
-    if opened {
-        Err(DocumentError::OpenFrontmatter { lines: count })
-    } else {
-        Err(DocumentError::NoFrontmatter {
-            head: String::new(),
-        })
-    }
-}
-
-pub fn parse_document(text: &str) -> Result<PlanFile, DocumentError> {
-    let (front, body) = split_frontmatter(text)?;
-    Ok(PlanFile {
-        plan: serde_json::from_str(front)?,
-        body: body.to_owned(),
-    })
-}
-
-/// The `## <heading>` section of a body with its heading line, up to the next
-/// section, trailing blank lines dropped.
-pub fn section_of(body: &str, heading: &str) -> Option<String> {
-    let header = format!("## {heading}");
-    let mut collected: Vec<&str> = Vec::new();
-    let mut inside = false;
-    for line in body.lines() {
-        if line.trim_end() == header {
-            inside = true;
-            collected.push(line);
-        } else if inside && line.starts_with("## ") {
-            break;
-        } else if inside {
-            collected.push(line);
-        }
-    }
-    inside.then(|| collected.join("\n").trim_end().to_owned())
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PlanFile {
-    pub plan: Plan,
-    pub body: String,
-}
-
-/// What a hand edit moved that the engine must answer for: todos whose recorded Running child
-/// is not the one on disk. Every other divergence costs one [`Plan::touched`] bump.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HandEdit {
-    pub left_running: Vec<TodoLabel>,
-}
-
-pub(super) fn running_by(state: &TodoState) -> Option<&AgentId> {
-    match state {
-        TodoState::Running { by } => Some(by),
-        TodoState::Pending
-        | TodoState::Blocked { .. }
-        | TodoState::Done { .. }
-        | TodoState::Failed { .. }
-        | TodoState::Abandoned
-        | TodoState::Other(_) => None,
-    }
+    #[error(transparent)]
+    Journal(#[from] JournalError),
+    #[error("journal of {root} does not reduce: {source}")]
+    Reduce { root: PlanId, source: ReduceError },
+    #[error(
+        "journal of {root} is damaged at byte {offset}{}: {reason}; run `yi plan repair {root}`",
+        seq.map(|seq| format!(" (record {seq})")).unwrap_or_default()
+    )]
+    RecoveryRequired {
+        root: PlanId,
+        seq: Option<u64>,
+        offset: u64,
+        reason: String,
+    },
+    #[error(
+        "{path} was changed behind the engine ({detail}); the journal is authoritative and a view is never folded in"
+    )]
+    ExternalEdit {
+        id: PlanId,
+        path: PathBuf,
+        detail: String,
+    },
+    #[error(transparent)]
+    Artifact(#[from] ArtifactError),
+    #[error(
+        "plan {id} has a checkpoint at {path}{} and no journal beside it (a clone carries the view, never the journal); `yi plan import local://{path}` adopts it as a new generation",
+        seq.map(|seq| format!(" naming journal record {seq}")).unwrap_or_default()
+    )]
+    JournalMissing {
+        id: PlanId,
+        path: PathBuf,
+        seq: Option<u64>,
+    },
 }
 
 /// Invariant: the arbiter is the uniquely named hold file, never the directory, so a holder
 /// whose file is gone releases nothing and cannot unlock whoever took the path over.
+#[must_use]
 #[derive(Debug)]
 pub struct Lease {
     dir: PathBuf,
@@ -191,9 +147,20 @@ impl Drop for Lease {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PlanStore {
     dir: PathBuf,
+    fs: Arc<dyn Fs>,
+    clock: Arc<dyn Clock>,
+}
+
+impl std::fmt::Debug for PlanStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlanStore")
+            .field("dir", &self.dir)
+            .finish_non_exhaustive()
+    }
 }
 
 fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
@@ -203,28 +170,163 @@ fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
     }
 }
 
+fn domain_at(path: PathBuf) -> impl FnOnce(&dyn std::fmt::Display) -> StoreError {
+    move |error| StoreError::Domain {
+        path,
+        detail: error.to_string(),
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every field of the envelope is named once"
+)]
+pub(super) fn draft(
+    plan: &PlanId,
+    op: &str,
+    actor: String,
+    at: u64,
+    todos: u32,
+    args: Value,
+    request_id: RequestId,
+    expected_revision: u64,
+    attempt: Option<AttemptId>,
+) -> JournalRecord {
+    JournalRecord {
+        record: PlanOpRecord {
+            plan: plan.clone(),
+            op: op.to_owned(),
+            actor,
+            at,
+            todo: None,
+            from: None,
+            to: None,
+            todos,
+            extra: serde_json::Map::new(),
+        },
+        seq: Seq::FIRST,
+        request_id,
+        expected_revision,
+        attempt,
+        args,
+        args_hash: Digest::of(&[]),
+        program_hash: None,
+        verdict: None,
+        digest: Digest::of(&[]),
+    }
+}
+
+pub(super) struct Loaded {
+    pub state: RootState,
+    pub records: Vec<JournalRecord>,
+}
+
 impl PlanStore {
     pub fn open(dir: PathBuf) -> Result<Self, StoreError> {
-        Ok(Self { dir })
+        let store = Self {
+            dir,
+            fs: Arc::new(RealFs),
+            clock: Arc::new(SystemClock),
+        };
+        if store.dir.is_dir() {
+            store.publish()?;
+        }
+        Ok(store)
+    }
+
+    pub fn with_fs(self, fs: Arc<dyn Fs>) -> Self {
+        Self { fs, ..self }
+    }
+
+    pub fn with_clock(self, clock: Arc<dyn Clock>) -> Self {
+        Self { clock, ..self }
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
     }
 
+    pub fn now_ms(&self) -> u64 {
+        self.clock.now_ms()
+    }
+
+    pub fn nonce(&self) -> String {
+        nonce()
+    }
+
+    /// A request id minted for a caller that brought none: the clock keeps it unique across
+    /// processes, since a journal outlives the pid the counter is scoped to.
+    pub fn request_nonce(&self) -> String {
+        format!("{}-{}", self.now_ms(), nonce())
+    }
+
+    pub fn plan_dir(&self, id: &PlanId) -> PathBuf {
+        self.dir.join(id.as_str())
+    }
+
     pub fn path(&self, id: &PlanId) -> PathBuf {
+        self.plan_dir(id).join(CHECKPOINT_NAME)
+    }
+
+    pub fn journal_path(&self, root: &PlanId) -> PathBuf {
+        self.plan_dir(root).join(JOURNAL_NAME)
+    }
+
+    pub fn journal(&self, root: &PlanId) -> Journal {
+        Journal::open(self.journal_path(root), Arc::clone(&self.fs))
+    }
+
+    pub fn artifacts(&self, id: &PlanId) -> Artifacts {
+        Artifacts::under(&self.plan_dir(id))
+    }
+
+    fn legacy_path(&self, id: &PlanId) -> PathBuf {
         self.dir.join(format!("{id}.md"))
     }
 
     pub fn exists(&self, id: &PlanId) -> bool {
-        self.path(id).is_file()
+        self.path(id).is_file() || self.legacy_path(id).is_file()
     }
 
-    pub fn read(&self, id: &PlanId) -> Result<PlanFile, StoreError> {
+    fn ensure_dir(&self) -> Result<(), StoreError> {
+        std::fs::create_dir_all(&self.dir).map_err(io_at(&self.dir))?;
+        self.publish()
+    }
+
+    fn publish(&self) -> Result<(), StoreError> {
+        let ignore = self.dir.join(".gitignore");
+        if !ignore.exists() {
+            std::fs::write(&ignore, GITIGNORE).map_err(io_at(&ignore))?;
+        }
+        let Some(parent) = self.dir.parent() else {
+            return Ok(());
+        };
+        if parent.file_name().and_then(OsStr::to_str) != Some(".yi") {
+            return Ok(());
+        }
+        let schemas = parent.join(SCHEMA_DIR);
+        let target = schemas.join(SCHEMA_NAME);
+        if std::fs::read(&target).is_ok_and(|bytes| bytes == PLAN_SCHEMA.as_bytes()) {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&schemas).map_err(io_at(&schemas))?;
+        let tmp = schemas.join(format!(".{SCHEMA_NAME}.{}", nonce()));
+        std::fs::write(&tmp, PLAN_SCHEMA).map_err(io_at(&tmp))?;
+        std::fs::rename(&tmp, &target).map_err(io_at(&target))
+    }
+
+    fn read_checkpoint(&self, id: &PlanId) -> Result<Plan, StoreError> {
         let path = self.path(id);
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                let legacy = self.legacy_path(id);
+                if legacy.is_file() {
+                    return Err(StoreError::NeedsImport {
+                        id: id.clone(),
+                        path: legacy,
+                    });
+                }
                 return Err(StoreError::Missing {
                     id: id.clone(),
                     path,
@@ -232,40 +334,293 @@ impl PlanStore {
             }
             Err(source) => return Err(StoreError::Io { path, source }),
         };
-        parse_document(&text).map_err(|source| StoreError::Document { path, source })
+        Self::decode_checkpoint(path, &bytes, id)
     }
 
-    /// The frontmatter as [`PlanStore::write`] puts it on disk; the cap is the only refusal.
-    pub fn render(plan: &Plan) -> Result<String, StoreError> {
-        let front = serde_json::to_string_pretty(plan).map_err(|source| StoreError::Serialize {
-            id: plan.id.clone(),
-            source,
-        })?;
-        if front.len() > FRONTMATTER_CAP_BYTES {
-            return Err(StoreError::FrontmatterOverCap {
-                id: plan.id.clone(),
-                bytes: front.len(),
-                cap: FRONTMATTER_CAP_BYTES,
+    /// Schema, then domain, on bytes already read: the reader's path and the importer's.
+    pub(super) fn decode_checkpoint(
+        path: PathBuf,
+        bytes: &[u8],
+        id: &PlanId,
+    ) -> Result<Plan, StoreError> {
+        if bytes.len() > PLAN_CAP_BYTES {
+            return Err(StoreError::PlanOverCap {
+                id: id.clone(),
+                bytes: bytes.len(),
+                cap: PLAN_CAP_BYTES,
             });
         }
-        Ok(front)
+        let value: Value = serde_json::from_slice(bytes).map_err(|error| StoreError::Schema {
+            path: path.clone(),
+            detail: format!("not JSON: {error}"),
+        })?;
+        let schema = serde_json::from_str(PLAN_SCHEMA)
+            .map_err(|error| error.to_string())
+            .and_then(crate::schema::Schema::from_value)
+            .map_err(|detail| StoreError::Schema {
+                path: path.clone(),
+                detail,
+            })?;
+        schema
+            .validate(&value)
+            .map_err(|detail| StoreError::Schema {
+                path: path.clone(),
+                detail,
+            })?;
+        serde_json::from_value(value).map_err(|error| domain_at(path)(&error))
     }
 
-    pub fn write(&self, file: &PlanFile) -> Result<(), StoreError> {
-        std::fs::create_dir_all(&self.dir).map_err(io_at(&self.dir))?;
-        let id = &file.plan.id;
-        let front = Self::render(&file.plan)?;
-        let document = format!("---\n{front}\n---\n{}", file.body);
-        let tmp = self.dir.join(format!(".{id}.{}.tmp", nonce()));
-        std::fs::write(&tmp, &document).map_err(io_at(&tmp))?;
-        let target = self.path(id);
-        if let Err(source) = std::fs::rename(&tmp, &target) {
-            let _ = std::fs::remove_file(&tmp);
+    pub fn read(&self, id: &PlanId) -> Result<Plan, StoreError> {
+        let root = root_of(id).map_err(|_| StoreError::Id {
+            source: DocError::PlanIdEmpty,
+        })?;
+        let checkpoint = match self.read_checkpoint(id) {
+            Ok(checkpoint) => Some(checkpoint),
+            // Invariant: beside a live journal the checkpoint is derived, so its absence is
+            // regenerated, and a legacy file left in place after import names nothing.
+            Err(StoreError::Missing { .. } | StoreError::NeedsImport { .. })
+                if self.journal_path(&root).is_file() =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        let reading = self.journal(&root).read()?;
+        // Invariant: damage is judged before the record count, or a damaged first record
+        // would hand back the unverified checkpoint as if the chain had been consulted.
+        if let Some(Damage::Corrupt {
+            offset,
+            seq,
+            reason,
+            ..
+        }) = reading.damage
+        {
+            return Err(StoreError::RecoveryRequired {
+                root,
+                seq: seq.map(Seq::get),
+                offset,
+                reason,
+            });
+        }
+        if reading.records.is_empty() {
+            let Some(checkpoint) = checkpoint else {
+                return Err(StoreError::Missing {
+                    id: id.clone(),
+                    path: self.path(id),
+                });
+            };
+            return Err(self.detached(id, &root, &checkpoint));
+        }
+        let state = reduce(&reading.records).map_err(|source| StoreError::Reduce {
+            root: root.clone(),
+            source,
+        })?;
+        let Some(reduced) = state.plans.get(id) else {
+            if checkpoint.is_none() {
+                return Err(StoreError::Missing {
+                    id: id.clone(),
+                    path: self.path(id),
+                });
+            }
+            return Err(StoreError::ExternalEdit {
+                id: id.clone(),
+                path: self.path(id),
+                detail: "the journal never made this plan".to_owned(),
+            });
+        };
+        let mark = state.mark.map(|(seq, digest)| JournalMark { seq, digest });
+        if let Some(checkpoint) = checkpoint
+            && checkpoint.journal == mark
+            && &checkpoint.clone().unmarked() == reduced
+        {
+            return Ok(checkpoint);
+        }
+        if let Ok(_lease) = self.lease() {
+            self.checkpoint_family(&state)?;
+        }
+        let mut plan = reduced.clone();
+        plan.journal = mark;
+        Ok(plan)
+    }
+
+    /// A checkpoint the journal did not produce: with no journal file it is a clone's view,
+    /// named so the remedy is the import; beside an empty journal it is an edit.
+    fn detached(&self, id: &PlanId, root: &PlanId, checkpoint: &Plan) -> StoreError {
+        let path = self.path(id);
+        if has_record(&self.journal_path(root)) {
+            return StoreError::ExternalEdit {
+                id: id.clone(),
+                path,
+                detail: "its journal has no record behind it".to_owned(),
+            };
+        }
+        StoreError::JournalMissing {
+            id: id.clone(),
+            path,
+            seq: checkpoint.journal.as_ref().map(|mark| mark.seq.get()),
+        }
+    }
+
+    /// `adopting` is the importer's load: a checkpoint with no journal is the view it adopts.
+    pub(super) fn load(&self, root: &PlanId, adopting: bool) -> Result<Loaded, StoreError> {
+        let (state, records, _torn) = super::recovery::reconstruct(self, root)?;
+        if records.is_empty() && !adopting && self.path(root).is_file() {
+            let checkpoint = self.read_checkpoint(root)?;
+            return Err(self.detached(root, root, &checkpoint));
+        }
+        for (id, plan) in &state.plans {
+            self.sweep_temps(id);
+            let path = self.path(id);
+            if !path.is_file() {
+                continue;
+            }
+            let on_disk = match self.read_checkpoint(id) {
+                Ok(on_disk) => on_disk,
+                Err(error) => {
+                    return Err(StoreError::ExternalEdit {
+                        id: id.clone(),
+                        path,
+                        detail: error.to_string(),
+                    });
+                }
+            };
+            let mark = state.mark.map(|(seq, digest)| JournalMark { seq, digest });
+            let lagging = match (on_disk.journal, mark) {
+                (Some(disk), Some(now)) => disk.seq < now.seq,
+                _ => false,
+            };
+            if lagging {
+                continue;
+            }
+            if on_disk.journal != mark {
+                return Err(StoreError::ExternalEdit {
+                    id: id.clone(),
+                    path,
+                    detail: "its journal mark is not the journal's last record".to_owned(),
+                });
+            }
+            if &on_disk.unmarked() != plan {
+                return Err(StoreError::ExternalEdit {
+                    id: id.clone(),
+                    path,
+                    detail: "its state is not what the journal reduces to".to_owned(),
+                });
+            }
+        }
+        Ok(Loaded { state, records })
+    }
+
+    fn sweep_temps(&self, id: &PlanId) {
+        let Ok(entries) = std::fs::read_dir(self.plan_dir(id)) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if name.starts_with(TEMP_PREFIX) && name.ends_with(TEMP_SUFFIX) {
+                let _orphan_from_a_crash = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    pub fn render(plan: &Plan) -> Result<String, StoreError> {
+        let serialize = |source| StoreError::Serialize {
+            id: plan.id.clone(),
+            source,
+        };
+        let value = serde_json::to_value(plan).map_err(serialize)?;
+        let mut text = serde_json::to_string_pretty(&sorted(&value)).map_err(serialize)?;
+        text.push('\n');
+        if text.len() > PLAN_CAP_BYTES {
+            return Err(StoreError::PlanOverCap {
+                id: plan.id.clone(),
+                bytes: text.len(),
+                cap: PLAN_CAP_BYTES,
+            });
+        }
+        Ok(text)
+    }
+
+    pub fn checkpoint(&self, plan: &Plan) -> Result<(), StoreError> {
+        let text = Self::render(plan)?;
+        let dir = self.plan_dir(&plan.id);
+        std::fs::create_dir_all(&dir).map_err(io_at(&dir))?;
+        let tmp = dir.join(format!("{TEMP_PREFIX}{}{TEMP_SUFFIX}", nonce()));
+        let target = self.path(&plan.id);
+        let written = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .and_then(|mut file| {
+                file.write_all(text.as_bytes())?;
+                file.sync_all()
+            })
+            .and_then(|()| std::fs::rename(&tmp, &target))
+            .and_then(|()| std::fs::File::open(&dir)?.sync_all());
+        if let Err(source) = written {
+            let _removed_best_effort = std::fs::remove_file(&tmp);
             return Err(StoreError::Io {
                 path: target,
                 source,
             });
         }
+        Ok(())
+    }
+
+    pub fn checkpoint_family(&self, state: &RootState) -> Result<Vec<PlanId>, StoreError> {
+        let mark = state.mark.map(|(seq, digest)| JournalMark { seq, digest });
+        let mut plans: Vec<Plan> = state
+            .plans
+            .values()
+            .map(|plan| {
+                let mut plan = plan.clone();
+                plan.journal = mark;
+                plan
+            })
+            .collect();
+        plans.sort_by_key(|plan| plan.id.is_root());
+        for plan in &plans {
+            Self::render(plan)?;
+        }
+        for plan in &plans {
+            self.checkpoint(plan)?;
+        }
+        Ok(plans.into_iter().map(|plan| plan.id).collect())
+    }
+
+    pub fn write(&self, plan: &Plan) -> Result<(), StoreError> {
+        self.ensure_dir()?;
+        let _lease = self.lease()?;
+        let root = root_of(&plan.id).map_err(|_| StoreError::Id {
+            source: DocError::PlanIdEmpty,
+        })?;
+        super::table::validate_plan(plan)
+            .map_err(|error| domain_at(self.path(&plan.id))(&error))?;
+        let Loaded { mut state, records } = self.load(&root, true)?;
+        let args = serde_json::json!({
+            "source": null,
+            "artifact": null,
+            "format": yi_types::plan::doc::PLAN_FORMAT,
+            "plan": plan.clone().unmarked(),
+        });
+        let request = RequestId::new(format!("seed-{}", self.request_nonce()))
+            .map_err(|error| domain_at(self.path(&plan.id))(&error))?;
+        let record = draft(
+            &plan.id,
+            KIND_IMPORT,
+            super::ops::OWNER_AGENT.to_owned(),
+            self.now_ms(),
+            u32::try_from(plan.todos.len()).unwrap_or(u32::MAX),
+            args,
+            request,
+            plan.touched.0,
+            None,
+        );
+        let journal = self.journal(&root);
+        let sealed = journal.seal(record, records.last())?;
+        journal.append(&sealed)?;
+        apply(&mut state, &sealed.record).map_err(|source| StoreError::Reduce { root, source })?;
+        self.checkpoint_family(&state)?;
         Ok(())
     }
 
@@ -278,13 +633,13 @@ impl PlanStore {
         };
         for entry in entries {
             let path = entry.map_err(io_at(&self.dir))?.path();
-            if path.extension().and_then(OsStr::to_str) != Some("md") {
+            if !path.join(CHECKPOINT_NAME).is_file() && !has_record(&path.join(JOURNAL_NAME)) {
                 continue;
             }
-            let Some(stem) = path.file_stem().and_then(OsStr::to_str) else {
+            let Some(name) = path.file_name().and_then(OsStr::to_str) else {
                 continue;
             };
-            if let Ok(id) = PlanId::new(stem) {
+            if let Ok(id) = PlanId::new(name) {
                 ids.push(id);
             }
         }
@@ -316,10 +671,10 @@ impl PlanStore {
         })
     }
 
-    /// Invariant: K1's `lock_is_stale` decides — a dead pid, else the 30 s mtime rule, which
-    /// also covers an unnamed generation.
+    /// Invariant: K1's `lock_is_stale` decides: a dead pid, else the 30 s mtime rule, which also
+    /// covers an unnamed generation. Taking the lease is what condemns a stale one.
     pub fn lease(&self) -> Result<Lease, StoreError> {
-        std::fs::create_dir_all(&self.dir).map_err(io_at(&self.dir))?;
+        self.ensure_dir()?;
         let dir = self.dir.join(LEASE_NAME);
         for _ in 0..LEASE_ATTEMPTS {
             match std::fs::create_dir(&dir) {
@@ -362,36 +717,18 @@ impl PlanStore {
             pid: None,
         })
     }
-
-    pub fn user_edits(&self, known: &PlanFile) -> Result<Option<HandEdit>, StoreError> {
-        let disk = self.read(&known.plan.id)?;
-        if disk == *known {
-            return Ok(None);
-        }
-        let left_running = known
-            .plan
-            .todos
-            .iter()
-            .filter(|todo| {
-                running_by(&todo.state).is_some_and(|was| {
-                    disk.plan
-                        .todo(&todo.label)
-                        .and_then(|now| running_by(&now.state))
-                        != Some(was)
-                })
-            })
-            .map(|todo| todo.label.clone())
-            .collect();
-        Ok(Some(HandEdit { left_running }))
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan::ops::{Actor, Delegate, Op, OpRequest, PlanEngine, PlanOpError, TodoSpec};
     use crate::scratch::Scratch;
     use yi_types::plan::PlanVersion;
-    use yi_types::plan::doc::{PlanTier, RetryCount, Todo, TouchCount};
+    use yi_types::plan::doc::{
+        AgentId, Delegation, PlanTier, RetryCount, Todo, TodoAddr, TodoLabel, TodoState, TouchCount,
+    };
+    use yi_types::url::Url;
 
     type Fallible = Result<(), Box<dyn std::error::Error>>;
 
@@ -408,6 +745,30 @@ mod tests {
         }
     }
 
+    struct NoChildren;
+
+    impl Delegate for NoChildren {
+        fn spawn(&self, _at: &TodoAddr, _delegation: &Delegation) -> Result<AgentId, String> {
+            Err("no children in this test".to_owned())
+        }
+
+        fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
+            Ok(None)
+        }
+
+        fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
+    }
+
+    fn owner(op: Op) -> OpRequest {
+        OpRequest {
+            plan: None,
+            actor: Actor::Owner,
+            op,
+            request_id: None,
+            expected_revision: None,
+        }
+    }
+
     fn plan(goal: &str) -> Result<Plan, Box<dyn std::error::Error>> {
         let mut plan = Plan::opening(
             PlanId::slug(goal)?,
@@ -415,28 +776,19 @@ mod tests {
             PlanTier::Root,
             vec![
                 Todo {
-                    label: TodoLabel::new("Freeze the token API seam")?,
-                    after: Vec::new(),
                     state: TodoState::Done {
                         output: Some("kernel://token_api_seam".parse()?),
+                        resolution: None,
                     },
-                    delegation: None,
-                    subplan: None,
-                    retries: RetryCount(0),
-                    children: Vec::new(),
-                    extra: serde_json::Map::new(),
+                    ..Todo::pending(TodoLabel::new("Freeze the token API seam")?)
                 },
                 Todo {
-                    label: TodoLabel::new("Implement refresh flow")?,
                     after: vec![TodoLabel::new("Freeze the token API seam")?],
                     state: TodoState::Running {
                         by: AgentId::new("child-1")?,
                     },
-                    delegation: None,
-                    subplan: None,
                     retries: RetryCount(1),
-                    children: Vec::new(),
-                    extra: serde_json::Map::new(),
+                    ..Todo::pending(TodoLabel::new("Implement refresh flow")?)
                 },
             ],
         );
@@ -445,119 +797,211 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_through_a_real_directory() -> Fallible {
+    fn round_trips_through_a_real_directory_with_a_journal_mark() -> Fallible {
         let temp = TempStore::new("round-trip")?;
-        let file = PlanFile {
-            plan: plan("Ship OAuth login end to end")?,
-            body: "\n## Implement refresh flow\n\nSeam notes.\n".to_owned(),
-        };
-        temp.store.write(&file)?;
-        let back = temp.store.read(&file.plan.id)?;
-        assert_eq!(back, file);
-        assert_eq!(
-            section_of(&back.body, "Implement refresh flow").as_deref(),
-            Some("## Implement refresh flow\n\nSeam notes.")
+        let plan = plan("Ship OAuth login end to end")?;
+        temp.store.write(&plan)?;
+        let back = temp.store.read(&plan.id)?;
+        let mark = back.journal.ok_or("no journal mark on the checkpoint")?;
+        assert_eq!(mark.seq, Seq::FIRST);
+        assert_eq!(back.unmarked(), plan);
+        assert_eq!(temp.store.list()?, vec![plan.id.clone()]);
+        assert_eq!(temp.store.roots()?, vec![plan.id.clone()]);
+        let text = std::fs::read_to_string(temp.store.path(&plan.id))?;
+        assert!(
+            text.starts_with("{\n  \"constraints\""),
+            "sorted keys: {text}"
         );
-        assert_eq!(temp.store.list()?, vec![file.plan.id.clone()]);
-        assert_eq!(temp.store.roots()?, vec![file.plan.id.clone()]);
+        assert!(
+            std::fs::read_to_string(temp.dir.join(".gitignore"))?.contains("*/ops.jsonl"),
+            "the store ignores its journals once"
+        );
         Ok(())
     }
 
     #[test]
-    fn reads_a_hand_written_document() -> Fallible {
-        let temp = TempStore::new("example")?;
-        let document = concat!(
-            "---\n",
-            "{\n",
-            "  \"format\": 1,\n",
-            "  \"plan\": \"7f3a-auth-refactor\",\n",
-            "  \"goal\": \"Ship OAuth login end to end\",\n",
-            "  \"version\": 3,\n",
-            "  \"tier\": \"root\",\n",
-            "  \"state\": \"active\",\n",
-            "  \"todos\": [\n",
-            "    {\"label\": \"Freeze the token API seam\", \"state\": \"done\",\n",
-            "     \"output\": \"kernel://token_api_seam\"},\n",
-            "    {\"label\": \"Implement refresh flow\", \"state\": \"running\", \"by\": \"child-1\",\n",
-            "     \"after\": [\"Freeze the token API seam\"],\n",
-            "     \"delegation\": {\n",
-            "       \"spec\": {\"role\": \"coder\", \"effort\": \"med\", \"isolation\": \"worktree\"},\n",
-            "       \"accept\": {\"command\": \"cargo test -p yi-ai refresh\"},\n",
-            "       \"output\": {\"schema\": \"local://.yi/schemas/refresh_result.json\"},\n",
-            "       \"context\": [\"plan://7f3a-auth-refactor/seam-notes\", \"local://docs/auth.md\"]\n",
-            "     },\n",
-            "     \"retries\": 1}\n",
-            "  ]\n",
-            "}\n",
-            "---\n",
-            "\n",
-            "## seam-notes\n",
-            "\n",
-            "The refresh endpoint owns rotation.\n",
+    fn the_schema_is_published_beside_a_dot_yi_plans_dir() -> Fallible {
+        let scratch = Scratch::new("yi-plan-store-schema")?;
+        let plans = scratch.join(".yi/plans");
+        std::fs::create_dir_all(&plans)?;
+        let target = scratch.join(".yi/schemas/plan.schema.json");
+        std::fs::create_dir_all(scratch.join(".yi/schemas"))?;
+        std::fs::write(&target, "stale")?;
+        PlanStore::open(plans)?;
+        assert_eq!(std::fs::read_to_string(&target)?, PLAN_SCHEMA);
+        Ok(())
+    }
+
+    #[test]
+    fn a_corrupted_plan_json_is_refused_with_the_failing_path() -> Fallible {
+        let temp = TempStore::new("corrupt")?;
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/plans/format2/corrupt/plan.json");
+        let id = PlanId::new("ship-logrotate-lite-with-a-packaged")?;
+        std::fs::create_dir_all(temp.store.plan_dir(&id))?;
+        std::fs::copy(&fixture, temp.store.path(&id))?;
+        let refused = temp.store.read(&id);
+        match refused {
+            Err(StoreError::Schema { path, detail }) => {
+                assert_eq!(path, temp.store.path(&id));
+                assert!(
+                    detail.starts_with("$.todos[1].state"),
+                    "the validator's own path: {detail}"
+                );
+            }
+            other => return Err(format!("expected a schema refusal, got {other:?}").into()),
+        }
+        let mut domain: Value = serde_json::from_str(&std::fs::read_to_string(&fixture)?)?;
+        domain["todos"][1]["state"] = Value::String("running".to_owned());
+        std::fs::write(temp.store.path(&id), serde_json::to_string(&domain)?)?;
+        assert!(
+            matches!(temp.store.read(&id), Err(StoreError::Domain { .. })),
+            "running without by is the domain validator's refusal"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_format_1_read_is_read_only_until_import() -> Fallible {
+        let temp = TempStore::new("legacy")?;
         let id = PlanId::new("7f3a-auth-refactor")?;
-        std::fs::write(temp.store.path(&id), document)?;
-        let file = temp.store.read(&id)?;
-        assert_eq!(file.plan.goal.as_str(), "Ship OAuth login end to end");
-        assert_eq!(file.plan.version, PlanVersion(3));
-        assert_eq!(file.plan.tier, PlanTier::Root);
-        assert_eq!(file.plan.todos.len(), 2);
-        assert!(matches!(
-            file.plan.todos.first().map(|todo| &todo.state),
-            Some(TodoState::Done { output: Some(_) })
-        ));
-        let running = file.plan.todos.get(1).ok_or("no second todo")?;
-        assert!(matches!(&running.state, TodoState::Running { by } if by.as_str() == "child-1"));
-        let delegation = running.delegation.as_ref().ok_or("no delegation")?;
-        assert_eq!(delegation.context.len(), 2);
-        assert_eq!(
-            section_of(&file.body, "seam-notes").as_deref(),
-            Some("## seam-notes\n\nThe refresh endpoint owns rotation.")
+        std::fs::create_dir_all(&*temp.dir)?;
+        std::fs::write(
+            temp.dir.join(format!("{id}.md")),
+            "---\n{\"format\": 1, \"plan\": \"7f3a-auth-refactor\", \"goal\": \"g\", \"version\": 1, \"tier\": \"root\", \"state\": \"active\"}\n---\n",
+        )?;
+        let refused = temp.store.read(&id);
+        match refused {
+            Err(StoreError::NeedsImport { id: named, .. }) => assert_eq!(named, id),
+            other => return Err(format!("expected NeedsImport, got {other:?}").into()),
+        }
+        assert!(temp.store.exists(&id), "a legacy id is taken");
+        assert!(temp.store.list()?.is_empty(), "no checkpoint, no listing");
+        let document = crate::plan::import::read_legacy(&temp.store, &id)?;
+        assert_eq!(document.plan.id, id);
+        assert!(
+            !temp.store.journal_path(&id).exists(),
+            "a read journals nothing"
         );
-        temp.store.write(&file)?;
-        assert_eq!(temp.store.read(&id)?, file);
-        assert!(matches!(
-            temp.store.read(&PlanId::new("nowhere")?),
-            Err(StoreError::Missing { .. })
-        ));
-        std::fs::write(temp.store.path(&id), "# not a plan\n")?;
-        assert!(matches!(
-            temp.store.read(&id),
-            Err(StoreError::Document {
-                source: DocumentError::NoFrontmatter { .. },
-                ..
-            })
-        ));
-        std::fs::write(temp.store.path(&id), "---\n{\"format\": 1\n")?;
-        assert!(matches!(
-            temp.store.read(&id),
-            Err(StoreError::Document {
-                source: DocumentError::OpenFrontmatter { lines: 2 },
-                ..
-            })
-        ));
         Ok(())
     }
 
     #[test]
-    fn over_cap_frontmatter_is_refused_and_the_file_is_untouched() -> Fallible {
+    fn edited_export_cannot_overwrite_authoritative_state() -> Fallible {
+        let temp = TempStore::new("edited")?;
+        let engine = PlanEngine::new(temp.store.clone(), Arc::new(NoChildren));
+        let out = engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the seam")?,
+            todos: vec![TodoSpec {
+                label: TodoLabel::new("cut")?,
+                after: Vec::new(),
+                delegation: None,
+                contract: None,
+                children: Vec::new(),
+            }],
+        }))?;
+        let id = out.plan.id.clone();
+        let path = temp.store.path(&id);
+        let mut forged: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        forged["todos"][0]["state"] = Value::String("done".to_owned());
+        forged["state"] = Value::String("done".to_owned());
+        std::fs::write(&path, serde_json::to_string_pretty(&forged)?)?;
+        let refused = engine.apply(owner(Op::Start {
+            label: TodoLabel::new("cut")?,
+        }));
+        assert!(
+            matches!(
+                refused,
+                Err(PlanOpError::Store(StoreError::ExternalEdit { .. }))
+            ),
+            "a schema-valid, digest-consistent edit is detected on a mutation: {refused:?}"
+        );
+        let journal = temp.store.journal(&id).read()?;
+        assert_eq!(journal.records.len(), 1, "the edited view wrote no record");
+        let read = temp.store.read(&id)?;
+        assert_eq!(
+            read.todos[0].state,
+            TodoState::Pending,
+            "regenerated on a read"
+        );
+        let back: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        assert_eq!(
+            back["todos"][0]["state"],
+            Value::String("pending".to_owned())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_file_changed_behind_the_engine_is_detected_not_diffed_in() -> Fallible {
+        let temp = TempStore::new("behind")?;
+        let engine = PlanEngine::new(temp.store.clone(), Arc::new(NoChildren));
+        let out = engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the seam")?,
+            todos: vec![TodoSpec {
+                label: TodoLabel::new("cut")?,
+                after: Vec::new(),
+                delegation: None,
+                contract: None,
+                children: Vec::new(),
+            }],
+        }))?;
+        let id = out.plan.id.clone();
+        let path = temp.store.path(&id);
+        let mut edited: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        edited["goal"] = Value::String("ship the seam and the docs".to_owned());
+        std::fs::write(&path, serde_json::to_string_pretty(&edited)?)?;
+        let refused = engine.apply(owner(Op::Append {
+            todos: vec![TodoSpec {
+                label: TodoLabel::new("polish")?,
+                after: Vec::new(),
+                delegation: None,
+                contract: None,
+                children: Vec::new(),
+            }],
+        }));
+        assert!(
+            matches!(
+                refused,
+                Err(PlanOpError::Store(StoreError::ExternalEdit { .. }))
+            ),
+            "{refused:?}"
+        );
+        let viewed = engine.apply(owner(Op::View { full: true }))?;
+        assert_eq!(viewed.plan.goal.as_str(), "ship the seam", "not diffed in");
+        assert_eq!(
+            viewed.plan.touched,
+            TouchCount(1),
+            "no user-attributed bump"
+        );
+        let landed = engine.apply(owner(Op::Append {
+            todos: vec![TodoSpec {
+                label: TodoLabel::new("polish")?,
+                after: Vec::new(),
+                delegation: None,
+                contract: None,
+                children: Vec::new(),
+            }],
+        }))?;
+        assert_eq!(landed.plan.todos.len(), 2, "once regenerated, work resumes");
+        Ok(())
+    }
+
+    #[test]
+    fn over_cap_plan_is_refused_and_the_file_is_untouched() -> Fallible {
         let temp = TempStore::new("cap")?;
-        let mut file = PlanFile {
-            plan: plan("Ship OAuth login end to end")?,
-            body: String::new(),
-        };
-        temp.store.write(&file)?;
-        let before = std::fs::read_to_string(temp.store.path(&file.plan.id))?;
-        file.plan
-            .extra
-            .insert("notes".to_owned(), "x".repeat(FRONTMATTER_CAP_BYTES).into());
-        let refused = temp.store.write(&file);
+        let mut plan = plan("Ship OAuth login end to end")?;
+        temp.store.write(&plan)?;
+        let before = std::fs::read_to_string(temp.store.path(&plan.id))?;
+        plan.extra
+            .insert("notes".to_owned(), "x".repeat(PLAN_CAP_BYTES).into());
+        let refused = temp.store.write(&plan);
         assert!(matches!(
             refused,
-            Err(StoreError::FrontmatterOverCap { bytes, cap, .. })
-                if bytes > cap && cap == FRONTMATTER_CAP_BYTES
+            Err(StoreError::PlanOverCap { bytes, cap, .. })
+                if bytes > cap && cap == PLAN_CAP_BYTES
         ));
-        let after = std::fs::read_to_string(temp.store.path(&file.plan.id))?;
+        let after = std::fs::read_to_string(temp.store.path(&plan.id))?;
         assert_eq!(before, after);
         Ok(())
     }
@@ -568,15 +1012,12 @@ mod tests {
         let goal = GoalText::new("Ship OAuth login end to end")?;
         let first = temp.store.allocate(&goal)?;
         assert_eq!(first.as_str(), "ship-oauth-login-end-to-end");
-        let mut file = PlanFile {
-            plan: plan(goal.as_str())?,
-            body: String::new(),
-        };
-        temp.store.write(&file)?;
+        let mut plan = plan(goal.as_str())?;
+        temp.store.write(&plan)?;
         let second = temp.store.allocate(&goal)?;
         assert_eq!(second.as_str(), "ship-oauth-login-end-to-end-2");
-        file.plan.id = second;
-        temp.store.write(&file)?;
+        plan.id = second;
+        temp.store.write(&plan)?;
         assert_eq!(
             temp.store.allocate(&goal)?.as_str(),
             "ship-oauth-login-end-to-end-3"
@@ -668,51 +1109,41 @@ mod tests {
     }
 
     #[test]
-    fn two_writers_in_one_process_never_publish_a_torn_file() -> Fallible {
+    fn a_reader_never_sees_a_torn_checkpoint() -> Fallible {
         let temp = TempStore::new("torn-write")?;
-        let file = PlanFile {
-            plan: plan("Ship OAuth login end to end")?,
-            body: format!("\n## seam-notes\n\n{}\n", "x".repeat(200_000)),
-        };
-        temp.store.write(&file)?;
-        let path = temp.store.path(&file.plan.id);
+        let mut plan = plan("Ship OAuth login end to end")?;
+        plan.extra
+            .insert("pad".to_owned(), "x".repeat(20_000).into());
+        temp.store.write(&plan)?;
+        let plan = temp.store.read(&plan.id)?;
+        let path = temp.store.path(&plan.id);
         let whole = std::fs::read_to_string(&path)?.len();
         let done = std::sync::atomic::AtomicBool::new(false);
         let torn: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 while !done.load(Ordering::Relaxed) {
-                    let seen = match std::fs::read_to_string(&path) {
-                        Ok(text) => text.len(),
+                    match std::fs::read_to_string(&path) {
+                        Ok(text) if text.len() == whole => {}
+                        Ok(text) => {
+                            if let Ok(mut log) = torn.lock() {
+                                log.push(format!("published {} of {whole} bytes", text.len()));
+                            }
+                        }
                         Err(error) => {
                             if let Ok(mut log) = torn.lock() {
                                 log.push(format!("read: {error}"));
                             }
-                            continue;
                         }
-                    };
-                    if seen != whole
-                        && let Ok(mut log) = torn.lock()
-                    {
-                        log.push(format!("published {seen} of {whole} bytes"));
                     }
                 }
             });
-            let writers: Vec<_> = (0..2)
-                .map(|_| {
-                    scope.spawn(|| {
-                        for _ in 0..150 {
-                            if let Err(error) = temp.store.write(&file)
-                                && let Ok(mut log) = torn.lock()
-                            {
-                                log.push(format!("write: {error}"));
-                            }
-                        }
-                    })
-                })
-                .collect();
-            for writer in writers {
-                let _ = writer.join();
+            for _ in 0..60 {
+                if let Err(error) = temp.store.checkpoint(&plan)
+                    && let Ok(mut log) = torn.lock()
+                {
+                    log.push(format!("write: {error}"));
+                }
             }
             done.store(true, Ordering::Relaxed);
         });
@@ -729,11 +1160,8 @@ mod tests {
     #[test]
     fn metacharacters_in_labels_and_keys_survive_write_then_read() -> Fallible {
         let temp = TempStore::new("metacharacters")?;
-        let mut file = PlanFile {
-            plan: plan("Ship OAuth login end to end")?,
-            body: String::new(),
-        };
-        file.plan.todos.clear();
+        let mut plan = plan("Ship OAuth login end to end")?;
+        plan.todos.clear();
         for label in [
             "hint[see docs",
             "brace{open",
@@ -747,64 +1175,14 @@ mod tests {
             "quote\"and\\slash",
             "--- looks like a fence",
         ] {
-            let mut extra = serde_json::Map::new();
-            extra.insert(format!("note{label}"), "read the seam notes".into());
-            file.plan.todos.push(Todo {
-                label: TodoLabel::new(label)?,
-                after: Vec::new(),
-                state: TodoState::Pending,
-                delegation: None,
-                subplan: None,
-                retries: RetryCount(0),
-                children: Vec::new(),
-                extra,
-            });
+            let mut todo = Todo::pending(TodoLabel::new(label)?);
+            todo.extra
+                .insert(format!("note{label}"), "read the seam notes".into());
+            plan.todos.push(todo);
         }
-        temp.store.write(&file)?;
-        assert_eq!(temp.store.read(&file.plan.id)?, file);
-        Ok(())
-    }
-
-    #[test]
-    fn a_hand_edit_names_the_todos_that_left_their_running_child() -> Fallible {
-        let temp = TempStore::new("edits")?;
-        let known = PlanFile {
-            plan: plan("Ship OAuth login end to end")?,
-            body: "\n## seam-notes\n\nold\n".to_owned(),
-        };
-        temp.store.write(&known)?;
-        assert_eq!(temp.store.user_edits(&known)?, None);
-        let mut edited = known.clone();
-        edited.body = "\n## seam-notes\n\nnew\n".to_owned();
-        assert_eq!(
-            temp.store
-                .write(&edited)
-                .and_then(|()| temp.store.user_edits(&known))?,
-            Some(HandEdit {
-                left_running: Vec::new()
-            }),
-            "prose moved, no child did"
-        );
-        if let Some(todo) = edited.plan.todos.get_mut(1) {
-            todo.state = TodoState::Running {
-                by: AgentId::new("child-2")?,
-            };
-        }
-        temp.store.write(&edited)?;
-        let swapped = temp.store.user_edits(&known)?.ok_or("no divergence")?;
-        assert_eq!(
-            swapped.left_running,
-            vec![TodoLabel::new("Implement refresh flow")?],
-            "a swapped agent leaves the first child behind"
-        );
-        edited.plan.todos.remove(1);
-        temp.store.write(&edited)?;
-        let dropped = temp.store.user_edits(&known)?.ok_or("no divergence")?;
-        assert_eq!(
-            dropped.left_running,
-            vec![TodoLabel::new("Implement refresh flow")?],
-            "a todo deleted by hand leaves its child behind too"
-        );
+        temp.store.write(&plan)?;
+        assert_eq!(temp.store.read(&plan.id)?.unmarked(), plan);
+        assert_eq!(plan.version, PlanVersion(1));
         Ok(())
     }
 }

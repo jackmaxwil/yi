@@ -912,6 +912,25 @@ sequenceDiagram
   (an unmerged branch would otherwise carry nothing), and a child still holding a
   worktree cannot be reaped by B2's `close`.
 - B6's role split is revised by D58 — see the row.
+- A plan-dispatched spawn is journaled as `spawn_intent` before `delegate.spawn`
+  and `spawn_result` after (plan §5.3), so a crash between the two is
+  reconciled on the next `yi plan repair`, never silently reissued.
+- **B17 wall on the spec (F0c, plan §7.6)** | `SpawnSpec.wall: Option<WallSpec>{deny_write,
+  deny_read, deny_url}` rides `kwargs_of` (`plan/dispatch.rs:84-107`) onto the same
+  `deny_write`/`deny_read`/`deny_url` kwargs B15 already reads, so a plan-dispatched child is
+  walled at the same cooperative seams as an `rlm.run` child; a plan-dispatched reader was
+  unwalled before this. Cooperative, not a sandbox, same as B15: it stops an honest agent at
+  the mediated seams, nothing more.
+- **B18 stuck notice (F0d, plan §7.5)** | the probe loop's second job computes
+  `state_from_records` (`family.rs`) for each running child on its own due time and sends one
+  `failure`-kind notice through the same wake the tick a child is first found `Stuck`, latched
+  until its records move; deterministic from the records the loop already writes, never a
+  model's judgment that a child is stuck.
+
+Not yet done: hereditary shrink (a child's wall as the union of its parent's and its own,
+so a child can never spawn with a wall smaller than its parent's) and holds compiled down for
+a detached child (plan §7.6) are F2b's; B15 and B17 today set a wall only from the spawning
+spec, with no inherited floor enforced.
 
 ### 8.11 Schedule / heartbeat (`yi-runtime::schedule`)
 
@@ -1217,12 +1236,54 @@ loads. Todos are addressed by verbatim label rather than by `TaskId`, `after` ed
 carry ordering and no data, `version` moves on `supersede` alone with a monotonic
 `touched` counter carrying the staleness signal the 12-turn latch below used to read
 off `version`, and the surfaces become one `plan` tool with an op parameter rather than
-`plan.*` host requests plus a kernel skill. **Carried forward unchanged:** D26 (no
-advisory-only state tool — a plan tool is checked at turn end or it is a print
-statement with a schema), host-verified done, and D53's anti-laundering intent, which
-is reconciled rather than repealed: nothing is deleted, `drop` is a state, rewording is
+`plan.*` host requests plus a kernel skill. **Superseded again by D-next-2 (F0b): the
+store is a journal, not a document.** `.yi/plans/<slug>/ops.jsonl` is the append-only,
+digest-chained record of every applied or refused op; `.yi/plans/<slug>/plan.json` is
+its typed JSON checkpoint, validated against a published schema, and is regenerated
+from the journal whenever it lags or is found edited behind the engine's back. There
+is no Markdown anywhere in the store any more; the old frontmatter file is read only
+as a one-time, explicit `import` into this format, and its bytes are kept as an
+artifact blob, never re-parsed as a document. There are no hand edits: `fold_user_edits`
+and `user_edits` are gone, and the user changes a plan only by prompting Yi or through
+a confirmed administrative op, which mints `Actor::User` through a tty-held permission
+prompt rather than by trusting a citation string (the daemon socket carries no such
+prompt, so the CLI and the serve worker refuse one). **Carried forward
+unchanged:** D26 (no advisory-only state tool — a plan tool is checked at turn end or
+it is a print statement with a schema), and D53's anti-laundering intent, which is
+reconciled rather than repealed: nothing is deleted, `drop` is a state, rewording is
 append-new plus abandon-old, and `supersede` is the audited exception D53 was defending
-against silent versions of. The paragraph below records the 0.33.0 shape it replaced.
+against silent versions of. **A done claim is host-verified again (F0c, D-next-3), no
+wider than the tested boundary.** A todo carries a `Contract` (`crates/types/src/plan/
+contract.rs`): a list of items, each a checker command, a schema, or an examples
+runner, frozen at `start` alongside the attempt. `done` never sets `Done` itself; it
+requests verification, the engine commits `verification_requested` to the journal, runs
+the frozen items under their own deadline with an emptied and allowlisted environment,
+and lands `Done { VerifiedDone }` only when the resulting verdict passes and still names
+the current attempt, contract and output. A failing, abstaining or escalating verdict
+commits `done_refused` with the verdict attached and charges the todo's refusal count;
+three refusals block the todo on the user as its own recorded transition. `set`,
+`import`, `repair` and `supersede` go through the same validator, so none of them can
+author a resolution; a todo with no contract and no stated acceptance completes on the
+caller's word as `Done { resolution: None }`, reported unverified, on every surface alike
+(D194's carve-out, closed by a decider today or by F3a's judge). The boundary is
+exact, not aspirational: a `judge` decider is refused at declaration until F3a lands,
+so today only a `cmd`, `schema` or `example` item can decide a contract, and "host-
+verified" names that set and nothing past it. **A worktree todo is done only through
+acceptance (F0d, D-next-4, plan §6.6).** Submitting a candidate on its branch commits
+`candidate_submitted`, and the candidate's own verification against that commit lands
+`candidate_verified`; only then may integration begin. Integration is prepared against
+the parent's current generation in a staging worktree, never the user's checkout, and
+lands `integration_prepared`, then `integration_verified` once the required checks pass
+against that exact tree outside the lock; a parent that moved underneath the prepared
+merge is `integration_stale` and the todo re-prepares against the new generation.
+`done` on a worktree todo is legal only once every phase above is present; passing lands
+one `accepted` record with the publication, the candidate and parent commits, and both
+verdicts, as the same transition to `Done { VerifiedDone }`. Every other exit from
+`Running` — a failure, a drop, a supersede, a revocation — commits an explicit
+`disposition` first (`Retained`, `Discarded`, `MergeFailed` or `RepossessionPending`,
+carrying what a retry needs and what the cleanup kept) and never merges to free a slot.
+The paragraph below records the 0.33.0
+shape the store superseded.
 
 
 The task DAG under the goal, per docs/plans/2026-08-27-closing-the-loop.md §3.2:
@@ -1281,7 +1342,10 @@ intentional growth.
   LOC of its own, 128 hits in agent-session; hashline: 7,193 LOC, 2 hits)
 - total event vocabulary ≤ 18 **summed across every layer**, measured at design time (13
   loop + 5 ACP `_yi/*`, C9); a bridge or runtime addition edits this number in the same
-  commit; not per enum (surveyed: 10 + 15 + 25 = 50, each union individually defensible)
+  commit; not per enum (surveyed: 10 + 15 + 25 = 50, each union individually defensible).
+  A syscall is not an event: every host request on the kernel registry, `plan.op`
+  included (D192), is answered there and adds no variant, so this budget stays where it
+  is while the syscall table grows
 - seam width ≤ 8 members: an extraction interface wider than 8 is the core with a different
   name (surveyed: 34-member advisor host, 219-member extension API)
 - config-key budget: every settings key names its owning feature; per-feature count ratcheted

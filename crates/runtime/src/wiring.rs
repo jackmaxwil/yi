@@ -310,52 +310,99 @@ pub fn register_history_grep(
     });
 }
 
-/// The plan engine, its tool, and the loop coupling, composed over the live
-/// [`SubagentHost`]; children get the tool view-only and no coupling.
-fn wire_plan_engine(
+/// The engine and `plan.op` with this session's principal; `None` (no plan surface at all)
+/// when the store is unavailable or a child's name is not a valid agent id.
+fn wire_plan_request(
     session: &AgentSession,
     wiring: &RuntimeWiring,
     plans_dir: &Path,
     host: &Arc<SubagentHost>,
-    tools: &mut Vec<Arc<dyn yi_tools::Tool>>,
+    registry: &mut crate::kernel::HostRegistry,
     log: Arc<crate::fetch::FetchLog>,
     resolver: Arc<crate::fetch::Resolver>,
-) {
-    let actor = if wiring.depth == 0 {
-        crate::plan::ops::Actor::Owner
+) -> Option<(Arc<crate::plan::ops::PlanEngine>, crate::plan::ops::Actor)> {
+    // Invariant: a child's engine stands on its parent's host and checkout, since its `submit`
+    // settles the lane the parent holds and integrates onto the parent's generation (6.6).
+    let (actor, host, cwd) = if wiring.depth == 0 {
+        (
+            crate::plan::ops::Actor::Owner,
+            Arc::clone(host),
+            wiring.cwd.clone(),
+        )
     } else {
-        let Some(name) = wiring
-            .parent_link
-            .as_ref()
-            .and_then(|link| yi_types::plan::doc::AgentId::new(&link.child_name).ok())
-        else {
-            return;
-        };
-        crate::plan::ops::Actor::Child(name)
+        let link = wiring.parent_link.as_ref()?;
+        let name = yi_types::plan::doc::AgentId::new(&link.child_name).ok()?;
+        let parent = link.host.upgrade()?;
+        let cwd = parent.options.cwd.clone();
+        (crate::plan::ops::Actor::Child(name), parent, cwd)
     };
+    let host = &host;
     let store = match crate::plan::store::PlanStore::open(plans_dir.to_path_buf()) {
         Ok(store) => store,
         Err(error) => {
             (session.notice_hook())(&format!("plan store unavailable: {error}"));
-            return;
+            return None;
         }
     };
     let deliver: crate::goal::DeliverFn = {
         let hook = session.heartbeat_hook();
         Arc::new(move |message, mode| hook(message, mode))
     };
-    let probe_deliver = Arc::clone(&deliver);
     let delegate = Arc::new(crate::plan::dispatch::SessionDelegate::new(
         Arc::clone(host),
         deliver,
         log,
     ));
     let ops = Arc::new(crate::plan::ledger::SessionOpSink(session.store_handle()));
-    let engine = Arc::new(
-        crate::plan::ops::PlanEngine::new(store, delegate)
-            .with_output_resolve(resolver)
-            .with_op_sink(ops),
-    );
+    let liveness: Arc<dyn crate::plan::recovery::Liveness> = delegate.clone();
+    let mut engine = crate::plan::ops::PlanEngine::new(store, delegate)
+        .with_output_resolve(resolver)
+        .with_op_sink(ops)
+        .with_liveness(liveness)
+        .with_cwd(cwd.clone());
+    // A verification never outlives the run (D177): the verifier reads the session's deadline
+    // as well as its own clock, and so does every lane settle the host runs.
+    if let Some(deadline) = session.deadline()
+        && let Some(ends) = deadline.started.checked_add(deadline.total)
+    {
+        let verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
+            .with_deadline(ends);
+        engine = engine.with_verifier(verifier);
+        host.set_deadline(Some(ends));
+    }
+    // The staging and verification checkouts come from the lane pool, split with the host's
+    // workers over one object (sections 6.6 and 7.6); no repository, no worktree children.
+    if let Ok(pool) = crate::lane::Pool::open(&wiring.home, &cwd, wiring.lane_slots) {
+        engine = engine.with_lanes(pool).with_capacity(host.capacity());
+    }
+    // The verification snapshot is the shadow gitdir tree the turn checkpoints capture (plan
+    // section 6.3); without git the engine hashes the workspace itself.
+    if let Some(snapshotter) = crate::plan::snapshot::shadow_tree(&wiring.home, &cwd, plans_dir) {
+        engine = engine.with_snapshotter(snapshotter);
+    }
+    let engine = Arc::new(engine);
+    crate::plan::request::register(Arc::clone(&engine), actor.clone(), registry);
+    Some((engine, actor))
+}
+
+fn wire_plan_engine(
+    session: &AgentSession,
+    wiring: &RuntimeWiring,
+    plans_dir: &Path,
+    host: &Arc<SubagentHost>,
+    tools: &mut Vec<Arc<dyn yi_tools::Tool>>,
+    plan: Option<(Arc<crate::plan::ops::PlanEngine>, crate::plan::ops::Actor)>,
+) {
+    let Some((engine, actor)) = plan else {
+        return;
+    };
+    let probe_deliver: crate::goal::DeliverFn = {
+        let hook = session.heartbeat_hook();
+        Arc::new(move |message, mode| hook(message, mode))
+    };
+    if let Some(service) = session.plan_service() {
+        service.set_engine(Arc::clone(&engine), actor.clone());
+    }
     tools.push(Arc::new(crate::plan::tool::PlanTool::new(
         Arc::clone(&engine),
         actor,
@@ -370,11 +417,14 @@ fn wire_plan_engine(
     ))));
     session.set_todos(Arc::clone(&todos));
     let inner = (wiring.depth == 0).then(|| {
-        crate::plan::probe::spawn(Arc::new(crate::plan::probe::ProbeLadder::new(
-            engine,
-            plans_dir.to_path_buf(),
-            probe_deliver,
-        )));
+        let children = Arc::clone(host);
+        crate::plan::probe::spawn(Arc::new(
+            crate::plan::probe::ProbeLadder::new(engine, plans_dir.to_path_buf(), probe_deliver)
+                .with_children(
+                    Arc::new(move || children.states()),
+                    lifecycle_notice(session),
+                ),
+        ));
         crate::plan::loop_coupling::coupling(
             session,
             crate::plan::loop_coupling::CouplingOptions {
@@ -538,6 +588,15 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         Arc::clone(&kernels),
     );
     wire_plan_compaction(session, &plans_dir);
+    let plan = wire_plan_request(
+        session,
+        &wiring,
+        &plans_dir,
+        &host,
+        &mut registry,
+        Arc::clone(&fetch_log),
+        resolver,
+    );
     let restore_notice = session.notice_hook();
     let service = Arc::new(crate::kernel::KernelService::new(
         crate::kernel::KernelServiceOptions {
@@ -571,9 +630,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     tools.push(crate::kernel::ipython_tool(Arc::clone(&service)));
     crate::auto_review::wire(session, &wiring, &mut tools);
     let fetch_for_rules = Arc::clone(&fetch_log);
-    wire_plan_engine(
-        session, &wiring, &plans_dir, &host, &mut tools, fetch_log, resolver,
-    );
+    wire_plan_engine(session, &wiring, &plans_dir, &host, &mut tools, plan);
     if let (Some(plan), Some(advisor)) = (session.plan_service(), session.advisor()) {
         plan.set_on_change(Arc::new(move |plan| {
             advisor.request_review(Some(crate::plan::summary_line(plan)));
@@ -604,6 +661,13 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     host
 }
 
+/// A child's lifecycle notice wakes its parent (§7.5); `notice_hook` only queues a steer
+/// for a turn that may never come. Same message either way.
+pub fn lifecycle_notice(session: &AgentSession) -> Arc<crate::subagent::NoticeFn> {
+    let wake = session.wake_idle_hook();
+    Arc::new(move |text: &str| wake(crate::session::user_message(text)))
+}
+
 fn subagent_host(
     session: &AgentSession,
     wiring: &RuntimeWiring,
@@ -617,7 +681,7 @@ fn subagent_host(
         parent_session_dir: wiring.rlm_dir.clone(),
         defaults: session.settings_handle(),
         factory,
-        notice: session.notice_hook(),
+        notice: lifecycle_notice(session),
         events: session.events_sender(),
         parent_messages: session.history_handle(),
         cwd: wiring.cwd.clone(),

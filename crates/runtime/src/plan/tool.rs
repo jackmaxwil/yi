@@ -8,28 +8,14 @@ use yi_types::plan::doc::{
 };
 use yi_types::url::Url;
 
-use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError, SetRow, TodoSpec};
-use super::table::{OpKind, op_name};
+use super::ops::{
+    Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError, Reconciliation, Resolution, Resolve,
+    SetRow, TodoSpec,
+};
+use super::table::{ALL_OPS, OpKind, op_name};
+use yi_types::plan::op::MODEL_OPS;
 
 const WINDOW: usize = 8;
-
-const ALL_OPS: [OpKind; 15] = [
-    OpKind::Set,
-    OpKind::Init,
-    OpKind::Append,
-    OpKind::Drop,
-    OpKind::Block,
-    OpKind::Unblock,
-    OpKind::Reorder,
-    OpKind::AddEdge,
-    OpKind::Start,
-    OpKind::Done,
-    OpKind::Fail,
-    OpKind::Retry,
-    OpKind::Decompose,
-    OpKind::Supersede,
-    OpKind::View,
-];
 
 fn legal_ops() -> String {
     ALL_OPS
@@ -63,6 +49,60 @@ pub enum ArgError {
     EmptyList,
     #[error("set list nests deeper than {max} levels at line {line}")]
     TooDeep { line: usize, max: usize },
+    #[error("actor is not an argument; the surface a request arrives on fixes its principal")]
+    ActorArg,
+    #[error("{} does not take {key:?}; its arguments are {legal}", op_name(*op))]
+    UnknownKey {
+        op: OpKind,
+        key: String,
+        legal: String,
+    },
+}
+
+/// Every key an op reads, `op` and `plan` included; `todo` is the alias for `label`.
+fn known_keys(kind: OpKind) -> &'static [&'static str] {
+    match kind {
+        OpKind::Init => &["op", "plan", "goal", "todos"],
+        OpKind::Append => &["op", "plan", "todos"],
+        OpKind::Unblock | OpKind::Start => &["op", "plan", "label", "todo"],
+        OpKind::Drop => &["op", "plan", "label", "todo", "disposition"],
+        OpKind::Block => &["op", "plan", "label", "todo", "on", "note"],
+        OpKind::Reorder => &["op", "plan", "labels"],
+        OpKind::AddEdge => &["op", "plan", "todo", "after"],
+        OpKind::Done => &["op", "plan", "label", "todo", "output"],
+        OpKind::Fail => &["op", "plan", "label", "todo", "cause", "disposition"],
+        OpKind::Retry => &["op", "plan", "label", "todo", "delegation"],
+        OpKind::Decompose => &["op", "plan", "label", "todo", "todos"],
+        OpKind::Supersede => &["op", "plan", "reason", "todos"],
+        OpKind::Set => &["op", "plan", "goal", "list"],
+        OpKind::View => &["op", "plan", "full"],
+        OpKind::FuseReset => &["op", "plan"],
+        OpKind::Repair => &["op", "plan", "resolutions"],
+        OpKind::Import => &["op", "plan", "source"],
+        OpKind::Reconcile => &["op", "plan", "label", "todo", "effect_id", "outcome"],
+        OpKind::Submit => &["op", "plan", "label", "todo", "attempt", "output"],
+        OpKind::Resolve => &["op", "plan", "label", "todo", "attempt", "resolution"],
+        OpKind::Accept => &["op", "plan", "label", "todo", "note", "output"],
+    }
+}
+
+const TODO_SPEC_KEYS: [&str; 4] = ["label", "after", "delegation", "contract"];
+
+/// Invariant: a key no op reads is refused, never dropped: a misspelled `contract` or `output`
+/// would otherwise land a todo on the unverified path with no error.
+fn refuse_unknown(
+    args: &Map<String, Value>,
+    op: OpKind,
+    legal: &[&'static str],
+) -> Result<(), ArgError> {
+    match args.keys().find(|key| !legal.contains(&key.as_str())) {
+        Some(key) => Err(ArgError::UnknownKey {
+            op,
+            key: key.clone(),
+            legal: legal.join(", "),
+        }),
+        None => Ok(()),
+    }
 }
 
 const CHECKLIST_DEPTH: usize = 6;
@@ -123,7 +163,10 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                         },
                     )?,
                 },
-                TodoStateName::Done => TodoState::Done { output: None },
+                TodoStateName::Done => TodoState::Done {
+                    output: None,
+                    resolution: None,
+                },
                 TodoStateName::Pending
                 | TodoStateName::Blocked
                 | TodoStateName::Failed
@@ -134,6 +177,11 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
             subplan: None,
             retries: yi_types::plan::doc::RetryCount::default(),
             children: Vec::new(),
+            note: None,
+            attempt: yi_types::plan::doc::AttemptId::FIRST,
+            refusals: 0,
+            contract: None,
+            contract_hash: None,
             extra: serde_json::Map::new(),
         };
         let depth = indent.min(path.len());
@@ -179,6 +227,7 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                 label: todo.label,
                 after: Vec::new(),
                 delegation: None,
+                contract: None,
                 children: todo.children,
             },
             state,
@@ -218,8 +267,15 @@ from_arg!(
     Url,
     BlockedOn,
     Delegation,
+    yi_types::plan::contract::Contract,
     String,
     bool,
+    Vec<Resolution>,
+    yi_types::plan::ledger::EffectId,
+    yi_types::plan::ledger::AttemptId,
+    Reconciliation,
+    Resolve,
+    yi_types::plan::op::Choice,
 );
 
 fn opt<T: FromArg>(
@@ -261,27 +317,32 @@ fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, Ar
         let Value::Object(spec) = value else {
             return Err(ArgError::TodoShape { op, index });
         };
+        refuse_unknown(spec, op, &TODO_SPEC_KEYS)?;
         specs.push(TodoSpec {
             label: need(spec, op, "label")?,
             after: opt(spec, op, "after")?.unwrap_or_default(),
             delegation: opt(spec, op, "delegation")?,
+            contract: opt(spec, op, "contract")?,
             children: Vec::new(),
         });
     }
     Ok(specs)
 }
 
+/// `accept` is the word every surface takes for the `accepted_by_user` record.
 fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
-    let name = args
-        .get("op")
-        .and_then(Value::as_str)
-        .ok_or(ArgError::NoOp)?;
+    let name = match args.get("op").and_then(Value::as_str) {
+        Some("accept") => "accepted_by_user",
+        Some(name) => name,
+        None => return Err(ArgError::NoOp),
+    };
     let kind = ALL_OPS
         .into_iter()
         .find(|op| op_name(*op) == name)
         .ok_or_else(|| ArgError::UnknownOp {
             got: name.to_owned(),
         })?;
+    refuse_unknown(args, kind, known_keys(kind))?;
     Ok(match kind {
         OpKind::Init => Op::Init {
             goal: need(args, kind, "goal")?,
@@ -292,6 +353,7 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         },
         OpKind::Drop => Op::Drop {
             label: label(args, kind)?,
+            disposition: opt(args, kind, "disposition")?,
         },
         OpKind::Block => Op::Block {
             label: label(args, kind)?,
@@ -318,6 +380,7 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         OpKind::Fail => Op::Fail {
             label: label(args, kind)?,
             cause: need(args, kind, "cause")?,
+            disposition: opt(args, kind, "disposition")?,
         },
         OpKind::Retry => Op::Retry {
             label: label(args, kind)?,
@@ -338,15 +401,48 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         OpKind::View => Op::View {
             full: opt(args, kind, "full")?.unwrap_or(false),
         },
+        OpKind::FuseReset => Op::FuseReset,
+        OpKind::Repair => Op::Repair {
+            resolutions: opt::<Vec<Resolution>>(args, kind, "resolutions")?.unwrap_or_default(),
+        },
+        OpKind::Import => Op::Import {
+            source: need(args, kind, "source")?,
+        },
+        OpKind::Reconcile => Op::Reconcile {
+            label: label(args, kind)?,
+            effect_id: opt(args, kind, "effect_id")?,
+            outcome: need::<Reconciliation>(args, kind, "outcome")?,
+        },
+        OpKind::Submit => Op::Submit {
+            label: label(args, kind)?,
+            attempt: need(args, kind, "attempt")?,
+            output: need(args, kind, "output")?,
+        },
+        OpKind::Resolve => Op::Resolve {
+            label: label(args, kind)?,
+            attempt: need(args, kind, "attempt")?,
+            resolution: need(args, kind, "resolution")?,
+        },
+        OpKind::Accept => Op::Accept {
+            label: label(args, kind)?,
+            note: need(args, kind, "note")?,
+            output: opt(args, kind, "output")?,
+        },
     })
 }
 
-fn request(actor: &Actor, args: &Map<String, Value>) -> Result<OpRequest, ArgError> {
+/// Invariant: the principal is a channel, never a string (§3.6): `actor` is refused, never read.
+pub(super) fn request(actor: &Actor, args: &Map<String, Value>) -> Result<OpRequest, ArgError> {
+    if args.contains_key("actor") {
+        return Err(ArgError::ActorArg);
+    }
     let op = parse_op(args)?;
     Ok(OpRequest {
         plan: opt(args, op.kind(), "plan")?,
         actor: actor.clone(),
         op,
+        request_id: None,
+        expected_revision: None,
     })
 }
 
@@ -399,17 +495,24 @@ fn todo_line(todo: &Todo) -> String {
             let on = serde_json::to_string(on).unwrap_or_else(|_| "?".to_owned());
             line.push_str(&format!(" on {on}: {note}"));
         }
-        TodoState::Done { output: Some(url) } => line.push_str(&format!(" -> {url}")),
+        TodoState::Done { output, resolution } => {
+            if let Some(url) = output {
+                line.push_str(&format!(" -> {url}"));
+            }
+            if let Some(resolution) = resolution {
+                line.push_str(&format!(" ({resolution})"));
+            }
+        }
         TodoState::Failed { cause, last } => {
             line.push_str(&format!(" ! {cause}"));
             if let Some(url) = last {
                 line.push_str(&format!(" (last {url})"));
             }
         }
-        TodoState::Pending
-        | TodoState::Done { output: None }
-        | TodoState::Abandoned
-        | TodoState::Other(_) => {}
+        TodoState::Pending | TodoState::Abandoned | TodoState::Other(_) => {}
+    }
+    if let Some(Value::String(url)) = todo.extra.get(super::state::SUBMITTED_KEY) {
+        line.push_str(&format!(" submitted {url}"));
     }
     if !todo.retries.is_zero() {
         line.push_str(&format!(" retries {}", todo.retries.0));
@@ -510,6 +613,11 @@ fn render(outcome: &Outcome, full: bool, stepped: Option<&TodoLabel>) -> String 
     out.join("\n")
 }
 
+pub(super) fn render_outcome(op: &Op, outcome: &Outcome) -> String {
+    let full = matches!(op, Op::View { full: true });
+    render(outcome, full, op.label())
+}
+
 pub struct PlanTool {
     engine: Arc<PlanEngine>,
     actor: Actor,
@@ -522,10 +630,9 @@ impl PlanTool {
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
         let request = request(&self.actor, args)?;
-        let full = matches!(request.op, Op::View { full: true });
-        let stepped = request.op.label().cloned();
+        let op = request.op.clone();
         let outcome = self.engine.apply(request)?;
-        Ok(render(&outcome, full, stepped.as_ref()))
+        Ok(render_outcome(&op, &outcome))
     }
 }
 
@@ -576,7 +683,7 @@ pub fn schema() -> Value {
             "properties": {
                 "op": {
                     "type": "string",
-                    "enum": ALL_OPS.iter().map(|op| op_name(*op)).collect::<Vec<_>>(),
+                    "enum": ALL_OPS.iter().take(MODEL_OPS).map(|op| op_name(*op)).collect::<Vec<_>>(),
                     "description": "set replaces the whole list from a checklist; init goal+todos; append/drop/reorder/add_edge edit the cut; start/done/fail step a todo; block/unblock park one; retry a failed one; decompose a running one into a sub-plan; supersede replaces the whole cut; view echoes it"
                 },
                 "list": {"type": "string", "description": "set: the checklist, one `- [ ] label` per line (`[>]` running, `[x]` done), nested by two-space indent"},
@@ -585,7 +692,7 @@ pub fn schema() -> Value {
                 "todos": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "init/append/decompose/supersede: [{label, after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}}]. A delegation hands the todo to a child and its accept is mandatory",
+                    "description": "init/append/decompose/supersede: [{label, after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, items: [{id, critical: bool, weight: 1..100, decider: {cmd: {checker: artifact, timeout_ms}} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; done runs the contract (an artifact is {digest, media_type, length} from the plan's store) and a todo without one completes unverified",
                     "minItems": 1
                 },
                 "label": {"type": "string", "description": "drop/block/unblock/start/done/fail/retry/decompose: the todo"},
@@ -614,11 +721,26 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plans")
     }
 
+    /// `repeat` and `reapFails` are the walkthrough's own keys, stripped before the engine
+    /// sees the args, so the parser never learns them.
+    fn strip_walkthrough_keys(args: &mut Map<String, Value>) {
+        args.remove("reapFails");
+        if let Some(Value::Array(todos)) = args.get_mut("todos") {
+            for todo in todos.iter_mut().filter_map(Value::as_object_mut) {
+                todo.remove("repeat");
+            }
+        }
+    }
+
     #[test]
     fn every_fixture_op_argument_set_parses() -> Fallible {
         let mut seen = 0usize;
         for entry in std::fs::read_dir(fixture_dir())? {
-            let fixture: Value = serde_json::from_str(&std::fs::read_to_string(entry?.path())?)?;
+            let path = entry?.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+            let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
             let Some(steps) = fixture.get("steps").and_then(Value::as_array) else {
                 continue;
             };
@@ -630,12 +752,31 @@ mod tests {
                     Some(Value::Object(args)) => args.clone(),
                     _ => Map::new(),
                 };
+                strip_walkthrough_keys(&mut input);
                 input.insert("op".to_owned(), Value::String(name.to_owned()));
                 if let Some(plan) = step.get("plan") {
                     input.insert("plan".to_owned(), plan.clone());
                 }
                 let parsed = request(&Actor::Owner, &input);
                 assert!(parsed.is_ok(), "{name}: {:?}", parsed.err());
+                // The CLI reads one line: the same args must parse to the same request.
+                let mut line = name.to_owned();
+                if let Some(plan) = step.get("plan").and_then(Value::as_str) {
+                    line.push(' ');
+                    line.push_str(plan);
+                }
+                if let Some(Value::Object(args)) = step.get("args") {
+                    line.push(' ');
+                    line.push_str(&serde_json::to_string(args)?);
+                }
+                let mut through_cli = super::super::authority::cli_args(&line)
+                    .map_err(|error| format!("{name}: {error}"))?;
+                strip_walkthrough_keys(&mut through_cli);
+                assert_eq!(
+                    request(&Actor::Owner, &through_cli).ok(),
+                    parsed.ok(),
+                    "{name}: the CLI line parses differently from the tool"
+                );
                 seen = seen.saturating_add(1);
             }
         }
@@ -649,6 +790,32 @@ mod tests {
             serde_json::to_string(&schema())?,
             serde_json::to_string(&schema())?
         );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unknown_argument_key_is_refused() -> Fallible {
+        let cases = [
+            json!({"op": "done", "label": "x", "outpt": "local://a"}),
+            json!({"op": "set", "list": "- [ ] x", "expected_revision": 3}),
+            json!({"op": "init", "goal": "ship it", "todos": [{"label": "x", "contrat": {}}]}),
+        ];
+        for case in cases {
+            let Value::Object(input) = case else {
+                return Err("case is not an object".into());
+            };
+            let message = request(&Actor::Owner, &input)
+                .err()
+                .ok_or_else(|| format!("{input:?} parsed with an unknown key"))?
+                .to_string();
+            assert!(message.contains("does not take"), "{message}");
+            assert!(
+                message.contains("outpt")
+                    || message.contains("expected_revision")
+                    || message.contains("contrat"),
+                "{message}"
+            );
+        }
         Ok(())
     }
 
@@ -674,6 +841,11 @@ mod tests {
             subplan: None,
             retries: yi_types::plan::doc::RetryCount::default(),
             children: Vec::new(),
+            note: None,
+            attempt: yi_types::plan::doc::AttemptId::FIRST,
+            refusals: 0,
+            contract: None,
+            contract_hash: None,
             extra: Map::new(),
         })
     }
@@ -686,7 +858,13 @@ mod tests {
             GoalText::new("ship it")?,
             PlanTier::Root,
             vec![
-                todo("cut", TodoState::Done { output: None })?,
+                todo(
+                    "cut",
+                    TodoState::Done {
+                        output: None,
+                        resolution: None,
+                    },
+                )?,
                 todo("build", TodoState::Running { by })?,
                 todo("ship", TodoState::Pending)?,
             ],
@@ -700,6 +878,7 @@ mod tests {
             spawned: Vec::new(),
             reaped: Vec::new(),
             subplan: None,
+            notices: Vec::new(),
         };
         let windowed = render(&outcome, false, None);
         assert!(
@@ -740,5 +919,72 @@ mod tests {
         input.insert("list".to_owned(), Value::String("- [ ] a\n".to_owned()));
         assert!(matches!(parse_op(&input)?, Op::Set { .. }));
         Ok(())
+    }
+
+    /// Guards the actor refusal in `request`: drop the `actor` key check and the child's
+    /// `view` below is honoured as the owner.
+    #[test]
+    fn the_tool_and_the_request_refuse_an_actor_argument() -> Fallible {
+        let dir = crate::scratch::Scratch::new("yi-plan-tool-actor")?;
+        let store = super::super::store::PlanStore::open(dir.to_path_buf())?;
+        let engine = Arc::new(PlanEngine::new(store, Arc::new(NoChildren)));
+        let child = Actor::Child(yi_types::plan::doc::AgentId::new("helper")?);
+        let mut args = Map::new();
+        args.insert("op".to_owned(), Value::String("init".to_owned()));
+        args.insert("goal".to_owned(), Value::String("ship the seam".to_owned()));
+        args.insert("todos".to_owned(), json!([{"label": "cut"}]));
+        args.insert("actor".to_owned(), Value::String("agent://main".to_owned()));
+        let tool = PlanTool::new(Arc::clone(&engine), child.clone());
+        let output = tool.execute(args.clone(), &ToolContext::new(dir.to_path_buf()));
+        assert!(output.is_error, "the tool honoured an actor argument");
+        let refused = match output.result.content.first() {
+            Some(yi_types::message::Content::Text { text, .. }) => text.clone(),
+            _ => String::new(),
+        };
+        assert!(
+            refused.contains("actor is not an argument"),
+            "the tool refuses the key itself, not the op: {refused}"
+        );
+        let refusal = super::super::request::refusal_of(&child, &args);
+        assert_eq!(refusal["refusal"]["code"], json!("bad_args"));
+        assert!(
+            refusal["refusal"]["message"]
+                .as_str()
+                .is_some_and(|text| text.contains("actor is not an argument")),
+            "{refusal:?}"
+        );
+        assert!(
+            engine.revision(None).is_err(),
+            "no plan may open through a claimed actor"
+        );
+        let line = format!("init {}", serde_json::to_string(&args)?);
+        let through_cli = super::super::authority::cli_args(&line)?;
+        assert!(
+            matches!(request(&child, &through_cli), Err(ArgError::ActorArg)),
+            "the CLI line carries the key into the same refusal"
+        );
+        Ok(())
+    }
+
+    struct NoChildren;
+
+    impl super::super::ops::Delegate for NoChildren {
+        fn spawn(
+            &self,
+            _at: &yi_types::plan::doc::TodoAddr,
+            _delegation: &Delegation,
+        ) -> Result<yi_types::plan::doc::AgentId, String> {
+            Err("no children in this test".to_owned())
+        }
+
+        fn reap(
+            &self,
+            _agent: &yi_types::plan::doc::AgentId,
+            _supplied: &[Url],
+        ) -> Result<Option<Url>, String> {
+            Ok(None)
+        }
+
+        fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
     }
 }
