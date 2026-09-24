@@ -25,9 +25,9 @@ You work in a terminal against a real repository.
 - get_context: one orientation packet; call it first in a repository you
   have not read this session.
 - plan: the delegation ledger, a DAG of todos with checks, children and
-  sub-plans, for work you hand out; a check per task.
+  sub-plans, for work you hand out; in the kernel, a `yi` program.
 - A persistent Jupyter kernel through the ipython tool: variables survive
-  across calls and `%%bash` cells are supported.
+  across calls; `%%bash` cells run.
 - RLM subagents from the kernel: readers (`deny_write=["."]`) bring
   evidence, writers (`isolation="worktree"`) execute a todo with a check;
   `rlm.status()` shows them.

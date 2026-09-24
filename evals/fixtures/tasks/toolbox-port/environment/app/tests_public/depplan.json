@@ -1,0 +1,77 @@
+[
+ {
+  "id": "waves",
+  "args": [],
+  "stdin": "# a small build\nfetch(2):\nparse(3): fetch\nlint: parse\ncodegen(4): parse\ncompile(5): codegen lint\ndocs(2): parse\ntest(3): compile\npackage: test docs   # last\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "wave 1: fetch\nwave 2: parse\nwave 3: codegen docs lint\nwave 4: compile\nwave 5: test\nwave 6: package\n",
+  "files_after": {}
+ },
+ {
+  "id": "jobs-2",
+  "args": [
+   "--jobs",
+   "2"
+  ],
+  "stdin": "# a small build\nfetch(2):\nparse(3): fetch\nlint: parse\ncodegen(4): parse\ncompile(5): codegen lint\ndocs(2): parse\ntest(3): compile\npackage: test docs   # last\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "t=0 w1 fetch(2)\nt=2 w1 parse(3)\nt=5 w1 codegen(4)\nt=5 w2 docs(2)\nt=7 w2 lint(1)\nt=9 w1 compile(5)\nt=14 w1 test(3)\nt=17 w1 package(1)\nmakespan: 18\n",
+  "files_after": {}
+ },
+ {
+  "id": "target",
+  "args": [
+   "--target",
+   "docs",
+   "--target",
+   "lint"
+  ],
+  "stdin": "# a small build\nfetch(2):\nparse(3): fetch\nlint: parse\ncodegen(4): parse\ncompile(5): codegen lint\ndocs(2): parse\ntest(3): compile\npackage: test docs   # last\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "wave 1: fetch\nwave 2: parse\nwave 3: docs lint\n",
+  "files_after": {}
+ },
+ {
+  "id": "cycles",
+  "args": [],
+  "stdin": "a: b\nb: c\nc: a d\nd: e\ne: d\nf: f\ng: a\nh:\n",
+  "files": {},
+  "exit": 3,
+  "stdout": "cycle: a -> b -> c -> a\ncycle: d -> e -> d\ncycle: f -> f\n",
+  "files_after": {}
+ },
+ {
+  "id": "missing",
+  "args": [],
+  "stdin": "a: b zlib\nc: zlib yaml\n",
+  "files": {},
+  "exit": 4,
+  "stdout": "missing: b (needed by a)\nmissing: yaml (needed by c)\nmissing: zlib (needed by a c)\n",
+  "files_after": {}
+ },
+ {
+  "id": "allow-missing",
+  "args": [
+   "--allow-missing",
+   "--jobs",
+   "1"
+  ],
+  "stdin": "a(2): b zlib\nc: zlib\nb:\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "t=0 w1 b(1)\nt=1 w1 zlib(1)\nt=2 w1 a(2)\nt=4 w1 c(1)\nmakespan: 5\n",
+  "files_after": {}
+ },
+ {
+  "id": "duplicate",
+  "args": [],
+  "stdin": "a:\nb: a\na: b\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ }
+]

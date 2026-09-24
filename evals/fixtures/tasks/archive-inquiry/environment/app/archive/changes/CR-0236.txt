@@ -1,0 +1,87 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0236
+Title: Erratum to incident review IR-2031-04
+Site: Tolland Sluice
+Requested by: Ysolde Quint
+Implemented: 2031-05-06
+
+Outcome: COMPLETED
+
+Description
+-----------
+
+A walkdown of Cindergate Station found the signage faded; replacement boards have been
+ordered under the routine budget. A minor oil weep from the telemetry outstation at
+Brackwater Lock was cleaned up and a drip tray fitted pending the next service.
+
+The final review of IR-2031-04 states that valve V-114 was replaced on 2031-04-18.
+That date belongs to valve V-141 (CR-0229). The correct date for valve V-114 is
+2031-04-22, as recorded in CR-0231. The review will not be reissued; this record
+stands as the correction.
+
+Risk and rollback plan
+----------------------
+
+A rollback was prepared but was not needed.
+
+The contractor's method statement for work at Pike Hollow was reviewed by the networks
+team and returned with 22 comments. An energy audit of Pike Hollow suggested that
+running the standby pump off-peak would reduce cost without affecting service.
+
+Verification
+------------
+
+No complaints were received from neighbours of Cindergate Station during the works,
+and the liaison log has been closed. The stores count showed 11 discrepancies, all
+traced to items issued to vans without a ticket. The telemetry link to Eastmere Intake
+dropped twice in the period; both outages were under 35 minutes and no alarms were
+missed. The handover notes between shifts were sampled by the control room and found
+complete in all but 23 cases. An energy audit of Cindergate Station suggested that
+running the standby pump off-peak would reduce cost without affecting service.
+
+Annex A. Housekeeping
+---------------------
+
+Hollis Wray confirmed that spares for the surge vessel are held at the central store
+and that the reorder level is 21 units. Tamsin Orrel thanked the finance office for
+covering the holiday rota at short notice. The draft drawing register for Merrow Basin
+is 19 percent complete and will be issued once the as-built survey is checked. Lucan
+Marsh confirmed that spares for the sample tap are held at the central store and that
+the reorder level is 5 units.
+
+Ysolde Quint confirmed that spares for the inlet screen are held at the central store
+and that the reorder level is 38 units. The contractor's method statement for work at
+Merrow Basin was reviewed by the asset planning group and returned with 25 comments.
+The handover notes between shifts were sampled by the field crews and found complete
+in all but 28 cases. A walkdown of Merrow Basin found the signage faded; replacement
+boards have been ordered under the routine budget. A walkdown of Pike Hollow found the
+signage faded; replacement boards have been ordered under the routine budget.
+
+Annex B. Routine matters
+------------------------
+
+The telemetry link to Osier Bank dropped twice in the period; both outages were under
+23 minutes and no alarms were missed. Members of the field crews asked for the
+seasonal demand figures to be circulated before the next meeting. Mirela Stanck
+thanked the finance office for covering the holiday rota at short notice. No
+complaints were received from neighbours of Cindergate Station during the works, and
+the liaison log has been closed. The telemetry link to Cindergate Station dropped
+twice in the period; both outages were under 12 minutes and no alarms were missed.
+
+Annex C. Correspondence
+-----------------------
+
+Ansel Brightwater noted that the calibration certificate for the duty pump expires
+next quarter and has booked the visit. Mirela Stanck raised the question of lone
+working at Tolland Sluice and was referred to the existing guidance held by the
+finance office. Ansel Brightwater noted that the calibration certificate for the duty
+pump expires next quarter and has booked the visit.
+
+A minor oil weep from the inlet screen at Low Fennick was cleaned up and a drip tray
+fitted pending the next service. The telemetry link to Tolland Sluice dropped twice in
+the period; both outages were under 36 minutes and no alarms were missed. No
+complaints were received from neighbours of Brackwater Lock during the works, and the
+liaison log has been closed. Sampling results for the quarter were within the expected
+band at every point except one, which is being resampled. Flooding on the lane to
+Brackwater Lock delayed the delivery by a day; no cost was incurred by the
+cooperative.

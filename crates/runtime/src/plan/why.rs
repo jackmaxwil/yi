@@ -103,8 +103,7 @@ pub fn answer(cwd: &Path, plans_dir: &Path, path: &str, line: u32) -> Result<Ans
     };
     let opened = PlanStore::open(plans_dir.to_path_buf())
         .ok()
-        .and_then(|store| store.read(&plan_id).ok())
-        .map(|file| file.plan);
+        .and_then(|store| store.read(&plan_id).ok());
     let (todo, goal) = match &opened {
         Some(plan) => (
             Some(

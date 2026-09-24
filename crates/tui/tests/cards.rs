@@ -99,6 +99,7 @@ fn task(status: TaskStatus, answer: &str) -> TaskCell {
         spawn: None,
         answer: Some(answer.to_owned()),
         activity: ChildActivity::Writing,
+        flag: None,
     }
 }
 

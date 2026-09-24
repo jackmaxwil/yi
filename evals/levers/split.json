@@ -1,0 +1,16 @@
+{
+ "development": [
+  "answer-echo",
+  "clean-workspace",
+  "edit-file",
+  "five-items"
+ ],
+ "validation": [
+  "block-on-user",
+  "search-loop",
+  "seen-red"
+ ],
+ "final": [
+  "fan-out"
+ ]
+}

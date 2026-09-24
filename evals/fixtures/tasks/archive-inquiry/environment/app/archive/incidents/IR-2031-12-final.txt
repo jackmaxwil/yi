@@ -1,0 +1,145 @@
+Quillfen Water Cooperative
+INCIDENT REVIEW IR-2031-12
+Stage: FINAL
+Site: Cindergate Station
+
+Occurred: 2031-11-05. Severity as assessed at this stage: 4.
+
+Summary
+-------
+
+No complaints were received from neighbours of Merrow Basin during the works, and the
+liaison log has been closed. An energy audit of Osier Bank suggested that running the
+duty pump off-peak would reduce cost without affecting service.
+
+Timeline
+--------
+
+  06:19  supply restored
+  06:40  supply restored
+  06:48  crew dispatched
+  06:59  duty manager informed
+
+Findings
+--------
+
+The contractor's method statement for work at Eastmere Intake was reviewed by the
+networks team and returned with 38 comments. A walkdown of Merrow Basin found the
+signage faded; replacement boards have been ordered under the routine budget. Tamsin
+Orrel raised the question of lone working at Cindergate Station and was referred to
+the existing guidance held by the safety committee. Vegetation clearance around the
+flow meter at Brackwater Lock was completed and the area photographed for the asset
+record. The stores count showed 17 discrepancies, all traced to items issued to vans
+without a ticket.
+
+Root cause
+----------
+
+A tripped breaker after a lightning strike nearby.
+
+Recommendations
+---------------
+
+1. Check the surge protection.
+
+Annex A. Follow-up from the last period
+---------------------------------------
+
+the asset planning group reminded everyone that permits for confined spaces must be
+closed out the same day. An energy audit of Harrow Weir suggested that running the
+flow meter off-peak would reduce cost without affecting service. No complaints were
+received from neighbours of Tolland Sluice during the works, and the liaison log has
+been closed. The draft drawing register for Tolland Sluice is 11 percent complete and
+will be issued once the as-built survey is checked.
+
+The stores count showed 7 discrepancies, all traced to items issued to vans without a
+ticket. An energy audit of Pike Hollow suggested that running the inlet screen off-
+peak would reduce cost without affecting service. the networks team will coordinate
+with Hollis Wray on the training calendar, which currently shows 22 open places.
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. A minor oil weep from the wet well ladder at Harrow
+Weir was cleaned up and a drip tray fitted pending the next service. Mirela Stanck
+confirmed that spares for the wet well ladder are held at the central store and that
+the reorder level is 34 units. Tamsin Orrel noted that the calibration certificate for
+the wet well ladder expires next quarter and has booked the visit.
+
+Annex B. Routine matters
+------------------------
+
+Ansel Brightwater raised the question of lone working at Brackwater Lock and was
+referred to the existing guidance held by the networks team. An energy audit of
+Brackwater Lock suggested that running the dosing skid off-peak would reduce cost
+without affecting service. The telemetry link to Low Fennick dropped twice in the
+period; both outages were under 16 minutes and no alarms were missed. A minor oil weep
+from the dosing skid at Low Fennick was cleaned up and a drip tray fitted pending the
+next service. A minor oil weep from the penstock actuator at Osier Bank was cleaned up
+and a drip tray fitted pending the next service.
+
+Members of the networks team asked for the seasonal demand figures to be circulated
+before the next meeting. An energy audit of Low Fennick suggested that running the
+surge vessel off-peak would reduce cost without affecting service. The contractor's
+method statement for work at Brackwater Lock was reviewed by the safety committee and
+returned with 29 comments.
+
+It was noted that access to Pike Hollow remains difficult after heavy rain and that
+the track will be regraded when crews allow. Members of the finance office asked for
+the seasonal demand figures to be circulated before the next meeting. A walkdown of
+Low Fennick found the signage faded; replacement boards have been ordered under the
+routine budget. A minor oil weep from the control panel at Brackwater Lock was cleaned
+up and a drip tray fitted pending the next service.
+
+Annex C. Follow-up from the last period
+---------------------------------------
+
+It was noted that access to Merrow Basin remains difficult after heavy rain and that
+the track will be regraded when crews allow. the finance office will coordinate with
+Ysolde Quint on the training calendar, which currently shows 25 open places. The
+stores count showed 28 discrepancies, all traced to items issued to vans without a
+ticket. Petra Vosk confirmed that spares for the inlet screen are held at the central
+store and that the reorder level is 3 units. Petra Vosk confirmed that spares for the
+telemetry outstation are held at the central store and that the reorder level is 29
+units.
+
+A walkdown of Low Fennick found the signage faded; replacement boards have been
+ordered under the routine budget. The telemetry link to Cindergate Station dropped
+twice in the period; both outages were under 32 minutes and no alarms were missed. Dov
+Callender reported that the inlet screen at Pike Hollow had been inspected and found
+serviceable, with minor wear noted on the seals.
+
+Petra Vosk noted that the calibration certificate for the telemetry outstation expires
+next quarter and has booked the visit. The telemetry link to Brackwater Lock dropped
+twice in the period; both outages were under 34 minutes and no alarms were missed. The
+draft drawing register for Merrow Basin is 6 percent complete and will be issued once
+the as-built survey is checked. The draft drawing register for Harrow Weir is 5
+percent complete and will be issued once the as-built survey is checked. Ysolde Quint
+presented a short paper on sensor drift and recommended a comparison check at
+Cindergate Station every 9 weeks.
+
+Annex D. Any other business
+---------------------------
+
+the safety committee reminded everyone that permits for confined spaces must be closed
+out the same day. The telemetry link to Brackwater Lock dropped twice in the period;
+both outages were under 21 minutes and no alarms were missed. Hollis Wray reported
+that the standby pump at Harrow Weir had been inspected and found serviceable, with
+minor wear noted on the seals. It was noted that access to Harrow Weir remains
+difficult after heavy rain and that the track will be regraded when crews allow. A
+minor oil weep from the surge vessel at Brackwater Lock was cleaned up and a drip tray
+fitted pending the next service.
+
+It was noted that access to Cindergate Station remains difficult after heavy rain and
+that the track will be regraded when crews allow. Dov Callender raised the question of
+lone working at Tolland Sluice and was referred to the existing guidance held by the
+field crews. The telemetry link to Cindergate Station dropped twice in the period;
+both outages were under 35 minutes and no alarms were missed. Ansel Brightwater
+reported that the surge vessel at Cindergate Station had been inspected and found
+serviceable, with minor wear noted on the seals. Flooding on the lane to Harrow Weir
+delayed the delivery by a day; no cost was incurred by the cooperative.
+
+the field crews reminded everyone that permits for confined spaces must be closed out
+the same day. Bram Ketteridge thanked the networks team for covering the holiday rota
+at short notice. Oona Farrow confirmed that spares for the surge vessel are held at
+the central store and that the reorder level is 3 units. The telemetry link to Low
+Fennick dropped twice in the period; both outages were under 39 minutes and no alarms
+were missed.

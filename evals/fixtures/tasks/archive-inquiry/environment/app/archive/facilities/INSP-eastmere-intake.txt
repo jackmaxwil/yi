@@ -1,0 +1,76 @@
+Quillfen Water Cooperative
+SITE INSPECTION REPORT
+Site: Eastmere Intake
+Inspected: 2031-04-26
+Inspector: Ansel Brightwater
+
+Condition
+---------
+
+Mirela Stanck raised the question of lone working at Cindergate Station and was
+referred to the existing guidance held by the field crews. the safety committee
+reminded everyone that permits for confined spaces must be closed out the same day. A
+minor oil weep from the dosing skid at Cindergate Station was cleaned up and a drip
+tray fitted pending the next service. The stores count showed 21 discrepancies, all
+traced to items issued to vans without a ticket.
+
+Standby power
+-------------
+
+The standby generator was run on load for one hour and passed.
+
+Annex A. Site notes
+-------------------
+
+A minor oil weep from the telemetry outstation at Merrow Basin was cleaned up and a
+drip tray fitted pending the next service. The telemetry link to Eastmere Intake
+dropped twice in the period; both outages were under 36 minutes and no alarms were
+missed. The contractor's method statement for work at Merrow Basin was reviewed by the
+safety committee and returned with 32 comments. Oona Farrow reported that the dosing
+skid at Osier Bank had been inspected and found serviceable, with minor wear noted on
+the seals.
+
+Annex B. Any other business
+---------------------------
+
+Mirela Stanck presented a short paper on sensor drift and recommended a comparison
+check at Cindergate Station every 21 weeks. No complaints were received from
+neighbours of Eastmere Intake during the works, and the liaison log has been closed.
+The telemetry link to Pike Hollow dropped twice in the period; both outages were under
+11 minutes and no alarms were missed. A walkdown of Osier Bank found the signage
+faded; replacement boards have been ordered under the routine budget.
+
+A walkdown of Tolland Sluice found the signage faded; replacement boards have been
+ordered under the routine budget. A walkdown of Osier Bank found the signage faded;
+replacement boards have been ordered under the routine budget. Petra Vosk noted that
+the calibration certificate for the duty pump expires next quarter and has booked the
+visit. the networks team will coordinate with Mirela Stanck on the training calendar,
+which currently shows 11 open places. The handover notes between shifts were sampled
+by the field crews and found complete in all but 21 cases.
+
+Annex C. Training and rota
+--------------------------
+
+The contractor's method statement for work at Osier Bank was reviewed by the control
+room and returned with 39 comments. Bram Ketteridge noted that the calibration
+certificate for the duty pump expires next quarter and has booked the visit. The
+contractor's method statement for work at Pike Hollow was reviewed by the field crews
+and returned with 33 comments.
+
+Lucan Marsh noted that the calibration certificate for the wet well ladder expires
+next quarter and has booked the visit. the networks team reminded everyone that
+permits for confined spaces must be closed out the same day. The stores count showed
+11 discrepancies, all traced to items issued to vans without a ticket. The handover
+notes between shifts were sampled by the safety committee and found complete in all
+but 23 cases. No complaints were received from neighbours of Eastmere Intake during
+the works, and the liaison log has been closed.
+
+Annex D. Follow-up from the last period
+---------------------------------------
+
+the networks team reminded everyone that permits for confined spaces must be closed
+out the same day. The contractor's method statement for work at Osier Bank was
+reviewed by the field crews and returned with 24 comments. It was noted that access to
+Eastmere Intake remains difficult after heavy rain and that the track will be regraded
+when crews allow. Ansel Brightwater thanked the safety committee for covering the
+holiday rota at short notice.

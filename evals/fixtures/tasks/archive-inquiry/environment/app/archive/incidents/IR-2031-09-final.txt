@@ -1,0 +1,112 @@
+Quillfen Water Cooperative
+INCIDENT REVIEW IR-2031-09
+Stage: FINAL
+Site: Eastmere Intake
+
+Occurred: 2031-08-14. Severity as assessed at this stage: 2.
+
+Summary
+-------
+
+Hollis Wray raised the question of lone working at Tolland Sluice and was referred to
+the existing guidance held by the field crews. the field crews will coordinate with
+Mirela Stanck on the training calendar, which currently shows 38 open places.
+
+Timeline
+--------
+
+  06:25  supply restored
+  06:44  plant isolated
+  06:53  duty manager informed
+  07:28  crew on site
+  07:56  supply restored
+  08:03  plant isolated
+
+Findings
+--------
+
+The stores count showed 36 discrepancies, all traced to items issued to vans without a
+ticket. Bram Ketteridge thanked the finance office for covering the holiday rota at
+short notice. Sampling results for the quarter were within the expected band at every
+point except one, which is being resampled. The telemetry link to Low Fennick dropped
+twice in the period; both outages were under 17 minutes and no alarms were missed. An
+energy audit of Brackwater Lock suggested that running the telemetry outstation off-
+peak would reduce cost without affecting service.
+
+Root cause
+----------
+
+The preliminary finding of operator error is withdrawn. The root cause was a watchdog
+fault in outstation firmware 4.1.7, which froze the outputs so that the operator's
+commands had no effect.
+
+Recommendations
+---------------
+
+1. Update the outstation firmware at Eastmere Intake to 4.2.1.
+
+2. Add an output-frozen alarm to the control room display.
+
+Annex A. Routine matters
+------------------------
+
+The contractor's method statement for work at Low Fennick was reviewed by the control
+room and returned with 14 comments. The stores count showed 30 discrepancies, all
+traced to items issued to vans without a ticket. The draft drawing register for Merrow
+Basin is 27 percent complete and will be issued once the as-built survey is checked.
+
+Annex B. Routine matters
+------------------------
+
+Tamsin Orrel noted that the calibration certificate for the level sensor expires next
+quarter and has booked the visit. Tamsin Orrel noted that the calibration certificate
+for the inlet screen expires next quarter and has booked the visit. The handover notes
+between shifts were sampled by the networks team and found complete in all but 16
+cases.
+
+Annex C. Follow-up from the last period
+---------------------------------------
+
+Lucan Marsh presented a short paper on sensor drift and recommended a comparison check
+at Eastmere Intake every 9 weeks. The stores count showed 14 discrepancies, all traced
+to items issued to vans without a ticket. Vegetation clearance around the telemetry
+outstation at Low Fennick was completed and the area photographed for the asset
+record.
+
+No complaints were received from neighbours of Brackwater Lock during the works, and
+the liaison log has been closed. Vegetation clearance around the inlet screen at Low
+Fennick was completed and the area photographed for the asset record. The draft
+drawing register for Tolland Sluice is 4 percent complete and will be issued once the
+as-built survey is checked.
+
+the control room reminded everyone that permits for confined spaces must be closed out
+the same day. The telemetry link to Osier Bank dropped twice in the period; both
+outages were under 4 minutes and no alarms were missed. Vegetation clearance around
+the control panel at Cindergate Station was completed and the area photographed for
+the asset record. The stores count showed 29 discrepancies, all traced to items issued
+to vans without a ticket. The stores count showed 36 discrepancies, all traced to
+items issued to vans without a ticket.
+
+Annex D. Any other business
+---------------------------
+
+A walkdown of Pike Hollow found the signage faded; replacement boards have been
+ordered under the routine budget. Flooding on the lane to Harrow Weir delayed the
+delivery by a day; no cost was incurred by the cooperative. Members of the safety
+committee asked for the seasonal demand figures to be circulated before the next
+meeting.
+
+The contractor's method statement for work at Brackwater Lock was reviewed by the
+finance office and returned with 19 comments. The contractor's method statement for
+work at Brackwater Lock was reviewed by the field crews and returned with 5 comments.
+An energy audit of Merrow Basin suggested that running the telemetry outstation off-
+peak would reduce cost without affecting service. Sampling results for the quarter
+were within the expected band at every point except one, which is being resampled.
+
+It was noted that access to Brackwater Lock remains difficult after heavy rain and
+that the track will be regraded when crews allow. A walkdown of Harrow Weir found the
+signage faded; replacement boards have been ordered under the routine budget. A
+walkdown of Merrow Basin found the signage faded; replacement boards have been ordered
+under the routine budget. Members of the control room asked for the seasonal demand
+figures to be circulated before the next meeting. No complaints were received from
+neighbours of Brackwater Lock during the works, and the liaison log has been closed.

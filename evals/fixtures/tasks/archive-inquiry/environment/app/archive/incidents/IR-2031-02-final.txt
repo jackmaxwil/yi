@@ -1,0 +1,118 @@
+Quillfen Water Cooperative
+INCIDENT REVIEW IR-2031-02
+Stage: FINAL
+Site: Harrow Weir
+
+Occurred: 2031-02-02. Severity as assessed at this stage: 4.
+
+Summary
+-------
+
+Vegetation clearance around the penstock actuator at Merrow Basin was completed and
+the area photographed for the asset record. The contractor's method statement for work
+at Brackwater Lock was reviewed by the control room and returned with 17 comments.
+
+Timeline
+--------
+
+  06:42  plant isolated
+  06:51  plant isolated
+  07:11  alarm received in the control room
+  07:30  duty manager informed
+  08:07  crew on site
+
+Findings
+--------
+
+No complaints were received from neighbours of Low Fennick during the works, and the
+liaison log has been closed. It was noted that access to Osier Bank remains difficult
+after heavy rain and that the track will be regraded when crews allow. Flooding on the
+lane to Cindergate Station delayed the delivery by a day; no cost was incurred by the
+cooperative.
+
+Root cause
+----------
+
+A delivery vehicle struck the gate post.
+
+Recommendations
+---------------
+
+1. Fit a marker post.
+
+Annex A. Site notes
+-------------------
+
+Vegetation clearance around the sample tap at Merrow Basin was completed and the area
+photographed for the asset record. Mirela Stanck raised the question of lone working
+at Tolland Sluice and was referred to the existing guidance held by the finance
+office. Sampling results for the quarter were within the expected band at every point
+except one, which is being resampled.
+
+Hollis Wray thanked the safety committee for covering the holiday rota at short
+notice. Oona Farrow confirmed that spares for the sample tap are held at the central
+store and that the reorder level is 37 units. A minor oil weep from the control panel
+at Harrow Weir was cleaned up and a drip tray fitted pending the next service.
+
+Annex B. Training and rota
+--------------------------
+
+The draft drawing register for Tolland Sluice is 26 percent complete and will be
+issued once the as-built survey is checked. The stores count showed 27 discrepancies,
+all traced to items issued to vans without a ticket. Ysolde Quint reported that the
+standby pump at Eastmere Intake had been inspected and found serviceable, with minor
+wear noted on the seals. the control room reminded everyone that permits for confined
+spaces must be closed out the same day.
+
+Flooding on the lane to Brackwater Lock delayed the delivery by a day; no cost was
+incurred by the cooperative. No complaints were received from neighbours of Pike
+Hollow during the works, and the liaison log has been closed. It was noted that access
+to Eastmere Intake remains difficult after heavy rain and that the track will be
+regraded when crews allow. Ansel Brightwater thanked the asset planning group for
+covering the holiday rota at short notice. Flooding on the lane to Pike Hollow delayed
+the delivery by a day; no cost was incurred by the cooperative.
+
+Annex C. Follow-up from the last period
+---------------------------------------
+
+Petra Vosk noted that the calibration certificate for the sample tap expires next
+quarter and has booked the visit. A walkdown of Harrow Weir found the signage faded;
+replacement boards have been ordered under the routine budget. Petra Vosk presented a
+short paper on sensor drift and recommended a comparison check at Pike Hollow every 35
+weeks. The telemetry link to Cindergate Station dropped twice in the period; both
+outages were under 7 minutes and no alarms were missed. It was noted that access to
+Brackwater Lock remains difficult after heavy rain and that the track will be regraded
+when crews allow.
+
+Annex D. Any other business
+---------------------------
+
+An energy audit of Tolland Sluice suggested that running the control panel off-peak
+would reduce cost without affecting service. Tamsin Orrel presented a short paper on
+sensor drift and recommended a comparison check at Brackwater Lock every 35 weeks. The
+draft drawing register for Merrow Basin is 22 percent complete and will be issued once
+the as-built survey is checked. Flooding on the lane to Tolland Sluice delayed the
+delivery by a day; no cost was incurred by the cooperative.
+
+It was noted that access to Eastmere Intake remains difficult after heavy rain and
+that the track will be regraded when crews allow. Dov Callender reported that the
+level sensor at Merrow Basin had been inspected and found serviceable, with minor wear
+noted on the seals. A walkdown of Cindergate Station found the signage faded;
+replacement boards have been ordered under the routine budget. Mirela Stanck confirmed
+that spares for the sample tap are held at the central store and that the reorder
+level is 24 units.
+
+Members of the field crews asked for the seasonal demand figures to be circulated
+before the next meeting. Vegetation clearance around the penstock actuator at
+Brackwater Lock was completed and the area photographed for the asset record. Tamsin
+Orrel presented a short paper on sensor drift and recommended a comparison check at
+Harrow Weir every 17 weeks.
+
+Annex E. Routine matters
+------------------------
+
+Dov Callender raised the question of lone working at Osier Bank and was referred to
+the existing guidance held by the safety committee. A walkdown of Brackwater Lock
+found the signage faded; replacement boards have been ordered under the routine
+budget. An energy audit of Pike Hollow suggested that running the surge vessel off-
+peak would reduce cost without affecting service.

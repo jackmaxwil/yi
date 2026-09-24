@@ -10,7 +10,7 @@ use yi_loop::ExecutionMode;
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, Status};
 use yi_session::{CreateOptions, JsonlRepo, SessionRepo};
 use yi_types::event::AgentEvent;
-use yi_types::message::StopReason;
+use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Model, ModelCost};
 
 fn faux_model() -> Model {
@@ -502,7 +502,8 @@ async fn a_deadline_kills_a_running_bash_call() -> Result<(), Box<dyn Error>> {
 }
 
 /// The deadline ends the run between turns, never inside one: the call in flight runs to its
-/// own end and the next request is never sent.
+/// own end and no work turn follows. Dies too with a run that ends on that tool call with no
+/// answer (`mbx-service`, `mbx-ask`): one last turn, with tool choice `none`, answers.
 #[tokio::test]
 async fn a_deadline_ends_the_run_after_the_turn_in_flight() -> Result<(), Box<dyn Error>> {
     let root = scratch("deadline-stop")?;
@@ -524,6 +525,32 @@ async fn a_deadline_ends_the_run_after_the_turn_in_flight() -> Result<(), Box<dy
         .lock()
         .map(|faux| faux.pending_response_count())
         .unwrap_or_default();
-    assert_eq!(unsent, 1, "a request started inside the margin");
+    assert_eq!(
+        unsent, 0,
+        "the last word is the one request inside the margin"
+    );
+    let messages = session.messages();
+    let asked = serde_json::to_string(&messages)?;
+    assert!(
+        asked.contains("[deadline] Time is up: no more tool calls"),
+        "{asked}"
+    );
+    let last = messages.iter().rev().find_map(|message| match message {
+        AgentMessage::Assistant { content, .. } => Some(content.clone()),
+        _ => None,
+    });
+    assert_eq!(serde_json::to_value(last)?[0]["text"], "done", "{asked}");
+    Ok(())
+}
+
+/// Dies with a follow-up only queued: an ACP or RPC follow-up that reached an idle session
+/// waited for a turn nobody started.
+#[tokio::test]
+async fn a_follow_up_to_an_idle_session_starts_its_turn() -> Result<(), Box<dyn Error>> {
+    let session = session_with_reply("taken");
+    session.follow_up_message(yi_runtime::session::user_input("one more thing"));
+    tokio::time::timeout(Duration::from_secs(5), session.wait_idle()).await?;
+    let said = serde_json::to_string(&session.messages())?;
+    assert!(said.contains("taken"), "{said}");
     Ok(())
 }

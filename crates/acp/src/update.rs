@@ -1,12 +1,12 @@
-use serde_json::Value;
+use serde_json::{Value, json};
 use yi_types::acp::{
-    AcpContentBlock, AcpExtensionUpdate, AcpSessionUpdate, AcpState, AcpStopReason,
+    AcpContentBlock, AcpExtensionUpdate, AcpOtherBlock, AcpSessionUpdate, AcpState, AcpStopReason,
     AcpTerminalExit, AcpToolCallStatus, AcpToolContent, AcpToolKind,
 };
 use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::goal::Goal;
-use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
+use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
 use yi_types::subagent::ChildId;
 
 pub fn extension<K: Into<String>>(
@@ -174,6 +174,35 @@ fn user_blocks(content: &UserContent) -> Vec<AcpContentBlock> {
     }
 }
 
+fn user_update(content: &UserContent, typed: bool, ids: &mut IdMap) -> AcpSessionUpdate {
+    let message_id = ids.allocate();
+    let content = user_blocks(content);
+    if typed {
+        return AcpSessionUpdate::UserMessage {
+            message_id,
+            content,
+        };
+    }
+    let content = content
+        .into_iter()
+        .map(|block| match block {
+            AcpContentBlock::Text { text } => AcpContentBlock::Other(AcpOtherBlock {
+                block_type: "text".to_owned(),
+                fields: [
+                    ("text".to_owned(), Value::String(text)),
+                    ("_meta".to_owned(), json!({"yi": {"hostNotice": true}})),
+                ]
+                .into(),
+            }),
+            other => other,
+        })
+        .collect();
+    AcpSessionUpdate::AgentMessage {
+        message_id,
+        content,
+    }
+}
+
 /// Wraps a Custom message as a `_yi/<custom_type>` extension update (C9).
 fn extension_of(
     custom_type: &str,
@@ -248,10 +277,11 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
                 ids.allocate();
                 Vec::new()
             }
-            AgentMessage::User { content, .. } => vec![AcpSessionUpdate::UserMessage {
-                message_id: ids.allocate(),
-                content: user_blocks(content),
-            }],
+            AgentMessage::User {
+                content,
+                attribution,
+                ..
+            } => vec![user_update(content, *attribution == Attribution::User, ids)],
             AgentMessage::Custom {
                 custom_type,
                 content,
@@ -398,7 +428,9 @@ pub fn replay_updates(entries: &[Entry], ids: &mut IdMap) -> Vec<AcpSessionUpdat
     let mut updates = Vec::new();
     for entry in entries {
         match entry {
-            Entry::Message { message, .. } => match message {
+            Entry::Message {
+                message, timestamp, ..
+            } => match message {
                 AgentMessage::Assistant { content, .. } => {
                     updates.push(AcpSessionUpdate::AgentMessage {
                         message_id: ids.allocate(),
@@ -407,12 +439,15 @@ pub fn replay_updates(entries: &[Entry], ids: &mut IdMap) -> Vec<AcpSessionUpdat
                         }],
                     });
                 }
-                AgentMessage::User { content, .. } => {
-                    updates.push(AcpSessionUpdate::UserMessage {
-                        message_id: ids.allocate(),
-                        content: user_blocks(content),
-                    });
-                }
+                AgentMessage::User {
+                    content,
+                    attribution,
+                    ..
+                } => updates.push(user_update(
+                    content,
+                    attribution.reads_as_typed(*timestamp),
+                    ids,
+                )),
                 AgentMessage::Custom {
                     custom_type,
                     content,

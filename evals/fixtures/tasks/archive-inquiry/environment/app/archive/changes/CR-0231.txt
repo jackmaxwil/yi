@@ -1,0 +1,126 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0231
+Title: Replace valve V-114
+Site: Tolland Sluice
+Requested by: Bram Ketteridge
+Implemented: 2031-04-22
+
+Outcome: COMPLETED
+
+Description
+-----------
+
+A minor oil weep from the telemetry outstation at Low Fennick was cleaned up and a
+drip tray fitted pending the next service. Lucan Marsh reported that the duty pump at
+Osier Bank had been inspected and found serviceable, with minor wear noted on the
+seals.
+
+The replacement of valve V-114 was planned for 2031-04-18 but the body casting arrived
+late. Valve V-114 was replaced on 2031-04-22 and pressure tested the same afternoon.
+
+Risk and rollback plan
+----------------------
+
+The previous settings were recorded so that they could be restored.
+
+No complaints were received from neighbours of Tolland Sluice during the works, and
+the liaison log has been closed. Vegetation clearance around the telemetry outstation
+at Harrow Weir was completed and the area photographed for the asset record.
+
+Verification
+------------
+
+the safety committee reminded everyone that permits for confined spaces must be closed
+out the same day. Tamsin Orrel raised the question of lone working at Osier Bank and
+was referred to the existing guidance held by the control room. The draft drawing
+register for Brackwater Lock is 20 percent complete and will be issued once the as-
+built survey is checked.
+
+Annex A. Site notes
+-------------------
+
+Vegetation clearance around the surge vessel at Osier Bank was completed and the area
+photographed for the asset record. A walkdown of Merrow Basin found the signage faded;
+replacement boards have been ordered under the routine budget. The stores count showed
+2 discrepancies, all traced to items issued to vans without a ticket. the finance
+office reminded everyone that permits for confined spaces must be closed out the same
+day.
+
+Annex B. Site notes
+-------------------
+
+Hollis Wray noted that the calibration certificate for the standby pump expires next
+quarter and has booked the visit. Ansel Brightwater raised the question of lone
+working at Pike Hollow and was referred to the existing guidance held by the field
+crews. No complaints were received from neighbours of Merrow Basin during the works,
+and the liaison log has been closed.
+
+Annex C. Stores and spares
+--------------------------
+
+Dov Callender reported that the telemetry outstation at Merrow Basin had been
+inspected and found serviceable, with minor wear noted on the seals. No complaints
+were received from neighbours of Low Fennick during the works, and the liaison log has
+been closed. Members of the control room asked for the seasonal demand figures to be
+circulated before the next meeting. Members of the field crews asked for the seasonal
+demand figures to be circulated before the next meeting. the finance office will
+coordinate with Ysolde Quint on the training calendar, which currently shows 4 open
+places.
+
+Dov Callender presented a short paper on sensor drift and recommended a comparison
+check at Eastmere Intake every 4 weeks. Ansel Brightwater raised the question of lone
+working at Merrow Basin and was referred to the existing guidance held by the networks
+team. The handover notes between shifts were sampled by the networks team and found
+complete in all but 10 cases. Lucan Marsh noted that the calibration certificate for
+the inlet screen expires next quarter and has booked the visit. the field crews
+reminded everyone that permits for confined spaces must be closed out the same day.
+
+Oona Farrow thanked the finance office for covering the holiday rota at short notice.
+Hollis Wray confirmed that spares for the inlet screen are held at the central store
+and that the reorder level is 33 units. It was noted that access to Brackwater Lock
+remains difficult after heavy rain and that the track will be regraded when crews
+allow.
+
+Annex D. Correspondence
+-----------------------
+
+Flooding on the lane to Cindergate Station delayed the delivery by a day; no cost was
+incurred by the cooperative. the control room will coordinate with Bram Ketteridge on
+the training calendar, which currently shows 9 open places. Members of the networks
+team asked for the seasonal demand figures to be circulated before the next meeting.
+Oona Farrow thanked the control room for covering the holiday rota at short notice.
+Dov Callender confirmed that spares for the level sensor are held at the central store
+and that the reorder level is 9 units.
+
+A walkdown of Harrow Weir found the signage faded; replacement boards have been
+ordered under the routine budget. the field crews reminded everyone that permits for
+confined spaces must be closed out the same day. The draft drawing register for Pike
+Hollow is 15 percent complete and will be issued once the as-built survey is checked.
+Tamsin Orrel presented a short paper on sensor drift and recommended a comparison
+check at Harrow Weir every 33 weeks. The draft drawing register for Harrow Weir is 14
+percent complete and will be issued once the as-built survey is checked.
+
+the field crews will coordinate with Ysolde Quint on the training calendar, which
+currently shows 32 open places. Hollis Wray presented a short paper on sensor drift
+and recommended a comparison check at Brackwater Lock every 37 weeks. the finance
+office will coordinate with Tamsin Orrel on the training calendar, which currently
+shows 29 open places. Petra Vosk reported that the standby pump at Tolland Sluice had
+been inspected and found serviceable, with minor wear noted on the seals.
+
+Annex E. Correspondence
+-----------------------
+
+Lucan Marsh reported that the surge vessel at Tolland Sluice had been inspected and
+found serviceable, with minor wear noted on the seals. The stores count showed 19
+discrepancies, all traced to items issued to vans without a ticket. the networks team
+reminded everyone that permits for confined spaces must be closed out the same day. A
+walkdown of Low Fennick found the signage faded; replacement boards have been ordered
+under the routine budget.
+
+Petra Vosk confirmed that spares for the inlet screen are held at the central store
+and that the reorder level is 22 units. The stores count showed 8 discrepancies, all
+traced to items issued to vans without a ticket. No complaints were received from
+neighbours of Osier Bank during the works, and the liaison log has been closed. The
+handover notes between shifts were sampled by the asset planning group and found
+complete in all but 39 cases. Lucan Marsh thanked the asset planning group for
+covering the holiday rota at short notice.

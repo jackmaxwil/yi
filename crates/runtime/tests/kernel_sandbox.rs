@@ -54,6 +54,17 @@ fn service(cwd: PathBuf, home: PathBuf, sandbox: Sandbox) -> Arc<KernelService> 
     }))
 }
 
+/// A directory this process can write that no root of `sandbox` covers: HOME, or the shared
+/// user directory when a run put HOME under tmp, which the sandbox grants whole.
+fn uncovered(sandbox: &Sandbox, home: &std::path::Path) -> Option<PathBuf> {
+    let resolve =
+        |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let roots: Vec<PathBuf> = sandbox.writable.iter().map(|root| resolve(root)).collect();
+    [home.to_path_buf(), PathBuf::from("/Users/Shared")]
+        .into_iter()
+        .find(|dir| dir.is_dir() && !roots.iter().any(|root| resolve(dir).starts_with(root)))
+}
+
 #[tokio::test]
 async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult {
     if !Sandbox::available() {
@@ -61,7 +72,7 @@ async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult
     }
     let (_root, project, home, session) = workspace("write")?;
     let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
-    let kernel = service(project.clone(), home.clone(), sandbox);
+    let kernel = service(project.clone(), home.clone(), sandbox.clone());
     let inside = cell(
         &kernel,
         "open('inside.txt','w').write('in')\nprint('ok')".to_owned(),
@@ -70,7 +81,8 @@ async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult
     assert_eq!(inside.result.status, yi_types::kernel::ExecuteStatus::Ok);
     assert_eq!(std::fs::read_to_string(project.join("inside.txt"))?, "in");
 
-    let escape = home.join(format!("yi-p7-escape-{}.txt", std::process::id()));
+    let probe = uncovered(&sandbox, &home).ok_or("no writable directory outside the sandbox")?;
+    let escape = probe.join(format!("yi-p7-escape-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&escape);
     let path = escape.display().to_string();
     let outside = cell(&kernel, format!("open(r'{path}','w').write('out')")).await?;
@@ -98,16 +110,19 @@ async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult
         "the file must not exist after a contained write"
     );
 
-    // ~/.yi itself is read-only; only the harness store the kernel owns takes writes.
+    // ~/.yi itself is read-only; only the harness store the kernel owns takes writes. A HOME
+    // under tmp sits inside a granted root, where no profile can make ~/.yi read-only.
     let yi = home.join(".yi");
-    let config = yi.join(format!("yi-p7-config-{}.txt", std::process::id()));
-    let config_path = config.display().to_string();
-    let denied = cell(&kernel, format!("open(r'{config_path}','w').write('x')")).await?;
-    assert_eq!(denied.result.status, yi_types::kernel::ExecuteStatus::Error);
-    assert!(
-        !config.is_file(),
-        "a cell must not write under ~/.yi itself"
-    );
+    if probe == home {
+        let config = yi.join(format!("yi-p7-config-{}.txt", std::process::id()));
+        let config_path = config.display().to_string();
+        let denied = cell(&kernel, format!("open(r'{config_path}','w').write('x')")).await?;
+        assert_eq!(denied.result.status, yi_types::kernel::ExecuteStatus::Error);
+        assert!(
+            !config.is_file(),
+            "a cell must not write under ~/.yi itself"
+        );
+    }
     let harness = yi.join("harness");
     let store = harness.join(format!("yi-p7-store-{}.txt", std::process::id()));
     let store_path = store.display().to_string();
