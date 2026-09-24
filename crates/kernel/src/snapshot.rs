@@ -116,7 +116,7 @@ pub fn build_snapshot_code(
         total += _b.len(blob)
 
     os.makedirs(os.path.dirname({out}), exist_ok=True)
-    tmp = {out} + ".tmp"
+    tmp = {out} + ".tmp-" + _b.str(os.getpid())
     try:
         with _b.open(tmp, "wb") as fh:
             dill.dump(payload, fh)
@@ -141,11 +141,16 @@ pub fn build_snapshot_code(
         "pythonVersion": sys.version.split()[0],
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }}
+    manifest_tmp = {manifest} + ".tmp-" + _b.str(os.getpid())
     try:
-        with _b.open({manifest}, "w") as fh:
+        with _b.open(manifest_tmp, "w") as fh:
             json.dump(manifest, fh)
+        os.replace(manifest_tmp, {manifest})
     except _b.Exception:
-        pass
+        try:
+            os.remove(manifest_tmp)
+        except _b.Exception:
+            pass
     pruned_ids = {{_b.id(ns[name]) for name in pruned}}
     while True:
         try:

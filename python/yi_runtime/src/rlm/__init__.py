@@ -999,10 +999,7 @@ def put(name: str, obj: Any) -> dict[str, Any]:
     directory.mkdir(parents=True, exist_ok=True)
     serializer = _serializer()
     target = directory / f"{name}.dill"
-    tmp = directory / f"{name}.dill.tmp-{os.getpid()}"
-    with open(tmp, "wb") as handle:
-        serializer.dump(obj, handle)
-    os.replace(tmp, target)
+    _publish(target, lambda handle: serializer.dump(obj, handle))
     sidecar = {
         "name": name,
         "owner": _member_name(),
@@ -1011,8 +1008,20 @@ def put(name: str, obj: Any) -> dict[str, Any]:
         "type": type(obj).__name__,
         "serializer": serializer.__name__,
     }
-    (directory / f"{name}.json").write_text(json.dumps(sidecar))
+    _publish(directory / f"{name}.json", lambda handle: handle.write(json.dumps(sidecar).encode()))
     return sidecar
+
+
+def _publish(path: Path, write: Any) -> None:
+    """Write through a per-process tmp and rename, so a reader sees the old file or the new."""
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    try:
+        with open(tmp, "wb") as handle:
+            write(handle)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 @_public
