@@ -123,9 +123,9 @@ async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Bo
     Ok(())
 }
 
-/// Six of eight dogfood trials called `rlm` without `await`: a spawn written that way runs.
+/// Six of eight dogfood trials called `rlm` without `await`: such a spawn runs once, after the cell.
 #[tokio::test]
-async fn an_unawaited_spawn_runs_and_prints_its_handle() -> Result<(), Box<dyn Error>> {
+async fn an_unawaited_spawn_runs_once_after_the_cell_and_says_so() -> Result<(), Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None, None));
     let mut call_args = serde_json::Map::new();
     call_args.insert("code".to_owned(), serde_json::json!("print(rlm.run('x'))"));
@@ -147,7 +147,10 @@ async fn an_unawaited_spawn_runs_and_prints_its_handle() -> Result<(), Box<dyn E
     );
     let mut registry = HostRegistry::default();
     registry.register_mcp_stubs();
-    registry.register("rlm.run", |_payload| {
+    let spawns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&spawns);
+    registry.register("rlm.run", move |_payload| {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Box::pin(async {
             let handle = serde_json::json!({"rlm_child_id": "sub-1", "name": "x", "session_dir": "/tmp/sub-1", "model": "faux/faux-1"});
             handle.as_object().cloned().ok_or_else(|| "handle".to_owned())
@@ -184,10 +187,17 @@ async fn an_unawaited_spawn_runs_and_prints_its_handle() -> Result<(), Box<dyn E
         }
     }
     let cell = texts.first().ok_or("the ipython call produced no result")?;
+    let note = cell.find("rlm.run() was not awaited, so the cell got a coroutine object");
     assert!(
-        cell.contains("RLMSpawnHandle(name='x'") && !cell.contains("<coroutine object "),
-        "the un-awaited spawn must run and print its handle: {cell}"
+        cell.find("<coroutine object ") < note && note < cell.find("RLMSpawnHandle(name='x'"),
+        "the cell prints the coroutine, then the note with the spawned handle: {cell}"
     );
+    assert_eq!(
+        spawns.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "{cell}"
+    );
+    assert!(!cell.contains("never awaited"), "{cell}");
     Ok(())
 }
 
