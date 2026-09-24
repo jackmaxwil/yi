@@ -39,3 +39,32 @@ impl KernelBridge for NoKernel {
         Err("no kernel in this test".to_owned())
     }
 }
+
+/// Incident: `attach_image` promised the model the picture, which reached only `details`.
+#[test]
+fn an_attached_image_is_in_the_models_view() -> TestResult {
+    let result: yi_types::kernel::ExecuteResult = serde_json::from_value(serde_json::json!({
+        "stdout": "attached", "stderr": "", "status": "ok", "durationMs": 1,
+        "attachments": [{"mime_type": "image/png", "data": "iVBORw0KGgo="},
+                        {"mime_type": "text/csv", "data": "YSxi"}],
+    }))?;
+    let outcome = KernelCellOutcome {
+        result,
+        kernel_restarted: false,
+        notes: Vec::new(),
+    };
+    let images: Vec<_> = yi_tools::cell_output("x", outcome)
+        .result
+        .content
+        .into_iter()
+        .filter_map(|block| match block {
+            yi_types::message::Content::Image { data, mime_type } => Some((data, mime_type)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        images,
+        vec![("iVBORw0KGgo=".to_owned(), "image/png".to_owned())]
+    );
+    Ok(())
+}
