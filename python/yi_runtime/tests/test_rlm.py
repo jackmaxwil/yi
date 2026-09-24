@@ -437,6 +437,22 @@ class AwaitLaterTests(unittest.IsolatedAsyncioTestCase):
         sends = ["agent_message.send"] * 2
         self.assertEqual(self.calls[:6], [*sends, "rlm.run", "rlm.run", "rlm.status", "rlm.status"])
 
+    async def test_mail_sent_unawaited_goes_out_before_an_awaited_result(self) -> None:
+        """Dies with un-awaited calls run only after the cell (``mbx-steer`` round 1): the two
+        sends landed after the result they were meant to shape."""
+        rlm.send("kid", "Include the word BANANA in your final answer.")
+        rlm.send("kid", "Include the word CHERRY in your final answer.", followup=True)
+        await rlm.status("kid")
+        self.assertEqual(self.calls, ["agent_message.send", "agent_message.send", "rlm.status"])
+
+    async def test_only_a_call_nobody_took_is_left_to_report(self) -> None:
+        bare, gathered, awaited = rlm.status(), rlm.status(), rlm.status()
+        await asyncio.gather(gathered)
+        await awaited
+        await asyncio.sleep(0.1)
+        self.assertEqual([bare.taken, gathered.taken, awaited.taken], [False, True, True])
+        self.assertEqual(bare.result(), [KID])
+
     async def test_two_tasks_awaiting_stored_calls_do_not_wait_on_each_other(self) -> None:
         loop = asyncio.get_running_loop()
 

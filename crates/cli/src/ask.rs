@@ -10,6 +10,8 @@ use super::{
 };
 
 const HOLD_POLL: Duration = Duration::from_millis(500);
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+const LAST_WORD_GRACE: Duration = Duration::from_secs(90);
 
 pub(super) fn run(args: &Args) -> i32 {
     use std::io::IsTerminal;
@@ -72,6 +74,7 @@ pub(super) fn run(args: &Args) -> i32 {
         stream(&session, &host, json, schema.as_ref(), ends).await
     });
     release_lane(lane.as_deref());
+    runtime.shutdown_timeout(SHUTDOWN_GRACE);
     code
 }
 
@@ -79,8 +82,15 @@ fn holds(working: bool, ends: Option<Instant>) -> bool {
     working && ends.is_none_or(|at| Instant::now() < at)
 }
 
-fn patience(holding: bool, ends: Option<Instant>) -> Option<Duration> {
-    let left = ends.map(|at| at.saturating_duration_since(Instant::now()));
+fn patience(holding: bool, ends: Option<(Instant, Duration)>) -> Option<Duration> {
+    let left = ends.map(|(at, grace)| {
+        let at = if holding {
+            at
+        } else {
+            at.checked_add(grace).unwrap_or(at)
+        };
+        at.saturating_duration_since(Instant::now())
+    });
     match (holding, left) {
         (true, left) => Some(left.map_or(HOLD_POLL, |left| left.min(HOLD_POLL))),
         (false, left) => left,
@@ -96,8 +106,28 @@ async fn stream(
 ) -> i32 {
     let held = || host.holds_owner();
     let working = || host.holds_owner() || session.status() != Status::Idle;
+    let ends = ends.map(|at| (at, LAST_WORD_GRACE));
     let code = follow(session.subscribe(), [&held, &working], json, schema, ends).await;
-    if let Some((said, line)) = leftovers(&host.states(), session.pending_count()) {
+    // Incident: nothing drove the runtime after the deadline, so a looping cell outlived it.
+    if session.status() != Status::Idle {
+        session.abort();
+        let _still_busy_is_left_to_the_shutdown =
+            tokio::time::timeout(SHUTDOWN_GRACE, session.wait_idle()).await;
+    }
+    let status = host.status();
+    let members = status.get("members").and_then(serde_json::Value::as_array);
+    let services: Vec<String> = members
+        .into_iter()
+        .flatten()
+        .filter(|member| member["service"] == true)
+        .filter_map(|member| member["name"].as_str().map(str::to_owned))
+        .collect();
+    let family = Family {
+        members: &host.states(),
+        services: &services,
+        requests: &host.open_requests(),
+    };
+    if let Some((said, line)) = leftovers(&family, session.pending_count()) {
         eprintln!("warning: {said}");
         if json {
             println!("{line}");
@@ -106,34 +136,51 @@ async fn stream(
     code
 }
 
-fn leftovers(
-    members: &[yi_runtime::family::MemberView],
-    undelivered: usize,
-) -> Option<(String, serde_json::Value)> {
+struct Family<'a> {
+    members: &'a [yi_runtime::family::MemberView],
+    services: &'a [String],
+    requests: &'a [(String, String, String)],
+}
+
+fn leftovers(family: &Family<'_>, undelivered: usize) -> Option<(String, serde_json::Value)> {
     use yi_runtime::family::MemberState;
-    let live: Vec<_> = members
+    let live: Vec<_> = family
+        .members
         .iter()
         .filter(|view| !matches!(view.state, MemberState::Finished | MemberState::Failed))
         .map(|view| (view.name.as_str(), view.state.as_str()))
         .collect();
-    if live.is_empty() && undelivered == 0 {
+    let (services, requests) = (family.services, family.requests);
+    if live.is_empty() && undelivered == 0 && services.is_empty() && requests.is_empty() {
         return None;
     }
     let named: Vec<String> = live
         .iter()
         .map(|(name, state)| format!("{name} ({state})"))
         .collect();
+    let asked: Vec<String> = requests
+        .iter()
+        .map(|(id, asker, respondent)| format!("{id} {asker} → {respondent}"))
+        .collect();
     let said = format!(
-        "the run ends with {} live child(ren) [{}] and {undelivered} undelivered message(s); they end with it",
+        "the run ends with {} live child(ren) [{}], {} service(s) [{}], {} open request(s) [{}] and {undelivered} undelivered message(s); they end with it",
         live.len(),
-        named.join(", ")
+        named.join(", "),
+        services.len(),
+        services.join(", "),
+        requests.len(),
+        asked.join(", ")
     );
     let children: Vec<_> = live
         .iter()
         .map(|(name, state)| serde_json::json!({"name": name, "state": state}))
         .collect();
-    let line =
-        serde_json::json!({"type": "leftovers", "children": children, "undelivered": undelivered});
+    let requests: Vec<_> = requests
+        .iter()
+        .map(|(id, asker, respondent)| serde_json::json!({"id": id, "from": asker, "to": respondent}))
+        .collect();
+    let line = serde_json::json!({"type": "leftovers", "children": children, "services": services,
+        "requests": requests, "undelivered": undelivered});
     Some((said, line))
 }
 
@@ -143,10 +190,10 @@ async fn follow(
     [held, working]: [&dyn Fn() -> bool; 2],
     json: bool,
     schema: Option<&yi_runtime::schema::Schema>,
-    ends: Option<Instant>,
+    ends: Option<(Instant, Duration)>,
 ) -> i32 {
     let (mut answer, mut exit) = (String::new(), 0);
-    let (mut holding, mut ended) = (false, false);
+    let (mut holding, mut ended, mut answered) = (false, false, false);
     loop {
         let next = match patience(holding, ends) {
             None => events.recv().await,
@@ -156,7 +203,7 @@ async fn follow(
             }
             Some(wait) => match tokio::time::timeout(wait, events.recv()).await {
                 Ok(next) => next,
-                Err(_) if holds(holding && working(), ends) => continue,
+                Err(_) if holds(holding && working(), ends.map(|(at, _)| at)) => continue,
                 Err(_) => {
                     ended = true;
                     break;
@@ -183,6 +230,12 @@ async fn follow(
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
             }
+        }
+        if let AgentEvent::MessageEnd {
+            message: message @ AgentMessage::Assistant { stop_reason, .. },
+        } = &event
+        {
+            answered = *stop_reason == StopReason::Stop && !message.plain_text().trim().is_empty();
         }
         match &event {
             AgentEvent::MessageEnd {
@@ -216,6 +269,13 @@ async fn follow(
     } else if ended && !json {
         println!();
     }
+    if ended && !answered && exit == 0 {
+        eprintln!("error: the run ended without a final answer");
+        if json {
+            println!("{}", serde_json::json!({"type": "no_answer"}));
+        }
+        exit = 1;
+    }
     exit
 }
 
@@ -226,6 +286,7 @@ mod tests {
     use yi_types::event::AgentEvent;
 
     /// Dies with no leftovers report: `mbx-detach` exited 0 with its child mid-work, silently.
+    /// Dies too with an idle service and an open request left unnamed (`mbx-service`).
     #[test]
     fn a_run_that_ends_with_a_live_child_names_it() -> Result<(), Box<dyn std::error::Error>> {
         use yi_runtime::family::{MemberState, MemberView};
@@ -242,7 +303,12 @@ mod tests {
             view("slow", MemberState::Running),
             view("done", MemberState::Finished),
         ];
-        let (said, line) = super::leftovers(&members, 1).ok_or("nothing reported")?;
+        let family = |members| super::Family {
+            members,
+            services: &[],
+            requests: &[],
+        };
+        let (said, line) = super::leftovers(&family(&members), 1).ok_or("nothing reported")?;
         assert!(
             said.contains("slow (running)") && !said.contains("done"),
             "{said}"
@@ -250,9 +316,25 @@ mod tests {
         assert_eq!(line["children"][0]["name"], "slow");
         assert_eq!(line["undelivered"], 1);
         assert!(
-            super::leftovers(&members[1..], 0).is_none(),
+            super::leftovers(&family(&members[1..]), 0).is_none(),
             "a clean end says nothing"
         );
+        let open = [(
+            "parent-1".to_owned(),
+            "parent".to_owned(),
+            "tally".to_owned(),
+        )];
+        let serving = super::Family {
+            members: &members[1..],
+            services: &["tally".to_owned()],
+            requests: &open,
+        };
+        let (said, line) = super::leftovers(&serving, 0).ok_or("a service and a request")?;
+        assert!(
+            said.contains("1 service(s) [tally]") && said.contains("parent-1 parent → tally"),
+            "{said}"
+        );
+        assert_eq!(line["requests"][0]["to"], "tally");
         Ok(())
     }
 
@@ -265,6 +347,7 @@ mod tests {
     }
 
     /// Dies with the deadline read only while holding: a Steer's owner turn ran unbounded.
+    /// A run the deadline ends with no final answer exits nonzero and says so.
     #[test]
     fn a_steered_turn_past_the_deadline_ends_the_run() -> Result<(), Box<dyn std::error::Error>> {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -277,10 +360,11 @@ mod tests {
         events.send(AgentEvent::AgentStart)?;
         let always = || true;
         let ends = Instant::now().checked_add(Duration::from_millis(50));
+        let ends = ends.map(|at| (at, Duration::ZERO));
         let run = super::follow(receiver, [&always, &always], true, None, ends);
         let ran =
             runtime.block_on(async { tokio::time::timeout(Duration::from_secs(5), run).await });
-        assert_eq!(ran.ok(), Some(0), "the steered turn outlived the deadline");
+        assert_eq!(ran.ok(), Some(1), "the steered turn outlived the deadline");
         drop(events);
         Ok(())
     }

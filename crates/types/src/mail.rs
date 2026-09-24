@@ -62,7 +62,8 @@ pub struct Envelope {
     pub body: String,
     #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
     pub reference: Option<Url>,
-    /// `human` on a parent's reply the human wrote from the reply box; absent otherwise.
+    /// `human` on a parent's reply the human wrote from the reply box, `final_text` on a reply
+    /// the host took off the end of a turn that left the request open; absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered_by: Option<String>,
 }
@@ -84,4 +85,7 @@ pub struct Receipt {
     pub target: String,
     pub id: MailId,
     pub state: Delivery,
+    /// When the receiver's model reads it, in words: which queue it took and what drains it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub presented: String,
 }

@@ -7,8 +7,7 @@ use super::{INTERRUPTED, Standing, Step, SubagentHost, last_assistant_text, prev
 use crate::family::Cause;
 use crate::session::AgentSession;
 
-/// How a settled run ended, read off its last assistant message; a run a cancel or the
-/// deadline stopped at a message boundary ends on a tool call with no request after it.
+/// How a settled run ended, read off its last assistant message.
 fn exit_of(session: &AgentSession) -> (ChildExit, Option<String>) {
     if session
         .kernel_service()
@@ -135,9 +134,14 @@ impl SubagentHost {
                 }
             }
         }
+        let steered = exit == ChildExit::Completed
+            && self.chase_open_requests(session_name, session, &messages);
         self.publish(child_id);
         if session.status() == crate::session::Status::Running {
             self.resume(child_id);
+        }
+        if steered {
+            return;
         }
         if juror {
             return;

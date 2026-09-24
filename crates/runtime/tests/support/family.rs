@@ -40,7 +40,7 @@ pub fn memory_store(id: &str) -> yi_session::SharedSession {
     )))
 }
 
-fn faux_model() -> Model {
+pub fn faux_model() -> Model {
     let zero = || serde_json::Number::from(0u64);
     Model {
         id: "faux-1".to_owned(),

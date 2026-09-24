@@ -1,8 +1,9 @@
 """Yi's kernel-side runtime shim (module name `rlm`).
 
-Every call here returns a coroutine: ``await rlm.status()`` gets its value. A call the
-cell never awaits runs once after the cell, which prints its value with a note, so
-``print(rlm.status())`` shows a coroutine object and then, one line later, the value.
+Every call here returns a task already running on the kernel loop: ``await rlm.status()``
+gets its value, and an un-awaited ``rlm.send(...)`` is sent the moment the cell next yields
+to the loop. A call the cell never awaits is named after the cell with its value, so
+``print(rlm.status())`` shows a pending task and then, one line later, the value.
 """
 
 from __future__ import annotations
@@ -38,49 +39,90 @@ HOST_COMM_TARGET = "host.request"
 
 _PUBLIC: list[str] = []
 _UNSETTLED: list[Any] = []
+_CALL: list[type] = []
+
+
+def _call_type() -> type:
+    """The task class an rlm call returns, built on whatever ``asyncio.Task`` is at first use
+    (the kernel's ``nest_asyncio`` replaces it)."""
+    if not _CALL:
+
+        class RLMCall(asyncio.Task):  # type: ignore[misc, valid-type]
+            """An rlm call already running. Awaiting it, gathering or waiting on it, or reading
+            its result takes it, and only a call nobody took is named after the cell."""
+
+            taken = False
+
+            def __await__(self):  # type: ignore[override]
+                self.taken = True
+                return super().__await__()
+
+            __iter__ = __await__
+
+            def add_done_callback(self, fn: Any, *, context: Any = None) -> None:
+                self.taken = True
+                super().add_done_callback(fn, context=context)
+
+            def result(self) -> Any:
+                self.taken = True
+                return super().result()
+
+        _CALL.append(RLMCall)
+    return _CALL[0]
 
 
 def _settle(*_: Any) -> None:
-    """IPython's post_run_cell hook: run each rlm coroutine the cell never started, once.
+    """IPython's post_run_cell hook: name each rlm call the cell never took, with its value.
 
-    Invariant: a coroutine that was started, or that a task owns, is never run here.
+    It starts nothing, since every call already runs as a task; one still running is waited
+    for, so its value prints under the cell that made it.
     """
     pending, _UNSETTLED[:] = _UNSETTLED[:], []
     loop = asyncio.get_event_loop()
-    owned = {task.get_coro() for task in asyncio.all_tasks(loop)}
-    for coro in pending:
-        if inspect.getcoroutinestate(coro) != inspect.CORO_CREATED or coro in owned:
-            continue
-        name = coro.__qualname__
+    for task in [task for task in pending if not task.taken]:
+        name = task.get_coro().__qualname__
         label = f"{name}()" if "." in name else f"rlm.{name}()"
         try:
-            said = f"returned {loop.run_until_complete(coro)!r}"
+            said = f"returned {loop.run_until_complete(task)!r}"
         except Exception as error:
             said = f"raised {type(error).__name__}: {error}"
         print(
-            f"{label} was not awaited, so the cell got a coroutine object, not its value; "
-            f"it ran once after the cell and {said}. Put `await` before the call to use it in the cell."
+            f"{label} was not awaited, so the cell got a task, not its value; it ran as the "
+            f"cell went on and {said}. Put `await` before the call to use it in the cell."
         )
 
 
 def _handed_out(fn: Any) -> Any:
-    """``fn`` still returns its coroutine; in a kernel the coroutine is recorded for ``_settle``."""
+    """``fn`` returns a task already scheduled on the running loop; in a kernel it is also
+    recorded for ``_settle``. With no running loop it returns the coroutine."""
 
     @functools.wraps(fn)
     def call(*args: Any, **kwargs: Any) -> Any:
         coro = fn(*args, **kwargs)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return coro
+        task = _call_type()(coro, loop=loop)
         shell = get_ipython() if get_ipython is not None else None
         if shell is not None:
             if _settle not in shell.events.callbacks["post_run_cell"]:
                 shell.events.register("post_run_cell", _settle)
-            _UNSETTLED.append(coro)
-        return coro
+            _UNSETTLED.append(task)
+        return task
 
     return getattr(inspect, "markcoroutinefunction", lambda marked: marked)(call)
 
 
+async def _calm(reply: dict[str, Any], remaining: float) -> None:
+    """A helper watching one child pauses on a wait that returned only because another child
+    asks or nothing is live, instead of spinning on it until its own deadline."""
+    if reply.get("state") in ("asks", "settled"):
+        await asyncio.sleep(max(0.0, min(0.5, remaining)))
+
+
 def _public(fn: Any) -> Any:
-    """One function of the ``rlm`` surface: listed in ``__all__``, its coroutine recorded."""
+    """One function of the ``rlm`` surface: listed in ``__all__``, its call a running task."""
     _PUBLIC.append(fn.__name__)
     return _handed_out(fn) if inspect.iscoroutinefunction(fn) else fn
 
@@ -171,6 +213,7 @@ class RLMSpawnHandle:
                             f"child {self.name} {note}; answer it with rlm.send({self.name!r}, "
                             "text, reply_to=<that id>), then call result() again"
                         ) from error
+            await _calm(reply, deadline - loop.time())
         raise TimeoutError(f"child {self.name} did not finish within {timeout}s")
 
     @_handed_out
@@ -488,11 +531,13 @@ async def send(
 
     ``target`` is an agent name, ``"parent"``, or ``"all"``. A broadcast returns
     one receipt per target rather than failing whole on the first bad one. Each
-    receipt is ``{target, id, state}`` and ``state`` says what the host did once
-    the message was in the target's inbox: ``queued`` (a running turn will take
+    receipt is ``{target, id, state, presented}``: ``state`` says what the host did
+    once the message was in the target's inbox, ``queued`` (a running turn will take
     it), ``woken`` (a turn was started on it) or ``inboxed`` (it waits in the
-    store; nothing is running to read it). ``reply_to=<id>`` answers a request: the
-    waiting call returns it (``answered``), and a request already answered refuses it.
+    store; nothing is running to read it), and ``presented`` says when the target's
+    model reads it. ``reply_to=<id>`` answers a request: the waiting call returns it
+    (``answered``), and a request already answered refuses it. A plain send to a
+    child with exactly one question open to you is that question's answer.
     ``kind`` is ``inform`` (the default), ``progress``, ``failure`` or ``cancel``.
     A body over 16 KiB is refused, never trimmed: ``put`` it and pass
     ``ref="family://<name>"``.
@@ -581,6 +626,9 @@ async def wait(timeout: float = 300.0, cursor: int | None = None) -> dict[str, A
     or ``stuck``) and ``notes``. With no cursor the host keeps your last one: the first call
     answers at once with the family as it stands, each later one blocks until a
     child moves, so ``await rlm.wait(300)`` in a loop waits instead of spinning.
+    ``state`` says why it returned: ``moved``, ``timeout``, ``asks`` (a child waits on
+    your answer, cause ``asks``; the wait returns at once until you answer it) or
+    ``settled`` (nothing in the family is live; at once, with ``finished``).
     The host clamps the timeout and says so in the reply (``clamped``), so a
     caller is never silently given a different one.
     """
@@ -673,7 +721,7 @@ async def result(
             remaining = min(timeout, deadline - loop.time())
             if remaining <= 0 or "still running" not in str(error):
                 raise
-        await wait(timeout=remaining)
+        await _calm(await wait(timeout=remaining), remaining)
 
 
 def _worktree_target(target: "str | RLMSubagent") -> str:
@@ -888,13 +936,11 @@ class BashHandle:
         except RuntimeError:
             self._spawn: asyncio.Future[dict[str, Any]] | None = None
         else:
-            self._spawn = loop.create_task(host_request("exec.spawn", {"command": command}))
+            self._spawn = asyncio.ensure_future(host_request("exec.spawn", {"command": command}), loop=loop)
 
     async def _id(self) -> int:
         if self._spawn is None:
-            self._spawn = asyncio.get_running_loop().create_task(
-                host_request("exec.spawn", {"command": self._command})
-            )
+            self._spawn = asyncio.ensure_future(host_request("exec.spawn", {"command": self._command}))
         reply = await asyncio.shield(self._spawn)
         job = reply.get("job_id")
         if not isinstance(job, int):
