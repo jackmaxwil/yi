@@ -150,9 +150,10 @@ impl SubagentHost {
         Ok(child)
     }
 
-    /// A lagged watch missed events, so the counters are read again from the session itself
-    /// and a missed tool end cannot leave the activity on `Executing`.
-    pub(super) fn refold(&self, child_id: &str) {
+    /// A lagged watch missed events: counters and activity are read again from the session, and
+    /// true means a run is live whose start event may be lost, so no reader would conclude it.
+    pub(super) fn refold(&self, child_id: &str) -> bool {
+        let mut running = false;
         if let Ok(mut children) = self.children.lock()
             && let Some(record) = children.get_mut(child_id)
         {
@@ -173,12 +174,14 @@ impl SubagentHost {
             }
             record.tool_use_count = record.tool_use_count.max(fresh.0);
             record.token_count = record.token_count.max(fresh.1);
-            record.activity = if record.session.status() == crate::session::Status::Idle {
-                ChildActivity::Waiting
-            } else {
+            running = record.session.status() == crate::session::Status::Running;
+            record.activity = if running {
                 ChildActivity::Writing
+            } else {
+                ChildActivity::Waiting
             };
         }
         self.publish(child_id);
+        running
     }
 }

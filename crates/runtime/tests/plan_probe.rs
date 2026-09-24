@@ -107,7 +107,7 @@ fn rig() -> Result<(Rig, ProbeLadder), Box<dyn Error>> {
             woke.fetch_add(1, Ordering::SeqCst);
             Vec::new()
         }),
-        Arc::new(|_notice: &str| {}),
+        Arc::new(|_notice: &str, _| {}),
     );
     Ok((
         Rig {

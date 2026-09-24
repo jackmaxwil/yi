@@ -543,41 +543,6 @@ fn batch_signature(message: &AgentMessage) -> Option<String> {
     )
 }
 
-fn waits(code: &str) -> bool {
-    const HEADS: [&str; 3] = ["rlm.wait(", "asyncio.sleep(", ".result("];
-    const BLOCKS: &str = "for |async for |while |if |elif |else|try|except";
-    let mut waited = false;
-    for line in code.lines().map(str::trim) {
-        let head = HEADS.iter().any(|head| line.contains(head));
-        waited |= head;
-        let block = BLOCKS.split('|').any(|word| line.starts_with(word)) && line.ends_with(':');
-        let inert_print = line
-            .strip_prefix("print(")
-            .is_some_and(|inner| !inner.trim_end_matches(')').contains('('));
-        let quiet = line.is_empty()
-            || line.starts_with('#')
-            || ["break", "continue", "pass", "finally:"].contains(&line);
-        if !(head || block || inert_print || quiet) {
-            return false;
-        }
-    }
-    waited
-}
-
-fn waits_only(message: &AgentMessage) -> bool {
-    let calls = extract_tool_calls(message);
-    !calls.is_empty()
-        && calls.iter().all(|call| match call.name.as_str() {
-            "ipython" => call
-                .arguments
-                .get("code")
-                .and_then(Value::as_str)
-                .is_some_and(waits),
-            "plan" => call.arguments.get("op").and_then(Value::as_str) == Some("view"),
-            _ => false,
-        })
-}
-
 /// A third copy in six turns, the last three all repeats, is sent back once; six end the run.
 fn repeat_break() -> AgentMessage {
     AgentMessage::Custom {
@@ -828,26 +793,7 @@ pub async fn run_loop<S: StreamFn>(
             // a clean turn ends the error streak: the next error gets its own retry
             stream_retries = 0;
 
-            let waiting =
-                config.waiting.as_ref().is_some_and(|live| live()) && waits_only(&message);
-            let repeats = match batch_signature(&message).filter(|_| !waiting) {
-                Some(batch) => {
-                    if recent.len() >= REPEAT_WINDOW {
-                        recent.pop_front();
-                    }
-                    let seen = recent.iter().filter(|past| **past == batch).count();
-                    recent.push_back(batch);
-                    // a batch new to the window is progress: the next stretch earns its own steer
-                    if seen == 0 {
-                        steered = false;
-                        repeating = 0;
-                    } else {
-                        repeating = repeating.saturating_add(1);
-                    }
-                    u32::try_from(seen.saturating_add(1)).unwrap_or(u32::MAX)
-                }
-                None => 0,
-            };
+            let waits_before = config.waiting.as_ref().map(|count| count());
             let calls = extract_tool_calls(&message);
             let mut tool_results: Vec<AgentMessage> = Vec::new();
             has_more_tool_calls = false;
@@ -877,6 +823,28 @@ pub async fn run_loop<S: StreamFn>(
                 }
             }
 
+            // The host saw the batch block on the family: a wait for work, never a repeat.
+            let waited = waits_before
+                .zip(config.waiting.as_ref())
+                .is_some_and(|(before, count)| count() > before);
+            let repeats = match batch_signature(&message).filter(|_| !waited) {
+                Some(batch) => {
+                    if recent.len() >= REPEAT_WINDOW {
+                        recent.pop_front();
+                    }
+                    let seen = recent.iter().filter(|past| **past == batch).count();
+                    recent.push_back(batch);
+                    // a batch new to the window is progress: the next stretch earns its own steer
+                    if seen == 0 {
+                        steered = false;
+                        repeating = 0;
+                    } else {
+                        repeating = repeating.saturating_add(1);
+                    }
+                    u32::try_from(seen.saturating_add(1)).unwrap_or(u32::MAX)
+                }
+                None => 0,
+            };
             emit(AgentEvent::TurnEnd {
                 message: message.clone(),
                 tool_results: tool_results.clone(),

@@ -141,7 +141,10 @@ async fn a_wake_built_before_a_model_switch_runs_the_woken_turn_on_the_new_model
     let mut switched = faux_model();
     switched.id = "faux-2".to_owned();
     session.set_model(switched);
-    wake("[subagent helper (sub-1) finished]\nLast answer: done");
+    wake(
+        "[subagent helper (sub-1) finished]\nLast answer: done",
+        None,
+    );
     let path = telemetry.path().ok_or("no sidecar bound")?;
     let mut request = None;
     for _ in 0..200 {

@@ -247,7 +247,7 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
         }),
         notice: match wake_parent {
             Some(parent) => yi_runtime::wiring::lifecycle_notice(&parent),
-            None => Arc::new(move |text: &str| {
+            None => Arc::new(move |text: &str, _| {
                 if let Ok(mut sink) = notice_sink.lock() {
                     sink.push(text.to_owned());
                 }
@@ -924,6 +924,331 @@ async fn two_messages_from_one_sender_drain_in_seq_order() -> TestResult {
     assert!(
         seen.contains(&("scout".to_owned(), 1, "aside".to_owned())),
         "another sender counts on its own and is never sorted into the first: {seen:?}"
+    );
+    Ok(())
+}
+
+/// Where `needle` first appears in what a session was handed, and where its last answer is.
+fn order_of(messages: &[AgentMessage], needle: &str) -> (Option<usize>, Option<usize>) {
+    let at = messages.iter().position(|message| {
+        inbound_texts(std::slice::from_ref(message))
+            .iter()
+            .any(|text| text.contains(needle))
+    });
+    let answer = messages
+        .iter()
+        .rposition(|message| matches!(message, AgentMessage::Assistant { .. }));
+    (at, answer)
+}
+
+/// Incident: `mbx-steer` sent BANANA plain, then CHERRY with `followup=True`, to a busy child;
+/// CHERRY rode the next boundary and BANANA came after the child's answer, so it answered
+/// twice. Dies with a plain send on the turn-end queue.
+#[tokio::test]
+async fn sends_to_a_busy_child_reach_its_next_boundary_in_send_order() -> TestResult {
+    let (harness, busy) = busy_child().await?;
+    for (text, followup) in [("BANANA", false), ("CHERRY", true)] {
+        let sent = harness.host.route("parent", "busy", text, followup)?;
+        assert_eq!(state_of(&sent), "queued", "{text}");
+    }
+    busy.wait_idle().await;
+    let messages = busy.messages();
+    let (banana, answer) = order_of(&messages, "BANANA");
+    let (cherry, _) = order_of(&messages, "CHERRY");
+    assert!(
+        banana < cherry && cherry < answer && banana.is_some(),
+        "both before the one answer, in send order: {messages:?}"
+    );
+    assert_eq!(
+        assistant_count(&messages),
+        2,
+        "the tool call and one answer"
+    );
+    Ok(())
+}
+
+/// Incident: `mbx-service` sent "10" plain, then requested "0", and the service answered 12
+/// instead of 22: the request started its turn and "10" came after the reply.
+#[tokio::test]
+async fn a_woken_turn_presents_what_waited_before_what_woke_it() -> TestResult {
+    let harness = harness(0, 1, "ok")?;
+    finished(&harness, "tally").await?;
+    let plain = harness.host.route("parent", "tally", "10", false)?;
+    assert_eq!(state_of(&plain), "inboxed");
+    let woke = harness.host.route("parent", "tally", "0", true)?;
+    assert_eq!(state_of(&woke), "woken");
+    assert!(child_sees(&harness, "tally", ">\n0\n<").await);
+    let bodies: Vec<String> = presented(&harness, "tally")
+        .into_iter()
+        .map(|(_, _, body)| body)
+        .collect();
+    assert_eq!(bodies, ["10", "0"], "send order, whatever woke the turn");
+    Ok(())
+}
+
+/// A tool whose sixth call hands its session a waking message, as child mail lands mid-turn.
+struct Poke {
+    calls: AtomicU32,
+    deliver: Arc<dyn Fn(AgentMessage, yi_types::schedule::DeliveryMode) + Send + Sync>,
+}
+
+impl yi_loop::AgentTool for Poke {
+    fn definition(&self) -> yi_types::model::ToolDef {
+        yi_types::model::ToolDef {
+            name: "poke".to_owned(),
+            description: "pokes".to_owned(),
+            parameters: json!({"type": "object"}),
+            freeform: None,
+        }
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _tool_call_id: &'a str,
+        _args: Map<String, Value>,
+        _signal: &'a yi_loop::interrupt::InterruptSignal,
+    ) -> yi_loop::tool::ToolFuture<'a> {
+        Box::pin(async move {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 5 {
+                let mail = AgentMessage::Custom {
+                    custom_type: "agent_message".to_owned(),
+                    content: yi_types::message::UserContent::Text("mail from kid".to_owned()),
+                    display: true,
+                    details: None,
+                    timestamp: 0,
+                };
+                (self.deliver)(mail, yi_types::schedule::DeliveryMode::Steer);
+            }
+            yi_loop::ToolOutcome {
+                result: yi_loop::tool::error_tool_result("poked"),
+                is_error: false,
+            }
+        })
+    }
+}
+
+/// Dies with the run's early stop going idle unchecked: mail queued in the turn the repeat
+/// breaker ended was never presented, and no turn was started for it.
+#[tokio::test]
+async fn mail_queued_as_a_run_stops_early_starts_the_next_turn() -> TestResult {
+    let call = faux_assistant_message(
+        vec![yi_ai::faux::faux_tool_call("p", "poke", Map::new())],
+        StopReason::ToolUse,
+    );
+    let mut session = parent_session_scripted(vec![call; 6], &["heard the kid"]);
+    let poke = Poke {
+        calls: AtomicU32::new(0),
+        deliver: session.heartbeat_hook(),
+    };
+    session.set_tools(vec![Arc::new(poke)]);
+    session.prompt("poke until told")?;
+    let mut messages = Vec::new();
+    for _ in 0..POLL_ATTEMPTS {
+        messages = session.messages();
+        if assistant_count(&messages) == 7 && session.status() == yi_runtime::Status::Idle {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    let (mail, answer) = order_of(&messages, "mail from kid");
+    assert!(
+        mail.is_some() && mail < answer && assistant_count(&messages) == 7,
+        "the mail starts a turn of its own: {messages:?}"
+    );
+    Ok(())
+}
+
+/// Dies with no redelivery at attach: an envelope inboxed before a crash, never presented,
+/// is lost to every later turn; one presented before it is shown once, never twice.
+#[tokio::test]
+async fn an_envelope_a_crash_left_unpresented_is_presented_once_after_it() -> TestResult {
+    let store = support::memory_store("restart");
+    let envelope = json!({"id": "kid-1", "from": "kid", "to": "parent", "kind": "inform",
+        "conversation": "kid-1", "seq": 1, "sentAt": 1, "body": "the tests are green"});
+    yi_session::lock_session(&store).append_custom("main", "agent_message", Some(envelope))?;
+    for (restart, reply) in [(1, "heard it"), (2, "nothing new")] {
+        let parent = parent_session(&[reply]);
+        parent.attach_store(store.clone())?;
+        parent.prompt("carry on")?;
+        parent.wait_idle().await;
+        let shown = parent
+            .messages()
+            .iter()
+            .filter(|message| {
+                inbound_texts(std::slice::from_ref(message))
+                    .iter()
+                    .any(|text| text.contains("the tests are green"))
+            })
+            .count();
+        assert_eq!(shown, 1, "restart {restart}: {:?}", parent.messages());
+    }
+    Ok(())
+}
+
+/// Incident: in `mbx-ask` the parent's followup woke the finished child, whose status read
+/// `finished` all through its second turn; `rlm.wait(60)` slept 60 s though it answered in 3.
+/// Dies with a woken run left outside the child's lifecycle.
+#[tokio::test]
+async fn a_woken_childs_turn_is_a_run_the_parent_can_wait_on() -> TestResult {
+    let harness = harness(0, 1, "the file is greeting.txt")?;
+    finished(&harness, "asker").await?;
+    let cursor = harness.host.wait(1_000, Some(0)).await["cursor"]
+        .as_u64()
+        .ok_or("cursor")?;
+    let sent = harness
+        .host
+        .route("parent", "asker", "use greeting.txt", true)?;
+    assert_eq!(state_of(&sent), "woken");
+    let members = harness.host.status()["members"].clone();
+    assert_eq!(members[0]["state"], "running", "{members}");
+    let started = harness.host.wait(1_000, Some(cursor)).await;
+    let cursor = started["cursor"].as_u64().ok_or("cursor")?;
+    let wait = harness.host.wait(60_000, Some(cursor));
+    let ended = json!(tokio::time::timeout(std::time::Duration::from_secs(10), wait).await?);
+    assert_eq!(ended["states"]["asker"], "finished", "{ended}");
+    assert_eq!(ended["causes"]["asker"], "finished", "{ended}");
+    for _ in 0..POLL_ATTEMPTS {
+        if harness.notices.lock().map_err(|_| "poisoned")?.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    let notices = harness.notices.lock().map_err(|_| "poisoned")?.clone();
+    assert_eq!(notices.len(), 2, "one notice per answer: {notices:?}");
+    assert_eq!(
+        harness.attributed.load(Ordering::SeqCst),
+        2,
+        "each run bills its own reply once"
+    );
+    Ok(())
+}
+
+/// Dies with a notice for a transition the parent already read: `mbx-*` trials ended 7 of 8
+/// times on a turn that said "nothing new in that notification".
+#[tokio::test]
+async fn a_finish_the_parent_already_collected_is_not_presented() -> TestResult {
+    for collects in [true, false] {
+        let slot: Arc<std::sync::OnceLock<Arc<SubagentHost>>> = Arc::default();
+        let call = faux_assistant_message(
+            vec![yi_ai::faux::faux_tool_call("c", "collect", Map::new())],
+            StopReason::ToolUse,
+        );
+        let mut parent = parent_session_scripted(vec![call], &["kid said done", "spare"]);
+        let collect = Collect {
+            host: Arc::clone(&slot),
+            collects,
+        };
+        parent.set_tools(vec![Arc::new(collect)]);
+        let parent = Arc::new(parent);
+        let harness = harness_with(HarnessOptions {
+            child_errors: false,
+            depth: 0,
+            max_depth: 1,
+            child_answer: "done",
+            tool_command: None,
+            cwd: None,
+            wake_parent: Some(Arc::clone(&parent)),
+        })?;
+        slot.set(Arc::clone(&harness.host)).map_err(|_| "set")?;
+        parent.prompt("spawn kid and collect it")?;
+        parent.wait_idle().await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let messages = parent.messages();
+        let shown = notice_texts(&messages).len();
+        assert_eq!(shown, usize::from(!collects), "{collects}: {messages:?}");
+        assert_eq!(assistant_count(&messages), 2, "{collects}: {messages:?}");
+    }
+    Ok(())
+}
+
+/// A cell that spawns `kid` and blocks until it ends, collecting its answer or only watching.
+struct Collect {
+    host: Arc<std::sync::OnceLock<Arc<SubagentHost>>>,
+    collects: bool,
+}
+
+impl yi_loop::AgentTool for Collect {
+    fn definition(&self) -> yi_types::model::ToolDef {
+        yi_types::model::ToolDef {
+            name: "collect".to_owned(),
+            description: "collects".to_owned(),
+            parameters: json!({"type": "object"}),
+            freeform: None,
+        }
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _tool_call_id: &'a str,
+        _args: Map<String, Value>,
+        _signal: &'a yi_loop::interrupt::InterruptSignal,
+    ) -> yi_loop::tool::ToolFuture<'a> {
+        Box::pin(async move {
+            let host = self.host.get();
+            let spawned =
+                host.map(|host| host.spawn("work".to_owned(), kwargs(&[("name", "kid")])));
+            let mut text = format!("spawned: {:?}", spawned.map(|reply| reply.is_ok()));
+            for _ in 0..POLL_ATTEMPTS {
+                let ended = host.is_some_and(|host| {
+                    let view = host.children_view();
+                    view.iter()
+                        .any(|child| child.update.status == ChildStatus::Completed)
+                });
+                if ended {
+                    if self.collects
+                        && let Some(host) = host
+                    {
+                        text = format!(
+                            "{:?}",
+                            host.result("kid", None).map(|reply| reply["text"].clone())
+                        );
+                    }
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+            }
+            // The notice has been queued by now; the next boundary reads it or drops it.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            yi_loop::ToolOutcome {
+                result: yi_loop::tool::error_tool_result(&text),
+                is_error: false,
+            }
+        })
+    }
+}
+
+/// Dies with `wait` saying only that a child moved: the cause of each move is named, and every
+/// envelope up moves the epoch, so a cell blocked in `wait` reads a child's second message.
+#[tokio::test]
+async fn wait_names_why_each_child_moved() -> TestResult {
+    let harness = harness(0, 1, "ok")?;
+    finished(&harness, "kid").await?;
+    let mut cursor = 0;
+    let mut moved = Vec::new();
+    for step in ["finished", "mail", "progress", "reaped"] {
+        match step {
+            "mail" | "progress" => {
+                let mut payload = kwargs(&[("target", "parent"), ("message", step)]);
+                if step == "progress" {
+                    payload.insert("kind".to_owned(), json!("progress"));
+                }
+                harness.host.send("kid", &payload)?;
+            }
+            "reaped" => drop(harness.host.delete("kid")?),
+            _ => {}
+        }
+        let reply = harness.host.wait(2_000, Some(cursor)).await;
+        cursor = reply["cursor"].as_u64().ok_or("cursor")?;
+        moved.push(json!(reply)["causes"]["kid"].clone());
+    }
+    assert_eq!(
+        moved,
+        [
+            json!("finished"),
+            json!("mail"),
+            json!("progress"),
+            json!("reaped")
+        ]
     );
     Ok(())
 }
@@ -2379,7 +2704,7 @@ async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResul
 }
 
 struct FireAtTurnEnd {
-    notice: Arc<dyn Fn(&str) + Send + Sync>,
+    notice: Arc<yi_runtime::subagent::NoticeFn>,
     running: Arc<dyn Fn() -> bool + Send + Sync>,
     fired_while_running: Arc<std::sync::atomic::AtomicBool>,
     fired: bool,
@@ -2401,7 +2726,10 @@ impl yi_runtime::ext::Extension for FireAtTurnEnd {
         self.fired = true;
         self.fired_while_running
             .store((self.running)(), Ordering::SeqCst);
-        (self.notice)("[subagent helper (sub-1) finished]\nLast answer: done at the seam");
+        (self.notice)(
+            "[subagent helper (sub-1) finished]\nLast answer: done at the seam",
+            None,
+        );
     }
 }
 
@@ -2441,10 +2769,10 @@ async fn notice_arriving_at_parent_turn_end_is_not_lost() -> TestResult {
     Ok(())
 }
 
-/// Guards `wake_idle_hook`'s follow-up queue: two children finish in milliseconds while the
-/// parent's turn sleeps two seconds in a tool, so both notices ride the open turn's one drain;
-/// the old `run(message)` drop lost the one that answered Busy, and a wake per notice would
-/// start a fourth turn the script cannot answer.
+/// Guards the one queue: two children finish in milliseconds while the parent's turn sleeps two
+/// seconds in a tool, so both notices ride that turn's next boundary and its one reply reads
+/// them; the old `run(message)` drop lost the one that answered Busy, and the old follow-up
+/// queue presented them after the answer and owed a third turn that said nothing new.
 #[tokio::test]
 async fn concurrent_notices_preserve_updates_and_coalesce_wakes() -> TestResult {
     let mut sleep = Map::new();
@@ -2506,8 +2834,18 @@ async fn concurrent_notices_preserve_updates_and_coalesce_wakes() -> TestResult 
     );
     assert_eq!(
         assistant_count(&messages),
-        3,
-        "the tool call, its reply, and one turn for both notices: {messages:?}"
+        2,
+        "the tool call and one reply that read both notices: {messages:?}"
+    );
+    let answer = messages
+        .iter()
+        .rposition(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .ok_or("no reply")?;
+    let read = notice_texts(messages.get(..answer).unwrap_or_default());
+    assert_eq!(
+        read.len(),
+        2,
+        "both notices come before the reply: {messages:?}"
     );
     Ok(())
 }
@@ -2533,7 +2871,10 @@ async fn a_wake_built_before_the_tools_runs_the_woken_turn_with_them() -> TestRe
     );
     let wake = yi_runtime::wiring::lifecycle_notice(&parent);
     parent.use_tools(yi_tools::builtin_tools(), std::env::temp_dir(), None);
-    wake("[subagent helper (sub-1) finished]\nLast answer: done");
+    wake(
+        "[subagent helper (sub-1) finished]\nLast answer: done",
+        None,
+    );
     let mut messages = Vec::new();
     for _ in 0..POLL_ATTEMPTS {
         messages = parent.messages();

@@ -125,7 +125,7 @@ async fn a_reaped_childs_booted_kernel_process_is_gone() -> TestResult {
             }
             Ok(child)
         }),
-        notice: Arc::new(|_| {}),
+        notice: Arc::new(|_, _| {}),
         events,
         parent_messages: Arc::new(Vec::new),
         report: Arc::new(|_| {}),

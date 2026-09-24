@@ -486,7 +486,7 @@ pub(super) mod tests {
                 }
                 Ok(child)
             }),
-            notice: Arc::new(move |text: &str| notice(text.to_owned())),
+            notice: Arc::new(move |text: &str, _| notice(text.to_owned())),
             events,
             parent_messages: Arc::new(Vec::new),
             report: Arc::new(move |message| report(message)),
@@ -751,15 +751,17 @@ pub(super) mod tests {
             last.to_string(),
             format!("history://{}/write-the-patch", out.plan.id.as_str())
         );
-        let promoted = texts(&rig.reports);
+        let said = texts(&rig.said);
+        let [line] = said.as_slice() else {
+            return Err(format!("one line for the verdict and its reap: {said:?}").into());
+        };
         assert!(
-            promoted.iter().any(|text| text.contains("half a patch")),
-            "the failure path still promotes the last product: {promoted:?}"
+            line.starts_with(
+                "plan: failed \"write the patch\": the provider hung up\n<reaped_child"
+            ) && line.contains("half a patch"),
+            "the failure path still promotes the last product, on the verdict: {line}"
         );
-        assert_eq!(
-            texts(&rig.said),
-            ["plan: failed \"write the patch\": the provider hung up"]
-        );
+        assert!(texts(&rig.reports).is_empty(), "and no second reap line");
         Ok(())
     }
 
@@ -812,11 +814,14 @@ pub(super) mod tests {
             stored, b"the seam is cut and holds",
             "the product is the child's answer"
         );
-        assert_eq!(
-            texts(&rig.said),
-            [format!(
-                "plan: accepted \"cut the seam\" (agent://{id}/cut-the-seam)"
-            )]
+        let said = texts(&rig.said);
+        let [line] = said.as_slice() else {
+            return Err(format!("one line for the verdict and its reap: {said:?}").into());
+        };
+        let verdict = format!("plan: accepted \"cut the seam\" (agent://{id}/cut-the-seam)\n");
+        assert!(
+            line.starts_with(&verdict) && line.contains("<reaped_child"),
+            "the verdict carries its reap: {line}"
         );
         let journal = rig.engine.store().journal(&id).read()?.records;
         let actors: Vec<(&str, &str)> = journal
@@ -826,10 +831,8 @@ pub(super) mod tests {
             .collect();
         assert_eq!(actors, [("submit", "engine"), ("done", "engine")]);
         assert!(
-            texts(&rig.reports)
-                .iter()
-                .any(|text| text.contains("seam is cut")),
-            "the done reaps the child and promotes its transcript"
+            line.contains("seam is cut") && texts(&rig.reports).is_empty(),
+            "the done reaps the child and promotes its transcript once, on the verdict"
         );
         let notices = rig.notices.lock().map_err(|_| "poisoned")?.clone();
         assert!(

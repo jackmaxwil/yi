@@ -22,7 +22,7 @@ pub struct NextTurn {
 type ConvertFn = dyn Fn(&[AgentMessage]) -> Vec<AgentMessage> + Send + Sync;
 type TransformFn = dyn Fn(&[AgentMessage]) -> Option<Vec<AgentMessage>> + Send + Sync;
 type StopFn = dyn Fn(&TurnSnapshot) -> bool + Send + Sync;
-type WaitingFn = dyn Fn() -> bool + Send + Sync;
+type WaitingFn = dyn Fn() -> u64 + Send + Sync;
 type PrepareFn = dyn Fn(&TurnSnapshot) -> Option<NextTurn> + Send + Sync;
 type QueueFn = dyn Fn() -> Vec<AgentMessage> + Send + Sync;
 type InterceptFn = dyn Fn(&TurnSnapshot) -> Option<AgentMessage> + Send + Sync;

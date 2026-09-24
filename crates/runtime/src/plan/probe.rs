@@ -249,7 +249,7 @@ impl ProbeLadder {
         let notices = latch.notices(&views);
         drop(latch);
         for text in &notices {
-            notice(text);
+            notice(text, None);
         }
         notices
     }

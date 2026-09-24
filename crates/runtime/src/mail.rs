@@ -247,6 +247,45 @@ pub(crate) fn present(envelope: &Envelope) -> AgentMessage {
     }
 }
 
+pub(crate) fn envelope_id(message: &AgentMessage) -> Option<&str> {
+    match message {
+        AgentMessage::Custom {
+            custom_type,
+            details: Some(details),
+            ..
+        } if custom_type == INBOX_ENTRY => details.get("id").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// Invariant: the presented copy is the transcript's own message entry, so an inbox entry with
+/// none after a crash was never shown and is queued again; `progress` is never shown at all.
+pub(crate) fn unread(entries: &[yi_types::entry::Entry]) -> Vec<AgentMessage> {
+    use yi_types::entry::Entry;
+    let shown: std::collections::HashSet<&str> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Message { message, .. } => envelope_id(message),
+            _ => None,
+        })
+        .collect();
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Custom {
+                custom_type, data, ..
+            } if custom_type == INBOX_ENTRY => {
+                serde_json::from_value::<Envelope>(data.clone()?).ok()
+            }
+            _ => None,
+        })
+        .filter(|envelope| {
+            envelope.kind != Kind::Progress && !shown.contains(envelope.id.0.as_str())
+        })
+        .map(|envelope| present(&envelope))
+        .collect()
+}
+
 /// Retires a request's waiter on every way out: a reply, a timeout, a refused send, or the
 /// requesting cell cancelled mid-wait.
 struct Parked<'a>(&'a SubagentHost, MailId);
@@ -271,6 +310,9 @@ impl SubagentHost {
     ) -> Result<Map<String, Value>, String> {
         if target == "all" {
             return Err("a request has one respondent; send to \"all\" instead".to_owned());
+        }
+        if from == PARENT_NAME {
+            self.waited();
         }
         let timeout_ms = timeout_ms.min(crate::mailbox::WAIT_MAX_MS);
         let respondent = self.member_name(target);
