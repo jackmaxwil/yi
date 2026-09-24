@@ -11,15 +11,19 @@ import contextlib
 import io
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "adapters"))
 sys.path.insert(0, str(ROOT / "drivers"))
+sys.path.insert(0, str(ROOT / "graph"))
+sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT))
 
 import orient_census  # noqa: E402
@@ -27,8 +31,11 @@ import rule_fires  # noqa: E402
 import record  # noqa: E402
 import tb21_cost  # noqa: E402
 import atif  # noqa: E402
+import surface  # noqa: E402
 import axes  # noqa: E402
 import yi_usage  # noqa: E402
+import test_refine  # noqa: E402
+import test_levers  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 EVENTS = FIXTURES / "ask_events.jsonl"
@@ -51,6 +58,9 @@ def check_command():
     argv = shlex.split(command)
     assert "--json" in argv, "E1: the adapter must run the JSON event stream"
     assert "--yolo" in argv, "E8: a permission prompt hangs the trial to timeout"
+    # Incident: without it the owner worked in lane 0 and accepted work never reached /app
+    # (fan-out and fleet-forensics scored 0, and 1.0 with it).
+    assert "--here" in argv, "the grader reads the task's checkout, not a lane"
     # E6: a bare `grep -v` exits 1 when nothing survives and pipefail scores the
     # trial 0; the delta filter is guarded, and tee's stdout is not harbor's to hold.
     assert "grep -v" in command and "|| [ $? -eq 1 ]" in command, "E6: the delta filter must be guarded"
@@ -165,6 +175,10 @@ def check_eval_config():
         source = (ROOT / name).read_text()
         assert "eval_config(" in source and '"enabled"' not in source, f"{name} writes its own config"
         assert "routing_label(" in source, f"{name}'s fingerprint cannot tell two routings apart"
+    # The ledger judges a PR's live run by main's runs of the same routing: one pin, three workflows.
+    pins = {name: re.findall(r"^\s*EVAL_ROUTING: (.+)$", (ROOT.parent / ".forgejo" / "workflows" / name).read_text(), re.M)
+            for name in ("pr.yml", "postmerge.yml", "tracking-hygiene.yml")}
+    assert len({pin for found in pins.values() for pin in found}) == 1 and all(pins.values()), pins
     # The fixtures lane leaves a caller's --home config alone, so a label there names a routing never sent.
     with tempfile.TemporaryDirectory() as home:
         done = subprocess.run(
@@ -509,7 +523,58 @@ def check_rule_fires():
     assert report["comment_fp"] == 2, report
 
 
+def check_surface():
+    """The tool-surface loop's schema and its census, with no binary and no key:
+    every scenario parses, a malformed one is refused by name, and the per-tool
+    counts come off the extractor's own store."""
+    assert surface.main(["--selfcheck", "--model", "faux/faux-1"]) == 0
+    roads = {scenario["id"]: scenario["road"] for scenario in surface.load_scenarios()}
+    assert len(roads) >= 6, roads
+    with tempfile.TemporaryDirectory() as directory:
+        broken = Path(directory) / "scenarios.json"
+        broken.write_text(json.dumps({"scenarios": [{"id": "x", "road": "r", "prompt": "p"}]}))
+        try:
+            surface.load_scenarios(broken)
+            raise AssertionError("a scenario missing timeoutSec, seed and clean was admitted")
+        except ValueError as error:
+            assert "missing" in str(error), error
+        store = Path(directory) / "mining"
+        store.mkdir()
+        (store / "mu.jsonl").write_text(json.dumps(
+            {"sessionId": "s1", "file": "a.jsonl", "toolCalls": {"byTool": {"edit": 4, "bash": 1}}}) + "\n")
+        (store / "issues.jsonl").write_text(json.dumps(
+            {"tool": "edit", "count": 3, "state": "NEW", "sessions": ["s1"],
+             "example": "hash #A1B2 is not from this session", "resolution": {"pivot": 1, "unresolved": 2}}) + "\n")
+        counts = surface.census(store)
+        assert counts["calls"] == {"bash": 1, "edit": 4}, counts
+        assert counts["refusals"] == {"edit": 3} and counts["rate"]["edit"] == 0.75, counts
+        text = surface.report([], store, Path(directory))
+        # The verdict is a human's; the runner prints the blank and never fills it.
+        assert "correct? ____" in text and "recovered 1, unresolved 2" in text, text
+
+
+def check_graph_refiner():
+    """D219: the refiner's gates on synthetic rows, and the fixture Rust judges too."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_refine)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 5 and result.wasSuccessful(), report.getvalue()
+
+
+def check_levers():
+    """D220: the manifest, the shared default fixture and the floors agree, and the gates hold."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_levers)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 5 and result.wasSuccessful(), report.getvalue()
+    environ = {yi_usage.LEVERS_ENV: str(ROOT / "levers" / "default.json")}
+    assert yi_usage.levers_label({}) == "" and len(yi_usage.levers_label(environ)) == len("+levers") + 12
+
+
 CHECKS = (
+    check_surface,
+    check_graph_refiner,
+    check_levers,
     check_cost_cap,
     check_orient_census,
     check_rule_fires,

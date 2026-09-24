@@ -5,6 +5,7 @@ pub mod client;
 pub mod connection;
 pub mod framing;
 pub mod journal;
+mod lock;
 pub(crate) mod pump;
 pub mod reduce;
 #[cfg(test)]

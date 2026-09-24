@@ -1,0 +1,93 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0275
+Title: Install standby generator
+Site: Merrow Basin
+Requested by: Hollis Wray
+Implemented: 2031-11-19
+
+Outcome: COMPLETED
+
+Description
+-----------
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. the networks team will coordinate with Ysolde Quint on
+the training calendar, which currently shows 27 open places.
+
+A standby generator was installed at Merrow Basin, load tested and commissioned on
+2031-11-19. The site now has standby power.
+
+Risk and rollback plan
+----------------------
+
+The rollback plan was rehearsed on the test rig beforehand.
+
+The contractor's method statement for work at Eastmere Intake was reviewed by the
+asset planning group and returned with 24 comments. A minor oil weep from the level
+sensor at Osier Bank was cleaned up and a drip tray fitted pending the next service.
+
+Verification
+------------
+
+The stores count showed 25 discrepancies, all traced to items issued to vans without a
+ticket. The draft drawing register for Cindergate Station is 29 percent complete and
+will be issued once the as-built survey is checked. The contractor's method statement
+for work at Pike Hollow was reviewed by the finance office and returned with 15
+comments. Hollis Wray noted that the calibration certificate for the duty pump expires
+next quarter and has booked the visit. The contractor's method statement for work at
+Tolland Sluice was reviewed by the control room and returned with 37 comments.
+
+Annex A. Correspondence
+-----------------------
+
+The stores count showed 37 discrepancies, all traced to items issued to vans without a
+ticket. The handover notes between shifts were sampled by the finance office and found
+complete in all but 36 cases. Oona Farrow noted that the calibration certificate for
+the wet well ladder expires next quarter and has booked the visit. An energy audit of
+Tolland Sluice suggested that running the control panel off-peak would reduce cost
+without affecting service. Bram Ketteridge reported that the duty pump at Harrow Weir
+had been inspected and found serviceable, with minor wear noted on the seals.
+
+Annex B. Training and rota
+--------------------------
+
+The draft drawing register for Pike Hollow is 36 percent complete and will be issued
+once the as-built survey is checked. Flooding on the lane to Harrow Weir delayed the
+delivery by a day; no cost was incurred by the cooperative. Mirela Stanck presented a
+short paper on sensor drift and recommended a comparison check at Eastmere Intake
+every 32 weeks. Flooding on the lane to Merrow Basin delayed the delivery by a day; no
+cost was incurred by the cooperative. A walkdown of Tolland Sluice found the signage
+faded; replacement boards have been ordered under the routine budget.
+
+It was noted that access to Eastmere Intake remains difficult after heavy rain and
+that the track will be regraded when crews allow. Sampling results for the quarter
+were within the expected band at every point except one, which is being resampled.
+Flooding on the lane to Eastmere Intake delayed the delivery by a day; no cost was
+incurred by the cooperative. The handover notes between shifts were sampled by the
+field crews and found complete in all but 12 cases.
+
+Annex C. Routine matters
+------------------------
+
+Mirela Stanck confirmed that spares for the wet well ladder are held at the central
+store and that the reorder level is 19 units. Sampling results for the quarter were
+within the expected band at every point except one, which is being resampled. Hollis
+Wray thanked the asset planning group for covering the holiday rota at short notice.
+No complaints were received from neighbours of Merrow Basin during the works, and the
+liaison log has been closed. The handover notes between shifts were sampled by the
+finance office and found complete in all but 25 cases.
+
+Lucan Marsh presented a short paper on sensor drift and recommended a comparison check
+at Harrow Weir every 18 weeks. It was noted that access to Low Fennick remains
+difficult after heavy rain and that the track will be regraded when crews allow.
+Ysolde Quint raised the question of lone working at Merrow Basin and was referred to
+the existing guidance held by the safety committee. The handover notes between shifts
+were sampled by the networks team and found complete in all but 10 cases. Sampling
+results for the quarter were within the expected band at every point except one, which
+is being resampled.
+
+It was noted that access to Harrow Weir remains difficult after heavy rain and that
+the track will be regraded when crews allow. Members of the field crews asked for the
+seasonal demand figures to be circulated before the next meeting. Flooding on the lane
+to Eastmere Intake delayed the delivery by a day; no cost was incurred by the
+cooperative.

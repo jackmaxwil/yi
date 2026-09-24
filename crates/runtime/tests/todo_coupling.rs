@@ -393,6 +393,31 @@ fn only_a_state_suppresses_the_interception() -> TestResult {
     Ok(())
 }
 
+/// Dies with the empty-stop check ahead of the ask exemption: the `mbx-ask` child's question
+/// has no text, so it was told "The turn produced no output" and answered itself.
+#[test]
+fn a_turn_that_ends_on_ask_user_is_not_an_empty_stop() -> TestResult {
+    let r = rig("ask-empty")?;
+    open_list(&r.todos)?;
+    let hooks = coupling(
+        &r.session,
+        Arc::clone(&r.todos),
+        Options {
+            eager: Eager::Prelude,
+            children_running: Arc::new(|| false),
+            inner: None,
+        },
+    );
+    let call = yi_ai::faux::faux_tool_call("q1", "ask_user", serde_json::Map::new());
+    let asking = faux_assistant_message(vec![call], StopReason::ToolUse);
+    let redrive = (hooks.intercept_stop)(&TurnSnapshot {
+        message: &asking,
+        tool_results: &[result("q1", "ask_user", false)],
+    });
+    assert!(redrive.is_none(), "{redrive:?}");
+    Ok(())
+}
+
 #[test]
 fn terminal_stops_are_never_re_driven_and_empty_stops_are_capped() -> TestResult {
     let r = rig("terminal")?;

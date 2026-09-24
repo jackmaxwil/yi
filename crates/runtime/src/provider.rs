@@ -77,6 +77,7 @@ pub struct ProviderStream {
     provider: String,
     pub session_id: Option<String>,
     pub faux: Mutex<FauxProvider>,
+    pub(crate) faux_pace: Mutex<Option<std::time::Duration>>,
     long_cache: bool,
     proxy: Option<yi_ai::request::ProxyConfig>,
     routing: Option<serde_json::Value>,
@@ -113,6 +114,7 @@ impl ProviderStream {
             provider: String::new(),
             session_id,
             faux: Mutex::new(FauxProvider::default()),
+            faux_pace: Mutex::new(None),
             long_cache: false,
             proxy: None,
             routing: None,
@@ -286,17 +288,38 @@ impl ProviderStream {
                 openai_responses::stream(model, context, &options, &self.key())
             }
             ProviderApi::Faux => {
-                let (sender, receiver) = tokio::sync::mpsc::channel(64);
                 let events = self
                     .faux
                     .lock()
                     .map(|mut faux| faux.stream())
                     .unwrap_or_default();
+                let (sender, receiver) = tokio::sync::mpsc::channel(events.len().max(1));
+                let pace = self.faux_pace.lock().ok().and_then(|pace| *pace);
+                if let Some(pace) = pace {
+                    drop(tokio::spawn(paced(sender, events, pace)));
+                    return receiver;
+                }
                 for event in events {
                     let _ = sender.try_send(event);
                 }
                 receiver
             }
+        }
+    }
+}
+
+async fn paced(
+    sender: tokio::sync::mpsc::Sender<yi_types::event::AssistantMessageEvent>,
+    events: Vec<yi_types::event::AssistantMessageEvent>,
+    pace: std::time::Duration,
+) {
+    use yi_types::event::AssistantMessageEvent as Event;
+    for event in events {
+        if matches!(event, Event::TextDelta { .. } | Event::ThinkingDelta { .. }) {
+            tokio::time::sleep(pace).await;
+        }
+        if sender.send(event).await.is_err() {
+            return;
         }
     }
 }

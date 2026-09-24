@@ -6,12 +6,15 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use ratatui::text::Line;
-use yi_types::event::{AgentEvent, AssistantMessageEvent, apply};
+use serde_json::Value;
+use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult, apply};
 use yi_types::message::{AgentMessage, Content};
 
 use super::{App, TaskState, UiEvent};
-use crate::cell::{Cell, TranscriptMode};
+use crate::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
+use crate::motion::elapsed_ms;
 use crate::reveal::{FRAME, Reveal};
+use crate::transcript::{preview_lines, text_of, todo_finished};
 
 /// Both reveal cursors, their speed, and the events waiting behind them.
 pub(crate) struct Pacing {
@@ -300,5 +303,70 @@ pub(super) fn fold_child(
             false
         }
         _ => false,
+    }
+}
+
+impl App {
+    /// A finished call leaves the live region for scrollback as its card; a todo step leaves
+    /// nothing, since the HUD carries the list, and only the list's close is a row.
+    pub(super) fn tool_ended(
+        &mut self,
+        tool_call_id: String,
+        tool_name: String,
+        result: &ToolResult,
+        is_error: bool,
+    ) {
+        self.turn_tools = self.turn_tools.saturating_add(1);
+        let elapsed = self
+            .tool_started
+            .remove(&tool_call_id)
+            .map(elapsed_ms)
+            .unwrap_or(0);
+        let index = self
+            .live_tools
+            .iter()
+            .position(|tool| tool.call_id == tool_call_id)
+            .or_else(|| {
+                self.live_tools
+                    .iter()
+                    .position(|tool| tool.status != ToolStatus::Done && tool.name == tool_name)
+            });
+        let mut cell = match index {
+            Some(i) => self.live_tools.remove(i),
+            // No start was seen, so nothing is known but the name; the
+            // result below fills in the rest.
+            None => ToolCell {
+                name: tool_name.clone(),
+                call_id: tool_call_id.clone(),
+                intent: None,
+                status: ToolStatus::Running,
+                summary: ToolCell::summary_of(&tool_name, ""),
+                digest: None,
+                preview: Vec::new(),
+                elapsed_ms: 0,
+                calls: 1,
+                details: Value::Null,
+            },
+        };
+        cell.status = if is_error {
+            ToolStatus::Failed
+        } else {
+            ToolStatus::Done
+        };
+        cell.elapsed_ms = elapsed;
+        let text = text_of(&result.content);
+        cell.digest = ToolCell::digest_of(&tool_name, &text, is_error);
+        cell.preview = preview_lines(&text, 12, 6);
+        cell.details = result.details.clone();
+        // The HUD carries the list; a card per step was six cards a turn.
+        if tool_name == "todo" && !is_error {
+            if let Some(done) = todo_finished(&text) {
+                self.commit_cell(&Cell::Footer { text: done });
+            }
+        } else {
+            self.commit_cell(&Cell::Tool(cell));
+        }
+        self.commit_finished_tasks();
+        self.intent = None;
     }
 }

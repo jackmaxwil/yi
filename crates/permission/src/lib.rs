@@ -8,7 +8,7 @@ mod rules;
 mod safety;
 
 pub use catastrophic::{
-    CatastrophicContext, command_reads_credentials, is_catastrophic, lexical_normalize,
+    CatastrophicContext, command_reads_credentials, git_dirs, is_catastrophic, lexical_normalize,
     resolve_target,
 };
 pub use decide::{
@@ -19,7 +19,7 @@ pub use review::{
     ActionId, ActionLedger, ActionState, LEDGER_CAP, RequestId, ReviewedAsk, UserVerdict,
 };
 pub use rules::{
-    ConfigRule, ConfigRuleAction, PathGlob, RuleStateError, SessionRules,
-    canonical_command_identity, canonical_tool_identity,
+    ConfigRule, ConfigRuleAction, Grant, PathGlob, RuleStateError, SessionRules,
+    canonical_command_identity, canonical_tool_identity, grants,
 };
-pub use safety::{Class, Parsed, Verdict, classify, parse, verdict};
+pub use safety::{Class, Parsed, Verdict, classify, parse, refused_scopes, verdict};

@@ -78,13 +78,12 @@ fn draw_frame<B>(
         app.reflow.schedule_immediate(std::time::Instant::now());
     }
     let reflow_theme = app.theme;
-    run_reflow(app, terminal, app.width.saturating_sub(2), &reflow_theme);
+    run_reflow(app, terminal, app.content_width(), &reflow_theme);
     let goal = port.and_then(|port| port.goal());
     let memory = port
         .and_then(|port| port.memory())
         .and_then(|feed| feed.hud());
-    app.plan_progress = port.and_then(|port| port.plan_progress());
-    app.todos = port.and_then(|port| port.todo_list());
+    app.sync_port(port);
     let total = u16::try_from(app.rows).unwrap_or(u16::MAX);
     let layout = layout_chat(app, goal, memory, total);
     let resized = terminal
@@ -104,13 +103,8 @@ fn draw_frame<B>(
 }
 
 /// The live region: the streaming thought tail, prose and tool rows of the turn in flight.
-fn live_lines(
-    app: &App,
-    width: usize,
-    spinner: usize,
-    theme: &crate::colors::Theme,
-) -> Vec<Line<'static>> {
-    let content_width = width.saturating_sub(2);
+fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Line<'static>> {
+    let content_width = app.content_width();
     let mut live_lines: Vec<Line<'static>> = Vec::new();
     if app.live_thought.len() > app.live_thought_cut {
         // Reasoning-heavy models stream thought long before prose, so show its dim tail and
@@ -119,23 +113,13 @@ fn live_lines(
             .live_thought
             .get(app.live_thought_cut..app.pacing.thought.shown())
             .unwrap_or_default();
-        let mut rendered = crate::cell::thought_lines(
+        let rendered = crate::cell::thought_lines(
             tail,
             content_width,
             theme,
             app.mode,
             app.live_thought_cut == 0,
         );
-        // The label pulses only while it is still live and still here: past the
-        // first committed slice the tail has no header and this is a no-op.
-        let glyph = crate::motion::thinking_glyph(crate::motion::elapsed_of(spinner));
-        if let Some(span) = rendered
-            .iter_mut()
-            .flat_map(|l| l.spans.iter_mut())
-            .find(|s| s.content.contains('∴'))
-        {
-            span.content = span.content.replace('∴', &glyph.to_string()).into();
-        }
         live_lines.extend(live_tail(rendered, app.rows));
     }
     if !app.live_markdown.is_empty() {
@@ -205,7 +189,7 @@ pub fn layout_chat(
     let theme = app.theme;
     let width = app.width;
 
-    let mut live_lines = live_lines(app, width, spinner, &theme);
+    let mut live_lines = live_lines(app, spinner, &theme);
     let hud_lines = if app.hud_hidden {
         Vec::new()
     } else {
@@ -293,7 +277,9 @@ pub fn layout_chat(
     } else {
         theme.muted_style()
     };
-    app.composer.set_frame(border, theme.dim_style());
+    app.bind_reply();
+    app.composer
+        .set_frame(border, theme.dim_style(), app.reply_title());
     let composer_height = app.composer.desired_height();
 
     let bottom_height = bottom_lines.as_ref().map_or(composer_height, |lines| {

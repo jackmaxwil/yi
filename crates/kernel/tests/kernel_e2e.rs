@@ -21,8 +21,26 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 struct EchoHost;
 
+/// Set when a `test.hold` request's host future is dropped rather than left running.
+static HOLD_DROPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct Held;
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        HOLD_DROPPED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 impl HostHandlers for EchoHost {
     fn dispatch(&self, request_type: &str, payload: Map<String, Value>) -> Option<HostFuture> {
+        if request_type == "test.hold" {
+            return Some(Box::pin(async move {
+                let _held = Held;
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                Ok(Map::new())
+            }));
+        }
         if request_type != "test.echo" {
             return None;
         }
@@ -163,6 +181,26 @@ async fn cells_stream_error_host_request_interrupt_and_shutdown() -> TestResult 
     );
     let dead = kernel.execute("1", ExecuteOptions::default()).await;
     assert!(dead.is_err(), "a shut-down kernel must refuse new cells");
+    Ok(())
+}
+
+/// Dies with the host task outliving its comm: an `rlm.receive` the cell stopped awaiting
+/// kept polling for 300 s, marked the mail it took as read and replied to a closed comm.
+#[tokio::test]
+async fn an_abandoned_host_request_stops_its_host_task() -> TestResult {
+    let kernel = manager()?;
+    let cell = "import asyncio, rlm\ntry:\n    await asyncio.wait_for(rlm.host_request('test.hold', {}), 0.3)\nexcept asyncio.TimeoutError:\n    print('gave up')";
+    let result = kernel.execute(cell, ExecuteOptions::default()).await?;
+    assert_eq!(result.stdout.trim(), "gave up", "{}", result.stderr);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !HOLD_DROPPED.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host task still runs after its comm closed"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    kernel.dispose().await;
     Ok(())
 }
 

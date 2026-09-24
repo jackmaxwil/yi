@@ -99,6 +99,7 @@ fn task(status: TaskStatus, answer: &str) -> TaskCell {
         spawn: None,
         answer: Some(answer.to_owned()),
         activity: ChildActivity::Writing,
+        flag: None,
     }
 }
 
@@ -127,17 +128,18 @@ fn palette_maps_tokens_and_headings() -> TestResult {
 }
 
 #[test]
-fn a_thought_row_is_a_purple_glyph_and_a_count() -> TestResult {
+fn a_thought_folds_to_a_dim_count_and_carries_no_glyph() -> TestResult {
     let theme = theme();
     let cell = Cell::Thought {
         markdown: "one line".to_owned(),
     };
     let lines = cell.lines(80, &theme, TranscriptMode::Normal, 0);
     let row = lines.first().ok_or("no row")?;
-    assert_eq!(row.spans[0].content.as_ref(), "  ∴");
-    assert_eq!(row.spans[0].style.fg, Some(theme.purple));
-    let text = flat(&lines).join("\n");
-    assert_eq!(text, "  ∴ 1 lines");
+    assert!(row.spans[0].style.add_modifier.contains(Modifier::ITALIC));
+    assert_eq!(flat(&lines).join("\n"), "  thought · 1 line");
+    let open = flat(&cell.lines(80, &theme, TranscriptMode::Thinking, 0)).join("\n");
+    assert!(!open.contains('∴'), "{open}");
+    assert!(open.contains("one line"), "{open}");
     Ok(())
 }
 
@@ -377,5 +379,45 @@ fn a_turn_ends_with_a_dim_footer() -> TestResult {
         .find(|r| r.starts_with("  ↳ 1 tool · "))
         .ok_or_else(|| format!("no footer: {rows:?}"))?;
     assert!(footer.contains("3K in / 620 out · 64% cached"), "{footer}");
+    Ok(())
+}
+
+/// Three pointers in one turn landed as three padded blocks, one of them bare:
+/// injected text takes one shape, and a run of it is one block.
+#[test]
+fn injected_text_takes_one_callout_shape_and_a_run_is_one_block() -> TestResult {
+    use yi_tui::history::History;
+
+    let theme = theme();
+    let mut history = History::default();
+    history.retain(Cell::Advisory {
+        source: "reminder".to_owned(),
+        text: "Relevant: skill://plan".to_owned(),
+    });
+    history.retain(Cell::Advisory {
+        source: "reminder".to_owned(),
+        text: "Relevant: skill://verify".to_owned(),
+    });
+    let rows = flat(&History::replay(
+        &history,
+        80,
+        &theme,
+        TranscriptMode::Thinking,
+        100,
+    ));
+    assert_eq!(
+        rows,
+        vec![
+            "  ▌ ⚑ reminder Relevant: skill://plan",
+            "  ▌ ⚑ reminder Relevant: skill://verify",
+        ]
+    );
+    let notice = Cell::Notice {
+        text: "This task has outgrown one-shot handling; write the plan now.".to_owned(),
+    };
+    assert_eq!(
+        flat(&notice.lines(80, &theme, TranscriptMode::Thinking, 0)),
+        vec!["  ▌ ⚑ This task has outgrown one-shot handling; write the plan now."]
+    );
     Ok(())
 }

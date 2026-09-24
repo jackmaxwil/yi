@@ -117,6 +117,24 @@ fn an_expired_token_refreshes_and_rotates() -> Res {
 }
 
 #[test]
+fn a_chatgpt_id_token_names_the_account_and_a_huge_expiry_does_not_panic() -> Res {
+    // The payload is {"https://api.openai.com/auth":{"chatgpt_account_id":"acct-7"}}.
+    let body = json!({
+        "access_token": "new-access",
+        "expires_in": u64::MAX,
+        "id_token": "e30.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC03In19.sig"
+    })
+    .to_string();
+    let (port, _) = serve_tokens(body, 1)?;
+    let store = store("idtoken");
+    store.save("fixture", &expired_credential())?;
+
+    let live = flow::live_oauth(&spec(port), &store, None)?;
+    assert_eq!(live.org.as_deref(), Some("acct-7"));
+    Ok(())
+}
+
+#[test]
 fn a_refresh_without_a_new_refresh_token_keeps_the_old_one() -> Res {
     let body = json!({"access_token": "new-access", "expires_in": 3600}).to_string();
     let (port, _) = serve_tokens(body, 1)?;

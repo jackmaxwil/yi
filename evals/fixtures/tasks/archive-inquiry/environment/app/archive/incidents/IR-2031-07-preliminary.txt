@@ -1,0 +1,122 @@
+Quillfen Water Cooperative
+INCIDENT REVIEW IR-2031-07
+Stage: PRELIMINARY
+Site: Osier Bank
+
+Occurred: 2031-06-24. Severity as assessed at this stage: 3.
+
+Summary
+-------
+
+No complaints were received from neighbours of Tolland Sluice during the works, and
+the liaison log has been closed. Bram Ketteridge reported that the standby pump at
+Osier Bank had been inspected and found serviceable, with minor wear noted on the
+seals.
+
+Timeline
+--------
+
+  06:55  duty manager informed
+  07:11  alarm received in the control room
+  07:43  crew on site
+  08:13  standby plant started
+  08:46  standby plant started
+  09:09  duty manager informed
+
+Findings
+--------
+
+An energy audit of Tolland Sluice suggested that running the level sensor off-peak
+would reduce cost without affecting service. No complaints were received from
+neighbours of Harrow Weir during the works, and the liaison log has been closed. Oona
+Farrow raised the question of lone working at Osier Bank and was referred to the
+existing guidance held by the asset planning group. Sampling results for the quarter
+were within the expected band at every point except one, which is being resampled.
+
+Root cause
+----------
+
+Overflow during a storm; blockage suspected.
+
+Recommendations
+---------------
+
+1. Clear the screen and inspect the channel.
+
+Annex A. Follow-up from the last period
+---------------------------------------
+
+The handover notes between shifts were sampled by the control room and found complete
+in all but 3 cases. Hollis Wray noted that the calibration certificate for the
+penstock actuator expires next quarter and has booked the visit. Mirela Stanck noted
+that the calibration certificate for the standby pump expires next quarter and has
+booked the visit.
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. It was noted that access to Harrow Weir remains
+difficult after heavy rain and that the track will be regraded when crews allow. Ansel
+Brightwater raised the question of lone working at Harrow Weir and was referred to the
+existing guidance held by the safety committee.
+
+Annex B. Routine matters
+------------------------
+
+The handover notes between shifts were sampled by the control room and found complete
+in all but 19 cases. The telemetry link to Tolland Sluice dropped twice in the period;
+both outages were under 4 minutes and no alarms were missed. Dov Callender noted that
+the calibration certificate for the dosing skid expires next quarter and has booked
+the visit.
+
+Annex C. Training and rota
+--------------------------
+
+Oona Farrow noted that the calibration certificate for the flow meter expires next
+quarter and has booked the visit. A minor oil weep from the penstock actuator at
+Harrow Weir was cleaned up and a drip tray fitted pending the next service. the
+networks team will coordinate with Lucan Marsh on the training calendar, which
+currently shows 37 open places. A minor oil weep from the flow meter at Harrow Weir
+was cleaned up and a drip tray fitted pending the next service. the field crews will
+coordinate with Oona Farrow on the training calendar, which currently shows 17 open
+places.
+
+Petra Vosk noted that the calibration certificate for the surge vessel expires next
+quarter and has booked the visit. Bram Ketteridge raised the question of lone working
+at Cindergate Station and was referred to the existing guidance held by the asset
+planning group. A walkdown of Eastmere Intake found the signage faded; replacement
+boards have been ordered under the routine budget.
+
+No complaints were received from neighbours of Low Fennick during the works, and the
+liaison log has been closed. An energy audit of Eastmere Intake suggested that running
+the telemetry outstation off-peak would reduce cost without affecting service. Hollis
+Wray reported that the control panel at Cindergate Station had been inspected and
+found serviceable, with minor wear noted on the seals. The contractor's method
+statement for work at Harrow Weir was reviewed by the networks team and returned with
+20 comments.
+
+Annex D. Any other business
+---------------------------
+
+Flooding on the lane to Brackwater Lock delayed the delivery by a day; no cost was
+incurred by the cooperative. the control room reminded everyone that permits for
+confined spaces must be closed out the same day. The handover notes between shifts
+were sampled by the asset planning group and found complete in all but 30 cases. No
+complaints were received from neighbours of Low Fennick during the works, and the
+liaison log has been closed. the field crews reminded everyone that permits for
+confined spaces must be closed out the same day.
+
+The telemetry link to Pike Hollow dropped twice in the period; both outages were under
+14 minutes and no alarms were missed. Vegetation clearance around the penstock
+actuator at Brackwater Lock was completed and the area photographed for the asset
+record. No complaints were received from neighbours of Merrow Basin during the works,
+and the liaison log has been closed. The draft drawing register for Eastmere Intake is
+38 percent complete and will be issued once the as-built survey is checked. Mirela
+Stanck thanked the safety committee for covering the holiday rota at short notice.
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. Mirela Stanck noted that the calibration certificate
+for the dosing skid expires next quarter and has booked the visit. It was noted that
+access to Brackwater Lock remains difficult after heavy rain and that the track will
+be regraded when crews allow. Bram Ketteridge presented a short paper on sensor drift
+and recommended a comparison check at Osier Bank every 18 weeks. Vegetation clearance
+around the inlet screen at Osier Bank was completed and the area photographed for the
+asset record.

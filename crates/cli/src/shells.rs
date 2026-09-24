@@ -30,6 +30,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             let request = yi_tui::AskRequest {
                 title: ask.title.to_owned(),
                 description: ask.text(),
+                grants: ask.grants.iter().map(|grant| grant.label.clone()).collect(),
                 reply: reply_tx,
             };
             if ask_tx.send(request).is_err() {
@@ -37,7 +38,9 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             }
             match reply_rx.recv() {
                 Ok(yi_tui::AskChoice::AllowOnce) => yi_runtime::AskOutcome::AllowOnce,
-                Ok(yi_tui::AskChoice::AllowAlways) => yi_runtime::AskOutcome::AllowAlways,
+                Ok(yi_tui::AskChoice::AllowAlways(index)) => {
+                    yi_runtime::AskOutcome::AllowAlways(index)
+                }
                 _ => yi_runtime::AskOutcome::Reject,
             }
         });
@@ -64,15 +67,10 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         .lane()
         .and_then(|lane| lane.path())
         .unwrap_or_else(|| effective_cwd(args));
-    // The row names the checkout and the slot; the slot path is a hash nobody reads.
-    let lane = session.lane().and_then(|lane| lane.slot()).map(|slot| {
-        let root = effective_cwd(args);
-        let repo = root
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        format!("{repo} ⎇ lane {slot}")
-    });
+    let lane = session
+        .lane()
+        .and_then(|lane| lane.row())
+        .map(|(_, row)| row);
     let options = yi_tui::TuiOptions {
         model: model.clone(),
         session_name: session_name.clone(),
@@ -231,6 +229,25 @@ pub fn run_serve_command(args: &Args, version: &str) -> i32 {
         },
         runtime,
     )
+}
+
+pub fn faux_replies(args: &Args) -> Result<Vec<yi_types::message::AgentMessage>, String> {
+    let Some(path) = &args.faux else {
+        return Ok(vec![yi_runtime::faux::faux_assistant_message(
+            vec![yi_runtime::faux::faux_text(&format!(
+                "faux: {}",
+                args.prompt
+            ))],
+            yi_types::message::StopReason::Stop,
+        )]);
+    };
+    let source =
+        std::fs::read_to_string(path).map_err(|error| format!("--faux {path}: {error}"))?;
+    source
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).map_err(|error| format!("--faux {path}: {error}")))
+        .collect()
 }
 
 #[cfg(feature = "tui")]

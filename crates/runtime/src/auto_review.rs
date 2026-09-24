@@ -131,11 +131,20 @@ impl Reviewer {
 /// request the model cannot answer is worse than no reviewer at all.
 pub struct AskUserTool {
     broker: Option<Arc<crate::permission::PermissionBroker>>,
+    parent: Option<crate::mailbox::ParentLink>,
 }
 
 impl AskUserTool {
     pub fn new(broker: Option<Arc<crate::permission::PermissionBroker>>) -> Self {
-        Self { broker }
+        Self {
+            broker,
+            parent: None,
+        }
+    }
+
+    pub fn asking(mut self, parent: Option<crate::mailbox::ParentLink>) -> Self {
+        self.parent = parent;
+        self
     }
 }
 
@@ -144,7 +153,7 @@ fn question_text(input: &Map<String, Value>) -> Option<String> {
     if question.is_empty() {
         return None;
     }
-    let mut text = format!("Question for the user: {question}");
+    let mut text = question.to_owned();
     let options: Vec<&str> = input
         .get("options")
         .and_then(Value::as_array)
@@ -156,7 +165,6 @@ fn question_text(input: &Map<String, Value>) -> Option<String> {
     if let Some(default) = input.get("default").and_then(Value::as_str) {
         text.push_str(&format!("\nDefault if unanswered: {default}"));
     }
-    text.push_str("\nThe turn ends here; the user's next message is the answer.");
     Some(text)
 }
 
@@ -166,6 +174,9 @@ impl yi_tools::Tool for AskUserTool {
     }
 
     fn description(&self) -> &str {
+        if self.parent.is_some() {
+            return "Ask your parent something only it can decide; the call waits for its answer and returns it. Pass `question` with two to four `options` and a `default` when one exists; never write a multiple-choice question as prose.";
+        }
         "Ask the user something only they can decide, and end the turn on it. Pass `question` with two to four `options` and a `default` when one exists; never write a multiple-choice question as prose. Block the todo it waits on first. With auto-review on, `request` (the number a denial quoted) puts that denial to the user instead; a denial you do not escalate stays denied."
     }
 
@@ -219,7 +230,15 @@ impl yi_tools::Tool for AskUserTool {
                 "ask_user needs a `question` (or `request`, the number a denial quoted)",
             );
         };
-        let mut output = yi_tools::text_output(text);
+        if let Some(parent) = &self.parent {
+            return match parent.ask(&text, &context.cancelled) {
+                Ok(answer) => yi_tools::text_output(format!("Your parent answered: {answer}")),
+                Err(refusal) => yi_tools::error_output(refusal),
+            };
+        }
+        let mut output = yi_tools::text_output(format!(
+            "Question for the user: {text}\nThe turn ends here; the user's next message is the answer."
+        ));
         output.result.terminate = Some(true);
         output
     }
@@ -247,27 +266,32 @@ pub fn wire(
 ) {
     wire_role(
         session,
-        wiring.auto_review.clone(),
-        wiring.broker.clone(),
+        (wiring.auto_review.clone(), wiring.broker.clone()),
         &wiring.provider,
         tools,
+        wiring.parent_link.clone(),
     );
 }
 
 pub fn wire_role(
     session: &AgentSession,
-    role: Option<Model>,
-    broker: Option<Arc<crate::permission::PermissionBroker>>,
+    (role, broker): (
+        Option<Model>,
+        Option<Arc<crate::permission::PermissionBroker>>,
+    ),
     provider: &Arc<ProviderStream>,
     tools: &mut Vec<Arc<dyn yi_tools::Tool>>,
+    parent: Option<crate::mailbox::ParentLink>,
 ) {
     let (Some(model), Some(broker)) = (role, broker) else {
-        tools.push(Arc::new(AskUserTool::new(None)));
+        tools.push(Arc::new(AskUserTool::new(None).asking(parent)));
         return;
     };
     broker.set_reviewer(Arc::new(Reviewer::new(Arc::clone(provider), model)));
     // P3: tools freeze after SessionStart, so registration is here or nowhere.
-    tools.push(Arc::new(AskUserTool::new(Some(Arc::clone(&broker)))));
+    tools.push(Arc::new(
+        AskUserTool::new(Some(Arc::clone(&broker))).asking(parent),
+    ));
     if let Some(host) = session.extensions()
         && let Ok(mut host) = host.lock()
     {
@@ -284,5 +308,6 @@ pub fn ask_text(ask: &ReviewedAsk) -> crate::permission::PermissionAsk<'_> {
         description: &ask.description,
         patch: ask.patch.as_deref(),
         changes: &ask.targets,
+        grants: &ask.grants,
     }
 }

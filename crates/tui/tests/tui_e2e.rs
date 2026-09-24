@@ -216,10 +216,10 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
         factory: Arc::new(|_build| Ok(faux_session("child answer"))),
-        notice: Arc::new(|_notice| {}),
+        notice: Arc::new(|_notice, _| {}),
         events: tokio::sync::broadcast::channel(64).0,
         parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message| {}),
+        report: Arc::new(|_message, _| {}),
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: dir.join(".yi/plans"),
@@ -763,7 +763,7 @@ fn the_approval_prompt_renders_its_diff_as_a_diff() -> TestResult {
         "+    match tool.trim() {",
     ]
     .join("\n");
-    let view = ApprovalView::new("write".to_owned(), description);
+    let view = ApprovalView::new("write".to_owned(), description, Vec::new());
     let theme = Theme::new(ColorTier::TrueColor, true);
     let rendered = flat_lines(&view.lines(80, &theme));
     let joined = rendered.join("\n");
@@ -789,6 +789,53 @@ fn the_approval_prompt_renders_its_diff_as_a_diff() -> TestResult {
     assert!(
         !joined.contains("--- a/"),
         "the git path headers repeat the title and cost two rows:\n{joined}"
+    );
+    Ok(())
+}
+
+/// "Always allow" names what it keeps: one option per grant the broker offers, and the choice
+/// carries which one.
+#[test]
+fn an_approval_offers_one_always_option_per_grant() -> TestResult {
+    use yi_tui::approval::{ApprovalView, AskChoice};
+    use yi_tui::keymap::{KeyCodeValue, SingleKey};
+    use yi_tui::popup::BottomView;
+
+    let grants = vec![
+        "edits under crates/tui/src".to_owned(),
+        "edits anywhere in this tree".to_owned(),
+    ];
+    let mut view = ApprovalView::new(
+        "write requires permission".to_owned(),
+        "write x".to_owned(),
+        grants.clone(),
+    );
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let joined = flat_lines(&view.lines(80, &theme)).join("\n");
+    for option in [
+        "Allow once",
+        "Always allow edits under crates/tui/src",
+        "Always allow edits anywhere in this tree",
+        "Reject",
+    ] {
+        assert!(joined.contains(option), "{option} missing:\n{joined}");
+    }
+    let key = |code| SingleKey {
+        code,
+        ctrl: false,
+        alt: false,
+        shift: false,
+    };
+    view.handle_key(&key(KeyCodeValue::Right));
+    view.handle_key(&key(KeyCodeValue::Right));
+    view.handle_key(&key(KeyCodeValue::Enter));
+    assert_eq!(view.outcome, Some(AskChoice::AllowAlways(1)));
+    let mut quick = ApprovalView::new("write".to_owned(), "write x".to_owned(), grants);
+    quick.handle_key(&key(KeyCodeValue::Char('a')));
+    assert_eq!(
+        quick.outcome,
+        Some(AskChoice::AllowAlways(0)),
+        "`a` keeps the narrowest grant"
     );
     Ok(())
 }
@@ -1008,10 +1055,10 @@ fn the_status_cost_sums_the_session_not_the_last_turn() -> TestResult {
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
         factory: Arc::new(|_build| Ok(faux_session("child answer"))),
-        notice: Arc::new(|_notice| {}),
+        notice: Arc::new(|_notice, _| {}),
         events: tokio::sync::broadcast::channel(64).0,
         parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message| {}),
+        report: Arc::new(|_message, _| {}),
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: dir.join(".yi/plans"),
@@ -1111,10 +1158,10 @@ fn a_recording_replays_to_the_frame_the_run_asserted_on() -> TestResult {
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
         factory: Arc::new(|_build| Ok(faux_session("child answer"))),
-        notice: Arc::new(|_notice| {}),
+        notice: Arc::new(|_notice, _| {}),
         events: tokio::sync::broadcast::channel(64).0,
         parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message| {}),
+        report: Arc::new(|_message, _| {}),
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: dir.join(".yi/plans"),
@@ -1241,14 +1288,47 @@ fn a_flushed_thought_leaves_no_empty_count_row_in_the_live_region() -> TestResul
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let contents = terminal.backend().contents();
     assert!(
-        contents.contains("∴ 1 lines"),
+        contents.contains("thought · 1 line"),
         "the flushed thought's count row committed:\n{contents}"
     );
-    // Glyph-agnostic: the live row's `∴` pulses into a starburst every frame.
     assert!(
         !contents.contains(" 0 lines"),
         "an empty live tail draws nothing:\n{contents}"
     );
+    Ok(())
+}
+
+/// The live tail wrapped at the terminal's width and the commit at a 100-column measure, so a
+/// thought paragraph narrowed and grew taller the moment its newline arrived.
+#[test]
+fn a_thought_paragraph_keeps_its_live_width_when_it_commits() -> TestResult {
+    let backend = VT100Backend::with_scrollback(200, 40, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_width(200);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let paragraph = "Opening words of a thought ".repeat(6);
+    let mut stream = |app: &mut App, thought: &str| {
+        let message = yi_runtime::faux::faux_assistant_message(
+            vec![yi_runtime::faux::faux_thinking(thought)],
+            StopReason::Stop,
+        );
+        app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
+            assistant_message_event: yi_types::event::AssistantMessageEvent::Done {
+                reason: StopReason::Stop,
+                message,
+            },
+        });
+        yi_tui::render::draw(app, &mut terminal, None);
+        let contents = terminal.backend().contents();
+        contents
+            .lines()
+            .find(|row| row.contains("Opening words"))
+            .map(|row| row.trim_end().to_owned())
+    };
+    let live = stream(&mut app, paragraph.trim_end()).ok_or("no live row")?;
+    let committed = stream(&mut app, &format!("{paragraph}\n\nnext")).ok_or("no committed row")?;
+    assert_eq!(live, committed, "the paragraph wraps once, at one width");
     Ok(())
 }
 
@@ -1271,10 +1351,10 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
         factory: Arc::new(|_build| Ok(faux_session("child answer"))),
-        notice: Arc::new(|_notice| {}),
+        notice: Arc::new(|_notice, _| {}),
         events: tokio::sync::broadcast::channel(64).0,
         parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message| {}),
+        report: Arc::new(|_message, _| {}),
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: dir.join(".yi/plans"),
@@ -1513,7 +1593,7 @@ fn the_recorded_session_orders_every_thought_above_its_prose() -> TestResult {
                 .get(turn..answer)
                 .unwrap_or_default()
                 .iter()
-                .filter(|row| row.starts_with("  ∴"))
+                .filter(|row| row.contains(thought.as_str()) || row.contains("thought ·"))
                 .count();
             assert_eq!(
                 labels,
@@ -1885,10 +1965,10 @@ fn the_hud_shows_open_todos_in_a_headless_frame() -> TestResult {
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
         factory: Arc::new(|_build| Ok(faux_session("child answer"))),
-        notice: Arc::new(|_notice| {}),
+        notice: Arc::new(|_notice, _| {}),
         events: tokio::sync::broadcast::channel(64).0,
         parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message| {}),
+        report: Arc::new(|_message, _| {}),
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: dir.join(".yi/plans"),
@@ -1920,12 +2000,306 @@ fn the_hud_shows_open_todos_in_a_headless_frame() -> TestResult {
     frames.sort();
     let last = std::fs::read_to_string(frames.last().ok_or("no frames dumped")?)?;
     for needle in [
-        "Todos 0/3 · running: read the code",
-        "- [>] t1 read the code",
-        "- [ ] t2 write the fix",
-        "  - [ ] t3 parser",
+        "Todos 0/3",
+        "1. ▶ read the code",
+        "2. ○ write the fix",
+        "  3. ○ parser",
     ] {
         assert!(last.contains(needle), "frame lacks {needle:?}:\n{last}");
     }
+    for stray in ["running:", " t1 ", "├─"] {
+        assert!(!last.contains(stray), "frame shows {stray:?}:\n{last}");
+    }
+    Ok(())
+}
+
+fn child_host(dir: &Scratch, reply: &'static str) -> Arc<SubagentHost> {
+    Arc::new(SubagentHost::new(child_host_options(dir, reply)))
+}
+
+fn child_host_options(dir: &Scratch, reply: &'static str) -> SubagentHostOptions {
+    SubagentHostOptions {
+        depth: 0,
+        max_depth: 1,
+        max_children: 4,
+        parent_session_dir: dir.to_path_buf(),
+        cwd: dir.to_path_buf(),
+        home: dir.join("home"),
+        lane_slots: 1,
+        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
+        factory: Arc::new(move |_build| Ok(faux_session(reply))),
+        notice: Arc::new(|_notice, _| {}),
+        events: tokio::sync::broadcast::channel(64).0,
+        parent_messages: Arc::new(Vec::new),
+        report: Arc::new(|_message, _| {}),
+        attribute: Arc::new(|_usage| {}),
+        store: Arc::new(|| None),
+        plans_dir: dir.join(".yi/plans"),
+        family_live: Arc::new(|| 0),
+    }
+}
+
+fn kernel_cell(id: &str, code: &str) -> yi_types::event::AgentEvent {
+    yi_types::event::AgentEvent::ToolExecutionStart {
+        tool_call_id: id.to_owned(),
+        tool_name: "ipython".to_owned(),
+        args: serde_json::json!({ "code": code }),
+    }
+}
+
+/// Guards both forwarders: `while let Ok(event)` read a lagged receiver as the end of the
+/// stream, so one burst past the bus capacity silenced the parent or a child for good.
+#[test]
+fn a_forwarder_survives_a_capacity_four_bus() -> TestResult {
+    use yi_tui::UiEvent;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let (bus, events) = tokio::sync::broadcast::channel(4);
+    let (ui_tx, ui_rx) = std::sync::mpsc::channel();
+    runtime.block_on(async {
+        let forwarder = tokio::spawn(yi_tui::app::forward(events, None, ui_tx));
+        // Twelve sends before the forwarder is polled once: eight fall off a bus of four.
+        for index in 0..12 {
+            bus.send(tool_start(&format!("c{index}")))
+                .map_err(|e| e.to_string())?;
+        }
+        tokio::task::yield_now().await;
+        bus.send(yi_types::event::AgentEvent::AgentStart)
+            .map_err(|e| e.to_string())?;
+        drop(bus);
+        forwarder.await.map_err(|e| e.to_string())
+    })?;
+    let mut app = app();
+    let mut after_the_gap = 0;
+    let mut gaps = 0;
+    for ui_event in ui_rx.try_iter() {
+        match ui_event {
+            UiEvent::Reply(reply) => {
+                gaps += 1;
+                app.apply(reply);
+            }
+            UiEvent::Agent(_) => after_the_gap += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(gaps, 1, "the gap is reported once");
+    assert_eq!(
+        after_the_gap, 5,
+        "the four kept events and the one sent after the gap"
+    );
+    let committed = flat_lines(&app.take_commits());
+    assert!(
+        committed
+            .iter()
+            .any(|line| line.contains("8 events behind")),
+        "the reader is told what was skipped: {committed:?}"
+    );
+    Ok(())
+}
+
+/// Guards late adoption: a client that subscribed after a child's tool event drew
+/// "starting" beside a record that said one tool call and `executing`.
+#[test]
+fn a_card_adopted_after_the_first_tool_event_names_it() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let mut args = Map::new();
+    args.insert("path".to_owned(), "src/lagged.rs".into());
+    provider.queue_faux(vec![
+        yi_runtime::faux::faux_assistant_message(
+            vec![yi_runtime::faux::faux_tool_call("t1", "read", args)],
+            StopReason::ToolUse,
+        ),
+        yi_runtime::faux::faux_assistant_message(
+            vec![yi_runtime::faux::faux_text("read it")],
+            StopReason::Stop,
+        ),
+    ]);
+    let session = Arc::new(AgentSession::new(
+        SessionConfig {
+            system_prompt: String::new(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: yi_runtime::ExecutionMode::Sequential,
+        },
+        provider,
+    ));
+    session.attach_store(Arc::new(std::sync::Mutex::new(
+        yi_runtime::session_store::SessionStore::in_memory(
+            yi_runtime::session_store::SessionMetadata {
+                id: "late".to_owned(),
+                created_at: 0,
+                parent_session_id: None,
+                name: None,
+            },
+        ),
+    )))?;
+    // The child's turn happens with nobody subscribed; only its transcript remembers it.
+    runtime.block_on(async {
+        session.prompt("go").map_err(|e| e.to_string())?;
+        session.wait_idle().await;
+        Ok::<(), String>(())
+    })?;
+    let roster = [yi_runtime::ChildView {
+        update: yi_runtime::ChildUpdate {
+            id: yi_types::subagent::ChildId("sub-late".to_owned()),
+            name: "late reader".to_owned(),
+            status: yi_runtime::ChildStatus::Running,
+            activity: yi_types::subagent::ChildActivity::Executing,
+            tool_use_count: 1,
+            token_count: 40,
+            answer_preview: None,
+            error: None,
+            exit: None,
+            flag: None,
+        },
+        session: yi_runtime::ChildFeed::of(session),
+    }];
+    let mut app = app();
+    app.sync_children(&roster);
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let contents = terminal.backend().contents();
+    assert!(
+        contents.contains("⚙ read") && contents.contains("lagged.rs"),
+        "the card names the tool the record counted:\n{contents}"
+    );
+    assert!(!contents.contains("starting"), "{contents}");
+    Ok(())
+}
+
+/// Guards the commit gate: any live `ipython` cell held every finished card, so one lost
+/// cell end froze them all. A card waits only on the cell it was born under.
+#[test]
+fn a_finished_card_commits_under_a_live_cell() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let dir = Scratch::new("yi-tui-live-cell")?;
+    let host = child_host(&dir, "child answer");
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    // Born outside any cell; a later, unrelated cell is live when it finishes.
+    runtime.block_on(async {
+        host.spawn("trace".to_owned(), Map::new())
+            .map_err(|e| e.to_string())?;
+        app.sync_children(&host.children_view());
+        app.reduce_agent(kernel_cell("c2", "await asyncio.sleep(600)"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while host
+            .children_view()
+            .iter()
+            .any(|c| c.update.status == yi_runtime::ChildStatus::Running)
+        {
+            if Instant::now() > deadline {
+                return Err("child never finished".to_owned());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        app.sync_children(&host.children_view());
+        Ok::<(), String>(())
+    })?;
+    let committed = flat_lines(&app.take_commits());
+    assert!(
+        committed.iter().any(|line| line.contains("╭─ ↳ Trace sub")),
+        "the finished card commits though a cell is still live: {committed:?}"
+    );
+    Ok(())
+}
+
+/// Guards the roster rule: a child deleted before its first event left a card at `Running`
+/// that nothing would ever finish, one per `rlm.delete_subagent` call.
+#[test]
+fn a_card_the_roster_stopped_listing_ends_as_gone() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let dir = Scratch::new("yi-tui-gone")?;
+    let host = child_host(&dir, "child answer");
+    let mut app = app();
+    let _context = runtime.enter();
+    host.spawn("trace".to_owned(), Map::new())?;
+    app.sync_children(&host.children_view());
+    // The client missed the terminal update; only the next roster tick can tell it.
+    let child = host.children_view().first().map(|c| c.update.id.clone());
+    host.delete(child.ok_or("no child")?.as_str())?;
+    app.sync_children(&host.children_view());
+    let committed = flat_lines(&app.take_commits());
+    assert!(
+        committed.iter().any(|line| line.contains("✗ Trace sub")),
+        "the orphan card is finished and committed: {committed:?}"
+    );
+    assert!(
+        committed.iter().any(|line| line.contains("gone")),
+        "and says why: {committed:?}"
+    );
+    Ok(())
+}
+
+/// Guards the delete journey, `h = await rlm.run(...); await rlm.delete_subagent(h)`, at the
+/// client: the removal published nothing, so the card the roster had adopted ran forever.
+/// The real-kernel half is `recursion_e2e::a_kernel_cell_that_spawns_and_deletes_tells_why`.
+#[test]
+fn a_kernel_cell_that_spawns_and_deletes_leaves_no_live_card() -> TestResult {
+    use yi_tui::UiEvent;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let dir = Scratch::new("yi-tui-delete")?;
+    let (bus, events) = tokio::sync::broadcast::channel(64);
+    let mut options = child_host_options(&dir, "child answer");
+    options.events = bus;
+    let host = Arc::new(SubagentHost::new(options));
+    let (ui_tx, ui_rx) = std::sync::mpsc::channel();
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let code = "h = await rlm.run('trace')\nawait rlm.delete_subagent(h)";
+    app.reduce_agent(kernel_cell("c1", code));
+    runtime.block_on(async {
+        tokio::spawn(yi_tui::app::forward(events, None, ui_tx));
+        host.spawn("trace".to_owned(), Map::new())
+            .map_err(|e| e.to_string())?;
+        app.sync_children(&host.children_view());
+        let child = host.children_view().first().map(|c| c.update.id.clone());
+        host.delete(child.ok_or("no child")?.as_str())?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        Ok::<(), String>(())
+    })?;
+    // No roster tick after the delete: the bus alone has to end the card.
+    for ui_event in ui_rx.try_iter() {
+        if let UiEvent::Agent(event) = ui_event {
+            app.reduce_agent(event);
+        }
+    }
+    app.reduce_agent(yi_types::event::AgentEvent::ToolExecutionEnd {
+        tool_call_id: "c1".to_owned(),
+        tool_name: "ipython".to_owned(),
+        result: yi_types::event::ToolResult {
+            content: Vec::new(),
+            details: serde_json::json!({ "code": code, "stdout": "" }),
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+        is_error: false,
+    });
+    let committed = flat_lines(&app.take_commits());
+    assert!(
+        committed.iter().any(|line| line.contains("✗ Trace sub")),
+        "the deleted child's card is finished and committed: {committed:?}"
+    );
+    assert!(
+        committed.iter().any(|line| line.contains("interrupted")),
+        "and carries the cause: {committed:?}"
+    );
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let live = terminal.backend().contents();
+    assert!(!live.contains("Trace sub"), "no card is left live:\n{live}");
     Ok(())
 }

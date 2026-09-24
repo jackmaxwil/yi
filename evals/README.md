@@ -10,7 +10,12 @@ adapters/yi_harbor/agent.py  harbor BaseInstalledAgent subclass
 adapters/yi_pier/agent.py    pier BaseInstalledAgent subclass (+ install spec, allowlist, extras)
 selftest.py                dry run: no docker, no API, no keys, no harness
 run.py                     task runner over `yi ask --json`, scored by each task's reward.sh
+surface.py                 tool-surface loop: one rollout per scenario, scored by the refusals its sessions recorded
+fixtures/surface/scenarios.json  the tool roads, as data: road, prompt, seed files, what a clean run looks like
 record.py                  session JSONL -> behavior cassette (J3), redacted at record time
+graph/refine.py            offline refiner for the procedural graph (D219): proposals in, a held-out gate, rejection memory
+levers/split.json          the development, validation and final task groups; a proposal may name only development tasks
+levers.py                  the levers manifest, floors and the two gates (D220): `--selfcheck` holds levers/{levers,default,floors}.json together; `compare` and `grid` pair a candidate with its baseline through the owner's runner, which runs the binary under `YI_LEVERS` and `yi ask --eval`
 fixtures/                  a recorded faux transcript, a v4 session file, and the runner's tasks
 ```
 
@@ -80,6 +85,48 @@ run HOME's `routing` config key for `evals/run.py` and the harbor adapter
 (`yi_usage.eval_config`, the one writer) and rides the fingerprint's mode as
 `+routing{…}`, so a routing A/B needs no rebuild; anything but a JSON object is
 refused, and so is `--home` on the fixtures lane, whose config stays the caller's.
+
+## Tool surface
+
+```
+python3 evals/surface.py --dry --binary target/debug/yi --model faux/faux-1
+python3 evals/surface.py --binary target/debug/yi \
+    --model openrouter/z-ai/glm-5.3-flash --cap-usd 3 --out runs/surface
+```
+
+The standing loop behind #468 to #476: run real one-shot agents over the tool
+surface, count what was refused, judge which refusals were the caller's fault
+and which were the tool's, fix, repeat. The refusal rate per tool is the number
+a release is judged by, and the corpus that opened those issues put plan at 39
+percent, ipython at 17, bash at 15, edit at 12 and todo at 4.
+
+A scenario is one entry in `fixtures/surface/scenarios.json`: the `road` it
+exercises, the `prompt`, the `seed` files the workspace starts with, an optional
+`levers` object (which makes the run an `--eval` run under `YI_LEVERS`, D220),
+and `clean`, what a run that met no friction looks like. Adding a road for a
+newly suspect tool is a JSON entry and never an edit to the runner.
+
+Each rollout gets its own workspace and its own HOME, as `run.py` does, so the
+caller's `~/.yi` is never touched and one scenario's plans and lanes never reach
+the next. A timeout is a result, never a retry.
+
+Scoring is the session-mining extractor's: `--out/mining/issues.jsonl` already
+groups every refusal by tool with its text and whether the session recovered,
+and `mu.jsonl` carries the per-tool call counts, so the runner reads that store
+rather than the sessions. `surface.json` is the machine row (per-tool calls,
+refusals and rate, the spend, whether a cap stopped it), and the printed report
+is what a human reads: each refusal with its count, its text, the model's own
+words from the turn it was made in, and a blank `correct? ____`. Judging a
+refusal is a reading act and the runner never guesses what a caller meant, which
+is the split the mining skill already draws.
+
+`--dry` is faux only and refuses any other provider; it rides
+`just postmerge-evals` beside `run.py --dry` because it needs a built binary.
+`selftest.py::check_surface` covers the scenario schema and the census with no
+binary and no key, so `just check` carries them. A real-model run refuses
+without `OPENROUTER_API_KEY` and without `--cap-usd`, naming the missing
+precondition and never a key value, and prints its `docs/eval-ledger.md` row
+like every other paid lane.
 
 ## Axes (D140)
 
@@ -322,9 +369,20 @@ posts `scripts/live_report.py run.json` as one PR comment; without the
 
 ### Verdicts and history
 
-`scripts/live_ledger.py baseline` reads the last ten `run.json` records from the
-`telemetry` branch — medians of ttft p50, cache hit rate and cost per scenario,
-plus every error class seen. `judge run.json baseline.json` names each band the
-run breaks and each ratchet it loses; `live_report.py` prints the verdict at the
+`scripts/live_ledger.py baseline run.json` reads the last ten records from the
+`telemetry` branch with the run's model and mode (its `+routing{…}` label; a
+record written before `mode` was recorded counts as plain `live`): the median and
+the worst run of ttft p50, the warm-turn cache hit rate of `cache-warm` (its row's
+`warmRead` over `warmRead + warmInput`) and cost per scenario, plus every error
+class seen. The whole-run hit rate is reported, not ratcheted: it moves with how
+many cold requests the model happens to take (#480).
+The three workflows that run the flash suite pin one upstream through
+`EVAL_ROUTING` (DeepInfra: Relace drops the whole cache on a prefix a few tokens
+past a 256-token page, and Sail Research's ttft p50 sat over the 3 s band), and
+`evals/selftest.py` holds them to one value. `judge run.json baseline.json [again.json …]` names each band the
+first run breaks and each ratchet every run lost. A ratchet's bound is the median's
+ratchet or the worst run in the history, whichever is further, and the PR lane runs
+the suite again, three runs at most, while `again baseline.json run.json …` says a
+ratchet still holds, so one draw of an upstream never speaks for its median; `live_report.py` prints the verdict at the
 top of the PR comment. Postmerge runs the suite on main and `append`s the record
 to the branch, so a PR is always judged against what main did last.

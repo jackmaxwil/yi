@@ -1,0 +1,152 @@
+{
+  "id": "examples-runner",
+  "description": "One critical example item over five cases. Three pass on three different JSON spellings of the same value, one answers wrongly, and one prints prose after its JSON. Structural equality decides the first three; the last two are distinct failures and the item's detail says which case failed and why, because a caller that only learns the count cannot repair anything.",
+  "decisions": [
+    "Key order and whitespace are not failures. Comparison is over the parsed values, so case 1's reordered object and case 2's padded object pass; a byte comparison would make the runner's formatter part of the contract.",
+    "Trailing prose is a failure distinct from a wrong answer. Stdout must be one complete JSON value; a model that appends a summary line is not almost right, it is producing something no caller can parse, and a lenient reader here would teach it the habit.",
+    "The detail lists zero-based case indexes, the same indexes as cases.json, so the failing case is the array entry at that position with no arithmetic.",
+    "Every case runs under both the item's timeout and the whole verification's deadline, and a case is not skipped because an earlier one failed: the detail is worth more than the few milliseconds early exit would save.",
+    "cases.json is a file, not an inline string, because it is the artifact by digest and a reviewer reads it as JSON. The runner is one sh script for the same reason: no per-language harness ships in F0c."
+  ],
+  "prompt": "Implement the tiny op evaluator and prove it against the case file.",
+  "eagerInit": true,
+  "goal": "Implement the op evaluator and pass its case file",
+  "plan": "implement-the-op-evaluator-and-pass-its",
+  "artifacts": {
+    "cases": {
+      "digest": "sha256:d8b766d5b36609664769ca577a7cb8e17142b24acd70c5b99e85305c3a7e8728",
+      "media_type": "application/json",
+      "length": 532,
+      "file": "cases.json"
+    },
+    "runner-script": {
+      "digest": "sha256:cd599f25b3e26a34f916fc23375a70a906ce1f870c83bd1708e162e053da8795",
+      "media_type": "text/x-shellscript",
+      "length": 582,
+      "text": "#!/bin/sh\n# One case per invocation: the case's input arrives on stdin, one complete JSON\n# value leaves on stdout. Case 3 answers wrongly and case 4 talks after its JSON;\n# the other three answer correctly in three different spellings.\ninput=$(cat)\ncase \"$input\" in\n  *'\"sum\"'*)    printf '{\"result\": 3}\\n' ;;\n  *'\"pair\"'*)   printf '{\"b\": 2, \"a\": 1}\\n' ;;\n  *'\"spaced\"'*) printf '{  \"result\" :  7  }\\n' ;;\n  *'\"wrong\"'*)  printf '{\"result\": 4}\\n' ;;\n  *'\"chatty\"'*) printf '{\"result\": 1}\\nAll cases passed!\\n' ;;\n  *)            printf 'no case for that input\\n' ; exit 2 ;;\nesac\n"
+    },
+    "runner": {
+      "digest": "sha256:5fe812ecac5cc8701ca59628a515e9b23590177ca22480a6cc31292d703bd610",
+      "media_type": "application/vnd.yi.checker-manifest+json",
+      "length": 225,
+      "text": "{\n  \"command\": \"sh ./runner.sh\",\n  \"cwd\": \"snapshot_root\",\n  \"cwd_subdir\": null,\n  \"env\": [],\n  \"manifest\": 1,\n  \"protected\": [\n    \"runner.sh\",\n    \"cases.json\"\n  ],\n  \"reads_outside_snapshot\": false,\n  \"timeout_ms\": 5000\n}\n"
+    }
+  },
+  "steps": [
+    {
+      "op": "init",
+      "actor": "agent://main",
+      "args": {
+        "goal": "Implement the op evaluator and pass its case file",
+        "todos": [
+          {
+            "label": "Implement the evaluator",
+            "contract": {
+              "class": "writer",
+              "items": [
+                {
+                  "id": "cases",
+                  "critical": true,
+                  "weight": 100,
+                  "decider": {
+                    "example": {
+                      "cases": {
+                        "digest": "sha256:d8b766d5b36609664769ca577a7cb8e17142b24acd70c5b99e85305c3a7e8728",
+                        "media_type": "application/json",
+                        "length": 532
+                      },
+                      "runner": {
+                        "digest": "sha256:5fe812ecac5cc8701ca59628a515e9b23590177ca22480a6cc31292d703bd610",
+                        "media_type": "application/vnd.yi.checker-manifest+json",
+                        "length": 225
+                      },
+                      "timeout_ms": 5000
+                    }
+                  }
+                }
+              ],
+              "threshold": 1000,
+              "min_coverage": 1000
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": {
+        "label": "Implement the evaluator"
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "workspace": {
+        "runner.sh": "runner-script",
+        "cases.json": "cases"
+      },
+      "args": {
+        "label": "Implement the evaluator"
+      },
+      "expect": {
+        "ok": false,
+        "error": "refused",
+        "verdict": {
+          "outcome": "fail",
+          "score": 0,
+          "coverage": 1000,
+          "items": [
+            {
+              "id": "cases",
+              "verdict": "fail",
+              "detail": "cases 3, 4 failed"
+            }
+          ]
+        },
+        "cases": [
+          {
+            "index": 0,
+            "outcome": "pass"
+          },
+          {
+            "index": 1,
+            "outcome": "pass",
+            "why": "key order"
+          },
+          {
+            "index": 2,
+            "outcome": "pass",
+            "why": "whitespace"
+          },
+          {
+            "index": 3,
+            "outcome": "fail",
+            "why": "wrong_answer"
+          },
+          {
+            "index": 4,
+            "outcome": "fail",
+            "why": "trailing_output"
+          }
+        ],
+        "todos": [
+          {
+            "label": "Implement the evaluator",
+            "state": "running",
+            "refusals": 1
+          }
+        ]
+      }
+    }
+  ],
+  "final": {
+    "planCount": 1
+  }
+}

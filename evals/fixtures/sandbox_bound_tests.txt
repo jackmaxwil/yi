@@ -1,4 +1,6 @@
 yi-acp daemon::tests::*  binds a unix socket; the sandbox denies bind
 yi-tools::sandbox *  invokes macOS Seatbelt inside a Seatbelt sandbox
+yi-cli::tui_drive a_lane_session_commits_contained  runs a contained commit through Seatbelt inside a Seatbelt sandbox
+yi-cli::tui_drive a_reshaped_retry_of_a_refused_program_reaches_the_approval_view  runs a contained mkdir through Seatbelt inside a Seatbelt sandbox
 yi-console::drive *  spawns the daemon and binds its socket
 yi-runtime::skills_e2e bundled_python_skills_work_through_the_kernel  the kernel venv reaches no network inside the sandbox

@@ -122,6 +122,9 @@ jobs:
       - name: run the live suite, or say why not
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Relace drops the whole cache on a prefix a few tokens past a 256-token page, so the
+          # verdict hung on which upstream served the run. postmerge and weekly pin the same one.
+          EVAL_ROUTING: '{"order":["deepinfra"],"allow_fallbacks":false}'
         run: |
           set -euo pipefail
           mkdir -p live-out
@@ -132,6 +135,16 @@ jobs:
             python3 evals/run.py --live --binary target/debug/yi \
               --model openrouter/deepseek/deepseek-v4-flash-0731 --cap-usd 1 --out live-out || true
           fi
+          # A ratchet speaks only when every run of this head crossed it (#480): one draw of an upstream
+          # is noise, so while one still holds the suite runs again, three runs at most.
+          python3 scripts/live_ledger.py baseline live-out/run.json > live-baseline.json || echo '{}' > live-baseline.json
+          runs=(live-out/run.json)
+          for n in 2 3; do
+            python3 scripts/live_ledger.py again live-baseline.json "${runs[@]}" || break
+            python3 evals/run.py --live --binary target/debug/yi \
+              --model openrouter/deepseek/deepseek-v4-flash-0731 --cap-usd 1 --out "live-again-$n" || true
+            runs+=("live-again-$n/run.json")
+          done
       - name: post the live report
         env:
           FORGEJO_API_URL: ${{ github.api_url }}
@@ -140,10 +153,9 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # The baseline is the last runs on the telemetry branch; the verdict names every
+          # The baseline is the last runs like this one on the telemetry branch; the verdict names every
           # band and ratchet the run breaks. Advisory: the comment says RED, the job stays green.
-          python3 scripts/live_ledger.py baseline > live-baseline.json || echo '{}' > live-baseline.json
-          python3 scripts/live_ledger.py judge live-out/run.json live-baseline.json > live-verdict.json || true
+          python3 scripts/live_ledger.py judge live-out/run.json live-baseline.json live-again-*/run.json > live-verdict.json || true
           python3 scripts/live_report.py live-out/run.json live-verdict.json live-baseline.json > live-body.md
           cat live-body.md
           # The report is above either way; a comment that will not post is said, not waited on.

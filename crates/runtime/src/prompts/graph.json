@@ -1,0 +1,35 @@
+{
+ "version": 1,
+ "nodes": [
+  {"id": "read", "kind": "tool"},
+  {"id": "edit", "kind": "tool"},
+  {"id": "write", "kind": "tool"},
+  {"id": "grep", "kind": "tool"},
+  {"id": "bash", "kind": "tool"},
+  {"id": "ipython", "kind": "tool"},
+  {"id": "todo", "kind": "tool"},
+  {"id": "plan", "kind": "tool"},
+  {"id": "todo.start", "kind": "op"},
+  {"id": "todo.done", "kind": "op"},
+  {"id": "todo.unblock", "kind": "op"},
+  {"id": "rlm.run", "kind": "request"},
+  {"id": "rlm.wait", "kind": "request"},
+  {"id": "rlm.result", "kind": "request"},
+  {"id": "rlm.list_subagents", "kind": "request"},
+  {"id": "compact.run", "kind": "request"}
+ ],
+ "edges": [
+  {"from": "rlm.run", "relation": "then", "to": "rlm.wait", "condition": "child_state(running)", "guidance": "await rlm.wait(120) blocks until this child reports; rlm.send('{name}', 'line') steers it", "weight": 50},
+  {"from": "rlm.run", "relation": "then", "to": "rlm.result", "condition": "child_state(finished)", "guidance": "await rlm.result('{name}', schema=…) validates the answer host-side; the child stays addressable for follow-ups", "weight": 50},
+  {"from": "ipython", "relation": "after_error", "to": "rlm.run", "condition": "coroutine_unawaited", "guidance": "an un-awaited coroutine ran nothing; rlm.run and handle.result are async, so write h = await rlm.run(...) then await h.result()", "weight": 50},
+  {"from": "ipython", "relation": "after_error", "to": "rlm.run", "condition": "method_awaited", "guidance": "rlm.run is a method, not a coroutine — call it: h = await rlm.run('…'), then r = await h.result()", "weight": 50},
+  {"from": "ipython", "relation": "after_error", "to": "rlm.list_subagents", "condition": "listing_name_missed", "guidance": "list_subagents() entries expose session_name; RLMSpawnHandle.name is the spawn handle", "weight": 50},
+  {"from": "ipython", "relation": "after_error", "to": "rlm.wait", "condition": "result_error(aborted)", "guidance": "a cell dies at 600 s; keep one rlm.wait under that per cell, or overlap the wait with h = await rlm.bash(...)", "weight": 50},
+  {"from": "bash", "relation": "then", "to": "grep", "condition": "grid_answer_empty", "guidance": "an empty grid answer means it cannot prove the relationship, not that the code is absent; grep to close the gap", "weight": 50},
+  {"from": "compact.run", "relation": "then", "to": "ipython", "condition": "session_on_disk", "guidance": "the window holds a summary plus recent turns; compact.recall(\"needle\") then rlm.fetch(\"history://<id>/<entry>\") pulls what the summary cites as (#entry)", "weight": 50},
+  {"from": "compact.run", "relation": "then", "to": "ipython", "condition": "session_in_memory", "guidance": "the window holds a summary plus recent turns; compact.recall(\"needle\") pulls entry ids the summary cites as (#entry)", "weight": 50},
+  {"from": "todo", "relation": "then", "to": "todo.done", "condition": "todo_state(running)", "guidance": "done {name} evidence=`<command>` <output line> · block {name} on user · drop {name} <reason>", "weight": 50},
+  {"from": "todo", "relation": "then", "to": "todo.start", "condition": "todo_state(pending)", "guidance": "start {name} · drop {name} <reason>", "weight": 50},
+  {"from": "todo", "relation": "then", "to": "todo.unblock", "condition": "todo_state(blocked)", "guidance": "unblock {name} · drop {name} <reason>", "weight": 50}
+ ]
+}

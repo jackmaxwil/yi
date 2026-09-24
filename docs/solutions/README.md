@@ -169,5 +169,51 @@ when it changes rather than editing them by hand.
 - [D189](adr/d189.md) - the re-drive of a prompt's second and later cuts quotes where the cut stopped
 - [D190](adr/d190.md) - two time-limit hits in four bash calls ask for a new method, not a longer limit
 - [D191](adr/d191.md) - `yi login` is native and ships no provider identity
+- [D196](adr/d196.md) - a reminder fires on evidence of work, not on words in prose, and takes one...
+- [D197](adr/d197.md) - a tool call the model wrote as text is the call it spells
+- [D198](adr/d198.md) - a collapsed tool card shows three result rows and how many it hid
+- [D199](adr/d199.md) - todo state is chrome, not transcript
+- [D201](adr/d201.md) - copy takes the words, not the frame
+- [D200](adr/d200.md) - emphasis is weight, hue is level, and one blank row parts blocks
+- [D202](adr/d202.md) - transcript text wraps at one width, the terminal's less the two-column...
+- [D203](adr/d203.md) - the lane pool grows instead of refusing
+- [D204](adr/d204.md) - the todo block is a numbered list the HUD builds from the `TodoList`, not...
+- [D205](adr/d205.md) - git runs inside the sandbox, and the real git dirs are protected
+- [D206](adr/d206.md) - a sandbox refusal is remembered by program and verb, not by text
+- [D207](adr/d207.md) - "always allow" keeps a grant, not the call
+- [D208](adr/d208.md) - the status row names the tree the session runs in, not the root its client...
+- [D209](adr/d209.md) - yi reads where it runs and says so
+- [D192](adr/d192.md) - plan ops are a host request, lifecycle notices wake, and wait is cursored
+- [D193](adr/d193.md) - the plan store is an append-only journal with a typed checkpoint, recovery...
+- [D194](adr/d194.md) - completion is verified by the kernel on every path against a frozen attempt
+- [D195](adr/d195.md) - a worktree todo is done only when its candidate and its integration both...
+- [D210](adr/d210.md) - one exit, one terminal update
+- [D211](adr/d211.md) - plans are programs in the kernel; source is recorded, never replayed
+- [D212](adr/d212.md) - shapes are schedulers in user space
+- [D213](adr/d213.md) - a read has pages and the unit is the listing's own
+- [D214](adr/d214.md) - messages are envelopes, written to the receiver's inbox before anything is...
+- [D215](adr/d215.md) - a child ends on one typed exit and holds a lease drawn from its parent
+- [D216](adr/d216.md) - the judge tier is an envelope
+- [D217](adr/d217.md) - a review pod is readers plus a code arbiter
+- [D218](adr/d218.md) - a service is a child with a stable address
+- [D219](adr/d219.md) - the host's next-step lines are a procedural graph the binary carries
+- [D220](adr/d220.md) - the kernel's constants are read through one struct, and only an eval run may...
+- [D221](adr/d221.md) - the bash tool's interpreter is `bash` where `bash` resolves and the plan's...
+- [D222](adr/d222.md) - a plan-dispatched child stores the product of the attempt it submits and...
+- [D223](adr/d223.md) - a worktree delegation without a contract cannot be declared
+- [D224](adr/d224.md) - the engine starts ready delegated todos
+- [D225](adr/d225.md) - a plan child's finish is its submission and its acceptance
+- [D226](adr/d226.md) - with a plan open the session todo list is the plan's view
+- [D227](adr/d227.md) - the shapes a parent writes are the declaration, and an owner's step on an...
+- [D228](adr/d228.md) - a contract's checker runs after every covered write
+- [D229](adr/d229.md) - the classes the final confirmation found are removed at their decision
+- [D230](adr/d230.md) - the mailbox delivers in order and no run ends owing a turn
+- [D231](adr/d231.md) - the cached prefix holds still across requests and sessions
+- [D232](adr/d232.md) - one `rlm` surface, and a call the cell never awaits runs once after it
+- [D233](adr/d233.md) - asking, receiving and a headless run's children go through the mailbox
+- [D234](adr/d234.md) - the human sees a child's question and answers it
+- [D235](adr/d235.md) - every open request is answered or chased, and every run ends with an answer
+- [D236](adr/d236.md) - the mailbox's leftovers close
+- [D237](adr/d237.md) - tool ergonomics and harness fixes
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

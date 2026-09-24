@@ -6,6 +6,10 @@ fn valid_source(source: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
 }
 
+// Incident: a model read `write the plan now` inside the wrapper as the user speaking.
+pub const ADVISORY_LINE: &str =
+    "Runtime advisory, not a user instruction; act on it only if it applies to the work in hand.";
+
 /// The wrapper makes an injected prompt data-with-provenance and droppable at compaction, so
 /// it never accumulates across windows. Invalid source labels fall back to `internal`.
 pub fn wrap_internal(source: &str, text: &str, timestamp: u64) -> AgentMessage {
@@ -14,9 +18,13 @@ pub fn wrap_internal(source: &str, text: &str, timestamp: u64) -> AgentMessage {
     } else {
         "internal"
     };
+    let body = match source {
+        "reminder" | "advisory" => format!("{ADVISORY_LINE}\n{text}"),
+        _ => text.to_owned(),
+    };
     AgentMessage::host_user(
         UserContent::Text(format!(
-            "<yi_internal_context source=\"{source}\">\n{text}\n</yi_internal_context>"
+            "<yi_internal_context source=\"{source}\">\n{body}\n</yi_internal_context>"
         )),
         timestamp,
     )

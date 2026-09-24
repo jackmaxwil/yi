@@ -472,10 +472,10 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
         let mut tools: Vec<Arc<dyn yi_tools::Tool>> = Vec::new();
         yi_runtime::auto_review::wire_role(
             &session,
-            named.then(faux_model),
-            Some(Arc::clone(&harness.broker)),
+            (named.then(faux_model), Some(Arc::clone(&harness.broker))),
             &harness.provider,
             &mut tools,
+            None,
         );
         let registered = tools.iter().any(|tool| tool.name() == "ask_user");
         let prompt = session

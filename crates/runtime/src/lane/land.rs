@@ -371,6 +371,22 @@ impl LaneHandle {
         ))
     }
 
+    /// Tree and row name under one lock: a release between the two reported a path, no label.
+    pub fn row(&self) -> Option<(std::path::PathBuf, String)> {
+        let guard = self.lane.lock().ok()?;
+        let lane = guard.as_ref()?;
+        let repo = lane
+            .pool()
+            .repo()
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Some((
+            lane.path().to_path_buf(),
+            format!("{repo} ⎇ lane {}", lane.slot()),
+        ))
+    }
+
     pub fn slot(&self) -> Option<super::SlotIndex> {
         self.lane.lock().ok()?.as_ref().map(Lane::slot)
     }

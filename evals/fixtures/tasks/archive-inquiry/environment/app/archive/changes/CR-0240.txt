@@ -1,0 +1,74 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0240
+Title: Replace outstation radio
+Site: Low Fennick
+Requested by: Mirela Stanck
+Implemented: 2031-05-20
+
+Outcome: ROLLED BACK
+
+Description
+-----------
+
+The handover notes between shifts were sampled by the asset planning group and found
+complete in all but 18 cases. The handover notes between shifts were sampled by the
+field crews and found complete in all but 8 cases.
+
+The change was rolled back on the day after implementation when the expected
+improvement did not appear.
+
+Risk and rollback plan
+----------------------
+
+A rollback was prepared but was not needed.
+
+The draft drawing register for Harrow Weir is 7 percent complete and will be issued
+once the as-built survey is checked. Vegetation clearance around the dosing skid at
+Low Fennick was completed and the area photographed for the asset record.
+
+Verification
+------------
+
+No complaints were received from neighbours of Merrow Basin during the works, and the
+liaison log has been closed. Ysolde Quint presented a short paper on sensor drift and
+recommended a comparison check at Tolland Sluice every 7 weeks. Sampling results for
+the quarter were within the expected band at every point except one, which is being
+resampled. An energy audit of Brackwater Lock suggested that running the wet well
+ladder off-peak would reduce cost without affecting service. Members of the safety
+committee asked for the seasonal demand figures to be circulated before the next
+meeting.
+
+Annex A. Any other business
+---------------------------
+
+The stores count showed 23 discrepancies, all traced to items issued to vans without a
+ticket. It was noted that access to Osier Bank remains difficult after heavy rain and
+that the track will be regraded when crews allow. Ansel Brightwater confirmed that
+spares for the standby pump are held at the central store and that the reorder level
+is 6 units.
+
+Annex B. Any other business
+---------------------------
+
+Flooding on the lane to Merrow Basin delayed the delivery by a day; no cost was
+incurred by the cooperative. No complaints were received from neighbours of Eastmere
+Intake during the works, and the liaison log has been closed. Hollis Wray reported
+that the penstock actuator at Low Fennick had been inspected and found serviceable,
+with minor wear noted on the seals.
+
+Lucan Marsh presented a short paper on sensor drift and recommended a comparison check
+at Harrow Weir every 3 weeks. Flooding on the lane to Pike Hollow delayed the delivery
+by a day; no cost was incurred by the cooperative. Ysolde Quint presented a short
+paper on sensor drift and recommended a comparison check at Tolland Sluice every 27
+weeks. Ysolde Quint presented a short paper on sensor drift and recommended a
+comparison check at Tolland Sluice every 5 weeks. Tamsin Orrel presented a short paper
+on sensor drift and recommended a comparison check at Tolland Sluice every 35 weeks.
+
+Annex C. Housekeeping
+---------------------
+
+Oona Farrow noted that the calibration certificate for the duty pump expires next
+quarter and has booked the visit. Tamsin Orrel presented a short paper on sensor drift
+and recommended a comparison check at Cindergate Station every 17 weeks. Members of
+the safety committee asked for the seasonal demand figures to be circulated before the
+next meeting.

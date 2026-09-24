@@ -41,7 +41,11 @@ impl Report {
     }
 
     pub fn reason(&self) -> String {
-        match &self.decision {
+        Self::reason_of(&self.decision)
+    }
+
+    pub fn reason_of(decision: &Decision) -> String {
+        match decision {
             Decision::Allow { reason }
             | Decision::Contain { reason }
             | Decision::Deny { reason } => reason.clone(),
@@ -65,6 +69,19 @@ impl Report {
     }
 }
 
+/// Holds compile down (plan section 7.6): a child with no interactive surface cannot ask, so
+/// its `Ask` is a deny naming the hazard; an attached one's stands on its family's broker.
+pub fn compile_ask(decision: Decision, attached: bool) -> Decision {
+    match decision {
+        Decision::Ask { description, .. } if !attached => Decision::Deny {
+            reason: format!(
+                "Permission required but no interactive surface is available. {description} Run with --yolo, or add an allow rule for this call."
+            ),
+        },
+        other => other,
+    }
+}
+
 pub fn mode_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Ask => "ask",
@@ -77,6 +94,7 @@ pub fn class_label(class: Class) -> &'static str {
     match class {
         Class::Safe => "safe",
         Class::Destructive => "destructive",
+        Class::Egress => "egress",
         Class::Unknown => "unknown",
     }
 }

@@ -1,0 +1,119 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0266
+Title: Outstation firmware update to 4.2.1
+Site: Brackwater Lock
+Requested by: Ansel Brightwater
+Implemented: 2031-09-16
+
+Outcome: COMPLETED
+
+Description
+-----------
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. Bram Ketteridge reported that the surge vessel at
+Tolland Sluice had been inspected and found serviceable, with minor wear noted on the
+seals.
+
+Implements recommendation 2 of the final review of IR-2031-06: update the outstation
+firmware at Brackwater Lock to 4.2.1.
+
+Risk and rollback plan
+----------------------
+
+The previous settings were recorded so that they could be restored.
+
+Oona Farrow thanked the finance office for covering the holiday rota at short notice.
+Flooding on the lane to Eastmere Intake delayed the delivery by a day; no cost was
+incurred by the cooperative.
+
+Verification
+------------
+
+A walkdown of Merrow Basin found the signage faded; replacement boards have been
+ordered under the routine budget. A minor oil weep from the dosing skid at Merrow
+Basin was cleaned up and a drip tray fitted pending the next service. Sampling results
+for the quarter were within the expected band at every point except one, which is
+being resampled. A walkdown of Osier Bank found the signage faded; replacement boards
+have been ordered under the routine budget. Mirela Stanck presented a short paper on
+sensor drift and recommended a comparison check at Brackwater Lock every 3 weeks.
+
+Annex A. Stores and spares
+--------------------------
+
+The stores count showed 21 discrepancies, all traced to items issued to vans without a
+ticket. Hollis Wray raised the question of lone working at Eastmere Intake and was
+referred to the existing guidance held by the networks team. Petra Vosk noted that the
+calibration certificate for the surge vessel expires next quarter and has booked the
+visit. Dov Callender thanked the networks team for covering the holiday rota at short
+notice.
+
+Mirela Stanck raised the question of lone working at Osier Bank and was referred to
+the existing guidance held by the safety committee. Petra Vosk raised the question of
+lone working at Merrow Basin and was referred to the existing guidance held by the
+networks team. The telemetry link to Brackwater Lock dropped twice in the period; both
+outages were under 17 minutes and no alarms were missed. The stores count showed 24
+discrepancies, all traced to items issued to vans without a ticket. Sampling results
+for the quarter were within the expected band at every point except one, which is
+being resampled.
+
+Annex B. Follow-up from the last period
+---------------------------------------
+
+Members of the asset planning group asked for the seasonal demand figures to be
+circulated before the next meeting. Sampling results for the quarter were within the
+expected band at every point except one, which is being resampled. The handover notes
+between shifts were sampled by the finance office and found complete in all but 34
+cases. Mirela Stanck presented a short paper on sensor drift and recommended a
+comparison check at Osier Bank every 32 weeks. No complaints were received from
+neighbours of Merrow Basin during the works, and the liaison log has been closed.
+
+Annex C. Correspondence
+-----------------------
+
+the finance office reminded everyone that permits for confined spaces must be closed
+out the same day. Flooding on the lane to Harrow Weir delayed the delivery by a day;
+no cost was incurred by the cooperative. Oona Farrow thanked the control room for
+covering the holiday rota at short notice. Ysolde Quint noted that the calibration
+certificate for the dosing skid expires next quarter and has booked the visit.
+
+The contractor's method statement for work at Osier Bank was reviewed by the asset
+planning group and returned with 20 comments. The stores count showed 18
+discrepancies, all traced to items issued to vans without a ticket. Oona Farrow
+presented a short paper on sensor drift and recommended a comparison check at Harrow
+Weir every 39 weeks. Members of the control room asked for the seasonal demand figures
+to be circulated before the next meeting.
+
+A minor oil weep from the dosing skid at Merrow Basin was cleaned up and a drip tray
+fitted pending the next service. An energy audit of Eastmere Intake suggested that
+running the telemetry outstation off-peak would reduce cost without affecting service.
+The handover notes between shifts were sampled by the control room and found complete
+in all but 26 cases. Oona Farrow noted that the calibration certificate for the dosing
+skid expires next quarter and has booked the visit.
+
+Annex D. Follow-up from the last period
+---------------------------------------
+
+Members of the networks team asked for the seasonal demand figures to be circulated
+before the next meeting. Oona Farrow noted that the calibration certificate for the
+sample tap expires next quarter and has booked the visit. An energy audit of
+Brackwater Lock suggested that running the surge vessel off-peak would reduce cost
+without affecting service. Dov Callender raised the question of lone working at
+Cindergate Station and was referred to the existing guidance held by the field crews.
+the safety committee reminded everyone that permits for confined spaces must be closed
+out the same day.
+
+No complaints were received from neighbours of Pike Hollow during the works, and the
+liaison log has been closed. Mirela Stanck reported that the control panel at Tolland
+Sluice had been inspected and found serviceable, with minor wear noted on the seals.
+the asset planning group reminded everyone that permits for confined spaces must be
+closed out the same day. Tamsin Orrel raised the question of lone working at Osier
+Bank and was referred to the existing guidance held by the networks team. Mirela
+Stanck confirmed that spares for the penstock actuator are held at the central store
+and that the reorder level is 34 units.
+
+The handover notes between shifts were sampled by the control room and found complete
+in all but 25 cases. A walkdown of Harrow Weir found the signage faded; replacement
+boards have been ordered under the routine budget. The telemetry link to Harrow Weir
+dropped twice in the period; both outages were under 37 minutes and no alarms were
+missed.

@@ -22,6 +22,7 @@ pub struct NextTurn {
 type ConvertFn = dyn Fn(&[AgentMessage]) -> Vec<AgentMessage> + Send + Sync;
 type TransformFn = dyn Fn(&[AgentMessage]) -> Option<Vec<AgentMessage>> + Send + Sync;
 type StopFn = dyn Fn(&TurnSnapshot) -> bool + Send + Sync;
+type WaitingFn = dyn Fn() -> u64 + Send + Sync;
 type PrepareFn = dyn Fn(&TurnSnapshot) -> Option<NextTurn> + Send + Sync;
 type QueueFn = dyn Fn() -> Vec<AgentMessage> + Send + Sync;
 type InterceptFn = dyn Fn(&TurnSnapshot) -> Option<AgentMessage> + Send + Sync;
@@ -46,6 +47,11 @@ pub struct LoopConfig {
     /// Invariant: consulted synchronously, only when a turn ended with no tool calls and an
     /// empty steering queue. Some forces one more turn carrying the message.
     pub intercept_stop: Option<Box<InterceptFn>>,
+    pub waiting: Option<std::sync::Arc<WaitingFn>>,
+    /// Asked once when a stop ends a turn on tool calls: Some runs one last turn, tool-less.
+    pub last_word: Option<Box<InterceptFn>>,
+    /// Polled while a request streams: true aborts it, and the last word follows.
+    pub last_word_due: Option<Box<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl LoopConfig {
@@ -63,6 +69,9 @@ impl LoopConfig {
             maybe_compact: None,
             first_turn_tool_choice: None,
             intercept_stop: None,
+            waiting: None,
+            last_word: None,
+            last_word_due: None,
         }
     }
 }

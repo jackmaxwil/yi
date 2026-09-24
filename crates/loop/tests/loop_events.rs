@@ -585,8 +585,8 @@ async fn a_bare_length_stop_is_re_driven_twice_then_ends_on_the_third() {
     assert_eq!(
         details,
         vec![
-            json!({"rung": 1, "cut": false}),
-            json!({"rung": 2, "cut": false})
+            json!({"rung": 1, "cut": false, "signal": "length_redrive"}),
+            json!({"rung": 2, "cut": false, "signal": "length_redrive"})
         ]
     );
     assert_eq!(answers, 3, "the third bare length stop ends the run");
@@ -1953,4 +1953,169 @@ async fn sequential_tool_splits_the_batch() {
         })
         .collect();
     assert_eq!(ends, ["call-a", "call-b", "call-c"]);
+}
+
+/// Markup the mapper could not read as a call is not an answer either: the turn ends as an
+/// error the surface can show, not as prose that says `<tool_call>`.
+#[tokio::test]
+async fn unparsed_call_markup_ends_the_turn_as_an_error() -> Result<(), Box<dyn std::error::Error>>
+{
+    let stream = Scripted::new(vec![faux_assistant_message(
+        vec![faux_text(
+            "<tool_call>read<arg_key>path</arg_key><arg_value>a.rs",
+        )],
+        StopReason::Stop,
+    )]);
+    let mut context = LoopContext {
+        system_prompt: "sys".to_owned(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("read it")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let last = collected.last();
+    let Some(AgentMessage::Assistant {
+        stop_reason,
+        error_message,
+        ..
+    }) = last
+    else {
+        return Err(format!("the turn ends on the assistant message: {last:?}").into());
+    };
+    assert_eq!(*stop_reason, StopReason::Error);
+    assert_eq!(
+        error_message.as_deref(),
+        Some(yi_loop::run::UNPARSED_MARKUP)
+    );
+    let events = events.lock().unwrap_or_else(|error| error.into_inner());
+    assert!(
+        !kinds(&events).contains(&"tool_execution_start"),
+        "nothing ran: {:?}",
+        kinds(&events)
+    );
+    Ok(())
+}
+
+/// A kernel cell the host saw block in a family wait (`rlm.wait`, `rlm.request`), or not.
+struct Cell {
+    waits: Arc<std::sync::atomic::AtomicU64>,
+    blocks: bool,
+}
+
+impl AgentTool for Cell {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "ipython".to_owned(),
+            description: "runs a cell".to_owned(),
+            parameters: json!({"type": "object"}),
+            freeform: None,
+        }
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _tool_call_id: &'a str,
+        _args: Map<String, Value>,
+        _signal: &'a InterruptSignal,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move {
+            if self.blocks {
+                self.waits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            ToolOutcome {
+                result: error_tool_result("cell ran"),
+                is_error: false,
+            }
+        })
+    }
+}
+
+/// The repeat breaks and assistant turns of eight identical calls to `tool` then an answer,
+/// under a host whose wait count moves only when a cell blocks.
+async fn repeated(tool: &str, code: &str, blocks: bool) -> (usize, usize) {
+    let mut arguments = Map::new();
+    arguments.insert("code".to_owned(), json!(code));
+    let mut script: Vec<_> = (0..8)
+        .map(|_| {
+            faux_assistant_message(
+                vec![faux_tool_call("c", tool, arguments.clone())],
+                StopReason::ToolUse,
+            )
+        })
+        .collect();
+    script.push(faux_assistant_message(
+        vec![faux_text("done")],
+        StopReason::Stop,
+    ));
+    let waits = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![
+            Arc::new(EchoTool),
+            Arc::new(Cell {
+                waits: Arc::clone(&waits),
+                blocks,
+            }),
+        ],
+    };
+    let mut config = LoopConfig::new(faux_model());
+    config.waiting = Some(Arc::new(move || {
+        waits.load(std::sync::atomic::Ordering::SeqCst)
+    }));
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &InterruptSignal::default(),
+        &mut emit,
+        &Scripted::new(script),
+    )
+    .await;
+    let breaks = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE))
+        .count();
+    let answers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .count();
+    (breaks, answers)
+}
+
+/// Incident: a parent waiting on its children sent the same wait cell each turn, the breaker
+/// told it nothing was changing, and its session ended with the children in it. Dies with the
+/// breaker reading the cell's text: `print(await rlm.status())` beside the wait read as work.
+#[tokio::test]
+async fn a_cell_the_host_saw_wait_is_never_a_repeat() {
+    let code = "print(await rlm.status())\nr = await rlm.wait(30)\nprint(r['changed'])";
+    assert_eq!(
+        repeated("ipython", code, true).await,
+        (0, 9),
+        "every wait ran and the run ended on its own answer"
+    );
+}
+
+/// Dies with the exemption read off the cell's text: a wait-shaped cell the host never saw
+/// block is a repeat, and a repeated call beside live work is steered as before.
+#[tokio::test]
+async fn a_batch_the_host_saw_no_wait_in_is_a_repeat_whatever_it_says() {
+    let (breaks, _) = repeated("ipython", "r = await rlm.wait(300)\nprint(r)", false).await;
+    assert_eq!(breaks, 1, "the text of a cell is not a wait");
+    let (breaks, _) = repeated("echo", "make check", false).await;
+    assert_eq!(
+        breaks, 1,
+        "a repeat that is not a wait is steered as before"
+    );
 }

@@ -1,0 +1,106 @@
+Quillfen Water Cooperative
+INCIDENT REVIEW IR-2031-07
+Stage: FINAL
+Site: Osier Bank
+
+Occurred: 2031-06-24. Severity as assessed at this stage: 2.
+
+Summary
+-------
+
+Petra Vosk presented a short paper on sensor drift and recommended a comparison check
+at Tolland Sluice every 30 weeks. An energy audit of Low Fennick suggested that
+running the duty pump off-peak would reduce cost without affecting service.
+
+Timeline
+--------
+
+  06:45  supply restored
+  07:15  supply restored
+  07:44  standby plant started
+  07:57  crew dispatched
+  08:04  standby plant started
+  08:11  duty manager informed
+
+Findings
+--------
+
+Bram Ketteridge noted that the calibration certificate for the dosing skid expires
+next quarter and has booked the visit. Petra Vosk reported that the wet well ladder at
+Cindergate Station had been inspected and found serviceable, with minor wear noted on
+the seals. The telemetry link to Eastmere Intake dropped twice in the period; both
+outages were under 7 minutes and no alarms were missed.
+
+Root cause
+----------
+
+The inlet screen blinded with storm debris and the high level alarm was inhibited.
+
+Recommendations
+---------------
+
+1. Remove the alarm inhibit and audit all inhibits monthly.
+
+Annex A. Housekeeping
+---------------------
+
+The contractor's method statement for work at Merrow Basin was reviewed by the field
+crews and returned with 19 comments. Dov Callender confirmed that spares for the
+sample tap are held at the central store and that the reorder level is 12 units. Ansel
+Brightwater raised the question of lone working at Brackwater Lock and was referred to
+the existing guidance held by the safety committee. The contractor's method statement
+for work at Low Fennick was reviewed by the safety committee and returned with 15
+comments.
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. The contractor's method statement for work at
+Brackwater Lock was reviewed by the asset planning group and returned with 6 comments.
+The handover notes between shifts were sampled by the finance office and found
+complete in all but 5 cases.
+
+Annex B. Stores and spares
+--------------------------
+
+No complaints were received from neighbours of Cindergate Station during the works,
+and the liaison log has been closed. Lucan Marsh thanked the field crews for covering
+the holiday rota at short notice. Oona Farrow presented a short paper on sensor drift
+and recommended a comparison check at Low Fennick every 16 weeks. The stores count
+showed 13 discrepancies, all traced to items issued to vans without a ticket. The
+stores count showed 29 discrepancies, all traced to items issued to vans without a
+ticket.
+
+The draft drawing register for Low Fennick is 36 percent complete and will be issued
+once the as-built survey is checked. An energy audit of Brackwater Lock suggested that
+running the sample tap off-peak would reduce cost without affecting service. Ysolde
+Quint presented a short paper on sensor drift and recommended a comparison check at
+Cindergate Station every 32 weeks.
+
+The telemetry link to Cindergate Station dropped twice in the period; both outages
+were under 33 minutes and no alarms were missed. A walkdown of Eastmere Intake found
+the signage faded; replacement boards have been ordered under the routine budget.
+Tamsin Orrel thanked the field crews for covering the holiday rota at short notice.
+
+Annex C. Training and rota
+--------------------------
+
+Hollis Wray thanked the safety committee for covering the holiday rota at short
+notice. Flooding on the lane to Merrow Basin delayed the delivery by a day; no cost
+was incurred by the cooperative. Ansel Brightwater reported that the sample tap at
+Cindergate Station had been inspected and found serviceable, with minor wear noted on
+the seals. Sampling results for the quarter were within the expected band at every
+point except one, which is being resampled.
+
+Ysolde Quint reported that the standby pump at Osier Bank had been inspected and found
+serviceable, with minor wear noted on the seals. A walkdown of Merrow Basin found the
+signage faded; replacement boards have been ordered under the routine budget. It was
+noted that access to Merrow Basin remains difficult after heavy rain and that the
+track will be regraded when crews allow. Members of the control room asked for the
+seasonal demand figures to be circulated before the next meeting. A walkdown of Osier
+Bank found the signage faded; replacement boards have been ordered under the routine
+budget.
+
+The contractor's method statement for work at Brackwater Lock was reviewed by the
+safety committee and returned with 30 comments. The stores count showed 26
+discrepancies, all traced to items issued to vans without a ticket. The telemetry link
+to Low Fennick dropped twice in the period; both outages were under 11 minutes and no
+alarms were missed.

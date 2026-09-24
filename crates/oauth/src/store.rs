@@ -7,11 +7,10 @@ use yi_types::oauth::{CREDENTIAL_SCHEMA, CredentialFile};
 use crate::{Error, Result};
 
 const EXPIRY_SLACK: Duration = Duration::from_secs(30);
-/// A refresh can take 40 s on the wire and a stale lock breaks at 45 s — a waiter
-/// must outwait both or it streams on the expired token it came in with.
+/// A refresh can take 40 s on the wire — a waiter must outwait it or it streams
+/// on the expired token it came in with.
 const LOCK_POLL: Duration = Duration::from_millis(80);
 const LOCK_WAIT: Duration = Duration::from_secs(50);
-const LOCK_STALE: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -188,28 +187,16 @@ impl Store {
     ) -> Result<T> {
         let locks = self.root.join("locks");
         std::fs::create_dir_all(&locks).map_err(|error| error.to_string())?;
-        let file = locks.join(format!("{}.lock", safe(provider)));
+        let path = locks.join(format!("{}.lock", safe(provider)));
+        // Incident: a pid-file lock broken by age let two waiters refresh at once and a
+        // rotated refresh token lost; the OS drops a flock with its holder instead.
+        let file = std::fs::File::create(&path)?;
         let started = std::time::Instant::now();
         loop {
-            if std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .truncate(true)
-                .open(&file)
-                .is_ok()
-            {
-                let outcome = action();
-                let _ = std::fs::remove_file(&file);
-                return outcome;
-            }
-            let aged = std::fs::metadata(&file)
-                .and_then(|meta| meta.modified())
-                .ok()
-                .and_then(|modified| modified.elapsed().ok())
-                .is_some_and(|age| age > LOCK_STALE);
-            if aged {
-                let _ = std::fs::remove_file(&file);
-                continue;
+            match file.try_lock() {
+                Ok(()) => return action(),
+                Err(std::fs::TryLockError::WouldBlock) => {}
+                Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
             }
             if started.elapsed() > LOCK_WAIT {
                 return Err(Error::from("refresh lock held too long by another process"));

@@ -1,0 +1,105 @@
+Quillfen Water Cooperative
+POLICY POL-03: Incident review
+Revision: 1
+Effective from: 2029-09-01
+Supersedes: none
+Owner: Hollis Wray
+
+1. Purpose
+----------
+
+Tamsin Orrel reported that the duty pump at Tolland Sluice had been inspected and
+found serviceable, with minor wear noted on the seals. Dov Callender presented a short
+paper on sensor drift and recommended a comparison check at Eastmere Intake every 16
+weeks.
+
+2. Scope
+--------
+
+It was noted that access to Tolland Sluice remains difficult after heavy rain and that
+the track will be regraded when crews allow. Members of the safety committee asked for
+the seasonal demand figures to be circulated before the next meeting.
+
+3. Requirements
+---------------
+
+3.1 Every incident is given a severity from 1 (highest) to 4 by the duty manager.
+
+3.2 The formal review of a severity 1 incident is due within 5 working days of the day
+the incident occurred.
+
+3.3 The formal review of a severity 2 incident is due within 15 working days of the
+day the incident occurred.
+
+3.4 The formal review of a severity 3 or 4 incident is due within 30 working days of
+the day the incident occurred.
+
+3.5 Working days are Monday to Friday, excluding cooperative closure days. The closure
+days for 2031 are 2031-01-01, 2031-04-14, 2031-07-04 and 2031-12-25. The day of the
+incident itself is not counted.
+
+4. Responsibilities
+-------------------
+
+Hollis Wray confirmed that spares for the control panel are held at the central store
+and that the reorder level is 6 units. A walkdown of Pike Hollow found the signage
+faded; replacement boards have been ordered under the routine budget. Ansel
+Brightwater noted that the calibration certificate for the inlet screen expires next
+quarter and has booked the visit. The draft drawing register for Brackwater Lock is 10
+percent complete and will be issued once the as-built survey is checked.
+
+5. Review
+---------
+
+This policy is reviewed every two years or after any incident that calls its
+requirements into question.
+
+Annex A. Training and rota
+--------------------------
+
+The telemetry link to Eastmere Intake dropped twice in the period; both outages were
+under 21 minutes and no alarms were missed. Flooding on the lane to Eastmere Intake
+delayed the delivery by a day; no cost was incurred by the cooperative. A minor oil
+weep from the telemetry outstation at Tolland Sluice was cleaned up and a drip tray
+fitted pending the next service. It was noted that access to Pike Hollow remains
+difficult after heavy rain and that the track will be regraded when crews allow.
+
+Annex B. Training and rota
+--------------------------
+
+Tamsin Orrel presented a short paper on sensor drift and recommended a comparison
+check at Eastmere Intake every 38 weeks. Ysolde Quint noted that the calibration
+certificate for the control panel expires next quarter and has booked the visit.
+Vegetation clearance around the telemetry outstation at Harrow Weir was completed and
+the area photographed for the asset record.
+
+Annex C. Routine matters
+------------------------
+
+The telemetry link to Eastmere Intake dropped twice in the period; both outages were
+under 9 minutes and no alarms were missed. An energy audit of Low Fennick suggested
+that running the flow meter off-peak would reduce cost without affecting service.
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. Flooding on the lane to Brackwater Lock delayed the
+delivery by a day; no cost was incurred by the cooperative. Flooding on the lane to
+Low Fennick delayed the delivery by a day; no cost was incurred by the cooperative.
+
+Annex D. Stores and spares
+--------------------------
+
+Dov Callender noted that the calibration certificate for the telemetry outstation
+expires next quarter and has booked the visit. No complaints were received from
+neighbours of Harrow Weir during the works, and the liaison log has been closed. the
+safety committee reminded everyone that permits for confined spaces must be closed out
+the same day. The stores count showed 12 discrepancies, all traced to items issued to
+vans without a ticket. the field crews reminded everyone that permits for confined
+spaces must be closed out the same day.
+
+It was noted that access to Brackwater Lock remains difficult after heavy rain and
+that the track will be regraded when crews allow. A minor oil weep from the dosing
+skid at Merrow Basin was cleaned up and a drip tray fitted pending the next service.
+The draft drawing register for Merrow Basin is 3 percent complete and will be issued
+once the as-built survey is checked. The draft drawing register for Low Fennick is 24
+percent complete and will be issued once the as-built survey is checked. Vegetation
+clearance around the wet well ladder at Harrow Weir was completed and the area
+photographed for the asset record.

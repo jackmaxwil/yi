@@ -259,7 +259,7 @@ fn hud_shows_the_checklist_count_without_a_goal() -> TestResult {
 }
 
 #[test]
-fn hud_shows_memory_saves_on_the_spine() -> TestResult {
+fn hud_shows_memory_saves_without_a_spine() -> TestResult {
     let input = yi_tui::hud::HudInput {
         memory: Some("saved 1".to_owned()),
         ..yi_tui::hud::HudInput::default()
@@ -268,7 +268,8 @@ fn hud_shows_memory_saves_on_the_spine() -> TestResult {
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
         .collect();
-    assert!(text.contains("├─ Memory · saved 1"), "{text}");
+    assert!(text.contains("   Memory · saved 1"), "{text}");
+    assert!(!text.contains('├') && !text.contains('└'), "{text}");
     Ok(())
 }
 
@@ -675,8 +676,9 @@ fn thought_cells_are_labeled_and_dim_while_prose_stays_bright() -> TestResult {
     let lines = thought.lines(80, &theme, yi_tui::cell::TranscriptMode::Thinking, 0);
     let text: Vec<String> = lines.iter().map(flat).collect();
     assert!(
-        text.iter().any(|l| l.starts_with("  ∴")),
-        "reasoning carries its glyph: {text:?}"
+        text.iter().any(|l| l.contains("weighing the options"))
+            && !text.iter().any(|l| l.contains('∴')),
+        "reasoning is its own style, not a glyph: {text:?}"
     );
     assert!(
         lines
@@ -1280,7 +1282,7 @@ fn loose_bullets_keep_their_glyph_and_tight_ones_stay_dense() -> TestResult {
         .collect();
     assert_eq!(
         loose,
-        vec!["• alpha".to_owned(), String::new(), "• beta".to_owned()],
+        vec!["‣ alpha".to_owned(), String::new(), "‣ beta".to_owned()],
         "a loose list keeps its author's breathing room"
     );
     let tight: Vec<String> = yi_tui::markdown::render("- alpha\n- beta\n", 60, &theme)
@@ -1289,7 +1291,7 @@ fn loose_bullets_keep_their_glyph_and_tight_ones_stay_dense() -> TestResult {
         .collect();
     assert_eq!(
         tight,
-        vec!["• alpha".to_owned(), "• beta".to_owned()],
+        vec!["‣ alpha".to_owned(), "‣ beta".to_owned()],
         "a tight list stays dense"
     );
     Ok(())
@@ -1551,15 +1553,15 @@ fn a_long_thought_reaches_scrollback_and_outlives_the_prose_that_follows() -> Te
     assert_eq!(
         committed
             .iter()
-            .filter(|line| line.starts_with("  \u{2234}"))
+            .filter(|line| line.contains("First step"))
             .count(),
         1,
-        "one label for the thought, not one per paragraph: {committed:?}"
+        "the thought commits once, not once per paragraph: {committed:?}"
     );
     let label = committed
         .iter()
-        .position(|line| line.starts_with("  \u{2234}"))
-        .ok_or("no thinking label")?;
+        .position(|line| line.contains("First step"))
+        .ok_or("no thought row")?;
     let answer = committed
         .iter()
         .position(|line| line.contains("The answer."))
@@ -1581,11 +1583,11 @@ fn a_short_unterminated_thought_still_lands_above_the_answer() -> TestResult {
     let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
     let label = committed
         .iter()
-        .position(|line| line.starts_with("  \u{2234}"))
-        .ok_or("no thinking label")?;
+        .position(|line| line.contains("I should just say ok."))
+        .ok_or("no thought row")?;
     let answer = committed
         .iter()
-        .position(|line| line.contains("ok."))
+        .position(|line| line.contains("ok.") && !line.contains("say ok."))
         .ok_or("no prose")?;
     assert!(
         label < answer,
@@ -1594,10 +1596,10 @@ fn a_short_unterminated_thought_still_lands_above_the_answer() -> TestResult {
     assert_eq!(
         committed
             .iter()
-            .filter(|line| line.starts_with("  \u{2234}"))
+            .filter(|line| line.contains("I should just say ok."))
             .count(),
         1,
-        "one label: {committed:?}"
+        "the thought commits once: {committed:?}"
     );
     Ok(())
 }
@@ -1615,7 +1617,7 @@ fn a_short_unterminated_thought_still_lands_above_the_answer_in_normal_mode() ->
     let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
     let label = committed
         .iter()
-        .position(|line| line.contains("\u{2234} 1 lines"))
+        .position(|line| line.contains("thought · 1 line"))
         .ok_or_else(|| format!("no one-line count row: {committed:?}"))?;
     let answer = committed
         .iter()
@@ -1714,7 +1716,7 @@ fn normal_mode_still_collapses_a_thought_to_its_line_count() -> TestResult {
     assert_eq!(app.mode(), TranscriptMode::Normal);
     let lines: Vec<String> = app.reflowed(200).iter().map(flat).collect();
     assert!(
-        lines.iter().any(|line| line.contains("\u{2234} 5 lines")),
+        lines.iter().any(|line| line.contains("thought · 5 lines")),
         "the count covers the whole thought, not its last slice: {lines:?}"
     );
     assert!(
@@ -1748,15 +1750,25 @@ fn cycling_the_transcript_mode_rewrites_what_is_already_on_screen() -> TestResul
     app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
         messages: Vec::new(),
     });
+    let shown = app.reflowed(200).iter().map(flat).collect::<Vec<_>>();
+    assert!(
+        shown.iter().any(|line| line.contains("2 lines")),
+        "{shown:?}"
+    );
+    // The default view carries the first rows of a result; `normal` is the fold.
+    assert!(
+        shown.iter().any(|line| line.contains("   1 one")),
+        "{shown:?}"
+    );
+    app.cycle_mode();
+    app.cycle_mode();
+    assert_eq!(app.mode(), TranscriptMode::Normal);
     let normal = app.reflowed(200).iter().map(flat).collect::<Vec<_>>();
     assert!(
-        normal.iter().any(|line| line.contains("2 lines")),
-        "{normal:?}"
-    );
-    assert!(
         !normal.iter().any(|line| line.contains("one")),
-        "{normal:?}"
+        "normal keeps the body folded away: {normal:?}"
     );
+    app.cycle_mode();
 
     // Ctrl+O must both change the mode and ask for the rows above the viewport
     // to be rebuilt; without the repaint request the cells already committed
@@ -2134,6 +2146,7 @@ fn a_multibyte_error_never_panics_the_task_cell() -> TestResult {
         spawn: None,
         answer: None,
         activity: yi_types::subagent::ChildActivity::Waiting,
+        flag: None,
     };
     let lines = cell.lines(120, &theme(), yi_tui::cell::TranscriptMode::Normal, 0);
     let joined: String = lines.iter().map(flat).collect();
@@ -2150,6 +2163,79 @@ fn a_multibyte_popup_item_never_panics() -> TestResult {
     let popup = ListPopup::new('/', vec!["€".repeat(200)]);
     for width in 5..60 {
         let _ = popup.lines(width, &theme());
+    }
+    Ok(())
+}
+
+/// A bold paragraph wore the heading's colour, a third-level heading matched the second, and
+/// every code span was one orange: weight is emphasis, hue is level, and a path reads as one.
+#[test]
+fn emphasis_is_weight_and_a_path_in_code_takes_the_read_hue() -> TestResult {
+    let theme = theme();
+    let lines = yi_tui::markdown::render(
+        "# Title\n\n**Yi is bold.** See `crates/x.rs` and `foo()`.\n\n### Third\n\n- one\n",
+        60,
+        &theme,
+    );
+    let span = |needle: &str| {
+        lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .find(|s| s.content.contains(needle))
+            .cloned()
+            .ok_or_else(|| format!("no span {needle:?}"))
+    };
+    let bold = span("Yi is bold.")?;
+    assert!(bold.style.add_modifier.contains(Modifier::BOLD));
+    assert_ne!(
+        bold.style.fg,
+        Some(theme.accent),
+        "bold prose is not heading-coloured"
+    );
+    let title_at = lines
+        .iter()
+        .position(|l| flat(l).contains("Title"))
+        .ok_or("title")?;
+    assert!(
+        flat(&lines[title_at + 1]).starts_with('━'),
+        "a rule under the top heading: {:?}",
+        flat(&lines[title_at + 1])
+    );
+    assert_eq!(span("Third")?.style.fg, Some(theme.text));
+    assert_eq!(span("crates/x.rs")?.style.fg, Some(theme.cyan));
+    assert_eq!(span("foo()")?.style.fg, Some(theme.orange));
+    assert!(
+        lines
+            .iter()
+            .any(|l| flat(l).trim_start().starts_with("‣ one")),
+        "the list marker is not the assistant gutter"
+    );
+    Ok(())
+}
+
+/// Each cell padded its own seam, so blocks met across two or three empty rows.
+#[test]
+fn blocks_meet_across_one_blank_row_on_replay() -> TestResult {
+    use yi_tui::history::History;
+
+    let mut history = History::default();
+    history.retain(Cell::Assistant {
+        markdown: "A paragraph.\n".to_owned(),
+    });
+    history.retain(Cell::Thought {
+        markdown: "a thought".to_owned(),
+    });
+    history.retain(Cell::Assistant {
+        markdown: "# Heading\n\nMore.\n".to_owned(),
+    });
+    let rows: Vec<String> = History::replay(&history, 80, &theme(), TranscriptMode::Thinking, 100)
+        .iter()
+        .map(flat)
+        .collect();
+    let mut run = 0;
+    for row in &rows {
+        run = if row.trim().is_empty() { run + 1 } else { 0 };
+        assert!(run <= 1, "two blank rows in a row: {rows:?}");
     }
     Ok(())
 }

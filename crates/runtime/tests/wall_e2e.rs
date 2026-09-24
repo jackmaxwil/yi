@@ -158,6 +158,46 @@ async fn a_read_deny_keeps_the_orientation_packet_out_of_the_denied_tree() -> Te
     Ok(())
 }
 
+/// Dies with the substring match: eleven confirmation `bash` reads of a `deny_write` standard
+/// (`python3 /app/check.py`, `sed -n`, `ls`) were refused as if they wrote it.
+#[test]
+fn a_bash_read_of_a_write_denied_path_runs_and_a_write_to_it_is_refused() -> TestResult {
+    let root = std::env::temp_dir().join("yi-wall-bash");
+    let check = root.join("check.py").display().to_string();
+    let spec = root.join("spec").display().to_string();
+    let wall = Wall {
+        deny_write: vec![root.join("check.py"), root.join("spec")],
+        deny_read: Vec::new(),
+        deny_url: Vec::new(),
+    };
+    let bash = |command: String| {
+        let mut args = serde_json::Map::new();
+        args.insert("command".to_owned(), serde_json::json!(command));
+        wall.check("bash", yi_tools::ToolKind::Exec, &args, &root)
+    };
+    for read in [
+        format!("python3 {check} tablefmt; echo \"exit=$?\""),
+        format!("sed -n '22p' {spec}/tablefmt.md; ls {spec} | head"),
+        format!("cat {check} > /tmp/copy.py && diff {spec}/a.md /tmp/b.md"),
+        format!("cp {check} /tmp/check.py"),
+    ] {
+        assert_eq!(bash(read.clone()), None, "{read}");
+    }
+    for write in [
+        format!("echo x > {check}"),
+        format!("sed -i 's/a/b/' {spec}/a.md"),
+        format!("rm -f {check}"),
+        format!("cp /tmp/x.py {check}"),
+        format!("ls && tee -a {spec}/a.md < /dev/null"),
+        format!("git checkout -- {check}"),
+        format!("perl -pi -e 's/a/b/' {check}"),
+    ] {
+        let refused = bash(write.clone()).ok_or(format!("{write} was let through"))?;
+        assert!(refused.contains("deny_write"), "{refused}");
+    }
+    Ok(())
+}
+
 #[test]
 fn a_read_deny_binds_reads_and_a_write_deny_does_not() -> TestResult {
     let root = std::env::temp_dir().join("yi-wall-scope");

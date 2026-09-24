@@ -38,6 +38,7 @@ jobs:
       - name: live suite on main, appended to the telemetry branch
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          EVAL_ROUTING: '{"order":["deepinfra"],"allow_fallbacks":false}'
         run: |
           set -euo pipefail
           if [ -z "${OPENROUTER_API_KEY:-}" ]; then
