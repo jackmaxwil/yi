@@ -23,8 +23,13 @@ pub fn doctor_toolchain(home: &Path) -> Result<String, String> {
     if let Some(python) = std::env::var_os("YI_KERNEL_PYTHON") {
         return Ok(format!("YI_KERNEL_PYTHON {}", Path::new(&python).display()));
     }
-    yi_kernel::bootstrap::find_toolchain(&doctor_options(home))
-        .map(|toolchain| toolchain.describe())
+    match yi_kernel::bootstrap::existing_toolchain(home) {
+        Some(toolchain) => Ok(toolchain.describe()),
+        None => yi_kernel::uv_install::Release::pinned().map(|_| {
+            let version = yi_kernel::uv_install::UV_VERSION;
+            format!("no uv or python3 3.11+; the venv build fetches uv {version}")
+        }),
+    }
 }
 
 /// `yi doctor`'s `kernel-boot` row: the venv (built under `fix`, else only reported), then a
