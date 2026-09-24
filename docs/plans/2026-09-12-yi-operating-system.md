@@ -420,10 +420,10 @@ table already accepts (`doc.rs:78-79`), and the capsule manifest format
 | D-next-7 | paged recall through `fetch` | extends D164 | F1c |
 | D-next-8 | messages are envelopes with kinds, receipts, per-pair order and a durable inbox | extends D165 | F2a |
 | D-next-9 | a child holds a lease drawn from its parent; revoke has a grace and a repossession record | new | F2b |
-| D-next-10 | a judged contract item is a walled reader of another model family answering a fixed schema, aggregated in Rust | new | F3a |
-| D-next-11 | a review pod is readers plus a code arbiter | extends D-next-10 | F3b |
-| D-next-12 | a service is a child with a stable address | extends D165 | F3c |
-| D-next-13 | the procedural graph replaces hand-maintained affordance strings; frozen online, evolved offline under a held-out gate with rejection memory | amends the affordance rows (D139's ladder stays) | F4a/F4b |
+| D-next-10 (D216) | a judged contract item is a walled reader of another model family answering a fixed schema, aggregated in Rust | new | F3a |
+| D-next-11 (D217) | a review pod is readers plus a code arbiter | extends D-next-10 | F3b |
+| D-next-12 (D218) | a service is a child with a stable address | extends D165 | F3c |
+| D-next-13 (D219) | the procedural graph replaces hand-maintained affordance strings; frozen online, evolved offline under a held-out gate with rejection memory | amends the affordance rows (D139's ladder stays) | F4a/F4b |
 | D-next-14 | the kernel's constants are levers with floors and two gates; the sweep never reads the held-out split | extends D140 | F4c/F4d |
 
 ### 3.6 The completion invariant and the authority rule
@@ -730,7 +730,8 @@ sha256 of `program.py` at the time of the op or null; `verdict` is present on
 record. Record kinds that appear only in the journal: `done_refused` (§6.5),
 `verification_requested` and `verification_stale` (§6.3), `spawn_intent` and
 `spawn_result`, `import` (§5.5), `fuse_reset`, `reconciled`, `accepted_by_user`,
-`program` (§8.3), `revoke` and `repossession` (§7.4), `judge` (§6.4).
+`program` (§8.3), `revoke` and `repossession` (§7.4). F3a landed no `judge` kind:
+a juror's line rides the verdict of the `done` or `done_refused` record (§6.4).
 The append itself, in `har-io`'s terms: one `write_all` of the
 newline-terminated record, then `sync_data` on the journal file (the commit
 point; a failure here acknowledges nothing and the partial line is the torn
@@ -867,7 +868,7 @@ pub enum Decider {
     Cmd { checker: ArtifactRef, timeout_ms: u64 },                 // a frozen manifest: command, cwd policy, protected files
     Schema { schema: ArtifactRef },                                 // validates this attempt's output artifact
     Example { cases: ArtifactRef, runner: ArtifactRef, timeout_ms: u64 },
-    Judge { rubric: ArtifactRef, evidence: Vec<ArtifactRef>, policy: JuryPolicy },   // refused at declaration until F3a
+    Judge { rubric: ArtifactRef, evidence: Vec<ArtifactRef>, policy: JuryPolicy },   // a jury of one or three (F3a)
 }
 pub enum ItemVerdict { Pass, Fail { detail: String }, Abstain { reason: String }, Escalate { question: String } }
 pub enum Outcome { Pass, Fail, Abstain, Escalate }
@@ -938,8 +939,9 @@ to satisfy the floor is the failure MAST names (specification failures,
 (§6.3); a `done` whose contract or criteria digest differs is refused
 `ContractDrift { label }`; the road back is `retry` (a new attempt with a new
 freeze) or `supersede`. A `judge` item on a plan whose kernel is dead is
-`Abstain { reason: "no kernel" }`, never a pass; before F3a every `judge`
-item is refused at declaration.
+never a pass: a juror reads its evidence through `fetch`, so one that cannot
+fetch cannot quote and abstains by the quote rule (F3a landed no `no kernel`
+reason of its own). Before F3a every `judge` item was refused at declaration.
 
 ### 6.3 The done path, in order
 
@@ -958,15 +960,20 @@ plan.op{done, request_id, expected_revision}  (tool, host request, or CLI)
         schema  → validate_product over the attempt's output artifact bytes (ops.rs:810-838, hoisted);
                   an unserved product or schema is a refusal, never skipped (today :836-838 skips)
         example → the runner over each case (§6.5)
-        judge   → F3a; until then the item is refused at declaration
+        judge   → the jury of §6.4 (F3a); a path that seats no jury abstains the item
   5  re-acquire the lease, re-read, compare the whole token: attempt, version, contract, criteria,
         output digest, snapshot, integration generation
         mismatch → commit verification_stale, refuse; not a product failure, no refusal charged
   6  Pass and the token current → commit the verdict and the transition Done { VerifiedDone } as one record;
         a worktree todo passes through §6.6's acceptance first
-     Fail | Abstain | Escalate → commit done_refused { verdict }, bump todo.refusals (an explicit event),
-        return the refusal with every item's line; refusals == DONE_REFUSAL_CAP (3) → the todo steps
-        Blocked { on: User, note } as its own committed transition (the human inbox)
+     Fail | Abstain | Escalate → commit done_refused { verdict }, bump todo.refusals (an explicit
+        event over the todo's life, which nothing reads for the cap), return the refusal with every
+        item's line; this attempt's refused verdicts == DONE_REFUSAL_CAP (3) → the todo steps
+        Blocked { on: User, note } as its own committed transition (the human inbox). The count is
+        per attempt (`done.rs` refused_verdicts), so a retry opens a fresh one and RETRY_CAP is the
+        only durable bound on a scheduler that retries a failed todo (§8.5). An Escalate outcome
+        blocks on its own refusal without waiting for the count, and its note names the
+        escalation rather than a refusal tally (F3a, §6.4)
 ```
 
 The lease is released around step 4 because a command may run ten minutes
@@ -997,14 +1004,14 @@ checks twice or charge two refusals.
 
 | field | value |
 |---|---|
-| spawn | `SubagentHost::spawn` with `wall = { deny_write: ["."], deny_url: ["history://<owner>", "kernel://<owner>", "tree://<owner>", "family://"] }` (`deny_url` is a prefix list, `wall.rs:13,64`; `deny_read` is paths), `isolation: none`, `check: none`; cooperative, as every wall is (`wall.rs:114-115`), and the verdict says so |
-| model | `find_models` (`subagent.rs:1012`) filtered to a recorded model identity whose vendor segment differs from the owner's (`openrouter/z-ai/glm-5.3-flash` → `z-ai`), a weak heuristic for independent errors, stated as such; none available → `Abstain { "no other family" }`, never the owner's model |
+| spawn | `SubagentHost::spawn_seated` with `wall = { deny_write: ["."], deny_url: [every scheme but `local://`] }` (as landed: whole schemes, which needs no owner name and covers `agent://` and `plan://` too; `deny_url` is a prefix list, `deny_read` is paths), `isolation: none`, `check: none`, no `fork`, no `context`; cooperative, as every wall is, so what refuses a source that is not evidence is the quote check |
+| model | the registry (`subagent/models.rs`, where `find_models` now lives) filtered to a recorded model identity whose vendor segment differs from the owner's (`openrouter/z-ai/glm-5.3-flash` → `z-ai`), a weak heuristic for independent errors, stated as such; as landed the owners are the host's own model and the selector the plan spawned the todo's child with, the candidates are models on the host's provider or on one whose key is set, cheapest input first; none available → `Abstain { "no other family" }`, never the owner's model |
 | brief | the rubric, the evidence artifact ids, the fixed schema, and nothing else: no owner transcript, no author, no prior verdict; evidence is served through `fetch` under the wall, never inlined |
-| schema | `{"verdict": "pass\|fail\|abstain", "reason": string, "quotes": [{"url": string, "line": integer, "text": string}]}`, validated at `rlm.result` (`mailbox.rs:338` path); anything else abstains (`auto_review.rs:62-81` is the pattern) |
-| quote check | every quote's `url` must be backed by the judge's own fetch log (`fetch/log.rs:82,167`) and its `text` must match the fetched line at the fetched digest; any miss → the item is `Abstain { "unbacked quote" }`; a matching quote proves provenance, not entailment |
+| schema | `{"verdict": "pass\|fail\|abstain", "reason": string, "quotes": [{"url": string, "line": integer, "text": string}]}`, parsed strictly as `JurorAnswer` from the retired juror's last answer (as landed: `rlm.result` is the kernel's road and would promote the answer into the owner's transcript, so the jury reads the record itself); anything else abstains, and so does a decided vote that quotes nothing (`auto_review.rs:62-81` is the pattern) |
+| quote check | every quote's `url` must be one of the item's evidence addresses and be backed by the judge's own fetch log (`fetch::rows_of` over its transcript) at the frozen artifact's hash, and its `text` must match that line, which a blank line never does; any miss → the item is `Abstain { "unbacked quote ..." }` and the dropped juror's line carries the check's own `unbacked` flag, never a prefix of the reason the juror wrote; as landed the hash is the whole file's, so a fragment or paged read backs nothing; a matching quote proves provenance, not entailment |
 | jury | `policy.n` children in parallel with a predeclared quorum: for n = 3, at least two decided votes, two `pass` → `Pass`, two `fail` → `Fail`, anything else `Abstain`; n = 1 is labelled single-judge; pass and fail quorums are validated disjoint for other n |
-| bounds | `JUDGE_CAP_PER_TODO` 3 per plan version (`todo.juries`), then `Escalate`; jury size, judge cost and concurrent model requests count against the root's budgets and against the family cap 16 and the parent cap 8; verification capacity is reserved so eight retained workers cannot starve their own judges (§7.6) |
-| record | one `judge` line per juror in `ops.jsonl` with the model identity, the verdict and the reasons; the item verdict aggregates in Rust; calibration (false accepts, false refusals, coverage, cost) on an independently labelled set precedes default use |
+| bounds | `JUDGE_CAP_PER_TODO` 3 per plan version, then `Escalate`, which blocks the todo on the user at once; as landed the count is derived from the journal's `verification_requested` records and there is no `todo.juries` field; a juror draws a lease from the owner and counts against the family cap 16; it sits above the parent cap 8 and the depth limit under the `Purpose::Verification` permit the done path reserves, one jury at a time, so eight retained workers cannot starve their own judges (§7.6) |
+| record | one line per juror with the model identity, the vote, the reason and whether the quote check dropped it, carried as `jurors` on the item's line of the verdict the `done` or `done_refused` record journals (as landed: no `judge` record kind of its own); the item verdict aggregates in Rust; calibration (false accepts, false refusals, coverage, cost) on an independently labelled set precedes default use |
 
 ### 6.5 Every completion path, the `done_refused` record, the examples runner
 
@@ -1079,7 +1086,7 @@ today moves.
 Rust (`crates/types/src/mail.rs`, new; schemas.lock `--update`):
 
 ```rust
-pub struct Envelope { pub id: MailId, pub from: String, pub from_incarnation: u32, pub to: String,
+pub struct Envelope { pub id: MailId, pub from: String, pub from_incarnation: Option<u32> /* None: no service; F3c */, pub to: String,
     pub to_incarnation: Option<u32> /* None: whoever holds the address */, pub kind: Kind,
     pub conversation: MailId, pub in_reply_to: Option<MailId>, pub seq: u64, pub sent_at: u64,
     pub deadline_ms: Option<u64>, pub body: String, pub reference: Option<Url> }
@@ -1404,22 +1411,25 @@ isolation: writers get worktrees, readers declared output artifacts.
 | pipeline | later; needs downstream attempt invalidation | edges form one path | the path | rest_for_one | the owner runs `done` per stage |
 | map_reduce | later; needs immutable producer outputs and a schema-validating reduce activity | N maps with one contract, one reduce `after` all | maps, then reduce | one_for_one on maps | the reduce is an inline todo |
 | tournament | later; needs per-candidate verification, one integration winner, legal loser cleanup | N todos with identical contract on one goal | all at once | none | the first passing candidate's acceptance |
-| pod | later; needs a calibrated findings contract and an arbiter with an independently meaningful check | ≥ 2 first passes plus one arbiter `cmd` todo | passes, then the arbiter | one_for_all on the passes | the arbiter's cmd |
+| pod | F3b, as the recipe `yi/recipes/review_pod.py`; a calibrated findings contract is still owed | ≥ 2 first passes plus one arbiter `cmd` todo | passes, then the arbiter | one_for_one, bounded (`_schedule`'s); one_for_all on the passes is still owed | the arbiter's cmd |
 
 Each later shape is its own PR with the prerequisite landed first and a
 failure it fixes named in the row.
 
 ### 8.6 Scatter
 
-Readers bound to stable partitions (`deny_read` of every other partition,
-`deny_write=["."]`, `roles.Reader(partition=…)`; cooperative, §7.6), a lead
-(the owner, or one writer child), rounds: the lead asks a question; each
+Readers bound to stable partitions (`roles.Reader(partition=…)`, which builds
+`deny_write=["."]` and passes a caller's own `deny_read` through; a wall is
+cooperative, §7.6, and `deny_read` is paths where a partition is urls, so what
+actually binds a reader to its partition is the quote seam below, not its wall),
+a lead (the owner, or one writer child), rounds: the lead asks a question; each
 reader answers `{"answer": str | null, "quotes": [{"url", "line", "text"}]}`;
 a null answer is an abstention and is dropped; `roles.verify_quotes` fetches
-each `url#L<line>` through `rlm.fetch`, pins the fetched digest, and drops
-any quote whose text does not match and any answer whose every quote was
+each cited `url` through `rlm.fetch` and reads line `<line>` from it, pins the fetched digest, and drops
+any quote citing a url outside the reader's own partition, any quote whose text
+does not match and any answer whose every quote was
 dropped; the lead sees only what survived; rounds continue until the lead
-commits (`lead.commit(answer)`) or `SCATTER_MAX_ROUNDS` (3, a lever). A
+commits (the lead function returns `{"commit": answer}`) or `SCATTER_MAX_ROUNDS` (3, a lever). A
 verified quote proves provenance, not entailment: an answer with no
 supporting quote abstains, and correctly copied irrelevant text does not
 validate a claim; the lead's commit is its own reasoning. ParSer's shape:
@@ -1481,7 +1491,9 @@ Nodes are Yi's verbs: every registered tool name, every plan op as
 
 ### 9.2 Conditions are a closed predicate set
 
-`enum Predicate` in `affordance.rs`, evaluated on facts the renderer already
+`Predicate` in `crates/types/src/graph.rs` (as landed: a string parsed against
+the closed table `PREDICATES`, plus the states the migrated producers branch
+on, F4a), evaluated on facts the renderer already
 holds at the seam (`tools.rs:305-308` appends the lines): `always`,
 `result_ok`, `result_error(ToolErrorKind)` (`event.rs:177-185`),
 `output_capped`, `todo_open`, `plan_ready_nonempty`,
@@ -1524,7 +1536,12 @@ once.
 
 An edit is promoted into `graph.json` when the held-out pass count is not
 lower than the current graph's (ties accepted, the paper's rule) and the
-token total per solved task is not higher; else it is appended to
+token total per solved task is not higher (as landed, F4b: the fit split
+filters first, so an edit that drops a development pass is rejected as
+`fit_passes_dropped` and never spends a held-out run, and a tie in which
+neither graph solves anything prices no token, so §9.8's rule stands alone
+there and rendered bytes that bought no pass are `guidance_bytes_unpaid`);
+else it is appended to
 `evals/fixtures/graph/rejected.jsonl` as `{editHash, baseVersion, protocol,
 model, reason, scores, at}`; the refiner refuses the same edit against the
 same base graph, protocol and model configuration, and treats an older
@@ -1676,7 +1693,7 @@ legacy metric and is never summed with the record-derived one.
 | F0d | candidate, integration and acceptance records; dispositions |
 | F1 | source records linked to plan requests (`program_cells`), scheduler lease and shape records (`shape_runs`), `spec_drift` |
 | F2 | envelopes by kind, receipts by state, `revocations`, `repossessions`, cancel latency (due vs observed), `requests_timed_out` |
-| F3 | `judge` records by outcome, quorum outcomes, `escalations`, `quotes_dropped` |
+| F3 | juror votes by outcome (`juror_pass`, `juror_fail`, `juror_abstain`, from the record's `jurors` counts), quorum outcomes and escalations (the `verdict_*` signals), `quotes_dropped` |
 | F4 | tokens per solved task against the baseline; `graph_version` in the session header; `levers_hash` in the config fingerprint |
 
 ### 10.7 The F0e run
@@ -1719,7 +1736,7 @@ T3 paid. Kernel-dead path named per stage. File placement respects the
 1,200-line cap (§2 B21): new behaviour goes in new files where the host file
 is within 150 lines of the cap.
 
-### F0a · `plan.op` is one request over the engine, and a child's lifecycle wakes its parent (D-next-1; extends D137, D165)
+### F0a · `plan.op` is one request over the engine, and a child's lifecycle wakes its parent (D192, landed 0.265.0; extends D137, D165)
 
 **Scope.** One host request sharing the tool's parser and engine; the
 dangling plan skill deleted in the same PR; race-safe lifecycle delivery
@@ -1779,7 +1796,7 @@ path.** untouched. **Rollback.** unregister one name and restore the one
 line at `wiring.rs:603`; persisted deliveries are never discarded by the
 revert.
 
-### F0b · The plan store is a journal with a typed checkpoint; recovery reconstructs; authority is a channel (D-next-2; amends D97, D105; carries D26, D53)
+### F0b · The plan store is a journal with a typed checkpoint; recovery reconstructs; authority is a channel (D193, landed 0.266.0; amends D97, D105; carries D26, D53)
 
 **Design gate before source.** The record schema of §5.3, the commit
 protocol, the crash matrix, the request and effect identities, the import
@@ -1874,7 +1891,7 @@ original files are untouched by import; a compatible binary reads format 1;
 downgrading an executed format-2 root needs the export path, not a
 `git checkout` of views.
 
-### F0c · done is verified on every completion path (D-next-3; retires D77's fields)
+### F0c · done is verified on every completion path (D194, landed 0.267.0; retires D77's fields)
 
 **Scope.** §6.1-6.5 without the judge (`judge` items refused at
 declaration); the contract on the todo; attempts; the verification token;
@@ -1895,7 +1912,7 @@ assertion-keyword refusal), `skills/yi/session-mining/extract.py`,
 **Signatures.**
 
 ```rust
-pub struct Verifier { timeout_ms: u64, judge: Option<Arc<dyn Judge>> }                       // judge is None until F3a
+pub struct Verifier { timeout_ms: u64, judge: Option<Arc<dyn Judge>> }                       // F3a wires the jury in
 impl Verifier { pub fn run(&self, token: &VerificationToken, contract: &Contract, snapshot: &Snapshot) -> Verdict }
 pub enum PlanOpError { … Refused { label: TodoLabel, verdict: Verdict }, Stale { label: TodoLabel, token: VerificationToken },
     ContractDrift { label: TodoLabel }, AcceptanceUnavailable { label: TodoLabel } }
@@ -1949,7 +1966,7 @@ generated state-machine trace shows no `VerifiedDone` without a `Pass`.
 path for one release; verified records are never downgraded to the
 unchecked path while claiming equivalence.
 
-### F0d · Worktree results are accepted, and failures are cleaned up without merging (D-next-4)
+### F0d · Worktree results are accepted, and failures are cleaned up without merging (D195, landed 0.268.0)
 
 **Scope.** §6.6: candidate submission, candidate and integration checks,
 serialized publication with a generation check, explicit dispositions,
@@ -2013,72 +2030,188 @@ activation without value, so the gate did not pass. The owner overrode it on
 2026-09-20 ("continue until full plan completion") and F1-F4 proceeded in
 #467 without the recorded decision.
 
-### F1a · The `yi` library: plans as programs, explicit resume (D-next-5; extends D166)
+### F1a · The `yi` library: plans as programs, explicit resume (D211, landed 0.270.0; extends D166)
 
 **Files.** `python/yi_runtime/src/yi/{__init__,plan,contract,roles}.py`,
-`pyproject.toml`, `python/yi_runtime/tests/test_yi_{plan,help,idempotent,resume}.py`,
-`crates/runtime/src/plan/ops.rs` (`Op::Program { cell_id, source_ref }`;
-the source artifact), `crates/runtime/tests/ext_e2e.rs:350` (`yi.`, `plan.`),
-`scripts/guardrails/check_prompt_examples.py:11-12`.
+`pyproject.toml`, `python/yi_runtime/tests/test_yi_{plan,help,idempotent,resume}.py`
+and `tests/fake_host.py`, `crates/types/src/plan/op.rs` (`Op::Program { cell_id,
+source_ref }`), `crates/runtime/src/plan/program.rs` (the record and the export),
+`crates/runtime/src/plan/request.rs` (the typed reply, the `artifacts` rider),
+`crates/runtime/src/fetch/schemes.rs` (`plan://<id>/artifacts/<sha256>`),
+`crates/runtime/src/kernel.rs` (the prelude imports `yi`),
+`crates/runtime/tests/ext_e2e.rs` (`yi.`, `plan.`),
+`scripts/guardrails/check_prompt_examples.py`.
 
 | control | test (tier) |
 |---|---|
-| `todo` is idempotent by key and refuses drift | `test_yi_idempotent::a_rerun_cell_writes_nothing_and_a_changed_spec_is_refused` (T0, a fake `host_request`) |
-| a retried `create` is one plan | `test_yi_plan::a_retried_create_request_is_the_same_plan` (T0) |
-| source is recorded before the first effect and never replayed | `plan_store::program_records_source_before_the_first_effect` (T0); `kernel_data_surface::resume_after_a_kernel_death_reuses_results_and_replays_no_cell` (T2, real kernel, a delegate counting spawns) |
-| an unknown external activity stays unresolved | `test_yi_resume::unknown_external_activity_remains_unresolved` (T0) |
-| a second `run` attaches or refuses | `test_yi_plan::duplicate_run_calls_attach_or_refuse` (T0) |
+| `todo` is idempotent by key and refuses drift | `test_yi_idempotent::test_a_rerun_cell_writes_nothing_and_a_changed_spec_is_refused` (T0, a fake `host_request`) |
+| a retried `create` is one plan | `test_yi_plan::test_a_retried_create_request_is_the_same_plan` (T0) |
+| source is recorded before the first effect and never replayed | `plan_program::program_records_source_before_the_first_effect` (T0, through `plan.op`); `test_yi_plan::test_a_cell_is_recorded_once_before_its_first_effect` (T0); `kernel_data_surface::resume_after_a_kernel_death_reuses_results_and_replays_no_cell` (T2, real kernel, a delegate counting spawns) |
+| an unknown external activity stays unresolved | `test_yi_resume::test_unknown_external_activity_remains_unresolved` (T0) |
+| a second `run` attaches or refuses | `test_yi_plan::test_duplicate_run_calls_attach_or_refuse` (T0) |
+| a verdict that judged no product leaves the attempt alone, and a child the host cannot vouch for blocks on the user | `test_yi_plan::test_a_verdict_that_judges_no_product_leaves_the_attempt_alone` (T0) |
+| only the plan owner stores artifacts, and since D222 the child submitting its own running attempt | `plan_e2e::a_child_kernels_plan_op_is_refused_beyond_view` (T1, extended); `plan_e2e::a_child_stores_the_product_of_the_attempt_it_submits` (T1) |
+| a child that asked you something is collected, never raised | `test_yi_plan::test_a_child_asking_you_something_is_collected_not_raised` (T0) |
 | an inline output gets a valid artifact id | `kernel_data_surface::an_inline_todo_completes_with_a_host_minted_artifact` (T2) |
-| every public name documents itself with a valid example | `test_yi_help::every_name_in_all_has_a_docstring_with_a_valid_example` (T0; sync and async alike) |
+| every public name documents itself with a valid example | `test_yi_help::test_every_name_in_all_has_a_docstring_with_a_valid_example` (T0; sync and async alike) |
 | the prompt gates know the new names | `ext_e2e::fragment_examples_name_real_kernel_apis` (T0, extended) |
 
-**LOC.** python +650, yi-runtime +90, tests +250. Memo: `growth +740: the
-yi library (plans as programs) and the source record`. **Issue.** "F1a the
-yi library". **Row.** "Plans are programs: the `yi` library opens, attaches
-to or resumes a plan, declares idempotent todos with contracts, runs one
-scheduler under a lease, and records its cells as an audit artifact
-(D-next-5, extends D166; Closes #<n>)". **ADR.** "D-next-5: plans are
-programs in the kernel; source is recorded, never replayed". **Exit.** the
-§8.2 example runs end to end on the faux provider with a stub delegate; the
-kernel-death journey passes. **Kernel-dead path.** unchanged from F0.
+**LOC.** python +1,080, yi-runtime, yi-types and yi-kernel +346, tests +890 (Rust 440, Python 450). Memo: `growth
++346: the source record, the typed `plan.op` reply and its artifacts`. **Issue.**
+"F1a the yi library" (#454). **Row.** "Plans are programs: the `yi` library opens,
+attaches to or resumes a plan, declares idempotent todos with contracts, runs one
+scheduler under a lease, and records its cells as an audit artifact (D211,
+extends D166; Closes #454)". **ADR.** "D211: plans are programs in the kernel;
+source is recorded, never replayed". **Exit.** the §8.2 example runs end to end
+on a real kernel with a stub delegate, and the kernel-death journey passes (one
+test, `resume_after_a_kernel_death_…`; no provider is reached, because a stub
+delegate spawns no child). **Kernel-dead path.** unchanged from F0.
 
-### F1b · Two shapes: `fork_join` and `scatter` (D-next-6)
+As landed, against §8 and §5.4. The tree had three gaps the design assumed closed,
+and F1a closes them at the host boundary rather than around it. (1) `plan.op`
+answered with rendered text only, so the reply now carries `plan` (the typed
+document with `ready` and `finished`), `notices`, and on a refusal the engine's own
+`kind` and a refused `done`'s `verdict`; the three-code `code` is unchanged. (2) No
+surface but a test could put a criterion into a plan's artifact store, so `plan.op`
+takes `artifacts` (`{media_type, text}`, the owner's, or one blob from the child
+submitting its own running attempt since D222, capped in count and bytes,
+stored under the store's own digest before the op applies); the builders and the
+source record name their blobs by sha256 computed in Python with the shared
+canonical rule, and an op citing a digest the store lacks is refused. A builder's
+`local://` input is frozen when the todo is declared, not at `start`. (3) No url
+named a stored blob, so `plan://<id>/artifacts/<sha256>` serves one, which is the
+host-minted id of an inline product and of a child's answer that a `schema` item
+needs. A todo's `key` lives in its label (`key: label text`, the key alone when no
+label is given): `TodoSpec` has thirty-five construction sites and no field for
+it, and the label is already unique per plan; a renamed label is `SpecDrift`. The
+scheduler lease is the owner kernel's (`_RUNS`), so it dies with the kernel, which
+is what resume needs; a lease in the store is F2b's. `programHash` is set on the
+`program` record alone (the sha256 `program.py` has once that cell is appended);
+other records keep null rather than pay a file hash per op. The export is appended
+after the commit, and the next `program` heals any cell it lacks before its own
+record is built, so a crash between the two heals without a rewrite and the hash
+still names the file the cell is appended to. `Plan.create` makes its plan
+before it can record into it, so the cell's record is that plan's second. The
+venv identity hashed `src/rlm` alone, so an edit to `yi` would have run a stale
+wheel; it hashes `src` now (`crates/kernel/src/bootstrap.rs`). Not
+built: a marker for a cell that later raised (the record stands either way), a
+token budget, automatic transport retry beyond the one host error that leaves a
+commit unknown, and `judge`, `shapes`, `mail`, `recipes/` (F3a, F1b, F2a).
+
+### F1b · Two shapes: `fork_join` and `scatter` (D212, landed 0.271.0)
 
 **Files.** `python/yi_runtime/src/yi/shapes.py`, `roles.py` (`verify_quotes`),
+`plan.py` (`decompose` resolves edges among its own batch),
 `python/yi_runtime/tests/programs/{typo-fix,campaign,arc-game}.py` (the
-walkthrough fixtures as programs), `test_yi_shapes.py`.
+walkthrough fixtures as programs), `test_yi_shapes.py`, `tests/fake_host.py`,
+`crates/runtime/tests/{plan_e2e,plan_walkthrough,kernel_data_surface}.rs`.
 
 | control | test (tier) |
 |---|---|
-| geometry refused before any start | `test_yi_shapes::a_fork_join_with_a_shared_write_set_is_refused_with_every_problem_named` (T0) |
-| over-admission refused while order is the shape's | `test_yi_shapes::fork_join_retries_a_refused_start_and_never_reorders_the_kernel` (T0, fake host counting refusals) |
-| restart intensity bounds retries and respects the step table | `test_yi_shapes::one_for_one_stops_after_max_within_window` (T0); `plan_e2e::a_shape_cannot_retry_a_done_or_drop_a_running_todo` (T1) |
-| concurrent waiters keep their own cursors | `test_yi_shapes::the_scheduler_and_the_model_wait_without_stealing_updates` (T0) |
-| a reader's uncited or unverifiable quote is dropped at the seam | `test_yi_shapes::scatter_drops_an_unverifiable_quote_before_the_lead_sees_it` (T0) |
-| abstentions are dropped and rounds are bounded | `test_yi_shapes::scatter_ends_at_max_rounds_without_a_commit` (T0) |
+| geometry refused before any start | `test_yi_shapes::test_a_fork_join_with_a_shared_write_set_is_refused_with_every_problem_named`, `test_yi_shapes::test_a_scatter_with_shared_partitions_or_no_lead_is_refused` (T0) |
+| over-admission refused while order is the shape's | `test_yi_shapes::test_fork_join_retries_a_refused_start_and_never_reorders_the_kernel` (T0, fake host counting refusals; the same run shows a module-level shape attaching to itself) |
+| restart intensity bounds retries and respects the step table | `test_yi_shapes::test_one_for_one_stops_after_max_within_window` (T0, the window and the engine's retry refusal both); `plan_e2e::a_shape_cannot_retry_a_done_or_drop_a_running_todo` (T1); `plan_ops::a_retry_opens_a_fresh_refusal_count_so_only_retry_cap_bounds_a_scheduler` (T0, added: the section 6.3 cap is per attempt, so `RETRY_CAP` is the durable bound) |
+| concurrent waiters keep their own cursors | `test_yi_shapes::test_the_scheduler_and_the_model_wait_without_stealing_updates` (T0) |
+| a reader's uncited, unverifiable or out-of-partition quote is dropped at the seam | `test_yi_shapes::test_scatter_drops_an_unverifiable_quote_before_the_lead_sees_it` (T0); `kernel_data_surface::both_shapes_schedule_under_the_real_admission_and_step_table` (T2, the same two drops over a real archive) |
+| abstentions are dropped and rounds are bounded | `test_yi_shapes::test_scatter_ends_at_max_rounds_without_a_commit` (T0) |
 | the fixtures agree as programs and as JSON | `plan_walkthrough::a_program_and_its_json_fixture_reach_the_same_plan_json` (T2) |
-| scatter is measured against direct retrieval | a paired journey row on the same tasks (T3, user-run) |
+| both shapes hold against the real admission, step table and verifier | `kernel_data_surface::both_shapes_schedule_under_the_real_admission_and_step_table` (T2, added) |
+| the overhead against the direct path is counted | `test_yi_shapes::test_both_shapes_do_useful_work_and_the_overhead_is_counted` (T0, added) |
+| scatter is measured against direct retrieval | a paired journey row on the same tasks (T3, user-run; not run in this stage) |
 
 **LOC.** python +420, tests +250. Memo: `growth +420: two shapes and the
 quote seam`. **Row.** "Two shapes ship as library schedulers under the
 engine's admission and step table: fork_join over isolated writers and
 readers, and scatter with readers bound to partitions and quotes verified
 against the archive; four more are specified with their prerequisites
-(D-next-6; Closes #<n>)". **ADR.** "D-next-6: shapes are schedulers in user
+(D212; Closes #455)". **ADR.** "D212: shapes are schedulers in user
 space". **Exit.** independently useful work through both shapes with the
 overhead reported against the direct path.
 
-### F1c · Paged recall through `fetch` (D-next-7; extends D164)
+As landed, against sections 8.5 and 8.6. Python +290, tests +772 (Rust 407,
+Python 365 with the three programs), no Rust `src` line. Overhead, counted in
+host requests on the fake host: fork_join over two writers is 9 against the 4
+ops sent by hand (one `repair`, three views and one `wait` on top, none of them
+journaled); scatter over two readers and a lead is 18 against 2 direct fetches
+(seven ops, four reads, one `wait`, two `rlm.result`, four fetches). The shapes
+take no arguments (`MAX_RESTARTS`, `RESTART_WINDOW` and `SCATTER_MAX_ROUNDS` are
+module levers), so each is a module-level function and the lease's identity
+check attaches a second `plan.run(shape=fork_join)` to the first. fork_join
+refuses an inline todo as well as a writer outside a worktree, since both write
+the owner's workspace. Its restart window is kernel-local; the durable bound is
+the engine's `RETRY_CAP`, whose `retries_exhausted` refusal ends the restarts
+and stays in `run.refusals`. The section 6.3 cap counts refused verdicts per
+attempt (`done.rs` `refused_verdicts`; `todo.refusals` is a lifetime event
+counter nothing reads for the cap, which is what section 6.3 step 6 used to read
+as, and it says the per-attempt rule now), and the scheduler sends one `done`
+per attempt, so a retrying shape never reaches it; a todo the engine did block
+is never retried, because only `failed` is. The scatter lead is the plan's one
+inline todo, `async def lead(answers, number)` returning `{"commit": answer}` or
+`{"ask": question}` (there is no `lead` object to call `commit` on), and its
+product is `{"answer", "rounds"}` because a bare string is stored as text and a
+`schema` item finds no JSON in it. A later round declares `<reader>-r<n>` todos
+with the reader's delegation and contract and the question as the note, and the
+key alone as the label, because a `TodoLabel` is eighty characters and no
+newline while the lead writes the question (the review found the round-two
+declaration refused on any question a real lead would ask, and the fake host now
+holds the label rule); a failed reader is retried and dropped, the two legal
+steps from `failed` to `abandoned`, so the plan can still finish, and the T2
+journey settles one that way on the real step table. `verify_quotes` fetches
+each cited url once and reads the line from it: the host's line fragment needs
+the tag (`#L<a>-<b>@<tag>`) a reader does not have, so a large page is read
+whole until F1c's paged `fetch` lands. It also takes the reader's partition and
+drops a quote citing anything else unread: the wall that bound the reader is
+cooperative (section 7.6) and the owner fetches with the owner's own reach, so a
+reader could otherwise answer for a partition it was never given, or for a page
+outside the archive, and the disjointness geometry checks before the first start
+would mean nothing afterwards. `shapes.ANSWER` types only `quotes`, because the
+host's schema subset has no union type for a nullable `answer`. A program
+reaches its fixture's JSON on the projection the two surfaces share: every
+plan's state and version, its todos in order (a program's key is the fixture's
+label in lower case), their states, edges, attempts, retries, whether they are
+delegated and what a done one output, and the committed transitions in journal
+order. Not compared: `refusals` and `touched`, since the fixture's refused steps
+are its own; the text of a cause or a block note; a delegation's or a contract's
+contents; and the campaign fixture's `reorder` and `add_edge`, which the library
+has no surface for and whose generation that fixture's `supersede` closes before
+the comparison reads the store. Found on the way and fixed: `Todo.decompose`
+looked a sibling edge up in the parent plan and raised, so its own docstring
+example failed. Not built, and section 8.6 corrected to say so: `Reader` derives
+no `deny_read` from the partition, and scatter does not either, because a wall
+is cooperative and `deny_read` is paths where a partition is urls; the seam is
+the binding. Also not built: a writer child as the scatter lead, `rest_for_one`
+and `one_for_all`, and the four later shapes.
+
+### F1c · Paged recall through `fetch` (D213, landed 0.272.0; extends D164)
 
 `fetch` payload gains `offset` and `limit` (bytes for `local://`, entries
-for `history://`, chars for `kernel://` past `VARIABLE_MAX_CHARS` 8,192,
-`kernel.rs:670`); the reply carries `next_offset` or null. Files:
-`wiring.rs:209`, `fetch/schemes.rs` (three resolvers), `rlm/__init__.py:466`.
+for `history://`, chars for `kernel://` past `VARIABLE_MAX_CHARS` 8,192 in
+`kernel.rs`); a paged reply carries `next_offset` or null, and a request
+naming neither key is answered key for key as before. Files: `wiring.rs` (the
+`fetch` host request), `fetch/mod.rs` (`Page`, `fetch_page`, `into_reply`),
+`fetch/schemes.rs` (three resolvers), `rlm/__init__.py` (`fetch`, `Page`).
 Tests: `fetch_session::a_capped_read_names_the_next_offset_and_the_next_page_continues_it`
-(T1). LOC yi-runtime +90, python +10. Row: "`fetch` pages: a capped read
-names the next offset (D-next-7, extends D164; Closes #<n>)".
+(T1) and three edge tests beside it. Row: "`fetch` pages: a capped read names
+the next offset (D213, extends D164; Closes #456)".
 
-### F1d · The working model speaks `yi` (no D-row; amends D166's text)
+**As landed.** LOC yi-runtime +148 against 90 (+22 of it from the review),
+python +16 against 10. Decided at the edges: a zero, negative or fractional
+number is refused, never clamped; a huge limit is the rest (a `kernel://` page
+clamps to the cell's cap); an offset past the end is an empty last page; a byte
+offset inside a UTF-8 sequence still serves text and `next_offset` always
+advances. A page is refused on `history://<agent>/tail/N`, which the plan did
+not foresee: the window is anchored at the end of a growing listing, so any
+append slides it. Found by the review: a walk of the reading session's own
+history never ended at a limit of one, because each page appended the fetch-log
+row the next page then read, so a paged read of it now records in memory alone
+(`FetchLog::remember`); and a page named beside D164's `object` was dropped
+without a word, and is refused.
+Follow-up, not built: `roles.verify_quotes` could read a cited line's
+neighbourhood instead of the whole page, but the digest it pins is the whole
+page's sha256 and a page's digest is not interchangeable with it in a stored
+quote, so that needs a digest rule of its own.
+
+### F1d · The working model speaks `yi` (no D-row, landed 0.273.0; amends D166's text)
 
 `orchestrate.md` examples become `yi` programs (about the same bytes: the
 fan-out and writer examples shrink; `help(yi)` named once); `doctrine.md`
@@ -2086,7 +2219,18 @@ rule 3 names the program; `identity.md` names `yi`. `request_budget`
 `--update` in its own commit named in the row. Tests: `prompts.rs` (every
 identifier defined in its example), `ext_e2e::fragment_examples_name_real_kernel_apis`.
 
-### F1e · Every child exit is published once, and clients reconcile (D-next-7b; extends D165)
+**As landed.** The reader fan-out is a `scatter` plan and the writer example
+a `fork_join` plan; a reader's question rides `Reader(note=)`, because the
+host's brief carries the label, role, acceptance, context and note and a label
+is eighty characters. Bytes: `orchestrate.md` 8,144 to 7,993, `doctrine.md`
+21,770 to 21,765, `identity.md` unchanged at 5,628; the request budget 48,187
+to 48,182. One control was added: `test_prompt_programs.py` runs every block
+of a fragment that imports `yi` against the fake host to `verified_success`,
+which is what "would actually run" means short of a real kernel. `prompts.rs`
+reads `shapes.ANSWER` as an attribute, not a constant the block owes, and
+prices a run's `budget=` against the cell ceiling (both examples say `"8m"`).
+
+### F1e · Every child exit is published once, and clients reconcile (D210, landed 0.269.0; extends D165)
 
 Added 2026-09-20 from the child lifecycle audit. Anchors are by symbol; the
 tree wins over any line number. Root cause: a child's lifecycle lives in
@@ -2154,6 +2298,18 @@ Repairs, smallest first, each its own commit inside the stage:
     record wins over the folded stream when they disagree (precedence:
     `ChildUpdate`, then roster, then raw stream).
 
+As landed: `retire` publishes for every removal, so `run_child` stays silent on a
+missing record (repair 2's second publish would have made two) and a removal after
+the child's own exit repeats that terminal update rather than contradicting it; repair 5 reserves
+the name and slot in a `building` list rather than a placeholder record, so a
+failed build has nothing to retire; repair 6 holds a finished card only behind
+the one cell it was born under, which keeps the pair test's ordering; repair 8's
+poll was already gone at F0a, so the handle gained the `stuck` raise alone; a
+roster-rule test, `tui_e2e::a_card_the_roster_stopped_listing_ends_as_gone`, was
+added for repair 3. Repair 1's refusal also reaches the plan engine's own reap, so
+the accepting road of `done` marks the published branch retained before it reaps
+(`lanes::accept::an_accepted_worktree_tells_the_host_its_branch_is_kept`).
+
 Not in this stage (YAGNI until F2b needs them): a new `ChildStatus` variant,
 moving the environment hook's git probes off the runtime thread (measure
 first; `spawn_blocking` if the lag tests show starvation), splitting
@@ -2161,16 +2317,16 @@ first; `spawn_blocking` if the lag tests show starvation), splitting
 
 | control | test (tier) |
 |---|---|
-| every exit publishes exactly one terminal update with a machine-readable cause | `recursion_e2e::every_exit_publishes_one_terminal_update` (T1; parameterised over complete, error, interrupt, delete while running, delete after end, reap, deadline; subscribes to the parent bus, never polls `host.list()`) |
+| every exit publishes exactly one terminal update with a machine-readable cause | `recursion_e2e::every_exit_publishes_one_terminal_update` (T1; parameterised over complete, error, interrupt, delete while running, delete after end and reap; a session deadline ends the turn after it settles, so a child out of clock leaves by the `complete` road, and `set_deadline` is crate-private; subscribes to the parent bus, never polls `host.list()`) |
 | a client view equals a projection of the host's records | `subagent_fuzz::no_card_runs_without_a_record` (T0; sequences of spawn, finish, interrupt, delete, reap and injected lag, the `plan_fuzz.rs` pattern) |
 | a lagged forwarder survives and surfaces the gap | `tui_e2e::a_forwarder_survives_a_capacity_four_bus` (T1) |
 | delete before the first poll leaves no zombie run and bills nothing | `recursion_e2e::a_child_deleted_before_its_first_poll_never_runs` (T1) |
 | a late subscriber still shows the last tool | `tui_e2e::a_card_adopted_after_the_first_tool_event_names_it` (T1) |
-| the kernel delete journey leaves no live card and tells the parent why | `tui_e2e::a_kernel_cell_that_spawns_and_deletes_leaves_no_live_card` (T2; `h = await rlm.run(...); await rlm.delete_subagent(h)`, then render) |
+| the kernel delete journey leaves no live card and tells the parent why | `tui_e2e::a_kernel_cell_that_spawns_and_deletes_leaves_no_live_card` (T1, the client half: spawn and delete under a live cell, the bus alone ends the card, then render) and `recursion_e2e::a_kernel_cell_that_spawns_and_deletes_tells_why` (T2, a real kernel runs `h = await rlm.run(...); await rlm.delete_subagent(h)`; yi-tui has no road to the kernel bridge without a new dev-dependency) |
 | a finished card commits while an `ipython` cell is live | `tui_e2e::a_finished_card_commits_under_a_live_cell` (T1) |
-| spawn does not hold the roster lock across the build | `subagent::states_answers_while_a_child_is_being_built` (T0, a factory that blocks on a channel) |
+| spawn does not hold the roster lock across the build | `subagent_fuzz::states_answers_while_a_child_is_being_built` (T0, a factory that blocks on a channel) |
 | a blocked handle sees stuck | `test_rlm_handle::result_surfaces_a_stuck_state_from_wait` (T0, fake host) |
-| the console drops a gone row and keeps accepting past the cap | `console chat::a_retired_child_leaves_the_roster_and_row_thirty_three_is_kept` (T0) |
+| the console drops a gone row and keeps accepting past the cap | `console chat::tests::a_child_first_seen_at_its_end_gets_no_row_and_row_thirty_three_is_kept` (T0; without a protocol change the console cannot tell a retired child from a retained one, so the rule is that a child first heard of at its end gets no row) |
 
 **LOC.** yi-runtime +140, yi-tui +90 −30, yi-console +25, python +15 −30,
 tests +420. Memo: `growth +240: every child exit is published and clients
@@ -2182,7 +2338,7 @@ Closes #<n>)". **ADR.** "D-next-7b: one exit, one terminal update". **Exit.**
 the kernel delete journey renders no live card; the fuzz holds over 10,000
 sequences.
 
-### F2a · Envelopes and the durable inbox (D-next-8; extends D165)
+### F2a · Envelopes and the durable inbox (D214, landed 0.274.0; extends D165)
 
 **Files.** `crates/types/src/mail.rs` (new), `mailbox.rs:65-160` (route
 builds an envelope; seq counters), `mailbox.rs:217-226` (deliver writes the
@@ -2194,9 +2350,10 @@ receipts; keeps `mailbox.rs` under the cap), `fetch/schemes.rs:30-44,179`
 |---|---|
 | per-pair order holds | `recursion_e2e::two_messages_from_one_sender_drain_in_seq_order` (T1) |
 | the inbox is durable | `recursion_e2e::a_message_to_a_finished_child_is_inboxed_and_readable_by_history` (T1) |
-| the body cap refuses and names the alternative | `mailbox::a_body_over_sixteen_kib_is_refused_not_trimmed` (T0) |
+| the body cap refuses and names the alternative | `recursion_e2e::a_body_over_sixteen_kib_is_refused_not_trimmed` (T1) |
 | request resolves on its reply and times out otherwise | `recursion_e2e::request_returns_the_matching_reply_and_times_out_without_one` (T1) |
-| a receipt states what the host did | `mailbox::send_returns_queued_woken_or_inboxed` (T0) |
+| a receipt states what the host did | `recursion_e2e::send_returns_queued_woken_or_inboxed` (T1) |
+| the host names the sender, and a kind keeps its direction | `recursion_e2e::the_host_names_the_sender_and_a_kind_keeps_its_direction` (T1) |
 
 LOC yi-types +80, yi-runtime +260, python +90. Memo: `growth +430: envelopes,
 receipts, the durable inbox and request/reply`. Row: "Messages are
@@ -2209,9 +2366,44 @@ reaches `follow_up_message`, and an idle or finished child never drains that
 queue while the receipt says "queued". The receipt is decided after the
 delivery attempt: `queued` only when a live turn will drain it, else `woken`
 (the idle child is started on it) or `inboxed`. Test:
-`mailbox::a_send_to_an_idle_child_is_woken_or_inboxed_never_queued` (T0).
+`recursion_e2e::a_send_to_an_idle_child_is_woken_or_inboxed_never_queued` (T1).
 
-### F2b · Leases: deadline inheritance, revoke, abort, parent close; capabilities shrink (D-next-9)
+As landed (0.274.0, D214). The three receipt tests filed above under `mailbox::`
+live in `recursion_e2e`: a receipt of `queued` needs a child whose turn is held
+open, and that faux child already exists there, so they are T1. Measured growth is
++462 Rust `src` lines (yi-types 77, yi-runtime 385) and 82 of Python. Where the
+landing differs from sections 7.1 to 7.3:
+
+- A plain `inform` starts no turn unless `followup=True`, as `rlm.send` always
+  documented and section 7.2's last paragraph says; the table's "wakes: yes" for
+  `inform` holds for the followup spelling. To an idle or finished child a plain
+  send answers `inboxed` and also waits on the follow-up queue, so the next turn
+  anyone starts presents it; mid-turn it answers `queued`, and that word is read
+  under the session's status lock as the message is pushed, never from a status
+  read that could race the turn's end. `request`, `reply`, `failure` and `cancel`
+  wake, through the one admission that settles it.
+- `from_incarnation` and `to_incarnation` are not on the envelope: no name is
+  respawned before F3c, which adds them with the thing they distinguish. (F3c added them, D218.)
+- `presented_at` is not a second custom record: the presented message is the
+  transcript's own entry and carries the envelope, id included, in `details`, so
+  an inbox entry with no such message is the inspectable, unpresented item.
+- The id is `<sender>-<n>` with `n` counted per host, so it is unique across
+  recipients; `seq` is the per-pair counter. Both restart with the host, as its
+  children do.
+- `history://self/...` names the reader's own transcript, because a child is
+  never told the name its family knows it by; `yi.mail.inbox()` defaults to it.
+- A message to the parent keeps the receipt word `delivered`: the report hook
+  queues or starts the parent's turn and returns nothing, and it has nine
+  constructors. The envelope is still inboxed first. This is the shape, not a
+  deferral: section 7.3's three words describe a receipt for a child, and no
+  later stage is on the hook to widen the hook's signature for a fourth.
+- Left to the stages that need them: the cancel flag in the child's loop and
+  `failed` from a `failure` envelope (F2b), `progress` into `status().note`,
+  progress coalescing, a bound on inbox growth, reserved capacity for control
+  kinds, and the list of outstanding conversations after a parent restart. One
+  bound landed: a sender holds at most sixteen waiting requests.
+
+### F2b · Leases: deadline inheritance, revoke, abort, parent close; capabilities shrink (D215, landed 0.275.0; extends D165, D210, D214)
 
 **Files.** `crates/types/src/lease.rs` (new), `crates/runtime/src/lease.rs`
 (new: the timer job on the probe tick, repossession), `subagent.rs:470-495`
@@ -2230,7 +2422,7 @@ at reap), `lane/mod.rs:939-955` (`Lane::settle()` hoisted), `gate.rs:120-124`
 | a lease is drawn, never minted | `subagent::a_spawn_asking_past_the_parents_deadline_or_tokens_is_refused_with_both_numbers` (T0) |
 | a revoke reaches the child and its repossession record lands before termination | `recursion_e2e::revoke_delivers_cancel_then_repossesses_after_grace_with_the_record_first` (T1, clock injected) |
 | uncommitted work survives repossession | `lanes::a_repossessed_worktree_keeps_its_work_on_its_branch` (T1) |
-| a hold-shaped rule on a detached child compiles to deny or a queued question | `gate::a_detached_childs_ask_compiles_to_deny_and_an_attached_ones_to_a_request` (T0) |
+| a hold-shaped rule on a detached child compiles to deny; an attached one stays a question | `gate::a_detached_childs_ask_compiles_to_deny_and_an_attached_ones_stays_a_question` (T0) |
 | walls only shrink | `subagent::a_child_cannot_spawn_with_a_smaller_wall_than_its_parent` (T0) |
 | the lease returns at reap | `plan_ledger::reap_records_the_unspent_lease` (T0) |
 
@@ -2261,7 +2453,75 @@ crate. Tests: `subagent::status_state_and_notice_derive_from_one_exit` (T0);
 `family::stuck_reads_the_typed_signal` (T0). LOC yi-types +40, yi-runtime
 +120 −60, yi-tui +10.
 
-### F3a · The judge tier (D-next-10)
+As landed (0.275.0, D215). Measured growth is +1032 Rust `src` lines (yi-types 146,
+yi-runtime 881, 60 of them the review pass) and 23 of Python. Where the landing differs from sections 7.4 to 7.6
+and the rows above:
+
+- One test is renamed: the attached half of the hold test asserts that the question
+  stands, so it is `..._and_an_attached_ones_stays_a_question`. Every child shares its
+  family's one `PermissionBroker`, so an attached child's `Ask` already reaches the
+  root's surface; a `request` envelope to the parent would be a second road to the same
+  answer. `gate::compile_ask` is the detached half, and the broker's no-asker arm reads
+  its refusal from it. The spawn refusal for a brief that names a walled path is not
+  built. The `context` the section means is a `Delegation`'s list of URLs, which is
+  structured and could be checked, but the effective wall is computed in `spawn`, which
+  is handed kwargs and never the delegation, so the check needs the URLs plumbed to the
+  one place that knows the parent's wall. F3a built it on the engine's spawn road: the
+  delegate asks the host for the effective wall (`wall_for`, which `spawn` shares) and
+  refuses a delegation whose `context` that wall denies.
+- The lease journal is the parent's own transcript (`custom{lease}` entries: `revoked`,
+  `repossessed`, `returned`), not `ops.jsonl`: a lease exists without a plan. Three
+  tests were added beside the table: `a_cancel_ends_the_run_at_its_next_message_boundary`,
+  `a_terminated_respondent_refuses_its_waiters_by_name` and
+  `a_failure_from_a_child_reads_failed_in_wait` (all `recursion_e2e`, T1).
+- "Record first" is the order inside `retire_as`: the run is stopped and joined, the lane
+  settles, the `Repossession` is journaled, and only then is the record released and the
+  terminal update published. The revocation itself is journaled before the `cancel` is
+  sent, which is what a restart resumes from. After a restart the child's process is
+  gone, so the resume completes the record and tells the parent; a worktree it held is
+  an orphan lane the pool already knows how to reap, and the record's disposition says
+  `pending` with that as its reason, because nothing settled it. The resume reads the
+  journal oldest first, so a `repossessed` line closes the `revoked` line before it.
+- The plan journal's `Disposition::RepossessionPending`, reserved in F0d, is still
+  unwritten. A repossessed worktree child leaves the roster, so the engine reads a child
+  it cannot vouch for and blocks its todo on the user; the disposition is journaled when
+  that todo leaves `Running` through `fail` or `drop`, from the refs its `submit`
+  recorded. Writing it from the repossession itself needs a road from the host into the
+  engine's journal that no delegate has. F3a did not build it: the road it opened runs
+  the other way, from the engine's verifier into the host, and a repossession fires on
+  the probe loop's timer with no engine transaction open, so the write needs its own
+  request into the engine and a stage that owns it.
+- `RepossessionPending` is a `MemberState` (`repossession_pending`) over a record whose
+  exit is still absent; the timer's job retries it on every wake, at the loop's one second
+  floor while a probe is in flight and at its idle poll otherwise. One reference is not
+  carried across a retry: a journal write that fails after the lane has already settled
+  leaves the record without its lane, so the retry's `kept` names only the transcript. The
+  branch itself is kept, and `yi lanes` still finds it as an orphan.
+- `lease.deadline_ms` is optional: a root with no `--deadline` has no clock to lease.
+  Tokens are reserved and accounted, and returned at reap; nothing ends a run for
+  spending past its reservation yet, and a parent's own turns are not debited here.
+  A root holds no token grant either, since no CLI flag sets one, so the refusal binds
+  a grandchild against what its own parent drew and never a root's first child. Both
+  spawn roads draw: `rlm.run` from `tokens`, the engine's dispatch from
+  `SpawnSpec.budget`, which is no longer only a line in the brief.
+- A child's `failure` envelope is a verdict on its work, not the end of its run. It
+  files no exit while the run is live: the record carries it as a phase, `wait` reports
+  `failed` at once, and the run's own ending turns it into `Failed { red_check }`. Filing
+  the exit there instead would publish a terminal update mid-run, breaking F1e's one
+  ending per run, and would let a revoked child read as ended and dodge its grace.
+- Stopping a run is `abort` and a bounded join (10 s); `abort` already kills bash and
+  interrupts the kernel cell. No separate process-group kill was added.
+- `close` is called where a parent's end is an event the process survives (ACP's session
+  handle drop). The CLI and TUI exit paths end the process and are unchanged.
+- `Failed { class }`: `refused_spawn`, `provider` and `deadline` have producers in
+  `run_child`; a child's own `failure` envelope is filed as `red_check`; `kernel_death`
+  has none until the kernel-dead path reports it.
+- Audit item (e): `fold_event`, `preview`, `update` and the new transition moved to
+  `subagent/record.rs`, the lease and the two stop registrations to `lease.rs`;
+  `subagent.rs` stands at 1,130 lines
+  and `session.rs` at 1,198. Nothing else was shed.
+
+### F3a · The judge tier (D216, landed 0.276.0; extends D194, D215)
 
 **Files.** `crates/runtime/src/plan/judge.rs` (new: the envelope of §6.4),
 `verify.rs` (`Judge` bound), `subagent.rs:1012` (`find_models` filter by
@@ -2277,14 +2537,52 @@ family), `fetch/log.rs:82,167` (quote check), `extract.py`.
 | one pass and two abstentions abstain under the n = 3 quorum | `judge::one_pass_and_two_abstentions_abstain` (T0) |
 | instructions inside the evidence change nothing | `judge::evidence_carrying_instructions_is_data` (T1, the `auto_review.md:5-9` rule) |
 | a full worker set still gets its jury | `judge::full_capacity_still_adjudicates_through_the_reservation` (T1) |
-| a judged item never stands alone | covered by F0c's floor test; re-asserted for a live `judge` decider in `Contract::validate` (T0) |
+| a judged item never stands alone | covered by F0c's floor test; re-asserted for a live `judge` decider in `Contract::validate` (T0): `contract::validate_enforces_the_floors_and_a_judge_never_stands_alone` |
+| a brief naming context its wall denies is refused (handed down by F2b, §7.6) | `judge::a_brief_naming_context_its_wall_denies_is_refused` (T0) |
 
 LOC yi-runtime +320. Memo: `growth +320: the judge envelope`. Row: "A judged
 contract item is a walled reader of another model family answering a fixed
 schema, its quotes checked against its fetch log, aggregated in Rust
 (D-next-10; Closes #<n>)". ADR: "D-next-10: the judge tier is an envelope".
 
-### F3b · Review pod with a code arbiter (D-next-11)
+As landed (0.276.0, D216, #460). Measured growth is +578 Rust `src` lines (yi-runtime
+534 against 320, yi-types 44) and 7 of Python. The tests are `tests/judge.rs`, so
+`judge::` names that file; the F0c floor test was renamed
+`validate_enforces_the_floors_and_a_judge_never_stands_alone`. What the estimate did not
+price: the seat (the verification permit carried from the done path through `Snapshot`
+into `spawn_seated`), the jury count and the escalation arm in `done.rs`, the juror lines
+with their session-visible counts, and F2b's context refusal.
+
+- The cap lives in `Verifier::run`, not in the jury, so the engine's test drives it with
+  a stub `Judge` and no host, beside the whole-verification deadline, which is read once
+  ahead of every decider so that no jury is seated for an item with no time left. An
+  `Escalate` outcome blocks the todo on the user on that refusal, under a note of its own;
+  before F3a nothing produced one.
+- `find_models` moved to `subagent/models.rs` beside `family_of` and `other_families`
+  rather than gaining a filter argument; `subagent.rs` is 6 lines smaller.
+- `extract.py` reads `jurors` counts from the `done` and `done_refused` session records
+  as `juror_pass`, `juror_fail`, `juror_abstain` and `quotes_dropped`; quorum outcomes
+  and escalations were already `verdict_*`.
+- Not built. A jury on the worktree paths: `submit`'s candidate check and the staging
+  check pass no seat, so a judged item abstains there; one jury on each would spend two
+  of a todo's three on a single submit, which wants a decision about which check the
+  jury belongs to. A `judge(...)` builder in the `yi` library: a judged item is declared
+  through the contract's JSON, and §6.4 puts calibration before default use. A `judge`
+  record kind and a `todo.juries` field (both derived instead). A fragment or paged read
+  as backing for a quote. A configured judge model. `Disposition::RepossessionPending`
+  (see F2b's list). Calibration on a labelled set, which §6.4 requires before a judged
+  item is used by default, has not been run.
+- Limits a deployment reaches before any of that. A `plans.dir` outside the cwd puts the
+  evidence blobs outside the tree a juror reads, so every judged item abstains there; a
+  host whose own grant is smaller than three juror leases of 100,000 tokens has a seat
+  refused and abstains by quorum; and a todo the plan holds no delegation for, which is
+  every todo the owner ran itself or spawned by hand, contributes no owner beyond the
+  host's own model, because nothing records the model a child actually executed on
+  (`spawn_result` carries the agent name only). Each abstains or narrows with its reason
+  in the verdict, none is silent, and the owner of all three is F3b, which is where a pod
+  records who read what.
+
+### F3b · Review pod with a code arbiter (D217, landed 0.277.0; extends D212, D216)
 
 `yi/recipes/review_pod.py`: N readers with distinct briefs (correctness,
 tests, scope) and one arbiter todo whose contract is a `cmd` (the checker) or
@@ -2292,7 +2590,33 @@ an `example` set; the pod's verdict is the arbiter's, the readers' findings
 are evidence attached to the todo's `note`. Tests: `test_yi_shapes::a_pod_verdict_is_the_arbiters_command_not_a_reader`
 (T0); a journey `review_pod_on_the_fixture_repo` (T2). LOC python +200.
 
-### F3c · Services with stable addresses (D-next-12)
+As landed (0.277.0, D217, #461, and the review fix on top of it). Python +128 against 200,
+no Rust `src` line; tests +62 of Python and the journey in `kernel_data_surface.rs`, whose rig moved into a `crewed`
+helper the F1b journey shares. The T0 test carries the unittest prefix,
+`test_a_pod_verdict_is_the_arbiters_command_not_a_reader`, and a geometry test sits beside
+it, `test_a_pod_without_a_code_arbiter_or_distinct_briefs_is_refused`.
+
+- The recipe is `declare` plus a module-level `review_pod(plan, run)` built on
+  `shapes._schedule`, `_survivor` and `_asked`; there is no third scheduler. A finding is
+  scatter's `ANSWER` (one answer and its quotes), so it passes the same quote seam, bound
+  to the reader's own partition; a null answer is "nothing found".
+- "Attached to the todo's `note`" is the delegation's note, and no op rewrites a declared
+  todo, so the arbiter is issued again once the readers settle, as `<key>-r2` (scatter's
+  round naming), with the findings in `delegation.note` inside the 1 KiB `InlineNote` cap
+  and each reader's whole answer as a `context` url; the declared arbiter is dropped. The
+  arbiter is therefore a delegated todo: an inline or an owner-run one has no delegation to
+  carry a note.
+- The arbiter is started once and never retried, and geometry refuses a `judge` item on it,
+  so a pod spends no jury and issues one verification per arbiter.
+- Not built: one_for_all on the passes (readers get `_schedule`'s one_for_one, and a reader
+  that stays failed is dropped and named "no backed finding"); a calibrated findings
+  contract; and the record of which model a reader ran on that F3a's limits hand to this
+  stage. The recipe sees only the role's declared `model` and `rlm.result` carries none, so
+  that record needs the host's spawn result to name the model, which is a wire change this
+  stage did not make. F3a's other two limits (a `plans.dir` outside the cwd, a grant
+  smaller than three juror leases) are untouched by a pod, which seats no jury.
+
+### F3c · Services with stable addresses (D218, landed 0.278.0; extends D165, D214, D215, D216)
 
 `rlm.service(name, brief, restart=…)`: a child whose name is reserved; a
 respawn keeps the name and the inbox; `status()` shows `service: true`;
@@ -2300,7 +2624,58 @@ respawn keeps the name and the inbox; `status()` shows `service: true`;
 (`fetch/mod.rs:190-200`). Tests: `recursion_e2e::a_service_respawns_under_its_name_and_keeps_its_inbox`
 (T1). LOC yi-runtime +140, python +40.
 
-### F4a · The procedural graph replaces affordance strings (D-next-13)
+As landed (0.278.0, D218, #462, and the review fixes on top of it). Measured growth is +430
+Rust `src` lines (yi-runtime 424 against 140, yi-types 6) and 24 of Python against 40. What
+the estimate did not price: a service lives in turns mail wakes, which no `run_child`
+watches, so a second road reads those endings; the lease is settled and drawn again under
+the roster lock, and journaled off it; the stopped mark is read again after the build;
+attach or refuse; and the `rlm.service` registration. Tests beside the named one, all
+`recursion_e2e` (T1): `a_service_out_of_restarts_or_lease_ends_failed_and_says_so`,
+`a_service_the_parent_cannot_relend_ends_failed_and_says_so`,
+`a_woken_crash_respawns_and_a_parent_close_ends_a_service_for_good`,
+`a_service_revoked_while_its_next_run_is_built_never_comes_back`,
+`a_respawned_service_is_billed_from_its_own_first_turn`,
+`a_service_is_outside_the_worker_cap_and_under_the_depth_limit`.
+
+- A respawn reuses the record: the new session is attached to the same session store and
+  `Step::Respawn` clears the exit, so the name is never free, the inbox is the same file,
+  `history://<name>` is one chain with no change to `fetch/mod.rs` or `kept_transcript`,
+  and no terminal update is published for a run that was respawned. The respawned session
+  therefore loads its predecessor's transcript, and its brief opens with a line naming the
+  incarnation and the cause.
+- `restart` is the intensity: how many respawns are allowed inside ten minutes
+  (`RESTART_WINDOW_MS`), default 3, 0 for none, and `MAX_RESTARTS` (ten) is the most a
+  caller may ask for, refused and never clamped. Only a provider error and a dead kernel
+  respawn; a deadline does not, because a fresh lease on expiry would undo the lease.
+- `turn_ended` lets one reader at a time out on a service's run: mail can start a turn on a
+  run that already crashed, and two readers of that one crash would end it twice, on two
+  leases and two incarnations. The race needs two `AgentEnd`s inside one crash window, which
+  the harness cannot schedule, so the guard has no test of its own.
+- The build is the one stretch a respawn holds no lock across, so the stopped mark is read
+  again under the roster lock after it, and a service a `revoke` or a `close` stopped while
+  its next run was being built ends `Failed` with that as the reason; the session that build
+  produced has its kernel disposed rather than dropped, as the dead incarnation's does.
+- Each incarnation is billed for its own turns: `ChildRecord.billed_from` is the kept
+  transcript's length at the respawn, and `refold` and the lease return both count from it,
+  so a lagged watch cannot charge a predecessor's turns to the successor's lease and a
+  provider error's unknown usage stops spending reservations after the one it ended.
+- `ChildRecord.juror` became `Standing { Worker, Juror, Service }`. A service is outside
+  the worker cap and sends no notice for an idle turn; it is under the depth limit, the
+  family cap, the lease and the wall, and takes no verification seat.
+- Section 7.1's `from_incarnation: u32` landed as `Option<u32>` like `to_incarnation`, so
+  an envelope between members that are no service is byte for byte what F2a wrote. The
+  waiter carries no incarnation (section 7.3 asks for one): the respawn retires every
+  waiter on the name through `drop_respondent` before the successor can reply, which is
+  the same refusal one step earlier.
+- Deliberate stops: `delete_subagent` removes the record, `revoke` and `close` mark the
+  service stopped (`close` reaches an idle service too, which holds no run to revoke). The
+  `revoke` mark is tested where it is the only thing that can act: a crash whose respawn is
+  already building, in `a_service_revoked_while_its_next_run_is_built_never_comes_back`.
+- Not built: the health `cmd` and shutdown contract of section 6.2's service row, a
+  service in a worktree (refused by name), and adoption after a host restart (counts and
+  incarnations restart with the host).
+
+### F4a · The procedural graph replaces affordance strings (D219, landed 0.279.0)
 
 **Files.** `crates/types/src/graph.rs` (new), `crates/runtime/src/prompts/graph.json`
 (new), `affordance.rs` (renderer; stays under 300 lines), `todo/text.rs:204-230`
@@ -2318,14 +2693,49 @@ respawn keeps the name and the inbox; `status()` shows `service: true`;
 LOC yi-types +90, yi-runtime +260 −80. Memo: `growth +270: the procedural
 graph and its renderer; the affordance strings became data`.
 
-### F4b · The offline refiner with rejection memory (part of D-next-13)
+As landed (0.279.0, D219, #463). Measured growth is +207 Rust `src` lines against 270:
+yi-types 180 against 90, yi-runtime 27 net against 180 (121 added, 94 deleted). The tree
+settled four things this section left open. The predicate set lives in
+`crates/types/src/graph.rs` as the table `PREDICATES`, and `Predicate` is a string that
+parses only against it, so an unknown condition fails where the graph is parsed and
+`graph::an_unknown_predicate_fails_to_parse` is a yi-types test; the host asserts the
+predicates that hold as facts (`Facts.holds`) and the renderer compares names, which is
+why `MemberState`, a runtime type, never had to move. The old producers branched on
+states section 9.2's list did not name, so the closed set gained `todo_state(...)`,
+`coroutine_unawaited`, `method_awaited`, `listing_name_missed`, `grid_answer_empty`,
+`session_on_disk` and `session_in_memory`; `spawned` and `child_finished` became
+`child_state(running)` and `child_state(finished)` on `rlm.run`, because two `always`
+edges on one node would have rendered both lines where one rendered before. The todo
+producer localizes at the tool (its lines are the same after every op) and renders one
+item at a time, so the cap of three stays `NEXT_LINES` in `next_lines`. The seven string
+builders and the `moves` match were dead once the goldens passed from the graph and are
+deleted; section 12's value row is still owed before the graph is more than an
+equivalent. Seven predicates are vocabulary no seam asserts yet (the row lists them).
+
+### F4b · The offline refiner with rejection memory (part of D219, landed 0.280.0)
 
 `evals/graph/refine.py`, `evals/fixtures/graph/{proposals-sample.jsonl,
 rejected.jsonl}`, `evals/levers/split.json` (shared with F4c). Tests (stdlib
 unittest under `evals/`, run by `selftest.py`): `a_graph_edit_that_drops_the_held_out_score_is_rejected_and_remembered`;
 `a_proposal_naming_a_held_out_task_is_refused`; `a_structurally_invalid_edit_never_reaches_a_run`.
 
-### F4c · Levers manifest, floors, the two gates (D-next-14; extends D140)
+As landed (0.280.0, #464; no Rust `src` line). The scoring run is an injected callable:
+`refine(graph, edits, split, run, config)` in tests, the owner's `--runner` command on the
+command line, so `refine.py` itself starts nothing; section 9.5's `ab.py` and the paid slice
+are what a runner wraps. The development tasks filter before the held-out tasks are touched
+(`fit_passes_dropped`), which keeps held-out accesses to candidates that earned one. A tie in
+which neither graph solves anything prices no token, so section 9.8's byte rule decides it
+(`guidance_bytes_unpaid`). The refusal of section 9.6 covers validation as well as final
+tasks, and reads the decoded line by token, so a JSON escape hides no id and an id inside a
+longer word refuses nothing. The two rule sets are held
+together by `evals/fixtures/graph/structural.json`, judged by `graph::the_shared_fixture_is_judged_alike_on_both_sides`
+and by the Python test of the same name. `split.json` is drawn over the seven synthetic
+tasks of `evals/fixtures/tasks` (development four, validation three, final empty); the
+thirteen-task slice of section 10.4 is benchmark data and stays out of the split file until
+the owner decides how it is named there. `graph.json` is kept in the writer's one-line-per-edge
+form. Not run: any real scoring.
+
+### F4c · Levers manifest, floors, the two gates (D220, landed 0.281.0; extends D140)
 
 `crates/runtime/src/levers.rs`, `evals/levers/{levers.json,default.json,floors.json,split.json}`,
 `evals/levers.py`, `env_vars.json` (`YI_LEVERS`, own `Ratchet:` commit).
@@ -2333,7 +2743,7 @@ unittest under `evals/`, run by `selftest.py`): `a_graph_edit_that_drops_the_hel
 | control | test (tier) |
 |---|---|
 | both sides agree | `levers::the_default_fixture_equals_the_compiled_defaults` (T0) and `levers.py --selfcheck` |
-| eval mode only | `levers::without_yi_levers_the_defaults_are_used_and_the_file_is_never_read` (T0); `levers::yi_levers_set_outside_eval_mode_is_ignored` (T0) |
+| eval mode only | `levers::without_yi_levers_the_defaults_are_used_and_the_file_is_never_read` (T0); `levers::yi_levers_set_outside_eval_mode_is_ignored` (T0); `cli_surfaces::yi_levers_is_read_only_under_the_eval_flag` (T1) |
 | a lever that improves cost by failing the floor is rejected | `evals/tests/test_levers.py::a_cheaper_candidate_below_the_floor_is_rejected_with_its_class` (T0) |
 | survivors are nondominated | `test_levers.py::a_dominated_candidate_is_not_a_survivor` (T0) |
 | the held-out split never enters the fit | `test_levers.py::fit_refuses_rows_that_name_a_held_out_task` (T0) |
@@ -2341,7 +2751,29 @@ unittest under `evals/`, run by `selftest.py`): `a_graph_edit_that_drops_the_hel
 LOC yi-runtime +240 (the struct, the reads at each constant), evals +400.
 Memo: `growth +240: the kernel's constants read through one Levers struct`.
 
-### F4d · Controlled comparisons over three to five knobs (part of D-next-14)
+As landed (0.281.0, #465; src +191 after the review). The tree won over section 10.1's table: `plan.nudge_cap`,
+`todo.artifact_steer_turn` and `todo.artifact_cap` no longer exist (D182) and are not listed,
+`loop.cut_stop_at` is 6 and `lane.slots` is 255 (grow on demand). 45 levers are listed and 25
+are tunable; the other 20 carry a `why`: the two fuses, the six mail caps, the ladder's height
+(three rung texts), the jury size (a contract rule), `family.depth`, `lane.slots` and
+`advisor.cadence` (config keys already), and the constants of yi-loop, yi-tools and
+`shapes.py`, which no `Levers` read reaches; wiring one of those is its own change. `Levers` is
+a process-wide `OnceLock` read through `levers::get()`, not a `RuntimeWiring` field: the reads
+sit in pure methods (`Cycle::work`, `Rung::delay`, `Features::route`) that hold no wiring, and
+one process runs one configuration; `levers::init` runs from `build_session`'s first statement,
+before the session exists, so no constant is read on both sides of it. The tree had no eval-mode
+flag and no existing flag means "a harness launched me" (`--deadline` is a user feature F2b
+leases inherit), so the review added `--eval`, which does nothing but let `YI_LEVERS` be read:
+the variable alone is inert, `evals/run.py` passes the flag when the variable is set, and a run
+that is not on the defaults names the file once on stderr. The manifest's ranges live in
+Rust too, since the loader cannot read `evals/` at run time; `levers::the_manifest_matches`
+holds the two equal. `floors.json` carries the `fixtures` class only: the first-cut classes of
+section 10.3 name benchmark tasks and wait for the owner, as the split does. The override
+file's canonical hash rides the fingerprint's mode in `evals/run.py` (section 10.6); the harbor
+adapter carries neither the variable nor the flag into its container yet. Not run: any paid
+comparison.
+
+### F4d · Controlled comparisons over three to five knobs (part of D220, landed 0.282.0)
 
 `levers.py compare` (paired baseline and candidate over one knob) and
 `levers.py grid` (a bounded grid over the chosen knobs, every run counted in
@@ -2351,6 +2783,22 @@ the search spend); tests on synthetic rows: `a_comparison_reports_its_interval`,
 Gaussian process (§0 R12, §10.4); a later optimizer is its own proposal with
 the data to justify it. Paid runs are the user's; each promotion is a ledger
 row and a changelog row naming it.
+
+As landed (0.282.0, #466; no Rust `src` line). `compare` is a grid of one point, so both
+share the pairing (by repetition, interleaved), the bound (`(points + 1) * k` runs against
+`--max-runs`, refused before anything runs) and the spend count. The interval is the sign
+test inverted, an order-statistic interval for the median paired difference per task,
+printed with the confidence its pair count supports: a bootstrap over a handful of pairs
+is too narrow and a t interval assumes a spread token counts do not have. A point is
+`better` only when both F4c gates pass and a whole efficiency interval lies below zero at
+0.95. The runner is an injected callable in tests and the owner's argv on the command
+line, called as `<runner> <overrides.json> <task>...` with `YI_LEVERS` naming the same file
+in its environment, this process's own untouched. `fit_rows` stays the guard a later fit would have to pass: nothing here
+fits anything, so no command calls it. The review added the per-task medians beside the pooled
+interval (repetitions of one task are not independent draws across tasks), a note before the
+spend when the pairs cannot reach 0.95, a refusal of a trial metric that does not order (a NaN
+reward would pass a floor by not being a number) and of a candidate that skipped a task the
+baseline ran, and `YI_LEVERS` in the runner's own environment. Not run: any paid comparison.
 
 ### Deferred (seams only)
 

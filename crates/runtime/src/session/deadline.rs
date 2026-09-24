@@ -26,8 +26,33 @@ impl Deadline {
 
     /// No turn starts in the last `STOP_MARGIN`; a short budget (a 120 s fixture) keeps
     /// three quarters of itself instead of one turn.
-    pub(super) fn winding_down(self) -> bool {
+    pub(crate) fn winding_down(self) -> bool {
         self.passed(STOP_MARGIN.min(self.total / 4))
+    }
+}
+
+impl super::Shared {
+    /// The loop's check at its message boundary: out of clock, or cancelled by the parent.
+    pub(super) fn winding_down(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+            || self
+                .deadline
+                .get()
+                .is_some_and(|clock| clock.winding_down())
+    }
+}
+
+impl super::AgentSession {
+    /// A `cancel` from the parent: the turn in flight settles and no request follows it.
+    pub(crate) fn cancel(&self) {
+        let flag = &self.shared.cancelled;
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn cancelled(&self) -> bool {
+        self.shared
+            .cancelled
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

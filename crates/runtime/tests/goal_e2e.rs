@@ -385,6 +385,7 @@ fn seed_plan_of(root: &std::path::Path, label: &str, check: &str) -> TestResult 
                     isolation: None,
                     budget: None,
                     wall: None,
+                    parent_close: None,
                     extra: serde_json::Map::new(),
                 },
                 accept: Check::Command(check.to_owned()),

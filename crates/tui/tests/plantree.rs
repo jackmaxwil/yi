@@ -70,6 +70,7 @@ fn delegated(label: &str) -> Result<Todo, Box<dyn Error>> {
             isolation: None,
             budget: None,
             wall: None,
+            parent_close: None,
             extra: serde_json::Map::new(),
         },
         accept: Check::Command("just check".to_owned()),

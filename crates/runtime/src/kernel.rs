@@ -62,6 +62,12 @@ except Exception as _yi_rlm_error:
             return await self.run(prompt, **kwargs)
 
     rlm = _YiMissingRlm()
+
+# Imported here so its pre_run_cell hook sees every later cell's source (plan section 8.3).
+try:
+    import yi
+except Exception:
+    pass
 "#;
 
 const SKILL_WRAPPER_CODE: &str = r#"
@@ -748,10 +754,16 @@ impl KernelService {
     pub async fn read_variable(
         &self,
         name: &VariableName,
-    ) -> Result<Option<String>, VariableReadError> {
-        self.variable_cell(name, read_variable_code(name))
-            .await
-            .map(|reply| reply.map(|(text, chars)| render_value(text, chars)))
+        page: Option<crate::fetch::Page>,
+    ) -> Result<Option<(String, Option<usize>)>, VariableReadError> {
+        let reply = self.variable_cell(name, read_variable_code(name, page));
+        Ok(reply.await?.map(|(text, chars)| match page {
+            None => (render_value(text, chars), None),
+            Some(page) => {
+                let end = page.offset.saturating_add(text.chars().count());
+                (text, (end < chars).then_some(end))
+            }
+        }))
     }
 
     /// The variable dilled to `path` (D164): `Some(bytes)` when it exists.
@@ -878,7 +890,7 @@ mod tests {
 
     #[test]
     fn the_read_cell_carries_the_name_as_data_not_as_code() -> TestResult {
-        let code = read_variable_code(&VariableName::parse("answer")?);
+        let code = read_variable_code(&VariableName::parse("answer")?, None);
         assert!(code.contains("name = \"answer\""), "{code}");
         assert!(code.contains("if name not in ns:"), "{code}");
         assert!(
@@ -1096,7 +1108,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_read_without_a_kernel_is_not_an_absence() -> TestResult {
-        let error = service().read_variable(&VariableName::parse("x")?).await;
+        let error = service()
+            .read_variable(&VariableName::parse("x")?, None)
+            .await;
         assert!(matches!(error, Err(VariableReadError::NotRunning)));
         Ok(())
     }
@@ -1111,13 +1125,13 @@ mod tests {
             .await?;
         assert_eq!(
             service
-                .read_variable(&VariableName::parse("answer")?)
+                .read_variable(&VariableName::parse("answer")?, None)
                 .await?,
-            Some("42".to_owned())
+            Some(("42".to_owned(), None))
         );
         assert_eq!(
             service
-                .read_variable(&VariableName::parse("never_bound")?)
+                .read_variable(&VariableName::parse("never_bound")?, None)
                 .await?,
             None
         );

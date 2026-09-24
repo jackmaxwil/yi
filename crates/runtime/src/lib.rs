@@ -16,6 +16,9 @@ pub mod kernel;
 mod kernel_doctor;
 mod kernel_variables;
 pub mod lane;
+pub mod lease;
+pub mod levers;
+mod mail;
 pub mod mailbox;
 pub mod memory;
 pub mod permission;
@@ -56,7 +59,7 @@ pub use rewind::{BranchStub, Rewound, rewind_to, summarize_branch};
 pub use session::{AgentSession, SessionConfig, SessionError, Status};
 pub use skills::{Skill, skills_catalog};
 pub use subagent::{
-    ChildBuild, ChildStatus, ChildUpdate, ChildView, SubagentHost, SubagentHostOptions,
+    ChildBuild, ChildFeed, ChildStatus, ChildUpdate, ChildView, SubagentHost, SubagentHostOptions,
 };
 pub use telemetry::Telemetry;
 pub use tools::ToolAdapter;

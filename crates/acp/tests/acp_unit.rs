@@ -214,6 +214,7 @@ fn child_updates_become_a_subagent_update_notification() -> TestResult {
                 token_count: 1200,
                 answer_preview: None,
                 error: None,
+                exit: None,
             },
         },
         &mut ids,
@@ -386,6 +387,7 @@ fn child_update() -> yi_types::subagent::ChildUpdate {
         token_count: 1200,
         answer_preview: None,
         error: None,
+        exit: None,
     }
 }
 

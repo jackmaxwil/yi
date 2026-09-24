@@ -4,13 +4,23 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, Content, StopReason, Usage};
+use yi_types::message::{AgentMessage, StopReason, Usage};
 use yi_types::model::{Effort, Model};
-pub use yi_types::subagent::{ChildActivity, ChildId, ChildStatus, ChildUpdate};
+use yi_types::subagent::FailClass;
+pub use yi_types::subagent::{ChildActivity, ChildExit, ChildId, ChildStatus, ChildUpdate};
 
-use crate::mailbox::{ParentLink, WAIT_MAX_MS, message_params};
-use crate::provider::{available_models, resolve_model};
+use crate::mail::Draft;
+use crate::mailbox::{ParentLink, timeout_of};
 use crate::session::AgentSession;
+
+mod build;
+pub mod models;
+mod record;
+mod service;
+pub use record::ChildFeed;
+pub(crate) use record::Step;
+use record::preview;
+pub(crate) use service::Standing;
 
 pub const DEFAULT_MAX_DEPTH: u8 = 1;
 // A completed child holds its slot until closed: the cap forces the parent to
@@ -19,6 +29,8 @@ pub const DEFAULT_MAX_CHILDREN: usize = 8;
 /// live sessions across the whole family, so a deeper fan-out cannot multiply (D165).
 pub const FAMILY_CAP: usize = 16;
 pub const PARENT_NAME: &str = "parent";
+/// The cause a cut-short run carries on its terminal update and in the parent's notice.
+pub(crate) const INTERRUPTED: &str = "interrupted";
 
 pub(crate) struct ChildRecord {
     pub(crate) session_name: String,
@@ -32,8 +44,17 @@ pub(crate) struct ChildRecord {
     /// Dispatched by the plan engine: its worktree goes through `submit` or a journaled
     /// disposition, never the kernel's merge or discard.
     pub(crate) managed: bool,
-    pub(crate) status: ChildStatus,
+    /// A juror or a service stands outside the worker cap and the owner's lifecycle notice.
+    pub(crate) standing: Standing,
+    /// `None` while the run is live; every status, state and notice is read from it.
+    pub(crate) exit: Option<ChildExit>,
+    pub(crate) phase: crate::family::Phase,
+    pub(crate) lease: yi_types::lease::Lease,
+    pub(crate) parent_close: yi_types::lease::ParentClose,
     activity: ChildActivity,
+    /// Where this incarnation's own turns start in the kept transcript: 0 for every child but
+    /// a respawned service, whose predecessor's turns were billed to the lease that ended.
+    pub(crate) billed_from: usize,
     tool_use_count: u64,
     token_count: u64,
     answer_preview: Option<String>,
@@ -51,9 +72,26 @@ pub(crate) struct ChildRecord {
 pub(crate) struct Children {
     records: HashMap<String, ChildRecord>,
     pub(crate) epoch: u64,
+    /// Children being built outside the lock; each holds a slot, its name and its tokens.
+    building: Vec<(String, u64)>,
 }
 
 impl Children {
+    /// Tokens out on lease: every record still held, and every build in flight.
+    pub(crate) fn reserved(&self) -> u64 {
+        let held = self
+            .records
+            .values()
+            .filter_map(|record| record.lease.tokens);
+        held.chain(self.building.iter().map(|(_, tokens)| *tokens))
+            .fold(0, u64::saturating_add)
+    }
+
+    /// A build whose record is listed: its reservation is the record's from here on.
+    pub(crate) fn release_build(&mut self, name: &str) {
+        self.building.retain(|(held, _)| held != name);
+    }
+
     /// A reaped record still moves the epoch, so an older cursor wakes and re-reads `states`.
     pub(crate) fn touch(&mut self, key: &str) -> u64 {
         self.epoch = self.epoch.saturating_add(1);
@@ -79,26 +117,11 @@ impl std::ops::DerefMut for Children {
     }
 }
 
-impl ChildRecord {
-    fn update(&self, child_id: &str) -> ChildUpdate {
-        ChildUpdate {
-            id: ChildId(child_id.to_owned()),
-            name: self.session_name.clone(),
-            status: self.status,
-            activity: self.activity,
-            tool_use_count: self.tool_use_count,
-            token_count: self.token_count,
-            answer_preview: self.answer_preview.clone(),
-            error: self.error.clone(),
-        }
-    }
-}
-
-/// The session handle is event-stream and store access, not control.
+/// The feed is event-stream and store access; control goes through the host.
 #[derive(Clone)]
 pub struct ChildView {
     pub update: ChildUpdate,
-    pub session: Arc<AgentSession>,
+    pub session: ChildFeed,
 }
 
 pub struct ChildBuild<'a> {
@@ -109,6 +132,9 @@ pub struct ChildBuild<'a> {
     pub cwd: Option<&'a Path>,
     pub link: ParentLink,
     pub wall: crate::wall::Wall,
+    /// The child's lease: its own clock and the tokens its own children may draw on.
+    pub deadline: Option<std::time::Duration>,
+    pub tokens: Option<u64>,
 }
 
 pub type ChildFactory = dyn Fn(ChildBuild<'_>) -> Result<AgentSession, String> + Send + Sync;
@@ -156,6 +182,9 @@ pub struct SubagentHost {
     /// Invariant: a reap pin names `history://<child>`, and a child's file lives
     /// under a `sub-*` directory no session repo scans, so it is kept by name here.
     pub(crate) reaped: Mutex<HashMap<String, yi_session::SharedSession>>,
+    pub(crate) mail: Mutex<crate::mail::Desk>,
+    /// Lock order: `mail`, then `children`, then `grant`, then a session store.
+    pub(crate) grant: Mutex<crate::lease::Grant>,
 }
 
 impl SubagentHost {
@@ -336,6 +365,9 @@ fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
                     | "deny_url"
                     | "context"
                     | "check"
+                    | "deadline_s"
+                    | "tokens"
+                    | "parent_close"
             )
         })
         .collect();
@@ -371,7 +403,7 @@ fn child_entry(child_id: &str, record: &ChildRecord) -> Value {
         "session_id": Value::Null,
         "session_name": record.session_name,
         "session_dir": record.session_dir.to_string_lossy(),
-        "status": record.status.as_str(),
+        "status": crate::family::read_exit(record.exit).status.as_str(),
     })
 }
 
@@ -392,54 +424,41 @@ pub(crate) fn last_assistant_text(messages: &[AgentMessage]) -> Option<String> {
     })
 }
 
-fn preview(text: &str) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.chars().count() > 240 {
-        let capped: String = compact.chars().take(240).collect();
-        format!("{capped}…")
-    } else {
-        compact
-    }
-}
-
-/// `false` means nothing a client can see moved, so nothing is published.
-fn fold_event(record: &mut ChildRecord, event: &AgentEvent) -> bool {
-    match event {
-        AgentEvent::ToolExecutionStart { .. } => {
-            record.tool_use_count = record.tool_use_count.saturating_add(1);
-            record.activity = ChildActivity::Executing;
-            true
+/// How a settled run ended, read off its last assistant message; a run a cancel or the
+/// deadline stopped at a message boundary ends on a tool call with no request after it.
+fn exit_of(session: &AgentSession) -> (ChildExit, Option<String>) {
+    let messages = session.messages();
+    let last = messages.iter().rev().find_map(|message| match message {
+        AgentMessage::Assistant {
+            stop_reason,
+            error_message,
+            ..
+        } => Some((stop_reason, error_message)),
+        _ => None,
+    });
+    let out_of_clock = session.deadline().is_some_and(|clock| clock.winding_down());
+    match last {
+        Some((StopReason::Error, message)) => (
+            ChildExit::Failed {
+                class: FailClass::Provider,
+            },
+            Some(
+                message
+                    .clone()
+                    .unwrap_or_else(|| "child run ended with an error".to_owned()),
+            ),
+        ),
+        Some((StopReason::Aborted, _)) => (ChildExit::Interrupted, Some(INTERRUPTED.to_owned())),
+        Some((StopReason::ToolUse, _)) if session.cancelled() => {
+            (ChildExit::Interrupted, Some("cancelled".to_owned()))
         }
-        AgentEvent::ToolExecutionEnd { .. } => {
-            record.activity = ChildActivity::Writing;
-            true
-        }
-        AgentEvent::MessageStart {
-            message: AgentMessage::Assistant { .. },
-        } => {
-            record.activity = ChildActivity::Writing;
-            true
-        }
-        AgentEvent::MessageEnd {
-            message: AgentMessage::Assistant { usage, content, .. },
-        } => {
-            let tokens = u64::try_from(usage.total_tokens).unwrap_or(0);
-            record.token_count = record.token_count.saturating_add(tokens);
-            record.activity = ChildActivity::Waiting;
-            let text: String = content
-                .iter()
-                .filter_map(|block| match block {
-                    Content::Text { text, .. } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            if !text.is_empty() {
-                record.answer_preview = Some(preview(&text));
-            }
-            true
-        }
-        _ => false,
+        Some((StopReason::ToolUse, _)) if out_of_clock => (
+            ChildExit::Failed {
+                class: FailClass::Deadline,
+            },
+            Some("the deadline ended the run before its task did".to_owned()),
+        ),
+        _ => (ChildExit::Completed, None),
     }
 }
 
@@ -451,6 +470,8 @@ impl SubagentHost {
             deadline: Mutex::new(None),
             children: Mutex::new(Children::default()),
             reaped: Mutex::new(HashMap::new()),
+            mail: Mutex::default(),
+            grant: Mutex::default(),
         }
     }
 
@@ -478,7 +499,7 @@ impl SubagentHost {
                     .iter()
                     .map(|(id, record)| ChildView {
                         update: record.update(id),
-                        session: Arc::clone(&record.session),
+                        session: ChildFeed::of(Arc::clone(&record.session)),
                     })
                     .collect();
                 view.sort_by(|left, right| left.update.id.cmp(&right.update.id));
@@ -505,6 +526,9 @@ impl SubagentHost {
             loop {
                 match events.recv().await {
                     Ok(event) => {
+                        if matches!(event, AgentEvent::AgentEnd { .. }) {
+                            host.turn_ended(&child_id);
+                        }
                         let moved = host
                             .children
                             .lock()
@@ -512,14 +536,16 @@ impl SubagentHost {
                             .and_then(|mut children| {
                                 children
                                     .get_mut(&child_id)
-                                    .map(|record| fold_event(record, &event))
+                                    .map(|record| record.step(Step::Event(&event)))
                             })
                             .unwrap_or(false);
                         if moved {
                             host.publish(&child_id);
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        host.refold(&child_id);
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -546,106 +572,96 @@ impl SubagentHost {
         prompt: String,
         kwargs: Map<String, Value>,
     ) -> Result<Map<String, Value>, String> {
+        self.spawn_seated(prompt, kwargs, None)
+    }
+
+    /// [`Self::spawn`], or a juror's seat when `seat` holds the verification reserve: a leaf
+    /// above the worker cap and the depth limit, still under the family cap and the lease.
+    pub(crate) fn spawn_seated(
+        self: &Arc<Self>,
+        prompt: String,
+        kwargs: Map<String, Value>,
+        seat: Option<&crate::plan::capacity::Permit>,
+    ) -> Result<Map<String, Value>, String> {
+        let juror =
+            seat.is_some_and(|seat| seat.purpose() == crate::plan::capacity::Purpose::Verification);
+        let standing = if juror {
+            Standing::Juror
+        } else {
+            Standing::Worker
+        };
+        self.admit(prompt, kwargs, standing)
+    }
+
+    /// Only a juror is above the depth limit; a juror and a service are above the worker cap.
+    fn admit(
+        self: &Arc<Self>,
+        prompt: String,
+        kwargs: Map<String, Value>,
+        standing: Standing,
+    ) -> Result<Map<String, Value>, String> {
+        let (juror, family_cap) = (
+            matches!(standing, Standing::Juror),
+            crate::levers::get().family_cap,
+        );
         require_kwargs(&kwargs)?;
         let requested_name = optional_string(&kwargs, "name")?;
-        let requested_model = optional_string(&kwargs, "model")?;
-        let thinking = optional_string(&kwargs, "thinking")?
-            .map(|level| level.parse::<Effort>())
-            .transpose()
-            .map_err(|error| error.to_string())?;
         let fork = parse_fork(&kwargs)?;
         let isolation = parse_isolation(&kwargs)?;
         let check = optional_string(&kwargs, "check")?;
         let context = crate::mailbox::context_block(&kwargs)?;
-        let wall = crate::wall::Wall::from_kwargs(&kwargs, &self.options.cwd)?;
-        if fork == Fork::All && (requested_model.is_some() || thinking.is_some()) {
+        let ask = crate::lease::Ask::from_kwargs(&kwargs)?;
+        let overrides =
+            optional_string(&kwargs, "model")?.or(optional_string(&kwargs, "thinking")?);
+        if fork == Fork::All && overrides.is_some() {
             return Err(
                 "fork=all inherits the parent's model and thinking; drop the override".to_owned(),
             );
         }
-        if (self.options.family_live)() >= FAMILY_CAP {
+        if (self.options.family_live)() >= family_cap {
             return Err(format!(
-                "the family holds {FAMILY_CAP} live sessions; reap one with rlm.delete_subagent before spawning"
+                "the family holds {family_cap} live sessions; reap one with rlm.delete_subagent before spawning"
             ));
         }
-        if self.options.depth >= self.options.max_depth {
+        if !juror && self.options.depth >= self.options.max_depth {
             return Err(format!(
                 "RLM recursion depth limit reached (RLM_DEPTH={}, RLM_MAX_DEPTH={})",
                 self.options.depth, self.options.max_depth
             ));
         }
-        let (parent_model, parent_effort) = (self.options.defaults)();
-        let model = match &requested_model {
-            None => parent_model,
-            Some(selector) => {
-                let (provider, id) = selector.split_once('/').ok_or_else(|| {
-                    format!("model selector must be provider/model, got {selector}")
-                })?;
-                resolve_model(provider, id)
-                    .ok_or_else(|| format!("no model matches selector {selector}"))?
-            }
-        };
-
+        let cast = self.cast(&kwargs)?;
+        let model = cast.0.clone();
         let (session_dir, child_id) = self.create_child_dir(&self.options.parent_session_dir)?;
         let session_name =
             requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
+        let capped = matches!(standing, Standing::Worker);
+        let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask, capped)?;
+        let (worktree, lane_permit) = match isolation {
+            Isolation::None => (None, None),
+            Isolation::Worktree => {
+                let (lane, permit) = self.claim_child_lane(&child_id)?;
+                (Some(lane), Some(permit))
+            }
+        };
+        let cwd = worktree.as_ref().map(|lane| lane.path());
+        let child = self.build(cast, &session_name, &session_dir, cwd, &lease, None)?;
+        if fork != Fork::None {
+            let seed = seed_for_fork(
+                &(self.options.parent_messages)(),
+                fork,
+                child.model().context_window,
+            );
+            child.seed_messages(seed);
+        }
+        let session = Arc::new(child);
+        // Invariant: read before the record is listed, so every abort a client can ask for
+        // from here on carries a later epoch and admission cannot clear it.
+        let requested = session.abort_epoch();
         {
             let mut children = self
                 .children
                 .lock()
                 .map_err(|_| "subagent state poisoned")?;
-            if children.len() >= self.options.max_children {
-                let _ = std::fs::remove_dir_all(&session_dir);
-                return Err(format!(
-                    "RLM child limit reached ({} children retained); rlm.delete_subagent a finished child first",
-                    self.options.max_children
-                ));
-            }
-            if children
-                .values()
-                .any(|record| record.session_name == session_name)
-            {
-                let _ = std::fs::remove_dir_all(&session_dir);
-                return Err(format!(
-                    "Agent session name \"{session_name}\" is already taken at depth {}",
-                    self.options.depth.saturating_add(1)
-                ));
-            }
-            let (worktree, lane_permit) = match isolation {
-                Isolation::None => (None, None),
-                Isolation::Worktree => {
-                    let (lane, permit) = self.claim_child_lane(&child_id)?;
-                    (Some(lane), Some(permit))
-                }
-            };
-            let child = (self.options.factory)(ChildBuild {
-                model: model.clone(),
-                thinking: Some(thinking.unwrap_or(parent_effort)),
-                session_dir: &session_dir,
-                cwd: worktree.as_ref().map(|lane| lane.path()),
-                link: ParentLink {
-                    child_name: session_name.clone(),
-                    host: Arc::downgrade(self),
-                },
-                wall,
-            })?;
-            // Invariant: a child that runs unrecorded leaves nothing to read
-            // when it fails, so a transcript it cannot open refuses the spawn.
-            let cwd = worktree
-                .as_ref()
-                .map_or(self.options.cwd.as_path(), |lane| lane.path());
-            yi_session::create_flat_session(session_dir.clone(), cwd.to_string_lossy())
-                .and_then(|store| child.attach_store(store))
-                .map_err(|error| error.to_string())?;
-            if fork != Fork::None {
-                let seed = seed_for_fork(
-                    &(self.options.parent_messages)(),
-                    fork,
-                    child.model().context_window,
-                );
-                child.seed_messages(seed);
-            }
-            let session = Arc::new(child);
             children.insert(
                 child_id.clone(),
                 ChildRecord {
@@ -655,8 +671,13 @@ impl SubagentHost {
                     lane_permit,
                     disposition: None,
                     managed: false,
-                    status: ChildStatus::Running,
+                    standing,
+                    exit: None,
+                    phase: crate::family::Phase::Queued,
+                    lease,
+                    parent_close: ask.parent_close,
                     activity: ChildActivity::Waiting,
+                    billed_from: 0,
                     tool_use_count: 0,
                     token_count: 0,
                     answer_preview: None,
@@ -667,36 +688,36 @@ impl SubagentHost {
                     session: Arc::clone(&session),
                 },
             );
+            // The record now carries the lease: a build still listed would reserve it twice,
+            // and a spawn racing this one would be refused tokens nobody holds.
+            children.release_build(&session_name);
             children.touch(&child_id);
-            self.watch(child_id.clone(), &session);
-            let host = Arc::clone(self);
-            let task_child_id = child_id.clone();
-            let task_name = session_name.clone();
-            let task_prompt = prompt.clone();
-            // Invariant: the spawn reply resolves at admission, and blocking here
-            // would abort the turn whose cell awaits it.
-            tokio::spawn(async move {
-                host.run_child(task_child_id, task_name, task_prompt, context, session)
-                    .await;
-            });
         }
+        drop(reserved);
+        self.watch(child_id.clone(), &session);
+        let host = Arc::clone(self);
+        let task_child_id = child_id.clone();
+        let task_name = session_name.clone();
+        // Invariant: the spawn reply resolves at admission, and blocking here
+        // would abort the turn whose cell awaits it.
+        tokio::spawn(async move {
+            host.run_child(
+                task_child_id,
+                task_name,
+                prompt,
+                context,
+                session,
+                requested,
+            )
+            .await;
+        });
         self.publish(&child_id);
-        let mut reply = Map::new();
-        reply.insert("rlm_child_id".to_owned(), Value::String(child_id));
-        reply.insert(
-            "next".to_owned(),
-            Value::String(crate::affordance::spawned(&session_name)),
-        );
-        reply.insert("name".to_owned(), Value::String(session_name));
-        reply.insert(
-            "session_dir".to_owned(),
-            Value::String(session_dir.to_string_lossy().into_owned()),
-        );
-        reply.insert(
-            "model".to_owned(),
-            Value::String(format!("{}/{}", model.provider, model.id)),
-        );
-        Ok(reply)
+        Ok(service::handle(
+            &child_id,
+            &session_name,
+            &session_dir,
+            &model,
+        ))
     }
 
     async fn run_child(
@@ -706,35 +727,61 @@ impl SubagentHost {
         prompt: String,
         context: Option<String>,
         session: Arc<AgentSession>,
+        requested: u64,
     ) {
         // Invariant: scope rides the first user message, never a trusted block.
         let content = match context {
             Some(block) => format!("[task from parent]\n\n{block}\n\n{prompt}"),
             None => format!("[task from parent]\n\n{prompt}"),
         };
-        let outcome = session.prompt(&content);
-        let mut error = outcome.err().map(|error| error.to_string());
-        if error.is_none() {
-            session.wait_idle().await;
-            error = session.messages().iter().rev().find_map(|message| {
-                if let AgentMessage::Assistant {
-                    stop_reason: StopReason::Error,
-                    error_message,
-                    ..
-                } = message
-                {
-                    Some(
-                        error_message
-                            .clone()
-                            .unwrap_or_else(|| "child run ended with an error".to_owned()),
-                    )
-                } else {
-                    None
-                }
-            });
+        if let Ok(mut children) = self.children.lock()
+            && let Some(record) = children.get_mut(&child_id)
+            && record.step(Step::Started)
+        {
+            children.touch(&child_id);
         }
+        let outcome =
+            session.prompt_requested(crate::session::user_message(&content), Some(requested));
+        let mut ended = outcome.err().map(|error| {
+            let class = FailClass::RefusedSpawn;
+            (ChildExit::Failed { class }, Some(error.to_string()))
+        });
+        if ended.is_none() {
+            session.wait_idle().await;
+            ended = Some(exit_of(&session));
+        }
+        let (exit, error) = ended.unwrap_or((ChildExit::Completed, None));
+        self.conclude(&child_id, &session_name, &session, exit, error);
+    }
 
-        if error.is_none() {
+    /// A run's ending, unless it is a service's crash and the record was respawned instead.
+    fn conclude(
+        self: &Arc<Self>,
+        child_id: &str,
+        session_name: &str,
+        session: &AgentSession,
+        exit: ChildExit,
+        error: Option<String>,
+    ) {
+        let Some((exit, error)) = self.respawn(child_id, exit, error) else {
+            return;
+        };
+        // A retired child has no record left: `retire` already published its terminal update,
+        // so a second one, a notice or a bill would only echo a closed slot.
+        let (mut replied, mut juror) = (None, false);
+        if let Ok(mut children) = self.children.lock()
+            && let Some(record) = children.get_mut(child_id)
+            && record.step(Step::Exit(exit, error.clone()))
+        {
+            let service = matches!(record.standing, Standing::Service(_));
+            replied = Some((record.replied, service));
+            juror = matches!(record.standing, Standing::Juror);
+            children.touch(child_id);
+        }
+        let Some((replied, service)) = replied else {
+            return;
+        };
+        if exit == ChildExit::Completed {
             for message in session.messages() {
                 if let AgentMessage::Assistant {
                     stop_reason, usage, ..
@@ -745,40 +792,22 @@ impl SubagentHost {
                 }
             }
         }
-
-        let status = if error.is_some() {
-            ChildStatus::Error
-        } else {
-            ChildStatus::Completed
-        };
-        // A reaped child has no record left; its product was already promoted,
-        // so the terminal notice would only echo a closed slot.
-        let mut reaped = true;
-        let mut replied = false;
-        if let Ok(mut children) = self.children.lock()
-            && let Some(record) = children.get_mut(&child_id)
-        {
-            record.status = status;
-            record.activity = ChildActivity::Waiting;
-            record.error = error.clone();
-            replied = record.replied;
-            reaped = false;
-            children.touch(&child_id);
-        }
-        if reaped {
+        self.publish(child_id);
+        if juror {
             return;
         }
-        self.publish(&child_id);
         // Terminal notices reach the parent as user-role host status, never as
         // something that can read as user instructions from the child.
         // a child that ended on `ask_user` is asking its parent, not finishing (D165).
         let question = crate::family::pending_question(&session.messages());
-        let notice = match (&error, question) {
-            (Some(error), _) => format!("[subagent {session_name} ({child_id}) failed]\n{error}"),
-            (None, Some(question)) => format!(
+        let verb = crate::family::read_exit(Some(exit)).verb;
+        let notice = match (exit, question) {
+            (ChildExit::Completed, Some(question)) => format!(
                 "[subagent {session_name} ({child_id}) asks: {question}]\nanswer with rlm.send(\"{session_name}\", \"…\", followup=True)"
             ),
-            (None, None) => {
+            // An idle service has not ended: it waits on its inbox and there is nothing to reap.
+            (ChildExit::Completed, None) if service => return,
+            (ChildExit::Completed, None) => {
                 let answer = last_assistant_text(&session.messages())
                     .map(|text| preview(&text))
                     .unwrap_or_else(|| "(no final answer text)".to_owned());
@@ -788,10 +817,19 @@ impl SubagentHost {
                     "; it sent you no message"
                 };
                 format!(
-                    "[subagent {session_name} ({child_id}) finished{silent}]\nLast answer: {answer}\n{}",
-                    crate::affordance::child_finished(&session_name)
+                    "[subagent {session_name} ({child_id}) {verb}{silent}]\nLast answer: {answer}\n{}",
+                    crate::affordance::next(
+                        "rlm.run",
+                        &[yi_types::graph::CHILD_FINISHED],
+                        session_name
+                    )
                 )
             }
+            (ChildExit::Failed { .. }, _) => format!(
+                "[subagent {session_name} ({child_id}) {verb}]\n{}",
+                error.unwrap_or_default()
+            ),
+            _ => format!("[subagent {session_name} ({child_id}) {verb}]"),
         };
         (self.options.notice)(&notice);
     }
@@ -811,7 +849,7 @@ impl SubagentHost {
                             .map(|store| crate::family::recent_entries(&store))
                             .unwrap_or_default();
                         let (state, note, idle_s) = crate::family::state_from_records(
-                            record.status,
+                            (record.exit, record.phase),
                             record.error.as_deref(),
                             &record.session.messages(),
                             &recent,
@@ -842,7 +880,10 @@ impl SubagentHost {
             .states()
             .into_iter()
             .map(|view| {
+                let incarnation = self.incarnation_of(&view.name);
                 json!({
+                    "service": incarnation.is_some(),
+                    "incarnation": incarnation,
                     "name": view.name,
                     "state": view.state.as_str(),
                     "note": view.note,
@@ -925,34 +966,7 @@ impl SubagentHost {
     }
 
     pub fn delete(&self, target: &str) -> Result<Map<String, Value>, String> {
-        let mut children = self
-            .children
-            .lock()
-            .map_err(|_| "subagent state poisoned")?;
-        let key = Self::key_of(&children, target)?;
-        // A worktree goes only through a recorded disposition: merge, discard, or the
-        // engine's dispose seam, never a delete that drops the only copy of its work.
-        if let Some(record) = children.get(&key)
-            && let Some(tree) = &record.worktree
-            && record.disposition.is_none()
-        {
-            return Err(format!(
-                "child \"{target}\" holds the worktree {}; merge or discard it first",
-                tree.path().display()
-            ));
-        }
-        let Some(record) = children.remove(&key) else {
-            return Err(format!("No RLM child matches \"{target}\""));
-        };
-        children.touch(&key);
-        drop(children);
-        if record.status == ChildStatus::Running {
-            record.session.abort();
-        }
-        Self::dispose_child_kernel(&record.session);
-        // A lane that cannot settle goes back on the record with its slot, and the delete fails.
-        let (mut record, settled) = self.settle_or_restore(&key, record)?;
-        drop(record.lane_permit.take());
+        let (key, record, settled) = self.retire(target)?;
         let mut reply = Map::new();
         reply.insert("subagent".to_owned(), child_entry(&key, &record));
         if let Some((choice, candidate)) = settled {
@@ -966,39 +980,20 @@ impl SubagentHost {
         Ok(reply)
     }
 
-    pub fn find_models(query: &str, limit: usize) -> Map<String, Value> {
-        let needle = query.to_lowercase();
-        let models: Vec<Value> = available_models()
-            .into_iter()
-            .filter(|model| {
-                needle.is_empty()
-                    || model.id.to_lowercase().contains(&needle)
-                    || model.name.to_lowercase().contains(&needle)
-                    || model.provider.to_lowercase().contains(&needle)
-            })
-            .take(limit)
-            .map(|model| {
-                json!({
-                    "provider": model.provider,
-                    "id": model.id,
-                    "name": model.name,
-                    "selector": format!("{}/{}", model.provider, model.id),
-                })
-            })
-            .collect();
-        let mut reply = Map::new();
-        reply.insert("models".to_owned(), Value::Array(models));
-        reply
-    }
-
     pub fn register(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
         let host = Arc::clone(self);
         registry.register("agent_message.send", move |payload| {
-            let (target, text, followup) = message_params(&payload);
+            let reply = host.send(PARENT_NAME, &payload);
+            Box::pin(async move { reply })
+        });
+        let host = Arc::clone(self);
+        registry.register("agent_message.request", move |payload| {
             let host = Arc::clone(&host);
             Box::pin(async move {
-                let text = text.ok_or("agent_message.send requires a message")?;
-                host.route(PARENT_NAME, &target, &text, followup)
+                let (target, draft) = Draft::from_payload(&payload)?;
+                let timeout = timeout_of(&payload);
+                host.request(PARENT_NAME, &target, &draft.text, timeout)
+                    .await
             })
         });
         let host = Arc::clone(self);
@@ -1008,26 +1003,13 @@ impl SubagentHost {
         });
         let host = Arc::clone(self);
         registry.register("rlm.wait", move |payload| {
-            let timeout = payload
-                .get("timeout_ms")
-                .and_then(Value::as_u64)
-                .unwrap_or(WAIT_MAX_MS);
+            let timeout = timeout_of(&payload);
             let cursor = payload.get("cursor").and_then(Value::as_u64);
             let host = Arc::clone(&host);
             Box::pin(async move { Ok(host.wait(timeout, cursor).await) })
         });
-        let host = Arc::clone(self);
-        registry.register("rlm.interrupt", move |payload| {
-            let target = payload
-                .get("target")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            let host = Arc::clone(&host);
-            Box::pin(async move {
-                let target = target.ok_or("rlm.interrupt requires a target")?;
-                host.interrupt(&target)
-            })
-        });
+        self.register_stops(registry);
+        self.register_service(registry);
         let host = Arc::clone(self);
         registry.register("rlm.result", move |payload| {
             let target = payload

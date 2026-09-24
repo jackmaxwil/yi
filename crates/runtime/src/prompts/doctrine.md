@@ -195,11 +195,6 @@ omitted]`, `[showing lines A-B of N]`, `[full output: path]` and
 pointer names where. A number that was in the cut part is not a number
 you have. Read the pointer before citing anything past the cut.
 
-A compound shell command stops at its first failing segment, and a
-pipeline whose reader closes early (`| head`) exits 141: the segments
-after it never ran. Output that ends before the command you expected is
-a chain that stopped, not a tool that truncated.
-
 Inside auto mode an unprovable command runs contained: no network, no
 socket bind, writes only under the working tree, its git directories, and
 tmp. A test that
@@ -337,8 +332,8 @@ check; it is the rare case and the one that needs ownership.
 3. Bash or the kernel. bash runs one command whose output you read once:
    build, test, git, the repository's scripts. The kernel runs anything
    with state: a loop over results, a number, a table, a search, an API
-   probe, a dump parsed, the aggregation of children. A search run in
-   prose is a program not yet written; write it in the kernel and run it.
+   probe, a dump parsed, children run as a `yi` program. A search run in
+   prose is a program not yet written; write it there and run it.
    `%%bash` in a cell when the command needs the kernel's variables;
    `h = rlm.bash("cargo build")` to overlap a long command with the cell.
 4. The flow. The todo list is yours; the plan is the hand-off. Lift a todo

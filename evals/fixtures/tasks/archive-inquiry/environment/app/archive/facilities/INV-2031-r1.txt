@@ -1,0 +1,81 @@
+Quillfen Water Cooperative
+SITE INVENTORY 2031, revision 1
+Compiled: 2031-01-20
+Supersedes: INV-2030 revision 2
+
+Standby power
+-------------
+
+One line per site. This table records the position on the day the inventory was
+compiled.
+
+  Harrow Weir          standby generator: fitted, 60 kVA
+  Tolland Sluice       standby generator: fitted, 120 kVA
+  Pike Hollow          standby generator: none
+  Merrow Basin         standby generator: none
+  Eastmere Intake      standby generator: fitted, 40 kVA
+  Cindergate Station   standby generator: fitted, 100 kVA
+  Low Fennick          standby generator: none
+  Brackwater Lock      standby generator: fitted, 40 kVA
+  Osier Bank           standby generator: none
+  North Sluice         standby generator: fitted, 80 kVA
+
+Notes
+-----
+
+Lucan Marsh confirmed that spares for the duty pump are held at the central store and
+that the reorder level is 18 units. Mirela Stanck raised the question of lone working
+at Brackwater Lock and was referred to the existing guidance held by the networks
+team. Hollis Wray reported that the control panel at Brackwater Lock had been
+inspected and found serviceable, with minor wear noted on the seals. Vegetation
+clearance around the sample tap at Low Fennick was completed and the area photographed
+for the asset record. The stores count showed 5 discrepancies, all traced to items
+issued to vans without a ticket.
+
+Annex A. Site notes
+-------------------
+
+The stores count showed 23 discrepancies, all traced to items issued to vans without a
+ticket. The stores count showed 3 discrepancies, all traced to items issued to vans
+without a ticket. Hollis Wray noted that the calibration certificate for the telemetry
+outstation expires next quarter and has booked the visit. the control room reminded
+everyone that permits for confined spaces must be closed out the same day. Dov
+Callender thanked the networks team for covering the holiday rota at short notice.
+
+Annex B. Stores and spares
+--------------------------
+
+A walkdown of Low Fennick found the signage faded; replacement boards have been
+ordered under the routine budget. A walkdown of Pike Hollow found the signage faded;
+replacement boards have been ordered under the routine budget. the field crews will
+coordinate with Hollis Wray on the training calendar, which currently shows 33 open
+places. A walkdown of Merrow Basin found the signage faded; replacement boards have
+been ordered under the routine budget. Tamsin Orrel reported that the flow meter at
+Tolland Sluice had been inspected and found serviceable, with minor wear noted on the
+seals.
+
+The stores count showed 24 discrepancies, all traced to items issued to vans without a
+ticket. Flooding on the lane to Osier Bank delayed the delivery by a day; no cost was
+incurred by the cooperative. Petra Vosk confirmed that spares for the wet well ladder
+are held at the central store and that the reorder level is 30 units.
+
+Annex C. Any other business
+---------------------------
+
+Flooding on the lane to Brackwater Lock delayed the delivery by a day; no cost was
+incurred by the cooperative. The draft drawing register for Low Fennick is 10 percent
+complete and will be issued once the as-built survey is checked. the finance office
+reminded everyone that permits for confined spaces must be closed out the same day.
+
+the networks team will coordinate with Dov Callender on the training calendar, which
+currently shows 14 open places. The draft drawing register for Low Fennick is 35
+percent complete and will be issued once the as-built survey is checked. The handover
+notes between shifts were sampled by the safety committee and found complete in all
+but 19 cases. The handover notes between shifts were sampled by the safety committee
+and found complete in all but 17 cases.
+
+Members of the networks team asked for the seasonal demand figures to be circulated
+before the next meeting. The telemetry link to Cindergate Station dropped twice in the
+period; both outages were under 20 minutes and no alarms were missed. It was noted
+that access to Pike Hollow remains difficult after heavy rain and that the track will
+be regraded when crews allow.

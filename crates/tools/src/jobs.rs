@@ -325,6 +325,21 @@ pub enum Run {
     TimedOut(Box<CommandCapture>),
 }
 
+/// Incident: the tool is named `bash` and the model writes bash, while `sh` is dash on the
+/// benchmark image, where process substitution is a syntax error (#476).
+pub fn interpreter() -> &'static str {
+    static SHELL: OnceLock<&'static str> = OnceLock::new();
+    SHELL.get_or_init(|| {
+        let found = command("sh")
+            .args(["-c", "command -v bash"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if found { "bash" } else { "sh" }
+    })
+}
+
 fn start(
     shell_command: &str,
     cwd: &Path,
@@ -349,7 +364,7 @@ fn start(
     let dir = cwd.to_path_buf();
     let outer = Arc::clone(cancelled);
     let flag: CancelFlag = Arc::new(move || kill.load(Ordering::SeqCst) || outer());
-    let wrapped = sandbox.map(|sandbox| sandbox.wrap("sh", &["-c", shell_command]));
+    let wrapped = sandbox.map(|sandbox| sandbox.wrap(interpreter(), &["-c", shell_command]));
     std::thread::spawn(move || {
         let mut process = match &wrapped {
             Some((program, args)) => {
@@ -358,7 +373,7 @@ fn start(
                 process
             }
             None => {
-                let mut process = command("sh");
+                let mut process = command(interpreter());
                 process.arg("-c").arg(&text);
                 process
             }

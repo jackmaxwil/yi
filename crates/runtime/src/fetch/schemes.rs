@@ -9,7 +9,7 @@ use yi_types::plan::ids::TodoAddr;
 use yi_types::url::Url;
 
 use super::{
-    CHECKPOINT_MISSING, FetchError, KERNEL_MISSING, MCP_MISSING, Resolver, SESSION_MISSING,
+    CHECKPOINT_MISSING, FetchError, KERNEL_MISSING, MCP_MISSING, Page, Resolver, SESSION_MISSING,
     Transcript, unsupported,
 };
 use crate::kernel::{VariableName, VariableReadError};
@@ -17,17 +17,52 @@ use crate::plan::import::{parse_document, section_of};
 use crate::plan::store::PlanStore;
 
 type Served = (String, String);
+type Paged = Result<(String, String, Option<usize>), FetchError>;
 
 fn render_history(
     url: &Url,
     session: &yi_session::SharedSession,
     entry_id: Option<&str>,
-) -> Result<Served, FetchError> {
+    page: Option<Page>,
+) -> Paged {
+    // `custom/<type>` closes any listing and keeps that custom type alone: an inbox (D214).
+    let (entry_id, custom) = match entry_id.and_then(|selector| selector.rsplit_once("custom/")) {
+        Some((head, custom)) if head.is_empty() || head.ends_with('/') => {
+            let head = head.trim_end_matches('/');
+            ((!head.is_empty()).then_some(head), Some(custom))
+        }
+        _ => (entry_id, None),
+    };
+    // A page counts entries that stay put: `tail/N` is anchored at the end, so an append slides it.
+    if page.is_some() && entry_id.is_some_and(|id| !id.starts_with("since/")) {
+        return Err(FetchError::BadAddress {
+            url: url.to_string(),
+            detail:
+                "offset and limit page the whole listing or since/<seq>, whose entries stay put"
+                    .to_owned(),
+        });
+    }
+    let paged = |lines: Vec<String>, served_by: String| {
+        let (lines, next) = match page {
+            Some(page) => page.window(lines),
+            None => (lines, None),
+        };
+        Ok((lines.join("\n"), served_by, next))
+    };
     let backend = |message: String| FetchError::Backend {
         url: url.to_string(),
         message,
     };
     let store = yi_session::lock_session(session);
+    let all = |custom_type: Option<&str>| {
+        store
+            .find_entries(&EntryQuery {
+                custom_type: custom_type.map(str::to_owned),
+                order: EntryOrder::OldestFirst,
+                ..EntryQuery::default()
+            })
+            .map_err(|error| backend(error.to_string()))
+    };
     // `tail/N` is the last N entries compact, `since/S` everything after sequence S (D165).
     let window = entry_id
         .and_then(|selector| selector.split_once('/'))
@@ -35,12 +70,12 @@ fn render_history(
         .and_then(|(kind, raw)| raw.parse::<u64>().ok().map(|number| (kind, number)));
     match (entry_id, window) {
         (_, Some((kind, number))) => {
-            let entries = store
-                .find_entries(&EntryQuery {
-                    order: EntryOrder::OldestFirst,
-                    ..EntryQuery::default()
-                })
-                .map_err(|error| backend(error.to_string()))?;
+            let entries = all(custom)?;
+            // A filtered listing is read for its data, which the compact line drops.
+            let line = |entry: &yi_types::entry::Entry| match custom {
+                Some(_) => serde_json::to_string(entry).unwrap_or_default(),
+                None => crate::family::compact_entry(entry),
+            };
             let kept: Vec<String> = match kind {
                 "tail" => entries
                     .iter()
@@ -49,16 +84,21 @@ fn render_history(
                     .collect::<Vec<_>>()
                     .into_iter()
                     .rev()
-                    .map(crate::family::compact_entry)
+                    .map(line)
                     .collect(),
                 _ => entries
                     .iter()
                     .filter(|entry| entry.seq() > number)
-                    .map(crate::family::compact_entry)
+                    .map(line)
                     .collect(),
             };
-            Ok((kept.join("\n"), format!("session-{kind}")))
+            paged(kept, format!("session-{kind}"))
         }
+        (Some(_), None) if custom.is_some() => Err(FetchError::BadAddress {
+            url: url.to_string(),
+            detail: "custom/<type> filters a listing: the whole one, tail/<n> or since/<seq>"
+                .to_owned(),
+        }),
         (Some(id), None) => {
             let entry = store.entry(id).ok_or_else(|| FetchError::NotFound {
                 url: url.to_string(),
@@ -66,21 +106,16 @@ fn render_history(
             })?;
             let text =
                 serde_json::to_string_pretty(&entry).map_err(|error| backend(error.to_string()))?;
-            Ok((text, "session-entry".to_owned()))
+            Ok((text, "session-entry".to_owned(), None))
         }
         (None, None) => {
-            let entries = store
-                .find_entries(&EntryQuery {
-                    order: EntryOrder::OldestFirst,
-                    ..EntryQuery::default()
-                })
-                .map_err(|error| backend(error.to_string()))?;
+            let entries = all(custom)?;
             let lines = entries
                 .iter()
                 .map(serde_json::to_string)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|error| backend(error.to_string()))?;
-            Ok((lines.join("\n"), "session-transcript".to_owned()))
+            paged(lines, "session-transcript".to_owned())
         }
     }
 }
@@ -174,6 +209,23 @@ impl Resolver {
                 let text = PlanStore::render(&plan).map_err(|error| backend(error.to_string()))?;
                 return Ok((text, "plan-file".to_owned()));
             }
+            // A blob by digest (a recorded product or source); no todo slug carries a slash.
+            if let Some(hex) = slug.and_then(|slug| slug.strip_prefix("artifacts/")) {
+                let bytes = format!("{}{hex}", yi_types::plan::canonical::DIGEST_PREFIX)
+                    .try_into()
+                    .map_err(|error: yi_types::plan::canonical::DigestError| error.to_string())
+                    .and_then(|digest| {
+                        let blobs = store.artifacts(&id);
+                        blobs.get(&digest).map_err(|error| error.to_string())
+                    })
+                    .map_err(|what| FetchError::NotFound {
+                        url: url.to_string(),
+                        what,
+                    })?;
+                let text = String::from_utf8(bytes)
+                    .map_err(|_| backend("the artifact is not UTF-8 text".to_owned()))?;
+                return Ok((text, "plan-artifact".to_owned()));
+            }
             (plan, None)
         };
         let Some(slug) = slug else {
@@ -211,16 +263,16 @@ impl Resolver {
 
     /// Invariant: an agent name carries its own slash, so the whole path is tried as an agent
     /// before an entry id is split off; splitting first read a reap pin as a missing entry.
-    pub(super) fn resolve_history(&self, url: &Url) -> Result<Served, FetchError> {
+    pub(super) fn resolve_history(&self, url: &Url, page: Option<Page>) -> Paged {
         let path = url.path();
         if let Some(session) = self.transcript_of(path) {
-            return render_history(url, &session, None);
+            return render_history(url, &session, None, page);
         }
         // The agent is the first segment: what follows is an entry id or a D165 window.
         if let Some((agent, entry)) = path.split_once('/')
             && let Some(session) = self.transcript_of(agent)
         {
-            return render_history(url, &session, Some(entry));
+            return render_history(url, &session, Some(entry), page);
         }
         if self.session_store().is_none() && self.transcripts().is_none() {
             return Err(unsupported(url, SESSION_MISSING));
@@ -233,9 +285,9 @@ impl Resolver {
         })
     }
 
-    /// One address space: this session, then a live child, then the corpus.
+    /// One address space: this session (by its name or as `self`), a live child, the corpus.
     pub(super) fn transcript_of(&self, agent: &str) -> Option<yi_session::SharedSession> {
-        if self.session_agent() == Some(agent) {
+        if agent == super::SELF || self.session_agent() == Some(agent) {
             return self.session_store();
         }
         self.transcripts()
@@ -364,7 +416,7 @@ impl Resolver {
         }
     }
 
-    pub(super) fn resolve_kernel(&self, url: &Url) -> Result<Served, FetchError> {
+    pub(super) fn resolve_kernel(&self, url: &Url, page: Option<Page>) -> Paged {
         let bad = |detail: String| FetchError::BadAddress {
             url: url.to_string(),
             detail,
@@ -385,8 +437,8 @@ impl Resolver {
         let Some(kernels) = self.kernel_variables() else {
             return Err(unsupported(url, KERNEL_MISSING));
         };
-        match kernels.read(agent, &variable) {
-            Ok(Some(text)) => Ok((text, format!("kernel-namespace {agent}"))),
+        match kernels.read(agent, &variable, page) {
+            Ok(Some((text, next))) => Ok((text, format!("kernel-namespace {agent}"), next)),
             Ok(None) => Err(FetchError::NotFound {
                 url: url.to_string(),
                 what: format!("variable {variable} in the {agent} namespace"),
@@ -403,7 +455,7 @@ impl Resolver {
         if let Some(Transcript::Live(session)) =
             self.transcripts().and_then(|desk| desk.open(url.path()))
         {
-            let (text, _reaped) = render_history(url, &session, None)?;
+            let (text, _reaped, _next) = render_history(url, &session, None, None)?;
             return Ok((text, format!("live-child {}", url.path())));
         }
         let Some(pinned) = self.log().pin_of(url) else {
@@ -412,7 +464,7 @@ impl Resolver {
                 what: "a reap pin for this delegation: the child is still live, or was never reaped through this log".to_owned(),
             });
         };
-        let (text, _served_by) = self.resolve(&pinned)?;
+        let (text, _served_by, _next) = self.resolve(&pinned, None)?;
         Ok((text, format!("reap-pin {pinned}")))
     }
 
@@ -578,10 +630,11 @@ mod tests {
             &self,
             agent: &str,
             variable: &VariableName,
-        ) -> Result<Option<String>, VariableReadError> {
+            _page: Option<Page>,
+        ) -> Result<Option<(String, Option<usize>)>, VariableReadError> {
             match (agent, variable.as_str()) {
                 ("ghost", _) => Err(VariableReadError::NotRunning),
-                (_, "answer") => Ok(Some("42".to_owned())),
+                (_, "answer") => Ok(Some(("42".to_owned(), None))),
                 _ => Ok(None),
             }
         }

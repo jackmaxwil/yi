@@ -4,6 +4,7 @@ mod schemes;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use yi_session::{EntryOrder, EntryQuery};
 use yi_tools::{CheckpointError, Checkpoints, TreeId};
@@ -15,7 +16,9 @@ use crate::ext::sanitize;
 use crate::kernel::{VariableName, VariableReadError};
 use crate::wall::Wall;
 
-pub use log::{FetchLog, PinError, Relevance, TerminalRecordError, relevance_of};
+pub use log::{
+    FetchLog, PinError, Relevance, TerminalRecordError, as_served, relevance_of, rows_of,
+};
 pub use yi_types::fetch::{FETCH_ENTRY_TYPE, FetchRecord};
 
 pub const KERNEL_MISSING: &str =
@@ -66,7 +69,8 @@ pub trait KernelVariables: Send + Sync {
         &self,
         agent: &str,
         variable: &VariableName,
-    ) -> Result<Option<String>, VariableReadError>;
+        page: Option<Page>,
+    ) -> Result<Option<(String, Option<usize>)>, VariableReadError>;
 
     /// the variable dilled to `path` by its own kernel; `Some(bytes)` when it exists (D164).
     fn dump(
@@ -138,7 +142,8 @@ impl KernelVariables for KernelServiceMap {
         &self,
         agent: &str,
         variable: &VariableName,
-    ) -> Result<Option<String>, VariableReadError> {
+        page: Option<Page>,
+    ) -> Result<Option<(String, Option<usize>)>, VariableReadError> {
         let Some(service) = self.service(agent) else {
             return Err(VariableReadError::NotRunning);
         };
@@ -146,7 +151,7 @@ impl KernelVariables for KernelServiceMap {
             tokio::runtime::Handle::try_current().map_err(|error| VariableReadError::Cell {
                 detail: format!("kernel:// needs a tokio runtime: {error}"),
             })?;
-        handle.block_on(service.read_variable(variable))
+        handle.block_on(service.read_variable(variable, page))
     }
 
     /// Invariant: parks the calling thread on the shared runtime, so it is reachable only
@@ -167,6 +172,10 @@ impl KernelVariables for KernelServiceMap {
         handle.block_on(service.dump_variable(variable, path))
     }
 }
+
+/// The reader's own transcript in a `history://` address, for a member that was never told
+/// the name its family knows it by.
+pub(crate) const SELF: &str = "self";
 
 pub struct SessionTranscripts {
     host: Arc<crate::subagent::SubagentHost>,
@@ -216,6 +225,77 @@ pub struct Fetched {
     pub text: String,
     pub hash: String,
     pub served_by: String,
+    pub next_offset: Option<usize>,
+}
+
+impl Fetched {
+    /// Invariant: an unpaged reply is byte for byte what it was before paging (D213), so
+    /// `next_offset` is a key of a paged reply alone, null at the end.
+    pub fn into_reply(self, paged: bool) -> serde_json::Map<String, Value> {
+        let mut reply = serde_json::Map::new();
+        reply.insert("url".to_owned(), Value::String(self.url.to_string()));
+        reply.insert("text".to_owned(), Value::String(self.text));
+        reply.insert("hash".to_owned(), Value::String(self.hash));
+        reply.insert("servedBy".to_owned(), Value::String(self.served_by));
+        if paged {
+            reply.insert("next_offset".to_owned(), Value::from(self.next_offset));
+        }
+        reply
+    }
+}
+
+/// One window onto a read (D213): bytes of a `local://` text, entries of a `history://`
+/// listing, chars of a `kernel://` repr. A request naming neither key has no page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Page {
+    pub offset: usize,
+    pub limit: usize,
+}
+
+impl Page {
+    /// Invariant: the host boundary refuses a negative, fractional or zero number; it never
+    /// clamps one into a read nobody asked for. A huge limit is the rest of the read.
+    pub fn from_payload(payload: &serde_json::Map<String, Value>) -> Result<Option<Self>, String> {
+        let read = |key: &str| -> Result<Option<usize>, String> {
+            match payload.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(value) => value
+                    .as_u64()
+                    .and_then(|number| usize::try_from(number).ok())
+                    .map(Some)
+                    .ok_or_else(|| {
+                        format!("fetch \"{key}\" must be a non-negative integer, got {value}")
+                    }),
+            }
+        };
+        let (offset, limit) = (read("offset")?, read("limit")?);
+        if limit == Some(0) {
+            return Err("fetch \"limit\" must be at least 1".to_owned());
+        }
+        Ok((offset.is_some() || limit.is_some()).then(|| Self {
+            offset: offset.unwrap_or(0),
+            limit: limit.unwrap_or(usize::MAX),
+        }))
+    }
+
+    pub(crate) fn window<T>(self, items: Vec<T>) -> (Vec<T>, Option<usize>) {
+        let end = self.offset.saturating_add(self.limit).min(items.len());
+        let next = (end < items.len()).then_some(end);
+        let kept = items.into_iter().take(end).skip(self.offset).collect();
+        (kept, next)
+    }
+
+    /// Invariant: both cuts land on a char boundary and the end passes `offset`, so a page is
+    /// always text and the next offset always advances, wherever the caller's offset fell.
+    pub(crate) fn bytes(self, text: &str) -> (String, Option<usize>) {
+        let start = text.floor_char_boundary(self.offset);
+        let mut end = text.floor_char_boundary(self.offset.saturating_add(self.limit));
+        if end <= self.offset && self.offset < text.len() {
+            end = text.ceil_char_boundary(self.offset.saturating_add(1));
+        }
+        let page = text.get(start..end).unwrap_or_default().to_owned();
+        (page, (end < text.len()).then_some(end))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -366,42 +446,78 @@ impl Resolver {
     /// Invariant: blocks on file and subprocess reads — a caller on a
     /// current-thread runtime must wrap it in [`tokio::task::spawn_blocking`].
     pub fn fetch(&self, url: &Url) -> Result<Fetched, FetchError> {
-        let (text, served_by) = self.resolve(url)?;
+        self.fetch_page(url, None)
+    }
+
+    /// A `history://` read of this session's own transcript, whose log row lands in the
+    /// listing it just served.
+    fn pages_own_history(&self, url: &Url) -> bool {
+        let agent = url.path().split('/').next();
+        matches!(url.scheme(), Scheme::History)
+            && (agent == Some(SELF) || self.session_agent() == agent)
+    }
+
+    /// [`Self::fetch`] through one [`Page`]; the hash and the log row are the page's own.
+    pub fn fetch_page(&self, url: &Url, page: Option<Page>) -> Result<Fetched, FetchError> {
+        let (text, served_by, next_offset) = self.resolve(url, page)?;
         let hash = content_hash(&text);
-        self.log.record(
-            url,
-            FetchRecord {
-                url: url.to_string(),
-                hash: hash.clone(),
-                served_by: served_by.clone(),
-            },
-        );
+        let record = FetchRecord {
+            url: url.to_string(),
+            hash: hash.clone(),
+            served_by: served_by.clone(),
+        };
+        // Invariant: a paged read of this session's own history appends no row, or each page
+        // would lengthen the listing by one and the walk would never reach its end (D213).
+        if page.is_some() && self.pages_own_history(url) {
+            self.log.remember(url, record);
+        } else {
+            self.log.record(url, record);
+        }
         Ok(Fetched {
             url: url.clone(),
             text,
             hash,
             served_by,
+            next_offset,
         })
     }
 
-    pub(super) fn resolve(&self, url: &Url) -> Result<(String, String), FetchError> {
+    pub(super) fn resolve(
+        &self,
+        url: &Url,
+        page: Option<Page>,
+    ) -> Result<(String, String, Option<usize>), FetchError> {
         if let Some(refusal) = self.wall.check_url(url, &self.workspace) {
             return Err(FetchError::Denied {
                 url: url.to_string(),
                 refusal,
             });
         }
+        let whole = |served: Result<(String, String), FetchError>| {
+            served.map(|(text, served_by)| (text, served_by, None))
+        };
         match url.scheme() {
-            Scheme::Local => self.resolve_local(url),
-            Scheme::Kernel => self.resolve_kernel(url),
-            Scheme::Plan => self.resolve_plan(url),
-            Scheme::Agent => self.resolve_agent(url),
-            Scheme::History => self.resolve_history(url),
-            Scheme::Checkpoint => self.resolve_checkpoint(url),
-            Scheme::Mcp => self.resolve_mcp(url),
-            Scheme::User => self.resolve_user(url),
-            Scheme::External(scheme) if scheme == "family" => self.resolve_family(url),
-            Scheme::External(scheme) if scheme == "tree" => self.resolve_tree(url),
+            Scheme::Local => {
+                let (text, served_by) = self.resolve_local(url)?;
+                let Some(page) = page else {
+                    return Ok((text, served_by, None));
+                };
+                let (text, next) = page.bytes(&text);
+                Ok((text, served_by, next))
+            }
+            Scheme::Kernel => self.resolve_kernel(url, page),
+            Scheme::History => self.resolve_history(url, page),
+            _ if page.is_some() => Err(FetchError::BadAddress {
+                url: url.to_string(),
+                detail: "offset and limit page local://, history:// and kernel:// only".to_owned(),
+            }),
+            Scheme::Plan => whole(self.resolve_plan(url)),
+            Scheme::Agent => whole(self.resolve_agent(url)),
+            Scheme::Checkpoint => whole(self.resolve_checkpoint(url)),
+            Scheme::Mcp => whole(self.resolve_mcp(url)),
+            Scheme::User => whole(self.resolve_user(url)),
+            Scheme::External(scheme) if scheme == "family" => whole(self.resolve_family(url)),
+            Scheme::External(scheme) if scheme == "tree" => whole(self.resolve_tree(url)),
             Scheme::External(scheme) => Err(FetchError::External {
                 url: url.to_string(),
                 scheme: scheme.clone(),
@@ -687,7 +803,7 @@ mod tests {
         let map = Arc::clone(map);
         let outcome = tokio::task::spawn_blocking(move || {
             let variable = VariableName::parse("answer")?;
-            map.read(agent, &variable)
+            map.read(agent, &variable, None)
         })
         .await?;
         match outcome {

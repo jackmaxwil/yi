@@ -149,6 +149,8 @@ impl Rig {
 /// Every byte of the original survives as a blob, the converted checkpoint and its genesis
 /// record are the fixtures byte for byte, the `.md` is left where it was, and a body section
 /// over the 4 KiB note cap lands whole as an artifact reference rather than a cut note.
+/// Dies with the shape hold in the import's reduce (`state.rs`): a worktree todo here has no
+/// contract, and `validate_plan` there refuses the replay of its own genesis record.
 #[test]
 fn import_preserves_all_markdown_and_large_notes() -> TestResult {
     let rig = rig("campaign")?;

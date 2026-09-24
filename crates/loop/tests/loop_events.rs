@@ -585,8 +585,8 @@ async fn a_bare_length_stop_is_re_driven_twice_then_ends_on_the_third() {
     assert_eq!(
         details,
         vec![
-            json!({"rung": 1, "cut": false}),
-            json!({"rung": 2, "cut": false})
+            json!({"rung": 1, "cut": false, "signal": "length_redrive"}),
+            json!({"rung": 2, "cut": false, "signal": "length_redrive"})
         ]
     );
     assert_eq!(answers, 3, "the third bare length stop ends the run");

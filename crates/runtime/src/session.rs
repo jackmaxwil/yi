@@ -67,6 +67,7 @@ struct Shared {
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
     deadline: OnceLock<Deadline>,
+    cancelled: std::sync::atomic::AtomicBool,
 }
 
 pub type PromptChoiceFn =
@@ -165,6 +166,7 @@ impl AgentSession {
                 on_turn_end: Mutex::new(None),
                 coupling: Mutex::new(None),
                 deadline: OnceLock::new(),
+                cancelled: false.into(),
             }),
             config,
             provider,
@@ -749,30 +751,24 @@ impl AgentSession {
         self.follow_up_message(user_message(text));
     }
 
-    /// B13 `send`: queued for the next turn, never starting one.
-    pub fn follow_up_message(&self, message: AgentMessage) {
+    /// B13 `send`: queued for the next turn, never starting one; true when a turn was running
+    /// to drain it. The status is held across the push, so the answer never races its end.
+    pub fn follow_up_message(&self, message: AgentMessage) -> bool {
+        let status = self.shared.status.lock();
         if let Ok(mut queue) = self.shared.follow_up.lock() {
             queue.push(message);
         }
+        status.is_ok_and(|status| *status == Status::Running)
     }
 
-    /// B13 `followup`: delivered into a running turn at its next boundary, or
-    /// starting one when the session is idle.
-    pub fn deliver(&self, message: AgentMessage) {
-        (self.heartbeat_hook())(message, yi_types::schedule::DeliveryMode::Steer);
-    }
-
-    pub fn abort(&self) {
-        self.shared.signal.fire();
-    }
-
-    pub async fn wait_idle(&self) {
-        loop {
-            if self.status() == Status::Idle {
-                return;
-            }
-            self.shared.idle.notified().await;
+    /// B13 `followup`: true when it started an idle session's turn, false when a running
+    /// turn takes it at its next boundary. Admission decides, so the answer is what happened.
+    pub fn deliver(&self, message: AgentMessage) -> bool {
+        let started = (self.run_handle())(message.clone()).is_ok();
+        if !started {
+            self.steer_message(message);
         }
+        started
     }
 
     /// Returns at admission; the run streams in a spawned task (R6).
@@ -783,6 +779,16 @@ impl AgentSession {
     /// Starts an idle session's turn without re-wrapping the message as plain
     /// user text.
     pub fn prompt_message(&self, prompt: AgentMessage) -> Result<(), SessionError> {
+        self.prompt_requested(prompt, None)
+    }
+
+    /// `requested` is [`Self::abort_epoch`] read when the run was asked for, so an abort fired
+    /// between the request and admission still stops it.
+    pub fn prompt_requested(
+        &self,
+        prompt: AgentMessage,
+        requested: Option<u64>,
+    ) -> Result<(), SessionError> {
         if self.status() == Status::Idle {
             start_ext(&self.shared, &prompt_text(&prompt));
         }
@@ -794,7 +800,7 @@ impl AgentSession {
             compactor: self.compactor.clone(),
             on_compacted: self.on_compacted.lock().ok().and_then(|slot| slot.clone()),
         };
-        Self::spawn_run(parts, prompt)
+        Self::spawn_run(parts, prompt, requested)
     }
 
     /// Wakes an idle session without `&self`; model, effort and tools are read at run start.
@@ -809,7 +815,7 @@ impl AgentSession {
             compactor: self.compactor.clone(),
             on_compacted: self.on_compacted.lock().ok().and_then(|slot| slot.clone()),
         };
-        Arc::new(move |prompt| Self::spawn_run(parts.clone(), prompt))
+        Arc::new(move |prompt| Self::spawn_run(parts.clone(), prompt, None))
     }
 
     /// Invariant: pre-first-turn only (B5) — mid-run it races the appending turn.
@@ -819,7 +825,11 @@ impl AgentSession {
         }
     }
 
-    fn spawn_run(parts: RunParts, prompt: AgentMessage) -> Result<(), SessionError> {
+    fn spawn_run(
+        parts: RunParts,
+        prompt: AgentMessage,
+        requested: Option<u64>,
+    ) -> Result<(), SessionError> {
         {
             let Ok(mut status) = parts.shared.status.lock() else {
                 return Err(SessionError::Busy);
@@ -831,7 +841,7 @@ impl AgentSession {
         }
         // Incident: nothing cleared the session-wide signal, so the first abort aborted every
         // later turn. Reading the epoch at admission still stops one hit before the spawn.
-        let admitted_epoch = parts.shared.signal.epoch();
+        let admitted_epoch = requested.unwrap_or_else(|| parts.shared.signal.epoch());
         let RunParts {
             shared,
             provider,
@@ -887,9 +897,8 @@ impl AgentSession {
             wire_queues_and_coupling(&mut config, &shared, &prompt);
             wire_environment(&mut config, &shared).await;
             // Not the interrupt: the turn in flight ends and settles, and no request follows.
-            if let Some(deadline) = shared.deadline.get().copied() {
-                config.should_stop_after_turn = Some(Box::new(move |_| deadline.winding_down()));
-            }
+            let stop = Arc::clone(&shared);
+            config.should_stop_after_turn = Some(Box::new(move |_| stop.winding_down()));
             let emit_shared = Arc::clone(&shared);
             let emit_compactor = compactor.clone();
             let mut emit = move |event: AgentEvent| {

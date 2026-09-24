@@ -1,0 +1,200 @@
+"""A stand-in for the host's `plan.op`, `rlm.wait`, `rlm.result` and `fetch` requests.
+
+It keeps the rules the `yi` library leans on (request ids replay, one open plan,
+edges gate `start`, a contract freezes at `start` and decides at `done`, the step
+table, the admission count, the retry cap, `wait` with a cursor) and none of the
+engine's depth; the T2 journeys in `kernel_data_surface.rs` run the real one.
+"""
+from __future__ import annotations
+
+import asyncio
+import collections
+import copy
+import hashlib
+import json
+
+import rlm
+
+
+# `TodoLabel::new` (`ids.rs`): 80 characters, and a newline is refused.
+LABEL_MAX = 80
+# The engine's step table (`table.rs`), for the ops a shape issues on its own.
+LEGAL = {
+    "done": ("running",),
+    "decompose": ("running",),
+    "fail": ("running",),
+    "block": ("pending", "running"),
+    "unblock": ("blocked",),
+    "retry": ("failed",),
+    "drop": ("pending", "blocked"),
+}
+
+
+def refusal(kind: str, message: str, code: str = "refused", **extra) -> dict:
+    return {"ok": False, "refusal": {"code": code, "kind": kind, "message": message, **extra}}
+
+
+class FakeHost:
+    def __init__(self) -> None:
+        self.plans: dict[str, dict] = {}
+        self.journal: list[tuple[str, dict]] = []
+        self.replies: dict[str, tuple[str, dict]] = {}
+        self.blobs: dict[str, str] = {}
+        self.children: dict[str, str] = {}
+        self.results: dict[str, dict] = {}
+        self.verdicts: dict[str, str] = {}
+        self.notices: list[str] = []
+        self.files: dict[str, str] = {}
+        self.spawns = 0
+        self.slots: int | None = None
+        self.retry_cap = 8
+        self.starts: list[str] = []
+        self.requests: collections.Counter = collections.Counter()
+        self.waits: list[tuple[int | None, list[str]]] = []
+        self.changes: list[tuple[str, str]] = []
+        rlm.host_request = self.request
+
+    def ops(self) -> list[str]:
+        return [op for op, _ in self.journal]
+
+    async def request(self, kind: str, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        self.requests[kind] += 1
+        if kind == "plan.op":
+            return self.plan_op(payload)
+        if kind == "rlm.wait":
+            await asyncio.sleep(0.01)
+            # Each caller's cursor is its own place in the change log; nobody drains it.
+            latest = dict(self.changes)
+            self.changes += [item for item in self.children.items() if latest.get(item[0]) != item[1]]
+            changed = sorted({name for name, _ in self.changes[payload.get("cursor") or 0 :]})
+            self.waits.append((payload.get("cursor"), changed))
+            return {"cursor": len(self.changes), "changed": changed, "states": dict(self.children), "notes": {}}
+        if kind == "rlm.result":
+            answer = self.results[payload["target"]]
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        if kind == "rlm.interrupt":
+            self.children[payload["target"]] = "failed"
+            return {}
+        if kind == "fetch":
+            url = payload["url"]
+            text = self.files.get(url, self.blobs.get("sha256:" + url.rsplit("/", 1)[-1]))
+            if text is None:
+                raise RuntimeError(f"{url}: not found")
+            return {"text": text}
+        raise AssertionError(f"unexpected host request {kind}")
+
+    def plan_op(self, payload: dict) -> dict:
+        op, args, request_id = payload["op"], payload.get("args") or {}, payload["request_id"]
+        identity = json.dumps([op, args], sort_keys=True)
+        if request_id in self.replies:
+            seen, reply = self.replies[request_id]
+            if seen != identity:
+                return refusal("request_id_reused", "the id was used with other args", "request_id_reused")
+            return copy.deepcopy(reply)
+        for blob in payload.get("artifacts") or []:
+            digest = "sha256:" + hashlib.sha256(blob["text"].encode()).hexdigest()
+            self.blobs[digest] = blob["text"]
+        reply = self.apply(op, args, payload.get("plan"), payload.get("expected_revision"))
+        if reply["ok"] and op not in ("view", "repair"):
+            self.journal.append((op, copy.deepcopy(args)))
+            self.replies[request_id] = (identity, copy.deepcopy(reply))
+        return copy.deepcopy(reply)
+
+    def view(self, plan: dict, notices: list[str] | None = None) -> dict:
+        cleared = {todo["label"] for todo in plan["todos"] if todo["state"] in ("done", "abandoned")}
+        plan["ready"] = [
+            todo["label"]
+            for todo in plan["todos"]
+            if todo["state"] == "pending" and set(todo.get("after", [])) <= cleared
+        ]
+        return {"ok": True, "revision": plan["touched"], "text": "", "plan": plan, "notices": notices or []}
+
+    def apply(self, op: str, args: dict, plan_id: str | None, expected: int | None) -> dict:
+        if op == "init":
+            if any(plan["state"] == "active" for plan in self.plans.values()):
+                return refusal("plan_exists", "a plan is already open")
+            plan_id = args["goal"].lower().replace(" ", "-")
+            self.plans[plan_id] = {"plan": plan_id, "goal": args["goal"], "touched": 1, "state": "active", "todos": []}
+            return self.view(self.plans[plan_id])
+        plan = self.plans.get(plan_id or "")
+        if plan is None:
+            return refusal("no_plan", f"no plan {plan_id}")
+        if op == "view":
+            return self.view(plan)
+        if op == "repair":
+            return self.view(plan, list(self.notices))
+        if expected is not None and expected != plan["touched"]:
+            return refusal("stale_revision", "the plan moved", "stale_revision")
+        todo = next((todo for todo in plan["todos"] if todo["label"] == args.get("label")), None)
+        refused = self.step(op, args, plan, todo)
+        if refused is not None:
+            return refused
+        plan["touched"] += 1
+        return self.view(plan)
+
+    def step(self, op: str, args: dict, plan: dict, todo: dict | None) -> dict | None:
+        if op in LEGAL and todo["state"] not in LEGAL[op]:
+            return refusal("illegal_step", f"{op} is illegal for {todo['label']} while {todo['state']}")
+        for spec in args.get("todos") or []:
+            if len(spec["label"]) > LABEL_MAX or "\n" in spec["label"]:
+                return refusal("label", f"{spec['label'][:40]!r}… is not a legal todo label")
+        if op == "program":
+            if args["source_ref"]["digest"] not in self.blobs:
+                return refusal("program", "the source is not in the store")
+        elif op == "append":
+            plan["todos"] += [{**spec, "state": "pending", "attempt": 1} for spec in args["todos"]]
+        elif op == "decompose":
+            todo["subplan"] = f"{plan['plan']}.{todo['label']}"
+            self.plans[todo["subplan"]] = {
+                "plan": todo["subplan"],
+                "goal": todo["label"],
+                "touched": 1,
+                "state": "active",
+                "todos": [{**spec, "state": "pending", "attempt": 1} for spec in args["todos"]],
+            }
+        elif op == "start":
+            self.starts.append(todo["label"])
+            ready = self.view(plan)["plan"]["ready"]
+            if todo["label"] not in ready:
+                return refusal("illegal_step", f"start is illegal for {todo['label']}")
+            # `table.rs` admit: a delegated todo starts only from the first free slots of the ready list.
+            if todo.get("delegation") and self.slots is not None:
+                by = {item["label"]: item for item in plan["todos"]}
+                queue = [label for label in ready if by[label].get("delegation")]
+                free = self.slots - sum(1 for item in plan["todos"] if item["state"] == "running" and item.get("delegation"))
+                if queue.index(todo["label"]) >= free:
+                    return refusal("admission", f"{todo['label']} waits for a slot; {max(free, 0)} free")
+            for item in (todo.get("contract") or {}).get("items", []):
+                for ref in next(iter(item["decider"].values())).values():
+                    if isinstance(ref, dict) and ref["digest"] not in self.blobs:
+                        return refusal("contract", f"criterion {ref['digest']} is not in the store")
+            todo["state"], todo["by"] = "running", "main"
+            if todo.get("delegation"):
+                self.spawns += 1
+                todo["by"] = plan["plan"] + "/" + todo["label"].split(":")[0]
+                self.children.setdefault(todo["by"], "running")
+        elif op == "submit":
+            todo["submitted"] = args["output"]
+        elif op == "done":
+            outcome = self.verdicts.get(todo["label"], "pass")
+            if todo.get("contract"):
+                if outcome != "pass":
+                    return refusal("refused", "done refused", verdict={"outcome": outcome, "items": []})
+                todo["resolution"] = "verified_done"
+            todo["state"], todo["output"] = "done", args.get("output")
+        elif op == "block":
+            todo["state"], todo["on"], todo["note"] = "blocked", args["on"], args["note"]
+        elif op == "fail":
+            todo["state"], todo["cause"] = "failed", args["cause"]
+        elif op == "retry":
+            if todo["attempt"] > self.retry_cap:
+                return refusal("retries_exhausted", f"{todo['label']} spent its {self.retry_cap} retries")
+            todo["state"], todo["attempt"] = "pending", todo["attempt"] + 1
+        elif op == "drop":
+            todo["state"] = "abandoned"
+        else:
+            raise AssertionError(f"the fake host has no op {op}")
+        return None

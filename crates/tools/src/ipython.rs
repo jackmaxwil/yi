@@ -160,6 +160,16 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
     });
     output.is_error =
         result.status == ExecuteStatus::Error || result.status == ExecuteStatus::Aborted;
+    // A cell killed at the ceiling reads as any other error, so the graph could not carry a
+    // next step for it and one F0e session wrote a second 600 s wait loop (#475).
+    if result.status == ExecuteStatus::Aborted
+        && let Value::Object(details) = &mut output.result.details
+    {
+        details.insert(
+            "errorKind".to_owned(),
+            Value::String(yi_types::event::ToolErrorKind::Aborted.as_str().to_owned()),
+        );
+    }
     output
 }
 

@@ -119,7 +119,7 @@ pub fn step(from: &TodoState, op: OpKind) -> Option<TodoStateName> {
 pub(super) fn check_plan_state(plan: &Plan, op: OpKind) -> Result<(), PlanOpError> {
     let allowed = match &plan.state {
         PlanState::Active => true,
-        PlanState::Done => matches!(op, OpKind::View | OpKind::Retry),
+        PlanState::Done => matches!(op, OpKind::View | OpKind::Retry | OpKind::Program),
         PlanState::Superseded { .. } | PlanState::Abandoned | PlanState::Other(_) => {
             matches!(op, OpKind::View)
         }
@@ -251,6 +251,27 @@ pub fn admit(plan: &Plan, label: &TodoLabel, slots: usize) -> Result<(), Refusal
 }
 
 pub(super) fn validate_plan(plan: &Plan) -> Result<(), PlanOpError> {
+    // Invariant: a worktree todo completes only through the acceptance of a contracted
+    // candidate (plan section 6.6), so the uncontracted shape is refused where it is declared.
+    if let Some(todo) = plan
+        .todos
+        .iter()
+        .find(|todo| super::acceptance::is_worktree(todo) && todo.contract.is_none())
+    {
+        return Err(PlanOpError::Contract {
+            label: todo.label.clone(),
+            detail: "a worktree delegation needs a `contract`, which its candidate is accepted \
+                     against (plan section 6.6); the delegation's `accept` is the child's brief, \
+                     not a contract"
+                .to_owned(),
+        });
+    }
+    validate_shape(plan)
+}
+
+/// The shape alone, which is what an import of a legacy document is held to: history is read
+/// as it was written, and section 6.6 binds the declarations made since.
+pub(super) fn validate_shape(plan: &Plan) -> Result<(), PlanOpError> {
     let mut issues = plan.validate();
     match issues.drain(..).next() {
         None => Ok(()),
@@ -389,7 +410,7 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    const OPS: [OpKind; 22] = ALL_OPS;
+    const OPS: [OpKind; 23] = ALL_OPS;
 
     fn named_states() -> Result<Vec<(TodoStateName, TodoState)>, Box<dyn std::error::Error>> {
         Ok(vec![
@@ -520,7 +541,8 @@ mod tests {
                             | OpKind::Reconcile
                             | OpKind::Submit
                             | OpKind::Resolve
-                            | OpKind::Accept => None,
+                            | OpKind::Accept
+                            | OpKind::Program => None,
                         };
                         assert_eq!(step(&state, op), expected, "{name} x {op:?}");
                     }
@@ -569,6 +591,7 @@ mod tests {
                 isolation: None,
                 budget: None,
                 wall: None,
+                parent_close: None,
                 extra: Map::new(),
             },
             accept: Check::Stated("it works".to_owned()),

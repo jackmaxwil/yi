@@ -26,14 +26,15 @@
 //! | `product_repair_passes_under_unchanged_criteria` | T1 | The red-then-green pair: the first product fails the frozen checker and `done` is refused with a recorded verdict; the product is repaired and the same frozen checker passes it. Every verdict in the run carries the same contract and criteria digest and a different output digest, which is the whole claim, and the todo's refusal counter still reads 1 after the pass. | The criteria being frozen at `start` and the refusal leaving the todo where it was. Let the contract be rewritten between attempts and the fixture still goes green while proving nothing, which is the specification failure this pair exists to make visible. Fixture: `fixtures/plans/contracts/writer-cmd-red-then-green.json`. |
 //! | `inline_task_output_validates_product_not_sidecar` | T0 | An inline todo's contract runs against the product itself, not against a note, a summary or a sidecar file the same turn wrote. The inline floor is the writer or reader floor of its declared role; running the work inline is not an exemption from it. | The output artifact being the one the token names. Let an inline todo nominate any artifact and the cheapest passing move is to write a sidecar that satisfies the schema, which is the reward-hacking shape the floors exist against. |
 //! | `the_third_refusal_blocks_the_todo_on_user_as_a_recorded_transition` | T0 | Three refused verdicts on one todo step it to `Blocked { on: User }` as its own committed transition with its own record, so the human inbox learns about it from the journal and not from a counter someone has to read. Stale and infrastructure abstentions do not count toward the three. | The counter bump being an explicit event and the cap being a transition rather than a return value. Make the cap a refusal text and a model retries forever; count stale verdicts and a slow checker walks a healthy todo into the inbox. |
+//! | `a_retry_opens_a_fresh_refusal_count_so_only_retry_cap_bounds_a_scheduler` | T0 | The section 6.3 cap counts the refused verdicts of one attempt, not of the todo: two refusals, a `fail` and a `retry`, then two more, leave the todo running with four journaled refusals and no `block`. `todo.refusals` is the lifetime event counter and is never what the cap reads, so `RETRY_CAP` is the only durable bound on a scheduler that retries a failed todo (D212). | The `attempt` filter in `refused_verdicts`. Drop it and the third refusal of a todo's life parks every retrying shape in the human inbox, whichever attempt it belongs to. |
 //! | `accept_records_accepted_by_user_never_verified_done` | T1 | The user's acceptance is its own op: refused to the owner, confirmed through `authority::submit` as the CLI and the console do, recorded as `accepted_by_user` with the citation as its actor, and landing `Done { AcceptedByUser }` with no `pass` verdict anywhere. | `check_actor` refusing the owner and `Actor::User` being minted only by the confirmed path. Let the owner accept and a model closes what its checker refused; write `VerifiedDone` here and the report cannot tell a checked todo from a waved-through one. |
 //! | `a_stated_only_todo_needs_an_item_or_a_user` | T0 | A todo whose only requirement is a stated acceptance is refused `done` on the owner's word; it completes once a decidable item is added and passes, or once a user accepts it. | `needs_resolution` counting a stated-only delegation. Drop it and "it works" is a contract again, the failure D77 was retired for. |
-//! | `done_on_an_uncontracted_worktree_todo_is_refused_as_unavailable` | T0 | `done` on a worktree todo with no contract is refused `AcceptanceUnavailable` and the todo stays `Running`; worktree acceptance is F0d, and no completion path frees a slot through a merge-less reap before it lands. | The worktree refusal sitting in `prepare` above the contract branch. Leave it inside `evidence` and the uncontracted todo takes the plain path, reaps the child and drops the lane with no disposition. |
+//! | `a_worktree_delegation_with_no_contract_is_refused_where_it_is_declared` | T0 | A worktree delegation carrying no contract is refused on `init`, on `append` and on the `retry` that swaps one in; the same declaration with a contract lands. A worktree todo is accepted against its contract (section 6.6), so without one it could be declared and never submitted or completed. | The worktree check in `validate_plan`. Drop it and the shape is declarable on every road and dead on all of them, which is what both dogfood owners wrote. |
 //! | `a_leftover_open_effect_does_not_hide_the_live_verification` | T0 | With an older `verification_requested` on the same todo left open under another token, two concurrent `done` calls still share one effect: the checker runs once, one refusal is charged, and the journal holds the leftover plus one live effect. | The token in `pending_verification`'s search. Match on the label alone and the oldest open effect is found first, the token filter drops it, and each call mints its own effect, runs the checker and charges a refusal. |
 //! | `a_checker_that_writes_into_the_workspace_still_passes` | T0 | A passing checker that appends to a file in its working directory lands `Done { VerifiedDone }` and the checkout is untouched: the checker runs in a materialization of the step 1 tree (`workspace_of(snapshot)`, section 6.3 step 4), never in the live checkout. | The materialization in `run_verifier`. Run the checker in the checkout and `pytest` writing a cache moves the tree step 5 re-captures, so it refuses its own pass as stale on every call. |
 //! | `a_workspace_edited_during_the_check_is_stale` | T0 | A checkout edited while the checker runs (a concurrent agent or the user) is refused `Stale` with `the workspace changed`, charging nothing: step 5 captures the workspace afresh and compares it with the token, as it does the attempt, version, digests and output. | The re-capture in step 5 (`evidence` in done.rs takes no frozen snapshot). Hand the step 1 id back in and the comparison passes by construction, so a tree that no longer exists lands `VerifiedDone`. |
 //! | `an_abstained_verification_is_rerun_not_replayed` | T0 | A verification that abstained for an infrastructure reason (a verifier deadline of 1 ms) is run again by the next `done` for the same token and passes, with no refusal charged at either point. | The `Fail \| Escalate` match on the settled verdict in `prepare` (done.rs). Replay every settled outcome and one abstention refuses a correct product forever without running the checker, and the cap never blocks it either. |
-//! | `set_cannot_complete_a_worktree_todo` | T0 | A `[x]` row for a worktree todo is refused `AcceptanceUnavailable` exactly as `done` is, and the todo stays `Running` with its child and lane; every completion of a worktree todo waits on F0d. | The worktree test in `completion_of` (state.rs), the validator `set`, `reconcile` and `accept` share with `done`. Keep it in `prepare` alone and `set` completes the todo `done` refuses, reaping nothing. |
+//! | `set_cannot_complete_a_worktree_todo` | T0 | A `[x]` row for a contracted worktree todo is refused `AcceptanceUnavailable` exactly as `done` is, and the todo stays `Running` with its child and lane; a worktree todo completes only through acceptance. | The worktree test in `completion_of` (state.rs), the validator `set`, `reconcile` and `accept` share with `done`. Keep it in `prepare` alone and `set` completes the todo `done` refuses, reaping nothing. |
 //! | `a_verbose_refusal_still_journals_under_the_record_cap` | T0 | A refusal whose six item tails would not fit the 64 KiB record once escaped still lands as `done_refused`: the journaled item details are clipped, the refusal is charged and the effect is settled. | `fitted` rehearsing the record under the cap before the commit. Commit unrehearsed and `seal` refuses the line, so the caller sees a store error, nothing is charged and the next `done` re-runs the same checker into the same wall. |
 //! | `import_marks_legacy_success_unverified` | T0 | An imported format-1 todo whose `Check::Stated` says a child called it done lands as `LegacyUnverified`, displayed as history and never as new evidence, and a later `set` asking `done` on the plan's remaining todo is refused all the same. | `Resolution` having three members. Read `LegacyUnverified` as `VerifiedDone` and one import launders a year of unchecked claims into verified work; drop the member and the history the user asked to keep is lost. Fixture: `fixtures/plans/contracts/legacy-stated-unverified.json`. |
 //!
@@ -41,8 +42,8 @@
 //! worktree todo was refused `AcceptanceUnavailable` on every completion path, and these
 //! three rows replace that refusal with the accept phase. They live in the same `contracts`
 //! module and use its helpers, so the helper column names what each turns on;
-//! `done_on_an_uncontracted_worktree_todo_is_refused_as_unavailable` and
-//! `set_cannot_complete_a_worktree_todo` stay as they are, because an uncontracted worktree
+//! `a_worktree_delegation_with_no_contract_is_refused_where_it_is_declared` and
+//! `set_cannot_complete_a_worktree_todo` stay beside them, because an uncontracted worktree
 //! todo has nothing to accept and `set` still may not author `Done`. These rows run over
 //! the `Stub` delegate and seeded records, no repository; the live acceptance rows, against
 //! `fixtures/plans/worktree/repo.sh`, are in `lanes.rs`.
@@ -150,6 +151,7 @@ fn delegation() -> Delegation {
             isolation: None,
             budget: None,
             wall: None,
+            parent_close: None,
             extra: Map::new(),
         },
         accept: Check::Command("true".to_owned()),
@@ -219,11 +221,20 @@ fn an_engine_init_on_a_fresh_directory_publishes_the_gitignore() -> TestResult {
 }
 
 #[test]
-fn width_clamps_low_and_high() -> TestResult {
-    assert_eq!(dispatch_width(width(1)?).get(), 1);
-    assert_eq!(dispatch_width(width(2)?).get(), 1);
-    assert_eq!(dispatch_width(width(9)?).get(), 8);
-    assert_eq!(dispatch_width(width(64)?).get(), 8);
+fn width_is_the_family_cap_not_the_host() -> TestResult {
+    // This replaces width_clamps_low_and_high, which pinned width(1) = 1 and width(2) = 1.
+    // That rule made fan-out unavailable in a 2-core container, which is every machine the
+    // evals and CI run on, and no lever could raise it (#468). The width now measures what
+    // actually bounds delegated children, and never the host's cores.
+    let levers = yi_runtime::levers::get();
+    assert_eq!(
+        dispatch_width().get(),
+        levers.family_max_children.min(levers.plan_width_max)
+    );
+    assert!(
+        dispatch_width().get() > 1,
+        "a small host must still admit fan-out"
+    );
     Ok(())
 }
 
@@ -1584,6 +1595,148 @@ fn a_ninth_delegated_start_is_refused_by_the_engine_with_the_count() -> TestResu
 // ---------------------------------------------------------------------------------------------
 // F0c: completion is verified on every path.
 
+/// Incident: every one of these refusals named the rule it enforced and not the move the
+/// caller evidently wanted, and F0e sessions repeated the same call up to three times (#472).
+mod refusals {
+    use super::*;
+    use yi_runtime::plan::tool::PlanTool;
+    use yi_tools::{Tool, ToolContext};
+
+    fn refusal(tool: &PlanTool, args: serde_json::Value) -> String {
+        let input = args.as_object().cloned().unwrap_or_default();
+        let output = tool.execute(input, &ToolContext::new(std::env::temp_dir()));
+        assert!(output.is_error, "the call was admitted: {output:?}");
+        output
+            .result
+            .content
+            .iter()
+            .map(|content| match content {
+                yi_types::message::Content::Text { text, .. } => text.clone(),
+                _ => String::new(),
+            })
+            .collect()
+    }
+
+    fn tool() -> Result<(Scratch, PlanTool), Box<dyn Error>> {
+        let (temp, _store, _stub, engine) = harness(2)?;
+        Ok((temp, PlanTool::new(Arc::new(engine), Actor::Owner)))
+    }
+
+    /// Dies with the child arm of `PlanTool::schema`: a worktree brief names `submit`, and a
+    /// schema without it teaches `done`, which waits on the very record `submit` writes.
+    #[test]
+    fn a_childs_plan_schema_lists_submit_and_the_owners_does_not() -> TestResult {
+        let (_temp, _store, _stub, engine) = harness(2)?;
+        let engine = Arc::new(engine);
+        let ops = |actor: Actor| {
+            PlanTool::new(Arc::clone(&engine), actor).schema()["properties"]["op"]["enum"]
+                .to_string()
+        };
+        let child = Actor::Child(yi_types::plan::doc::AgentId::new("cut")?);
+        assert!(ops(child).contains("\"submit\""));
+        assert!(!ops(Actor::Owner).contains("\"submit\""));
+        Ok(())
+    }
+
+    #[test]
+    fn done_on_a_pending_todo_names_the_legal_move() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let opened = tool.execute(
+            serde_json::json!({"op": "init", "goal": "ship it", "todos": [{"label": "tablefmt"}]})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            &ToolContext::new(std::env::temp_dir()),
+        );
+        assert!(!opened.is_error, "{opened:?}");
+        let text = refusal(
+            &tool,
+            serde_json::json!({"op": "done", "label": "tablefmt"}),
+        );
+        assert!(text.contains("in state pending"), "{text}");
+        assert!(text.contains("start it first"), "{text}");
+        assert!(text.contains("- [x]"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_prose_output_names_the_url_shapes_and_the_evidence_field() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let text = refusal(
+            &tool,
+            serde_json::json!({
+                "op": "done",
+                "label": "patchfuzz",
+                "output": "python3 check.py patchfuzz -> ok 8 of 8 public cases pass",
+            }),
+        );
+        assert!(text.contains("output is a url of the product"), "{text}");
+        assert!(text.contains("file:///abs/path"), "{text}");
+        assert!(text.contains("todo tool's evidence"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_over_long_set_label_is_measured_not_called_a_bad_row() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let long = "gateway: root failure, causal chain, blast radius from an interleaved log (check: python3 /app/check.py gateway)";
+        let text = refusal(
+            &tool,
+            serde_json::json!({"op": "set", "goal": "ship it", "list": format!("- [ ] {long}\n")}),
+        );
+        assert!(
+            text.contains(&format!(
+                "label is {} chars, the cap is 80",
+                long.chars().count()
+            )),
+            "{text}"
+        );
+        assert!(!text.contains("is not a checklist row"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_set_with_no_open_plan_names_goal() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let text = refusal(
+            &tool,
+            serde_json::json!({"op": "set", "list": "- [ ] one\n"}),
+        );
+        assert!(text.contains("add goal to this set to open one"), "{text}");
+        Ok(())
+    }
+
+    /// Three F0e trials lost a turn to this cap with briefs of 1428, 1490 and 1777 bytes; the
+    /// cap stays, because a plan of forty noted delegations has a frontmatter budget (#471).
+    #[test]
+    fn an_over_long_inline_note_names_the_artifact_road() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let opened = tool.execute(
+            serde_json::json!({"op": "init", "goal": "ship it", "todos": [{"label": "seam"}]})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            &ToolContext::new(std::env::temp_dir()),
+        );
+        assert!(!opened.is_error, "{opened:?}");
+        let brief = "x".repeat(1490);
+        let text = refusal(
+            &tool,
+            serde_json::json!({
+                "op": "append",
+                "todos": [{
+                    "label": "gateway",
+                    "delegation": {"spec": {}, "accept": {"command": "true"}, "note": brief},
+                }],
+            }),
+        );
+        assert!(text.contains("1490 bytes exceeds 1024"), "{text}");
+        assert!(text.contains("artifact"), "{text}");
+        assert!(text.contains("context"), "{text}");
+        Ok(())
+    }
+}
+
 mod contracts {
     use super::*;
     use std::collections::HashMap;
@@ -1601,7 +1754,8 @@ mod contracts {
     use yi_runtime::{AskOutcome, Asker, PermissionAsk, PermissionBroker, PermissionMode};
     use yi_types::plan::canonical::{ArtifactRef, Digest};
     use yi_types::plan::contract::{
-        Contract, Outcome as VerdictOutcome, Resolution, Verdict, VerificationToken,
+        Contract, ContractItem, ItemVerdict, JurorLine, Outcome as VerdictOutcome, Resolution,
+        Verdict, VerificationToken, Vote,
     };
     use yi_types::plan::doc::{AttemptId, Isolation};
     use yi_types::plan::ledger::JournalRecord;
@@ -1640,6 +1794,14 @@ mod contracts {
         name: &str,
         hook: Option<yi_runtime::plan::ops::VerifyHook>,
     ) -> Result<Rig, Box<dyn Error>> {
+        rig_verified(name, hook, Verifier::new(20_000))
+    }
+
+    fn rig_verified(
+        name: &str,
+        hook: Option<yi_runtime::plan::ops::VerifyHook>,
+        verifier: Verifier,
+    ) -> Result<Rig, Box<dyn Error>> {
         let temp = Scratch::new(name)?;
         let store = PlanStore::open(temp.join("plans"))?;
         let ws = temp.join("ws");
@@ -1649,7 +1811,7 @@ mod contracts {
             .with_width(width(4)?)
             .with_output_resolve(serve.clone())
             .with_cwd(ws.clone())
-            .with_verifier(Verifier::new(20_000));
+            .with_verifier(verifier);
         if let Some(hook) = hook {
             engine = engine.with_verify_hook(hook);
         }
@@ -2101,7 +2263,7 @@ mod contracts {
             matches!(at_set, Err(PlanOpError::Invalid { .. })),
             "{at_set:?}"
         );
-        // A judge item never stands alone, and is refused at declaration until F3a.
+        // A judge item never stands alone: a live decider (F3a), and still below every floor.
         let judged: Contract = serde_json::from_value(json!({
             "class": "writer",
             "items": [{"id": "taste", "critical": true, "weight": 100,
@@ -2685,6 +2847,161 @@ mod contracts {
         Ok(())
     }
 
+    /// A jury that never settles: it counts its sittings and abstains with one juror's line,
+    /// whose reason claims the phrase the quote check writes while its flag says otherwise.
+    struct HungJury(AtomicU32);
+
+    impl yi_runtime::plan::verify::Judge for HungJury {
+        fn judge(
+            &self,
+            _item: &ContractItem,
+            snapshot: &yi_runtime::plan::verify::Snapshot<'_>,
+            _until: std::time::Instant,
+        ) -> (ItemVerdict, Vec<JurorLine>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let seated = snapshot.jury.as_ref().map(|seat| seat.permit.purpose());
+            let line = JurorLine {
+                model: "openrouter/z-ai/glm-5.3-flash".to_owned(),
+                vote: Vote::Abstain,
+                reason: format!("unbacked quote: seated under {seated:?}"),
+                unbacked: false,
+            };
+            let reason = "no quorum".to_owned();
+            (ItemVerdict::Abstain { reason }, vec![line])
+        }
+    }
+
+    // Dies with the `JUDGE_CAP_PER_TODO` arm in `Verifier::run`, with `juries` counting the
+    // journal's requests, with the escalation arm of `refuse`'s cap and its own note, and with
+    // `juror_votes` reading the check's flag rather than a reason a juror writes.
+    #[test]
+    fn the_fourth_jury_on_one_todo_escalates_to_the_user() -> TestResult {
+        let jury = Arc::new(HungJury(AtomicU32::new(0)));
+        let verifier = Verifier::new(20_000).with_judge(jury.clone());
+        let rig = rig_verified("yi-f3a-jury-cap", None, verifier)?;
+        let plan = planned()?;
+        let artifacts = rig.store.artifacts(&plan);
+        let rubric = artifacts.put(b"it reads well", "text/markdown", &rig.store.nonce())?;
+        let essay = artifacts.put(b"an essay", "text/markdown", &rig.store.nonce())?;
+        let mut contract =
+            serde_json::to_value(cmd_contract(&rig.store, &plan, "true", "writer")?)?;
+        contract["items"]
+            .as_array_mut()
+            .ok_or("items")?
+            .push(json!({
+                "id": "taste", "critical": false, "weight": 1,
+                "decider": {"judge": {"rubric": rubric, "evidence": [essay], "policy": {"n": 3}}}
+            }));
+        init(
+            &rig.engine,
+            vec![contracted("land it", serde_json::from_value(contract)?)?],
+        )?;
+        start(&rig.engine, &plan, "land it")?;
+        for sitting in 1..=3 {
+            let verdict = refused(done(&rig.engine, &plan, "land it", None))?;
+            assert_eq!(
+                verdict.outcome,
+                VerdictOutcome::Abstain,
+                "sitting {sitting}"
+            );
+            let taste = verdict.items.get(1).ok_or("the judged line")?;
+            assert_eq!(taste.jurors.len(), 1, "the juror's line rides the verdict");
+            assert!(taste.jurors[0].reason.contains("Verification"), "{taste:?}");
+        }
+        let journal = Journal::open(rig.store.journal_path(&plan), Arc::new(RealFs));
+        let sat = journal.read()?.records.pop().ok_or("the third refusal")?;
+        assert_eq!(
+            sat.record.extra.get("jurors"),
+            Some(&json!({"pass": 0, "fail": 0, "abstain": 1, "unbacked": 0})),
+            "the votes are counted off the check's flag, never a juror's reason"
+        );
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        assert!(
+            matches!(todo.state, TodoState::Running { .. }),
+            "{:?}",
+            todo.state
+        );
+        assert_eq!(rig.engine.capacity().held(Purpose::Verification), 0);
+
+        let verdict = refused(done(&rig.engine, &plan, "land it", None))?;
+        assert_eq!(verdict.outcome, VerdictOutcome::Escalate);
+        assert_eq!(jury.0.load(Ordering::SeqCst), 3, "no fourth jury sits");
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        assert!(
+            matches!(&todo.state, TodoState::Blocked { on: BlockedOn::User, note }
+                if note.contains("juries") && !note.contains("refused verdicts")),
+            "{:?}",
+            todo.state
+        );
+        let tail: Vec<String> = kinds(&rig.store, &plan)?
+            .into_iter()
+            .rev()
+            .take(2)
+            .collect();
+        assert_eq!(tail, ["block", "done_refused"]);
+        Ok(())
+    }
+
+    // Dies with the `attempt` filter in `refused_verdicts`: count the todo's lifetime refusals
+    // and every retrying scheduler walks a healthy todo into the human inbox instead of RETRY_CAP.
+    #[test]
+    fn a_retry_opens_a_fresh_refusal_count_so_only_retry_cap_bounds_a_scheduler() -> TestResult {
+        let rig = rig("yi-f0c-cap-attempt", None)?;
+        let plan = planned()?;
+        init(
+            &rig.engine,
+            vec![contracted(
+                "land it",
+                cmd_contract(&rig.store, &plan, "exit 1", "writer")?,
+            )?],
+        )?;
+        for attempt in 1..=2 {
+            start(&rig.engine, &plan, "land it")?;
+            for call in 1..=2 {
+                // A fresh product each time, or the second `done` replays the settled verdict free.
+                rig.serve.set(
+                    "local://out.txt",
+                    Some(&format!("product {attempt}.{call}")),
+                );
+                let verdict =
+                    refused(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
+                assert_eq!(verdict.outcome, VerdictOutcome::Fail);
+            }
+            let todo = todo_of(&rig.store, &plan, "land it")?;
+            assert!(
+                matches!(todo.state, TodoState::Running { .. }),
+                "attempt {attempt} of two refusals must not block: {:?}",
+                todo.state
+            );
+            rig.engine.apply(at(
+                &plan,
+                Op::Fail {
+                    label: TodoLabel::new("land it")?,
+                    cause: "the shape settles a refused done".to_owned(),
+                    disposition: None,
+                },
+            ))?;
+            rig.engine.apply(at(
+                &plan,
+                Op::Retry {
+                    label: TodoLabel::new("land it")?,
+                    delegation: None,
+                },
+            ))?;
+        }
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        assert_eq!(
+            todo.refusals, 4,
+            "the lifetime counter is an event, not the cap"
+        );
+        assert_eq!(todo.retries, RetryCount(2));
+        assert!(
+            !kinds(&rig.store, &plan)?.iter().any(|kind| kind == "block"),
+            "four refusals across two attempts must never reach the section 6.3 cap"
+        );
+        Ok(())
+    }
+
     // Dies with `mark_legacy` in import.rs: drop it and one import launders a file's claims into
     // verified work; read it as VerifiedDone and the fuzz lane's pass-verdict check dies too.
     fn accept_submission(plan: &PlanId, label: &str) -> Result<Submission, Box<dyn Error>> {
@@ -2949,27 +3266,67 @@ mod contracts {
         Ok(())
     }
 
-    // Dies with the worktree refusal in `prepare` (done.rs), above the contract branch: move it
-    // back into `evidence` and an uncontracted worktree todo completes through a merge-less reap.
+    // Dies with the worktree check in `validate_plan` (table.rs): drop it and the shape is
+    // declarable on every road, and acceptance then has no contract to accept a candidate
+    // against, so the todo can never be submitted and never completed.
     #[test]
-    fn done_on_an_uncontracted_worktree_todo_is_refused_as_unavailable() -> TestResult {
-        let rig = rig("yi-f0c-worktree-plain", None)?;
-        let mut spec = delegated_spec("build it apart")?;
-        if let Some(delegation) = &mut spec.delegation {
+    fn a_worktree_delegation_with_no_contract_is_refused_where_it_is_declared() -> TestResult {
+        let rig = rig("yi-f0c-worktree-declare", None)?;
+        let plan = planned()?;
+        let mut apart = delegated_spec("build it apart")?;
+        if let Some(delegation) = &mut apart.delegation {
             delegation.spec.isolation = Some(Isolation::Worktree);
         }
-        init(&rig.engine, vec![spec])?;
-        let plan = planned()?;
-        start(&rig.engine, &plan, "build it apart")?;
-        let refused = done(&rig.engine, &plan, "build it apart", None);
+        let refused = init(&rig.engine, vec![apart.clone()]);
         assert!(
-            matches!(refused, Err(PlanOpError::AcceptanceUnavailable { .. })),
+            matches!(refused, Err(PlanOpError::Contract { .. })),
             "{refused:?}"
         );
-        assert!(matches!(
-            todo_of(&rig.store, &plan, "build it apart")?.state,
-            TodoState::Running { .. }
+        init(&rig.engine, vec![spec("hold the plan open")?])?;
+        let appended = rig.engine.apply(at(
+            &plan,
+            Op::Append {
+                todos: vec![apart.clone()],
+            },
         ));
+        assert!(
+            matches!(appended, Err(PlanOpError::Contract { .. })),
+            "{appended:?}"
+        );
+        // With a contract the same declaration lands, which is the road the refusal names.
+        apart.contract = Some(cmd_contract(&rig.store, &plan, "true", "writer")?);
+        rig.engine.apply(at(
+            &plan,
+            Op::Append {
+                todos: vec![apart.clone()],
+            },
+        ))?;
+        assert!(
+            todo_of(&rig.store, &plan, "build it apart")?
+                .contract
+                .is_some()
+        );
+        // A retry swapping a worktree delegation onto an uncontracted todo is the same shape.
+        start(&rig.engine, &plan, "hold the plan open")?;
+        rig.engine.apply(at(
+            &plan,
+            Op::Fail {
+                label: label("hold the plan open")?,
+                cause: "needs its own tree".to_owned(),
+                disposition: None,
+            },
+        ))?;
+        let retried = rig.engine.apply(at(
+            &plan,
+            Op::Retry {
+                label: label("hold the plan open")?,
+                delegation: apart.delegation.map(Box::new),
+            },
+        ));
+        assert!(
+            matches!(retried, Err(PlanOpError::Contract { .. })),
+            "{retried:?}"
+        );
         Ok(())
     }
 
@@ -3191,12 +3548,13 @@ mod contracts {
     #[test]
     fn set_cannot_complete_a_worktree_todo() -> TestResult {
         let rig = rig("yi-f0c-worktree-set", None)?;
+        let plan = planned()?;
         let mut spec = delegated_spec("build it apart")?;
         if let Some(delegation) = &mut spec.delegation {
             delegation.spec.isolation = Some(Isolation::Worktree);
         }
+        spec.contract = Some(cmd_contract(&rig.store, &plan, "true", "writer")?);
         init(&rig.engine, vec![spec.clone()])?;
-        let plan = planned()?;
         start(&rig.engine, &plan, "build it apart")?;
         let refused = rig.engine.apply(at(
             &plan,
@@ -3391,6 +3749,15 @@ mod contracts {
                     if *phase == "unsubmitted" && *missing == "candidate_submitted"
             ),
             "{refused:?}"
+        );
+        let text = refused
+            .as_ref()
+            .err()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            text.contains("op=submit"),
+            "the refusal names the call: {text}"
         );
         assert!(matches!(
             todo_of(&rig.store, &plan, "build it apart")?.state,

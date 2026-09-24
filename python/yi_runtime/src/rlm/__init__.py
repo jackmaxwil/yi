@@ -67,14 +67,16 @@ class RLMSpawnHandle:
         so the host blocks instead of the kernel polling, and no other waiter
         can steal this child's update. The deadline is wall clock, and a
         child no longer registered with the parent (``delete_subagent``
-        reaps it) raises immediately instead of waiting to the deadline.
+        reaps it) raises immediately instead of waiting to the deadline, and
+        so does a child the host reports ``stuck``.
         """
         _check_schema(schema)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         cursor: int | None = None
         while True:
-            remaining = deadline - loop.time()
+            # Float rounding can put `(now + timeout) - now` an ulp past `timeout`.
+            remaining = min(timeout, deadline - loop.time())
             if remaining <= 0:
                 break
             reply = await wait(timeout=remaining, cursor=cursor)
@@ -89,6 +91,13 @@ class RLMSpawnHandle:
                 raise RuntimeError(
                     f"child {self.name} ({self.rlm_child_id}) is no longer registered with "
                     "the parent; rlm.delete_subagent reaps a child and its answer with it"
+                )
+            if state == "stuck":
+                notes = reply.get("notes")
+                note = notes.get(self.name) if isinstance(notes, dict) else None
+                raise RuntimeError(
+                    f"child {self.name} is stuck ({note or 'no progress in its records'}); "
+                    "rlm.send it a nudge, rlm.interrupt it, or call result() again to keep waiting"
                 )
             if state in ("finished", "failed", "needs_you"):
                 try:
@@ -272,12 +281,36 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     serialized into its brief and nothing else of this namespace reaches it.
     ``check`` makes it a protocol child — it owes a ``{"value": …, "discoveries":
     […]}`` answer, and ``result`` withholds that answer while the check is red.
+    ``deadline_s`` and ``tokens`` are the child's lease, drawn from this session's own: an
+    ask past what is left here is refused with both numbers, never clamped. ``parent_close``
+    is ``"terminate"`` (default, 30 s grace) or ``"request_cancel"``; work is kept either way.
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
     kwargs = _resolve_context(kwargs)
     payload = await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs})
     return _spawn_handle_from_payload(payload)
+
+
+async def service(name: str, brief: str, restart: int = 3, **kwargs: Any) -> RLMSpawnHandle:
+    """Start a service: a child whose ``name`` is its address for as long as this session lives.
+
+    It idles between turns and ``send`` or ``request`` wakes it. A run that crashes (a provider
+    error, a dead kernel) is respawned under the same name with its transcript and inbox kept
+    and a fresh lease, at most ``restart`` times in ten minutes (the host refuses more than ten
+    and counts them in memory, so a restarted host starts the count over); past that, or when
+    the parent has no lease left to draw, it reads ``failed`` and the notice says why. Each
+    incarnation is billed for its own turns only. The same ``name``
+    and ``brief`` again attach to the running service; ``delete_subagent``, ``revoke`` and the
+    parent's close end it for good. ``status()`` shows ``service`` and ``incarnation``; a
+    message carries the incarnation it was addressed to. ``kwargs`` are ``run``'s, less
+    ``name`` and ``isolation``.
+    """
+    if not isinstance(restart, int) or restart < 0:
+        raise ValueError("restart is how many respawns are allowed in ten minutes: 0 or more")
+    kwargs = _resolve_context(kwargs)
+    payload = {"name": name, "prompt": brief, "restart": restart, "kwargs": kwargs}
+    return _spawn_handle_from_payload(await host_request("rlm.service", payload))
 
 
 def _model_from_payload(payload: Any) -> RLMModel:
@@ -345,33 +378,67 @@ async def list_subagents() -> list[RLMSubagent]:
     return [_subagent_from_payload(entry) for entry in entries]
 
 
-async def delete_subagent(target: str | RLMSubagent) -> RLMSubagent:
+async def delete_subagent(target: str | RLMSubagent | RLMSpawnHandle) -> RLMSubagent:
     """Delete one running or retained direct child from the current parent session."""
-    if isinstance(target, RLMSubagent):
+    if isinstance(target, (RLMSubagent, RLMSpawnHandle)):
         selector = target.rlm_child_id
     elif isinstance(target, str):
         selector = target.strip()
         if not selector:
             raise ValueError("target must not be empty")
     else:
-        raise TypeError(f"target must be str or RLMSubagent, got {type(target).__name__}")
+        raise TypeError(
+            f"target must be str, RLMSubagent or RLMSpawnHandle, got {type(target).__name__}"
+        )
     payload = await host_request("rlm.delete_subagent", {"target": selector})
     return _subagent_from_payload(payload.get("subagent"), "rlm.delete_subagent")
 
 
-async def send(target: "str | RLMSubagent", message: str, followup: bool = False) -> dict[str, Any]:
-    """Send one agent message; ``followup=True`` also starts the target's turn.
-
-    ``target`` is an agent name, ``"parent"``, or ``"all"``. A broadcast returns
-    one receipt per target rather than failing whole on the first bad one.
-    """
+def _mail(target: "str | RLMSubagent", message: str, **options: Any) -> dict[str, Any]:
     if not isinstance(message, str) or not message:
         raise ValueError("message must be a non-empty str")
     selector = target if isinstance(target, str) else target.session_name
-    return await host_request(
-        "agent_message.send",
-        {"target": selector, "message": message, "followup": bool(followup)},
-    )
+    sent = {key: value for key, value in options.items() if value is not None}
+    return {"target": selector, "message": message, **sent}
+
+
+async def send(
+    target: "str | RLMSubagent",
+    message: str,
+    followup: bool = False,
+    *,
+    reply_to: str | None = None,
+    kind: str | None = None,
+    ref: str | None = None,
+    conversation: str | None = None,
+    deadline_ms: int | None = None,
+) -> dict[str, Any]:
+    """Send one agent message; ``followup=True`` also starts the target's turn.
+
+    ``target`` is an agent name, ``"parent"``, or ``"all"``. A broadcast returns
+    one receipt per target rather than failing whole on the first bad one. Each
+    receipt is ``{target, id, state}`` and ``state`` says what the host did once
+    the message was in the target's inbox: ``queued`` (a running turn will take
+    it), ``woken`` (a turn was started on it) or ``inboxed`` (it waits in the
+    store; nothing is running to read it). ``reply_to=<id>`` answers a request.
+    ``kind`` is ``inform`` (the default), ``progress``, ``failure`` or ``cancel``.
+    A body over 16 KiB is refused, never trimmed: ``put`` it and pass
+    ``ref="family://<name>"``.
+    """
+    options = {"reply_to": reply_to, "kind": kind, "ref": ref}
+    options.update(conversation=conversation, deadline_ms=deadline_ms)
+    return await host_request("agent_message.send", _mail(target, message, followup=bool(followup), **options))
+
+
+async def request(target: "str | RLMSubagent", message: str, timeout: float = 300.0) -> dict[str, Any]:
+    """Send a request and wait for its reply; an idle target is started on it.
+
+    Returns ``{reply, envelope, receipts}``: the reply's text, its whole envelope
+    and the request's receipt. Only the target's own
+    ``send(sender, text, reply_to=<id>)`` resolves it. RuntimeError when no reply
+    came within ``timeout`` seconds; a late reply still lands in your history.
+    """
+    return await host_request("agent_message.request", _mail(target, message, timeout_ms=int(timeout * 1000)))
 
 
 async def followup(target: "str | RLMSubagent", message: str) -> dict[str, Any]:
@@ -383,10 +450,14 @@ async def status(name: str | None = None) -> list[dict[str, Any]]:
     """Every child's state as its own records show it (D165).
 
     Each entry is ``{name, state, note, tools, tokens, idle_s, worktree}`` with ``state``
-    one of ``running``, ``finished``, ``failed``, ``needs_you`` (it ended on ``ask_user``
-    or blocked a todo on you: answer with ``send(name, text, followup=True)``) and
+    one of ``queued`` (admitted, not yet started), ``running``, ``finished``, ``failed``
+    (its run ended badly, or it sent you a ``failure`` of its own while still running),
+    ``needs_you`` (it ended on ``ask_user`` or blocked a todo on you: answer with
+    ``send(name, text, followup=True)``),
     ``stuck`` (a repeat break, a length re-drive at rung two or more, a let-go
-    intercept, or five idle minutes; ``note`` names which). ``name`` keeps one.
+    intercept, or five idle minutes; ``note`` names which) and ``repossession_pending``
+    (``revoke`` took its lease back but the stop, settle or record failed; everything it
+    held is kept and the host retries). ``name`` keeps one.
     """
     payload = await host_request("rlm.status", {})
     members = payload.get("members")
@@ -431,6 +502,7 @@ async def plan_op(
     plan: str | None = None,
     request_id: str | None = None,
     expected_revision: int | None = None,
+    artifacts: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Run one op against the host's plan engine and return its reply.
 
@@ -441,7 +513,9 @@ async def plan_op(
     the op if the plan moved under you. Pass your own ``request_id`` to retry
     as the same request; without one each call is minted a new id and is a
     new request. Read ``ok`` in the reply: a refusal is data, not an
-    exception.
+    exception; ``plan`` is the plan as it stands. ``artifacts`` are
+    ``{media_type, text}`` blobs stored in the plan before the op applies,
+    which the op's args then name by sha256 (``help(yi)`` builds them).
 
         reply = await plan_op("view", {"full": True})
     """
@@ -451,6 +525,7 @@ async def plan_op(
         "expected_revision": expected_revision,
         "op": op,
         "args": args,
+        "artifacts": artifacts or None,
     }
     return await host_request("plan.op", {k: v for k, v in payload.items() if v is not None})
 
@@ -460,15 +535,46 @@ async def interrupt(target: "str | RLMSubagent") -> dict[str, Any]:
     return await host_request("rlm.interrupt", {"target": _worktree_target(target)})
 
 
-async def result(
-    target: "str | RLMSubagent", *, schema: dict[str, Any] | None = None
+async def revoke(
+    target: "str | RLMSubagent", *, grace_s: float = 30, reason: str = ""
 ) -> dict[str, Any]:
-    """A finished child's answer as data, checked against ``schema`` host-side."""
+    """Take a running child's lease back: it is sent a ``cancel`` and has ``grace_s`` to stop.
+
+    A child still running when the grace ends is repossessed: its run is stopped, its
+    worktree's work is kept on its branch, the record lands in this session's history and
+    ``wait`` stops listing it. One that stops in time keeps its record for ``result``.
+    """
+    payload = {"target": _worktree_target(target), "grace_ms": int(grace_s * 1000), "reason": reason}
+    return await host_request("rlm.revoke", payload)
+
+
+async def result(
+    target: "str | RLMSubagent",
+    *,
+    schema: dict[str, Any] | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """A finished child's answer as data, checked against ``schema`` host-side.
+
+    ``timeout`` waits that many seconds for a child that is still running, as
+    ``RLMSpawnHandle.result`` does; omitted, a running child raises at once.
+    """
     _check_schema(schema)
     payload: dict[str, Any] = {"target": _worktree_target(target)}
     if schema is not None:
         payload["schema"] = schema
-    return await host_request("rlm.result", payload)
+    if timeout is None:
+        return await host_request("rlm.result", payload)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            return await host_request("rlm.result", payload)
+        except RuntimeError as error:
+            remaining = min(timeout, deadline - loop.time())
+            if remaining <= 0 or "still running" not in str(error):
+                raise
+        await wait(timeout=remaining)
 
 
 def _worktree_target(target: "str | RLMSubagent") -> str:
@@ -522,7 +628,15 @@ def _kernel_local_name(url: str) -> str | None:
     return variable
 
 
-async def fetch(url: str, *, as_text: bool = False) -> Any:
+class Page(str):
+    """One page of a paged ``fetch``: the text, and where the next page starts (None at the end)."""
+
+    next_offset: int | None = None
+
+
+async def fetch(
+    url: str, *, as_text: bool = False, offset: int | None = None, limit: int | None = None
+) -> Any:
     """Read one addressable URL; a URL names a noun, so a fetch never writes.
 
     ``kernel://<var>`` and ``kernel://main/<var>`` in the plan owner's kernel
@@ -530,6 +644,10 @@ async def fetch(url: str, *, as_text: bool = False) -> Any:
     round trip. Every other URL — ``local://``, ``plan://``, ``history://``,
     ``checkpoint://``, ``mcp://``, another agent's ``kernel://`` — is resolved
     by the host and returns text. Batch reads with ``asyncio.gather``.
+
+    ``offset`` and ``limit`` page a read: bytes of ``local://``, entries of
+    ``history://``, chars of another agent's ``kernel://`` repr. A paged read
+    returns a ``Page``, a str whose ``next_offset`` continues it until None.
     """
     if not isinstance(url, str) or not url:
         raise TypeError("url must be a non-empty str")
@@ -544,8 +662,9 @@ async def fetch(url: str, *, as_text: bool = False) -> Any:
         return namespace[name]
     # D164: another member's kernel:// returns the object itself (its kernel dills it into
     # the family dir); text on request, or when the host has no family dir to dill into.
-    want_object = url.startswith("kernel://") and not as_text
-    reply = await host_request("fetch", {"url": url, "object": want_object})
+    paged = {key: value for key, value in (("offset", offset), ("limit", limit)) if value is not None}
+    want_object = url.startswith("kernel://") and not as_text and not paged
+    reply = await host_request("fetch", {"url": url, "object": want_object, **paged})
     path = reply.get("path")
     if want_object and isinstance(path, str):
         with open(path, "rb") as handle:
@@ -553,6 +672,9 @@ async def fetch(url: str, *, as_text: bool = False) -> Any:
     text = reply.get("text")
     if not isinstance(text, str):
         raise RuntimeError(f"fetch of {url} returned no text")
+    if paged:
+        text = Page(text)
+        text.next_offset = reply.get("next_offset")
     return text
 
 
@@ -818,8 +940,11 @@ class _RLMCallable:
     async def run(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
         return await run(prompt, **kwargs)
 
-    async def fetch(self, url: str, *, as_text: bool = False) -> Any:
-        return await fetch(url, as_text=as_text)
+    async def service(self, name: str, brief: str, restart: int = 3, **kwargs: Any) -> RLMSpawnHandle:
+        return await service(name, brief, restart, **kwargs)
+
+    async def fetch(self, url: str, **options: Any) -> Any:
+        return await fetch(url, **options)
 
     def put(self, name: str, obj: Any) -> dict[str, Any]:
         return put(name, obj)
@@ -839,14 +964,19 @@ class _RLMCallable:
     async def list_subagents(self) -> list[RLMSubagent]:
         return await list_subagents()
 
-    async def delete_subagent(self, target: str | RLMSubagent) -> RLMSubagent:
+    async def delete_subagent(self, target: str | RLMSubagent | RLMSpawnHandle) -> RLMSubagent:
         return await delete_subagent(target)
 
-    async def send(self, target: str | RLMSubagent, message: str, followup: bool = False) -> dict[str, Any]:
-        return await send(target, message, followup)
+    async def send(
+        self, target: str | RLMSubagent, message: str, followup: bool = False, **options: Any
+    ) -> dict[str, Any]:
+        return await send(target, message, followup, **options)
 
     async def followup(self, target: str | RLMSubagent, message: str) -> dict[str, Any]:
         return await followup(target, message)
+
+    async def request(self, target: str | RLMSubagent, message: str, timeout: float = 300.0) -> dict[str, Any]:
+        return await request(target, message, timeout)
 
     async def list_agents(self) -> list[dict[str, Any]]:
         return await list_agents()
@@ -865,13 +995,24 @@ class _RLMCallable:
         plan: str | None = None,
         request_id: str | None = None,
         expected_revision: int | None = None,
+        artifacts: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         return await plan_op(
-            op, args, plan=plan, request_id=request_id, expected_revision=expected_revision
+            op,
+            args,
+            plan=plan,
+            request_id=request_id,
+            expected_revision=expected_revision,
+            artifacts=artifacts,
         )
 
     async def interrupt(self, target: str | RLMSubagent) -> dict[str, Any]:
         return await interrupt(target)
+
+    async def revoke(
+        self, target: str | RLMSubagent, *, grace_s: float = 30, reason: str = ""
+    ) -> dict[str, Any]:
+        return await revoke(target, grace_s=grace_s, reason=reason)
 
     async def result(
         self, target: str | RLMSubagent, *, schema: dict[str, Any] | None = None
@@ -921,10 +1062,12 @@ __all__ = [
     "harness",
     "host_request",
     "interrupt",
+    "revoke",
     "list_agents",
     "list_subagents",
     "merge_worktree",
     "plan_op",
+    "request",
     "result",
     "rlm",
     "run",

@@ -26,14 +26,18 @@
 //! | `done_naming_an_output_the_integration_never_saw_is_stale` | T1 | `Rig::fixture_repo`, `Bench::done_as`, the bench's `Serve` | `done` naming another output than the candidate submitted is refused stale with a `verification_stale` record, charges no refusal, and leaves the attempt at its verified integration; `done` naming nothing accepts the submitted output. | Section 6.3 step 5 at the accept phase: the token recomputed under the lease and compared whole. Skip it and a product the checks never saw is recorded `VerifiedDone`. |
 //! | `full_worker_capacity_does_not_deadlock_verification` | T1 | `Rig::fixture_repo`, `PlanEngine::capacity` | With the engine's own worker share held to its cap, a worktree todo still submits, verifies and is accepted, and the run ends with no verification permit and no slot held. | `Purpose::Verification` being its own counter (capacity.rs). Charge the checks against the worker share and a parent whose workers hold every worker lane cannot verify the candidate any of them submits. |
 //!
-//! `a_repossessed_worktree_keeps_its_work_on_its_branch` is F2b and is not written here.
-//! Its record shape is already pinned: `fixtures/plans/journal/acceptance.jsonl` carries a
-//! `repossession_pending` disposition with `slot_released` false, so F2b adds the path and
-//! not the vocabulary.
+//! `a_repossessed_worktree_keeps_its_work_on_its_branch` landed with F2b (D215) at the end of
+//! this file, against the lease journal on the parent's transcript. The plan journal's own
+//! `Disposition::RepossessionPending` is still unwritten: a repossessed worktree todo reaches
+//! the plan as a child the host cannot vouch for, blocks on the user, and records its
+//! disposition through `fail` or `drop` as any other non-accept exit does. Writing it from
+//! the repossession needs a road from the host into the engine's journal, which F3a owns.
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+#[path = "support/family.rs"]
+mod support;
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -925,6 +929,7 @@ mod accept {
                 isolation: Some(Isolation::Worktree),
                 budget: None,
                 wall: None,
+                parent_close: None,
                 extra: serde_json::Map::new(),
             },
             accept: Check::Command("true".to_owned()),
@@ -1634,6 +1639,29 @@ mod accept {
         Ok(())
     }
 
+    // Dies with the accepting road skipping `mark` in `reap_leaving` (acceptance.rs): the host
+    // reads the child as holding an undisposed worktree and refuses the reap `done` runs, after
+    // the integration is already published.
+    #[test]
+    fn an_accepted_worktree_tells_the_host_its_branch_is_kept() -> TestResult {
+        let rig = Rig::new("f0d-accept-mark")?;
+        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
+        bench.submit()?;
+        bench.done()?;
+        assert!(
+            bench.kinds()?.contains(&KIND_ACCEPTED.to_owned()),
+            "the candidate was accepted"
+        );
+        assert_eq!(
+            bench.child.disposed.lock().map_err(|_| "poisoned")?[..],
+            [Choice::Retained],
+            "the host is told the accepted branch is kept, so its reap settles the lane"
+        );
+        assert!(matches!(bench.state()?, TodoState::Done { .. }));
+        Ok(())
+    }
+
     // Dies with the `Merge::Conflict` arm of `integrate` (acceptance.rs): return the git error
     // instead and the lane drops through `Drop` with no record naming the branch.
     #[test]
@@ -2014,4 +2042,41 @@ mod accept {
         assert_eq!(held(&bench.pool)?, 0);
         Ok(())
     }
+}
+
+/// Dies with the `Retained` choice `repossess` sets before it settles: discard instead, or drop
+/// the lane unsettled, and a revoked child's uncommitted work goes with its checkout.
+#[tokio::test]
+async fn a_repossessed_worktree_keeps_its_work_on_its_branch() -> TestResult {
+    let rig = Rig::new("repossess")?;
+    let store = support::memory_store("lanes-repossess");
+    let hold = Some("echo unsaved > draft.txt; sleep 30");
+    let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, hold);
+    let mut asked = serde_json::Map::new();
+    asked.insert("name".to_owned(), "writer".into());
+    asked.insert("isolation".to_owned(), "worktree".into());
+    family.host.spawn("write a draft".to_owned(), asked)?;
+    let tree = family.host.cwd_of("writer").ok_or("no worktree")?;
+    for _ in 0..400 {
+        if tree.join("draft.txt").exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    family.host.revoke("writer", 0, "scope changed")?;
+    assert_eq!(family.host.expire().await, ["writer"]);
+    let journal = family.journal();
+    let Some(yi_types::lease::LeaseRecord::Repossessed(record)) = journal.last() else {
+        return Err(format!("no repossession record: {journal:?}").into());
+    };
+    let kept: Vec<String> = record.kept.iter().map(ToString::to_string).collect();
+    let branch = kept
+        .iter()
+        .find_map(|url| url.strip_prefix("branch://"))
+        .ok_or("the record names no branch")?;
+    assert_eq!(
+        git(&rig.repo, &["show", &format!("{branch}:draft.txt")])?,
+        "unsaved"
+    );
+    Ok(())
 }

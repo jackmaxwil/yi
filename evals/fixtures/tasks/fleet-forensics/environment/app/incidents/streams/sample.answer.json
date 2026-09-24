@@ -1,0 +1,18 @@
+{
+ "acme": {
+  "first_stale": {
+   "at_ms": 1947454940417,
+   "id": "w-25f2ae"
+  },
+  "puts": 14,
+  "stale": 1
+ },
+ "borealis": {
+  "first_stale": {
+   "at_ms": 1947454930694,
+   "id": "w-d77d62"
+  },
+  "puts": 24,
+  "stale": 2
+ }
+}

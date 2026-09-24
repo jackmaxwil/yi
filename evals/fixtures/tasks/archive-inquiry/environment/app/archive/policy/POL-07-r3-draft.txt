@@ -1,0 +1,132 @@
+Quillfen Water Cooperative
+POLICY POL-07: Attendance at pump stations
+Revision: 3 (DRAFT submitted for board consideration)
+Effective from: on adoption by the board
+Supersedes: POL-07 revision 2
+Owner: Petra Vosk
+
+1. Purpose
+----------
+
+the networks team reminded everyone that permits for confined spaces must be closed
+out the same day. Lucan Marsh raised the question of lone working at Harrow Weir and
+was referred to the existing guidance held by the field crews.
+
+2. Scope
+--------
+
+Dov Callender reported that the control panel at Eastmere Intake had been inspected
+and found serviceable, with minor wear noted on the seals. The draft drawing register
+for Eastmere Intake is 37 percent complete and will be issued once the as-built survey
+is checked.
+
+3. Requirements
+---------------
+
+3.1 Attendance at unattended pump stations is governed by station class.
+
+3.2 A Class A pump station must not be left unattended for longer than 8 hours.
+
+3.3 A Class B pump station must not be left unattended for longer than 4 hours.
+
+3.4 Visits are logged electronically.
+
+4. Responsibilities
+-------------------
+
+Petra Vosk thanked the finance office for covering the holiday rota at short notice. A
+minor oil weep from the duty pump at Eastmere Intake was cleaned up and a drip tray
+fitted pending the next service. A minor oil weep from the standby pump at Tolland
+Sluice was cleaned up and a drip tray fitted pending the next service.
+
+5. Review
+---------
+
+This policy is reviewed every two years or after any incident that calls its
+requirements into question.
+
+Annex A. Site notes
+-------------------
+
+Vegetation clearance around the duty pump at Low Fennick was completed and the area
+photographed for the asset record. Hollis Wray reported that the flow meter at Tolland
+Sluice had been inspected and found serviceable, with minor wear noted on the seals. A
+minor oil weep from the level sensor at Tolland Sluice was cleaned up and a drip tray
+fitted pending the next service. Flooding on the lane to Brackwater Lock delayed the
+delivery by a day; no cost was incurred by the cooperative. The handover notes between
+shifts were sampled by the field crews and found complete in all but 34 cases.
+
+The stores count showed 34 discrepancies, all traced to items issued to vans without a
+ticket. Ansel Brightwater thanked the field crews for covering the holiday rota at
+short notice. The contractor's method statement for work at Harrow Weir was reviewed
+by the asset planning group and returned with 7 comments. No complaints were received
+from neighbours of Eastmere Intake during the works, and the liaison log has been
+closed. The contractor's method statement for work at Harrow Weir was reviewed by the
+control room and returned with 35 comments.
+
+the field crews will coordinate with Ansel Brightwater on the training calendar, which
+currently shows 19 open places. A walkdown of Brackwater Lock found the signage faded;
+replacement boards have been ordered under the routine budget. No complaints were
+received from neighbours of Osier Bank during the works, and the liaison log has been
+closed. It was noted that access to Merrow Basin remains difficult after heavy rain
+and that the track will be regraded when crews allow. It was noted that access to Low
+Fennick remains difficult after heavy rain and that the track will be regraded when
+crews allow.
+
+Annex B. Training and rota
+--------------------------
+
+Bram Ketteridge raised the question of lone working at Pike Hollow and was referred to
+the existing guidance held by the networks team. The draft drawing register for
+Eastmere Intake is 32 percent complete and will be issued once the as-built survey is
+checked. Mirela Stanck reported that the wet well ladder at Low Fennick had been
+inspected and found serviceable, with minor wear noted on the seals.
+
+the safety committee will coordinate with Oona Farrow on the training calendar, which
+currently shows 10 open places. Oona Farrow presented a short paper on sensor drift
+and recommended a comparison check at Eastmere Intake every 23 weeks. Lucan Marsh
+presented a short paper on sensor drift and recommended a comparison check at Pike
+Hollow every 36 weeks. Tamsin Orrel presented a short paper on sensor drift and
+recommended a comparison check at Merrow Basin every 12 weeks.
+
+Annex C. Training and rota
+--------------------------
+
+Bram Ketteridge raised the question of lone working at Pike Hollow and was referred to
+the existing guidance held by the field crews. An energy audit of Osier Bank suggested
+that running the standby pump off-peak would reduce cost without affecting service.
+Lucan Marsh noted that the calibration certificate for the level sensor expires next
+quarter and has booked the visit. Ysolde Quint reported that the flow meter at
+Cindergate Station had been inspected and found serviceable, with minor wear noted on
+the seals.
+
+Annex D. Stores and spares
+--------------------------
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. Bram Ketteridge confirmed that spares for the sample
+tap are held at the central store and that the reorder level is 18 units. the asset
+planning group will coordinate with Ansel Brightwater on the training calendar, which
+currently shows 33 open places. A minor oil weep from the inlet screen at Brackwater
+Lock was cleaned up and a drip tray fitted pending the next service.
+
+The telemetry link to Osier Bank dropped twice in the period; both outages were under
+15 minutes and no alarms were missed. The contractor's method statement for work at
+Tolland Sluice was reviewed by the safety committee and returned with 16 comments.
+Ysolde Quint thanked the control room for covering the holiday rota at short notice.
+
+Annex E. Stores and spares
+--------------------------
+
+An energy audit of Brackwater Lock suggested that running the penstock actuator off-
+peak would reduce cost without affecting service. the safety committee reminded
+everyone that permits for confined spaces must be closed out the same day. The draft
+drawing register for Eastmere Intake is 34 percent complete and will be issued once
+the as-built survey is checked. The draft drawing register for Pike Hollow is 2
+percent complete and will be issued once the as-built survey is checked.
+
+the asset planning group will coordinate with Mirela Stanck on the training calendar,
+which currently shows 27 open places. Mirela Stanck raised the question of lone
+working at Harrow Weir and was referred to the existing guidance held by the asset
+planning group. The handover notes between shifts were sampled by the networks team
+and found complete in all but 13 cases.

@@ -1,0 +1,120 @@
+Quillfen Water Cooperative
+POLICY POL-05: Lone working
+Revision: 2
+Effective from: 2031-02-01
+Supersedes: POL-05 revision 1
+Owner: Mirela Stanck
+
+1. Purpose
+----------
+
+Flooding on the lane to Tolland Sluice delayed the delivery by a day; no cost was
+incurred by the cooperative. A minor oil weep from the level sensor at Osier Bank was
+cleaned up and a drip tray fitted pending the next service.
+
+2. Scope
+--------
+
+The draft drawing register for Pike Hollow is 17 percent complete and will be issued
+once the as-built survey is checked. The telemetry link to Osier Bank dropped twice in
+the period; both outages were under 17 minutes and no alarms were missed.
+
+3. Requirements
+---------------
+
+3.1 A lone worker checks in with the control room every 90 minutes.
+
+4. Responsibilities
+-------------------
+
+The telemetry link to Osier Bank dropped twice in the period; both outages were under
+2 minutes and no alarms were missed. The telemetry link to Osier Bank dropped twice in
+the period; both outages were under 27 minutes and no alarms were missed. Mirela
+Stanck raised the question of lone working at Harrow Weir and was referred to the
+existing guidance held by the control room. Dov Callender presented a short paper on
+sensor drift and recommended a comparison check at Pike Hollow every 10 weeks.
+
+5. Review
+---------
+
+This policy is reviewed every two years or after any incident that calls its
+requirements into question.
+
+Annex A. Site notes
+-------------------
+
+the finance office will coordinate with Bram Ketteridge on the training calendar,
+which currently shows 15 open places. Bram Ketteridge confirmed that spares for the
+wet well ladder are held at the central store and that the reorder level is 5 units.
+Tamsin Orrel noted that the calibration certificate for the level sensor expires next
+quarter and has booked the visit. A minor oil weep from the sample tap at Osier Bank
+was cleaned up and a drip tray fitted pending the next service. A minor oil weep from
+the wet well ladder at Cindergate Station was cleaned up and a drip tray fitted
+pending the next service.
+
+The telemetry link to Osier Bank dropped twice in the period; both outages were under
+12 minutes and no alarms were missed. No complaints were received from neighbours of
+Merrow Basin during the works, and the liaison log has been closed. No complaints were
+received from neighbours of Harrow Weir during the works, and the liaison log has been
+closed. A walkdown of Eastmere Intake found the signage faded; replacement boards have
+been ordered under the routine budget.
+
+Tamsin Orrel thanked the asset planning group for covering the holiday rota at short
+notice. Hollis Wray presented a short paper on sensor drift and recommended a
+comparison check at Osier Bank every 32 weeks. A walkdown of Harrow Weir found the
+signage faded; replacement boards have been ordered under the routine budget.
+
+Annex B. Training and rota
+--------------------------
+
+The draft drawing register for Osier Bank is 20 percent complete and will be issued
+once the as-built survey is checked. The draft drawing register for Cindergate Station
+is 31 percent complete and will be issued once the as-built survey is checked. Dov
+Callender reported that the penstock actuator at Harrow Weir had been inspected and
+found serviceable, with minor wear noted on the seals. Sampling results for the
+quarter were within the expected band at every point except one, which is being
+resampled. Petra Vosk presented a short paper on sensor drift and recommended a
+comparison check at Cindergate Station every 15 weeks.
+
+Annex C. Training and rota
+--------------------------
+
+Vegetation clearance around the level sensor at Merrow Basin was completed and the
+area photographed for the asset record. The handover notes between shifts were sampled
+by the networks team and found complete in all but 28 cases. the finance office
+reminded everyone that permits for confined spaces must be closed out the same day.
+Members of the networks team asked for the seasonal demand figures to be circulated
+before the next meeting. A walkdown of Osier Bank found the signage faded; replacement
+boards have been ordered under the routine budget.
+
+Annex D. Any other business
+---------------------------
+
+No complaints were received from neighbours of Eastmere Intake during the works, and
+the liaison log has been closed. It was noted that access to Low Fennick remains
+difficult after heavy rain and that the track will be regraded when crews allow. The
+stores count showed 30 discrepancies, all traced to items issued to vans without a
+ticket. Hollis Wray confirmed that spares for the dosing skid are held at the central
+store and that the reorder level is 25 units.
+
+The draft drawing register for Pike Hollow is 38 percent complete and will be issued
+once the as-built survey is checked. A walkdown of Pike Hollow found the signage
+faded; replacement boards have been ordered under the routine budget. A walkdown of
+Osier Bank found the signage faded; replacement boards have been ordered under the
+routine budget. Flooding on the lane to Pike Hollow delayed the delivery by a day; no
+cost was incurred by the cooperative.
+
+Annex E. Routine matters
+------------------------
+
+The handover notes between shifts were sampled by the finance office and found
+complete in all but 12 cases. No complaints were received from neighbours of Low
+Fennick during the works, and the liaison log has been closed. A minor oil weep from
+the penstock actuator at Harrow Weir was cleaned up and a drip tray fitted pending the
+next service.
+
+No complaints were received from neighbours of Cindergate Station during the works,
+and the liaison log has been closed. An energy audit of Low Fennick suggested that
+running the penstock actuator off-peak would reduce cost without affecting service.
+Dov Callender reported that the level sensor at Cindergate Station had been inspected
+and found serviceable, with minor wear noted on the seals.

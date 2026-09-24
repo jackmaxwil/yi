@@ -99,6 +99,7 @@ fn delegated(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
                 isolation: None,
                 budget: None,
                 wall: None,
+                parent_close: None,
                 extra: serde_json::Map::new(),
             },
             accept: Check::Stated("it works".to_owned()),

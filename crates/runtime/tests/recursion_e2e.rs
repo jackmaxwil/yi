@@ -1,6 +1,8 @@
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+#[path = "support/family.rs"]
+mod support;
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -67,9 +69,18 @@ struct Harness {
     entries: Arc<Mutex<Vec<AgentMessage>>>,
     store: yi_session::SharedSession,
     root: Scratch,
+    /// One per build, oldest first: 1 ends that child's first reply on a provider error, 2 its
+    /// second; a build that finds none answers.
+    faults: Arc<Mutex<std::collections::VecDeque<u8>>>,
+    /// Run once, inside the next build: the window a respawn holds no lock in.
+    during_build: BuildHook,
 }
 
+type BuildHook = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
+
 struct HarnessOptions {
+    /// The child's one reply ends on a provider error instead of an answer.
+    child_errors: bool,
     depth: u8,
     max_depth: u8,
     child_answer: &'static str,
@@ -84,6 +95,7 @@ struct HarnessOptions {
 
 fn harness(depth: u8, max_depth: u8, child_answer: &'static str) -> std::io::Result<Harness> {
     harness_with(HarnessOptions {
+        child_errors: false,
         depth,
         max_depth,
         child_answer,
@@ -141,6 +153,7 @@ fn assistant_count(messages: &[AgentMessage]) -> usize {
 
 fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
     let HarnessOptions {
+        child_errors,
         depth,
         max_depth,
         child_answer,
@@ -172,6 +185,10 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
     let store_handle = store.clone();
     let parent: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
     let parent_source = Arc::clone(&parent);
+    let faults: Arc<Mutex<std::collections::VecDeque<u8>>> = Arc::default();
+    let fault_source = Arc::clone(&faults);
+    let during_build: BuildHook = Arc::default();
+    let hook_source = Arc::clone(&during_build);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth,
         max_depth,
@@ -185,6 +202,10 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
             if let Ok(mut slot) = cwd_sink.lock() {
                 *slot = build.cwd.map(std::path::Path::to_path_buf);
             }
+            let hook = hook_source.lock().ok().and_then(|mut slot| slot.take());
+            if let Some(hook) = hook {
+                hook();
+            }
             let provider = Arc::new(ProviderStream::new(None, None));
             let mut script = Vec::new();
             if let Some(command) = tool_command {
@@ -195,7 +216,18 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
                     StopReason::ToolUse,
                 ));
             }
+            let fault = fault_source
+                .lock()
+                .ok()
+                .and_then(|mut faults| faults.pop_front());
+            let error = faux_assistant_message(vec![faux_text(child_answer)], StopReason::Error);
+            if child_errors || fault == Some(1) {
+                script.push(error.clone());
+            }
             script.push(child_reply(child_answer));
+            if fault == Some(2) {
+                script.push(error);
+            }
             // A second scripted reply so a B13 followup has a turn to run.
             script.push(child_reply(child_answer));
             provider.queue_faux(script);
@@ -259,6 +291,8 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
         entries,
         store,
         root,
+        faults,
+        during_build,
     })
 }
 
@@ -354,6 +388,7 @@ async fn collect_updates(
 #[tokio::test]
 async fn child_updates_ride_the_parent_bus_with_counts_and_activity() -> TestResult {
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: "swept the logs",
@@ -561,11 +596,15 @@ async fn agent_messages_route_by_name_and_broadcast_with_receipts() -> TestResul
         assert!(child_sees(&harness, name, "[task from parent]").await);
     }
 
-    let queued = harness
+    harness.host.wait(0, None).await;
+    let inboxed = harness
         .host
         .route("parent", "beta", "no rush", false)
         .map_err(|error| error.to_string())?;
-    assert_eq!(queued["receipts"][0]["state"], "queued");
+    assert_eq!(
+        inboxed["receipts"][0]["state"], "inboxed",
+        "beta's turn is over, so nothing will drain a queue: the receipt says so"
+    );
     assert!(
         !child_sees(&harness, "beta", "no rush").await,
         "a plain send never starts a turn: it waits for the next one"
@@ -604,6 +643,410 @@ async fn agent_messages_route_by_name_and_broadcast_with_receipts() -> TestResul
             .route("parent", "parent", "hi", false)
             .err()
             .is_some_and(|error| error.contains("cannot send to itself"))
+    );
+    Ok(())
+}
+
+/// Every envelope a child's turns were handed, as `(from, seq, body)` in presented order.
+fn presented(harness: &Harness, name: &str) -> Vec<(String, u64, String)> {
+    let child = harness
+        .host
+        .children_view()
+        .into_iter()
+        .find(|child| child.update.name == name);
+    let messages = child
+        .map(|child| child.session.messages())
+        .unwrap_or_default();
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Custom {
+                details: Some(mail),
+                ..
+            } => Some((
+                mail["from"].as_str()?.to_owned(),
+                mail["seq"].as_u64()?,
+                mail["body"].as_str()?.to_owned(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn finished(harness: &Harness, name: &str) -> Result<(), String> {
+    let kwargs = kwargs(&[("name", name)]);
+    let reply = harness.host.spawn(format!("work {name}"), kwargs)?;
+    let id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    match wait_for_status(&harness.host, id, "completed").await {
+        true => Ok(()),
+        false => Err(format!("{name} never completed")),
+    }
+}
+
+/// A child whose first turn a two-second tool call holds open, returned once it is running.
+async fn busy_child() -> Result<(Harness, yi_runtime::ChildFeed), Box<dyn Error>> {
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "ok",
+        tool_command: Some("sleep 2"),
+        cwd: None,
+        wake_parent: None,
+    })?;
+    let kwargs = kwargs(&[("name", "busy")]);
+    harness.host.spawn("hold a turn open".to_owned(), kwargs)?;
+    let busy = harness
+        .host
+        .children_view()
+        .pop()
+        .ok_or("no child")?
+        .session;
+    while busy.status() != yi_runtime::Status::Running {
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    Ok((harness, busy))
+}
+
+fn state_of(reply: &Map<String, Value>) -> &str {
+    reply["receipts"][0]["state"].as_str().unwrap_or_default()
+}
+
+/// The inbox of `name` as the host wrote it: one JSON entry per accepted envelope.
+fn inbox_of(harness: &Harness, name: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let store = harness.host.transcript(name).ok_or("no transcript")?;
+    let entries = yi_runtime::session_store::lock_session(&store).find_entries(
+        &yi_runtime::session_store::EntryQuery {
+            custom_type: Some("agent_message".to_owned()),
+            order: yi_runtime::session_store::EntryOrder::OldestFirst,
+            ..Default::default()
+        },
+    )?;
+    Ok(entries
+        .iter()
+        .map(|entry| serde_json::to_string(entry).unwrap_or_default())
+        .collect())
+}
+
+#[tokio::test]
+async fn a_body_over_sixteen_kib_is_refused_not_trimmed() -> TestResult {
+    let harness = harness(0, 1, "ok")?;
+    finished(&harness, "reader").await?;
+    let over = "x".repeat(16 * 1024 + 1);
+    let error = harness
+        .host
+        .route("parent", "reader", &over, false)
+        .err()
+        .ok_or("accepted")?;
+    assert!(
+        error.contains("nothing was sent")
+            && error.contains("rlm.put")
+            && error.contains("family://"),
+        "the refusal names the alternative: {error}"
+    );
+    assert!(
+        inbox_of(&harness, "reader")?.is_empty(),
+        "no trimmed copy was inboxed"
+    );
+    harness.host.route("parent", "reader", &over[1..], false)?;
+    assert!(
+        inbox_of(&harness, "reader")?[0].contains(&over[1..]),
+        "a body at the cap arrives whole"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn send_returns_queued_woken_or_inboxed() -> TestResult {
+    let (harness, busy) = busy_child().await?;
+    let plain = harness.host.route("parent", "busy", "no rush", false)?;
+    assert_eq!(
+        state_of(&plain),
+        "queued",
+        "a running turn drains a plain send"
+    );
+    assert_eq!(
+        plain["receipts"][0]["id"], "parent-1",
+        "the receipt names the envelope"
+    );
+    let steered = harness.host.route("parent", "busy", "look now", true)?;
+    assert_eq!(
+        state_of(&steered),
+        "queued",
+        "a followup rides the running turn"
+    );
+    busy.wait_idle().await;
+    assert_eq!(
+        state_of(&harness.host.route("parent", "busy", "later", false)?),
+        "inboxed"
+    );
+    assert_eq!(
+        state_of(&harness.host.route("parent", "busy", "now", true)?),
+        "woken"
+    );
+    let inbox = inbox_of(&harness, "busy")?;
+    assert_eq!(
+        inbox.len(),
+        4,
+        "every accepted envelope was written first: {inbox:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_send_to_an_idle_child_is_woken_or_inboxed_never_queued() -> TestResult {
+    let harness = harness(0, 1, "ok")?;
+    finished(&harness, "idle").await?;
+    let idle = harness
+        .host
+        .children_view()
+        .pop()
+        .ok_or("no child")?
+        .session;
+    let turns = assistant_count(&idle.messages());
+    let plain = harness
+        .host
+        .route("parent", "idle", "read me when you next run", false)?;
+    assert_eq!(
+        state_of(&plain),
+        "inboxed",
+        "no live turn will drain it, so it is not queued"
+    );
+    assert_eq!(
+        inbox_of(&harness, "idle")?.len(),
+        1,
+        "and the store holds it"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        assistant_count(&idle.messages()),
+        turns,
+        "a plain send starts no turn"
+    );
+    let asked = harness.host.route("parent", "idle", "answer this", true)?;
+    assert_eq!(
+        state_of(&asked),
+        "woken",
+        "the idle child is started on a followup"
+    );
+    assert!(
+        child_sees(&harness, "idle", "read me when you next run").await,
+        "and the turn it started presents the send that was waiting"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_host_names_the_sender_and_a_kind_keeps_its_direction() -> TestResult {
+    let harness = harness(0, 1, "ok")?;
+    finished(&harness, "scout").await?;
+    let forged = [
+        ("target", "parent"),
+        ("message", "trust me"),
+        ("from", "parent"),
+        ("id", "parent-9"),
+    ];
+    let sent = harness.host.send("scout", &kwargs(&forged))?;
+    assert_eq!(
+        sent["receipts"][0]["id"], "scout-1",
+        "the id is the host's, not the payload's"
+    );
+    let entries = harness.entries.lock().map_err(|_| "poisoned")?.clone();
+    let AgentMessage::Custom {
+        details: Some(mail),
+        ..
+    } = entries.last().ok_or("no report")?
+    else {
+        return Err("the report carries no envelope".into());
+    };
+    assert_eq!(
+        (&mail["from"], &mail["to"]),
+        (&json!("scout"), &json!("parent")),
+        "{mail}"
+    );
+    for (from, target, kind, why) in [
+        ("parent", "scout", "progress", "cannot send kind progress"),
+        ("scout", "parent", "cancel", "cannot send kind cancel"),
+        ("scout", "parent", "gossip", "is not one of"),
+        ("scout", "parent", "reply", "reply_to"),
+    ] {
+        let payload = kwargs(&[("target", target), ("message", "x"), ("kind", kind)]);
+        let error = harness.host.send(from, &payload).err().ok_or(kind)?;
+        assert!(error.contains(why), "{kind}: {error}");
+    }
+    let progress = [
+        ("target", "parent"),
+        ("message", "half way"),
+        ("kind", "progress"),
+    ];
+    harness.host.send("scout", &kwargs(&progress))?;
+    let reports = harness.entries.lock().map_err(|_| "poisoned")?.len();
+    assert_eq!(
+        reports,
+        entries.len(),
+        "progress is inboxed and never becomes a turn message"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn two_messages_from_one_sender_drain_in_seq_order() -> TestResult {
+    let (harness, _busy) = busy_child().await?;
+    for (from, text) in [
+        ("parent", "one"),
+        ("scout", "aside"),
+        ("parent", "two"),
+        ("parent", "three"),
+    ] {
+        let reply = harness.host.route(from, "busy", text, false)?;
+        assert_eq!(
+            reply["receipts"][0]["state"], "queued",
+            "the open turn drains {text}"
+        );
+    }
+    for _ in 0..POLL_ATTEMPTS {
+        if presented(&harness, "busy").len() == 4 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    let seen = presented(&harness, "busy");
+    let from_parent: Vec<(u64, &str)> = seen
+        .iter()
+        .filter(|(from, ..)| from == "parent")
+        .map(|(_, seq, body)| (*seq, body.as_str()))
+        .collect();
+    assert_eq!(
+        from_parent,
+        vec![(1, "one"), (2, "two"), (3, "three")],
+        "one sender's messages are numbered per pair and presented in that order: {seen:?}"
+    );
+    assert!(
+        seen.contains(&("scout".to_owned(), 1, "aside".to_owned())),
+        "another sender counts on its own and is never sorted into the first: {seen:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_message_to_a_finished_child_is_inboxed_and_readable_by_history() -> TestResult {
+    let harness = harness(0, 1, "ok")?;
+    finished(&harness, "done").await?;
+    let desk =
+        yi_runtime::fetch::SessionTranscripts::new(Arc::clone(&harness.host), None, &harness.root);
+    let resolver =
+        yi_runtime::fetch::Resolver::new(harness.root.to_path_buf(), yi_runtime::Wall::default())
+            .with_transcripts(Arc::new(desk));
+    let first = harness
+        .host
+        .route("parent", "done", "kept for later", false)?;
+    assert_eq!(first["receipts"][0]["state"], "inboxed");
+    let inbox: yi_types::url::Url = "history://done/custom/agent_message".parse()?;
+    let served = resolver.fetch(&inbox)?;
+    assert_eq!(
+        served.text.lines().count(),
+        1,
+        "the inbox holds the envelope alone: {}",
+        served.text
+    );
+    assert!(
+        served.text.contains("\"body\":\"kept for later\"") && served.text.contains("\"seq\":1")
+    );
+    assert_eq!(
+        resolver.fetch(&inbox)?.text,
+        served.text,
+        "reading an inbox does not grow it"
+    );
+
+    harness.host.reap("done")?;
+    let late = harness
+        .host
+        .route("parent", "done", "after the reap", false)?;
+    assert_eq!(
+        late["receipts"][0]["state"], "inboxed",
+        "a retired child keeps its inbox"
+    );
+    let page = |offset| yi_runtime::fetch::Page { offset, limit: 1 };
+    let head = resolver.fetch_page(&inbox, Some(page(0)))?;
+    assert!(head.text.contains("kept for later") && head.next_offset == Some(1));
+    let tail = resolver.fetch_page(&inbox, Some(page(1)))?;
+    assert!(tail.text.contains("after the reap") && tail.next_offset.is_none());
+    let since: yi_types::url::Url = "history://done/tail/1/custom/agent_message".parse()?;
+    assert!(resolver.fetch(&since)?.text.contains("after the reap"));
+    assert!(
+        resolver.fetch_page(&since, Some(page(0))).is_err(),
+        "a tail slides under an append, so it refuses a page"
+    );
+    let gone = harness.host.route("parent", "never-was", "hello", false);
+    assert!(gone.is_err(), "a name nobody held has no inbox to write");
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_returns_the_matching_reply_and_times_out_without_one() -> TestResult {
+    let harness = harness(0, 1, "ok")?;
+    finished(&harness, "oracle").await?;
+    finished(&harness, "bystander").await?;
+    let host = Arc::clone(&harness.host);
+    let asking = tokio::spawn(async move {
+        host.request("parent", "oracle", "which suite is red?", 20_000)
+            .await
+    });
+    assert!(
+        child_sees(&harness, "oracle", "reply_to=\"parent-1\"").await,
+        "the request wakes its respondent and names the call that answers it"
+    );
+    let reply = |text: &str| -> Map<String, Value> {
+        let pairs = [
+            ("target", "parent"),
+            ("message", text),
+            ("reply_to", "parent-1"),
+        ];
+        kwargs(&pairs)
+    };
+    harness
+        .host
+        .send("bystander", &reply("not mine to answer"))?;
+    let elsewhere = [
+        ("target", "bystander"),
+        ("message", "meant for a sibling"),
+        ("reply_to", "parent-1"),
+    ];
+    harness.host.send("oracle", &kwargs(&elsewhere))?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !asking.is_finished(),
+        "only the named respondent, answering the sender that asked, resolves a request"
+    );
+    harness.host.send("oracle", &reply("the fetch suite"))?;
+    let answer = asking.await??;
+    assert_eq!(answer["reply"], "the fetch suite");
+    assert_eq!(answer["envelope"]["inReplyTo"], "parent-1");
+    assert_eq!(answer["envelope"]["conversation"], "parent-1");
+
+    let silent = harness
+        .host
+        .request("parent", "bystander", "anyone?", 1_000)
+        .await;
+    let error = silent
+        .err()
+        .ok_or("a request nobody answers must time out")?;
+    assert!(
+        error.contains("no reply to parent-") && error.contains("bystander"),
+        "{error}"
+    );
+    harness.host.send(
+        "bystander",
+        &kwargs(&[
+            ("target", "parent"),
+            ("message", "late"),
+            ("reply_to", "parent-5"),
+        ]),
+    )?;
+    let inbox = harness.inbox.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        inbox.iter().any(|text| text.contains("late")),
+        "a late reply lands in history and resolves nothing: {inbox:?}"
     );
     Ok(())
 }
@@ -752,6 +1195,340 @@ async fn a_child_that_messaged_its_parent_finishes_without_the_silent_note() -> 
     Ok(())
 }
 
+fn service_row(harness: &Harness, name: &str) -> Value {
+    let status = harness.host.status();
+    let members = status["members"].as_array().cloned().unwrap_or_default();
+    let found = members.into_iter().find(|member| member["name"] == name);
+    found.unwrap_or_default()
+}
+
+async fn serves(harness: &Harness, name: &str, incarnation: u64, state: &str) -> bool {
+    for _ in 0..POLL_ATTEMPTS {
+        let row = service_row(harness, name);
+        if row["incarnation"] == incarnation && row["state"] == state {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    false
+}
+
+/// F3c. Dies with the control: retire the crashed record and the name is free for `rlm.run`
+/// and the inbox is a new file; keep the waiter and incarnation 2 answers a request put to 1;
+/// drop the stamps and nothing in the kept inbox says whose conversation a message was.
+#[tokio::test]
+async fn a_service_respawns_under_its_name_and_keeps_its_inbox() -> TestResult {
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "serving",
+        tool_command: Some("sleep 1"),
+        cwd: None,
+        wake_parent: None,
+    })?;
+    harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
+    let mut updates = harness.events.subscribe();
+    let brief = "serve the index".to_owned();
+    let handle = harness
+        .host
+        .service("index", brief.clone(), Map::new(), 3)?;
+    assert!(serves(&harness, "index", 1, "running").await);
+    assert_eq!(service_row(&harness, "index")["service"], true);
+
+    let first = harness
+        .host
+        .route("parent", "index", "for the first", false)?;
+    assert_eq!(first["receipts"][0]["target"], "index");
+    let host = Arc::clone(&harness.host);
+    let parked = tokio::spawn(async move { host.request("parent", "index", "ping", 8_000).await });
+    let taken = harness
+        .host
+        .spawn("an ordinary child".to_owned(), kwargs(&[("name", "index")]));
+    assert!(taken.is_err_and(|refusal| refusal.contains("already taken")));
+    // The kernel's road: `rlm.service` on the registry, which is what `rlm.service(...)` sends.
+    use yi_kernel::client::HostHandlers as _;
+    let mut registry = yi_runtime::HostRegistry::default();
+    harness.host.register(&mut registry);
+    let payload = serde_json::json!({"name": "index", "prompt": brief, "restart": 3, "kwargs": {}});
+    let asked = registry.dispatch(
+        "rlm.service",
+        payload.as_object().cloned().ok_or("payload")?,
+    );
+    let again = asked.ok_or("rlm.service is not registered")?.await?;
+    assert_eq!(
+        (&again["rlm_child_id"], &again["attached"]),
+        (&handle["rlm_child_id"], &Value::Bool(true)),
+        "the same brief attaches"
+    );
+    let other = harness
+        .host
+        .service("index", "serve something else".to_owned(), Map::new(), 3);
+    assert!(other.is_err_and(|refusal| refusal.contains("another brief")));
+
+    assert!(
+        serves(&harness, "index", 2, "finished").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let refused = parked.await?.err().unwrap_or_default();
+    assert!(
+        refused.contains("\"index\" was respawned before it replied"),
+        "{refused}"
+    );
+    // Dies with the hand-off in `respawn`: the send the first run never drained is owed a turn.
+    let views = harness.host.children_view();
+    let texts = serde_json::to_string(&views.first().ok_or("no view")?.session.messages())?;
+    assert!(texts.contains("for the first"), "{texts}");
+    assert_eq!(
+        harness.host.children_view().len(),
+        1,
+        "a respawn never duplicates"
+    );
+    harness
+        .host
+        .route("parent", "index", "for the second", false)?;
+    let inbox = inbox_of(&harness, "index")?;
+    let addressed = |body: &str, incarnation: u32| {
+        let stamp = format!("\"toIncarnation\":{incarnation}");
+        inbox
+            .iter()
+            .any(|entry| entry.contains(body) && entry.contains(&stamp))
+    };
+    assert!(
+        addressed("for the first", 1) && addressed("ping", 1),
+        "{inbox:?}"
+    );
+    assert!(addressed("for the second", 2), "{inbox:?}");
+
+    let desk =
+        yi_runtime::fetch::SessionTranscripts::new(Arc::clone(&harness.host), None, &harness.root);
+    let resolver =
+        yi_runtime::fetch::Resolver::new(harness.root.to_path_buf(), yi_runtime::Wall::default())
+            .with_transcripts(Arc::new(desk));
+    let history = resolver.fetch(&"history://index".parse()?)?.text;
+    assert_eq!(
+        history.matches("serve the index").count(),
+        2,
+        "one chain, both runs: {history}"
+    );
+    assert!(history.contains("[incarnation 2 of service"), "{history}");
+    let told = harness.notices.lock().map_err(|_| "poisoned")?.join("\n");
+    assert!(
+        !told.contains("index"),
+        "a respawn and an idle service are no ending: {told}"
+    );
+    // A card the crash committed out of the chrome would never come back as incarnation 2.
+    while let Ok(AgentEvent::ChildUpdate { update }) = updates.try_recv() {
+        assert_ne!(
+            (update.status, update.error.is_some()),
+            (ChildStatus::Error, true),
+            "a respawned run published an ending: {update:?}"
+        );
+    }
+    Ok(())
+}
+
+/// The stop lands in the one window a respawn holds no lock in, between the draw and the
+/// record taking the new session. Dies with the control: read the mark only before the build
+/// and a revoked service comes back as incarnation 2.
+#[tokio::test]
+async fn a_service_revoked_while_its_next_run_is_built_never_comes_back() -> TestResult {
+    let harness = harness(0, 1, "serving")?;
+    harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
+    harness
+        .host
+        .service("index", "serve".to_owned(), Map::new(), 3)?;
+    let host = Arc::downgrade(&harness.host);
+    *harness.during_build.lock().map_err(|_| "poisoned")? = Some(Box::new(move || {
+        if let Some(host) = host.upgrade() {
+            let _the_dead_run_may_refuse_the_cancel = host.revoke("index", 30_000, "enough");
+        }
+    }));
+    assert!(
+        serves(&harness, "index", 1, "failed").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let told = harness.notices.lock().map_err(|_| "poisoned")?.join("\n");
+    assert!(
+        told.contains("not respawned: it was stopped while its next run was being built"),
+        "{told}"
+    );
+    Ok(())
+}
+
+/// Dies with the control: bill the kept transcript whole and the crashed run's unknown usage
+/// spends the successor's reservation too, leaving the parent nothing to lend.
+#[tokio::test]
+async fn a_respawned_service_is_billed_from_its_own_first_turn() -> TestResult {
+    let harness = harness(0, 1, "serving")?;
+    harness
+        .host
+        .set_grant(yi_runtime::Wall::default(), Some(1_000));
+    harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
+    let mut asked = Map::new();
+    asked.insert("tokens".to_owned(), Value::from(400));
+    harness
+        .host
+        .service("index", "serve".to_owned(), asked, 3)?;
+    assert!(
+        serves(&harness, "index", 2, "finished").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    harness.host.reap("index")?;
+    // The crashed run spent its own 400 whole, on usage it could not report; the successor
+    // spends only the 120 of its own turn, so 480 of the 1,000 are still there to lend.
+    let mut big = Map::new();
+    big.insert("tokens".to_owned(), Value::from(400));
+    big.insert("name".to_owned(), Value::String("after".to_owned()));
+    harness.host.spawn("work".to_owned(), big)?;
+    Ok(())
+}
+
+/// Dies with the control: drop the intensity and the third crash respawns; clamp the lease
+/// and a parent out of clock still gets a fresh incarnation.
+#[tokio::test]
+async fn a_service_out_of_restarts_or_lease_ends_failed_and_says_so() -> TestResult {
+    let harness = harness(0, 1, "serving")?;
+    harness
+        .faults
+        .lock()
+        .map_err(|_| "poisoned")?
+        .extend([1, 1]);
+    harness
+        .host
+        .service("index", "serve".to_owned(), Map::new(), 1)?;
+    assert!(
+        serves(&harness, "index", 2, "failed").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let told = harness.notices.lock().map_err(|_| "poisoned")?.join("\n");
+    assert!(
+        told.contains("not respawned: 1 restarts within 600 s are spent"),
+        "{told}"
+    );
+
+    let harness = harness_with(HarnessOptions {
+        child_errors: true,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "serving",
+        tool_command: Some("sleep 1"),
+        cwd: None,
+        wake_parent: None,
+    })?;
+    harness
+        .host
+        .service("index", "serve".to_owned(), Map::new(), 3)?;
+    assert!(serves(&harness, "index", 1, "running").await);
+    harness.host.set_deadline(Some(std::time::Instant::now()));
+    assert!(
+        serves(&harness, "index", 1, "failed").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let told = harness.notices.lock().map_err(|_| "poisoned")?.join("\n");
+    assert!(
+        told.contains("not respawned: the parent's own deadline has passed"),
+        "{told}"
+    );
+
+    Ok(())
+}
+
+/// A crash on a turn that reported no usage spends the whole reservation, so the parent has
+/// nothing left for the next incarnation. Dies with the control: mint the lease instead of
+/// drawing it and the service comes back on tokens nobody holds.
+#[tokio::test]
+async fn a_service_the_parent_cannot_relend_ends_failed_and_says_so() -> TestResult {
+    let harness = harness(0, 1, "serving")?;
+    harness
+        .host
+        .set_grant(yi_runtime::Wall::default(), Some(200));
+    harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
+    let mut asked = Map::new();
+    asked.insert("tokens".to_owned(), Value::from(200));
+    harness
+        .host
+        .service("index", "serve".to_owned(), asked, 3)?;
+    assert!(
+        serves(&harness, "index", 1, "failed").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let told = harness.notices.lock().map_err(|_| "poisoned")?.join("\n");
+    assert!(
+        told.contains("not respawned: tokens asks for 200 and the parent has 0"),
+        "{told}"
+    );
+    Ok(())
+}
+
+/// Dies with the control: leave woken turns unread and the first half never reaches
+/// incarnation 2; let a close leave the service standing and the second half does.
+#[tokio::test]
+async fn a_woken_crash_respawns_and_a_parent_close_ends_a_service_for_good() -> TestResult {
+    for closes in [false, true] {
+        let harness = harness(0, 1, "serving")?;
+        harness.faults.lock().map_err(|_| "poisoned")?.push_back(2);
+        harness
+            .host
+            .service("index", "serve".to_owned(), Map::new(), 3)?;
+        assert!(serves(&harness, "index", 1, "finished").await);
+        if closes {
+            harness.host.close();
+        }
+        harness.host.route("parent", "index", "wake up", true)?;
+        let (incarnation, state) = if closes {
+            (1, "failed")
+        } else {
+            (2, "finished")
+        };
+        let row = service_row(&harness, "index");
+        assert!(
+            serves(&harness, "index", incarnation, state).await,
+            "{closes}: {row:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Dies with the control: count a service as a worker and the eighth child is refused; seat
+/// it like a juror and a leaf host spawns one past its depth.
+#[tokio::test]
+async fn a_service_is_outside_the_worker_cap_and_under_the_depth_limit() -> TestResult {
+    let leaf = harness(1, 1, "serving")?;
+    let deep = leaf
+        .host
+        .service("index", "serve".to_owned(), Map::new(), 3);
+    assert!(deep.is_err_and(|refusal| refusal.contains("depth limit")));
+    let harness = harness(0, 1, "serving")?;
+    let lane = kwargs(&[("isolation", "worktree")]);
+    let walled = harness.host.service("index", "serve".to_owned(), lane, 3);
+    assert!(walled.is_err_and(|refusal| refusal.contains("parent's tree")));
+    let greedy = harness
+        .host
+        .service("index", "serve".to_owned(), Map::new(), 99);
+    assert!(greedy.is_err_and(|refusal| refusal.contains("nothing is clamped")));
+    harness
+        .host
+        .service("index", "serve".to_owned(), Map::new(), 3)?;
+    for number in 0..8 {
+        let name = format!("worker-{number}");
+        harness
+            .host
+            .spawn("work".to_owned(), kwargs(&[("name", &name)]))?;
+    }
+    let ninth = harness
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", "worker-8")]));
+    assert!(ninth.is_err_and(|refusal| refusal.contains("child limit")));
+    Ok(())
+}
+
 async fn wait_for_status_named(harness: &Harness, name: &str) -> bool {
     for _ in 0..POLL_ATTEMPTS {
         if harness
@@ -803,6 +1580,7 @@ fn git_repo(label: &str) -> Result<Scratch, Box<dyn Error>> {
 async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResult {
     let repo = git_repo("merge")?;
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: "isolated",
@@ -843,7 +1621,12 @@ async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResul
             .host
             .delete("mutator")
             .err()
-            .is_some_and(|error| error.contains("merge or discard it first")),
+            // The refusal names the two calls that do it; naming only the rule cost four
+            // F0e sessions a turn apiece (#475).
+            .is_some_and(|error| {
+                error.contains("rlm.merge_worktree(\"mutator\")")
+                    && error.contains("rlm.discard_worktree(\"mutator\")")
+            }),
         "reaping a child with unmerged work must refuse, not drop the tree"
     );
     let merged = harness
@@ -873,6 +1656,7 @@ async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResul
 async fn discarding_a_worktree_throws_the_branch_away() -> TestResult {
     let repo = git_repo("discard")?;
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: "discarded",
@@ -945,6 +1729,16 @@ async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
             .is_some_and(|error| error.contains("\"twin\" is already taken at depth 1")),
         "duplicate names must be rejected"
     );
+    // Dies with the reserved names in `reserve`: `main` is the owner's inline agent.
+    for word in ["main", "host"] {
+        let reserved = harness
+            .host
+            .spawn("impostor".to_owned(), kwargs(&[("name", word)]));
+        assert!(
+            reserved.is_err_and(|error| error.contains("is reserved")),
+            "{word}"
+        );
+    }
 
     for index in 0..7 {
         harness
@@ -1054,7 +1848,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         move || {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
-                "agents = await rlm.list_agents()\nreceipt = await rlm.send('helper', 'status?')\nprint([a['name'] for a in agents], receipt['receipts'][0]['state'])",
+                "agents = await rlm.list_agents()\nreceipt = await rlm.send('helper', 'status?')\ntry:\n    await rlm.request('helper', 'ping?', timeout=1)\nexcept RuntimeError as error:\n    asked = 'no reply to parent-' in str(error)\nprint([a['name'] for a in agents], receipt['receipts'][0]['state'], asked)",
                 &cancelled,
             )
         }
@@ -1064,7 +1858,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         roster_cell
             .result
             .stdout
-            .contains("['parent', 'helper'] queued"),
+            .contains("['parent', 'helper'] inboxed True"),
         "the family and the send path are reachable from the kernel: {} {}",
         roster_cell.result.stdout,
         roster_cell.result.stderr
@@ -1312,6 +2106,7 @@ fn write_canonical_plan(cwd: &std::path::Path, todos: &[(&str, &str)]) -> TestRe
                         isolation: None,
                         budget: None,
                         wall: None,
+                        parent_close: None,
                         extra: Map::new(),
                     },
                     accept: Check::Command((*check).to_owned()),
@@ -1376,6 +2171,7 @@ fn discovery_texts(harness: &Harness) -> Vec<String> {
 async fn a_discovery_the_runtime_cannot_adjudicate_holds_the_result_back() -> TestResult {
     let cwd = Scratch::new("yi-adjudication-no-plan")?;
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: ONE_DISCOVERY,
@@ -1412,6 +2208,7 @@ async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> Test
     let cwd = Scratch::new("yi-adjudication-no-ledger")?;
     write_canonical_plan(&cwd, &[("t1", "exit 4")])?;
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: ONE_DISCOVERY,
@@ -1472,6 +2269,7 @@ async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResul
     let cwd = Scratch::new("yi-adjudication-criticality")?;
     write_canonical_plan(&cwd, &[("t1", "exit 4"), ("t2", "true")])?;
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: TWO_DISCOVERIES,
@@ -1661,6 +2459,7 @@ async fn concurrent_notices_preserve_updates_and_coalesce_wakes() -> TestResult 
     parent.use_tools(yi_tools::builtin_tools(), std::env::temp_dir(), None);
     let parent = Arc::new(parent);
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: "done",
@@ -1859,5 +2658,790 @@ async fn late_wait_observes_already_completed_child() -> TestResult {
     );
     assert_eq!(late["changed"], json!(["early"]), "{late:?}");
     assert_eq!(late["states"]["early"], json!("finished"));
+    Ok(())
+}
+
+/// One exit, by the road named: what the parent bus must carry for it.
+async fn exit_updates(road: &str) -> Result<(Vec<ChildUpdate>, Vec<ChildUpdate>), Box<dyn Error>> {
+    let running = matches!(road, "interrupt" | "delete while running");
+    let harness = harness_with(HarnessOptions {
+        child_errors: road == "error",
+        depth: 0,
+        max_depth: 1,
+        child_answer: "the answer",
+        tool_command: running.then_some("sleep 30"),
+        cwd: None,
+        wake_parent: None,
+    })?;
+    let mut events = harness.events.subscribe();
+    let reply = harness
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", "exiting")]))
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"].as_str().ok_or("no id")?.to_owned();
+    let mut seen = Vec::new();
+    if running {
+        // Held inside its `sleep`: the bus says so before the exit is asked for.
+        while !seen
+            .last()
+            .is_some_and(|update: &ChildUpdate| update.activity == ChildActivity::Executing)
+        {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(20), events.recv()).await??;
+            if let AgentEvent::ChildUpdate { update } = event {
+                assert_eq!(update.status, ChildStatus::Running, "{road}: ended early");
+                seen.push(update);
+            }
+        }
+    } else {
+        seen = collect_updates(&mut events).await;
+    }
+    match road {
+        "interrupt" => drop(harness.host.interrupt("exiting")?),
+        "delete while running" | "delete after end" => drop(harness.host.delete("exiting")?),
+        "reap" => drop(harness.host.reap("exiting")?),
+        _ => {}
+    }
+    // The bus alone, never `host.list()`: what arrives once the exit was asked for.
+    let mut after = Vec::new();
+    while let Ok(Ok(event)) =
+        tokio::time::timeout(std::time::Duration::from_millis(700), events.recv()).await
+    {
+        if let AgentEvent::ChildUpdate { update } = event {
+            after.push(update);
+        }
+    }
+    seen.retain(|update| update.id.as_str() == child_id);
+    after.retain(|update| update.id.as_str() == child_id);
+    Ok((seen, after))
+}
+
+/// Guards the terminal update: a removal took the record without a publish, and the run it cut
+/// short then found no record and skipped its own, so a client's card ran forever.
+#[tokio::test]
+async fn every_exit_publishes_one_terminal_update() -> TestResult {
+    let roads = [
+        ("complete", ChildStatus::Completed, None),
+        (
+            "error",
+            ChildStatus::Error,
+            Some("child run ended with an error"),
+        ),
+        ("interrupt", ChildStatus::Error, Some("interrupted")),
+        (
+            "delete while running",
+            ChildStatus::Error,
+            Some("interrupted"),
+        ),
+        ("delete after end", ChildStatus::Completed, None),
+        ("reap", ChildStatus::Completed, None),
+    ];
+    for (road, status, cause) in roads {
+        let (before, after) = exit_updates(road).await?;
+        let asked = !matches!(road, "complete" | "error");
+        let terminal: Vec<&ChildUpdate> = before
+            .iter()
+            .chain(&after)
+            .filter(|update| update.status != ChildStatus::Running)
+            .collect();
+        assert!(!terminal.is_empty(), "{road}: no terminal update at all");
+        for update in &terminal {
+            assert_eq!(
+                (update.status, update.error.as_deref()),
+                (status, cause),
+                "{road}: one machine-readable cause, never two stories: {terminal:?}"
+            );
+        }
+        if asked {
+            let told = after
+                .iter()
+                .filter(|update| update.status != ChildStatus::Running)
+                .count();
+            assert!(
+                told >= 1,
+                "{road}: the exit itself published nothing: {after:?}"
+            );
+            if road == "delete while running" {
+                assert_eq!(
+                    told, 1,
+                    "the record is gone, so nothing may follow: {after:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Pins what a parent's end did to its children before leases (plan section 7.4): nothing. The
+/// run task holds the host, so a child outlives every handle its parent dropped, runs to its
+/// own end unbounded and reports to a parent that is gone. A dropped handle still does that;
+/// `close` is the control, and its default is pinned below.
+#[tokio::test]
+async fn children_at_parent_close_today() -> TestResult {
+    let (harness, feed) = busy_child().await?;
+    let Harness { host, notices, .. } = harness;
+    drop(host);
+    assert_eq!(
+        feed.status(),
+        yi_runtime::Status::Running,
+        "the drop stopped nothing"
+    );
+    feed.wait_idle().await;
+    let answered = feed.messages().iter().any(|message| {
+        matches!(
+            message,
+            AgentMessage::Assistant {
+                stop_reason: StopReason::Stop,
+                ..
+            }
+        )
+    });
+    assert!(answered, "the orphan ran to its own end");
+    for _ in 0..POLL_ATTEMPTS {
+        if !notices.lock().map_err(|_| "poisoned")?.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    let told = notices.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        told.iter().any(|text| text.contains("finished")),
+        "{told:?}"
+    );
+
+    // The default since leases: a close revokes each live child with the thirty second grace.
+    let (harness, _feed) = busy_child().await?;
+    assert_eq!(harness.host.close(), ["busy"]);
+    let journaled =
+        yi_session::lock_session(&harness.store).find_entries(&yi_session::EntryQuery {
+            custom_type: Some("lease".to_owned()),
+            ..yi_session::EntryQuery::default()
+        })?;
+    let text = serde_json::to_string(&journaled)?;
+    assert!(
+        text.contains(r#""graceMs":30000"#) && text.contains("the parent closed"),
+        "{text}"
+    );
+    assert!(
+        harness.host.close().is_empty(),
+        "a revoked child is not revoked twice"
+    );
+    Ok(())
+}
+
+/// Dies with the stop road: a client that aborts the child's session itself leaves the host's
+/// record to guess, and the feed a client holds has no abort to call. The TUI sends the id.
+#[tokio::test]
+async fn a_tui_stop_is_a_host_interrupt() -> TestResult {
+    let (harness, _feed) = busy_child().await?;
+    let mut events = harness.events.subscribe();
+    let id = harness.host.children_view()[0].update.id.clone();
+    harness.host.interrupt(id.as_str())?;
+    let ended = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(20), events.recv()).await;
+        if let AgentEvent::ChildUpdate { update } = event??
+            && update.status != ChildStatus::Running
+        {
+            break update;
+        }
+    };
+    assert_eq!(ended.exit, Some(yi_types::subagent::ChildExit::Interrupted));
+    assert_eq!(
+        (ended.status, ended.error.as_deref()),
+        (ChildStatus::Error, Some("interrupted"))
+    );
+    assert_eq!(harness.host.status()["members"][0]["state"], "failed");
+    for _ in 0..POLL_ATTEMPTS {
+        if !harness.notices.lock().map_err(|_| "poisoned")?.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    let notices = harness.notices.lock().map_err(|_| "poisoned")?.clone();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(notices[0].ends_with("interrupted]"), "{notices:?}");
+    Ok(())
+}
+
+/// Guards the abort-before-first-poll race: admission read the interrupt's epoch after the
+/// delete had moved it, cleared the abort, and a child with no record ran to the end unseen.
+#[tokio::test]
+async fn a_child_deleted_before_its_first_poll_never_runs() -> TestResult {
+    let marker = Scratch::new("yi-zombie")?;
+    let ran = marker.join("ran");
+    let command: &'static str = Box::leak(format!("touch {}", ran.display()).into_boxed_str());
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "done",
+        tool_command: Some(command),
+        cwd: None,
+        wake_parent: None,
+    })?;
+    // No await between the two: the child's run task has not been polled once.
+    harness
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", "zombie")]))
+        .map_err(|error| error.to_string())?;
+    harness.host.delete("zombie")?;
+    tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+    assert!(!ran.exists(), "the deleted child ran its tool call anyway");
+    assert_eq!(harness.attributed.load(Ordering::SeqCst), 0, "it billed");
+    let notices = harness.notices.lock().map_err(|e| e.to_string())?.clone();
+    assert!(
+        notices.is_empty(),
+        "a retired child tells nothing: {notices:?}"
+    );
+    Ok(())
+}
+
+/// Guards the kernel delete journey on a real kernel: `delete_subagent` refused the handle
+/// `rlm.run` had just returned, and a removal it did make published nothing to any client.
+#[tokio::test]
+async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "never reached",
+        tool_command: Some("sleep 30"),
+        cwd: None,
+        wake_parent: None,
+    })?;
+    let mut events = harness.events.subscribe();
+    let mut registry = HostRegistry::default();
+    registry.register_mcp_stubs();
+    harness.host.register(&mut registry);
+    let service = Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: std::env::temp_dir(),
+        home: std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+        session_dir: Some(harness.root.to_path_buf()),
+        family_dir: None,
+        host: Arc::new(registry),
+        on_restore: None,
+        sandbox: None,
+        snapshot_key: None,
+        cell_ceiling: None,
+    }));
+    let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
+    let cell = tokio::task::spawn_blocking({
+        let service = Arc::clone(&service);
+        move || {
+            yi_tools::KernelBridge::execute_cell(
+                service.as_ref(),
+                "h = await rlm.run('hold on', name='doomed')\nd = await rlm.delete_subagent(h)\nprint(d.session_name, d.status)",
+                &cancelled,
+            )
+        }
+    })
+    .await??;
+    assert!(
+        cell.result.stdout.contains("doomed error"),
+        "the delete takes the handle and says the run did not finish: {} {}",
+        cell.result.stdout,
+        cell.result.stderr
+    );
+    let mut last = None;
+    while let Ok(Ok(event)) =
+        tokio::time::timeout(std::time::Duration::from_millis(700), events.recv()).await
+    {
+        if let AgentEvent::ChildUpdate { update } = event {
+            last = Some(update);
+        }
+    }
+    let last = last.ok_or("the bus carried no update for the child")?;
+    assert_eq!(
+        (last.status, last.error.as_deref()),
+        (ChildStatus::Error, Some("interrupted")),
+        "the last word on the bus is the exit, with its cause: {last:?}"
+    );
+    assert!(harness.host.children_view().is_empty());
+    Ok(())
+}
+
+type Ticks = Arc<std::sync::atomic::AtomicU64>;
+
+/// A family whose one child holds its turn open on `hold`, with the lease clock in hand.
+async fn leased(
+    label: &str,
+    hold: &'static str,
+    cwd: Option<PathBuf>,
+) -> Result<(Scratch, support::Family, Ticks), Box<dyn Error>> {
+    let root = Scratch::new(label)?;
+    let store = support::memory_store(label);
+    let cwd = cwd.unwrap_or_else(std::env::temp_dir);
+    let family = support::family(root.to_path_buf(), cwd, store, Some(hold));
+    let ticks: Ticks = Arc::new(std::sync::atomic::AtomicU64::new(1_000_000));
+    let clock = Arc::clone(&ticks);
+    let now = Arc::new(move || clock.load(Ordering::SeqCst));
+    family.host.set_lease_clock(Some(now), None);
+    Ok((root, family, ticks))
+}
+
+async fn executing(family: &support::Family) -> Result<(), Box<dyn Error>> {
+    for _ in 0..POLL_ATTEMPTS {
+        let views = family.host.children_view();
+        if views
+            .first()
+            .is_some_and(|view| view.update.activity == ChildActivity::Executing)
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    Err("the child never reached its tool".into())
+}
+
+fn terminal(events: &mut tokio::sync::broadcast::Receiver<AgentEvent>) -> Vec<ChildUpdate> {
+    let mut ended = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::ChildUpdate { update } = event
+            && update.status != ChildStatus::Running
+        {
+            ended.push(update);
+        }
+    }
+    ended
+}
+
+/// Dies with the order in `revoke` and `retire_as`: send the cancel before the journal write,
+/// or publish before the repossession record commits, and a crash between the two leaves a
+/// child told to stop, or reported gone, with nothing on record saying why.
+#[tokio::test]
+async fn revoke_delivers_cancel_then_repossesses_after_grace_with_the_record_first() -> TestResult {
+    use yi_types::lease::{Disposition, LeaseRecord};
+    let (_root, family, ticks) = leased("yi-lease-revoke", "sleep 30", None).await?;
+    let graces: Arc<Mutex<Vec<u64>>> = Arc::default();
+    let seen = Arc::clone(&graces);
+    let timer = Arc::new(move |grace: std::time::Duration| {
+        if let Ok(mut seen) = seen.lock() {
+            seen.push(u64::try_from(grace.as_millis()).unwrap_or(0));
+        }
+    });
+    family.host.set_lease_clock(None, Some(timer));
+    family
+        .host
+        .spawn("hold".to_owned(), kwargs(&[("name", "held")]))?;
+    executing(&family).await?;
+    let mut events = family.events.subscribe();
+
+    let reply = family.host.revoke("held", 30_000, "scope changed")?;
+    assert_eq!(
+        state_of(&reply),
+        "queued",
+        "the cancel reached a live turn: {reply:?}"
+    );
+    assert_eq!(graces.lock().map_err(|_| "poisoned")?[..], [30_000]);
+    let journal = family.journal();
+    let [LeaseRecord::Revoked(lease)] = &journal[..] else {
+        return Err(format!("the revocation is journaled first: {journal:?}").into());
+    };
+    assert_eq!(
+        lease.revoked.as_ref().map(|revoked| revoked.at),
+        Some(1_000_000)
+    );
+    let inbox = family.host.transcript("held").ok_or("no transcript")?;
+    let cancel = serde_json::to_string(&yi_runtime::family::recent_entries(&inbox))?;
+    assert!(cancel.contains(r#""kind":"cancel""#), "{cancel}");
+    let sent = family.host.route("parent", "held", "more work", true)?;
+    assert_eq!(
+        state_of(&sent),
+        "inboxed",
+        "a revoked child is admitted no new work"
+    );
+
+    // Inside the grace nothing is taken, however often the timer's job runs.
+    ticks.store(1_029_999, Ordering::SeqCst);
+    assert!(family.host.expire().await.is_empty());
+    assert_eq!(family.state_of("held").as_deref(), Some("running"));
+
+    // Dies with `ChildRecord::running`: a child that files its own exit by declaring failure
+    // reads `failed` and its turn keeps writing, so `exit` alone buys it out of its grace.
+    let mut own = Map::new();
+    own.insert("target".to_owned(), json!("parent"));
+    own.insert("message".to_owned(), json!("I gave up"));
+    own.insert("kind".to_owned(), json!("failure"));
+    family.host.send("held", &own)?;
+    assert_eq!(family.state_of("held").as_deref(), Some("failed"));
+
+    // The grace is over, and the record cannot be written: nothing is released or published.
+    ticks.store(1_030_000, Ordering::SeqCst);
+    family.unplugged.store(true, Ordering::SeqCst);
+    assert!(family.host.expire().await.is_empty());
+    assert!(
+        terminal(&mut events).is_empty(),
+        "no record, so no clean report"
+    );
+    assert_eq!(
+        family.state_of("held").as_deref(),
+        Some("repossession_pending")
+    );
+
+    family.unplugged.store(false, Ordering::SeqCst);
+    let asked = std::time::Instant::now();
+    assert_eq!(family.host.expire().await, ["held"]);
+    assert!(
+        asked.elapsed() < std::time::Duration::from_secs(5),
+        "the latency is observed"
+    );
+    let journal = family.journal();
+    let Some(LeaseRecord::Repossessed(record)) = journal.get(1) else {
+        return Err(format!("no repossession record: {journal:?}").into());
+    };
+    assert_eq!(record.disposition, Disposition::Settled);
+    assert_eq!(
+        record
+            .kept
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["history://held"]
+    );
+    let ended = terminal(&mut events);
+    assert_eq!(
+        ended.len(),
+        1,
+        "one terminal update, after the record: {ended:?}"
+    );
+    assert_eq!(
+        ended[0].exit,
+        Some(yi_types::subagent::ChildExit::Repossessed)
+    );
+    assert_eq!(ended[0].error.as_deref(), Some("repossessed"));
+    assert!(!family.host.holds("held"), "the record is released last");
+    assert!(
+        family.host.kept_transcript("held").is_some(),
+        "its history stays readable"
+    );
+    Ok(())
+}
+
+/// Dies with `resume_revocations`: without it a host that restarts inside a grace forgets the
+/// revocation, and the journal says a child was told to stop and never says what became of it.
+#[tokio::test]
+async fn restart_during_grace_completes_the_repossession() -> TestResult {
+    use yi_types::lease::LeaseRecord;
+    let (root, family, _ticks) = leased("yi-lease-restart", "sleep 30", None).await?;
+    // One lease finished before the restart, so the resume must read the journal oldest first:
+    // newest first and its `revoked` line outlives the `repossessed` that answered it.
+    family
+        .host
+        .spawn("hold".to_owned(), kwargs(&[("name", "earlier")]))?;
+    executing(&family).await?;
+    family.host.revoke("earlier", 0, "scope changed")?;
+    assert_eq!(family.host.expire().await, ["earlier"]);
+    family
+        .host
+        .spawn("hold".to_owned(), kwargs(&[("name", "held")]))?;
+    executing(&family).await?;
+    family.host.revoke("held", 30_000, "scope changed")?;
+    family.host.interrupt("held")?;
+    let store = family.store.clone();
+    drop(family);
+
+    let next = support::family(root.to_path_buf(), std::env::temp_dir(), store, None);
+    assert!(
+        next.host.expire().await.is_empty(),
+        "nothing live is left to stop"
+    );
+    let journal = next.journal();
+    let holders: Vec<(&str, &str)> = journal
+        .iter()
+        .map(|record| match record {
+            LeaseRecord::Revoked(lease) => ("revoked", lease.holder.as_str()),
+            LeaseRecord::Repossessed(done) => ("repossessed", done.lease.holder.as_str()),
+            LeaseRecord::Returned(back) => ("returned", back.lease.holder.as_str()),
+        })
+        .collect();
+    assert_eq!(
+        holders,
+        [
+            ("revoked", "earlier"),
+            ("repossessed", "earlier"),
+            ("revoked", "held"),
+            ("repossessed", "held"),
+        ],
+        "the first expiry after a restart completes only the open record"
+    );
+    let told = next.notices.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        told.iter().any(|text| text.contains("held repossessed")),
+        "{told:?}"
+    );
+    assert_eq!(
+        next.host.resume_revocations()?,
+        Vec::<String>::new(),
+        "completed once"
+    );
+    Ok(())
+}
+
+/// Dies with the refusal in `resume_revocations`: skip a lease line this build cannot read and
+/// the revocation it may have closed is completed again, a kept branch called an orphan.
+#[tokio::test]
+async fn a_lease_record_this_build_cannot_read_refuses_the_resume() -> TestResult {
+    use yi_types::lease::LeaseRecord;
+    let (root, family, _ticks) = leased("yi-lease-unknown", "sleep 30", None).await?;
+    family
+        .host
+        .spawn("hold".to_owned(), kwargs(&[("name", "held")]))?;
+    executing(&family).await?;
+    family.host.revoke("held", 30_000, "scope changed")?;
+    family.host.interrupt("held")?;
+    let newer = json!({"event": "forfeited", "lease": {"holder": "held", "parent": "parent", "grantedAt": 1}});
+    yi_session::lock_session(&family.store).append_custom("main", "lease", Some(newer))?;
+    let store = family.store.clone();
+    drop(family);
+
+    let next = support::family(root.to_path_buf(), std::env::temp_dir(), store, None);
+    assert!(next.host.expire().await.is_empty());
+    let journal = next.journal();
+    assert!(
+        !journal
+            .iter()
+            .any(|record| matches!(record, LeaseRecord::Repossessed(_))),
+        "no repossession is invented past a line it cannot read: {journal:?}"
+    );
+    let told = next.notices.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        told.iter()
+            .any(|text| text.contains("lease resume refused")),
+        "{told:?}"
+    );
+    Ok(())
+}
+
+/// Dies with the exit check in `repossess`: `expire` reads its due list once, so a sibling
+/// whose run ends while the first is joined is repossessed too, on top of its own ending,
+/// and the journal closes that lease twice. This is also the expire-versus-conclude pin.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_child_that_ends_while_expire_joins_a_sibling_keeps_its_one_ending() -> TestResult {
+    use yi_types::lease::LeaseRecord;
+    let (_root, family, _ticks) = leased("yi-lease-race", "sleep 30", None).await?;
+    for name in ["a", "b"] {
+        family
+            .host
+            .spawn("hold".to_owned(), kwargs(&[("name", name)]))?;
+    }
+    for _ in 0..POLL_ATTEMPTS {
+        let views = family.host.children_view();
+        if views.len() == 2
+            && views
+                .iter()
+                .all(|view| view.update.activity == ChildActivity::Executing)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    for name in ["a", "b"] {
+        family.host.revoke(name, 0, "scope changed")?;
+    }
+    // `expire` runs on this thread; its second clock read is the first repossession's, after
+    // its join, and the other run ends there, after the due list was read. A read a child's
+    // own task makes, under the roster lock, is left alone.
+    let (reads, host) = (AtomicU32::new(0), Arc::downgrade(&family.host));
+    let expiring = std::thread::current().id();
+    let clock = Arc::new(move || {
+        if std::thread::current().id() == expiring
+            && reads.fetch_add(1, Ordering::SeqCst) == 1
+            && let Some(host) = host.upgrade()
+        {
+            for view in host.children_view() {
+                let _ = host.interrupt(&view.update.name);
+            }
+            for _ in 0..POLL_ATTEMPTS {
+                let views = host.children_view();
+                if views.iter().any(|view| view.update.exit.is_some()) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS));
+            }
+        }
+        1_000_000
+    });
+    family.host.set_lease_clock(Some(clock), None);
+    let mut events = family.events.subscribe();
+
+    let taken = family.host.expire().await;
+    let [first] = &taken[..] else {
+        return Err(format!("only the joined child is repossessed: {taken:?}").into());
+    };
+    let other = if first == "a" { "b" } else { "a" };
+    let ended = terminal(&mut events);
+    // A late event may republish an ending unchanged; what may not happen is a second one.
+    let exits = |name: &str| {
+        let mut seen: Vec<_> = ended
+            .iter()
+            .filter(|update| update.name == name)
+            .map(|update| update.exit)
+            .collect();
+        seen.dedup();
+        seen
+    };
+    let repossessed = Some(yi_types::subagent::ChildExit::Repossessed);
+    assert_eq!(exits(first), [repossessed], "{ended:?}");
+    assert_eq!(
+        exits(other),
+        [Some(yi_types::subagent::ChildExit::Interrupted)],
+        "{ended:?}"
+    );
+    family.host.delete(other)?;
+    let journal = family.journal();
+    let closing: Vec<(&str, &str)> = journal
+        .iter()
+        .filter_map(|record| match record {
+            LeaseRecord::Revoked(_) => None,
+            LeaseRecord::Repossessed(done) => Some(("repossessed", done.lease.holder.as_str())),
+            LeaseRecord::Returned(back) => Some(("returned", back.lease.holder.as_str())),
+        })
+        .map(|(kind, holder)| (kind, if holder == first { "first" } else { "other" }))
+        .collect();
+    assert_eq!(
+        closing,
+        [("repossessed", "first"), ("returned", "other")],
+        "each lease closes once"
+    );
+    Ok(())
+}
+
+/// Dies with the restore in `retire_as` and `leave_pending`: report the child gone when its
+/// lane would not settle and the only copy of its work is a checkout nothing points at.
+#[tokio::test]
+async fn a_failed_settle_reports_repossession_pending_with_references_kept() -> TestResult {
+    use yi_types::lease::LeaseRecord;
+    let repo = git_repo("lease-pending")?;
+    let hold = "echo kept > work.txt; sleep 30";
+    let (_root, family, _ticks) =
+        leased("yi-lease-pending", hold, Some(repo.to_path_buf())).await?;
+    let asked = kwargs(&[("name", "walled"), ("isolation", "worktree")]);
+    family.host.spawn("hold".to_owned(), asked)?;
+    executing(&family).await?;
+    let mut events = family.events.subscribe();
+    family.host.revoke("walled", 0, "scope changed")?;
+
+    // A settle past the run's own end is refused, and the lane stays where it is.
+    family.host.set_deadline(Some(std::time::Instant::now()));
+    assert!(family.host.expire().await.is_empty());
+    assert!(
+        terminal(&mut events).is_empty(),
+        "never a clean report: nothing is published"
+    );
+    assert_eq!(
+        family.state_of("walled").as_deref(),
+        Some("repossession_pending")
+    );
+    let tree = family
+        .host
+        .cwd_of("walled")
+        .ok_or("the record lost its worktree")?;
+    assert_eq!(std::fs::read_to_string(tree.join("work.txt"))?, "kept\n");
+    assert_eq!(
+        family.journal().len(),
+        1,
+        "only the revocation is on record"
+    );
+
+    // The cause removed, the next run of the timer's job finishes it.
+    family.host.set_deadline(None);
+    assert_eq!(family.host.expire().await, ["walled"]);
+    let journal = family.journal();
+    let Some(LeaseRecord::Repossessed(record)) = journal.last() else {
+        return Err(format!("no repossession record: {journal:?}").into());
+    };
+    let kept: Vec<String> = record.kept.iter().map(ToString::to_string).collect();
+    assert!(
+        kept.iter().any(|url| url.starts_with("branch://")),
+        "{kept:?}"
+    );
+    assert_eq!(terminal(&mut events).len(), 1);
+    Ok(())
+}
+
+/// Dies with the cancel flag (`Shared::winding_down`) and the `cancelled` arm of `exit_of`:
+/// without them a cancel is one more message, the run goes on to its answer, and reads finished.
+#[tokio::test]
+async fn a_cancel_ends_the_run_at_its_next_message_boundary() -> TestResult {
+    let (_root, family, ticks) = leased("yi-lease-cancel", "sleep 1", None).await?;
+    family
+        .host
+        .spawn("hold".to_owned(), kwargs(&[("name", "polite")]))?;
+    executing(&family).await?;
+    family.host.revoke("polite", 60_000, "scope changed")?;
+    assert!(
+        family.reaches("polite", "failed").await,
+        "{:?}",
+        family.state_of("polite")
+    );
+    let view = family
+        .host
+        .children_view()
+        .pop()
+        .ok_or("the record is kept")?;
+    assert_eq!(
+        view.update.exit,
+        Some(yi_types::subagent::ChildExit::Interrupted)
+    );
+    assert_eq!(view.update.error.as_deref(), Some("cancelled"));
+    let answered = view.session.messages().iter().any(|message| {
+        matches!(
+            message,
+            AgentMessage::Assistant {
+                stop_reason: StopReason::Stop,
+                ..
+            }
+        )
+    });
+    assert!(!answered, "no request followed the cancelled turn");
+    ticks.store(2_000_000, Ordering::SeqCst);
+    assert!(
+        family.host.expire().await.is_empty(),
+        "it stopped inside its grace"
+    );
+    assert!(
+        family.host.holds("polite"),
+        "so its record is the parent's to reap"
+    );
+    Ok(())
+}
+
+/// Dies with `Desk::drop_respondent`: without it a request to a child that was then removed
+/// waits out its whole timeout and blames the clock.
+#[tokio::test]
+async fn a_terminated_respondent_refuses_its_waiters_by_name() -> TestResult {
+    let (harness, _feed) = busy_child().await?;
+    let host = Arc::clone(&harness.host);
+    let asking =
+        tokio::spawn(async move { host.request("parent", "busy", "which suite?", 60_000).await });
+    for _ in 0..POLL_ATTEMPTS {
+        if !inbox_of(&harness, "busy")?.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    harness.host.delete("busy")?;
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(5), asking).await;
+    let refused = waited??.err().ok_or("a removed child answered")?;
+    assert!(refused.contains("\"busy\" was reaped"), "{refused}");
+    Ok(())
+}
+
+/// Dies with the `Kind::Failure` arm of `deliver_to_parent`: without it a child that said it
+/// failed reads `finished` the moment its turn ends.
+#[tokio::test]
+async fn a_failure_from_a_child_reads_failed_in_wait() -> TestResult {
+    let harness = harness(0, 1, "done")?;
+    finished(&harness, "sorry").await?;
+    let mut payload = Map::new();
+    payload.insert("target".to_owned(), json!("parent"));
+    payload.insert("message".to_owned(), json!("the fixture is missing"));
+    payload.insert("kind".to_owned(), json!("failure"));
+    harness.host.send("sorry", &payload)?;
+    let waited = harness.host.wait(1_000, None).await;
+    assert_eq!(waited["states"]["sorry"], json!("failed"), "{waited:?}");
+    assert_eq!(waited["notes"]["sorry"], json!("the fixture is missing"));
     Ok(())
 }
