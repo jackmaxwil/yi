@@ -504,9 +504,13 @@ async fn resume_after_a_kernel_death_reuses_results_and_replays_no_cell() -> Tes
     Ok(())
 }
 
-/// A delegate whose children are named for their todos, with the names it spawned.
+/// A delegate whose children are named for their todos: the names it spawned, and those it
+/// holds from spawn to reap, as `SubagentHost::holds` does behind `SessionDelegate`.
 #[derive(Default)]
-struct Crew(std::sync::Mutex<Vec<String>>);
+struct Crew(
+    std::sync::Mutex<Vec<String>>,
+    std::sync::Mutex<std::collections::BTreeSet<String>>,
+);
 
 impl Delegate for Crew {
     fn spawn(
@@ -517,15 +521,27 @@ impl Delegate for Crew {
         let slug = yi_types::plan::doc::PlanId::slug(at.todo.as_str());
         let name = slug.map_err(|error| error.to_string())?.to_string();
         self.0.lock().map_err(|_| "poisoned")?.push(name.clone());
+        self.1.lock().map_err(|_| "poisoned")?.insert(name.clone());
         yi_types::plan::doc::AgentId::new(name).map_err(|error| error.to_string())
     }
 
     fn reap(
         &self,
-        _agent: &yi_types::plan::doc::AgentId,
+        agent: &yi_types::plan::doc::AgentId,
         _supplied: &[yi_types::url::Url],
     ) -> Result<Option<yi_types::url::Url>, String> {
+        self.1
+            .lock()
+            .map_err(|_| "poisoned")?
+            .remove(agent.as_str());
         Ok(None)
+    }
+}
+
+/// `SessionDelegate`'s liveness (`plan/dispatch.rs`): a held child is alive, finished or not.
+impl yi_runtime::plan::recovery::Liveness for Crew {
+    fn alive(&self, agent: &yi_types::plan::doc::AgentId) -> Option<bool> {
+        Some(self.1.lock().ok()?.contains(agent.as_str()))
     }
 }
 
@@ -548,6 +564,7 @@ fn crewed(
         PlanEngine::new(store.clone(), crew.clone())
             .with_cwd(workspace)
             .with_output_resolve(resolver.clone())
+            .with_liveness(crew.clone())
             .with_width(std::num::NonZeroUsize::MIN),
     );
     let mut registry = HostRegistry::default();
