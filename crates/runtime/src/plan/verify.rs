@@ -20,6 +20,7 @@ use crate::goal::run_check_in;
 /// Retries of an item the host failed to spawn, backing off this many ms per attempt.
 const ABSTAIN_RETRIES: u32 = 2;
 const ABSTAIN_BACKOFF_MS: u64 = 100;
+const EVIDENCE_CHARS: usize = 300;
 const PAST_DEADLINE: &str = "the verification deadline passed before this item ran";
 
 /// The judge tier (`judge.rs`). A verifier built without one abstains every judge item.
@@ -238,6 +239,7 @@ impl Verifier {
                     id: item.id.clone(),
                     verdict: abstain(PAST_DEADLINE),
                     jurors: Vec::new(),
+                    evidence: None,
                 });
                 continue;
             }
@@ -253,22 +255,29 @@ impl Verifier {
                     id,
                     verdict,
                     jurors,
+                    evidence: None,
                 });
                 continue;
             }
-            let mut verdict = self.run_item(item, snapshot, whole, &mut reproducible);
+            let mut evidence = None;
+            let mut run = |evidence: &mut Option<String>| {
+                self.run_item(item, snapshot, whole, (&mut reproducible, evidence))
+            };
+            let mut verdict = run(&mut evidence);
             let mut retries = 0;
             while retryable(&verdict) && retries < ABSTAIN_RETRIES && Instant::now() < whole {
                 retries = retries.saturating_add(1);
                 std::thread::sleep(Duration::from_millis(
                     ABSTAIN_BACKOFF_MS.saturating_mul(u64::from(retries)),
                 ));
-                verdict = self.run_item(item, snapshot, whole, &mut reproducible);
+                verdict = run(&mut evidence);
             }
+            let evidence = evidence.filter(|_| verdict == ItemVerdict::Pass);
             lines.push(ItemLine {
                 id: item.id.clone(),
                 verdict,
                 jurors: Vec::new(),
+                evidence,
             });
         }
         aggregated(token, contract, lines, reproducible, started)
@@ -289,6 +298,7 @@ impl Verifier {
                 id: item.id.clone(),
                 verdict: abstain(reason),
                 jurors: Vec::new(),
+                evidence: None,
             })
             .collect();
         aggregated(token, contract, lines, true, Instant::now())
@@ -299,7 +309,7 @@ impl Verifier {
         item: &ContractItem,
         snapshot: &Snapshot<'_>,
         whole: Instant,
-        reproducible: &mut bool,
+        (reproducible, evidence): (&mut bool, &mut Option<String>),
     ) -> ItemVerdict {
         match &item.decider {
             Decider::Cmd {
@@ -322,7 +332,9 @@ impl Verifier {
                     deadline_after(Instant::now(), (*timeout_ms).min(manifest.timeout_ms))
                         .min(whole);
                 protecting(&manifest, snapshot.root, || {
-                    run_cmd(&manifest, snapshot.root, deadline, None)
+                    let (verdict, said) = run_cmd_said(&manifest, snapshot.root, deadline);
+                    *evidence = said;
+                    verdict
                 })
             }
             Decider::Schema { schema } => run_schema(snapshot, schema),
@@ -383,8 +395,7 @@ fn aggregated(
     }
 }
 
-/// The manifest's protected paths as they stand, relative to the snapshot root; a missing
-/// path digests as `None`, so appearing or vanishing is a change too.
+/// Protected paths digested under the root; a missing one is `None`, so appearing counts too.
 fn protected_digests(manifest: &CheckerManifest, root: &Path) -> Vec<Option<Digest>> {
     manifest
         .protected
@@ -397,8 +408,7 @@ fn protected_digests(manifest: &CheckerManifest, root: &Path) -> Vec<Option<Dige
         .collect()
 }
 
-/// A check that changed a protected path fails the item rather than passing it
-/// (`fixtures/plans/contracts/contracts.md`): the paths are digested before and after.
+/// A check that changed a protected path fails its item: paths are digested before and after.
 pub(super) fn protecting(
     manifest: &CheckerManifest,
     root: &Path,
@@ -420,20 +430,59 @@ pub(super) fn protecting(
     }
 }
 
+fn run_cmd_said(
+    manifest: &CheckerManifest,
+    root: &Path,
+    deadline: Instant,
+) -> (ItemVerdict, Option<String>) {
+    let capture = run_check_in(
+        &manifest.workdir(root),
+        &manifest.command,
+        &manifest.env,
+        None,
+        deadline,
+        None,
+    );
+    let passed =
+        |capture: &&yi_tools::CommandCapture| capture.exit_code == Some(0) && !capture.cancelled;
+    let said = capture.as_ref().ok().filter(passed).map(|capture| {
+        let output = crate::goal::output_tail(capture);
+        let total = capture.stdout.trim().chars().count() + capture.stderr.trim().chars().count();
+        let skip = output.chars().count().saturating_sub(EVIDENCE_CHARS);
+        let kept: String = output.chars().skip(skip).collect();
+        let cut = if total > EVIDENCE_CHARS {
+            format!("[… last {EVIDENCE_CHARS} of {total} chars; the rest was not kept]\n")
+        } else {
+            String::new()
+        };
+        format!("`{}` exit 0\n{cut}{kept}", manifest.command)
+    });
+    (verdict_of(capture, manifest), said)
+}
+
 pub(super) fn run_cmd(
     manifest: &CheckerManifest,
     root: &Path,
     deadline: Instant,
     stop: Option<&yi_tools::CancelFlag>,
 ) -> ItemVerdict {
-    let capture = match run_check_in(
-        &manifest.workdir(root),
+    let workdir = manifest.workdir(root);
+    let capture = run_check_in(
+        &workdir,
         &manifest.command,
         &manifest.env,
         None,
         deadline,
         stop,
-    ) {
+    );
+    verdict_of(capture, manifest)
+}
+
+fn verdict_of(
+    capture: Result<yi_tools::CommandCapture, String>,
+    manifest: &CheckerManifest,
+) -> ItemVerdict {
+    let capture = match capture {
         Ok(capture) => capture,
         Err(reason) => return abstain(reason),
     };

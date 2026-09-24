@@ -53,6 +53,7 @@ pub enum Cause {
     Revoked,
     Held,
     Settled,
+    Stuck,
 }
 
 impl Cause {
@@ -71,6 +72,7 @@ impl Cause {
             Self::Revoked => "revoked",
             Self::Held => "held",
             Self::Settled => "settled",
+            Self::Stuck => "stuck",
         }
     }
 

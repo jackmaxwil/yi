@@ -309,7 +309,7 @@ class RLMSpawnHandle:
 
     @_handed_out
     async def send(self, message: str, followup: bool = False) -> dict[str, Any]:
-        return await send(self.name, message, followup)
+        return await send.__wrapped__(self.name, message, followup)
 
 
 @dataclass(frozen=True)
@@ -675,7 +675,7 @@ async def receive(timeout: float = 300.0) -> list[dict[str, Any]]:
 @_public
 async def followup(target: "str | RLMSubagent", message: str) -> dict[str, Any]:
     """Send and start the target's turn if it is idle (delivered at a boundary if not)."""
-    return await send(target, message, followup=True)
+    return await send.__wrapped__(target, message, followup=True)
 
 
 @_public
@@ -691,8 +691,8 @@ async def status(name: str | None = None) -> "list[Reply] | Reply":
     intercept, or five idle minutes; ``note`` names which) and ``repossession_pending``
     (``revoke`` took its lease back but the stop, settle or record failed; everything it
     held is kept and the host retries). An entry reads by key or attribute. With
-    ``name`` it returns that one child's entry, and an unknown name raises KeyError
-    naming the children there are::
+    ``name`` (a plan child's todo label names it too) it returns that one child's entry,
+    and an unknown name raises KeyError naming the children there are::
 
         for m in await rlm.status():
             print(m["name"], m.state)
@@ -706,12 +706,13 @@ async def status(name: str | None = None) -> "list[Reply] | Reply":
     entries = [Reply(member, "rlm.status", example) for member in members if isinstance(member, dict)]
     if name is None:
         return entries
-    for entry in entries:
-        if entry.get("name") == name:
-            return entry
+    named = [entry for entry in entries if entry.get("name") == name]
+    named = named or [entry for entry in entries if str(entry.get("name")).endswith(f"/{name}")]
+    if len(named) == 1:
+        return named[0]
     roster = (await host_request("rlm.status", {})).get("members") or []
     known = ", ".join(repr(member.get("name")) for member in roster if isinstance(member, dict))
-    raise KeyError(f"no child named {name!r}; the children are: {known or 'none'}")
+    raise KeyError(f"no one child named {name!r}; the children are: {known or 'none'}")
 
 
 @_public

@@ -1445,6 +1445,43 @@ mod accept {
         Ok(())
     }
 
+    // Dies with `repair` blind to staging: a crash between `integration_intent` and
+    // `integration_prepared` left a slot and a branch that only a retry of that attempt freed.
+    #[test]
+    fn repair_drops_the_staging_a_crash_left_before_prepare_and_names_it() -> TestResult {
+        let rig = Rig::new("f0d-stage-repair")?;
+        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
+        bench.submit()?;
+        let head = sha(&parent, "HEAD")?;
+        seed(
+            &bench,
+            KIND_INTEGRATION_INTENT,
+            json!({"label": LABEL, "generation": 2, "staging": "stage-lost"}),
+        )?;
+        let lane = bench
+            .pool
+            .claim("stage-lost", ClaimBase::Commit(head.as_str().to_owned()))?;
+        git(
+            lane.path(),
+            &["merge", "-q", "--no-ff", "--no-edit", "yi/cand-green"],
+        )?;
+        let slot = lane.slot();
+        drop(lane);
+        orphan(&bench.pool, slot, "stage-lost")?;
+        let repair = || {
+            bench.owner(Op::Repair {
+                resolutions: Vec::new(),
+            })
+        };
+        let said = repair()?.notices.join("\n");
+        assert!(said.contains("dropped staging stage-lost"), "{said}");
+        assert_eq!(git(&parent, &["branch", "--list", "yi/stage-lost"])?, "");
+        let again = repair()?.notices.join("\n");
+        assert!(!again.contains("stage-lost"), "{again}");
+        Ok(())
+    }
+
     // Dies with `Phase::IntegrationPrepared` handled as a re-preparation in `try_publish`
     // (acceptance.rs): treat it as a missing record instead and a verified candidate whose
     // process died between `integration_prepared` and `integration_verified` is refused

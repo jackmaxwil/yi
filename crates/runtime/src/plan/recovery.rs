@@ -183,6 +183,7 @@ impl PlanEngine {
             recovered.regenerated.len()
         ));
         notices.extend(recovered.findings.iter().map(ToString::to_string));
+        notices.extend(self.drop_left_staging(&root));
         for resolution in &resolutions {
             let found = recovered
                 .findings

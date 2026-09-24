@@ -111,6 +111,7 @@ impl SubagentHost {
             && let Some(record) = children.get_mut(child_id)
         {
             record.concluding = false;
+            record.concluded_runs = session.runs().1;
             let billed = std::mem::replace(&mut record.attributed, messages.len());
             if record.step(Step::Exit(exit, error.clone())) {
                 let service = matches!(record.standing, Standing::Service(_));
@@ -193,7 +194,9 @@ impl SubagentHost {
     /// Another run on a concluded record reads running again, and one reader concludes it.
     pub(crate) fn resume(self: &Arc<Self>, key: &str) {
         let claimed = self.children.lock().ok().and_then(|mut children| {
-            let record = children.get_mut(key).filter(|record| !record.concluding)?;
+            let record = children.get_mut(key).filter(|record| {
+                !record.concluding && record.session.runs().0 > record.concluded_runs
+            })?;
             record.concluding = true;
             record.step(Step::Resumed);
             let claimed = (record.session_name.clone(), Arc::clone(&record.session));
@@ -210,6 +213,32 @@ impl SubagentHost {
             let (exit, error) = exit_of(&session);
             host.conclude(&key, &name, &session, exit, error);
         });
+    }
+
+    /// Invariant: a derived `stuck` moves no record, so a newly stuck member moves the epoch.
+    pub(crate) fn mark_stuck(&self) {
+        let views = self.states();
+        let stuck: Vec<&str> = views
+            .iter()
+            .filter(|view| view.state == crate::family::MemberState::Stuck)
+            .map(|view| view.name.as_str())
+            .collect();
+        let Ok(mut latched) = self.stuck.lock() else {
+            return;
+        };
+        latched.retain(|name| stuck.contains(&name.as_str()));
+        let fresh: Vec<&str> = stuck
+            .into_iter()
+            .filter(|name| latched.insert((*name).to_owned()))
+            .collect();
+        drop(latched);
+        if let Ok(mut children) = self.children.lock() {
+            for name in fresh {
+                if let Ok(key) = Self::key_of(&children, name) {
+                    children.touch(&key, Cause::Stuck);
+                }
+            }
+        }
     }
 
     fn unseen(&self, key: &str, epoch: u64) -> bool {

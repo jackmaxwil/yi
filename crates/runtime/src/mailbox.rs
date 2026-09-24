@@ -169,8 +169,7 @@ pub fn register_receive(
     });
 }
 
-/// What a child needs to reach the family it was spawned into: its own name,
-/// and the parent host's router (a `Weak`, so the family is not a cycle).
+/// A child's own name and a `Weak` to its parent host's router, so the family is no cycle.
 #[derive(Clone)]
 pub struct ParentLink {
     pub child_name: String,
@@ -348,8 +347,9 @@ impl SubagentHost {
         if answered && let Some(store) = (self.options.store)() {
             crate::mail::mark_read(&store, vec![Value::String(envelope.id.0.clone())]);
         }
-        if envelope.kind != Kind::Progress && !answered {
-            (self.options.report)(crate::mail::present(&envelope), true);
+        if !answered {
+            let wakes = envelope.kind != Kind::Progress;
+            (self.options.report)(crate::mail::present(&envelope), wakes);
         }
         let state = if answered { "answered" } else { "delivered" };
         let mut row = receipt(PARENT_NAME, state);
@@ -368,7 +368,13 @@ impl SubagentHost {
             .children
             .lock()
             .map_err(|_| "subagent state poisoned".to_owned())?;
-        let key = Self::key_of(&children, target).ok();
+        let key = Self::key_of(&children, target);
+        if let Err(error) = &key
+            && error.contains(crate::subagent::AMBIGUOUS)
+        {
+            return Err(error.clone());
+        }
+        let key = key.ok();
         let record = key.as_ref().and_then(|key| children.get(key));
         let (name, store) = match record {
             Some(record) => (record.session_name.clone(), record.session.store()),
@@ -406,9 +412,6 @@ impl SubagentHost {
             _ if answered => {
                 crate::mail::mark_read(&store, vec![Value::String(envelope.id.0.clone())]);
                 (Delivery::Answered, presented_when(Delivery::Answered))
-            }
-            _ if envelope.kind == Kind::Progress => {
-                (Delivery::Inboxed, "never: progress stays in the inbox")
             }
             // A revoked child is admitted no new work; its inbox still keeps the message.
             Some(record) if record.lease.revoked.is_some() && envelope.kind != Kind::Cancel => (
@@ -485,7 +488,12 @@ impl SubagentHost {
             .checked_add(std::time::Duration::from_millis(clamped))
             .unwrap_or_else(std::time::Instant::now);
         let since = cursor.unwrap_or(0);
+        let mut polls = 0_u32;
         loop {
+            if polls.is_multiple_of(10) {
+                self.mark_stuck();
+            }
+            polls = polls.wrapping_add(1);
             let (epoch, moved, live) = self.changed_since(since);
             let quiet = bare && moved.is_empty() && live;
             let moved_on = epoch > since && !quiet;
@@ -560,12 +568,15 @@ impl SubagentHost {
             .iter()
             .map(|(name, cause)| (name.clone(), Value::from(cause.as_str())))
             .collect();
+        let asking = self
+            .mail
+            .lock()
+            .map(|mut desk| {
+                desk.show_asking();
+                desk.asking()
+            })
+            .unwrap_or_default();
         if state == "asks" {
-            let asking = self
-                .mail
-                .lock()
-                .map(|desk| desk.asking())
-                .unwrap_or_default();
             for name in asking.into_keys() {
                 causes.insert(name, Value::from("asks"));
             }
@@ -940,8 +951,7 @@ impl SubagentHost {
     }
 }
 
-/// What a reap found: the child's name and whether it left any product to point a terminal
-/// record at; how its worktree went is the engine's journaled disposition, not the reap's.
+/// A reap's name and whether it left a product; its worktree's fate is the engine's disposition.
 pub struct Harvest {
     pub name: String,
     pub produced: bool,

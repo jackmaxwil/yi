@@ -74,6 +74,7 @@ struct Shared {
     deadline: OnceLock<Deadline>,
     turn_time: Mutex<(Option<std::time::Instant>, Option<Duration>)>,
     cancelled: std::sync::atomic::AtomicBool,
+    runs: std::sync::atomic::AtomicU64,
 }
 
 pub type PromptChoiceFn =
@@ -175,6 +176,7 @@ impl AgentSession {
                 deadline: OnceLock::new(),
                 turn_time: Mutex::new((None, None)),
                 cancelled: false.into(),
+                runs: 0.into(),
             }),
             config,
             provider,
@@ -764,13 +766,20 @@ impl AgentSession {
         self.follow_up_message(user_message(text));
     }
 
-    /// Taken after a running turn's answer, or the next run's; true when a turn was running.
+    /// Runs admitted so far, and how many of them have ended.
+    pub(crate) fn runs(&self) -> (u64, u64) {
+        let running = self
+            .shared
+            .status
+            .lock()
+            .is_ok_and(|status| *status == Status::Running);
+        let started = self.shared.runs.load(std::sync::atomic::Ordering::SeqCst);
+        (started, started.saturating_sub(u64::from(running)))
+    }
+
+    /// Taken after a running turn's answer, or it starts an idle session's turn.
     pub fn follow_up_message(&self, message: AgentMessage) -> bool {
-        let status = self.shared.status.lock();
-        if let Ok(mut queue) = self.shared.follow_up.lock() {
-            queue.push(message);
-        }
-        status.is_ok_and(|status| *status == Status::Running)
+        run::follow(&self.parts(), message)
     }
 
     /// Presented in arrival order at the next boundary; `wakes` starts an idle session's turn.
