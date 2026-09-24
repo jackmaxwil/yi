@@ -564,6 +564,9 @@ impl KernelService {
             watcher.abort();
             match outcome {
                 Ok(result) => {
+                    if !kernel_restarted && let Ok(mut restarted) = self.restarted.lock() {
+                        *restarted = None;
+                    }
                     if result.status != yi_types::kernel::ExecuteStatus::Aborted
                         && let Some(names) = manager.list_namespace_names().await
                         && let Ok(mut slot) = self.names.lock()
