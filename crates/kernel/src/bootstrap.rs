@@ -66,7 +66,6 @@ const DOCUMENT_PROBE_KEY: &str = "documentProbe";
 fn document_probe_hash() -> String {
     format!("{:016x}", fnv1a(DOCUMENT_FORMATS_PROBE.as_bytes()))
 }
-const UV_INSTALL_COMMAND: &str = "curl -LsSf https://astral.sh/uv/install.sh | sh";
 pub const RUNTIME_READY_CHECK: &str = "import inspect; import rlm; import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = [\"create_memory\",\"update_memory\",\"delete_memory\",\"create_skill\",\"update_skill\",\"delete_skill\",\"create_subagent\",\"update_subagent\",\"delete_subagent\",\"create_prompt_note\",\"update_prompt_note\",\"delete_prompt_note\",\"record_refinement\"]; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert callable(rlm); assert all(hasattr(rlm, _name) for _name in rlm.__all__); assert not hasattr(rlm, 'rlm'); assert all(callable(getattr(rlm.harness, _method, None)) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert not inspect.iscoroutinefunction(rlm.bash); assert hasattr(rlm.BashHandle, '__await__'); assert not hasattr(rlm, 'background'); from pathlib import Path as _P; assert rlm.RLMSubagent(rlm_child_id='c', active_session_id=None, session_id=None, session_name='kid', session_dir=_P('.'), status='idle').name == 'kid'";
 const BOOTSTRAP_VERSION_FILE: &str = ".bootstrap-version";
 /// `python/yi_runtime` and `python/skills`, deflated by `build.rs`.
@@ -439,7 +438,7 @@ fn missing_extra_imports(python: &Path) -> Vec<String> {
         .collect()
 }
 
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -480,35 +479,27 @@ pub fn find_system_python() -> Option<PathBuf> {
         })
 }
 
-/// uv, else the machine's python3 3.11+ with venv, else the uv installer when asked for.
-pub fn find_toolchain(options: &BootstrapOptions) -> Result<Toolchain, String> {
-    if let Some(uv) = find_executable("uv") {
-        return Ok(Toolchain::Uv(uv));
-    }
-    let local_uv = options.home.join(".local").join("bin").join("uv");
-    if is_executable(&local_uv) {
-        return Ok(Toolchain::Uv(local_uv));
-    }
-    if let Some(python) = find_system_python() {
-        return Ok(Toolchain::System(python));
-    }
-    if std::env::var_os("YI_INSTALL_UV").as_deref() != Some(std::ffi::OsStr::new("1")) {
-        return Err(format!(
-            "no uv and no python3 3.11+ with venv on PATH. Install uv ({UV_INSTALL_COMMAND}), or python3-venv, or set YI_INSTALL_UV=1 to let yi run that installer."
-        ));
-    }
-    options.progress("› installing uv (one-time)…");
-    run(Path::new("sh"), &["-c", UV_INSTALL_COMMAND], true).map_err(|error| {
-        format!(
-            "couldn't install uv from astral.sh; install it yourself: {UV_INSTALL_COMMAND}, then re-run yi. {error}"
-        )
-    })?;
-    if is_executable(&local_uv) {
-        return Ok(Toolchain::Uv(local_uv));
-    }
+/// uv on PATH or under `~/.local/bin`, else the pinned uv Yi installed, else the machine's
+/// python3 3.11+ with venv; `None` leaves only fetching the pinned uv.
+pub fn existing_toolchain(home: &Path) -> Option<Toolchain> {
+    let local_uv = home.join(".local").join("bin").join("uv");
     find_executable("uv")
+        .or_else(|| is_executable(&local_uv).then_some(local_uv))
+        .or_else(|| crate::uv_install::installed(home))
         .map(Toolchain::Uv)
-        .ok_or_else(|| "uv install completed but binary not found at ~/.local/bin/uv".to_owned())
+        .or_else(|| find_system_python().map(Toolchain::System))
+}
+
+pub fn find_toolchain(options: &BootstrapOptions) -> Result<Toolchain, String> {
+    if let Some(toolchain) = existing_toolchain(&options.home) {
+        return Ok(toolchain);
+    }
+    let release = crate::uv_install::Release::pinned()?;
+    options.progress(&format!(
+        "› no uv or python3 3.11+; installing uv {} (one-time)…",
+        crate::uv_install::UV_VERSION
+    ));
+    crate::uv_install::install(&options.home, &release, crate::uv_install::fetch).map(Toolchain::Uv)
 }
 
 fn create_venv(toolchain: &Toolchain, venv_text: &str) -> Result<(), String> {

@@ -972,6 +972,27 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
     Ok(())
 }
 
+/// A report-only doctor on a machine with no toolchain says what the build would fetch; the
+/// dead proxy makes a regression fail fast instead of downloading uv.
+#[test]
+fn doctor_without_fix_reports_the_uv_fetch_instead_of_running_it() -> TestResult {
+    let workspace = Workspace::new("doctor-no-toolchain")?;
+    let dead = "http://127.0.0.1:9";
+    let seen = workspace.yi_env(
+        &["doctor"],
+        &[("PATH", ""), ("ALL_PROXY", dead), ("HTTPS_PROXY", dead)],
+    )?;
+    let lines = doctor_lines(&seen);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("ok    kernel-toolchain") && l.contains("fetches uv")),
+        "{lines:?}"
+    );
+    assert!(!workspace.0.join("home/.yi/uv").exists());
+    Ok(())
+}
+
 /// A config that will not parse is what `doctor` exists to say; it must not die of it first.
 #[test]
 fn doctor_runs_over_a_broken_config_and_names_the_key() -> TestResult {
