@@ -112,6 +112,59 @@ fn the_fetch_and_bash_contract_holds_against_a_stubbed_host() -> TestResult {
     Ok(())
 }
 
+/// The ipython description named `rlm.status()` while `rlm.__all__` left it out: every
+/// `rlm.<name>` the model reads is a public name of the package its kernel imports.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the contract under test is a real python process importing the shipped package"
+)]
+#[test]
+fn every_rlm_name_the_model_reads_is_public_in_the_package() -> TestResult {
+    let tool = yi_runtime::kernel::ipython_tool(service());
+    let text = [
+        tool.description(),
+        yi_runtime::identity_fragment(),
+        yi_runtime::doctrine_fragment(),
+    ]
+    .join("\n");
+    let pieces: Vec<&str> = text.split("rlm.").collect();
+    let mut named = std::collections::BTreeSet::new();
+    for pair in pieces.windows(2) {
+        let [before, after] = pair else { continue };
+        if before
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
+        {
+            continue;
+        }
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            named.insert(name);
+        }
+    }
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/yi_runtime/src");
+    let output = std::process::Command::new("python3")
+        .args(["-c", "import json, rlm; print(json.dumps(rlm.__all__))"])
+        .env("PYTHONPATH", &src)
+        .current_dir(std::env::temp_dir())
+        .output()?;
+    let public: Vec<String> = serde_json::from_slice(&output.stdout)?;
+    let missing: Vec<&String> = named.iter().filter(|name| !public.contains(name)).collect();
+    assert!(
+        named.len() > 5,
+        "the model-facing text names rlm: {named:?}"
+    );
+    assert!(
+        missing.is_empty(),
+        "named but not in rlm.__all__: {missing:?}"
+    );
+    Ok(())
+}
+
 struct NoChildren;
 
 impl Delegate for NoChildren {
@@ -223,6 +276,62 @@ async fn a_live_kernel_fetches_its_own_variables_and_runs_bash_handles() -> Test
     let (whole, next) = service.read_variable(&long, None).await?.ok_or("long")?;
     assert!(whole.ends_with("[... truncated: 8192 of 9002 chars ...]") && next.is_none());
     service.dispose().await;
+    Ok(())
+}
+
+/// Six of eight dogfood trials called `rlm.status()` or `rlm.send(...)` without `await` and got
+/// a coroutine that never ran. Un-awaited, a call now runs where its value is used.
+#[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn a_live_kernel_answers_rlm_calls_with_or_without_await() -> TestResult {
+    let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut registry = HostRegistry::default();
+    registry.register("rlm.status", |_payload| {
+        Box::pin(async {
+            let reply = serde_json::json!({"members": [{"name": "kid", "state": "running"}]});
+            reply.as_object().cloned().ok_or_else(|| "reply".to_owned())
+        })
+    });
+    let seen = Arc::clone(&sent);
+    registry.register("agent_message.send", move |payload| {
+        if let Ok(mut seen) = seen.lock() {
+            seen.push(payload.get("message").cloned());
+        }
+        Box::pin(async { Ok(serde_json::Map::new()) })
+    });
+    let service = service_with(registry);
+    let outcome = cell(
+        &service,
+        concat!(
+            "import sys\n",
+            "print('one', rlm is sys.modules['rlm'], fetch is rlm.fetch, bash is rlm.bash)\n",
+            "print('bare', rlm.status())\n",
+            "s = rlm.status()\n",
+            "print('stored', s[0]['state'])\n",
+            "rlm.send('kid', 'sent bare')\n",
+            "print('awaited', (await rlm.status())[0]['name'])\n",
+            "both = await asyncio.gather(rlm.status(), rlm.status('kid'))\n",
+            "print('gathered', len(both), len(both[1]))\n",
+            "for c in rlm.status():\n    await asyncio.sleep(0)\n    print('mixed', c['name'])\n",
+            "h = bash('printf hi')\nr = h.wait()\nprint('handle', r['exit_code'], r['output'])\n",
+        ),
+    )
+    .await?;
+    service.dispose().await;
+    let printed = format!("{}\n{}", outcome.result.stdout, outcome.result.stderr);
+    for line in [
+        "one True True True",
+        "bare [{'name': 'kid', 'state': 'running'}]",
+        "stored running",
+        "awaited kid",
+        "gathered 2 1",
+        "mixed kid",
+        "handle 0 hi",
+    ] {
+        assert!(printed.contains(line), "missing {line:?}: {printed}");
+    }
+    let sent = sent.lock().map_err(|error| error.to_string())?.clone();
+    assert_eq!(sent, [Some(serde_json::json!("sent bare"))], "{printed}");
     Ok(())
 }
 

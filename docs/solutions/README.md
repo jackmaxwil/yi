@@ -207,5 +207,6 @@ when it changes rather than editing them by hand.
 - [D228](adr/d228.md) - a contract's checker runs after every covered write
 - [D229](adr/d229.md) - the classes the final confirmation found are removed at their decision
 - [D230](adr/d230.md) - the mailbox delivers in order and no run ends owing a turn
+- [D231](adr/d231.md) - one `rlm` surface, and every call on it works with or without `await`
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
