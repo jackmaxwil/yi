@@ -725,6 +725,9 @@ fn kernel_ready(python: &Path, venv: &Path, runtime_identity: &str) -> bool {
         let _record_refreshed =
             write_bootstrap_version(venv, runtime_identity, document_formats_of(python));
     }
+    if live {
+        crate::lock::restart_sweep_clock(venv);
+    }
     live
 }
 
@@ -972,6 +975,34 @@ mod tests {
             document_converter(&home).1,
             Vec::<String>::new(),
             "a venv built without the converter claims no format"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_ready_boot_keeps_its_venv_out_of_the_sweep() -> Result<(), String> {
+        let root = Scratch::new("yi-kernel-used").map_err(|error| error.to_string())?;
+        let venv = root.join("kernel-venv-aaaa0000");
+        let python = venv.join("bin").join("python");
+        std::fs::create_dir_all(venv.join("bin")).map_err(|error| error.to_string())?;
+        std::fs::write(&python, "#!/bin/sh\nexit 0\n").map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&python, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+        write_bootstrap_version(&venv, "sha256:old", Vec::new())?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the sweep reads real directory ages"
+        )]
+        let days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86_400);
+        std::fs::File::open(&venv)
+            .and_then(|dir| dir.set_modified(days_ago))
+            .map_err(|error| error.to_string())?;
+        assert!(kernel_ready(&python, &venv, "sha256:old"));
+        let removed = remove_stale_venvs(&root.join("kernel-venv-cccc0000"));
+        assert!(
+            removed.is_empty() && venv.is_dir(),
+            "a venv booted now was swept"
         );
         Ok(())
     }

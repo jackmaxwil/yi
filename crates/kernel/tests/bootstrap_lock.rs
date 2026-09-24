@@ -84,14 +84,14 @@ fn a_boot_sweeps_only_the_venvs_nothing_uses() -> Result<(), Box<dyn std::error:
         clippy::disallowed_methods,
         reason = "the sweep reads real directory ages, so the fixture sets real ones"
     )]
-    let hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3_600);
+    let days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86_400);
     let venv = |name: &str| -> std::io::Result<std::path::PathBuf> {
         let dir = yi.join(name);
         std::fs::create_dir_all(dir.join("bin"))?;
         std::fs::write(dir.join("pyvenv.cfg"), "home = /usr/bin\n")?;
         Ok(dir)
     };
-    let age = |dir: &std::path::Path| std::fs::File::open(dir)?.set_modified(hours_ago);
+    let age = |dir: &std::path::Path| std::fs::File::open(dir)?.set_modified(days_ago);
     let current = venv("kernel-venv-cccc0000")?;
     let old = venv("kernel-venv-aaaa0000")?;
     let building = venv("kernel-venv-bbbb0000")?;
