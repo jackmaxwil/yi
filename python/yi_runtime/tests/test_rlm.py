@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import pathlib
+import pydoc
 import tempfile
 import shutil
 import os
@@ -56,8 +57,6 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
             h.result(30)
         with self.assertRaises(TypeError):
             rlm.result("n", 30)
-        with self.assertRaises(TypeError):
-            rlm.rlm.result("n", 30)
 
     async def test_result_refuses_a_non_dict_schema_before_any_host_round_trip(self) -> None:
         calls: list[int] = []
@@ -353,5 +352,57 @@ class PlanOpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(calls[-1], ("rlm.wait", {"timeout_ms": 1500}))
             await rlm.wait(2, cursor=7)
             self.assertEqual(calls[-1][1], {"timeout_ms": 2000, "cursor": 7})
-            await rlm.rlm.wait(2, 9)
+            await rlm.wait(2, 9)
             self.assertEqual(calls[-1][1], {"timeout_ms": 2000, "cursor": 9})
+
+
+KID = {"name": "kid", "state": "running"}
+
+
+class EitherWayTests(unittest.TestCase):
+    """U2: six of eight dogfood trials called rlm without await and got a coroutine that never ran."""
+
+    def setUp(self) -> None:
+        self.calls: list[tuple[str, dict | None]] = []
+
+        async def fake_host_request(kind, payload=None):
+            self.calls.append((kind, payload))
+            return {"members": [KID]}
+
+        patcher = mock.patch.object(rlm, "host_request", fake_host_request)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_an_unawaited_call_runs_where_its_value_is_used(self) -> None:
+        self.assertEqual(rlm.status(), [KID])
+        stored = rlm.status("kid")
+        self.assertEqual(stored, [KID])
+        self.assertEqual([member["name"] for member in rlm.status()], ["kid"])
+        rlm.send("kid", "sent bare")
+        self.assertEqual(self.calls[-1], ("agent_message.send", {"target": "kid", "message": "sent bare", "followup": False}))
+
+    def test_an_awaited_returned_or_composed_call_is_still_a_coroutine(self) -> None:
+        async def main() -> tuple:
+            handed = (lambda: rlm.status())()
+            self.assertTrue(inspect.iscoroutine(handed))
+            waiting = asyncio.ensure_future(rlm.wait(1))
+            both = await asyncio.gather(rlm.status(), rlm.status("kid"))
+            return await rlm.status(), both, await waiting, await handed
+
+        awaited, both, waited, handed = asyncio.run(main())
+        self.assertEqual((awaited, both, handed), ([KID], [[KID], [KID]], [KID]))
+        self.assertEqual(waited, {"members": [KID]})
+
+
+class SurfaceTests(unittest.TestCase):
+    """U3: the preloaded object had drifted from the module; now there is one list, ``__all__``."""
+
+    def test_every_public_function_is_in_all_and_help_and_callable_either_way(self) -> None:
+        # A sibling suite's fake host replaces host_request; only the package's own functions count.
+        own = {name: value for name, value in vars(rlm).items() if inspect.isfunction(value) and value.__module__ == "rlm"}
+        defined = {name for name in own if not name.startswith("_")}
+        self.assertEqual(defined - set(rlm.__all__), set())
+        self.assertEqual([name for name in rlm.__all__ if not hasattr(rlm, name)], [])
+        self.assertEqual([name for name in defined if inspect.iscoroutinefunction(own[name])], [])
+        text = pydoc.render_doc(rlm, renderer=pydoc.plaintext)
+        self.assertEqual([name for name in sorted(defined) if f"{name}(" not in text], [])

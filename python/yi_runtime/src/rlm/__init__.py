@@ -1,9 +1,19 @@
-"""Yi's kernel-side runtime shim (module name `rlm`)."""
+"""Yi's kernel-side runtime shim (module name `rlm`).
+
+Every call here works with or without ``await``. ``await rlm.status()``, a ``return``,
+or an asyncio call such as ``asyncio.gather`` gets the coroutine; anywhere else, as in
+``print(rlm.status())``, the call runs to completion on the kernel's loop and returns its value.
+"""
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import functools
+import inspect
+import itertools
 import json
+import linecache
 import os
 import sys
 import pathlib
@@ -29,6 +39,88 @@ except Exception:  # pragma: no cover - only available in kernels
 
 HOST_COMM_TARGET = "host.request"
 
+_PUBLIC: list[str] = []
+# The asyncio entry points that take a coroutine, by the name they are called under.
+_COMPOSERS = frozenset(
+    {"gather", "ensure_future", "create_task", "wait_for", "shield", "wait", "as_completed",
+     "run_coroutine_threadsafe", "run", "run_until_complete"}
+)
+_COROUTINE_ATTRS = frozenset({"__await__", "send", "throw", "close"})
+_PASS_THROUGH = (ast.Starred, ast.List, ast.Tuple, ast.Set, ast.keyword)
+
+
+@functools.lru_cache(maxsize=256)
+def _call_sites(filename: str) -> tuple[dict[tuple, ast.Call], dict[ast.AST, ast.AST]]:
+    try:
+        tree = ast.parse("".join(linecache.getlines(filename)))
+    except (SyntaxError, ValueError):
+        return {}, {}
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    calls = {
+        (node.lineno, node.end_lineno, node.col_offset, node.end_col_offset): node
+        for node in parents
+        if isinstance(node, ast.Call)
+    }
+    return calls, parents
+
+
+def _hands_on_coroutine(frame: types.FrameType) -> bool:
+    """Whether the caller's syntax takes the coroutine itself rather than its value.
+
+    Invariant: a CALL instruction's position is its ast.Call span on 3.11-3.14, so the
+    site is read from the source; a site with no readable source keeps the coroutine.
+    """
+    code = frame.f_code
+    if not hasattr(code, "co_positions"):
+        return True
+    position = next(itertools.islice(code.co_positions(), frame.f_lasti // 2, None), None)
+    calls, parents = _call_sites(code.co_filename)
+    node = calls.get(position)
+    if node is None:
+        return True
+    parent = parents.get(node)
+    while isinstance(parent, _PASS_THROUGH) or (
+        isinstance(parent, (ast.ListComp, ast.SetComp, ast.GeneratorExp)) and parent.elt is node
+    ):
+        node, parent = parent, parents.get(parent)
+    if isinstance(parent, ast.Attribute):
+        return parent.attr in _COROUTINE_ATTRS
+    if isinstance(parent, ast.Call) and node is not parent.func:
+        return getattr(parent.func, "attr", getattr(parent.func, "id", None)) in _COMPOSERS
+    return isinstance(parent, (ast.Await, ast.Return, ast.Lambda, ast.Yield, ast.YieldFrom))
+
+
+def _complete(coro: Any) -> Any:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    try:
+        import nest_asyncio
+
+        nest_asyncio.apply(loop)
+    except Exception as error:
+        coro.close()
+        raise RuntimeError(f"this loop cannot run a call to completion, so await it: {error}") from error
+    return loop.run_until_complete(coro)
+
+
+def _either_way(fn: Any) -> Any:
+    """``fn`` as a coroutine where the call site takes one, else its value, run now."""
+
+    @functools.wraps(fn)
+    def call(*args: Any, **kwargs: Any) -> Any:
+        coro = fn(*args, **kwargs)
+        return coro if _hands_on_coroutine(sys._getframe(1)) else _complete(coro)
+
+    return call
+
+
+def _public(fn: Any) -> Any:
+    """One function of the ``rlm`` surface: listed in ``__all__``, callable either way."""
+    _PUBLIC.append(fn.__name__)
+    return _either_way(fn) if inspect.iscoroutinefunction(fn) else fn
+
 
 def _check_schema(schema: dict[str, Any] | None) -> None:
     if schema is not None and not isinstance(schema, dict):
@@ -50,6 +142,7 @@ class RLMSpawnHandle:
         )
         return f"{head}\n{self.next}" if self.next else head
 
+    @_either_way
     async def result(
         self,
         *,
@@ -112,6 +205,7 @@ class RLMSpawnHandle:
                     raise
         raise TimeoutError(f"child {self.name} did not finish within {timeout}s")
 
+    @_either_way
     async def send(self, message: str, followup: bool = False) -> dict[str, Any]:
         return await send(self.name, message, followup)
 
@@ -171,6 +265,7 @@ def _spawn_handle_from_payload(payload: Any) -> RLMSpawnHandle:
     )
 
 
+@_public
 async def host_request(request_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     """Send a typed request to the Yi host and await its reply.
 
@@ -264,6 +359,7 @@ def _resolve_context(kwargs: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
+@_public
 async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     """Spawn a recursive Yi child and return once its task is admitted.
 
@@ -294,6 +390,7 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     return _spawn_handle_from_payload(payload)
 
 
+@_public
 async def service(name: str, brief: str, restart: int = 3, **kwargs: Any) -> RLMSpawnHandle:
     """Start a service: a child whose ``name`` is its address for as long as this session lives.
 
@@ -327,6 +424,7 @@ def _model_from_payload(payload: Any) -> RLMModel:
     return RLMModel(provider=provider, id=model_id, name=name, selector=selector)
 
 
+@_public
 async def find_models(query: str = "", limit: int = 8) -> list[RLMModel]:
     """Search a bounded list of models backed by active user credentials."""
     if not isinstance(query, str):
@@ -371,6 +469,7 @@ def _subagent_from_payload(payload: Any, operation: str = "rlm.list_subagents") 
     )
 
 
+@_public
 async def list_subagents() -> list[RLMSubagent]:
     """List direct RLM children retained by the current parent session."""
     payload = await host_request("rlm.list_subagents")
@@ -380,6 +479,7 @@ async def list_subagents() -> list[RLMSubagent]:
     return [_subagent_from_payload(entry) for entry in entries]
 
 
+@_public
 async def delete_subagent(target: str | RLMSubagent | RLMSpawnHandle) -> RLMSubagent:
     """Delete one running or retained direct child from the current parent session."""
     if isinstance(target, (RLMSubagent, RLMSpawnHandle)):
@@ -404,6 +504,7 @@ def _mail(target: "str | RLMSubagent", message: str, **options: Any) -> dict[str
     return {"target": selector, "message": message, **sent}
 
 
+@_public
 async def send(
     target: "str | RLMSubagent",
     message: str,
@@ -432,6 +533,7 @@ async def send(
     return await host_request("agent_message.send", _mail(target, message, followup=bool(followup), **options))
 
 
+@_public
 async def request(target: "str | RLMSubagent", message: str, timeout: float = 300.0) -> dict[str, Any]:
     """Send a request and wait for its reply; an idle target is started on it.
 
@@ -443,11 +545,13 @@ async def request(target: "str | RLMSubagent", message: str, timeout: float = 30
     return await host_request("agent_message.request", _mail(target, message, timeout_ms=int(timeout * 1000)))
 
 
+@_public
 async def followup(target: "str | RLMSubagent", message: str) -> dict[str, Any]:
     """Send and start the target's turn if it is idle (delivered at a boundary if not)."""
     return await send(target, message, followup=True)
 
 
+@_public
 async def status(name: str | None = None) -> list[dict[str, Any]]:
     """Every child's state as its own records show it (D165).
 
@@ -470,6 +574,7 @@ async def status(name: str | None = None) -> list[dict[str, Any]]:
     return members
 
 
+@_public
 async def list_agents() -> list[dict[str, Any]]:
     """The family this agent can address by name."""
     payload = await host_request("agent_message.list_agents", {})
@@ -479,6 +584,7 @@ async def list_agents() -> list[dict[str, Any]]:
     return agents
 
 
+@_public
 async def wait(timeout: float = 300.0, cursor: int | None = None) -> dict[str, Any]:
     """Block until a child reports or finishes; returns what moved since ``cursor``.
 
@@ -498,6 +604,7 @@ async def wait(timeout: float = 300.0, cursor: int | None = None) -> dict[str, A
     return await host_request("rlm.wait", payload)
 
 
+@_public
 async def plan_op(
     op: str,
     args: dict[str, Any] | None = None,
@@ -533,11 +640,13 @@ async def plan_op(
     return await host_request("plan.op", {k: v for k, v in payload.items() if v is not None})
 
 
+@_public
 async def interrupt(target: "str | RLMSubagent") -> dict[str, Any]:
     """End a child's run and keep its record (``delete_subagent`` reaps instead)."""
     return await host_request("rlm.interrupt", {"target": _worktree_target(target)})
 
 
+@_public
 async def revoke(
     target: "str | RLMSubagent", *, grace_s: float = 30, reason: str = ""
 ) -> dict[str, Any]:
@@ -551,6 +660,7 @@ async def revoke(
     return await host_request("rlm.revoke", payload)
 
 
+@_public
 async def result(
     target: "str | RLMSubagent",
     *,
@@ -591,6 +701,7 @@ def _worktree_target(target: "str | RLMSubagent") -> str:
     raise TypeError(f"target must be str or RLMSubagent, got {type(target).__name__}")
 
 
+@_public
 async def merge_worktree(target: "str | RLMSubagent") -> dict[str, Any]:
     """Commit an isolated child's work on its branch and merge it into this checkout.
 
@@ -600,6 +711,7 @@ async def merge_worktree(target: "str | RLMSubagent") -> dict[str, Any]:
     return await host_request("rlm.merge_worktree", {"target": _worktree_target(target)})
 
 
+@_public
 async def discard_worktree(target: "str | RLMSubagent") -> dict[str, Any]:
     """Throw an isolated child's worktree and branch away without merging."""
     return await host_request("rlm.discard_worktree", {"target": _worktree_target(target)})
@@ -637,6 +749,7 @@ class Page(str):
     next_offset: int | None = None
 
 
+@_public
 async def fetch(
     url: str, *, as_text: bool = False, offset: int | None = None, limit: int | None = None
 ) -> Any:
@@ -708,6 +821,7 @@ def _member_name() -> str:
     return base if base.startswith("sub-") else "main"
 
 
+@_public
 def put(name: str, obj: Any) -> dict[str, Any]:
     """Publish one object on the family blackboard (D164) and return its sidecar.
 
@@ -738,6 +852,7 @@ def put(name: str, obj: Any) -> dict[str, Any]:
     return sidecar
 
 
+@_public
 def get(name: str) -> Any:
     """Read one blackboard object back; ``KeyError`` names a missing entry."""
     if not isinstance(name, str) or not FAMILY_NAME.match(name):
@@ -749,6 +864,7 @@ def get(name: str) -> Any:
         return _serializer().load(handle)
 
 
+@_public
 def ls() -> list[dict[str, Any]]:
     """Every blackboard sidecar, oldest first."""
     directory = _family_dir()
@@ -799,6 +915,7 @@ class BashHandle:
             raise RuntimeError("exec.spawn returned an invalid job_id")
         return job
 
+    @_either_way
     async def tail(self) -> str:
         """New output since the last ``tail``; a released job's output lives on its report."""
         if self._report is not None:
@@ -814,6 +931,7 @@ class BashHandle:
             return f"[... {dropped} bytes trimmed from the front ...]\n{text}"
         return text
 
+    @_either_way
     async def poll(self) -> dict[str, Any]:
         """A snapshot — ``running``, ``exit_code``, ``killed`` — that never waits."""
         if self._report is not None:
@@ -824,12 +942,14 @@ class BashHandle:
             }
         return await host_request("exec.poll", {"job_id": await self._id()})
 
+    @_either_way
     async def kill(self) -> dict[str, Any]:
         """Stop the job if it still runs, release it, and return the final report."""
         if self._report is None:
             await host_request("exec.kill", {"job_id": await self._id()})
         return await self.wait(poll=0.05)
 
+    @_either_way
     async def wait(self, poll: float = 0.5) -> dict[str, Any]:
         """Wait for exit, release the host-side job, and return the final report."""
         while self._report is None:
@@ -873,6 +993,7 @@ class BashHandle:
             pass
 
 
+@_public
 def bash(command: str) -> BashHandle:
     """Start a shell command host-side and return its handle without waiting.
 
@@ -934,109 +1055,11 @@ class _HarnessProxy:
 
 
 _harness_state = _HarnessProxy()
-
-
-class _RLMCallable:
-    harness = _harness_state
-    get_harness_state = staticmethod(get_harness_state)
-
-    async def run(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
-        return await run(prompt, **kwargs)
-
-    async def service(self, name: str, brief: str, restart: int = 3, **kwargs: Any) -> RLMSpawnHandle:
-        return await service(name, brief, restart, **kwargs)
-
-    async def fetch(self, url: str, **options: Any) -> Any:
-        return await fetch(url, **options)
-
-    def put(self, name: str, obj: Any) -> dict[str, Any]:
-        return put(name, obj)
-
-    def get(self, name: str) -> Any:
-        return get(name)
-
-    def ls(self) -> list[dict[str, Any]]:
-        return ls()
-
-    def bash(self, command: str) -> BashHandle:
-        return bash(command)
-
-    async def find_models(self, query: str = "", limit: int = 8) -> list[RLMModel]:
-        return await find_models(query, limit)
-
-    async def list_subagents(self) -> list[RLMSubagent]:
-        return await list_subagents()
-
-    async def delete_subagent(self, target: str | RLMSubagent | RLMSpawnHandle) -> RLMSubagent:
-        return await delete_subagent(target)
-
-    async def send(
-        self, target: str | RLMSubagent, message: str, followup: bool = False, **options: Any
-    ) -> dict[str, Any]:
-        return await send(target, message, followup, **options)
-
-    async def followup(self, target: str | RLMSubagent, message: str) -> dict[str, Any]:
-        return await followup(target, message)
-
-    async def request(self, target: str | RLMSubagent, message: str, timeout: float = 300.0) -> dict[str, Any]:
-        return await request(target, message, timeout)
-
-    async def list_agents(self) -> list[dict[str, Any]]:
-        return await list_agents()
-
-    async def status(self, name: str | None = None) -> list[dict[str, Any]]:
-        return await status(name)
-
-    async def wait(self, timeout: float = 300.0, cursor: int | None = None) -> dict[str, Any]:
-        return await wait(timeout, cursor)
-
-    async def plan_op(
-        self,
-        op: str,
-        args: dict[str, Any] | None = None,
-        *,
-        plan: str | None = None,
-        request_id: str | None = None,
-        expected_revision: int | None = None,
-        artifacts: list[dict[str, str]] | None = None,
-    ) -> dict[str, Any]:
-        return await plan_op(
-            op,
-            args,
-            plan=plan,
-            request_id=request_id,
-            expected_revision=expected_revision,
-            artifacts=artifacts,
-        )
-
-    async def interrupt(self, target: str | RLMSubagent) -> dict[str, Any]:
-        return await interrupt(target)
-
-    async def revoke(
-        self, target: str | RLMSubagent, *, grace_s: float = 30, reason: str = ""
-    ) -> dict[str, Any]:
-        return await revoke(target, grace_s=grace_s, reason=reason)
-
-    async def result(
-        self, target: str | RLMSubagent, *, schema: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        return await result(target, schema=schema)
-
-    async def merge_worktree(self, target: str | RLMSubagent) -> dict[str, Any]:
-        return await merge_worktree(target)
-
-    async def discard_worktree(self, target: str | RLMSubagent) -> dict[str, Any]:
-        return await discard_worktree(target)
-
-    async def __call__(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
-        return await run(prompt, **kwargs)
-
-
-rlm = _RLMCallable()
 harness = _harness_state
 
 
 class _CallableModule(types.ModuleType):
+    @_either_way
     async def __call__(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
         return await run(prompt, **kwargs)
 
@@ -1044,6 +1067,7 @@ class _CallableModule(types.ModuleType):
 sys.modules[__name__].__class__ = _CallableModule
 
 __all__ = [
+    *_PUBLIC,
     "BashHandle",
     "HarnessEntry",
     "HarnessScope",
@@ -1055,27 +1079,8 @@ __all__ = [
     "RLMSpawnHandle",
     "RLMSubagent",
     "RefinementEvent",
-    "bash",
-    "delete_subagent",
-    "discard_worktree",
-    "fetch",
-    "find_models",
     "get_harness_state",
-    "followup",
     "harness",
-    "host_request",
-    "interrupt",
-    "revoke",
-    "list_agents",
-    "list_subagents",
-    "merge_worktree",
-    "plan_op",
-    "request",
-    "result",
-    "rlm",
-    "run",
-    "send",
-    "wait",
 ]
 
 # Lazily re-export the MCP base class. Kept lazy so `import rlm` never requires
