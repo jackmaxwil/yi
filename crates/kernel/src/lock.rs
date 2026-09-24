@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 const BOOTSTRAP_LOCK_NAME: &str = ".bootstrap.lock";
 const BOOTSTRAP_LOCK_RETRY_MS: u64 = 100;
 const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS: u128 = 30_000;
-const SWEEP_AFTER_SECS: u64 = 3_600;
+const SWEEP_AFTER_SECS: u64 = 86_400;
 
 pub(crate) fn bootstrap_lock_dir(venv: &Path) -> PathBuf {
     let name = venv
@@ -121,6 +121,15 @@ fn running_commands() -> Option<String> {
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a ready boot is the last use the sweep ages the venv by"
+)]
+pub(crate) fn restart_sweep_clock(venv: &Path) {
+    let now = std::time::SystemTime::now();
+    let _best_effort = std::fs::File::open(venv).and_then(|dir| dir.set_modified(now));
 }
 
 fn settled(venv: &Path) -> bool {
