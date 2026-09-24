@@ -179,3 +179,46 @@ async fn a_forced_restart_names_what_it_lost_in_the_result_and_the_state() -> Te
     assert!(state.contains("restarted; 2 names lost"), "{state}");
     Ok(())
 }
+
+/// The names the state line offers are checked against the live modules, not a copy of them.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn the_first_cell_shows_the_rlm_table_once_and_the_state_names_the_surface() -> TestResult {
+    let service = service();
+    let before = service.state();
+    assert!(
+        before.contains("help(rlm) and help(yi) are exact"),
+        "{before}"
+    );
+    let offered = |module: &str| -> Vec<String> {
+        before
+            .split(&format!("{module}: "))
+            .nth(1)
+            .and_then(|rest| rest.split(" · ").next())
+            .map(|names| names.split(", ").map(|name| format!("{name:?}")).collect())
+            .unwrap_or_default()
+    };
+    let (rlm, yi) = (offered("rlm"), offered("yi"));
+    assert!(!rlm.is_empty() && !yi.is_empty(), "{before}");
+    let check = format!(
+        "import yi\nprint(all(hasattr(rlm, n) for n in [{}]) and all(hasattr(yi, n) for n in [{}]))",
+        rlm.join(", "),
+        yi.join(", ")
+    );
+    let first = service.execute_user_cell(&check, &never_cancelled()).await;
+    let second = service.execute_user_cell("1", &never_cancelled()).await;
+    let after = service.state();
+    service.dispose().await;
+    assert_eq!(stdout_of(&first), "True\n", "{}", text_of(&first));
+    let table = text_of(&first);
+    assert!(table.contains("[rlm, shown once per session;"), "{table}");
+    assert!(table.contains("await rlm.send(target, message,"), "{table}");
+    assert!(table.contains("\nrlm.bash(command)"), "{table}");
+    assert!(
+        !text_of(&second).contains("shown once per session"),
+        "{}",
+        text_of(&second)
+    );
+    assert!(!after.contains("help(rlm)"), "{after}");
+    Ok(())
+}
