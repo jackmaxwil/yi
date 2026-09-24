@@ -102,19 +102,23 @@ pub struct RuntimeWiring {
     pub kernels: Arc<crate::fetch::KernelServiceMap>,
 }
 
+pub(crate) fn family_dir_of(rlm_dir: &std::path::Path) -> PathBuf {
+    let mut dir = rlm_dir;
+    while dir
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with("sub-"))
+        && let Some(parent) = dir.parent()
+    {
+        dir = parent;
+    }
+    dir.join("family")
+}
+
 impl RuntimeWiring {
     /// the root session's `family/` directory, shared by every member; a child's (D164)
     /// `rlm_dir` sits under the root's as `sub-*`, so the root is the first non-`sub-` ancestor.
     pub fn family_dir(&self) -> PathBuf {
-        let mut dir = self.rlm_dir.as_path();
-        while dir
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with("sub-"))
-            && let Some(parent) = dir.parent()
-        {
-            dir = parent;
-        }
-        dir.join("family")
+        family_dir_of(&self.rlm_dir)
     }
 
     /// The kernel's snapshot, `RLM_SESSION_DIR` and writable root. Incident: the root's was
@@ -167,10 +171,11 @@ fn wire_schedule(
 fn wire_goal(
     session: &AgentSession,
     registry: &mut crate::kernel::HostRegistry,
-    plan_stale_turns: Option<u64>,
+    wiring: &RuntimeWiring,
     plans_dir: &Path,
 ) {
-    let service = crate::goal::attach_goal(session, plans_dir.to_path_buf());
+    let plan_stale_turns = wiring.plan_stale_turns;
+    let service = crate::goal::attach_goal(session, plans_dir.to_path_buf(), wiring.cwd.clone());
     service.register(registry);
     session.set_goal_service(service);
     let plan = crate::plan::attach_plan(session, plan_stale_turns, plans_dir.to_path_buf());
@@ -443,11 +448,14 @@ fn wire_plan_engine(
         let children = Arc::clone(host);
         let leased = Arc::clone(host);
         let ladder = Arc::new(
-            crate::plan::probe::ProbeLadder::new(engine, plans_dir.to_path_buf(), probe_deliver)
-                .with_children(
-                    Arc::new(move || children.states()),
-                    lifecycle_notice(session),
-                )
+            crate::plan::probe::ProbeLadder::new(engine, (plans_dir, &wiring.cwd), probe_deliver)
+                .with_children(Arc::new(move || children.states()), {
+                    let (notice, stalled) = (lifecycle_notice(session), Arc::clone(host));
+                    Arc::new(move |text: &str, news| {
+                        notice(text, news);
+                        stalled.publish_all();
+                    })
+                })
                 .with_leases(Arc::new(move || {
                     let host = Arc::clone(&leased);
                     tokio::spawn(async move { host.expire().await });
@@ -604,8 +612,8 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         });
     }
     let host = subagent_host(session, &wiring, &plans_dir);
-    host.set_grant(wiring.wall.clone(), None);
     host.register(&mut registry);
+    crate::mailbox::register_receive(session, &host, &mut registry);
     session.set_environment(crate::environment::hook(
         session,
         &wiring,
@@ -615,7 +623,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         register_child_messaging(link, &host, &mut registry);
     }
     wire_schedule(session, &wiring, &mut registry);
-    wire_goal(session, &mut registry, wiring.plan_stale_turns, &plans_dir);
+    wire_goal(session, &mut registry, &wiring, &plans_dir);
     let fetch_log = Arc::new(crate::fetch::FetchLog::new());
     fetch_log.attach_session_handle(session.store_handle());
     let kernels = Arc::clone(&wiring.kernels);
@@ -703,11 +711,11 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     host
 }
 
-/// A child's lifecycle notice wakes its parent (§7.5); `notice_hook` only queues a steer
-/// for a turn that may never come. Same message either way.
+/// A child's lifecycle notice wakes its parent (§7.5) unless its news was read before a turn
+/// would present it.
 pub fn lifecycle_notice(session: &AgentSession) -> Arc<crate::subagent::NoticeFn> {
     let wake = session.wake_idle_hook();
-    Arc::new(move |text: &str| wake(crate::session::user_message(text)))
+    Arc::new(move |text: &str, news| wake(crate::session::user_message(text), news))
 }
 
 fn subagent_host(
@@ -716,7 +724,7 @@ fn subagent_host(
     plans_dir: &Path,
 ) -> Arc<SubagentHost> {
     let factory = child_factory(wiring.clone());
-    Arc::new(SubagentHost::new(SubagentHostOptions {
+    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: wiring.depth,
         max_depth: wiring.max_depth,
         max_children: crate::levers::get().family_max_children,
@@ -729,12 +737,7 @@ fn subagent_host(
         cwd: wiring.cwd.clone(),
         home: wiring.home.clone(),
         lane_slots: wiring.lane_slots,
-        report: {
-            let deliver = session.heartbeat_hook();
-            Arc::new(move |message| {
-                deliver(message, yi_types::schedule::DeliveryMode::Steer);
-            })
-        },
+        report: session.deliver_hook(),
         attribute: session.attribution_handle(),
         store: session.store_handle(),
         plans_dir: plans_dir.to_path_buf(),
@@ -742,7 +745,16 @@ fn subagent_host(
             let kernels = Arc::clone(&wiring.kernels);
             Arc::new(move || kernels.live())
         },
-    }))
+    }));
+    host.set_grant(wiring.wall.clone(), None);
+    let counted = Arc::downgrade(&host);
+    session.set_waits(Arc::new(move || {
+        let host = counted.upgrade();
+        host.map_or(0, |host| {
+            host.waits.load(std::sync::atomic::Ordering::SeqCst)
+        })
+    }));
+    host
 }
 
 /// §12: the ledger names what is load-bearing at every compaction and the summarizer

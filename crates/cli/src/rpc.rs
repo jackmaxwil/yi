@@ -191,12 +191,12 @@ impl RpcState {
                 None => error_frame(id, "compact_status", "auto-compaction is not enabled"),
             },
             "prompt" => {
-                let message = text_arg("message");
-                if self.session.prompt(message).is_err() {
+                let message = yi_runtime::session::user_input(text_arg("message"));
+                if self.session.prompt_message(message.clone()).is_err() {
                     if text_arg("streamingBehavior") == "steer" {
-                        self.session.steer(message);
+                        self.session.steer_message(message);
                     } else {
-                        self.session.follow_up(message);
+                        self.session.follow_up_message(message);
                     }
                 }
                 ok_frame(id, "prompt")
@@ -279,11 +279,13 @@ impl RpcState {
                 None => error_frame(id, "advisor_stats", "the advisor is not attached"),
             },
             "steer" => {
-                self.session.steer(text_arg("message"));
+                self.session
+                    .steer_message(yi_runtime::session::user_input(text_arg("message")));
                 ok_frame(id, "steer")
             }
             "follow_up" => {
-                self.session.follow_up(text_arg("message"));
+                self.session
+                    .follow_up_message(yi_runtime::session::user_input(text_arg("message")));
                 ok_frame(id, "follow_up")
             }
             "abort" => {

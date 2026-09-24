@@ -356,7 +356,7 @@ impl Delegate for SessionDelegate {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::num::NonZeroUsize;
     use std::sync::Mutex;
@@ -374,7 +374,7 @@ pub(super) mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    fn faux_model() -> Model {
+    pub(crate) fn faux_model() -> Model {
         let zero = || serde_json::Number::from(0u64);
         Model {
             id: "faux-1".to_owned(),
@@ -440,7 +440,7 @@ pub(super) mod tests {
         pins: Arc<FetchLog>,
         pub(in crate::plan) reports: Sink<AgentMessage>,
         /// The host's own lifecycle notices, which a child the engine took never sends.
-        notices: Sink<String>,
+        pub(in crate::plan) notices: Sink<String>,
         /// The engine's lines to the owner.
         pub(in crate::plan) said: Sink<AgentMessage>,
         pub(in crate::plan) cwd: Scratch,
@@ -463,9 +463,7 @@ pub(super) mod tests {
         let (reports, report) = sink();
         let (notices, notice) = sink::<String>();
         let (said, say) = sink();
-        let asks = script.iter().any(|message| {
-            crate::family::pending_question(std::slice::from_ref(message)).is_some()
-        });
+        let asks = serde_json::to_string(&script).is_ok_and(|text| text.contains("ask_user"));
         let cwd = root.to_path_buf();
         let host = Arc::new(SubagentHost::new(SubagentHostOptions {
             depth: 0,
@@ -477,19 +475,18 @@ pub(super) mod tests {
             lane_slots: 1,
             defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
             factory: Arc::new(move |build: ChildBuild<'_>| {
-                let _ = build;
                 let mut child = scripted(script.clone());
                 if asks {
-                    let ask: Arc<dyn yi_tools::Tool> =
-                        Arc::new(crate::auto_review::AskUserTool::new(None));
+                    let ask = crate::auto_review::AskUserTool::new(None).asking(Some(build.link));
+                    let ask: Arc<dyn yi_tools::Tool> = Arc::new(ask);
                     child.use_tools(vec![ask], cwd.clone(), None);
                 }
                 Ok(child)
             }),
-            notice: Arc::new(move |text: &str| notice(text.to_owned())),
+            notice: Arc::new(move |text: &str, _| notice(text.to_owned())),
             events,
             parent_messages: Arc::new(Vec::new),
-            report: Arc::new(move |message| report(message)),
+            report: Arc::new(move |message, _| report(message)),
             attribute: Arc::new(|_usage| {}),
             store: Arc::new(|| None),
             plans_dir: root.join(crate::plan::PLANS_DIR),
@@ -751,15 +748,17 @@ pub(super) mod tests {
             last.to_string(),
             format!("history://{}/write-the-patch", out.plan.id.as_str())
         );
-        let promoted = texts(&rig.reports);
+        let said = texts(&rig.said);
+        let [line] = said.as_slice() else {
+            return Err(format!("one line for the verdict and its reap: {said:?}").into());
+        };
         assert!(
-            promoted.iter().any(|text| text.contains("half a patch")),
-            "the failure path still promotes the last product: {promoted:?}"
+            line.starts_with(
+                "plan: failed \"write the patch\": the provider hung up\n<reaped_child"
+            ) && line.contains("half a patch"),
+            "the failure path still promotes the last product, on the verdict: {line}"
         );
-        assert_eq!(
-            texts(&rig.said),
-            ["plan: failed \"write the patch\": the provider hung up"]
-        );
+        assert!(texts(&rig.reports).is_empty(), "and no second reap line");
         Ok(())
     }
 
@@ -812,11 +811,14 @@ pub(super) mod tests {
             stored, b"the seam is cut and holds",
             "the product is the child's answer"
         );
-        assert_eq!(
-            texts(&rig.said),
-            [format!(
-                "plan: accepted \"cut the seam\" (agent://{id}/cut-the-seam)"
-            )]
+        let said = texts(&rig.said);
+        let [line] = said.as_slice() else {
+            return Err(format!("one line for the verdict and its reap: {said:?}").into());
+        };
+        let verdict = format!("plan: accepted \"cut the seam\" (agent://{id}/cut-the-seam)\n");
+        assert!(
+            line.starts_with(&verdict) && line.contains("<reaped_child"),
+            "the verdict carries its reap: {line}"
         );
         let journal = rig.engine.store().journal(&id).read()?.records;
         let actors: Vec<(&str, &str)> = journal
@@ -826,48 +828,14 @@ pub(super) mod tests {
             .collect();
         assert_eq!(actors, [("submit", "engine"), ("done", "engine")]);
         assert!(
-            texts(&rig.reports)
-                .iter()
-                .any(|text| text.contains("seam is cut")),
-            "the done reaps the child and promotes its transcript"
+            line.contains("seam is cut") && texts(&rig.reports).is_empty(),
+            "the done reaps the child and promotes its transcript once, on the verdict"
         );
         let notices = rig.notices.lock().map_err(|_| "poisoned")?.clone();
         assert!(
             notices.iter().all(|notice| !notice.contains("[subagent")),
             "a child the engine took sends no second notice: {notices:?}"
         );
-        Ok(())
-    }
-
-    /// Dies with the hook consulted on the asking arm (D165): a child waiting on its parent
-    /// would be submitted and accepted mid-question.
-    #[tokio::test]
-    async fn an_asking_child_is_not_submitted() -> TestResult {
-        let mut ask = Map::new();
-        ask.insert(
-            "question".to_owned(),
-            Value::String("which region?".to_owned()),
-        );
-        let rig = hooked(vec![yi_ai::faux::faux_assistant_message(
-            vec![yi_ai::faux::faux_tool_call("ask-1", "ask_user", ask)],
-            StopReason::ToolUse,
-        )])?;
-        rig.engine.apply(owner(Op::Init {
-            goal: GoalText::new("ship the widget")?,
-            todos: vec![delegated("cut the seam")?],
-        }))?;
-        let asked = wait_notice(&rig, "asks: which region?").await?;
-        assert!(asked.contains("rlm.send"), "{asked}");
-        let plan = rig.engine.apply(owner(Op::View { full: false }))?.plan;
-        let todo = plan
-            .todo(&TodoLabel::new("cut the seam")?)
-            .ok_or("todo missing")?;
-        assert!(
-            matches!(todo.state, TodoState::Running { .. }),
-            "{:?}",
-            todo.state
-        );
-        assert!(texts(&rig.said).is_empty(), "nothing was submitted");
         Ok(())
     }
 
@@ -1018,8 +986,9 @@ pub(super) mod tests {
         Err("the host never went idle".into())
     }
 
-    /// Dies with the cursor dropped: a wait with none read epoch 0 and returned at once, so a
-    /// parent looping on `rlm.wait(300)` spun and the repeat breaker ended its session.
+    /// Dies with the cursor dropped: a wait with none read epoch 0 and reported the finished
+    /// child again, so a parent looping on `rlm.wait(300)` saw news that was not new. With
+    /// nothing live, the second wait at that same state refuses and names it (M4).
     #[tokio::test]
     async fn a_wait_with_no_cursor_blocks_until_something_moves() -> TestResult {
         use yi_kernel::client::HostHandlers;
@@ -1042,14 +1011,13 @@ pub(super) mod tests {
             started.elapsed().as_millis() < 900,
             "the first wait sees the family now"
         );
-        let started = std::time::Instant::now();
-        registry
+        let again = registry
             .dispatch("rlm.wait", payload)
             .ok_or("rlm.wait")?
-            .await?;
-        assert!(
-            started.elapsed().as_millis() >= 900,
-            "nothing moved, so it waited"
+            .await;
+        assert_eq!(
+            again.err().as_deref(),
+            Some("the family is settled: nothing is running; stop waiting")
         );
         Ok(())
     }
@@ -1119,7 +1087,7 @@ pub(super) mod tests {
             notice,
             events,
             parent_messages: Arc::new(Vec::new),
-            report: Arc::new(|_message| {}),
+            report: Arc::new(|_message, _| {}),
             attribute: Arc::new(|_usage| {}),
             store: Arc::new(|| None),
         }));

@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -93,12 +93,13 @@ pub struct ProbeLadder {
 }
 
 impl ProbeLadder {
-    pub fn new(engine: Arc<PlanEngine>, plans_dir: PathBuf, deliver: DeliverFn) -> Self {
+    pub fn new(engine: Arc<PlanEngine>, (plans, cwd): (&Path, &Path), deliver: DeliverFn) -> Self {
+        let cwd = cwd.to_path_buf();
         Self {
             engine,
-            plans_dir,
+            plans_dir: plans.to_path_buf(),
             deliver,
-            run: Arc::new(|command| crate::goal::run_check(command, PROBE_TIMEOUT_MS)),
+            run: Arc::new(move |command| crate::goal::run_check(command, &cwd, PROBE_TIMEOUT_MS)),
             clock: Arc::new(Instant::now),
             pending: Mutex::new(HashMap::new()),
             due_at: Mutex::new(BTreeSet::new()),
@@ -249,7 +250,7 @@ impl ProbeLadder {
         let notices = latch.notices(&views);
         drop(latch);
         for text in &notices {
-            notice(text);
+            notice(text, None);
         }
         notices
     }

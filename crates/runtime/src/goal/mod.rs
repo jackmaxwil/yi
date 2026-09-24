@@ -43,20 +43,9 @@ pub(crate) fn output_tail(capture: &yi_tools::CommandCapture) -> String {
 }
 
 /// Exit 0 is the only pass; the Err carries the model-facing evidence.
-pub(crate) fn run_check(check: &str, timeout_ms: u64) -> Result<(), String> {
-    run_check_at(check, None, timeout_ms)
-}
-
-pub(crate) fn run_check_at(
-    check: &str,
-    cwd: Option<&std::path::Path>,
-    timeout_ms: u64,
-) -> Result<(), String> {
+pub(crate) fn run_check(check: &str, cwd: &std::path::Path, timeout_ms: u64) -> Result<(), String> {
     let mut command = yi_tools::command("sh");
-    command.arg("-c").arg(check);
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
-    }
+    command.arg("-c").arg(check).current_dir(cwd);
     let deadline = Instant::now()
         .checked_add(std::time::Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
@@ -255,6 +244,7 @@ fn usage_delta(usage: &yi_types::message::Usage) -> u64 {
 pub struct GoalService {
     store: StoreHandle,
     plans_dir: std::path::PathBuf,
+    cwd: std::path::PathBuf,
     deliver: DeliverFn,
     /// Set by an abort: auto-continuation stops until the next real user input.
     deferred: Mutex<bool>,
@@ -264,10 +254,11 @@ pub struct GoalService {
 }
 
 impl GoalService {
-    pub fn new(store: StoreHandle, deliver: DeliverFn) -> Self {
+    pub fn new(store: StoreHandle, deliver: DeliverFn, cwd: std::path::PathBuf) -> Self {
         Self {
             store,
             plans_dir: crate::plan::default_plans_dir(),
+            cwd,
             deliver,
             deferred: Mutex::new(false),
             pending: Mutex::new(false),
@@ -367,7 +358,7 @@ impl GoalService {
             && let Some(check) = goal.check.clone()
         {
             let timeout = goal.check_timeout_ms.unwrap_or(DEFAULT_CHECK_TIMEOUT_MS);
-            if let Err(evidence) = run_check(&check, timeout) {
+            if let Err(evidence) = run_check(&check, &self.cwd, timeout) {
                 goal.check_failure = Some(evidence.clone());
                 goal.updated = yi_session::now_ms();
                 self.write_goal(goal)?;
@@ -410,7 +401,9 @@ impl GoalService {
                 Some((id, check)) => {
                     let evidence = adjudged
                         .entry(id.clone())
-                        .or_insert_with(|| run_check(&check, DISCOVERY_CHECK_TIMEOUT_MS).err())
+                        .or_insert_with(|| {
+                            run_check(&check, &self.cwd, DISCOVERY_CHECK_TIMEOUT_MS).err()
+                        })
                         .clone();
                     match evidence {
                         None => {
@@ -651,15 +644,11 @@ fn as_object(value: Value) -> Result<Map<String, Value>, String> {
 pub fn attach_goal(
     session: &crate::AgentSession,
     plans_dir: std::path::PathBuf,
+    cwd: std::path::PathBuf,
 ) -> Arc<GoalService> {
-    let steer = session.heartbeat_hook();
-    let wake = session.wake_idle_hook();
-    let deliver: DeliverFn = Arc::new(move |message, mode| match mode {
-        DeliveryMode::Steer => steer(message, DeliveryMode::Steer),
-        DeliveryMode::FollowUp => wake(message),
-    });
+    let deliver: DeliverFn = session.heartbeat_hook();
     let service =
-        Arc::new(GoalService::new(session.store_handle(), deliver).with_plans_dir(plans_dir));
+        Arc::new(GoalService::new(session.store_handle(), deliver, cwd).with_plans_dir(plans_dir));
     let mut events = session.subscribe();
     let observer = Arc::clone(&service);
     tokio::spawn(async move {

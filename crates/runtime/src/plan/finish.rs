@@ -13,7 +13,7 @@ use super::acceptance::{Phase, is_worktree, phase_of};
 use super::ops::{Actor, ENGINE_AGENT, Op, OpRequest, Outcome, PlanEngine, PlanOpError, agent_url};
 use super::state::{KIND_LEFT, SUBMITTED_KEY, reduce, root_of};
 use crate::goal::DeliverFn;
-use crate::subagent::{FinishFn, SubagentHost, last_assistant_text};
+use crate::subagent::{FinishFn, SubagentHost};
 
 const CAUSE_CHARS: usize = 500;
 
@@ -184,6 +184,44 @@ impl PlanEngine {
         .map(drop)
     }
 
+    /// Incident: in all eight G5 trials the owner re-ran the check the engine had just passed.
+    fn accepted_evidence(&self, held: &Held) -> String {
+        let reading = root_of(&held.plan).map(|root| self.store.journal(&root).read());
+        let records = match reading {
+            Ok(Ok(reading)) => reading.records,
+            _ => Vec::new(),
+        };
+        let verdict = records
+            .iter()
+            .rev()
+            .filter(|record| record.record.plan == held.plan)
+            .filter(|record| record.record.todo.as_ref() == Some(&held.label))
+            .find_map(|record| serde_json::from_value::<Verdict>(record.verdict.clone()?).ok())
+            .filter(|verdict| verdict.outcome == ContractOutcome::Pass);
+        let Some(verdict) = verdict else {
+            return String::new();
+        };
+        let (passed, short): (Vec<_>, Vec<_>) = verdict
+            .items
+            .iter()
+            .partition(|line| line.verdict == ItemVerdict::Pass);
+        let lines: String = passed
+            .iter()
+            .map(|line| match &line.evidence {
+                Some(said) => format!("\n- {} pass: {said}", line.id),
+                None => format!("\n- {} pass", line.id),
+            })
+            .collect();
+        let short: Vec<String> = short.iter().map(|line| line.id.to_string()).collect();
+        let short = match short.as_slice() {
+            [] => String::new(),
+            ids => format!("\nNot passed, and not covered by this: {}.", ids.join(", ")),
+        };
+        format!(
+            ". The engine ran these checks and they passed, so do not run them again:{lines}{short}"
+        )
+    }
+
     fn fail_finish(&self, held: &Held, cause: String) -> Result<(), PlanOpError> {
         self.step(
             &held.plan,
@@ -308,7 +346,8 @@ impl PlanEngine {
                     todo: held.label.clone(),
                 };
                 let url = agent_url(&addr).map_or_else(|_| agent.to_owned(), |url| url.to_string());
-                return Some(format!("plan: accepted {label:?} ({url})"));
+                let evidence = self.accepted_evidence(&held);
+                return Some(format!("plan: accepted {label:?} ({url}){evidence}"));
             }
             Err(refusal) => refusal,
         };
@@ -354,8 +393,11 @@ impl SubagentHost {
             children.get(&key)?.check.clone()?
         };
         let timeout = crate::goal::DEFAULT_CHECK_TIMEOUT_MS;
+        let cwd = self
+            .cwd_of(name)
+            .unwrap_or_else(|| self.options.cwd.clone());
         let red = (!verified)
-            .then(|| crate::goal::run_check_at(&check, Some(&self.options.cwd), timeout).err())
+            .then(|| crate::goal::run_check(&check, &cwd, timeout).err())
             .flatten();
         if let Some(evidence) = red {
             return Some(format!("its check is red: {evidence}"));
@@ -371,7 +413,7 @@ impl SubagentHost {
         if let Ok(mut children) = self.children.lock()
             && let Ok(key) = Self::key_of(&children, name)
         {
-            children.touch(&key);
+            children.touch(&key, crate::family::Cause::Settled);
         }
     }
 
@@ -383,20 +425,39 @@ impl SubagentHost {
         live.unwrap_or(false) || self.settling.load(Ordering::SeqCst) > 0
     }
 
-    /// A finish settling, or a plan child still moving; a stuck or owner-spawned child holds nothing.
+    /// A finish settling, or any child still moving or asking.
     pub fn holds_owner(&self) -> bool {
-        use crate::family::MemberState;
-        let moving = |view: &crate::family::MemberView| {
-            view.name.contains('/')
-                && matches!(view.state, MemberState::Running | MemberState::Queued)
-        };
-        self.settling.load(Ordering::SeqCst) > 0 || self.states().iter().any(moving)
+        self.settling.load(Ordering::SeqCst) > 0
+            || self
+                .states()
+                .iter()
+                .any(|view| holds(view, self.in_tool(&view.name)))
+    }
+
+    fn in_tool(&self, name: &str) -> bool {
+        self.children.lock().is_ok_and(|children| {
+            children.values().any(|record| {
+                record.session_name == name
+                    && record.activity == yi_types::subagent::ChildActivity::Executing
+                    && record.session.status() == crate::session::Status::Running
+            })
+        })
+    }
+
+    /// Held, a reap of `name` leaves its block here to ride the verdict; released, it comes back.
+    fn hold_harvest(&self, name: &str, hold: bool) -> Option<String> {
+        let mut held = self.harvests.lock().ok()?;
+        if hold {
+            held.insert(name.to_owned(), None);
+            return None;
+        }
+        held.remove(name).flatten()
     }
 
     fn answer_of(&self, name: &str) -> Option<String> {
         let children = self.children.lock().ok()?;
         let key = Self::key_of(&children, name).ok()?;
-        last_assistant_text(&children.get(&key)?.session.messages())
+        crate::subagent::answer_text(&children.get(&key)?.session.messages())
     }
 }
 
@@ -456,13 +517,32 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
                 None => (exit, error),
             };
             let product = host.answer_of(&agent);
+            host.hold_harvest(&agent, true);
             let line = engine.finish_child(&agent, exit, error, product);
-            super::dispatch::say(&deliver, line.unwrap_or(unheld));
+            let said = line.unwrap_or(unheld);
+            match host.hold_harvest(&agent, false) {
+                Some(block) => super::dispatch::say(&deliver, format!("{said}\n{block}")),
+                None => super::dispatch::say(&deliver, said),
+            }
             host.settled(&agent);
             drop(settling);
         }));
         true
     }));
+}
+
+/// Invariant: a stuck child holds nothing unless only the idle clock stalled it mid tool call.
+fn holds(view: &crate::family::MemberView, in_tool: bool) -> bool {
+    use crate::family::MemberState;
+    let idle = view
+        .note
+        .as_deref()
+        .is_some_and(|note| note.starts_with("idle "));
+    match view.state {
+        MemberState::Running | MemberState::Queued | MemberState::NeedsYou => true,
+        MemberState::Stuck => idle && in_tool,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -521,6 +601,43 @@ mod tests {
             todo.state,
             texts(&rig.said)
         );
+        Ok(())
+    }
+
+    /// Dies with a bare `plan: accepted` (G5: 8 of 8 owners re-ran it), or an unnamed cut, or
+    /// a failed item the threshold let through listed among the checks not to run again.
+    #[tokio::test]
+    async fn an_accepted_notice_quotes_each_check_the_engine_passed() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut")])?;
+        let long = "head -c 1000 /dev/zero | tr '\\0' x";
+        let args = serde_json::json!({"op": "init", "goal": "ship the widget", "todos": [{
+            "label": "cut the seam",
+            "delegation": {"spec": {"role": "worker"}, "accept": {"command": "true"}},
+            "contract": {"class": "inline", "threshold": 600, "items": [
+                {"id": "tests", "critical": true, "weight": 1, "decider": {"cmd": "echo 12 passed"}},
+                {"id": "long", "critical": true, "weight": 1, "decider": {"cmd": long}},
+                {"id": "lint", "critical": false, "weight": 1, "decider": {"cmd": "echo lint broke; exit 1"}}
+            ]},
+        }]});
+        let args = args.as_object().cloned().ok_or("args")?;
+        let (request, blobs) =
+            super::super::tool::declared(&super::super::ops::Actor::Owner, &args)?;
+        let out = rig.engine.apply_with(request, &blobs)?;
+        let todo = settled(&rig, &out.plan.id, "cut the seam").await?;
+        assert!(
+            matches!(todo.state, TodoState::Done { .. }),
+            "{:?}",
+            todo.state
+        );
+        let said = texts(&rig.said).join("\n");
+        assert!(said.contains("do not run them again"), "{said}");
+        assert!(
+            said.contains("- tests pass: `echo 12 passed` exit 0\n12 passed"),
+            "{said}"
+        );
+        assert!(said.contains("[… last 300 of 1000 chars"), "{said}");
+        assert!(!said.contains("lint broke"), "{said}");
+        assert!(said.contains("not covered by this: lint."), "{said}");
         Ok(())
     }
 
@@ -783,6 +900,222 @@ mod tests {
             "{said:?}"
         );
         assert!(epoch().map_err(|_| "poisoned")? > ended, "{said:?}");
+        Ok(())
+    }
+
+    async fn ended(host: &std::sync::Arc<crate::SubagentHost>) -> bool {
+        for _ in 0..400 {
+            if host
+                .states()
+                .iter()
+                .any(|view| view.state.as_str() == "finished")
+            {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    /// Dies with `refold` reading only a live session: a lagged woken run never concluded.
+    #[tokio::test]
+    async fn a_lagged_watch_concludes_a_woken_run_it_never_saw_start() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut"), reply("cut again")])?;
+        let named = serde_json::Map::from_iter([("name".to_owned(), "kid".into())]);
+        rig.host.spawn("cut".to_owned(), named)?;
+        assert!(ended(&rig.host).await, "child never completed");
+        let key = {
+            let mut children = rig.host.children.lock().map_err(|_| "poisoned")?;
+            let (key, record) = children.iter_mut().next().ok_or("no record")?;
+            record
+                .session
+                .deliver(crate::session::user_message("again"), true);
+            record.step(crate::subagent::Step::Resumed);
+            key.clone()
+        };
+        if rig.host.refold(&key) {
+            rig.host.resume(&key);
+        }
+        assert!(ended(&rig.host).await, "the woken run was never concluded");
+        Ok(())
+    }
+
+    /// Dies with a late `AgentStart` claiming a concluded run again: a second ending, one run.
+    #[tokio::test]
+    async fn a_late_start_of_a_concluded_run_concludes_nothing() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut")])?;
+        let named = serde_json::Map::from_iter([("name".to_owned(), "kid".into())]);
+        rig.host.spawn("cut".to_owned(), named)?;
+        assert!(ended(&rig.host).await, "child never completed");
+        let endings = || rig.notices.lock().map(|sink| sink.len()).unwrap_or(0);
+        let before = endings();
+        let key = rig
+            .host
+            .children_view()
+            .pop()
+            .ok_or("no child")?
+            .update
+            .id
+            .0;
+        rig.host.resume(&key);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(endings(), before, "a second ending for one run");
+        assert!(ended(&rig.host).await, "the concluded run reads live again");
+        Ok(())
+    }
+
+    /// Dies with every wait counted: an empty family's wait exempted a repeat forever, and a
+    /// settled family's at-once reply exempted a model looping on `rlm.wait` while it settled.
+    #[tokio::test]
+    async fn only_a_wait_on_a_live_family_counts_for_the_breaker() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut")])?;
+        let counted = || rig.host.waits.load(std::sync::atomic::Ordering::SeqCst);
+        drop(rig.host.wait(1_000, None).await);
+        assert_eq!(counted(), 0, "nothing lives to wait on");
+        rig.host.spawn("cut".to_owned(), serde_json::Map::new())?;
+        drop(rig.host.wait(1_000, None).await);
+        assert_eq!(counted(), 1, "a live child is waited on");
+        let _settling = super::Settling::hold(&rig.host);
+        assert!(ended(&rig.host).await, "child never completed");
+        let settled = rig.host.wait(1_000, None).await?;
+        assert_eq!(settled["state"], "settled", "{settled:?}");
+        assert_eq!(counted(), 1, "an at-once settled reply is no wait");
+        Ok(())
+    }
+
+    #[test]
+    fn a_child_idle_inside_a_running_tool_still_holds_the_owner() {
+        let view = |note: &str| crate::family::MemberView {
+            name: "builder".to_owned(),
+            state: crate::family::MemberState::Stuck,
+            note: Some(note.to_owned()),
+            tools: 1,
+            tokens: 0,
+            idle_s: 400,
+            worktree: None,
+        };
+        assert!(super::holds(&view("idle 400s"), true));
+        assert!(!super::holds(&view("idle 400s"), false));
+        assert!(!super::holds(&view("repeat_break"), true));
+    }
+
+    /// Dies with the ask ending the child's run, or read as outside its tool call.
+    #[tokio::test]
+    async fn an_asking_child_is_not_submitted() -> TestResult {
+        let ask = serde_json::Map::from_iter([("question".to_owned(), "which region?".into())]);
+        let rig = hooked(vec![yi_ai::faux::faux_assistant_message(
+            vec![yi_ai::faux::faux_tool_call("ask-1", "ask_user", ask)],
+            yi_types::message::StopReason::ToolUse,
+        )])?;
+        rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![delegated("cut the seam")?],
+        }))?;
+        let mut asked = None;
+        for _ in 0..400 {
+            asked = texts(&rig.reports)
+                .into_iter()
+                .find(|text| text.contains("which region?"));
+            if asked.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let asked = asked.ok_or("the parent never got the question")?;
+        assert!(asked.contains("reply_to="), "{asked}");
+        let plan = rig.engine.apply(owner(Op::View { full: false }))?.plan;
+        let todo = plan
+            .todo(&yi_types::plan::doc::TodoLabel::new("cut the seam")?)
+            .ok_or("todo missing")?;
+        assert!(
+            matches!(todo.state, TodoState::Running { .. }),
+            "{:?}",
+            todo.state
+        );
+        assert!(texts(&rig.said).is_empty(), "nothing was submitted");
+        let name = rig
+            .host
+            .children_view()
+            .pop()
+            .ok_or("no child")?
+            .update
+            .name;
+        assert!(rig.host.in_tool(&name), "blocked inside ask_user");
+        rig.host.interrupt(&name)?;
+        for _ in 0..400 {
+            if !rig.host.in_tool(&name) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(!rig.host.in_tool(&name), "a stopped run is in no tool");
+        Ok(())
+    }
+
+    /// Dies with the chase turn harvested: a plan child answered its brief, a request to it
+    /// was still open, and the steered turn's "Still nothing to add." became the product.
+    #[tokio::test]
+    async fn a_chased_plan_child_keeps_its_briefs_answer() -> TestResult {
+        let ask = serde_json::Map::from_iter([("question".to_owned(), "which region?".into())]);
+        let rig = hooked(vec![
+            yi_ai::faux::faux_assistant_message(
+                vec![yi_ai::faux::faux_tool_call("ask-1", "ask_user", ask)],
+                yi_types::message::StopReason::ToolUse,
+            ),
+            reply("the seam is cut and holds"),
+            reply("Still nothing to add."),
+            reply("Nothing more."),
+        ])?;
+        let out = rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![delegated("cut the seam")?],
+        }))?;
+        let (host, mut child, mut question) = (std::sync::Arc::clone(&rig.host), None, None);
+        for _ in 0..400 {
+            child = host.children_view().pop().map(|view| view.update.name);
+            question = host
+                .open_requests()
+                .into_iter()
+                .find(|open| open.2 == "parent");
+            if question.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let (child, (id, ..)) = (child.ok_or("no child")?, question.ok_or("no question")?);
+        let asking = (std::sync::Arc::clone(&host), child.clone());
+        let request = tokio::spawn(async move {
+            asking
+                .0
+                .request("parent", &asking.1, "total?", 20_000)
+                .await
+        });
+        while !host.open_requests().iter().any(|open| open.2 == child) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let answer = serde_json::json!({"target": child, "message": "eu", "reply_to": id});
+        host.send("parent", answer.as_object().ok_or("answer")?)?;
+        let todo = settled(&rig, &out.plan.id, "cut the seam").await?;
+        let TodoState::Done {
+            output: Some(output),
+            ..
+        } = &todo.state
+        else {
+            return Err(format!("expected Done with a product, got {:?}", todo.state).into());
+        };
+        let digest = output.to_string();
+        let digest = digest.rsplit('/').next().ok_or("no digest")?;
+        let digest = yi_types::plan::canonical::Digest::parse(digest)?;
+        let stored = rig.engine.store().artifacts(&out.plan.id).get(&digest)?;
+        assert_eq!(
+            stored, b"the seam is cut and holds",
+            "the brief's answer is the product"
+        );
+        let reply = request.await??;
+        assert_eq!(
+            reply["envelope"]["body"], "Still nothing to add.",
+            "{reply:?}"
+        );
         Ok(())
     }
 }

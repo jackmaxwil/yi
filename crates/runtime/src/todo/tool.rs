@@ -346,7 +346,7 @@ impl TodoTool {
     }
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, TodoToolError> {
-        let op = parse_op(args)?;
+        let op = self.store.aim(parse_op(args)?)?;
         let inferred = if string(args, "op").as_deref() == Some(op.name()) {
             String::new()
         } else {

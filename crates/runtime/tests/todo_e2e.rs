@@ -1044,3 +1044,37 @@ fn an_op_passed_as_a_key_lands_as_that_op() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with a done that names no item closing every open item, or refused for evidence
+/// in the name of t1 that was already done, instead of landing on the one running item.
+#[test]
+fn a_done_naming_no_item_lands_on_the_running_one() -> TestResult {
+    let (_root, session) = session("done-running")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(store.clone());
+    store.apply(
+        Op::Set {
+            list: "- [x] a\n- [>] b\n- [ ] c\n".to_owned(),
+        },
+        None,
+    )?;
+    let (is_error, text) = call(&tool, json!({"op": "done"}));
+    assert!(is_error && text.contains("proves \"b\""), "{text}");
+    let (is_error, text) = call(&tool, json!({"op": "done", "evidence": "`make` ok"}));
+    assert!(!is_error, "{text}");
+    let list = store.list();
+    let done = |name: &str| {
+        list.items()
+            .any(|item| item.label.as_str() == name && item.state == TodoStateName::Done)
+    };
+    assert!(done("b") && !done("c"), "{:?}", states(&list));
+    let mut two = list.clone();
+    two.for_each_mut(|item| item.state = TodoStateName::Running);
+    store.replace_with(|_| Some(two), "engine");
+    let (is_error, text) = call(&tool, json!({"op": "done", "evidence": "`make` ok"}));
+    assert!(
+        is_error && text.contains("t1") && text.contains("t3"),
+        "{text}"
+    );
+    Ok(())
+}

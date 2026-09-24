@@ -118,4 +118,23 @@ pub struct ChildUpdate {
     /// Absent while the child runs, and from a host older than the typed exit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<ChildExit>,
+    /// Absent unless a live child waits on its parent or has stalled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flag: Option<ChildFlag>,
+}
+
+/// The family state a live child's status alone does not say. `note` is `rlm.status`'s own:
+/// `asks <request id>: <question>` for a question, the stall's reason for `stuck`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ChildFlag {
+    NeedsYou {
+        note: String,
+    },
+    Stuck {
+        note: String,
+    },
+    /// A state a newer host named, decoded rather than failing the update that carries it.
+    #[serde(other)]
+    Other,
 }

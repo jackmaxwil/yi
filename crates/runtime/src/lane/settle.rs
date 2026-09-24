@@ -311,12 +311,15 @@ pub fn drop_integration_pin(pool: &Pool, integrated: &Sha) -> Result<(), LaneErr
 }
 
 /// Frees the slot and deletes the branch of a staging lane whose merge no record names.
-pub fn drop_staging(pool: &Pool, session: &str) -> Result<(), LaneError> {
+/// True when a slot or a branch of `session` was there to drop.
+pub fn drop_staging(pool: &Pool, session: &str) -> Result<bool, LaneError> {
+    let mut dropped = false;
     for view in pool.list()? {
         if let SlotView::Orphan { slot, holder, .. } = view
             && holder.session == session
         {
             pool.reap_left_by(slot, session)?;
+            dropped = true;
         }
     }
     let branch = BranchName::for_session(session)?;
@@ -329,8 +332,9 @@ pub fn drop_staging(pool: &Pool, session: &str) -> Result<(), LaneError> {
     .is_ok()
     {
         git_by(pool.repo(), &["branch", "-q", "-D", branch.as_str()], None)?;
+        dropped = true;
     }
-    Ok(())
+    Ok(dropped)
 }
 
 impl Drop for Staging {
@@ -727,7 +731,7 @@ impl SubagentHost {
         record.step(crate::subagent::Step::Held(cause.to_owned()));
         if let Ok(mut children) = self.children.lock() {
             children.insert(key.to_owned(), record);
-            children.touch(key);
+            children.touch(key, crate::family::Cause::Held);
         }
     }
 

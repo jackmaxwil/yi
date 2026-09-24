@@ -837,7 +837,6 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
         })
     };
 
-    let waiting: Arc<dyn Fn() -> bool + Send + Sync> = Arc::clone(&children_running);
     let intercept_stop: Arc<InterceptStopFn> = {
         let cycle = Arc::clone(&cycle);
         let todos = Arc::clone(&todos);
@@ -847,6 +846,9 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
         Arc::new(move |snapshot: &yi_loop::TurnSnapshot| {
             if is_terminal(snapshot.message) {
                 return None;
+            }
+            if called(snapshot.tool_results, "ask_user") {
+                return inner.as_ref().and_then(|inner| inner(snapshot));
             }
             let Ok(mut cycle) = cycle.lock() else {
                 return None;
@@ -867,7 +869,7 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             }
             let list = todos.list();
             let posture = stop_posture(&list, children_running());
-            if posture != StopPosture::Continue || called(snapshot.tool_results, "ask_user") {
+            if posture != StopPosture::Continue {
                 drop(cycle);
                 return inner.as_ref().and_then(|inner| inner(snapshot));
             }
@@ -889,7 +891,6 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
         on_prompt,
         on_turn,
         intercept_stop,
-        waiting: Some(waiting),
     }
 }
 

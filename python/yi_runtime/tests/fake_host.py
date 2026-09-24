@@ -42,6 +42,7 @@ class FakeHost:
         self.replies: dict[str, tuple[str, dict]] = {}
         self.blobs: dict[str, str] = {}
         self.children: dict[str, str] = {}
+        self.notes: dict[str, str] = {}
         self.results: dict[str, dict] = {}
         self.verdicts: dict[str, str] = {}
         self.notices: list[str] = []
@@ -92,7 +93,7 @@ class FakeHost:
             self.changes += [item for item in self.children.items() if latest.get(item[0]) != item[1]]
             changed = sorted({name for name, _ in self.changes[payload.get("cursor") or 0 :]})
             self.waits.append((payload.get("cursor"), changed))
-            return {"cursor": len(self.changes), "changed": changed, "states": dict(self.children), "notes": {}}
+            return {"cursor": len(self.changes), "changed": changed, "states": dict(self.children), "notes": dict(self.notes)}
         if kind == "rlm.result":
             answer = self.results[payload["target"]]
             if isinstance(answer, Exception):
@@ -119,7 +120,7 @@ class FakeHost:
             if len(self.changes) > cursor or loop.time() >= ends:
                 changed = sorted({name for name, _ in self.changes[cursor:]})
                 self.waits.append((payload.get("cursor"), changed))
-                return {"cursor": len(self.changes), "changed": changed, "states": dict(self.children), "notes": {}}
+                return {"cursor": len(self.changes), "changed": changed, "states": dict(self.children), "notes": dict(self.notes)}
             await asyncio.sleep(0.01)
 
     def plan_op(self, payload: dict) -> dict:

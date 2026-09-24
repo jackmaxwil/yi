@@ -40,7 +40,7 @@ pub fn memory_store(id: &str) -> yi_session::SharedSession {
     )))
 }
 
-fn faux_model() -> Model {
+pub fn faux_model() -> Model {
     let zero = || serde_json::Number::from(0u64);
     Model {
         id: "faux-1".to_owned(),
@@ -124,14 +124,14 @@ pub fn family(
             }
             Ok(child)
         }),
-        notice: Arc::new(move |text: &str| {
+        notice: Arc::new(move |text: &str, _| {
             if let Ok(mut told) = told.lock() {
                 told.push(text.to_owned());
             }
         }),
         events: events.clone(),
         parent_messages: Arc::new(Vec::new),
-        report: Arc::new(|_message| {}),
+        report: Arc::new(|_message, _| {}),
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(move || {
             (!plug.load(std::sync::atomic::Ordering::SeqCst)).then(|| journal.clone())

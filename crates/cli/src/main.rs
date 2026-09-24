@@ -147,7 +147,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         && let Some(flag) = [
             ("--keys", keys.is_some()),
             ("--frames", frames.is_some()),
-            ("--faux", faux.is_some()),
             ("--record", record.is_some()),
             ("--snap", snap.is_some()),
         ]
@@ -156,6 +155,12 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     {
         return Err(lexopt::Error::Custom(
             format!("{flag} needs --headless").into(),
+        ));
+    }
+    if faux.is_some() && !headless && !solo && matches!(command.as_str(), "" | "console") {
+        return Err(lexopt::Error::Custom(
+            "--faux runs in-process only: add --solo, or use `yi tui`, `yi ask` or --headless"
+                .into(),
         ));
     }
     Ok(Args {

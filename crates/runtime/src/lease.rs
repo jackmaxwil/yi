@@ -235,7 +235,7 @@ impl SubagentHost {
         {
             record.lease = lease;
             record.standing.stop();
-            children.touch(&key);
+            children.touch(&key, crate::family::Cause::Revoked);
         }
         let cancel = Draft::of(Kind::Cancel, reason);
         let mut reply = self.route_mail(PARENT_NAME, &name, &cancel)?;
@@ -313,7 +313,7 @@ impl SubagentHost {
             .lock()
             .is_ok_and(|mut grant| !std::mem::replace(&mut grant.resumed, true));
         if first && let Err(reason) = self.resume_revocations() {
-            (self.options.notice)(&format!("[lease resume refused: {reason}]"));
+            (self.options.notice)(&format!("[lease resume refused: {reason}]"), None);
         }
         let now = self.lease_now();
         let due: Vec<String> = self
@@ -348,7 +348,7 @@ impl SubagentHost {
             && let Some(record) = children.get_mut(key)
         {
             record.step(Step::Pending(format!("repossession pending: {reason}")));
-            children.touch(key);
+            children.touch(key, crate::family::Cause::Revoked);
         }
     }
 
@@ -461,10 +461,13 @@ impl SubagentHost {
                             .to_owned(),
                 },
             }))?;
-            (self.options.notice)(&format!(
-                "[child {} repossessed: its revocation was completed after a restart; any worktree it held is an orphan lane]",
-                lease.holder
-            ));
+            (self.options.notice)(
+                &format!(
+                    "[child {} repossessed: its revocation was completed after a restart; any worktree it held is an orphan lane]",
+                    lease.holder
+                ),
+                None,
+            );
         }
         Ok(open.into_iter().map(|lease| lease.holder).collect())
     }

@@ -633,6 +633,9 @@ pub struct ItemLine {
     pub verdict: ItemVerdict,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jurors: Vec<JurorLine>,
+    /// A passing command's line and the tail of what it printed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
 }
 
 #[must_use]
