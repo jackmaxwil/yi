@@ -1,4 +1,16 @@
 //! D165: a member's state is read from its own records, and the environment line groups them.
+//!
+//! F0d, the stuck notice. Plan section 7.5: the probe loop's second job reads
+//! `state_from_records` for every running child and sends one `failure`-kind notice
+//! `[child <name> stuck: <note>]` through the same wake, latched until that child's records
+//! move. Deterministic, from records the loop already writes, with no model in the decision.
+//! The row below uses this file's own helpers, `store`, `custom` and `recent_entries`, with
+//! `STUCK_IDLE_MS` and the injected `now` that `state_from_records` already takes, and adds
+//! the `StuckLatch` keyed by child name.
+//!
+//! | test | tier | helpers | what it pins | the control it dies with |
+//! |---|---|---|---|---|
+//! | `a_stuck_child_is_reported_once_until_its_records_move` | T0, clock injected | `store`, `custom`, `recent_entries`, `state_from_records`, `STUCK_IDLE_MS`, `StuckLatch` | A child that goes `Stuck` notices once. Ticking again at a later clock with the same records notices nothing. One new record, and the next tick past `STUCK_IDLE_MS` notices once more. Two children going stuck on the same tick get one notice each, and a child that was already stuck when the latch was built is not announced twice. | The latch being keyed on the child and cleared by its records moving, not by a timer. Key it on the tick and a stuck child reports every 60 seconds forever; clear it on any tick and the same episode is announced again on the next one, which is the notice spam that makes a real one invisible. |
 
 use std::error::Error;
 use std::sync::{Arc, Mutex};
@@ -6,8 +18,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Map, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_runtime::family::{
-    MemberState, MemberView, STUCK_IDLE_MS, children_line, compact_entry, recent_entries,
-    state_from_records,
+    MemberState, MemberView, STUCK_IDLE_MS, StuckLatch, children_line, compact_entry,
+    recent_entries, state_from_records,
 };
 use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::subagent::ChildStatus;
@@ -157,5 +169,100 @@ fn a_compact_entry_is_one_line_with_its_sequence() -> TestResult {
         "{line}"
     );
     assert!(line.contains("pytest -q"), "{line}");
+    Ok(())
+}
+
+fn newest_ms(session: &yi_session::SharedSession) -> u64 {
+    recent_entries(session)
+        .iter()
+        .map(|entry| match entry {
+            yi_types::entry::Entry::Message { timestamp, .. } => *timestamp,
+            _ => 0,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// A running member as its records show it at the injected clock.
+fn member(name: &str, session: &yi_session::SharedSession, now_ms: u64) -> MemberView {
+    let recent = recent_entries(session);
+    let (state, note, idle_s) =
+        state_from_records(ChildStatus::Running, None, &[], &recent, now_ms);
+    MemberView {
+        name: name.to_owned(),
+        state,
+        note,
+        tools: 0,
+        tokens: 0,
+        idle_s,
+        worktree: None,
+    }
+}
+
+#[test]
+fn a_stuck_child_is_reported_once_until_its_records_move() -> TestResult {
+    let a = store("a");
+    let b = store("b");
+    for session in [&a, &b] {
+        yi_session::lock_session(session).append_message(
+            "main",
+            faux_assistant_message(vec![faux_text("working")], StopReason::ToolUse),
+        )?;
+    }
+    let stamped = newest_ms(&a).max(newest_ms(&b));
+    let mut latch = StuckLatch::default();
+    assert!(
+        latch
+            .notices(&[
+                member("a", &a, stamped + 1_000),
+                member("b", &b, stamped + 1_000)
+            ])
+            .is_empty(),
+        "a running child earns no notice"
+    );
+    let idle = stamped + STUCK_IDLE_MS;
+    assert_eq!(
+        latch.notices(&[member("a", &a, idle), member("b", &b, idle)]),
+        vec!["[child a stuck: idle 300s]", "[child b stuck: idle 300s]"],
+        "two children going stuck on one tick get one notice each"
+    );
+    let later = stamped + 2 * STUCK_IDLE_MS;
+    assert!(
+        latch
+            .notices(&[member("a", &a, later), member("b", &b, later)])
+            .is_empty(),
+        "a later clock over the same records is the same episode"
+    );
+
+    yi_session::lock_session(&a).append_message(
+        "main",
+        faux_assistant_message(vec![faux_text("moving again")], StopReason::ToolUse),
+    )?;
+    let moved = newest_ms(&a);
+    // b's clock stays where it was, so b is still in its first episode.
+    assert!(
+        latch
+            .notices(&[member("a", &a, moved + 1_000), member("b", &b, later)])
+            .is_empty(),
+        "a record that moves releases the latch without a notice"
+    );
+    let again = moved + STUCK_IDLE_MS;
+    assert_eq!(
+        latch.notices(&[member("a", &a, again), member("b", &b, again)]),
+        vec!["[child a stuck: idle 300s]"],
+        "a new episode is announced once; the child still in its old one is not"
+    );
+
+    let mut fresh = StuckLatch::default();
+    assert_eq!(
+        fresh.notices(&[member("b", &b, again)]).len(),
+        1,
+        "a child already stuck when the latch is built is announced once"
+    );
+    assert!(fresh.notices(&[member("b", &b, again)]).is_empty());
+    assert!(
+        fresh.notices(&[]).is_empty() && fresh.notices(&[member("b", &b, again)]).len() == 1,
+        "a reaped child leaves the latch"
+    );
     Ok(())
 }

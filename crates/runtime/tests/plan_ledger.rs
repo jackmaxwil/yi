@@ -24,10 +24,11 @@ type TestResult = Result<(), Box<dyn Error>>;
 struct Recorder(Mutex<Vec<PlanOpRecord>>);
 
 impl OpSink for Recorder {
-    fn record(&self, record: PlanOpRecord) {
-        if let Ok(mut seen) = self.0.lock() {
-            seen.push(record);
-        }
+    fn record(&self, record: PlanOpRecord) -> Result<(), String> {
+        self.0
+            .lock()
+            .map(|mut seen| seen.push(record))
+            .map_err(|_| "poisoned".to_owned())
     }
 }
 
@@ -57,6 +58,7 @@ fn spec(label: &str, after: &[&str]) -> Result<TodoSpec, Box<dyn Error>> {
             .map(|edge| TodoLabel::new(*edge))
             .collect::<Result<Vec<_>, _>>()?,
         delegation: None,
+        contract: None,
         children: Vec::new(),
     })
 }
@@ -66,6 +68,8 @@ fn owner(op: Op) -> OpRequest {
         plan: None,
         actor: Actor::Owner,
         op,
+        request_id: None,
+        expected_revision: None,
     }
 }
 
@@ -119,6 +123,11 @@ fn plan_with(edges: &[(&str, &[&str])]) -> Result<Plan, Box<dyn Error>> {
             subplan: None,
             retries: yi_types::plan::doc::RetryCount(0),
             children: Vec::new(),
+            note: None,
+            attempt: yi_types::plan::doc::AttemptId::FIRST,
+            refusals: 0,
+            contract: None,
+            contract_hash: None,
             extra: serde_json::Map::new(),
         });
     }
@@ -244,6 +253,7 @@ fn the_lint_reads_the_file_and_never_refuses_anything() -> TestResult {
     if let Some(todo) = plan.todos.get_mut(0) {
         todo.state = TodoState::Done {
             output: Some("agent://measured/a".parse::<Url>()?),
+            resolution: None,
         };
     }
     if let Some(todo) = plan.todos.get_mut(1) {
@@ -260,7 +270,10 @@ fn the_lint_reads_the_file_and_never_refuses_anything() -> TestResult {
 fn the_directive_names_what_is_load_bearing_and_what_may_compress() -> TestResult {
     let mut plan = plan_with(&[("cut the seam", &[]), ("wire it", &[]), ("ship it", &[])])?;
     if let Some(todo) = plan.todos.get_mut(0) {
-        todo.state = TodoState::Done { output: None };
+        todo.state = TodoState::Done {
+            output: None,
+            resolution: None,
+        };
     }
     if let Some(todo) = plan.todos.get_mut(1) {
         todo.state = TodoState::Running {
@@ -283,7 +296,10 @@ fn the_directive_names_what_is_load_bearing_and_what_may_compress() -> TestResul
 fn a_finished_plan_directs_the_summarizer_at_nothing() -> TestResult {
     let mut plan = plan_with(&[("cut the seam", &[])])?;
     if let Some(todo) = plan.todos.get_mut(0) {
-        todo.state = TodoState::Done { output: None };
+        todo.state = TodoState::Done {
+            output: None,
+            resolution: None,
+        };
     }
     assert_eq!(yi_runtime::plan::compaction_directive(&plan), None);
     Ok(())

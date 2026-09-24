@@ -342,15 +342,15 @@ check; it is the rare case and the one that needs ownership.
    `%%bash` in a cell when the command needs the kernel's variables;
    `h = rlm.bash("cargo build")` to overlap a long command with the cell.
 4. The flow. The todo list is yours; the plan is the hand-off. Lift a todo
-   into the plan only when a child executes it, with its check; the
-   child's report is data; you run the check; you step your todo, blocked
-   `on child` while it runs.
+   into the plan only when a child executes it, with its contract; the
+   child's report is data; `done` runs the contract and a refusal names
+   the item; you step your todo, blocked `on child` while it runs.
 5. Ownership and waiting. Readers own nothing and share your tree. Two
    writers never own one file: `isolation='worktree'` each and
    `merge_worktree` in dependency order, or a `deny_write` list that is
    the complement of the scope. Keep working what you kept;
-   `await rlm.wait(120)` only when the next step needs a result, and read
-   the names it returns because they are gone from the next call. Between
+   `await rlm.wait(120)` only when the next step needs a result; it returns
+   the names that moved and their `states`, so read them there. Between
    waits `rlm.status()` is the fact: `needs_you` gets
    `send(name, text, followup=True)`; `stuck` gets its tail
    (`history://<name>/tail/20`), an `interrupt`, and a corrected respawn.

@@ -182,5 +182,9 @@ when it changes rather than editing them by hand.
 - [D207](adr/d207.md) - "always allow" keeps a grant, not the call
 - [D208](adr/d208.md) - the status row names the tree the session runs in, not the root its client...
 - [D209](adr/d209.md) - yi reads where it runs and says so
+- [D192](adr/d192.md) - plan ops are a host request, lifecycle notices wake, and wait is cursored
+- [D193](adr/d193.md) - the plan store is an append-only journal with a typed checkpoint, recovery...
+- [D194](adr/d194.md) - completion is verified by the kernel on every path against a frozen attempt
+- [D195](adr/d195.md) - a worktree todo is done only when its candidate and its integration both...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

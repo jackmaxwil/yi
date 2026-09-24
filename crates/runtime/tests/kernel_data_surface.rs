@@ -1,7 +1,13 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use yi_runtime::plan::ops::{Actor, Delegate, PlanEngine};
+use yi_runtime::plan::store::PlanStore;
 use yi_runtime::{HostRegistry, KernelService, KernelServiceOptions};
 use yi_tools::{CancelFlag, KernelBridge};
 
@@ -105,8 +111,33 @@ fn the_fetch_and_bash_contract_holds_against_a_stubbed_host() -> TestResult {
     Ok(())
 }
 
+struct NoChildren;
+
+impl Delegate for NoChildren {
+    fn spawn(
+        &self,
+        _at: &yi_types::plan::doc::TodoAddr,
+        _delegation: &yi_types::plan::doc::Delegation,
+    ) -> Result<yi_types::plan::doc::AgentId, String> {
+        Err("no children in this journey".to_owned())
+    }
+
+    fn reap(
+        &self,
+        _agent: &yi_types::plan::doc::AgentId,
+        _supplied: &[yi_types::url::Url],
+    ) -> Result<Option<yi_types::url::Url>, String> {
+        Ok(None)
+    }
+
+    fn follow_up(&self, _dispatched: &[yi_types::plan::doc::TodoLabel], _held: usize) {}
+}
+
 fn service() -> Arc<KernelService> {
-    let mut registry = HostRegistry::default();
+    service_with(HostRegistry::default())
+}
+
+fn service_with(mut registry: HostRegistry) -> Arc<KernelService> {
     registry.register_mcp_stubs();
     registry.register_exec(std::env::temp_dir());
     Arc::new(KernelService::new(KernelServiceOptions {
@@ -173,6 +204,50 @@ async fn a_live_kernel_fetches_its_own_variables_and_runs_bash_handles() -> Test
         "kill must settle and release: {} {}",
         killed.result.stdout,
         killed.result.stderr
+    );
+    service.dispose().await;
+    Ok(())
+}
+
+/// Guards the `PYTHON_SKILLS` deletion and the `plan.op` registration: put the skill
+/// back and the import succeeds; unregister the request and the init has no answer.
+#[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn the_plan_skill_is_gone_and_plan_op_answers() -> TestResult {
+    let dir = Scratch::new("yi-kernel-plan-op")?;
+    let engine = Arc::new(PlanEngine::new(
+        PlanStore::open(dir.to_path_buf())?,
+        Arc::new(NoChildren),
+    ));
+    let mut registry = HostRegistry::default();
+    yi_runtime::plan::request::register(engine, Actor::Owner, &mut registry);
+    let service = service_with(registry);
+    let outcome = cell(
+        &service,
+        concat!(
+            "import rlm\n",
+            "try:\n",
+            "    import plan\n",
+            "    print('plan importable')\n",
+            "except ImportError:\n",
+            "    print('plan gone')\n",
+            "r = await rlm.host_request('plan.op', {'request_id': 't2-1', 'op': 'init', ",
+            "'args': {'goal': 'prove the request answers', 'todos': [{'label': 'answer'}]}})\n",
+            "print(r['ok'], r['revision'], r['text'].splitlines()[0])\n",
+        ),
+    )
+    .await?;
+    assert!(
+        outcome.result.stdout.contains("plan gone"),
+        "the kernel-side plan skill must be gone: {} {}",
+        outcome.result.stdout,
+        outcome.result.stderr
+    );
+    assert!(
+        outcome.result.stdout.contains("True 1 plan "),
+        "plan.op must open a plan through rlm: {} {}",
+        outcome.result.stdout,
+        outcome.result.stderr
     );
     service.dispose().await;
     Ok(())

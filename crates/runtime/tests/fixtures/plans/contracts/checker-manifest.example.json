@@ -1,0 +1,15 @@
+{
+  "command": "make -s check",
+  "cwd": "snapshot_subdir",
+  "cwd_subdir": "crates/logrotate-lite",
+  "env": [
+    "MAKEFLAGS"
+  ],
+  "manifest": 1,
+  "protected": [
+    "Makefile",
+    "tests/**"
+  ],
+  "reads_outside_snapshot": false,
+  "timeout_ms": 60000
+}

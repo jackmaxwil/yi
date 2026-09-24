@@ -1,29 +1,35 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tokio::sync::Notify;
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::plan::doc::{BlockedOn, Plan, PlanId, PlanState, TodoLabel, TodoState};
 use yi_types::schedule::DeliveryMode;
 
 use super::ops::{Actor, Op, OpRequest, PlanEngine};
 use super::store::PlanStore;
+use crate::family::{MemberView, StuckLatch};
 use crate::goal::DeliverFn;
+use crate::subagent::NoticeFn;
 
 pub const FIRST_DELAY: Duration = Duration::from_secs(60);
 
 /// The ceiling, and the interval a probeless block nudges its owner on.
 pub const MAX_DELAY: Duration = Duration::from_secs(30 * 60);
 
-/// Nothing is due with no block open, so the loop still wakes often enough to
-/// notice one that opened between its own ticks.
+/// Nothing is due with no block open, so the loop still wakes often enough to notice one
+/// that opened between its ticks; the stuck job runs on every wake, so this bounds it too.
 const IDLE_POLL: Duration = Duration::from_secs(60);
 
 const PROBE_TIMEOUT_MS: u64 = 30_000;
 const SATURATED_SHIFT: u32 = 5;
 
 pub type ProbeRun = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
+pub type Children = Arc<dyn Fn() -> Vec<MemberView> + Send + Sync>;
 
 /// Invariant: the ladder saturates rather than growing without bound, so a condition nobody
 /// satisfies costs one check per [`MAX_DELAY`], not one per turn or an overflowing interval.
@@ -67,7 +73,18 @@ pub struct ProbeLadder {
     plans_dir: PathBuf,
     deliver: DeliverFn,
     run: ProbeRun,
+    clock: Clock,
     pending: Mutex<HashMap<String, Pending>>,
+    /// Every due time registered from outside the ladder, each cleared once its tick has run:
+    /// an earlier registration never forgets a later one.
+    due_at: Mutex<BTreeSet<Instant>>,
+    /// Stores one permit, so a `notify_one` before the loop parks is not lost.
+    wake: Notify,
+    /// A probe tick in flight; the loop never waits on it, and the tick never wakes the loop
+    /// when it ends, since a stored permit would run the next tick at once: a spin.
+    probing: AtomicBool,
+    children: Option<(Children, Arc<NoticeFn>)>,
+    latch: Mutex<StuckLatch>,
 }
 
 impl ProbeLadder {
@@ -77,13 +94,52 @@ impl ProbeLadder {
             plans_dir,
             deliver,
             run: Arc::new(|command| crate::goal::run_check(command, PROBE_TIMEOUT_MS)),
+            clock: Arc::new(Instant::now),
             pending: Mutex::new(HashMap::new()),
+            due_at: Mutex::new(BTreeSet::new()),
+            wake: Notify::new(),
+            probing: AtomicBool::new(false),
+            children: None,
+            latch: Mutex::new(StuckLatch::default()),
         }
     }
 
     pub fn with_run(mut self, run: ProbeRun) -> Self {
         self.run = run;
         self
+    }
+
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// The stuck job's source and its notice path: the running children as their records
+    /// show them, and the host's lifecycle notice that wakes the parent.
+    pub fn with_children(mut self, children: Children, notice: Arc<NoticeFn>) -> Self {
+        self.children = Some((children, notice));
+        self
+    }
+
+    /// Registers a due time; one earlier than every other registered interrupts the loop's
+    /// sleep. Later ones are kept for their own turn.
+    pub fn wake_at(&self, due: Instant) {
+        let earliest = match self.due_at.lock() {
+            Ok(mut dues) => {
+                let earliest = dues.first().is_none_or(|first| due < *first);
+                dues.insert(due);
+                earliest
+            }
+            Err(_) => false,
+        };
+        if earliest {
+            self.wake.notify_one();
+        }
+    }
+
+    /// The registered due times still to come.
+    pub fn due_times(&self) -> usize {
+        self.due_at.lock().map(|dues| dues.len()).unwrap_or(0)
     }
 
     fn plans(&self) -> Vec<Plan> {
@@ -95,14 +151,22 @@ impl ProbeLadder {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|id| store.read(&id).ok())
-            .map(|file| file.plan)
             .filter(|plan| plan.state == PlanState::Active)
             .collect()
+    }
+
+    /// The registered due times that have come are taken by the tick that serves them; a wake
+    /// that finds a tick still in flight leaves them armed for the next one.
+    fn take_due(&self, now: Instant) {
+        if let Ok(mut dues) = self.due_at.lock() {
+            dues.retain(|due| *due > now);
+        }
     }
 
     /// Invariant: due times live only in memory, so a resumed session restarts every ladder
     /// at the first rung; a probe is cheap and is not the runaway the spawn fuse guards.
     pub fn tick(&self, now: Instant) -> Vec<Verdict> {
+        self.take_due(now);
         let mut verdicts = Vec::new();
         let mut live = Vec::new();
         for plan in self.plans() {
@@ -145,6 +209,24 @@ impl ProbeLadder {
         }
         self.forget_all_but(&live);
         verdicts
+    }
+
+    /// The stuck job: one `[child <name> stuck: <note>]` per episode, from the records the
+    /// loop already writes (D165). Returns the notices it sent.
+    pub fn watch(&self) -> Vec<String> {
+        let Some((children, notice)) = &self.children else {
+            return Vec::new();
+        };
+        let views = children();
+        let Ok(mut latch) = self.latch.lock() else {
+            return Vec::new();
+        };
+        let notices = latch.notices(&views);
+        drop(latch);
+        for text in &notices {
+            notice(text);
+        }
+        notices
     }
 
     /// A slot seen for the first time waits one full rung before its first run,
@@ -194,6 +276,8 @@ impl ProbeLadder {
             op: Op::Unblock {
                 label: label.clone(),
             },
+            request_id: None,
+            expected_revision: None,
         };
         match self.engine.apply(request) {
             Ok(_) => {
@@ -230,31 +314,64 @@ impl ProbeLadder {
         }
     }
 
+    /// A slot due while a tick is in flight wakes the loop on the one-second floor, where
+    /// `wake_once` finds the tick still running and returns; the climb sizes the next wake.
     fn next_wake(&self, now: Instant) -> Duration {
-        self.pending
+        let probes = self
+            .pending
             .lock()
             .ok()
-            .and_then(|pending| pending.values().map(|entry| entry.due).min())
+            .and_then(|pending| pending.values().map(|entry| entry.due).min());
+        let registered = self
+            .due_at
+            .lock()
+            .ok()
+            .and_then(|dues| dues.first().copied());
+        [probes, registered]
+            .into_iter()
+            .flatten()
+            .min()
             .map_or(IDLE_POLL, |due| {
                 due.saturating_duration_since(now).min(IDLE_POLL)
             })
     }
+
+    /// One wake: the stuck job and the probes each on a blocking thread the loop does not wait
+    /// for, so a slow probe never delays a stuck check and neither stalls the reactor.
+    fn wake_once(self: &Arc<Self>) {
+        let now = (self.clock)();
+        let watching = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            watching.watch();
+        });
+        if self.probing.swap(true, Ordering::SeqCst) {
+            // The due times stay armed for the tick that follows the one in flight.
+            return;
+        }
+        // Taken on the loop's thread before the tick is spawned, so the next sleep never
+        // reads a due time the tick has not cleared yet.
+        self.take_due(now);
+        let ticking = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            ticking.tick(now);
+            ticking.probing.store(false, Ordering::SeqCst);
+        });
+    }
 }
 
-/// The ladder runs off the wall clock, not off turns: a session whose loop has
-/// gone quiet on a `Cadence` posture is exactly the one waiting on a probe.
+/// The ladder runs off the wall clock, not off turns; the sleep is raced against the
+/// `Notify`, so an earlier due time registered mid-sleep runs at its own time (section 7.4).
 pub fn spawn(ladder: Arc<ProbeLadder>) {
     tokio::spawn(async move {
         loop {
-            let wake = ladder.next_wake(Instant::now()).max(Duration::from_secs(1));
-            tokio::time::sleep(wake).await;
-            let ticking = Arc::clone(&ladder);
-            if tokio::task::spawn_blocking(move || ticking.tick(Instant::now()))
-                .await
-                .is_err()
-            {
-                break;
+            let wake = ladder
+                .next_wake((ladder.clock)())
+                .max(Duration::from_secs(1));
+            tokio::select! {
+                () = tokio::time::sleep(wake) => {}
+                () = ladder.wake.notified() => {}
             }
+            ladder.wake_once();
         }
     });
 }
