@@ -13,6 +13,7 @@ pub mod gate;
 pub mod goal;
 pub mod host;
 pub mod kernel;
+mod kernel_bootstrap;
 mod kernel_doctor;
 mod kernel_variables;
 pub mod lane;

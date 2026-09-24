@@ -9,135 +9,11 @@ use yi_kernel::client::{
 use yi_tools::ToolOutput;
 use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome};
 
+pub use crate::kernel_bootstrap::{RLM_BOOTSTRAP_CODE, restore_notice_text, rlm_bootstrap_code};
 use crate::kernel_variables::{dump_variable_code, parse_variable_reply, read_variable_code};
-
-/// Binds `rlm` and `mcp` in the namespace, or a loud placeholder when the
-/// runtime package is missing. [`rlm_bootstrap_code`] appends bundled skills.
-pub const RLM_BOOTSTRAP_CODE: &str = r#"
-import asyncio
-import os as _yi_os
-
-_yi_os.environ["NO_COLOR"] = "1"
-_yi_os.environ["PIP_NO_COLOR"] = "1"
-_yi_os.environ["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
-get_ipython().colors = "nocolor"
-
-try:
-    import nest_asyncio as _yi_nest_asyncio
-    _yi_nest_asyncio.apply()
-except Exception:
-    pass
-
-try:
-    import rlm
-    import rlm.mcp as mcp
-    fetch, bash = rlm.fetch, rlm.bash
-except Exception as _yi_rlm_error:
-    _RLM_IMPORT_ERROR = str(_yi_rlm_error)
-
-    class _YiMissingRlm:
-        def __getattr__(self, name):
-            if name.startswith("_"):
-                raise AttributeError(name)
-            raise RuntimeError(
-                "yi-runtime is not installed in this IPython kernel. "
-                "Remove ~/.yi/kernel-venv-* so yi can rebuild it, or set "
-                "YI_KERNEL_PYTHON to a kernel environment with yi-runtime installed. "
-                f"Import error: {_RLM_IMPORT_ERROR}"
-            )
-
-        def __call__(self, *args, **kwargs):
-            return self.run(*args, **kwargs)
-
-    rlm = _YiMissingRlm()
-
-# Imported here so its pre_run_cell hook sees every later cell's source (plan section 8.3).
-try:
-    import yi
-except Exception:
-    pass
-"#;
-
-const SKILL_WRAPPER_CODE: &str = r#"
-import importlib as _yi_importlib
-import inspect as _yi_inspect
-import sys as _yi_sys
-import types as _yi_types
-
-class _YiCallableSkillModule(_yi_types.ModuleType):
-    async def __call__(self, *args, **kwargs):
-        result = self.run(*args, **kwargs)
-        if _yi_inspect.isawaitable(result):
-            return await result
-        return result
-
-class _YiUnavailableSkill:
-    def __init__(self, name, error):
-        self.__name__ = name
-        self._yi_import_error = error
-        self.__doc__ = f"Python skill {name} is unavailable: {error}"
-
-    async def run(self, *args, **kwargs):
-        raise RuntimeError(
-            f"Python skill {self.__name__} is unavailable in this IPython kernel. "
-            f"Import error: {self._yi_import_error}"
-        )
-
-    async def __call__(self, *args, **kwargs):
-        return await self.run(*args, **kwargs)
-
-    def __repr__(self):
-        return f"<unavailable Python skill {self.__name__!r}: {self._yi_import_error}>"
-
-def _yi_wrap_skill_module(module):
-    run = getattr(module, "run", None)
-    if not callable(run):
-        return module
-    if isinstance(module, _YiCallableSkillModule):
-        return module
-    wrapped = _YiCallableSkillModule(module.__name__)
-    wrapped.__dict__.update(module.__dict__)
-    try:
-        wrapped.__signature__ = _yi_inspect.signature(run)
-    except Exception:
-        pass
-    doc = getattr(run, "__doc__", None)
-    if doc:
-        wrapped.__doc__ = doc
-    _yi_sys.modules[module.__name__] = wrapped
-    return wrapped
-
-_SKILL_IMPORT_ERRORS = {}
-
-for _yi_skill_name in %IMPORTS%:
-    try:
-        globals()[_yi_skill_name] = _yi_wrap_skill_module(
-            _yi_importlib.import_module(_yi_skill_name)
-        )
-    except Exception as _yi_skill_error:
-        _SKILL_IMPORT_ERRORS[_yi_skill_name] = str(_yi_skill_error)
-        globals()[_yi_skill_name] = _YiUnavailableSkill(
-            _yi_skill_name,
-            str(_yi_skill_error),
-        )
-"#;
-
-/// The base cell plus a skill-module wrapper per bundled Python skill.
-pub fn rlm_bootstrap_code(import_names: &[&str]) -> String {
-    if import_names.is_empty() {
-        return RLM_BOOTSTRAP_CODE.trim().to_owned();
-    }
-    let imports = serde_json::to_string(import_names).unwrap_or_else(|_| "[]".to_owned());
-    format!(
-        "{}\n{}",
-        RLM_BOOTSTRAP_CODE.trim(),
-        SKILL_WRAPPER_CODE.replace("%IMPORTS%", &imports).trim()
-    )
-}
 
 pub type HostHandlerFn = dyn Fn(Map<String, Value>) -> HostFuture + Send + Sync;
 
-/// Registered by the runtime, dispatched by yi-kernel.
 #[derive(Default)]
 pub struct HostRegistry {
     handlers: HashMap<String, Arc<HostHandlerFn>>,
@@ -339,6 +215,10 @@ pub struct KernelService {
     last_error: Mutex<Option<String>>,
     on_death: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     died: std::sync::atomic::AtomicBool,
+    names: Mutex<Option<Vec<String>>>,
+    restarted: Mutex<Option<String>>,
+    surface: Mutex<Option<String>>,
+    surface_shown: std::sync::atomic::AtomicBool,
 }
 
 impl KernelService {
@@ -350,6 +230,10 @@ impl KernelService {
             last_error: Mutex::new(None),
             on_death: Mutex::new(None),
             died: std::sync::atomic::AtomicBool::new(false),
+            names: Mutex::new(None),
+            restarted: Mutex::new(None),
+            surface: Mutex::new(None),
+            surface_shown: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -377,18 +261,25 @@ impl KernelService {
         }
     }
 
-    /// The environment line's fact: `ready`, `booting`, `idle`, or the last boot error.
+    /// The environment line's fact: `ready`, `booting`, `idle` or the boot error, then any restart.
     pub fn state(&self) -> String {
-        let Ok(slot) = self.manager.try_lock() else {
-            return "booting".to_owned();
+        let mut state = match self.manager.try_lock() {
+            Err(_) => "booting".to_owned(),
+            Ok(slot) if slot.as_ref().is_some_and(|manager| manager.is_running()) => {
+                "ready".to_owned()
+            }
+            Ok(_) => match self.last_error.lock().ok().and_then(|error| error.clone()) {
+                Some(error) => format!("unavailable: {}", error.lines().next().unwrap_or_default()),
+                None => "idle (boots on the first ipython call)".to_owned(),
+            },
         };
-        if slot.as_ref().is_some_and(|manager| manager.is_running()) {
-            return "ready".to_owned();
+        if let Some(restarted) = self.restarted.lock().ok().and_then(|slot| slot.clone()) {
+            state.push_str(&format!(" · {restarted}"));
         }
-        match self.last_error.lock().ok().and_then(|error| error.clone()) {
-            Some(error) => format!("unavailable: {}", error.lines().next().unwrap_or_default()),
-            None => "idle (boots on the first ipython call)".to_owned(),
+        if !self.surface_shown.load(std::sync::atomic::Ordering::SeqCst) {
+            state.push_str(&format!(" · {}", crate::kernel_bootstrap::surface_line()));
         }
+        state
     }
 
     pub async fn set_sandbox(&self, sandbox: Option<yi_tools::Sandbox>) {
@@ -535,11 +426,25 @@ impl KernelService {
         if let (Some(restore), Some(on_restore)) = (pending_restore, &self.options.on_restore) {
             on_restore(&restore);
         }
+        if self.surface.lock().is_ok_and(|table| table.is_none())
+            && let Ok(table) = manager
+                .execute(
+                    crate::kernel_bootstrap::SURFACE_CODE,
+                    ExecuteOptions::default(),
+                )
+                .await
+            && let Ok(mut slot) = self.surface.lock()
+        {
+            *slot = Some(table.stdout.trim_end().to_owned()).filter(|table| !table.is_empty());
+        }
         *slot = Some(Arc::clone(&manager));
         Ok(manager)
     }
 
     pub async fn kill(&self) {
+        if let Ok(mut restarted) = self.restarted.lock() {
+            *restarted = None;
+        }
         let manager = self.manager.lock().await.take();
         if let Some(manager) = manager {
             manager.dispose().await;
@@ -598,18 +503,40 @@ impl KernelService {
         }
     }
 
+    async fn restart_note(&self, manager: &KernelManager) -> String {
+        let before = self.names.lock().ok().and_then(|names| names.clone());
+        let now = manager.list_namespace_names().await.unwrap_or_default();
+        let lost: Option<Vec<String>> = before.map(|names| {
+            names
+                .into_iter()
+                .filter(|name| !now.contains(name))
+                .collect()
+        });
+        if let Ok(mut slot) = self.restarted.lock() {
+            *slot = Some(match &lost {
+                Some(names) => format!("restarted; {} names lost", names.len()),
+                None => "restarted; in-memory state lost".to_owned(),
+            });
+        }
+        crate::kernel_bootstrap::restart_note(lost.as_deref())
+    }
+
     async fn execute_async(
         &self,
         code: &str,
         cancelled: &CancelFlag,
     ) -> Result<KernelCellOutcome, String> {
         let mut kernel_restarted = false;
+        let mut notes = Vec::new();
         let ceiling = self
             .options
             .cell_ceiling
             .unwrap_or(std::time::Duration::from_secs(yi_tools::MAX_TIMEOUT_SECS));
         loop {
             let manager = self.ensure().await?;
+            if kernel_restarted && notes.is_empty() {
+                notes.push(self.restart_note(&manager).await);
+            }
             let abort = AbortFlag::default();
             let watcher = {
                 let abort = abort.clone();
@@ -637,13 +564,29 @@ impl KernelService {
             watcher.abort();
             match outcome {
                 Ok(result) => {
+                    if !kernel_restarted && let Ok(mut restarted) = self.restarted.lock() {
+                        *restarted = None;
+                    }
+                    if result.status != yi_types::kernel::ExecuteStatus::Aborted
+                        && let Some(names) = manager.list_namespace_names().await
+                        && let Ok(mut slot) = self.names.lock()
+                    {
+                        *slot = Some(names);
+                    }
+                    let first = !self
+                        .surface_shown
+                        .swap(true, std::sync::atomic::Ordering::SeqCst);
+                    if let Some(table) = self.surface.lock().ok().and_then(|table| table.clone())
+                        && first
+                    {
+                        notes.push(crate::kernel_bootstrap::surface_note(&table));
+                    }
                     return Ok(KernelCellOutcome {
                         result,
                         kernel_restarted,
+                        notes,
                     });
                 }
-                // Headless busy recovery: kill + fresh kernel + restart notice
-                // into model context; no UI to ask yet.
                 Err(ExecuteError::BusyAfterInterrupt) => {
                     if cancelled() {
                         return Err(ExecuteError::BusyAfterInterrupt.to_string());
@@ -662,33 +605,6 @@ impl KernelService {
 
 pub fn ipython_tool(service: Arc<KernelService>) -> Arc<dyn yi_tools::Tool> {
     Arc::new(yi_tools::IpythonTool { bridge: service })
-}
-
-pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> String {
-    let mut lines = vec!["<ipython_state_restored>".to_owned()];
-    if restore.restored.is_empty() {
-        lines.push(
-            "Your previous IPython kernel state could not be revived; the kernel is starting fresh, so re-create any variables, imports, or loaded data you need.".to_owned(),
-        );
-    } else {
-        lines.push(format!(
-            "Your IPython kernel state was revived from your previous session. These names are available again: {}.",
-            restore.restored.join(", ")
-        ));
-    }
-    if !restore.failed.is_empty() {
-        let names: Vec<&str> = restore
-            .failed
-            .iter()
-            .map(|failure| failure.name.as_str())
-            .collect();
-        lines.push(format!(
-            "These could not be restored and must be recreated if needed: {}.",
-            names.join(", ")
-        ));
-    }
-    lines.push("</ipython_state_restored>".to_owned());
-    lines.join("\n")
 }
 
 impl KernelBridge for KernelService {

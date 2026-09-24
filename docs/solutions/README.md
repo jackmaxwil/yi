@@ -212,5 +212,6 @@ when it changes rather than editing them by hand.
 - [D234](adr/d234.md) - the human sees a child's question and answers it
 - [D235](adr/d235.md) - every open request is answered or chased, and every run ends with an answer
 - [D236](adr/d236.md) - the mailbox's leftovers close
+- [D237](adr/d237.md) - tool ergonomics and harness fixes
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

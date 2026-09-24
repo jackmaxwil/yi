@@ -7,10 +7,11 @@ use super::messages::{
     EMPTY_PUT_AUTO_CUT_WARNING, MINUS_BULLET_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED,
     MOVE_TAKES_NO_BODY, READ_METADATA_IGNORED_WARNING, REGISTER_PUT_TAKES_NO_BODY,
     REM_TAKES_NO_BODY, REPLACE_PAIR_COALESCED_WARNING, SNAPSHOT_ROWS_AUTO_PUT_WARNING,
-    invalid_absolute_range_message, literal_op_row_warning, repeated_snapshot_row_message,
+    invalid_absolute_range_message, literal_op_row_warning, near_miss_header_warning,
+    repeated_snapshot_row_message,
 };
 use super::prefixes::{is_read_metadata_line, strip_one_leading_hashline_prefix};
-use super::tokenizer::{BlockTarget, Token, TokenKind, is_hunk_header_text};
+use super::tokenizer::{BlockTarget, Token, TokenKind, is_hunk_header_text, near_miss_hunk_header};
 use super::types::{Anchor, BlockMode, Cursor, Edit, FileOp, ParsedRange, PasteTarget};
 
 /// Bounds parser amplification before the target file's line count is available.
@@ -352,6 +353,17 @@ impl Executor {
                 self.handle_literal_payload(text, token.line_num)
             }
             TokenKind::Raw { text } => {
+                if let Some((repaired, scan)) = near_miss_hunk_header(text) {
+                    self.warnings
+                        .push(near_miss_header_warning(token.line_num, text, &repaired));
+                    return self.feed(&Token {
+                        kind: TokenKind::OpBlock {
+                            target: scan.target,
+                            had_colon: scan.had_colon,
+                        },
+                        line_num: token.line_num,
+                    });
+                }
                 if self.pending.is_none() && is_skippable_comment_line(text) {
                     self.skippable_comments.push(PendingComment {
                         text: text.clone(),
