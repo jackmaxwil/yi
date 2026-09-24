@@ -146,8 +146,7 @@ fn longest(text: &str, call: &str, default: u64) -> u64 {
 /// bare `h.result()`, whose default is 540 s: 660 s in one cell, and neither file was checked.
 #[test]
 fn no_prompt_example_waits_past_the_cell_ceiling() {
-    let wait = python_default("async def wait(timeout", "timeout")
-        .min(python_default("async def wait(self, timeout", "timeout"));
+    let wait = python_default("async def wait(", "timeout");
     let result = python_default("async def result(\n        self,", "timeout");
     assert_eq!((wait, result), (300, 540), "the defaults this test prices");
     let mut over = Vec::new();
