@@ -8,7 +8,6 @@ pub mod grep;
 pub mod http;
 pub mod oauth;
 pub mod output;
-pub mod pkce;
 pub mod profiles;
 pub mod sessions;
 pub mod stdio;

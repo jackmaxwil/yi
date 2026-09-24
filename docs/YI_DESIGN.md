@@ -63,7 +63,8 @@ crates/
                 tool contract types, permission types. deps: serde only. No tokio, no fs, no net.
   yi-loop       run_loop(ctx, new_msgs, cfg, signal, emit, stream) + interrupt module (InterruptSignal, SoftInterruptQueue).
                 ≤ 1,000 lines. deps: yi-types, tokio (Notify only).
-  yi-ai         providers (anthropic-messages, openai-completions, openai-responses), model catalog, StreamFn impl. deps: yi-types.
+  yi-ai         providers (anthropic-messages, openai-completions, openai-responses), model catalog, StreamFn impl. deps: yi-types, yi-oauth.
+  yi-oauth      `yi login` / `yi logout`: PKCE, loopback, token files, profile loader. Ships no provider identity. deps: ureq, sha2, serde_json. Delete the crate to drop subscription OAuth.
   yi-session    entry tree repo (JSONL + in-memory), projection, rebuild_context, conformance tests. deps: yi-types.
   yi-context    token accounting, compaction policy + cut-point, summarizer, ledger, assembly. deps: yi-types (store access stays in yi-runtime).
   yi-permission modes, rules, session rule state, holds (advisor), approval request/response. deps: yi-types.

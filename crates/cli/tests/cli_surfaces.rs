@@ -89,6 +89,74 @@ fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// D85's row for the login verbs (D191): a key piped on stdin lands 0600 in the
+/// token store, an unknown provider names the profile path, and bare `yi logout`
+/// clears even a token whose profile is gone. The login fast path answers before
+/// the shared flags parse, so the binary is driven directly.
+#[test]
+fn login_logout_round_trip() -> TestResult {
+    let workspace = Workspace::new("login")?;
+    let home = workspace.0.join("home");
+    let login = |args: &[&str], stdin_text: &str| -> Result<Output, Box<dyn Error>> {
+        use std::io::Write;
+        use std::process::Stdio;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the login fast path's contract is argv, stdin, exit code and files"
+        )]
+        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        let mut child = command
+            .args(args)
+            .env("HOME", &home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .take()
+            .ok_or("stdin")?
+            .write_all(stdin_text.as_bytes())?;
+        Ok(child.wait_with_output()?)
+    };
+
+    let listed = login(&["login", "--list"], "")?;
+    assert_eq!(listed.status.code(), Some(0));
+    assert!(stdout(&listed).contains("openai"), "{}", stdout(&listed));
+
+    let unknown = login(&["login", "bogus"], "")?;
+    assert_eq!(unknown.status.code(), Some(2));
+    let complaint = String::from_utf8_lossy(&unknown.stderr).into_owned();
+    assert!(complaint.contains(".yi/oauth/bogus.json"), "{complaint}");
+
+    // The documented path: the key comes from stdin, never argv.
+    let saved = login(&["login", "openai"], "sk-test-pasted\n")?;
+    assert_eq!(saved.status.code(), Some(0), "{:?}", saved);
+    let token = home.join(".yi/providers/tokens/openai.json");
+    let stored: Value = serde_json::from_str(&std::fs::read_to_string(&token)?)?;
+    assert_eq!(stored["kind"], "key");
+    assert_eq!(stored["access"], "sk-test-pasted");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&token)?.permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    // A token whose profile was never written still logs out.
+    std::fs::write(
+        home.join(".yi/providers/tokens/lonely.json"),
+        r#"{"version":1,"kind":"key","access":"x"}"#,
+    )?;
+    let cleared = login(&["logout"], "")?;
+    assert_eq!(cleared.status.code(), Some(0));
+    assert!(!token.exists(), "openai token removed");
+    assert!(!home.join(".yi/providers/tokens/lonely.json").exists());
+    Ok(())
+}
+
 fn ask(workspace: &Workspace, prompt: &str, extra: &[&str]) -> Result<Output, Box<dyn Error>> {
     let mut args = vec!["ask", "--model", "faux/faux-1"];
     args.extend_from_slice(extra);
@@ -690,10 +758,19 @@ fn catalog_reports_the_bundle_before_any_refresh() -> TestResult {
     let listed = workspace.yi(&["catalog"])?;
     assert_eq!(listed.status.code(), Some(0), "{}", stdout(&listed));
     let text = stdout(&listed);
-    for provider in ["anthropic", "openai", "openrouter"] {
+    for provider in [
+        "anthropic",
+        "openai",
+        "openrouter",
+        "openai-codex",
+        "google",
+    ] {
         assert!(text.contains(provider), "{text}");
     }
-    assert_eq!(text.matches("bundled only").count(), 3, "{text}");
+    // Every listed row is bundled-only before any refresh; the row count comes from the
+    // binary's own output so a new provider fails on presence, not on a stale count.
+    let rows = text.lines().filter(|line| !line.trim().is_empty()).count();
+    assert_eq!(text.matches("bundled only").count(), rows, "{text}");
     let wrong = workspace.yi(&["catalog", "purge"])?;
     assert_eq!(wrong.status.code(), Some(2));
     Ok(())

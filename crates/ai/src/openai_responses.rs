@@ -219,7 +219,10 @@ fn convert_input(model: &Model, context: &LlmContext) -> Vec<Value> {
         Some(normalize_responses_tool_call_id),
     );
     let mut input = Vec::new();
-    if !context.system_prompt.is_empty() {
+    // ChatGPT's Codex backend takes the system text as top-level `instructions`
+    // (codex-rs, Pi): sending it as an input message too would bill it twice.
+    let codex = model.provider == "openai-codex";
+    if !context.system_prompt.is_empty() && !codex {
         let role = if model.reasoning && compat_bool(model, "supportsDeveloperRole", true) {
             "developer"
         } else {
@@ -340,6 +343,9 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         "stream": true,
         "store": false,
     });
+    if model.provider == "openai-codex" {
+        params["instructions"] = json!(context.system_prompt);
+    }
     if let Some(session_id) = &options.session_id {
         params["prompt_cache_key"] = json!(session_id);
     }
@@ -950,17 +956,21 @@ fn run_request(
     wire: crate::request::Wire<'_>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
-    let crate::request::Wire {
-        api_key,
-        proxy,
-        stop,
-    } = wire;
     let url = format!("{}/responses", model.base_url);
     let mut mapper = EventMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let resent = crate::request::pump_sse_with_resend(
-        stop,
-        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy),
+        wire.stop,
+        || {
+            crate::request::openai_bearer_post(
+                &url,
+                model,
+                wire.api_key,
+                body,
+                wire.proxy,
+                wire.extra,
+            )
+        },
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);
@@ -984,7 +994,8 @@ fn run_request(
             }
             Ok(true)
         },
-    )?;
+    )
+    .map_err(|message| crate::request::auth_hint(&message, wire.oauth, &model.provider))?;
     if let Some(first_error) = resent {
         crate::request::note_resend(&mut mapper.output, &first_error);
     }
@@ -1004,9 +1015,13 @@ pub fn stream(
         |model, message| EventMapper::new(model).fail(message),
         model,
         build_params(model, context, options),
-        api_key,
-        options.proxy.clone(),
-        options.stop.clone(),
+        crate::request::WireOwned {
+            api_key: api_key.to_owned(),
+            proxy: options.proxy.clone(),
+            stop: options.stop.clone(),
+            extra: options.extra_headers.clone(),
+            oauth: options.oauth,
+        },
         run_request,
     )
 }

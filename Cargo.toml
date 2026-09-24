@@ -4,6 +4,7 @@ members = [
   "crates/types",
   "crates/loop",
   "crates/ai",
+  "crates/oauth",
   "crates/orb",
   "crates/session",
   "crates/context",
@@ -25,6 +26,7 @@ license = "MIT"
 rust-version = "1.94"
 
 [workspace.dependencies]
+yi-oauth = { path = "crates/oauth" }
 yi-types = { path = "crates/types" }
 yi-loop = { path = "crates/loop" }
 yi-ai = { path = "crates/ai" }
