@@ -123,8 +123,9 @@ async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Bo
     Ok(())
 }
 
+/// Six of eight dogfood trials called `rlm` without `await`: a spawn written that way runs.
 #[tokio::test]
-async fn an_unawaited_spawn_is_named_in_the_cell_result() -> Result<(), Box<dyn Error>> {
+async fn an_unawaited_spawn_runs_and_prints_its_handle() -> Result<(), Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None, None));
     let mut call_args = serde_json::Map::new();
     call_args.insert("code".to_owned(), serde_json::json!("print(rlm.run('x'))"));
@@ -146,6 +147,12 @@ async fn an_unawaited_spawn_is_named_in_the_cell_result() -> Result<(), Box<dyn 
     );
     let mut registry = HostRegistry::default();
     registry.register_mcp_stubs();
+    registry.register("rlm.run", |_payload| {
+        Box::pin(async {
+            let handle = serde_json::json!({"rlm_child_id": "sub-1", "name": "x", "session_dir": "/tmp/sub-1", "model": "faux/faux-1"});
+            handle.as_object().cloned().ok_or_else(|| "handle".to_owned())
+        })
+    });
     let service = Arc::new(KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),
         home: home(),
@@ -178,12 +185,8 @@ async fn an_unawaited_spawn_is_named_in_the_cell_result() -> Result<(), Box<dyn 
     }
     let cell = texts.first().ok_or("the ipython call produced no result")?;
     assert!(
-        cell.contains("<coroutine object ") && cell.contains("run at 0x"),
-        "the cell must print the un-awaited spawn coroutine: {cell}"
-    );
-    assert!(
-        cell.contains("await rlm.run"),
-        "an un-awaited spawn must carry the affordance: {cell}"
+        cell.contains("RLMSpawnHandle(name='x'") && !cell.contains("<coroutine object "),
+        "the un-awaited spawn must run and print its handle: {cell}"
     );
     Ok(())
 }
