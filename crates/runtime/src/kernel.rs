@@ -342,18 +342,24 @@ impl KernelService {
     /// Boot the kernel now so the first cell pays execution only. A failed
     /// prewarm stays quiet: the next cell repeats [`Self::ensure`] and reports it.
     pub async fn prewarm(&self) {
-        let _first_cell_will_report = self.ensure().await;
+        let _first_cell_will_report = self.ensure_for(false).await;
     }
 
     async fn ensure(&self) -> Result<Arc<KernelManager>, String> {
-        let outcome = self.ensure_inner().await;
+        self.ensure_for(true).await
+    }
+
+    /// `claim` is false only for a prewarm, which leaves no lock file for a session that
+    /// never runs a cell; a snapshot already on disk is claimed either way.
+    async fn ensure_for(&self, claim: bool) -> Result<Arc<KernelManager>, String> {
+        let outcome = self.ensure_inner(claim).await;
         if let Ok(mut slot) = self.last_error.lock() {
             *slot = outcome.as_ref().err().cloned();
         }
         outcome
     }
 
-    async fn ensure_inner(&self) -> Result<Arc<KernelManager>, String> {
+    async fn ensure_inner(&self, claim: bool) -> Result<Arc<KernelManager>, String> {
         let wrap = self.kernel_wrap(self.sandbox.lock().await.as_ref());
         // Only an on-disk session is revivable (K10). Incident: `/new`, `switch_session` and
         // `fork` swap the store under a live kernel, which kept writing under the old id.
@@ -368,7 +374,8 @@ impl KernelService {
                 debounce_ms: None,
             }
         });
-        let snapshot = snapshot.filter(|config| self.own_snapshot(&config.path));
+        let snapshot = snapshot
+            .filter(|config| (!claim && !config.path.is_file()) || self.own_snapshot(&config.path));
         let mut slot = self.manager.lock().await;
         if let Some(manager) = slot.as_ref()
             && manager.is_running()
