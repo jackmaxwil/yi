@@ -694,3 +694,15 @@ fn an_anchor_past_the_end_is_not_called_unseen() -> TestResult {
     assert!(text.contains("136 lines"), "{text}");
     Ok(())
 }
+
+/// A bare body row `REM.` in a batch file is one mark from `REM`, which deletes the file.
+#[test]
+fn a_near_miss_never_reads_as_a_file_op() -> TestResult {
+    let fixture = Fixture::new("near-miss-rem")?;
+    fixture.write("run.bat", "@echo off\nexit\n")?;
+    let tag = fixture.tag_of("run.bat")?;
+    let edit = fixture.edit(&format!("[run.bat#{tag}]\nPUT 1:\n@echo off\nREM.\n"));
+    assert!(!edit.is_error, "{}", output_text(&edit));
+    assert_eq!(fixture.content("run.bat")?, "@echo off\nREM.\nexit\n");
+    Ok(())
+}

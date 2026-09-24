@@ -611,17 +611,12 @@ pub fn is_hunk_header_text(text: &str) -> bool {
     is_hunk_lead && try_parse_hunk_header(text).is_some()
 }
 
-/// `PUT 40.:=40:` read as `PUT 40.=40:`: kept only when every one-mark repair names one op.
+/// `PUT 40.:=40:` read as `PUT 40.=40:` when every one-mark repair names one line op, never REM.
 pub fn near_miss_hunk_header(text: &str) -> Option<(String, TargetScan)> {
     let lead = text.trim_start();
-    let keyword = [
-        HL_PUT_KEYWORD,
-        HL_CUT_KEYWORD,
-        HL_REM_KEYWORD,
-        HL_MOVE_KEYWORD,
-    ]
-    .into_iter()
-    .any(|keyword| lead.starts_with(keyword));
+    let keyword = [HL_PUT_KEYWORD, HL_CUT_KEYWORD]
+        .into_iter()
+        .any(|keyword| lead.starts_with(keyword));
     if !keyword {
         return None;
     }
