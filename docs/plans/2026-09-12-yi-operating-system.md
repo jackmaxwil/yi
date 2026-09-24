@@ -12,7 +12,7 @@ status:  planned 2026-09-12; revised 2026-09-13 after an external review (§0).
          2026-09-20 ("continue until full plan completion") and F1 started
          without the decision. F0e, measured 2026-09-20/21, found activation
          without value, so the gate did not pass (docs/eval-ledger.md row
-         0056). F1-F4 landed as one stacked PR, #467, opened on #427 before
+         0056). F1-F4 went into one stacked PR, #467, opened on #427 before
          #427 merged, with seventeen changelog rows (0.269.0-0.285.0) and
          thirteen ADRs (D210-D222) by the owner's choice; #427 itself carries
          F0a-F0d as four rows and four ADRs (D192-D195). The rules in this
@@ -350,7 +350,7 @@ Stage impacts
   time; fixtures before source; every kernel invariant gets a test that dies
   with it (§11 tables); never relax a linter; stacked PRs land in order; the
   forge holds the issues, one per stage under one milestone, opened before
-  the row. As landed, the stack did not keep "one changelog row and one ADR
+  the row. As built, the stack does not keep "one changelog row and one ADR
   per PR": #427 carries F0a-F0d as four rows (0.265.0-0.268.0) and four
   ADRs (D192-D195), and #467 carries F1-F4 and their measured follow-ups as
   seventeen rows (0.269.0-0.285.0) and thirteen ADRs (D210-D222), by the
@@ -1700,7 +1700,7 @@ mechanism or the evaluation, not F1; an independently proven fix (F0a) may
 land on its own correctness evidence without claiming the platform passed.
 As run: the F0e run showed activation without value (docs/eval-ledger.md
 row 0056), and F1 went ahead anyway because the owner overrode this rule on
-2026-09-20; the mechanism fixes the run pointed at (#468-#471) landed in
+2026-09-20; the mechanism fixes the run pointed at (#468-#471) went into
 #467 as 0.283.0, after F1-F4.
 Row 0025's own numbers are read honestly: 3/18 is one task passing three
 times (`html-js-filter` 3/3, :63), and a signal that misses engine spawns
