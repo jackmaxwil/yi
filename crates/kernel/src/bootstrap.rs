@@ -5,7 +5,7 @@ use yi_types::kernel::BootstrapVersion;
 
 pub(crate) use crate::lock::acquire_bootstrap_lock;
 pub use crate::lock::{
-    lock_is_stale, lock_missing_pid_is_stale, process_is_running, read_lock_pid,
+    lock_is_stale, lock_missing_pid_is_stale, process_is_running, read_lock_pid, remove_stale_venvs,
 };
 
 pub const BOOTSTRAP_SCHEMA: u64 = 1;
@@ -850,6 +850,11 @@ pub fn ensure_kernel_python(options: &BootstrapOptions) -> Result<PathBuf, Strin
         &options.runtime_source_dir,
         Some(&options.skills_source_dir),
     )?;
+    let sweep = options.venv_dir.is_none() && env_path("YI_KERNEL_VENV").is_none();
+    if sweep {
+        let current = venv.clone();
+        std::thread::spawn(move || remove_stale_venvs(&current));
+    }
     if kernel_ready(&python, &venv, &runtime_identity) {
         return Ok(python);
     }
