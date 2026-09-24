@@ -152,7 +152,8 @@ async fn a_cancelled_awaiting_cell_leaves_the_namespace_standing() -> TestResult
     Ok(())
 }
 
-/// A cell deaf to SIGINT outlives the busy window, so the kernel has to go.
+/// A cell deaf to SIGINT outlives the busy window, so the kernel has to go; the state says so
+/// until the next cell.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "tier-2 journey: `just journeys`"]
 async fn a_forced_restart_names_what_it_lost_in_the_result_and_the_state() -> TestResult {
@@ -169,6 +170,8 @@ async fn a_forced_restart_names_what_it_lost_in_the_result_and_the_state() -> Te
         .execute_user_cell("print('fresh')", &never_cancelled())
         .await;
     let state = service.state();
+    let _ = service.execute_user_cell("1", &never_cancelled()).await;
+    let settled = service.state();
     service.dispose().await;
     let text = text_of(&after);
     assert_eq!(after.result.details["kernelRestarted"], true, "{text}");
@@ -177,6 +180,10 @@ async fn a_forced_restart_names_what_it_lost_in_the_result_and_the_state() -> Te
         "{text}"
     );
     assert!(state.contains("restarted; 2 names lost"), "{state}");
+    assert!(
+        !settled.contains("restarted"),
+        "a later cell left the note: {settled}"
+    );
     Ok(())
 }
 
