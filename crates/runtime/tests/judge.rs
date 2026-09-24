@@ -186,7 +186,7 @@ fn rig(owner: Model, max_children: usize) -> Result<Rig, Box<dyn Error>> {
             }
             Ok(session)
         }),
-        notice: Arc::new(move |text: &str| {
+        notice: Arc::new(move |text: &str, _| {
             if let Ok(mut told) = told.lock() {
                 told.push(text.to_owned());
             }

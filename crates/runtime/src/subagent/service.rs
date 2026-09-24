@@ -30,8 +30,6 @@ pub(crate) struct Service {
     restarts: Vec<u64>,
     /// A revoke or the parent's close is a deliberate stop: nothing respawns after it.
     stopped: bool,
-    /// A `turn_ended` reader is out on this service's current run; a second would double it.
-    reading: bool,
     prompt: String,
     kwargs: Map<String, Value>,
 }
@@ -120,7 +118,6 @@ impl SubagentHost {
             max: restart,
             restarts: Vec::new(),
             stopped: false,
-            reading: false,
             prompt: prompt.clone(),
             kwargs: kwargs.clone(),
         };
@@ -221,17 +218,11 @@ impl SubagentHost {
                 service.incarnation = next;
             }
             record.step(Step::Respawn);
-            children.touch(key);
+            children.touch(key, crate::family::Cause::Respawned);
             dead
         };
         // A queued or woken receipt is owed a turn: what the dead run never drained moves on.
-        let (steers, follow_ups) = dead.take_pending();
-        for message in steers {
-            session.steer_message(message);
-        }
-        for message in follow_ups {
-            session.follow_up_message(message);
-        }
+        session.adopt_pending(&dead);
         Self::dispose_child_kernel(&dead);
         // A request parked on the dead incarnation is refused by name, never answered by this one.
         if let Ok(mut desk) = self.mail.lock() {
@@ -249,40 +240,6 @@ impl SubagentHost {
                 .await;
         });
         None
-    }
-
-    /// A woken turn has no `run_child` behind it, so a service's later crashes are read here,
-    /// one reader at a time: two readers of one crash would end it twice, on two leases.
-    pub(super) fn turn_ended(self: &Arc<Self>, key: &str) {
-        let held = self.children.lock().ok().and_then(|mut children| {
-            let record = children.get_mut(key)?;
-            let idle = record.exit == Some(ChildExit::Completed);
-            let (name, session) = (record.session_name.clone(), Arc::clone(&record.session));
-            let Standing::Service(service) = &mut record.standing else {
-                return None;
-            };
-            (idle && !service.reading).then(|| {
-                service.reading = true;
-                (name, session)
-            })
-        });
-        let Some((name, session)) = held else {
-            return;
-        };
-        let (host, key) = (Arc::clone(self), key.to_owned());
-        tokio::spawn(async move {
-            session.wait_idle().await;
-            let (exit, error) = super::exit_of(&session);
-            if let Ok(mut children) = host.children.lock()
-                && let Some(record) = children.get_mut(&key)
-                && let Standing::Service(service) = &mut record.standing
-            {
-                service.reading = false;
-            }
-            if exit != ChildExit::Completed {
-                host.conclude(&key, &name, &session, exit, error);
-            }
-        });
     }
 
     pub(super) fn register_service(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {

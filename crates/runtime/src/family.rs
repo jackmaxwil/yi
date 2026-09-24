@@ -37,6 +37,55 @@ impl MemberState {
     }
 }
 
+/// Why a member's record last moved, which `wait` names beside the member's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    Spawned,
+    Started,
+    Mail,
+    Progress,
+    Asked,
+    Finished,
+    Failed,
+    Interrupted,
+    Reaped,
+    Respawned,
+    Revoked,
+    Held,
+    Settled,
+}
+
+impl Cause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Spawned => "spawned",
+            Self::Started => "started",
+            Self::Mail => "mail",
+            Self::Progress => "progress",
+            Self::Asked => "asked",
+            Self::Finished => "finished",
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
+            Self::Reaped => "reaped",
+            Self::Respawned => "respawned",
+            Self::Revoked => "revoked",
+            Self::Held => "held",
+            Self::Settled => "settled",
+        }
+    }
+
+    pub fn ended(exit: ChildExit, asked: bool) -> Self {
+        match exit {
+            ChildExit::Completed if asked => Self::Asked,
+            ChildExit::Completed => Self::Finished,
+            ChildExit::Interrupted => Self::Interrupted,
+            ChildExit::Reaped => Self::Reaped,
+            ChildExit::Repossessed => Self::Revoked,
+            ChildExit::Failed { .. } | ChildExit::Other => Self::Failed,
+        }
+    }
+}
+
 /// Where a record with no exit stands: admitted and not yet polled, live, told by the child
 /// itself that its work failed, or held by a repossession that has not finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -652,12 +652,7 @@ pub fn attach_goal(
     session: &crate::AgentSession,
     plans_dir: std::path::PathBuf,
 ) -> Arc<GoalService> {
-    let steer = session.heartbeat_hook();
-    let wake = session.wake_idle_hook();
-    let deliver: DeliverFn = Arc::new(move |message, mode| match mode {
-        DeliveryMode::Steer => steer(message, DeliveryMode::Steer),
-        DeliveryMode::FollowUp => wake(message),
-    });
+    let deliver: DeliverFn = session.heartbeat_hook();
     let service =
         Arc::new(GoalService::new(session.store_handle(), deliver).with_plans_dir(plans_dir));
     let mut events = session.subscribe();

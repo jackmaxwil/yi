@@ -124,7 +124,7 @@ pub fn family(
             }
             Ok(child)
         }),
-        notice: Arc::new(move |text: &str| {
+        notice: Arc::new(move |text: &str, _| {
             if let Ok(mut told) = told.lock() {
                 told.push(text.to_owned());
             }

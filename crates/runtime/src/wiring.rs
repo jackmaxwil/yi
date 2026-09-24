@@ -703,11 +703,11 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     host
 }
 
-/// A child's lifecycle notice wakes its parent (§7.5); `notice_hook` only queues a steer
-/// for a turn that may never come. Same message either way.
+/// A child's lifecycle notice wakes its parent (§7.5) unless its news was read before a turn
+/// would present it.
 pub fn lifecycle_notice(session: &AgentSession) -> Arc<crate::subagent::NoticeFn> {
     let wake = session.wake_idle_hook();
-    Arc::new(move |text: &str| wake(crate::session::user_message(text)))
+    Arc::new(move |text: &str, news| wake(crate::session::user_message(text), news))
 }
 
 fn subagent_host(
@@ -716,7 +716,7 @@ fn subagent_host(
     plans_dir: &Path,
 ) -> Arc<SubagentHost> {
     let factory = child_factory(wiring.clone());
-    Arc::new(SubagentHost::new(SubagentHostOptions {
+    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: wiring.depth,
         max_depth: wiring.max_depth,
         max_children: crate::levers::get().family_max_children,
@@ -742,7 +742,15 @@ fn subagent_host(
             let kernels = Arc::clone(&wiring.kernels);
             Arc::new(move || kernels.live())
         },
-    }))
+    }));
+    let counted = Arc::downgrade(&host);
+    session.set_waits(Arc::new(move || {
+        let host = counted.upgrade();
+        host.map_or(0, |host| {
+            host.waits.load(std::sync::atomic::Ordering::SeqCst)
+        })
+    }));
+    host
 }
 
 /// §12: the ledger names what is load-bearing at every compaction and the summarizer

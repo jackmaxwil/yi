@@ -371,7 +371,7 @@ impl SubagentHost {
         if let Ok(mut children) = self.children.lock()
             && let Ok(key) = Self::key_of(&children, name)
         {
-            children.touch(&key);
+            children.touch(&key, crate::family::Cause::Settled);
         }
     }
 
@@ -391,6 +391,16 @@ impl SubagentHost {
                 && matches!(view.state, MemberState::Running | MemberState::Queued)
         };
         self.settling.load(Ordering::SeqCst) > 0 || self.states().iter().any(moving)
+    }
+
+    /// Held, a reap of `name` leaves its block here to ride the verdict; released, it comes back.
+    fn hold_harvest(&self, name: &str, hold: bool) -> Option<String> {
+        let mut held = self.harvests.lock().ok()?;
+        if hold {
+            held.insert(name.to_owned(), None);
+            return None;
+        }
+        held.remove(name).flatten()
     }
 
     fn answer_of(&self, name: &str) -> Option<String> {
@@ -456,8 +466,13 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
                 None => (exit, error),
             };
             let product = host.answer_of(&agent);
+            host.hold_harvest(&agent, true);
             let line = engine.finish_child(&agent, exit, error, product);
-            super::dispatch::say(&deliver, line.unwrap_or(unheld));
+            let said = line.unwrap_or(unheld);
+            match host.hold_harvest(&agent, false) {
+                Some(block) => super::dispatch::say(&deliver, format!("{said}\n{block}")),
+                None => super::dispatch::say(&deliver, said),
+            }
             host.settled(&agent);
             drop(settling);
         }));

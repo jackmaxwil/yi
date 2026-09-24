@@ -727,7 +727,7 @@ impl SubagentHost {
         record.step(crate::subagent::Step::Held(cause.to_owned()));
         if let Ok(mut children) = self.children.lock() {
             children.insert(key.to_owned(), record);
-            children.touch(key);
+            children.touch(key, crate::family::Cause::Held);
         }
     }
 
