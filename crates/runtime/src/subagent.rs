@@ -817,6 +817,13 @@ impl SubagentHost {
         self.status_of(None)
     }
 
+    fn status_shown(&self, name: Option<&str>) -> Map<String, Value> {
+        if let Ok(mut desk) = self.mail.lock() {
+            desk.show_asking();
+        }
+        self.status_of(name)
+    }
+
     fn status_of(&self, name: Option<&str>) -> Map<String, Value> {
         self.saw(name);
         let members: Vec<Value> = self
@@ -1007,7 +1014,7 @@ impl SubagentHost {
         });
         let host = Arc::clone(self);
         registry.register("rlm.status", move |payload| {
-            let reply = host.status_of(payload.get("name").and_then(Value::as_str));
+            let reply = host.status_shown(payload.get("name").and_then(Value::as_str));
             Box::pin(async move { Ok(reply) })
         });
         let host = Arc::clone(self);

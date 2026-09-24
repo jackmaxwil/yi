@@ -463,6 +463,14 @@ class AwaitLaterTests(unittest.IsolatedAsyncioTestCase):
         await rlm.status("kid")
         self.assertEqual(self.calls, ["agent_message.send", "agent_message.send", "rlm.status"])
 
+    async def test_a_followup_or_handle_send_goes_out_before_a_later_await(self) -> None:
+        """Dies with the wrapper nested: ``rlm.followup`` and ``h.send`` made a second task one
+        loop turn late, so a status or request awaited next went out ahead of them."""
+        rlm.followup("kid", "Include the word CHERRY.")
+        _handle().send("Include the word BANANA.")
+        await rlm.status("kid")
+        self.assertEqual(self.calls, ["agent_message.send", "agent_message.send", "rlm.status"])
+
     async def test_only_a_call_nobody_took_is_left_to_report(self) -> None:
         bare, gathered, awaited = (rlm.send("kid", word) for word in ("a", "b", "c"))
         await asyncio.gather(gathered)

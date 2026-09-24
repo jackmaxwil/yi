@@ -90,7 +90,7 @@ struct Modes {
 
 fn left(deadline: Option<Instant>) -> Duration {
     deadline.map_or(SHUTDOWN_GRACE, |at| {
-        at.saturating_duration_since(Instant::now()) / 2
+        SHUTDOWN_GRACE.min(at.saturating_duration_since(Instant::now()) / 2)
     })
 }
 
@@ -270,7 +270,6 @@ async fn follow(
                     "error: {}",
                     error_message.as_deref().unwrap_or("provider error")
                 );
-                exit = 1;
             }
             AgentEvent::AgentStart if holding => {
                 holding = false;
@@ -301,6 +300,8 @@ async fn follow(
         }
     } else if ended && !said_anything && exit == 0 {
         eprintln!("error: the run ended with no assistant text at all");
+        exit = 1;
+    } else if !json && matches!(last_stop, Some((StopReason::Error, _))) {
         exit = 1;
     }
     exit
@@ -425,5 +426,49 @@ mod tests {
             assert_eq!(runtime.block_on(run), code, "eval {eval}");
         }
         Ok(())
+    }
+
+    /// Dies with any provider error setting the exit: a stream error the loop retried and
+    /// answered past still exited 1 in plain mode, which a script reads as a failed run.
+    #[test]
+    fn a_provider_error_the_run_recovered_from_exits_zero() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use yi_runtime::faux::{faux_assistant_message, faux_text};
+        use yi_types::message::StopReason;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let never = || false;
+        let error = faux_assistant_message(Vec::new(), StopReason::Error);
+        let answer = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+        let cases = [
+            (vec![error.clone(), answer.clone()], 0),
+            (vec![answer, error], 1),
+        ];
+        for (messages, code) in cases {
+            let (events, receiver) = tokio::sync::broadcast::channel(8);
+            for message in messages {
+                events.send(AgentEvent::MessageEnd { message })?;
+            }
+            events.send(AgentEvent::AgentEnd {
+                messages: Vec::new(),
+            })?;
+            let modes = super::Modes {
+                json: false,
+                eval: false,
+            };
+            let run = super::follow(receiver, [&never, &never], modes, None, None);
+            assert_eq!(runtime.block_on(run), code);
+        }
+        Ok(())
+    }
+
+    /// Dies with half of `--deadline`'s remainder: a blocking request held an early exit.
+    #[test]
+    fn the_runtime_shutdown_never_waits_past_its_grace() {
+        let far = Instant::now().checked_add(Duration::from_secs(600));
+        assert!(super::left(far) <= super::SHUTDOWN_GRACE);
+        let near = Instant::now().checked_add(Duration::from_secs(4));
+        assert!(super::left(near) <= Duration::from_secs(2));
     }
 }
