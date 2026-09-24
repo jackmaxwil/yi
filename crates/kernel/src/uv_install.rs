@@ -93,8 +93,8 @@ pub fn install(
         return Ok(uv);
     }
     let url = release.url();
-    let archive =
-        fetch(&url).map_err(|error| format!("couldn't download {url}: {error}; {REMEDY}"))?;
+    let archive = fetch(&url)
+        .map_err(|error| format!("couldn't download uv {UV_VERSION}: {error}; {REMEDY}"))?;
     let digest = sha256_hex(&archive);
     if digest != release.sha256 {
         return Err(format!(

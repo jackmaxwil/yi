@@ -480,20 +480,19 @@ pub fn find_system_python() -> Option<PathBuf> {
 }
 
 /// uv on PATH or under `~/.local/bin`, else the pinned uv Yi installed, else the machine's
-/// python3 3.11+ with venv, else the pinned uv fetched now.
+/// python3 3.11+ with venv; `None` leaves only fetching the pinned uv.
+pub fn existing_toolchain(home: &Path) -> Option<Toolchain> {
+    let local_uv = home.join(".local").join("bin").join("uv");
+    find_executable("uv")
+        .or_else(|| is_executable(&local_uv).then_some(local_uv))
+        .or_else(|| crate::uv_install::installed(home))
+        .map(Toolchain::Uv)
+        .or_else(|| find_system_python().map(Toolchain::System))
+}
+
 pub fn find_toolchain(options: &BootstrapOptions) -> Result<Toolchain, String> {
-    if let Some(uv) = find_executable("uv") {
-        return Ok(Toolchain::Uv(uv));
-    }
-    let local_uv = options.home.join(".local").join("bin").join("uv");
-    if is_executable(&local_uv) {
-        return Ok(Toolchain::Uv(local_uv));
-    }
-    if let Some(uv) = crate::uv_install::installed(&options.home) {
-        return Ok(Toolchain::Uv(uv));
-    }
-    if let Some(python) = find_system_python() {
-        return Ok(Toolchain::System(python));
+    if let Some(toolchain) = existing_toolchain(&options.home) {
+        return Ok(toolchain);
     }
     let release = crate::uv_install::Release::pinned()?;
     options.progress(&format!(
