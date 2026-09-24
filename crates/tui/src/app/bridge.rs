@@ -9,6 +9,8 @@ use yi_types::event::AgentEvent;
 
 use super::{AskRequest, Command, UiEvent};
 
+const QUIT_GRACE: Duration = Duration::from_secs(3);
+
 /// One bus into the UI queue, the parent's or a child's. A lagged receiver reports the gap
 /// and keeps going, as the ACP forwarder does; only a closed bus or a gone UI ends it.
 pub async fn forward(
@@ -136,10 +138,16 @@ pub(crate) fn spawn_runtime_bridge(
                             }
                         }
                         Command::Abort => driver_session.abort(),
-                        Command::Shutdown => break,
+                        Command::Shutdown => {
+                            driver_session.abort();
+                            break;
+                        }
                     }
                 }
             });
+            // Incident: a kernel cell running at quit held a blocking thread, and dropping the
+            // runtime waited out the cell (up to its 600 s ceiling) before the process exited.
+            runtime.shutdown_timeout(QUIT_GRACE);
         });
     (ui_rx, cmd_tx, runtime_thread)
 }
