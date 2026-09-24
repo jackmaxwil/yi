@@ -103,7 +103,7 @@ pub fn register_child_messaging(
     });
     let (sender, own) = (link.clone(), Arc::clone(local));
     registry.register("agent_message.request", move |payload| {
-        own.waited();
+        own.waited_on(true);
         let parsed = Draft::from_payload(&payload);
         let timeout = timeout_of(&payload);
         let sender = sender.clone();
@@ -124,6 +124,35 @@ pub fn register_child_messaging(
     registry.register("agent_message.list_agents", move |_payload| {
         let reply = link.roster();
         Box::pin(async move { Ok(reply) })
+    });
+}
+
+pub fn register_receive(
+    session: &crate::session::AgentSession,
+    host: &Arc<SubagentHost>,
+    registry: &mut crate::kernel::HostRegistry,
+) {
+    let (take, host) = (session.mail_hook(), Arc::clone(host));
+    registry.register("rlm.receive", move |payload| {
+        let asked = timeout_of(&payload);
+        let clamped = asked.clamp(WAIT_MIN_MS, WAIT_MAX_MS);
+        let (take, host) = (Arc::clone(&take), Arc::clone(&host));
+        Box::pin(async move {
+            let started = std::time::Instant::now();
+            let deadline = std::time::Duration::from_millis(clamped);
+            loop {
+                let envelopes = take();
+                if !envelopes.is_empty() || started.elapsed() >= deadline {
+                    host.waited_on(!envelopes.is_empty());
+                    let mut reply = Map::new();
+                    reply.insert("envelopes".to_owned(), Value::Array(envelopes));
+                    reply.insert("timeout_ms".to_owned(), Value::from(clamped));
+                    reply.insert("clamped".to_owned(), Value::Bool(clamped != asked));
+                    return Ok(reply);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(WAIT_POLL_MS)).await;
+            }
+        })
     });
 }
 
@@ -151,6 +180,25 @@ impl ParentLink {
             .upgrade()
             .ok_or_else(|| "the parent session is gone".to_owned())?;
         host.route_mail(&self.child_name, target, draft)
+    }
+
+    pub fn ask(&self, question: &str, cancelled: &yi_tools::CancelFlag) -> Result<String, String> {
+        let host = self.host.upgrade().ok_or("the parent session is gone")?;
+        let runtime = tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
+        runtime.block_on(async {
+            let stopped = async {
+                while !cancelled() {
+                    tokio::time::sleep(std::time::Duration::from_millis(WAIT_POLL_MS)).await;
+                }
+            };
+            let asked = host.request(&self.child_name, PARENT_NAME, question, WAIT_MAX_MS);
+            tokio::select! {
+                answer = asked => answer.map(|reply| {
+                    reply.get("reply").and_then(Value::as_str).unwrap_or_default().to_owned()
+                }),
+                () = stopped => Err("the run was stopped before the parent answered".to_owned()),
+            }
+        })
     }
 
     pub fn roster(&self) -> Map<String, Value> {
@@ -263,6 +311,7 @@ impl SubagentHost {
             record.step(Step::Replied);
             let cause = match draft.kind {
                 Kind::Progress => Cause::Progress,
+                Kind::Request => Cause::Asked,
                 // The child's own verdict on its work: `wait` reports it failed from here on.
                 Kind::Failure if record.step(Step::Failed(draft.text.clone())) => Cause::Failed,
                 _ => Cause::Mail,
@@ -389,9 +438,9 @@ impl SubagentHost {
         &self,
         timeout_ms: u64,
         cursor: Option<u64>,
-        named: bool,
+        bare: bool,
     ) -> Map<String, Value> {
-        self.waited();
+        self.waited_on(false);
         let clamped = timeout_ms.clamp(WAIT_MIN_MS, WAIT_MAX_MS);
         let deadline = std::time::Instant::now()
             .checked_add(std::time::Duration::from_millis(clamped))
@@ -399,9 +448,11 @@ impl SubagentHost {
         let since = cursor.unwrap_or(0);
         loop {
             let (epoch, moved, live) = self.changed_since(since);
-            let quiet = named && moved.is_empty() && live;
+            let quiet = bare && moved.is_empty() && live;
             if (epoch > since && !quiet) || std::time::Instant::now() >= deadline {
-                self.saw(None);
+                if bare {
+                    self.saw(None);
+                }
                 let changed: Vec<&str> = moved.keys().map(String::as_str).collect();
                 let causes: Map<String, Value> = moved
                     .iter()
@@ -547,7 +598,10 @@ impl SubagentHost {
                     result.discoveries.len()
                 ));
             }
-            crate::goal::run_check(&check, crate::goal::DEFAULT_CHECK_TIMEOUT_MS).map_err(
+            let cwd = self
+                .cwd_of(&name)
+                .unwrap_or_else(|| self.options.cwd.clone());
+            crate::goal::run_check(&check, &cwd, crate::goal::DEFAULT_CHECK_TIMEOUT_MS).map_err(
                 |evidence| {
                     format!("child \"{target}\" result held back; its check is red: {evidence}")
                 },
@@ -591,8 +645,8 @@ impl SubagentHost {
                 adjudged
                     .entry(id)
                     .or_insert_with(|| {
-                        crate::goal::run_check(&check, crate::goal::DISCOVERY_CHECK_TIMEOUT_MS)
-                            .err()
+                        let timeout = crate::goal::DISCOVERY_CHECK_TIMEOUT_MS;
+                        crate::goal::run_check(&check, &self.options.cwd, timeout).err()
                     })
                     .clone()
                     .map(|evidence| (id, evidence))
@@ -681,6 +735,8 @@ impl SubagentHost {
             (key, record)
         };
         if record.exit.is_none() {
+            // Cancelled first, so the settle of the aborted run starts none for mail it queued.
+            record.session.cancel();
             record.session.abort();
             // A lane refusal stays the cause of a plain removal; a repossession names itself.
             let cause = match exit {

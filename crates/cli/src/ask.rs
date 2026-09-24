@@ -96,7 +96,45 @@ async fn stream(
 ) -> i32 {
     let held = || host.holds_owner();
     let working = || host.holds_owner() || session.status() != Status::Idle;
-    follow(session.subscribe(), [&held, &working], json, schema, ends).await
+    let code = follow(session.subscribe(), [&held, &working], json, schema, ends).await;
+    if let Some((said, line)) = leftovers(&host.states(), session.pending_count()) {
+        eprintln!("warning: {said}");
+        if json {
+            println!("{line}");
+        }
+    }
+    code
+}
+
+fn leftovers(
+    members: &[yi_runtime::family::MemberView],
+    undelivered: usize,
+) -> Option<(String, serde_json::Value)> {
+    use yi_runtime::family::MemberState;
+    let live: Vec<_> = members
+        .iter()
+        .filter(|view| !matches!(view.state, MemberState::Finished | MemberState::Failed))
+        .map(|view| (view.name.as_str(), view.state.as_str()))
+        .collect();
+    if live.is_empty() && undelivered == 0 {
+        return None;
+    }
+    let named: Vec<String> = live
+        .iter()
+        .map(|(name, state)| format!("{name} ({state})"))
+        .collect();
+    let said = format!(
+        "the run ends with {} live child(ren) [{}] and {undelivered} undelivered message(s); they end with it",
+        live.len(),
+        named.join(", ")
+    );
+    let children: Vec<_> = live
+        .iter()
+        .map(|(name, state)| serde_json::json!({"name": name, "state": state}))
+        .collect();
+    let line =
+        serde_json::json!({"type": "leftovers", "children": children, "undelivered": undelivered});
+    Some((said, line))
 }
 
 /// Incident: a plan child's finish wakes the owner, so it waits, but only on what wakes it (#489).
@@ -186,6 +224,37 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use yi_types::event::AgentEvent;
+
+    /// Dies with no leftovers report: `mbx-detach` exited 0 with its child mid-work, silently.
+    #[test]
+    fn a_run_that_ends_with_a_live_child_names_it() -> Result<(), Box<dyn std::error::Error>> {
+        use yi_runtime::family::{MemberState, MemberView};
+        let view = |name: &str, state| MemberView {
+            name: name.to_owned(),
+            state,
+            note: None,
+            tools: 0,
+            tokens: 0,
+            idle_s: 0,
+            worktree: None,
+        };
+        let members = [
+            view("slow", MemberState::Running),
+            view("done", MemberState::Finished),
+        ];
+        let (said, line) = super::leftovers(&members, 1).ok_or("nothing reported")?;
+        assert!(
+            said.contains("slow (running)") && !said.contains("done"),
+            "{said}"
+        );
+        assert_eq!(line["children"][0]["name"], "slow");
+        assert_eq!(line["undelivered"], 1);
+        assert!(
+            super::leftovers(&members[1..], 0).is_none(),
+            "a clean end says nothing"
+        );
+        Ok(())
+    }
 
     /// Dies with the deadline unread: a finish that never settles holds `yi ask` open forever.
     #[test]

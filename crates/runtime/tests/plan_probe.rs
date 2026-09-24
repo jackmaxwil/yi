@@ -79,7 +79,7 @@ fn rig() -> Result<(Rig, ProbeLadder), Box<dyn Error>> {
     let woke = Arc::clone(&wakes);
     let ladder = ProbeLadder::new(
         Arc::clone(&engine),
-        dir.to_path_buf(),
+        (&*dir, &*dir),
         Arc::new(move |message: AgentMessage, _mode| {
             if let AgentMessage::Custom { content, .. } = message
                 && let Ok(mut said) = sink.lock()
@@ -331,7 +331,7 @@ fn the_backstop_starts_only_the_roots_this_session_owns() -> TestResult {
         "the first spawn was refused"
     );
     let deliver: yi_runtime::goal::DeliverFn = Arc::new(|_message, _mode| {});
-    let sibling = ProbeLadder::new(Arc::clone(&engine), dir.to_path_buf(), Arc::clone(&deliver))
+    let sibling = ProbeLadder::new(Arc::clone(&engine), (&*dir, &*dir), Arc::clone(&deliver))
         .with_owned(Arc::new(Vec::new));
     let _ = sibling.tick(Instant::now());
     assert_eq!(
@@ -340,7 +340,7 @@ fn the_backstop_starts_only_the_roots_this_session_owns() -> TestResult {
         "a sibling's tick starts nothing here"
     );
     let owned = root.clone();
-    let own = ProbeLadder::new(Arc::clone(&engine), dir.to_path_buf(), deliver)
+    let own = ProbeLadder::new(Arc::clone(&engine), (&*dir, &*dir), deliver)
         .with_owned(Arc::new(move || vec![owned.clone()]));
     let _ = own.tick(Instant::now());
     assert!(

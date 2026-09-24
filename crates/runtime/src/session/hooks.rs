@@ -89,6 +89,17 @@ impl AgentSession {
         })
     }
 
+    pub fn mail_hook(&self) -> Arc<dyn Fn() -> Vec<serde_json::Value> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            let taken = shared
+                .steer
+                .lock()
+                .map(|mut queue| run::take_mail(&mut queue));
+            crate::mail::received(store_of(&shared), taken.unwrap_or_default())
+        })
+    }
+
     pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage, Option<StillNews>) + Send + Sync> {
         let parts = self.parts();
         Arc::new(move |message, news| {

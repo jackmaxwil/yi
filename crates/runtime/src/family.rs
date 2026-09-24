@@ -74,9 +74,8 @@ impl Cause {
         }
     }
 
-    pub fn ended(exit: ChildExit, asked: bool) -> Self {
+    pub fn ended(exit: ChildExit) -> Self {
         match exit {
-            ChildExit::Completed if asked => Self::Asked,
             ChildExit::Completed => Self::Finished,
             ChildExit::Interrupted => Self::Interrupted,
             ChildExit::Reaped => Self::Reaped,
@@ -144,26 +143,6 @@ fn cut(text: &str) -> String {
     }
 }
 
-/// The question a member ended its turn on, when its last assistant message called `ask_user`.
-pub fn pending_question(messages: &[AgentMessage]) -> Option<String> {
-    let last = messages
-        .iter()
-        .rev()
-        .find(|message| matches!(message, AgentMessage::Assistant { .. }))?;
-    let AgentMessage::Assistant { content, .. } = last else {
-        return None;
-    };
-    content.iter().find_map(|block| match block {
-        Content::ToolCall {
-            name, arguments, ..
-        } if name == "ask_user" => Some(cut(arguments
-            .get("question")
-            .and_then(Value::as_str)
-            .unwrap_or("asked a question"))),
-        _ => None,
-    })
-}
-
 /// A stuck or waiting signal in one recent record. `stuck` is the loop's typed `signal`,
 /// never a record's name: a renamed or look-alike record cannot make or hide a stuck child.
 fn signal_of(entry: &Entry) -> Option<(MemberState, String)> {
@@ -204,22 +183,17 @@ fn timestamp_of(entry: &Entry) -> u64 {
     }
 }
 
-/// The state a member's newest records show: `needs_you` after `ask_user` or a todo blocked
-/// on the user, `stuck` after a re-drive in them or [`STUCK_IDLE_MS`] idle; the note says which.
+/// The state a member's newest records show: `needs_you` after a todo blocked on the user,
+/// `stuck` after a re-drive in them or [`STUCK_IDLE_MS`] idle; the note says which.
 pub fn state_from_records(
     (exit, phase): (Option<ChildExit>, Phase),
     error: Option<&str>,
-    messages: &[AgentMessage],
     recent: &[Entry],
     now_ms: u64,
 ) -> (MemberState, Option<String>, u64) {
     let newest = recent.iter().map(timestamp_of).max().unwrap_or(now_ms);
     let idle_s = now_ms.saturating_sub(newest) / 1000;
     match read_exit(exit).state {
-        MemberState::Finished => match pending_question(messages) {
-            Some(question) => (MemberState::NeedsYou, Some(question), idle_s),
-            None => (MemberState::Finished, None, idle_s),
-        },
         MemberState::Running if phase == Phase::Queued => (MemberState::Queued, None, idle_s),
         MemberState::Running if phase == Phase::Failed => {
             (MemberState::Failed, error.map(cut), idle_s)

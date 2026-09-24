@@ -354,8 +354,11 @@ impl SubagentHost {
             children.get(&key)?.check.clone()?
         };
         let timeout = crate::goal::DEFAULT_CHECK_TIMEOUT_MS;
+        let cwd = self
+            .cwd_of(name)
+            .unwrap_or_else(|| self.options.cwd.clone());
         let red = (!verified)
-            .then(|| crate::goal::run_check_at(&check, Some(&self.options.cwd), timeout).err())
+            .then(|| crate::goal::run_check(&check, &cwd, timeout).err())
             .flatten();
         if let Some(evidence) = red {
             return Some(format!("its check is red: {evidence}"));
@@ -383,12 +386,14 @@ impl SubagentHost {
         live.unwrap_or(false) || self.settling.load(Ordering::SeqCst) > 0
     }
 
-    /// A finish settling, or a plan child still moving; a stuck or owner-spawned child holds nothing.
+    /// A finish settling, or any child still moving or asking; a stuck child holds nothing.
     pub fn holds_owner(&self) -> bool {
         use crate::family::MemberState;
         let moving = |view: &crate::family::MemberView| {
-            view.name.contains('/')
-                && matches!(view.state, MemberState::Running | MemberState::Queued)
+            matches!(
+                view.state,
+                MemberState::Running | MemberState::Queued | MemberState::NeedsYou
+            )
         };
         self.settling.load(Ordering::SeqCst) > 0 || self.states().iter().any(moving)
     }
@@ -798,6 +803,93 @@ mod tests {
             "{said:?}"
         );
         assert!(epoch().map_err(|_| "poisoned")? > ended, "{said:?}");
+        Ok(())
+    }
+
+    async fn ended(host: &std::sync::Arc<crate::SubagentHost>) -> bool {
+        for _ in 0..400 {
+            if host
+                .states()
+                .iter()
+                .any(|view| view.state.as_str() == "finished")
+            {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    /// Dies with `refold` reading only a live session: a lagged woken run never concluded.
+    #[tokio::test]
+    async fn a_lagged_watch_concludes_a_woken_run_it_never_saw_start() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut")])?;
+        let named = serde_json::Map::from_iter([("name".to_owned(), "kid".into())]);
+        rig.host.spawn("cut".to_owned(), named)?;
+        assert!(ended(&rig.host).await, "child never completed");
+        let key = {
+            let mut children = rig.host.children.lock().map_err(|_| "poisoned")?;
+            let (key, record) = children.iter_mut().next().ok_or("no record")?;
+            record.step(crate::subagent::Step::Resumed);
+            key.clone()
+        };
+        if rig.host.refold(&key) {
+            rig.host.resume(&key);
+        }
+        assert!(ended(&rig.host).await, "the woken run was never concluded");
+        Ok(())
+    }
+
+    /// Dies with every wait counted: an empty family's wait exempted a repeat forever.
+    #[tokio::test]
+    async fn only_a_wait_on_a_live_family_counts_for_the_breaker() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut")])?;
+        let counted = || rig.host.waits.load(std::sync::atomic::Ordering::SeqCst);
+        drop(rig.host.wait(1_000, None).await);
+        assert_eq!(counted(), 0, "nothing lives to wait on");
+        rig.host.spawn("cut".to_owned(), serde_json::Map::new())?;
+        drop(rig.host.wait(1_000, None).await);
+        assert_eq!(counted(), 1, "a live child is waited on");
+        Ok(())
+    }
+
+    /// Dies with the ask ending the child's run: it would be accepted mid-question.
+    #[tokio::test]
+    async fn an_asking_child_is_not_submitted() -> TestResult {
+        let ask = serde_json::Map::from_iter([("question".to_owned(), "which region?".into())]);
+        let rig = hooked(vec![yi_ai::faux::faux_assistant_message(
+            vec![yi_ai::faux::faux_tool_call("ask-1", "ask_user", ask)],
+            yi_types::message::StopReason::ToolUse,
+        )])?;
+        rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![delegated("cut the seam")?],
+        }))?;
+        let mut asked = None;
+        for _ in 0..400 {
+            asked = texts(&rig.reports)
+                .into_iter()
+                .find(|text| text.contains("which region?"));
+            if asked.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let asked = asked.ok_or("the parent never got the question")?;
+        assert!(asked.contains("reply_to="), "{asked}");
+        let plan = rig.engine.apply(owner(Op::View { full: false }))?.plan;
+        let todo = plan
+            .todo(&yi_types::plan::doc::TodoLabel::new("cut the seam")?)
+            .ok_or("todo missing")?;
+        assert!(
+            matches!(todo.state, TodoState::Running { .. }),
+            "{:?}",
+            todo.state
+        );
+        assert!(texts(&rig.said).is_empty(), "nothing was submitted");
+        for child in rig.host.children_view() {
+            rig.host.interrupt(&child.update.name)?;
+        }
         Ok(())
     }
 }

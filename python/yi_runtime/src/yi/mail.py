@@ -2,6 +2,7 @@
 
     send      one message; the receipt says what the host did with it
     request   send and wait for the reply
+    receive   wait for mail; what it returns is never presented to you again
     inbox     every envelope the host accepted for you, read from your own history
 
 The host writes an envelope to the receiver's inbox before it delivers anything,
@@ -24,6 +25,7 @@ import rlm
 
 send = rlm.send
 request = rlm.request
+receive = rlm.receive
 
 
 async def inbox(agent: str = "self", since: int = 0, limit: int | None = None) -> list[dict[str, Any]]:

@@ -337,6 +337,8 @@ pub struct KernelService {
     sandbox: tokio::sync::Mutex<Option<yi_tools::Sandbox>>,
     manager: tokio::sync::Mutex<Option<Arc<KernelManager>>>,
     last_error: Mutex<Option<String>>,
+    on_death: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    died: std::sync::atomic::AtomicBool,
 }
 
 impl KernelService {
@@ -346,6 +348,32 @@ impl KernelService {
             options,
             manager: tokio::sync::Mutex::new(None),
             last_error: Mutex::new(None),
+            on_death: Mutex::new(None),
+            died: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub fn on_death(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        if let Ok(mut slot) = self.on_death.lock() {
+            *slot = Some(hook);
+        }
+    }
+
+    pub fn take_death(&self) -> bool {
+        self.died.swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn died_under(&self, manager: &Arc<KernelManager>, cancelled: &CancelFlag) {
+        let ours = self
+            .manager
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|held| Arc::ptr_eq(held, manager));
+        let hook = self.on_death.lock().ok().and_then(|slot| slot.clone());
+        if let (true, false, false, Some(hook)) = (ours, cancelled(), manager.is_running(), hook) {
+            self.died.store(true, std::sync::atomic::Ordering::SeqCst);
+            hook();
         }
     }
 
@@ -623,7 +651,10 @@ impl KernelService {
                     self.kill().await;
                     kernel_restarted = true;
                 }
-                Err(error) => return Err(error.to_string()),
+                Err(error) => {
+                    self.died_under(&manager, cancelled).await;
+                    return Err(error.to_string());
+                }
             }
         }
     }

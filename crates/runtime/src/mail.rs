@@ -10,6 +10,7 @@ use yi_types::message::{AgentMessage, UserContent};
 use crate::subagent::{PARENT_NAME, SubagentHost};
 
 pub(crate) const INBOX_ENTRY: &str = "agent_message";
+const READ_ENTRY: &str = "agent_message_read";
 pub(crate) const BODY_CAP: usize = crate::mailbox::CONTEXT_TOTAL_CAP;
 /// Requests one sender may have waiting at once; a flood refuses instead of growing the map.
 const MAX_OUTSTANDING: usize = 16;
@@ -110,6 +111,7 @@ struct Waiter {
     sender: String,
     respondent: String,
     reply: oneshot::Sender<Result<Envelope, String>>,
+    asked: String,
 }
 
 /// The host's mail state under one lock, held across a whole routing so that the order `seq`
@@ -181,6 +183,21 @@ impl Desk {
 }
 
 impl Desk {
+    pub(crate) fn asking(&self) -> HashMap<String, String> {
+        let asked = self
+            .waiters
+            .iter()
+            .filter(|(_, waiter)| waiter.respondent == PARENT_NAME);
+        asked
+            .map(|(id, waiter)| {
+                (
+                    waiter.sender.clone(),
+                    format!("asks {id}: {}", waiter.asked),
+                )
+            })
+            .collect()
+    }
+
     /// A terminated respondent answers nothing, so its waiters are refused at once with the
     /// termination named; a timeout would say the wrong thing a long time later.
     pub(crate) fn drop_respondent(&mut self, respondent: &str, how: &str) {
@@ -264,9 +281,14 @@ pub(crate) fn unread(entries: &[yi_types::entry::Entry]) -> Vec<AgentMessage> {
     use yi_types::entry::Entry;
     let shown: std::collections::HashSet<&str> = entries
         .iter()
-        .filter_map(|entry| match entry {
-            Entry::Message { message, .. } => envelope_id(message),
-            _ => None,
+        .flat_map(|entry| match entry {
+            Entry::Message { message, .. } => envelope_id(message).into_iter().collect(),
+            Entry::Custom {
+                custom_type,
+                data: Some(Value::Array(ids)),
+                ..
+            } if custom_type == READ_ENTRY => ids.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
         })
         .collect();
     entries
@@ -284,6 +306,28 @@ pub(crate) fn unread(entries: &[yi_types::entry::Entry]) -> Vec<AgentMessage> {
         })
         .map(|envelope| present(&envelope))
         .collect()
+}
+
+pub(crate) fn received(
+    store: Option<yi_session::SharedSession>,
+    taken: Vec<AgentMessage>,
+) -> Vec<Value> {
+    let envelopes: Vec<Value> = taken
+        .into_iter()
+        .filter_map(|message| match message {
+            AgentMessage::Custom { details, .. } => details,
+            _ => None,
+        })
+        .collect();
+    let ids: Vec<Value> = envelopes
+        .iter()
+        .filter_map(|envelope| envelope.get("id").cloned())
+        .collect();
+    if let Some(store) = store.filter(|_| !ids.is_empty()) {
+        let _refused_read_mark_rereads_after_a_crash = yi_session::lock_session(&store)
+            .append_custom("main", READ_ENTRY, Some(Value::Array(ids)));
+    }
+    envelopes
 }
 
 /// Retires a request's waiter on every way out: a reply, a timeout, a refused send, or the
@@ -311,9 +355,6 @@ impl SubagentHost {
         if target == "all" {
             return Err("a request has one respondent; send to \"all\" instead".to_owned());
         }
-        if from == PARENT_NAME {
-            self.waited();
-        }
         let timeout_ms = timeout_ms.min(crate::mailbox::WAIT_MAX_MS);
         let respondent = self.member_name(target);
         let (id, reply) = {
@@ -330,6 +371,13 @@ impl SubagentHost {
                 sender: from.to_owned(),
                 respondent: respondent.clone(),
                 reply: sender,
+                asked: text
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(120)
+                    .collect(),
             };
             desk.waiters.insert(id.clone(), waiter);
             (id, reply)
@@ -342,6 +390,9 @@ impl SubagentHost {
             ..Draft::plain(text, false)
         };
         let mut sent = self.route_mail(from, target, &draft)?;
+        if from == PARENT_NAME {
+            self.waited_on(false);
+        }
         let wait = std::time::Duration::from_millis(timeout_ms);
         let answer = match tokio::time::timeout(wait, reply).await {
             Ok(Ok(Ok(answer))) => Some(answer),

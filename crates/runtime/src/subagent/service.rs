@@ -67,6 +67,19 @@ pub(super) fn handle(
     reply.as_object().cloned().unwrap_or_default()
 }
 
+pub(super) fn watch_kernel(session: &Arc<crate::session::AgentSession>) {
+    let Some(kernel) = session.kernel_service() else {
+        return;
+    };
+    let weak = Arc::downgrade(session);
+    kernel.on_death(Arc::new(move || {
+        if let Some(session) = weak.upgrade() {
+            session.cancel();
+            session.abort();
+        }
+    }));
+}
+
 impl SubagentHost {
     pub(crate) fn incarnation_of(&self, name: &str) -> Option<u32> {
         let children = self.children.lock().ok()?;
@@ -192,6 +205,7 @@ impl SubagentHost {
             Ok(session) => Arc::new(session),
             Err(why) => return refused(why),
         };
+        watch_kernel(&session);
         let requested = session.abort_epoch();
         let dead = {
             let Ok(mut children) = self.children.lock() else {

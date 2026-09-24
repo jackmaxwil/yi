@@ -343,7 +343,7 @@ check; it is the rare case and the one that needs ownership.
    `await rlm.wait(120)` only when the next step needs a result; it returns
    the names that moved and their `states`, so read them there. Between
    waits `rlm.status()` is the fact: `needs_you` gets
-   `send(name, text, followup=True)`; `stuck` gets its tail
+   `send(name, text, reply_to=id)`; `stuck` gets its tail
    (`history://<name>/tail/20`), an `interrupt`, and a corrected respawn.
    Collect with `await h.result(schema=SCHEMA, timeout=420)`; reap with
    `rlm.delete_subagent`. Depth is one unless the config raises it.

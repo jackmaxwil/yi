@@ -463,9 +463,7 @@ pub(super) mod tests {
         let (reports, report) = sink();
         let (notices, notice) = sink::<String>();
         let (said, say) = sink();
-        let asks = script.iter().any(|message| {
-            crate::family::pending_question(std::slice::from_ref(message)).is_some()
-        });
+        let asks = serde_json::to_string(&script).is_ok_and(|text| text.contains("ask_user"));
         let cwd = root.to_path_buf();
         let host = Arc::new(SubagentHost::new(SubagentHostOptions {
             depth: 0,
@@ -477,11 +475,10 @@ pub(super) mod tests {
             lane_slots: 1,
             defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
             factory: Arc::new(move |build: ChildBuild<'_>| {
-                let _ = build;
                 let mut child = scripted(script.clone());
                 if asks {
-                    let ask: Arc<dyn yi_tools::Tool> =
-                        Arc::new(crate::auto_review::AskUserTool::new(None));
+                    let ask = crate::auto_review::AskUserTool::new(None).asking(Some(build.link));
+                    let ask: Arc<dyn yi_tools::Tool> = Arc::new(ask);
                     child.use_tools(vec![ask], cwd.clone(), None);
                 }
                 Ok(child)
@@ -839,38 +836,6 @@ pub(super) mod tests {
             notices.iter().all(|notice| !notice.contains("[subagent")),
             "a child the engine took sends no second notice: {notices:?}"
         );
-        Ok(())
-    }
-
-    /// Dies with the hook consulted on the asking arm (D165): a child waiting on its parent
-    /// would be submitted and accepted mid-question.
-    #[tokio::test]
-    async fn an_asking_child_is_not_submitted() -> TestResult {
-        let mut ask = Map::new();
-        ask.insert(
-            "question".to_owned(),
-            Value::String("which region?".to_owned()),
-        );
-        let rig = hooked(vec![yi_ai::faux::faux_assistant_message(
-            vec![yi_ai::faux::faux_tool_call("ask-1", "ask_user", ask)],
-            StopReason::ToolUse,
-        )])?;
-        rig.engine.apply(owner(Op::Init {
-            goal: GoalText::new("ship the widget")?,
-            todos: vec![delegated("cut the seam")?],
-        }))?;
-        let asked = wait_notice(&rig, "asks: which region?").await?;
-        assert!(asked.contains("rlm.send"), "{asked}");
-        let plan = rig.engine.apply(owner(Op::View { full: false }))?.plan;
-        let todo = plan
-            .todo(&TodoLabel::new("cut the seam")?)
-            .ok_or("todo missing")?;
-        assert!(
-            matches!(todo.state, TodoState::Running { .. }),
-            "{:?}",
-            todo.state
-        );
-        assert!(texts(&rig.said).is_empty(), "nothing was submitted");
         Ok(())
     }
 

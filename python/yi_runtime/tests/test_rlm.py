@@ -120,6 +120,43 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
                 await _handle().result(timeout=0.05)
         self.assertTrue(waits and all(asked <= 0.05 for asked in waits))
 
+    async def test_a_finished_child_woken_again_is_waited_on_not_refused(self) -> None:
+        """Dies with only needs_you retried: a sibling's request woke the finished child
+        between the wait and the read, and the handle raised "still running"."""
+        results: list[int] = []
+
+        async def wait_finished(timeout: float, cursor: int | None = None) -> dict:
+            return _wait_reply("finished", cursor=len(results) + 1)
+
+        async def woken_then_answer(*args, **kwargs):
+            results.append(1)
+            if len(results) == 1:
+                raise RuntimeError('child "n" is still running')
+            return {"text": "ok"}
+
+        with mock.patch.object(rlm, "wait", wait_finished), mock.patch.object(
+            rlm, "result", woken_then_answer
+        ):
+            self.assertEqual(await _handle().result(timeout=1.0), {"text": "ok"})
+
+    async def test_a_child_waiting_on_your_answer_is_named_not_waited_out(self) -> None:
+        """Dies with the ask waited on: the child's request sits in the queue of the turn this
+        cell holds, so the handle would stall until the ask timed out on its default."""
+
+        async def wait_asking(timeout: float, cursor: int | None = None) -> dict:
+            reply = _wait_reply("needs_you")
+            reply["notes"] = {"n": "asks n-3: Which file name?"}
+            return reply
+
+        async def still_running(*args, **kwargs):
+            raise RuntimeError('child "n" is still running')
+
+        with mock.patch.object(rlm, "wait", wait_asking), mock.patch.object(
+            rlm, "result", still_running
+        ):
+            with self.assertRaisesRegex(RuntimeError, "asks n-3: Which file name.*reply_to"):
+                await _handle().result(timeout=1.0)
+
     async def test_a_child_asking_its_parent_is_collected_not_timed_out(self) -> None:
         """needs_you names a child that ended on ask_user (D165); its answer is collectable."""
 

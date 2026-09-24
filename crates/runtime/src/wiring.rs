@@ -167,10 +167,11 @@ fn wire_schedule(
 fn wire_goal(
     session: &AgentSession,
     registry: &mut crate::kernel::HostRegistry,
-    plan_stale_turns: Option<u64>,
+    wiring: &RuntimeWiring,
     plans_dir: &Path,
 ) {
-    let service = crate::goal::attach_goal(session, plans_dir.to_path_buf());
+    let plan_stale_turns = wiring.plan_stale_turns;
+    let service = crate::goal::attach_goal(session, plans_dir.to_path_buf(), wiring.cwd.clone());
     service.register(registry);
     session.set_goal_service(service);
     let plan = crate::plan::attach_plan(session, plan_stale_turns, plans_dir.to_path_buf());
@@ -443,7 +444,7 @@ fn wire_plan_engine(
         let children = Arc::clone(host);
         let leased = Arc::clone(host);
         let ladder = Arc::new(
-            crate::plan::probe::ProbeLadder::new(engine, plans_dir.to_path_buf(), probe_deliver)
+            crate::plan::probe::ProbeLadder::new(engine, (plans_dir, &wiring.cwd), probe_deliver)
                 .with_children(
                     Arc::new(move || children.states()),
                     lifecycle_notice(session),
@@ -604,8 +605,8 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         });
     }
     let host = subagent_host(session, &wiring, &plans_dir);
-    host.set_grant(wiring.wall.clone(), None);
     host.register(&mut registry);
+    crate::mailbox::register_receive(session, &host, &mut registry);
     session.set_environment(crate::environment::hook(
         session,
         &wiring,
@@ -615,7 +616,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         register_child_messaging(link, &host, &mut registry);
     }
     wire_schedule(session, &wiring, &mut registry);
-    wire_goal(session, &mut registry, wiring.plan_stale_turns, &plans_dir);
+    wire_goal(session, &mut registry, &wiring, &plans_dir);
     let fetch_log = Arc::new(crate::fetch::FetchLog::new());
     fetch_log.attach_session_handle(session.store_handle());
     let kernels = Arc::clone(&wiring.kernels);
@@ -743,6 +744,7 @@ fn subagent_host(
             Arc::new(move || kernels.live())
         },
     }));
+    host.set_grant(wiring.wall.clone(), None);
     let counted = Arc::downgrade(&host);
     session.set_waits(Arc::new(move || {
         let host = counted.upgrade();
