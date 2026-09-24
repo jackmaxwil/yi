@@ -490,10 +490,11 @@ impl<'a> Patcher<'a> {
         if seen.is_empty() {
             return Ok(());
         }
+        let lines = u64::try_from(snapshot.text.split('\n').count()).unwrap_or(u64::MAX);
         let unseen: Vec<u64> = section
             .collect_anchor_lines()?
             .into_iter()
-            .filter(|line| !seen.contains(line))
+            .filter(|line| *line <= lines && !seen.contains(line))
             .collect();
         if unseen.is_empty() {
             return Ok(());
