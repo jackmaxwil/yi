@@ -201,15 +201,25 @@ impl PlanEngine {
         let Some(verdict) = verdict else {
             return String::new();
         };
-        let lines: String = verdict
+        let (passed, short): (Vec<_>, Vec<_>) = verdict
             .items
             .iter()
+            .partition(|line| line.verdict == ItemVerdict::Pass);
+        let lines: String = passed
+            .iter()
             .map(|line| match &line.evidence {
-                Some(said) => format!("\n- {} {}: {said}", line.id, line.verdict),
-                None => format!("\n- {} {}", line.id, line.verdict),
+                Some(said) => format!("\n- {} pass: {said}", line.id),
+                None => format!("\n- {} pass", line.id),
             })
             .collect();
-        format!(". The engine ran its checks and they passed, so do not run them again:{lines}")
+        let short: Vec<String> = short.iter().map(|line| line.id.to_string()).collect();
+        let short = match short.as_slice() {
+            [] => String::new(),
+            ids => format!("\nNot passed, and not covered by this: {}.", ids.join(", ")),
+        };
+        format!(
+            ". The engine ran these checks and they passed, so do not run them again:{lines}{short}"
+        )
     }
 
     fn fail_finish(&self, held: &Held, cause: String) -> Result<(), PlanOpError> {
@@ -594,7 +604,8 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with a bare `plan: accepted` (G5: 8 of 8 owners re-ran it), or an unnamed cut.
+    /// Dies with a bare `plan: accepted` (G5: 8 of 8 owners re-ran it), or an unnamed cut, or
+    /// a failed item the threshold let through listed among the checks not to run again.
     #[tokio::test]
     async fn an_accepted_notice_quotes_each_check_the_engine_passed() -> TestResult {
         let rig = hooked(vec![reply("the seam is cut")])?;
@@ -602,9 +613,10 @@ mod tests {
         let args = serde_json::json!({"op": "init", "goal": "ship the widget", "todos": [{
             "label": "cut the seam",
             "delegation": {"spec": {"role": "worker"}, "accept": {"command": "true"}},
-            "contract": {"class": "inline", "items": [
+            "contract": {"class": "inline", "threshold": 600, "items": [
                 {"id": "tests", "critical": true, "weight": 1, "decider": {"cmd": "echo 12 passed"}},
-                {"id": "long", "critical": true, "weight": 1, "decider": {"cmd": long}}
+                {"id": "long", "critical": true, "weight": 1, "decider": {"cmd": long}},
+                {"id": "lint", "critical": false, "weight": 1, "decider": {"cmd": "echo lint broke; exit 1"}}
             ]},
         }]});
         let args = args.as_object().cloned().ok_or("args")?;
@@ -624,6 +636,8 @@ mod tests {
             "{said}"
         );
         assert!(said.contains("[… last 300 of 1000 chars"), "{said}");
+        assert!(!said.contains("lint broke"), "{said}");
+        assert!(said.contains("not covered by this: lint."), "{said}");
         Ok(())
     }
 

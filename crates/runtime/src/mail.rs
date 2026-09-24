@@ -241,14 +241,13 @@ impl Desk {
             .collect()
     }
 
-    pub(crate) fn show_asking(&mut self) {
-        let ids: Vec<MailId> = self
-            .oldest_asks()
-            .into_values()
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in ids {
-            if let Some(waiter) = self.waiters.get_mut(&id) {
+    pub(crate) fn show<'a>(&mut self, notes: impl IntoIterator<Item = &'a str>) {
+        for note in notes {
+            let id = note
+                .strip_prefix("asks ")
+                .and_then(|rest| rest.split_once(':'));
+            let open = id.and_then(|(id, _)| self.waiters.get_mut(&MailId(id.to_owned())));
+            if let Some(waiter) = open {
                 waiter.shown = true;
             }
         }

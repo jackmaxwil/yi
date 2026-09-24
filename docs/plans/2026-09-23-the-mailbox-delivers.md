@@ -112,6 +112,9 @@ Landed as 0.297.0 (D235, #499) from a paid confirmation of M1-M3 at 9f29fa88.
 - A pre-merge review of 06a40d3e..97cd7be2 (four): a question read off `wait` or `status`
   counts as shown, `followup` and `h.send` go out in call order, a retried provider error
   exits 0, and the shutdown keeps its 10 s grace.
+- A pre-merge review of 97cd7be2..6e1e6e17 (two): a question counts as shown only when
+  the model's reply quoted it, and an accepted notice names a failed item the threshold
+  let through instead of listing it among the checks not to rerun.
 
 ## Verification
 

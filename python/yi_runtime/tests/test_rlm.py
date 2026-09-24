@@ -341,6 +341,31 @@ class StatusTests(unittest.IsolatedAsyncioTestCase):
                 _handle().state
         self.assertIn("(await rlm.status('n')).state", str(blocked.exception))
 
+    async def test_only_a_read_the_model_sees_marks_its_questions_shown(self) -> None:
+        """Dies with a helper's read unmarked: the host counted a question quoted to
+        ``h.result``'s own wait or ``h.state`` as shown, so a plain send answered it."""
+        calls = []
+
+        async def fake_host_request(kind, payload):
+            calls.append((kind, payload.get("quiet", False)))
+            if kind == "rlm.wait":
+                return {"state": "moved", "cursor": 1, "states": {"n": "finished"}}
+            if kind == "rlm.result":
+                return {"text": "done"}
+            return {"members": [{"name": "n", "state": "running"}]}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            await asyncio.to_thread(lambda: _handle().state)
+            await _handle().result(timeout=5)
+            with self.assertRaises(KeyError):
+                await rlm.status("counter")
+            await rlm.wait(1)
+        self.assertEqual(
+            calls,
+            [("rlm.status", True), ("rlm.wait", True), ("rlm.result", False),
+             ("rlm.status", False), ("rlm.status", True), ("rlm.wait", False)],
+        )
+
     async def test_revoke_sends_the_grace_in_milliseconds(self) -> None:
         sent = []
 
