@@ -630,3 +630,39 @@ fn an_edit_to_a_charted_file_carries_a_named_grid_layer() -> TestResult {
     assert_eq!(plain.result.details["grid"], json!("skipped"));
     Ok(())
 }
+
+/// The header from the #481 confirmation run: one stray `:` between the range halves.
+#[test]
+fn a_one_mark_near_miss_header_applies_and_names_the_repair() -> TestResult {
+    let fixture = Fixture::new("near-miss")?;
+    let body: String = (1..=45).map(|n| format!("row {n}\n")).collect();
+    fixture.write("rows.txt", &body)?;
+    let tag = fixture.tag_of("rows.txt")?;
+    let edit = fixture.edit(&format!("[rows.txt#{tag}]\nPUT 40.:=40:\n+row forty\n"));
+    assert!(!edit.is_error, "{}", output_text(&edit));
+    let text = output_text(&edit);
+    assert!(
+        text.contains("read the hunk header `PUT 40.:=40:` as `PUT 40.=40:`"),
+        "{text}"
+    );
+    let content = fixture.content("rows.txt")?;
+    assert!(content.contains("row 39\nrow forty\nrow 41\n"), "{content}");
+    Ok(())
+}
+
+/// Dropping one `.` of `PUT 4.5.:` reads lines 4-5, dropping the other reads line 45.
+#[test]
+fn an_ambiguous_near_miss_header_is_still_refused() -> TestResult {
+    let fixture = Fixture::new("near-miss-ambiguous")?;
+    fixture.write("rows.txt", "a\nb\nc\nd\ne\nf\n")?;
+    let tag = fixture.tag_of("rows.txt")?;
+    let edit = fixture.edit(&format!("[rows.txt#{tag}]\nPUT 4.5.:\n+x\n"));
+    assert!(edit.is_error, "{}", output_text(&edit));
+    assert!(
+        output_text(&edit).contains("no preceding hunk header"),
+        "{}",
+        output_text(&edit)
+    );
+    assert_eq!(fixture.content("rows.txt")?, "a\nb\nc\nd\ne\nf\n");
+    Ok(())
+}

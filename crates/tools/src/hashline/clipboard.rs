@@ -76,8 +76,6 @@ fn read_register(
         }
         return Err(format!("line {line_num}: {EMPTY_PASTE}"));
     };
-    // Successful anonymous read clears the pending ambiguity counter for
-    // follow-up pastes.
     clipboard.pending_anon_cuts.clear();
     Ok(Some(lines))
 }

@@ -611,6 +611,46 @@ pub fn is_hunk_header_text(text: &str) -> bool {
     is_hunk_lead && try_parse_hunk_header(text).is_some()
 }
 
+/// `PUT 40.:=40:` read as `PUT 40.=40:`: kept only when every one-mark repair names one op.
+pub fn near_miss_hunk_header(text: &str) -> Option<(String, TargetScan)> {
+    let lead = text.trim_start();
+    let keyword = [
+        HL_PUT_KEYWORD,
+        HL_CUT_KEYWORD,
+        HL_REM_KEYWORD,
+        HL_MOVE_KEYWORD,
+    ]
+    .into_iter()
+    .any(|keyword| lead.starts_with(keyword));
+    if !keyword {
+        return None;
+    }
+    let mut found: Option<(String, TargetScan)> = None;
+    for (skip, mark) in text.chars().enumerate() {
+        if mark.is_alphanumeric() || mark.is_whitespace() {
+            continue;
+        }
+        let repaired: String = text
+            .chars()
+            .enumerate()
+            .filter_map(|(at, kept)| (at != skip).then_some(kept))
+            .collect();
+        let Some(scan) = try_parse_hunk_header(&repaired) else {
+            continue;
+        };
+        match &found {
+            Some((_, prior))
+                if prior.target != scan.target || prior.had_colon != scan.had_colon =>
+            {
+                return None;
+            }
+            Some(_) => {}
+            None => found = Some((repaired, scan)),
+        }
+    }
+    found
+}
+
 pub struct ParsedHeader {
     pub path: String,
     pub file_hash: Option<String>,
