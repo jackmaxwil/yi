@@ -383,6 +383,46 @@ fn a_broken_config_file_fails_instead_of_reading_as_absent() -> TestResult {
     Ok(())
 }
 
+/// Invariant: the levers override rides an eval harness's own `--eval`, so the variable
+/// alone is inert in a user's run, `--deadline` or not, and a refused file stops the run
+/// before any model call (D220).
+#[test]
+fn yi_levers_is_read_only_under_the_eval_flag() -> TestResult {
+    let workspace = Workspace::new("levers")?;
+    let out_of_range = workspace.project().join("wide.json");
+    std::fs::write(&out_of_range, r#"{"plan.width_max": 99}"#)?;
+    let wide = out_of_range.display().to_string();
+    let refused = workspace.yi_env(
+        &["ask", "--model", "faux/faux-1", "--eval", "hi"],
+        &[("YI_LEVERS", wide.as_str())],
+    )?;
+    assert_eq!(refused.status.code(), Some(1));
+    let reason = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(
+        reason.contains("plan.width_max wants an integer in 1..=16, not 99")
+            && reason.contains("refusal:config"),
+        "{reason}"
+    );
+    for extra in [&[][..], &["--deadline", "600"][..]] {
+        let mut args = vec!["ask", "--model", "faux/faux-1"];
+        args.extend_from_slice(extra);
+        args.push("hi");
+        let ran = workspace.yi_env(&args, &[("YI_LEVERS", wide.as_str())])?;
+        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+        assert!(!said.contains("YI_LEVERS"), "the file was read: {said}");
+        assert!(!said.contains("levers:"), "the run was overridden: {said}");
+    }
+    let narrow = workspace.project().join("narrow.json");
+    std::fs::write(&narrow, r#"{"plan.width_max": 4}"#)?;
+    let announced = workspace.yi_env(
+        &["ask", "--model", "faux/faux-1", "--eval", "hi"],
+        &[("YI_LEVERS", narrow.display().to_string().as_str())],
+    )?;
+    let banner = String::from_utf8_lossy(&announced.stderr).into_owned();
+    assert!(banner.contains("levers: this run reads"), "{banner}");
+    Ok(())
+}
+
 /// `yi gate` is the dry run: the same decision the tool seam would make, with
 /// the exit code carrying it for a script and `--json` for a reader.
 #[test]
@@ -990,5 +1030,79 @@ fn memory_imports_lists_checks_and_forgets() -> TestResult {
     assert_eq!(show.status.code(), Some(1));
     let usage = workspace.yi(&["memory", "frobnicate"])?;
     assert_eq!(usage.status.code(), Some(2));
+    Ok(())
+}
+
+/// A `--faux` script: a bash call running `command`, then `after` if given.
+fn bash_script(
+    workspace: &Workspace,
+    command: &str,
+    after: Option<&str>,
+) -> Result<String, Box<dyn Error>> {
+    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_types::message::StopReason;
+    let args = serde_json::json!({"command": command});
+    let call = faux_tool_call("c1", "bash", args.as_object().cloned().unwrap_or_default());
+    let mut lines = vec![serde_json::to_string(&faux_assistant_message(
+        vec![call],
+        StopReason::ToolUse,
+    ))?];
+    if let Some(text) = after {
+        let said = faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+        lines.push(serde_json::to_string(&said)?);
+    }
+    let path = workspace.project().join("script.jsonl");
+    std::fs::write(&path, lines.join("\n"))?;
+    Ok(path.display().to_string())
+}
+
+/// Dies with the last word started at `--deadline` and followed 90 s past it: the eval
+/// harness kills `yi ask` at the deadline, so the answer and the lane release were lost.
+#[test]
+fn a_run_past_its_deadline_answers_and_exits_inside_it() -> TestResult {
+    let workspace = Workspace::new("deadline-last-word")?;
+    let script = bash_script(&workspace, "sleep 100", Some("the last word"))?;
+    let started = std::time::Instant::now();
+    let answered = ask(
+        &workspace,
+        "go",
+        &["--faux", &script, "--json", "--deadline", "12"],
+    )?;
+    let took = started.elapsed();
+    assert!(took < std::time::Duration::from_secs(12), "{took:?}");
+    assert!(
+        stdout(&answered).contains("the last word"),
+        "{}",
+        stdout(&answered)
+    );
+    assert_eq!(answered.status.code(), Some(0));
+    Ok(())
+}
+
+/// Dies with the no-answer exit untried live: a run with no assistant text exits 1, and an
+/// eval run exits 0 and says `no_answer` in its stream, since harbor reads 1 as a crash.
+#[test]
+fn a_run_with_no_text_exits_one_except_under_eval() -> TestResult {
+    let workspace = Workspace::new("no-answer")?;
+    let script = bash_script(&workspace, "true", None)?;
+    let bare = ask(&workspace, "go", &["--faux", &script, "--json"])?;
+    assert_eq!(
+        bare.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&bare.stderr)
+    );
+    let eval = ask(&workspace, "go", &["--faux", &script, "--json", "--eval"])?;
+    assert_eq!(
+        eval.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&eval.stderr)
+    );
+    assert!(
+        stdout(&eval).contains(r#""type":"no_answer""#),
+        "{}",
+        stdout(&eval)
+    );
     Ok(())
 }

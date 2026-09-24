@@ -1,0 +1,82 @@
+Quillfen Water Cooperative
+MINUTES OF THE BOARD, meeting BM-2031-07
+Held: 2031-07-18
+Present: Hollis Wray, Lucan Marsh, Oona Farrow, Ysolde Quint, Bram Ketteridge, Tamsin Orrel
+Apologies: Oona Farrow
+
+1. Minutes of the previous meeting
+----------------------------------
+
+The minutes of the previous meeting were agreed as a true record, subject to any
+correction recorded below.
+
+2. Programme ownership
+----------------------
+
+The telemetry link to Osier Bank dropped twice in the period; both outages were under
+31 minutes and no alarms were missed. Ansel Brightwater noted that the calibration
+certificate for the level sensor expires next quarter and has booked the visit.
+
+The chair recorded that ownership of the telemetry renewal programme passes from Petra
+Vosk to Oona Farrow from 1 August.
+
+3. Operations report
+--------------------
+
+Tamsin Orrel presented a short paper on sensor drift and recommended a comparison
+check at Osier Bank every 34 weeks. Hollis Wray reported that the wet well ladder at
+Merrow Basin had been inspected and found serviceable, with minor wear noted on the
+seals. An energy audit of Merrow Basin suggested that running the penstock actuator
+off-peak would reduce cost without affecting service. The stores count showed 30
+discrepancies, all traced to items issued to vans without a ticket. A walkdown of
+Tolland Sluice found the signage faded; replacement boards have been ordered under the
+routine budget.
+
+The contractor's method statement for work at Pike Hollow was reviewed by the control
+room and returned with 16 comments. Tamsin Orrel confirmed that spares for the standby
+pump are held at the central store and that the reorder level is 39 units. Petra Vosk
+presented a short paper on sensor drift and recommended a comparison check at Pike
+Hollow every 27 weeks. Oona Farrow reported that the inlet screen at Merrow Basin had
+been inspected and found serviceable, with minor wear noted on the seals.
+
+Annex A. Stores and spares
+--------------------------
+
+Ysolde Quint noted that the calibration certificate for the wet well ladder expires
+next quarter and has booked the visit. the finance office reminded everyone that
+permits for confined spaces must be closed out the same day. the field crews will
+coordinate with Lucan Marsh on the training calendar, which currently shows 10 open
+places. Flooding on the lane to Low Fennick delayed the delivery by a day; no cost was
+incurred by the cooperative. Ysolde Quint raised the question of lone working at
+Brackwater Lock and was referred to the existing guidance held by the networks team.
+
+Annex B. Correspondence
+-----------------------
+
+The contractor's method statement for work at Pike Hollow was reviewed by the safety
+committee and returned with 35 comments. It was noted that access to Eastmere Intake
+remains difficult after heavy rain and that the track will be regraded when crews
+allow. The stores count showed 37 discrepancies, all traced to items issued to vans
+without a ticket.
+
+A minor oil weep from the level sensor at Tolland Sluice was cleaned up and a drip
+tray fitted pending the next service. An energy audit of Eastmere Intake suggested
+that running the telemetry outstation off-peak would reduce cost without affecting
+service. Oona Farrow noted that the calibration certificate for the flow meter expires
+next quarter and has booked the visit.
+
+Annex C. Any other business
+---------------------------
+
+An energy audit of Low Fennick suggested that running the control panel off-peak would
+reduce cost without affecting service. the asset planning group reminded everyone that
+permits for confined spaces must be closed out the same day. Members of the asset
+planning group asked for the seasonal demand figures to be circulated before the next
+meeting. Vegetation clearance around the wet well ladder at Osier Bank was completed
+and the area photographed for the asset record.
+
+Petra Vosk presented a short paper on sensor drift and recommended a comparison check
+at Eastmere Intake every 29 weeks. Ansel Brightwater noted that the calibration
+certificate for the inlet screen expires next quarter and has booked the visit. Lucan
+Marsh presented a short paper on sensor drift and recommended a comparison check at
+Osier Bank every 5 weeks.

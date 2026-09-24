@@ -17,6 +17,7 @@ pub fn handle_terminal_event(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
     ct_event: CtEvent,
 ) {
+    app.bind_reply();
     match ct_event {
         CtEvent::Paste(text) => {
             if !app.composer.search_active() {
@@ -177,6 +178,15 @@ pub(crate) fn handle_action(
                 // a prompt that opens with a path (`/usr/...`) still prompts.
                 if let Some(command) = slash_line(&text) {
                     handle_slash(app, &command);
+                    return;
+                }
+                if let Some(bound) = app.reply_bound.take() {
+                    let (child_id, question) = (bound.child_id, bound.question);
+                    let _ = cmd_tx.send(Command::Answer {
+                        child_id,
+                        question,
+                        text,
+                    });
                     return;
                 }
                 if app.running {

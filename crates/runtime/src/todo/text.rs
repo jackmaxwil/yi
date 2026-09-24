@@ -169,6 +169,7 @@ pub fn suffix(item: &TodoItem) -> String {
         }
         (TodoStateName::Blocked, Some(on), None) => format!(" (blocked on {})", on.as_str()),
         (TodoStateName::Abandoned, _, Some(note)) => format!(" (dropped: {note})"),
+        (TodoStateName::Failed, _, Some(note)) => format!(" (failed: {note})"),
         _ => String::new(),
     }
 }
@@ -176,7 +177,12 @@ pub fn suffix(item: &TodoItem) -> String {
 pub fn header(list: &TodoList) -> String {
     let progress = list.progress();
     let mut line = format!("Todos {}/{}", progress.done, progress.total);
-    if let Some(running) = list.running() {
+    let planned = super::mirror::plan_of(list).and_then(|_| {
+        list.items().find(|item| {
+            item.state == TodoStateName::Running && item.extra.contains_key(super::mirror::PLAN_KEY)
+        })
+    });
+    if let Some(running) = planned.or_else(|| list.running()) {
         let cut = if running.is_cut() { "…" } else { "" };
         line.push_str(&format!(" · running: {}{cut}", running.label));
     }
@@ -202,38 +208,35 @@ pub fn checklist(list: &TodoList) -> Vec<String> {
     out
 }
 
-fn moves(item: &TodoItem) -> String {
-    let name = name(item);
-    match item.state {
-        TodoStateName::Running => {
-            format!(
-                "done {name} evidence=`<command>` <output line> · block {name} on user · drop {name} <reason>"
-            )
-        }
-        TodoStateName::Pending => format!("start {name} · drop {name} <reason>"),
-        TodoStateName::Blocked => format!("unblock {name} · drop {name} <reason>"),
-        _ => String::new(),
-    }
+fn moves(item: &TodoItem) -> Option<String> {
+    let state = format!("{}({})", yi_types::graph::TODO_STATE, item.state.as_str());
+    let facts = crate::affordance::Facts {
+        holds: &[state.as_str()],
+        name: &name(item),
+        cap: 1,
+    };
+    crate::affordance::render(crate::affordance::shipped(), super::tool::NAME, &facts).pop()
 }
 
 pub fn next_lines(list: &TodoList) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Some(running) = list.running() {
-        out.push(format!("next: {}", moves(running)));
+    if super::mirror::plan_of(list).is_some() {
+        return Vec::new();
     }
-    for item in list
+    let mut out: Vec<String> = list.running().and_then(moves).into_iter().collect();
+    let pending = list
         .items()
         .filter(|item| item.state == TodoStateName::Pending)
-        .take(NEXT_LINES.saturating_sub(out.len()))
-    {
-        out.push(format!("next: {}", moves(item)));
-    }
-    if out.is_empty()
-        && let Some(blocked) = list
+        .take(
+            crate::levers::get()
+                .graph_next_lines
+                .saturating_sub(out.len()),
+        );
+    out.extend(pending.filter_map(moves));
+    if out.is_empty() {
+        let blocked = list
             .items()
-            .find(|item| item.state == TodoStateName::Blocked)
-    {
-        out.push(format!("next: {}", moves(blocked)));
+            .find(|item| item.state == TodoStateName::Blocked);
+        out.extend(blocked.and_then(moves));
     }
     out
 }

@@ -1,0 +1,137 @@
+Quillfen Water Cooperative
+POLICY POL-01: Permit to work
+Revision: 1
+Effective from: 2030-05-01
+Supersedes: none
+Owner: Ansel Brightwater
+
+1. Purpose
+----------
+
+The contractor's method statement for work at Osier Bank was reviewed by the control
+room and returned with 36 comments. The draft drawing register for Eastmere Intake is
+11 percent complete and will be issued once the as-built survey is checked.
+
+2. Scope
+--------
+
+It was noted that access to Osier Bank remains difficult after heavy rain and that the
+track will be regraded when crews allow. A minor oil weep from the level sensor at
+Pike Hollow was cleaned up and a drip tray fitted pending the next service.
+
+3. Requirements
+---------------
+
+3.1 Forms named in this policy are held by the control room and issued on request.
+
+3.2 Records made under this policy are kept for seven years and then reviewed for
+disposal.
+
+3.3 Where this policy conflicts with a site rule, the stricter of the two applies.
+
+3.4 A deviation from this policy needs the written agreement of the policy owner
+before the work starts.
+
+4. Responsibilities
+-------------------
+
+Ansel Brightwater presented a short paper on sensor drift and recommended a comparison
+check at Eastmere Intake every 34 weeks. No complaints were received from neighbours
+of Harrow Weir during the works, and the liaison log has been closed. Flooding on the
+lane to Pike Hollow delayed the delivery by a day; no cost was incurred by the
+cooperative. The contractor's method statement for work at Brackwater Lock was
+reviewed by the finance office and returned with 32 comments. The draft drawing
+register for Eastmere Intake is 31 percent complete and will be issued once the as-
+built survey is checked.
+
+5. Review
+---------
+
+This policy is reviewed every two years or after any incident that calls its
+requirements into question.
+
+Annex A. Correspondence
+-----------------------
+
+the finance office will coordinate with Ysolde Quint on the training calendar, which
+currently shows 8 open places. Flooding on the lane to Osier Bank delayed the delivery
+by a day; no cost was incurred by the cooperative. Members of the finance office asked
+for the seasonal demand figures to be circulated before the next meeting. Ysolde Quint
+presented a short paper on sensor drift and recommended a comparison check at
+Brackwater Lock every 39 weeks.
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. No complaints were received from neighbours of
+Brackwater Lock during the works, and the liaison log has been closed. The telemetry
+link to Brackwater Lock dropped twice in the period; both outages were under 21
+minutes and no alarms were missed. the finance office will coordinate with Dov
+Callender on the training calendar, which currently shows 2 open places. Ansel
+Brightwater thanked the asset planning group for covering the holiday rota at short
+notice.
+
+Annex B. Routine matters
+------------------------
+
+An energy audit of Cindergate Station suggested that running the wet well ladder off-
+peak would reduce cost without affecting service. An energy audit of Cindergate
+Station suggested that running the wet well ladder off-peak would reduce cost without
+affecting service. Vegetation clearance around the penstock actuator at Low Fennick
+was completed and the area photographed for the asset record.
+
+The draft drawing register for Tolland Sluice is 18 percent complete and will be
+issued once the as-built survey is checked. The contractor's method statement for work
+at Eastmere Intake was reviewed by the control room and returned with 39 comments.
+Members of the field crews asked for the seasonal demand figures to be circulated
+before the next meeting.
+
+Annex C. Routine matters
+------------------------
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. Bram Ketteridge presented a short paper on sensor drift
+and recommended a comparison check at Cindergate Station every 9 weeks. The telemetry
+link to Tolland Sluice dropped twice in the period; both outages were under 3 minutes
+and no alarms were missed.
+
+Annex D. Routine matters
+------------------------
+
+No complaints were received from neighbours of Low Fennick during the works, and the
+liaison log has been closed. Mirela Stanck reported that the control panel at Osier
+Bank had been inspected and found serviceable, with minor wear noted on the seals. The
+draft drawing register for Brackwater Lock is 15 percent complete and will be issued
+once the as-built survey is checked. Members of the safety committee asked for the
+seasonal demand figures to be circulated before the next meeting. The contractor's
+method statement for work at Eastmere Intake was reviewed by the asset planning group
+and returned with 22 comments.
+
+Oona Farrow raised the question of lone working at Cindergate Station and was referred
+to the existing guidance held by the safety committee. Sampling results for the
+quarter were within the expected band at every point except one, which is being
+resampled. The contractor's method statement for work at Eastmere Intake was reviewed
+by the networks team and returned with 27 comments.
+
+Annex E. Correspondence
+-----------------------
+
+It was noted that access to Merrow Basin remains difficult after heavy rain and that
+the track will be regraded when crews allow. It was noted that access to Harrow Weir
+remains difficult after heavy rain and that the track will be regraded when crews
+allow. Members of the networks team asked for the seasonal demand figures to be
+circulated before the next meeting.
+
+The telemetry link to Merrow Basin dropped twice in the period; both outages were
+under 28 minutes and no alarms were missed. The stores count showed 23 discrepancies,
+all traced to items issued to vans without a ticket. Dov Callender thanked the safety
+committee for covering the holiday rota at short notice. A minor oil weep from the
+level sensor at Eastmere Intake was cleaned up and a drip tray fitted pending the next
+service.
+
+Lucan Marsh presented a short paper on sensor drift and recommended a comparison check
+at Brackwater Lock every 30 weeks. A walkdown of Merrow Basin found the signage faded;
+replacement boards have been ordered under the routine budget. Bram Ketteridge noted
+that the calibration certificate for the telemetry outstation expires next quarter and
+has booked the visit. It was noted that access to Brackwater Lock remains difficult
+after heavy rain and that the track will be regraded when crews allow. An energy audit
+of Harrow Weir suggested that running the flow meter off-peak would reduce cost
+without affecting service.

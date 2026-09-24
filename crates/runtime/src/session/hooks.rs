@@ -6,11 +6,45 @@ use std::sync::Arc;
 use yi_types::message::{AgentMessage, Usage};
 use yi_types::model::{Effort, Model};
 
+use super::run::{self, Queued};
 use super::{
-    AgentSession, ExtHook, Status, attribute_to_shared, dispatch_ext, store_of, user_message,
+    AgentSession, ExtHook, Shared, Status, StillNews, attribute_to_shared, dispatch_ext, store_of,
+    user_message,
 };
 
+pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
+    let model = shared
+        .model
+        .lock()
+        .map(|model| model.clone())
+        .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
+    let effort = shared
+        .effort
+        .lock()
+        .map(|effort| *effort)
+        .unwrap_or_else(|poisoned| *poisoned.into_inner());
+    (model, effort)
+}
+
 impl AgentSession {
+    pub fn abort(&self) {
+        self.shared.signal.fire();
+    }
+
+    /// The interrupt's epoch, read when a run is requested for [`Self::prompt_requested`].
+    pub fn abort_epoch(&self) -> u64 {
+        self.shared.signal.epoch()
+    }
+
+    pub async fn wait_idle(&self) {
+        loop {
+            if self.status() == Status::Idle {
+                return;
+            }
+            self.shared.idle.notified().await;
+        }
+    }
+
     pub fn ext_hook(&self) -> ExtHook {
         let shared = Arc::clone(&self.shared);
         Arc::new(move |event| dispatch_ext(&shared, &event))
@@ -37,70 +71,46 @@ impl AgentSession {
 
     pub fn settings_handle(&self) -> Arc<dyn Fn() -> (Model, Effort) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
-        Arc::new(move || {
-            let model = shared
-                .model
-                .lock()
-                .map(|model| model.clone())
-                .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
-            let effort = shared
-                .effort
-                .lock()
-                .map(|effort| *effort)
-                .unwrap_or_else(|poisoned| *poisoned.into_inner());
-            (model, effort)
-        })
+        Arc::new(move || settings_of(&shared))
     }
 
-    /// Running session ⇒ queued (Steer drains at the next message boundary,
-    /// FollowUp at turn end); idle session ⇒ the message starts a run.
+    /// A steer wakes an idle session through the one queue; a follow-up waits for a turn's answer.
     pub fn heartbeat_hook(
         &self,
     ) -> Arc<dyn Fn(AgentMessage, yi_types::schedule::DeliveryMode) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        let run = self.run_handle();
-        Arc::new(move |message, mode| {
-            let running = shared
-                .status
-                .lock()
-                .map(|status| *status == Status::Running)
-                .unwrap_or(false);
-            if running {
-                let queue = match mode {
-                    yi_types::schedule::DeliveryMode::Steer => &shared.steer,
-                    yi_types::schedule::DeliveryMode::FollowUp => &shared.follow_up,
-                };
-                if let Ok(mut pending) = queue.lock() {
-                    pending.push(message);
-                }
-            } else {
-                let _ = run(message);
+        let parts = self.parts();
+        Arc::new(move |message, mode| match mode {
+            yi_types::schedule::DeliveryMode::Steer => {
+                run::enqueue(&parts, Queued::new(message, true, None));
+            }
+            yi_types::schedule::DeliveryMode::FollowUp => {
+                run::follow(&parts, message);
             }
         })
     }
 
-    /// Waits out any running turn rather than gating on status: AgentEnd is emitted while the
-    /// status is still Running, so a status-gated hook queued into a follow-up that never ran.
-    pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage) + Send + Sync> {
+    pub fn deliver_hook(&self) -> Arc<dyn Fn(AgentMessage, bool) + Send + Sync> {
+        let parts = self.parts();
+        Arc::new(move |message, wakes| {
+            run::enqueue(&parts, Queued::new(message, wakes, None));
+        })
+    }
+
+    pub fn mail_hook(&self) -> Arc<dyn Fn() -> Vec<serde_json::Value> + Send + Sync> {
         let shared = Arc::clone(&self.shared);
-        let run = self.run_handle();
-        Arc::new(move |message| {
-            let shared = Arc::clone(&shared);
-            let run = Arc::clone(&run);
-            tokio::spawn(async move {
-                loop {
-                    let idle = shared
-                        .status
-                        .lock()
-                        .map(|status| *status == Status::Idle)
-                        .unwrap_or(true);
-                    if idle {
-                        break;
-                    }
-                    shared.idle.notified().await;
-                }
-                let _busy_means_queued = run(message);
-            });
+        Arc::new(move || {
+            let taken = shared
+                .steer
+                .lock()
+                .map(|mut queue| run::take_mail(&mut queue));
+            crate::mail::received(store_of(&shared), taken.unwrap_or_default())
+        })
+    }
+
+    pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage, Option<StillNews>) + Send + Sync> {
+        let parts = self.parts();
+        Arc::new(move |message, news| {
+            run::enqueue(&parts, Queued::new(message, true, news));
         })
     }
 
@@ -109,18 +119,15 @@ impl AgentSession {
     pub fn advisory_hook(&self) -> Arc<dyn Fn(AgentMessage) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move |message| {
-            let running = shared
-                .status
-                .lock()
-                .map(|status| *status == Status::Running)
-                .unwrap_or(false);
-            let queue = if running {
-                &shared.steer
-            } else {
-                &shared.follow_up
+            let Ok(status) = shared.status.lock() else {
+                return;
             };
-            if let Ok(mut pending) = queue.lock() {
-                pending.push(message);
+            if *status == Status::Running {
+                if let Ok(mut queue) = shared.steer.lock() {
+                    run::push(&mut queue, Queued::new(message, false, None));
+                }
+            } else if let Ok(mut queue) = shared.follow_up.lock() {
+                queue.push(message);
             }
         })
     }
@@ -178,8 +185,7 @@ impl AgentSession {
         })
     }
 
-    /// A user-role steering message consumed at the next message boundary, or
-    /// the next turn when idle — R3 delivery for work finishing outside a turn.
+    /// A job's report (R3), taken after a running turn's answer or the next turn's, never waking.
     pub fn follow_up_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move |text: &str| {
@@ -190,11 +196,9 @@ impl AgentSession {
     }
 
     pub fn notice_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
+        let parts = self.parts();
         Arc::new(move |text: &str| {
-            if let Ok(mut queue) = shared.steer.lock() {
-                queue.push(user_message(text));
-            }
+            run::enqueue(&parts, Queued::new(user_message(text), false, None));
         })
     }
 

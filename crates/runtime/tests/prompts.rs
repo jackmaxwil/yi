@@ -64,7 +64,9 @@ fn undefined_constants(block: &str) -> BTreeSet<String> {
         {
             defined.insert(name.to_owned());
         }
-        for token in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+        // `shapes.ANSWER` is an attribute of an import, not a name the block owes a definition.
+        for token in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.')) {
+            let token = token.split('.').next().unwrap_or_default();
             if token.len() > 1 && token.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
                 used.insert(token.to_owned());
             }
@@ -98,6 +100,11 @@ fn the_rot_the_test_exists_for_is_caught() {
     let missing = undefined_constants("r = await h.result(schema=TASK_SCHEMA)");
     assert_eq!(missing.into_iter().collect::<Vec<_>>(), ["TASK_SCHEMA"]);
     assert!(undefined_constants("SCHEMA = {}\nr = await h.result(schema=SCHEMA)").is_empty());
+    assert!(undefined_constants("accept = contract(schema(shapes.ANSWER))").is_empty());
+    assert_eq!(
+        undefined_constants("accept = schema(ANSWER.copy())").len(),
+        1
+    );
 }
 
 /// The runtime's own defaults, so a changed default re-prices every example that leans on it.
@@ -139,8 +146,7 @@ fn longest(text: &str, call: &str, default: u64) -> u64 {
 /// bare `h.result()`, whose default is 540 s: 660 s in one cell, and neither file was checked.
 #[test]
 fn no_prompt_example_waits_past_the_cell_ceiling() {
-    let wait = python_default("async def wait(timeout", "timeout")
-        .min(python_default("async def wait(self, timeout", "timeout"));
+    let wait = python_default("async def wait(", "timeout");
     let result = python_default("async def result(\n        self,", "timeout");
     assert_eq!((wait, result), (300, 540), "the defaults this test prices");
     let mut over = Vec::new();
@@ -160,6 +166,17 @@ fn no_prompt_example_waits_past_the_cell_ceiling() {
             longest(text, "rlm.wait(", wait).saturating_add(longest(text, ".result(", result));
         if waited >= yi_tools::MAX_TIMEOUT_SECS {
             over.push(format!("{name}: an example waits {waited} s in one cell"));
+        }
+        // F1d: a bounded `plan.run` blocks its cell for the whole budget, spelled in minutes.
+        for budget in text.split("budget=\"").skip(1) {
+            let minutes = budget
+                .split_once("m\"")
+                .and_then(|(n, _)| n.parse::<u64>().ok());
+            if minutes.is_none_or(|minutes| minutes * 60 >= yi_tools::MAX_TIMEOUT_SECS) {
+                over.push(format!(
+                    "{name}: a run's budget is not minutes under the ceiling"
+                ));
+            }
         }
     }
     assert!(over.is_empty(), "{}", over.join("; "));

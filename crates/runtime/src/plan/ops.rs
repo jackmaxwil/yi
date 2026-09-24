@@ -1,24 +1,53 @@
-use std::collections::HashMap;
+//! The plan engine (plan sections 5.3 and 5.6): one transaction per request over the root's journal.
+
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use serde_json::Value;
+use yi_types::plan::canonical::canonical_digest;
+use yi_types::plan::contract::{Resolution as Completion, Verdict, VerificationToken};
 use yi_types::plan::doc::{
-    AgentId, BlockedOn, Delegation, DocError, GoalText, Plan, PlanId, PlanIssue, PlanState,
-    PlanTier, RetryCount, Spawns, Todo, TodoAddr, TodoLabel, TodoState, TodoStateName,
+    AgentId, Delegation, DocError, GoalText, Plan, PlanId, PlanIssue, PlanState, RetryCount,
+    Spawns, TodoAddr, TodoLabel, TodoState, TodoStateName, TouchCount,
 };
-use yi_types::plan::ledger::PlanOpRecord;
+use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, PlanOpRecord, RequestId};
 use yi_types::url::Url;
 
-use super::store::{PlanFile, PlanStore, StoreError};
-use super::table::{
-    OpKind, add_edge, admissible, append_todos, charge_retry, charge_spawn, check_actor,
-    check_plan_state, check_terminal, in_flight, locate_step, new_todo, op_name, ready_labels,
-    reorder_todos, step, validate_plan,
-};
+pub use yi_types::plan::op::{Op, Reconciliation, Resolution, Resolve, SetRow, TodoSpec};
 
-pub(super) const OWNER_AGENT: &str = "main";
+use super::journal::{Journal, has_record};
+pub use super::output::OutputResolve;
+use super::output::check_output;
+use super::recovery::{self, Liveness};
+use super::snapshot::{Snapshotter, TreeHash};
+use super::state::{self, Decided, KIND_IMPORT, RootState, leaving_running, root_of};
+use super::store::{Loaded, PlanStore, StoreError, draft};
+use super::table::{
+    OpKind, Refusal, admit, check_actor, check_plan_state, in_flight, op_name, ready_labels,
+};
+use super::verify::Verifier;
+use yi_types::plan::op::Reaped;
+
+pub(crate) const OWNER_AGENT: &str = "main";
+pub(crate) const ENGINE_AGENT: &str = "engine";
 
 const CHILD_SUFFIX_MAX: u32 = 9_999;
+
+/// Bytes a rehearsed record may still grow by after the reaps: at most the dispatch width
+/// (8) of `Reaped.last` urls the host mints as `history://<agent>`; the commit seal backstops.
+const REAP_ENVELOPE_BYTES: usize = 8 * 1024;
+
+/// The legal move a refusal named the rule for and not the road to: F0e sessions repeated
+/// `done` on three sibling pending todos in a row because nothing said what to do (#472).
+fn illegal_hint(op: OpKind, from: &TodoStateName) -> &'static str {
+    match (op, from) {
+        (OpKind::Done, TodoStateName::Pending) => {
+            "; start it first, or resend set with the row marked \"- [x]\" for a todo carrying no contract"
+        }
+        _ => "",
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Actor {
@@ -26,121 +55,7 @@ pub enum Actor {
     Child(AgentId),
     User(Url),
     Host,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct TodoSpec {
-    pub label: TodoLabel,
-    pub after: Vec<TodoLabel>,
-    pub delegation: Option<Delegation>,
-    pub children: Vec<Todo>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SetRow {
-    pub spec: TodoSpec,
-    pub state: TodoStateName,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Op {
-    Init {
-        goal: GoalText,
-        todos: Vec<TodoSpec>,
-    },
-    Append {
-        todos: Vec<TodoSpec>,
-    },
-    Drop {
-        label: TodoLabel,
-    },
-    Block {
-        label: TodoLabel,
-        on: BlockedOn,
-        note: String,
-    },
-    Unblock {
-        label: TodoLabel,
-    },
-    Reorder {
-        labels: Vec<TodoLabel>,
-    },
-    AddEdge {
-        todo: TodoLabel,
-        after: TodoLabel,
-    },
-    Start {
-        label: TodoLabel,
-    },
-    Done {
-        label: TodoLabel,
-        output: Option<Url>,
-    },
-    Fail {
-        label: TodoLabel,
-        cause: String,
-    },
-    Retry {
-        label: TodoLabel,
-        delegation: Option<Box<Delegation>>,
-    },
-    Decompose {
-        label: TodoLabel,
-        todos: Vec<TodoSpec>,
-    },
-    Supersede {
-        reason: String,
-        todos: Vec<TodoSpec>,
-    },
-    Set {
-        goal: Option<GoalText>,
-        rows: Vec<SetRow>,
-    },
-    View {
-        full: bool,
-    },
-}
-
-impl Op {
-    pub fn label(&self) -> Option<&TodoLabel> {
-        match self {
-            Self::Drop { label }
-            | Self::Block { label, .. }
-            | Self::Unblock { label }
-            | Self::Start { label }
-            | Self::Done { label, .. }
-            | Self::Fail { label, .. }
-            | Self::Retry { label, .. }
-            | Self::Decompose { label, .. } => Some(label),
-            Self::AddEdge { todo, .. } => Some(todo),
-            Self::Init { .. }
-            | Self::Append { .. }
-            | Self::Reorder { .. }
-            | Self::Supersede { .. }
-            | Self::Set { .. }
-            | Self::View { .. } => None,
-        }
-    }
-
-    pub fn kind(&self) -> OpKind {
-        match self {
-            Self::Init { .. } => OpKind::Init,
-            Self::Append { .. } => OpKind::Append,
-            Self::Drop { .. } => OpKind::Drop,
-            Self::Block { .. } => OpKind::Block,
-            Self::Unblock { .. } => OpKind::Unblock,
-            Self::Reorder { .. } => OpKind::Reorder,
-            Self::AddEdge { .. } => OpKind::AddEdge,
-            Self::Start { .. } => OpKind::Start,
-            Self::Done { .. } => OpKind::Done,
-            Self::Fail { .. } => OpKind::Fail,
-            Self::Retry { .. } => OpKind::Retry,
-            Self::Decompose { .. } => OpKind::Decompose,
-            Self::Supersede { .. } => OpKind::Supersede,
-            Self::Set { .. } => OpKind::Set,
-            Self::View { .. } => OpKind::View,
-        }
-    }
+    Engine,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,6 +63,8 @@ pub struct OpRequest {
     pub plan: Option<PlanId>,
     pub actor: Actor,
     pub op: Op,
+    pub request_id: Option<RequestId>,
+    pub expected_revision: Option<TouchCount>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -159,19 +76,21 @@ pub struct Outcome {
     pub spawned: Vec<Url>,
     pub reaped: Vec<Url>,
     pub subplan: Option<PlanId>,
+    pub notices: Vec<String>,
+    pub standing: super::schedule::Standing,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlanOpError {
-    #[error("no plan is open; init opens one")]
+    #[error("no plan is open; add goal to this set to open one, or init")]
     NoPlan,
-    #[error("plan {id} already exists and is open")]
+    #[error("plan {id} already exists and is open; Plan.attach({id:?}) resumes it")]
     PlanExists { id: PlanId },
     #[error("no todo labelled {label:?} in plan {plan}")]
     UnknownLabel { plan: PlanId, label: TodoLabel },
     #[error("only the plan owner may {op:?}; propose to the owner instead")]
     NotOwner { op: OpKind },
-    #[error("{} is illegal for todo {label} in state {from}", op_name(*op))]
+    #[error("{} is illegal for todo {label} in state {from}{}", op_name(*op), illegal_hint(*op, from))]
     IllegalStep {
         label: TodoLabel,
         from: TodoStateName,
@@ -203,8 +122,12 @@ pub enum PlanOpError {
         spent: RetryCount,
         cap: RetryCount,
     },
+    #[error("attempts exhausted for {label:?}")]
+    AttemptsExhausted { label: TodoLabel },
     #[error("start refused for todo {label:?}: after edge {after:?} is not cleared")]
     UnmetEdge { label: TodoLabel, after: TodoLabel },
+    #[error("start refused: {0} (the dispatch width admits no more)")]
+    Admission(Refusal),
     #[error("plan {id} is not active; a plan that is not active accepts view alone")]
     NotActive { id: PlanId, state: PlanState },
     #[error("could not spawn a child at {at}: {reason}")]
@@ -236,10 +159,192 @@ pub enum PlanOpError {
         schema: Box<Url>,
         detail: String,
     },
+    #[error("expected revision {expected}, the plan is at {current}")]
+    StaleRevision { expected: u64, current: u64 },
+    #[error("request {request_id} was already recorded with different arguments")]
+    RequestIdReused { request_id: RequestId },
+    #[error("request {request_id} was refused when it first ran: {detail}")]
+    RecordedRefusal {
+        request_id: RequestId,
+        code: String,
+        detail: String,
+    },
+    #[error(
+        "todo {label:?} carries spawn intent {effect} with no result; run `yi plan repair` before starting it again"
+    )]
+    NeedsReconciliation { label: TodoLabel, effect: EffectId },
+    #[error("start of delegated todo {label:?} has no committed spawn behind it")]
+    StartWithoutSpawn { label: TodoLabel },
+    #[error("decompose of {label:?} carries no sub-plan id")]
+    SubplanUndecided { label: TodoLabel },
+    #[error("{} is never journaled as an applied op", op_name(*op))]
+    NotJournaled { op: OpKind },
+    #[error("todo {label:?} needs no reconciliation")]
+    NotReconcilable { label: TodoLabel },
+    #[error("done refused for {label:?}: {} (score {}, coverage {})\n{}", verdict.outcome, verdict.score, verdict.coverage, verdict.lines())]
+    Refused {
+        label: TodoLabel,
+        verdict: Box<Verdict>,
+    },
+    #[error(
+        "done for {label:?} is stale: the token names attempt {}; the todo moved on",
+        token.attempt
+    )]
+    Stale {
+        label: TodoLabel,
+        token: Box<VerificationToken>,
+    },
+    #[error(
+        "done for {label:?} refused: the contract or its criteria changed since start; retry or supersede"
+    )]
+    ContractDrift { label: TodoLabel },
+    #[error(
+        "done for {label:?} refused: a worktree todo completes only through the acceptance of its contracted candidate (plan section 6.6); one with no `contract` takes it from a `set` row (a delegation `accept` is not a contract) and then `submit` the candidate, and `fail` or `drop` takes the disposition road"
+    )]
+    AcceptanceUnavailable { label: TodoLabel },
+    #[error(
+        "done for {label:?} refused at phase {phase}: it needs {missing}{}",
+        if *phase == "unsubmitted" { "; the engine records one when the child ends, or the child with op=submit" } else { "" }
+    )]
+    PhaseMissing {
+        label: TodoLabel,
+        phase: &'static str,
+        missing: &'static str,
+    },
+    #[error(
+        "the candidate of {label:?} conflicts with the parent at {}; the branch is retained: resolve the conflict on it and submit again",
+        paths.join(", ")
+    )]
+    MergeFailed {
+        label: TodoLabel,
+        paths: Vec<String>,
+    },
+    #[error("no verified completion for {:?}", label.as_str())]
+    NoVerifiedCompletion { label: TodoLabel },
+    #[error(
+        "done for {label:?} names unserved product {url}: resolved, but its bytes are not here to adjudicate"
+    )]
+    UnservedOutput { label: TodoLabel, url: Url },
+    #[error(
+        "done for {label:?} names unserved schema {schema}: the criterion is not here to adjudicate"
+    )]
+    UnservedSchema { label: TodoLabel, schema: Box<Url> },
+    #[error("done for {label:?} names no output; the contract's schema item needs the product")]
+    OutputRequired { label: TodoLabel },
+    #[error("contract of {label:?}: {detail}")]
+    Contract { label: TodoLabel, detail: String },
+    #[error("verification of {label:?} could not run: {reason}")]
+    Verification { label: TodoLabel, reason: String },
+    #[error(
+        "{label:?} is on attempt {}, not attempt {}",
+        current.get(),
+        named.get()
+    )]
+    WrongAttempt {
+        label: TodoLabel,
+        named: AttemptId,
+        current: AttemptId,
+    },
+    #[error("{label:?} is not running by {agent}; an agent submits for its own attempt only")]
+    NotRunningBy { label: TodoLabel, agent: String },
+    #[error("program refused: {detail}")]
+    Program { detail: String },
+    #[error("import refused: {0}")]
+    Import(#[from] super::import::ImportError),
+    #[error("record did not serialize: {0}")]
+    Serialize(#[from] serde_json::Error),
+    #[error("{0}")]
+    Canonical(#[from] yi_types::plan::canonical::CanonicalError),
+    #[error("{0}")]
+    Reduce(#[from] state::ReduceError),
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
     Doc(#[from] DocError),
+}
+
+impl From<super::journal::JournalError> for PlanOpError {
+    fn from(error: super::journal::JournalError) -> Self {
+        Self::Store(StoreError::Journal(error))
+    }
+}
+
+impl PlanOpError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NoPlan => "no_plan",
+            Self::PlanExists { .. } => "plan_exists",
+            Self::UnknownLabel { .. } => "unknown_label",
+            Self::NotOwner { .. } => "not_owner",
+            Self::IllegalStep { .. } => "illegal_step",
+            Self::UnknownState { .. } => "unknown_state",
+            Self::LabelNotUnique { .. } => "label_not_unique",
+            Self::Invalid { .. } => "invalid",
+            Self::NotAPermutation { .. } => "not_a_permutation",
+            Self::DepthExhausted { .. } => "depth_exhausted",
+            Self::SpawnCeilingExhausted { .. } => "spawn_ceiling_exhausted",
+            Self::RetriesExhausted { .. } => "retries_exhausted",
+            Self::AttemptsExhausted { .. } => "attempts_exhausted",
+            Self::UnmetEdge { .. } => "unmet_edge",
+            Self::Admission(_) => "admission",
+            Self::NotActive { .. } => "not_active",
+            Self::SpawnFailed { .. } => "spawn_failed",
+            Self::ReapFailed { .. } => "reap_failed",
+            Self::EphemeralTerminal { .. } => "ephemeral_terminal",
+            Self::MissingDeclaredOutput { .. } => "missing_declared_output",
+            Self::UnresolvedOutput { .. } => "unresolved_output",
+            Self::UnusableSchema { .. } => "unusable_schema",
+            Self::OutputMismatch { .. } => "output_mismatch",
+            Self::StaleRevision { .. } => "stale_revision",
+            Self::RequestIdReused { .. } => "request_id_reused",
+            Self::RecordedRefusal { .. } => "recorded_refusal",
+            Self::NeedsReconciliation { .. } => "needs_reconciliation",
+            Self::StartWithoutSpawn { .. } => "start_without_spawn",
+            Self::SubplanUndecided { .. } => "subplan_undecided",
+            Self::NotJournaled { .. } => "not_journaled",
+            Self::NotReconcilable { .. } => "not_reconcilable",
+            Self::Refused { .. } => "refused",
+            Self::Stale { .. } => "stale",
+            Self::ContractDrift { .. } => "contract_drift",
+            Self::AcceptanceUnavailable { .. } => "acceptance_unavailable",
+            Self::PhaseMissing { .. } => "phase_missing",
+            Self::MergeFailed { .. } => "merge_failed",
+            Self::NoVerifiedCompletion { .. } => "no_verified_completion",
+            Self::UnservedOutput { .. } => "unserved_output",
+            Self::UnservedSchema { .. } => "unserved_schema",
+            Self::OutputRequired { .. } => "output_required",
+            Self::Contract { .. } => "contract",
+            Self::Verification { .. } => "verification",
+            Self::WrongAttempt { .. } => "wrong_attempt",
+            Self::NotRunningBy { .. } => "not_running_by",
+            Self::Program { .. } => "program",
+            Self::Import(_) => "import",
+            Self::Serialize(_) | Self::Canonical(_) => "serialize",
+            Self::Reduce(_) => "reduce",
+            Self::Store(_) => "store",
+            Self::Doc(_) => "doc",
+        }
+    }
+
+    /// `Refused` and `Stale` are recorded by the done path itself; an unserved product and a
+    /// verification that could not run are the host's failures, so they charge no refusal.
+    pub(super) fn is_recordable(&self) -> bool {
+        !matches!(
+            self,
+            Self::Store(_)
+                | Self::Serialize(_)
+                | Self::Canonical(_)
+                | Self::Reduce(_)
+                | Self::RecordedRefusal { .. }
+                | Self::RequestIdReused { .. }
+                | Self::Refused { .. }
+                | Self::Stale { .. }
+                | Self::UnservedOutput { .. }
+                | Self::UnservedSchema { .. }
+                | Self::Verification { .. }
+                | Self::MergeFailed { .. }
+        )
+    }
 }
 
 pub trait Delegate: Send + Sync {
@@ -247,102 +352,144 @@ pub trait Delegate: Send + Sync {
     /// `supplied` is the delegation's context, so the seam that frees the child
     /// is also the one that can say how much of it the child ever read.
     fn reap(&self, agent: &AgentId, supplied: &[Url]) -> Result<Option<Url>, String>;
-    fn follow_up(&self, dispatched: &[TodoLabel], held: usize);
-}
-
-/// Where an applied op is recorded. The plan file is the state; this is the
-/// only record of when it moved, which every duration in §12 is a difference of.
-pub trait OpSink: Send + Sync {
-    fn record(&self, record: PlanOpRecord);
-}
-
-/// One read over the fetch seam, shaped like [`crate::fetch::CheckpointShow`]. `Ok(None)` is
-/// resolved-but-unserved: the referent exists, its bytes are not there to adjudicate.
-pub trait OutputResolve: Send + Sync {
-    fn resolve(&self, url: &Url) -> Result<Option<String>, String>;
-}
-
-impl OutputResolve for crate::fetch::Resolver {
-    fn resolve(&self, url: &Url) -> Result<Option<String>, String> {
-        use crate::fetch::FetchError;
-        match self.fetch(url) {
-            Ok(fetched) => Ok(Some(fetched.text)),
-            // Invariant: a missing reader is not a missing referent — a scheme
-            // this resolver has no backend for cannot adjudicate existence.
-            Err(FetchError::Unsupported { .. }) => Ok(None),
-            Err(
-                error @ (FetchError::Denied { .. }
-                | FetchError::External { .. }
-                | FetchError::OutsideWorkspace { .. }
-                | FetchError::BadAddress { .. }
-                | FetchError::NotFound { .. }
-                | FetchError::Stale { .. }
-                | FetchError::Backend { .. }),
-            ) => Err(error.to_string()),
-        }
+    /// Invariant: a delegate with no session behind it (the CLI) never has the engine start.
+    fn hosts(&self) -> bool {
+        true
+    }
+    fn finishes(&self) -> bool {
+        false
+    }
+    /// A worktree child's candidate, committed on its branch with the child quiescent, read
+    /// with nothing marked on the host; `None` when the host holds no lane for it.
+    fn candidate(&self, agent: &AgentId) -> Result<Option<crate::lane::settle::Held>, String> {
+        let _unused = agent;
+        Ok(None)
+    }
+    /// How the branch goes at the reap that follows, set on the host only after the
+    /// disposition record is committed (plan section 6.6).
+    fn mark(&self, agent: &AgentId, choice: yi_types::plan::op::Choice) -> Result<(), String> {
+        let _unused = (agent, choice);
+        Ok(())
     }
 }
 
-/// The §3 clause the existence probe alone leaves unenforced: a delegation that
-/// declared a schema makes `done` legal only on a product that satisfies it.
-fn validate_product(
-    label: &TodoLabel,
-    url: &Url,
-    schema: &Url,
-    product: &str,
-    document: &str,
-) -> Result<(), PlanOpError> {
-    let unusable = |cause: String| PlanOpError::UnusableSchema {
-        label: label.clone(),
-        schema: Box::new(schema.clone()),
-        cause,
-    };
-    let mismatch = |detail: String| PlanOpError::OutputMismatch {
-        label: label.clone(),
-        url: Box::new(url.clone()),
-        schema: Box::new(schema.clone()),
-        detail,
-    };
-    let document: serde_json::Value =
-        serde_json::from_str(document).map_err(|error| unusable(error.to_string()))?;
-    let value = crate::schema::extract(product).map_err(mismatch)?;
-    crate::schema::Schema::from_value(document)
-        .map_err(unusable)?
-        .validate(&value)
-        .map_err(mismatch)
+pub trait OpSink: Send + Sync {
+    fn record(&self, record: PlanOpRecord) -> Result<(), String>;
 }
 
-pub fn dispatch_width(cores: NonZeroUsize) -> NonZeroUsize {
-    NonZeroUsize::new(cores.get().saturating_sub(1).clamp(1, 8)).unwrap_or(NonZeroUsize::MIN)
+pub const WIDTH_MAX: usize = 8;
+
+/// Invariant: a delegated child waits on a network model, not on a core, so the bound is what
+/// bounds children, the family cap and the lever, and never the host's cores (#468).
+pub fn dispatch_width() -> NonZeroUsize {
+    let levers = crate::levers::get();
+    NonZeroUsize::new(levers.family_max_children.min(levers.plan_width_max))
+        .unwrap_or(NonZeroUsize::MIN)
 }
 
 #[derive(Debug, Default)]
-struct Delta {
-    spawned: Vec<(Url, AgentId)>,
-    reaped: Vec<Url>,
-    subplan: Option<PlanId>,
-    extra: Vec<PlanFile>,
+pub(super) struct Delta {
+    pub(super) spawned: Vec<Url>,
+    pub(super) reaped: Vec<Url>,
+    pub(super) subplan: Option<PlanId>,
+    pub(super) notices: Vec<String>,
 }
 
+pub(super) struct Txn {
+    pub(super) root: PlanId,
+    pub(super) state: RootState,
+    pub(super) records: Vec<JournalRecord>,
+    pub(super) journal: Journal,
+    pub(super) actor: String,
+    pub(super) principal: Actor,
+    pub(super) request: RequestId,
+    pub(super) expected: u64,
+    /// The resolution a `done` in this transaction lands with; the done path decides it.
+    pub(super) resolution: Option<Completion>,
+    /// The verdict the `done` record carries, committed as one record with the transition.
+    pub(super) verdict: Option<Verdict>,
+    /// The verification effect the `done` record settles.
+    pub(super) effect: Option<EffectId>,
+    /// The acceptance body a worktree `done` lands as one `accepted` record with the transition.
+    pub(super) accepted: Option<Value>,
+}
+
+impl Txn {
+    pub(super) fn last(&self) -> Option<&JournalRecord> {
+        self.records.last()
+    }
+
+    pub(super) fn derived(&self, suffix: &str) -> Result<RequestId, PlanOpError> {
+        RequestId::new(format!("{}/{suffix}", self.request)).map_err(|error| {
+            PlanOpError::Doc(DocError::AgentIdWhitespace {
+                id: error.to_string(),
+            })
+        })
+    }
+}
+
+/// A hook the done path calls between releasing the lease and running the verifier; tests use
+/// it to move the todo out from under its own verification.
+pub type VerifyHook = Arc<dyn Fn() + Send + Sync>;
+
 pub struct PlanEngine {
-    store: PlanStore,
-    delegate: Arc<dyn Delegate>,
-    width: NonZeroUsize,
-    known: Mutex<HashMap<PlanId, PlanFile>>,
-    output_resolve: Option<Arc<dyn OutputResolve>>,
-    op_sink: Option<Arc<dyn OpSink>>,
+    pub(super) store: PlanStore,
+    pub(super) delegate: Arc<dyn Delegate>,
+    pub(super) width: NonZeroUsize,
+    pub(super) output_resolve: Option<Arc<dyn OutputResolve>>,
+    pub(super) op_sink: Option<Arc<dyn OpSink>>,
+    pub(super) liveness: Arc<dyn Liveness>,
+    pub(super) cwd: PathBuf,
+    pub(super) verifier: Verifier,
+    pub(super) snapshotter: Arc<dyn Snapshotter>,
+    pub(super) verify_hook: Option<VerifyHook>,
+    pub(super) in_flight: Mutex<super::done::InFlight>,
+    pub(super) lanes: std::sync::OnceLock<crate::lane::Pool>,
+    pub(super) lane_home: Option<(PathBuf, u8)>,
+    /// The pool's slots split between workers and verification (plan section 7.6).
+    pub(super) capacity: Arc<super::capacity::Capacity>,
+    pub(super) refused: super::schedule::Refused,
+    pub(super) previewed: super::covers::Previewed,
 }
 
 impl PlanEngine {
     pub fn new(store: PlanStore, delegate: Arc<dyn Delegate>) -> Self {
-        let cores = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+        let snapshotter = Arc::new(TreeHash::excluding(store.dir()));
         Self {
             store,
             delegate,
-            width: dispatch_width(cores),
-            known: Mutex::new(HashMap::new()),
+            width: dispatch_width(),
             output_resolve: None,
             op_sink: None,
+            liveness: Arc::new(recovery::Unknown),
+            cwd: std::env::current_dir().unwrap_or_default(),
+            verifier: Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS),
+            snapshotter,
+            verify_hook: None,
+            in_flight: Mutex::new(super::done::InFlight::default()),
+            lanes: std::sync::OnceLock::new(),
+            lane_home: None,
+            capacity: super::capacity::Capacity::for_slots(crate::lane::DEFAULT_SLOTS),
+            refused: super::schedule::Refused::default(),
+            previewed: super::covers::Previewed::default(),
+        }
+    }
+
+    pub fn with_verifier(self, verifier: Verifier) -> Self {
+        Self { verifier, ..self }
+    }
+
+    pub fn with_snapshotter(self, snapshotter: Arc<dyn Snapshotter>) -> Self {
+        Self {
+            snapshotter,
+            ..self
+        }
+    }
+
+    pub fn with_verify_hook(self, hook: VerifyHook) -> Self {
+        Self {
+            verify_hook: Some(hook),
+            ..self
         }
     }
 
@@ -364,219 +511,557 @@ impl PlanEngine {
         }
     }
 
-    fn emit(
-        &self,
-        plan: &Plan,
-        op: OpKind,
-        actor: &Actor,
-        todo: Option<TodoLabel>,
-        from: Option<TodoStateName>,
-    ) {
-        let Some(sink) = &self.op_sink else {
-            return;
-        };
-        let to = todo
-            .as_ref()
-            .and_then(|label| plan.todo(label))
-            .map(|found| TodoStateName::of(&found.state));
-        sink.record(PlanOpRecord {
-            plan: plan.id.clone(),
-            op: op_name(op).to_owned(),
-            actor: actor_word(actor),
-            at: yi_session::now_ms(),
-            todo,
-            from,
-            to,
-            todos: u32::try_from(plan.todos.len()).unwrap_or(u32::MAX),
-            extra: serde_json::Map::new(),
-        });
+    pub fn with_liveness(self, liveness: Arc<dyn Liveness>) -> Self {
+        Self { liveness, ..self }
+    }
+
+    pub fn with_cwd(self, cwd: PathBuf) -> Self {
+        Self { cwd, ..self }
+    }
+
+    pub fn store(&self) -> &PlanStore {
+        &self.store
+    }
+
+    /// The revision `plan.op` compares: `touched` moves on every op, `version` does not.
+    pub fn revision(&self, plan: Option<PlanId>) -> Result<TouchCount, PlanOpError> {
+        let id = self.resolve(plan)?;
+        Ok(self.store.read(&id)?.touched)
     }
 
     pub fn apply(&self, request: OpRequest) -> Result<Outcome, PlanOpError> {
-        let OpRequest { plan, actor, op } = request;
-        let kind = op.kind();
-        check_actor(&actor, kind)?;
-        let _lease = self.store.lease()?;
-        let named = op.label().cloned();
-        match op {
-            Op::Init { goal, todos } => self.init(goal, todos, &actor),
-            Op::Append { todos } => self.framed(plan, kind, &actor, named, |file, _| {
-                append_todos(&mut file.plan, todos)?;
-                Ok(Delta::default())
-            }),
-            Op::Drop { label } => self.framed(plan, kind, &actor, named, |file, _| {
-                self.do_mark(file, &label, OpKind::Drop, TodoState::Abandoned)
-            }),
-            Op::Block { label, on, note } => self.framed(plan, kind, &actor, named, |file, _| {
-                self.do_mark(file, &label, OpKind::Block, TodoState::Blocked { on, note })
-            }),
-            Op::Unblock { label } => self.framed(plan, kind, &actor, named, |file, _| {
-                self.do_mark(file, &label, OpKind::Unblock, TodoState::Pending)
-            }),
-            Op::Reorder { labels } => self.framed(plan, kind, &actor, named, |file, _| {
-                reorder_todos(&mut file.plan, labels)?;
-                Ok(Delta::default())
-            }),
-            Op::AddEdge { todo, after } => self.framed(plan, kind, &actor, named, |file, _| {
-                add_edge(&mut file.plan, todo, after)?;
-                Ok(Delta::default())
-            }),
-            Op::Start { label } => self.framed(plan, kind, &actor, named, |file, root| {
-                self.do_start(file, root, label)
-            }),
-            Op::Done { label, output } => self.framed(plan, kind, &actor, named, |file, _| {
-                self.do_done(file, label, output)
-            }),
-            Op::Fail { label, cause } => self.framed(plan, kind, &actor, named, |file, _| {
-                self.do_fail(file, label, cause)
-            }),
-            Op::Retry { label, delegation } => self.framed(plan, kind, &actor, named, |file, _| {
-                self.do_retry(file, label, delegation)
-            }),
-            Op::Decompose { label, todos } => self.framed(plan, kind, &actor, named, |file, _| {
-                self.do_decompose(file, label, todos)
-            }),
-            Op::Supersede { reason, todos } => self.framed(plan, kind, &actor, named, |file, _| {
-                self.do_supersede(file, reason, todos)
-            }),
-            Op::Set { goal, rows } => {
-                if plan.is_none() && self.resolve(None).is_err() {
-                    let Some(goal) = goal else {
-                        return Err(PlanOpError::NoPlan);
-                    };
-                    let specs = rows.iter().map(|row| row.spec.clone()).collect();
-                    self.init(goal, specs, &actor)?;
-                }
-                self.framed(plan, kind, &actor, named, |file, _| self.do_set(file, rows))
+        self.apply_with(request, &[])
+    }
+
+    pub(super) fn apply_once(&self, request: OpRequest) -> Result<Outcome, PlanOpError> {
+        let OpRequest {
+            plan,
+            actor,
+            op,
+            request_id,
+            expected_revision,
+        } = request;
+        check_actor(&actor, &op)?;
+        if let Op::View { full } = op {
+            return self.view(plan, full);
+        }
+        let request = match request_id {
+            Some(id) => id,
+            None => {
+                RequestId::new(format!("auto-{}", self.store.request_nonce())).map_err(|error| {
+                    PlanOpError::Doc(DocError::AgentIdWhitespace {
+                        id: error.to_string(),
+                    })
+                })?
             }
-            Op::View { full } => self.view(plan, full),
+        };
+        // Done and a worktree submit take their own leases around the verifier (sections 6.3
+        // and 6.6); the probe holds one too, and a read that fails refuses the op outright.
+        let worktree = matches!(op, Op::Done { .. } | Op::Submit { .. }) && {
+            let _peek = self.lease_waiting()?;
+            self.is_worktree_todo(plan.as_ref(), op.label())?
+        };
+        match &op {
+            Op::Done { .. } if worktree => {
+                return self.accept(plan, &actor, op, request, expected_revision);
+            }
+            Op::Done { .. } => return self.done(plan, &actor, op, request, expected_revision),
+            Op::Submit { .. } if worktree => {
+                return self.submit_candidate(plan, &actor, op, request, expected_revision);
+            }
+            _ => {}
+        }
+        let _lease = self.lease_waiting()?;
+        match op {
+            Op::Init { goal, todos } => self.init(goal, todos, &actor, request),
+            Op::Import { source } => self.import(&source, &actor, request),
+            Op::Repair { resolutions } => {
+                self.repair(plan, resolutions, &actor, request, expected_revision)
+            }
+            Op::Set { goal, rows } if plan.is_none() && self.resolve(None).is_err() => {
+                let Some(goal) = goal else {
+                    return Err(PlanOpError::NoPlan);
+                };
+                // Invariant: the caller's id names the Set, so a retry after a crash between
+                // the two commits replays or finishes the Set instead of hitting the init.
+                let specs = rows.iter().map(|row| row.spec.clone()).collect();
+                let opening = RequestId::new(format!("{request}/init")).map_err(|error| {
+                    PlanOpError::Doc(DocError::AgentIdWhitespace {
+                        id: error.to_string(),
+                    })
+                })?;
+                let opened = self.init(goal.clone(), specs, &actor, opening)?;
+                let set = Op::Set {
+                    goal: Some(goal),
+                    rows,
+                };
+                self.framed(Some(opened.plan.id), &actor, set, request, None)
+            }
+            program @ Op::Program { .. } => {
+                self.program(plan, &actor, program, request, expected_revision)
+            }
+            other => self.framed(plan, &actor, other, request, expected_revision),
         }
     }
 
-    fn init(
+    /// `adopting` is the importer's load: a checkpoint with no journal is the view it adopts.
+    pub(super) fn begin(
+        &self,
+        root: &PlanId,
+        actor: &Actor,
+        request: RequestId,
+        expected: Option<TouchCount>,
+        adopting: bool,
+    ) -> Result<Txn, PlanOpError> {
+        let Loaded { state, records } = self.store.load(root, adopting)?;
+        Ok(Txn {
+            root: root.clone(),
+            state,
+            records,
+            journal: self.store.journal(root),
+            actor: actor_word(actor),
+            principal: actor.clone(),
+            request,
+            expected: expected.map_or(0, |touched| touched.0),
+            resolution: None,
+            verdict: None,
+            effect: None,
+            accepted: None,
+        })
+    }
+
+    pub(super) fn commit(
+        &self,
+        txn: &mut Txn,
+        record: JournalRecord,
+    ) -> Result<JournalRecord, PlanOpError> {
+        let sealed = txn.journal.seal(record, txn.last())?;
+        txn.journal.append(&sealed)?;
+        state::apply(&mut txn.state, &sealed.record)?;
+        txn.records.push(sealed.record.clone());
+        Ok(sealed.record)
+    }
+
+    pub(super) fn emit(&self, record: &JournalRecord) {
+        let Some(sink) = &self.op_sink else {
+            return;
+        };
+        let _telemetry_never_fails_an_op = sink.record(record.record.clone());
+    }
+
+    pub(super) fn init(
         &self,
         goal: GoalText,
         specs: Vec<TodoSpec>,
         actor: &Actor,
+        request: RequestId,
     ) -> Result<Outcome, PlanOpError> {
+        let op = Op::Init { goal, todos: specs };
         for id in self.store.roots()? {
-            if self.store.read(&id)?.plan.state == PlanState::Active {
-                return Err(PlanOpError::PlanExists { id });
+            if has_record(&self.store.journal_path(&id)) {
+                let txn = self.begin(&id, actor, request.clone(), None, false)?;
+                if let Some(replayed) = self.replay(&txn, &op)? {
+                    return Ok(replayed);
+                }
+                if matches!(txn.state.plan(&id), Ok(plan) if plan.state == PlanState::Active) {
+                    return Err(PlanOpError::PlanExists { id });
+                }
+                continue;
+            }
+            match self.store.read(&id) {
+                Ok(plan) if plan.state == PlanState::Active => {
+                    return Err(PlanOpError::PlanExists { id });
+                }
+                Ok(_) | Err(StoreError::JournalMissing { .. } | StoreError::NeedsImport { .. }) => {
+                }
+                Err(error) => return Err(error.into()),
             }
         }
-        let id = self.store.allocate(&goal)?;
-        let plan = Plan::opening(
-            id.clone(),
-            goal,
-            PlanTier::Root,
-            specs.into_iter().map(new_todo).collect(),
-        );
-        validate_plan(&plan)?;
-        let file = PlanFile {
-            plan,
-            body: String::new(),
+        let Op::Init { goal, .. } = &op else {
+            return Err(PlanOpError::NoPlan);
         };
-        self.write_all(&file, &[])?;
-        self.emit(&file.plan, OpKind::Init, actor, None, None);
-        self.conclude(&id, &id, &[], Delta::default())
+        let id = self.store.allocate(goal)?;
+        let mut txn = self.begin(&id, actor, request, None, false)?;
+        let mut probe = txn.state.clone();
+        state::apply_op(&mut probe, &id, &op, &Decided::default())?;
+        let record = self.record_for(&txn, &id, &op, &probe, Decided::default(), None)?;
+        for plan in probe.plans.values() {
+            PlanStore::render(plan)?;
+        }
+        let committed = self.commit(&mut txn, record)?;
+        self.store.checkpoint_family(&txn.state)?;
+        self.emit(&committed);
+        self.conclude(&id, &txn.state, &[], Delta::default())
     }
 
-    fn view(&self, plan: Option<PlanId>, _full: bool) -> Result<Outcome, PlanOpError> {
-        let id = self.resolve(plan)?;
-        let file = self.store.read(&id)?;
-        let ready = ready_labels(&file.plan);
+    pub(super) fn view(&self, plan: Option<PlanId>, _full: bool) -> Result<Outcome, PlanOpError> {
+        let id = self
+            .resolve(plan)
+            .or_else(|error| self.latest().ok_or(error))?;
+        let plan = self.store.read(&id)?;
+        let ready = ready_labels(&plan);
+        let (held, standing) = self.standing(&plan);
         Ok(Outcome {
-            plan: file.plan,
+            plan,
+            ready,
+            dispatched: Vec::new(),
+            held,
+            spawned: Vec::new(),
+            reaped: Vec::new(),
+            subplan: None,
+            notices: standing.notices(),
+            standing,
+        })
+    }
+
+    pub(super) fn replay(&self, txn: &Txn, op: &Op) -> Result<Option<Outcome>, PlanOpError> {
+        let Some((index, record)) = txn
+            .records
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, record)| record.request_id == txn.request)
+        else {
+            return Ok(None);
+        };
+        // Invariant: the kind is part of the identity; `args()` drops the `op` tag. An
+        // `accepted` record is its `done` with the acceptance body beside the op's own args.
+        let args = op.args()?;
+        let same = if record.record.op == super::acceptance::KIND_ACCEPTED {
+            matches!(op, Op::Done { .. })
+                && args.as_object().is_some_and(|mine| {
+                    mine.iter()
+                        .all(|(key, value)| record.args.get(key) == Some(value))
+                })
+        } else {
+            record.record.op == op_name(op.kind())
+                && if record.record.op == KIND_IMPORT {
+                    record.args.get("source") == args.get("source")
+                } else {
+                    record.args_hash == canonical_digest(&args)?
+                }
+        };
+        if !same {
+            return Err(PlanOpError::RequestIdReused {
+                request_id: txn.request.clone(),
+            });
+        }
+        if record.is_refusal() {
+            let refusal = record.record.extra.get("refusal");
+            let field = |name: &str| {
+                refusal
+                    .and_then(|value| value.get(name))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            return Err(PlanOpError::RecordedRefusal {
+                request_id: txn.request.clone(),
+                code: field("code"),
+                detail: field("detail"),
+            });
+        }
+        self.store.checkpoint_family(&txn.state)?;
+        let then = state::reduce(txn.records.get(..=index).unwrap_or(&[]))?;
+        let plan = then.plan(&record.record.plan)?.clone();
+        let ready = ready_labels(&plan);
+        Ok(Some(Outcome {
+            plan,
             ready,
             dispatched: Vec::new(),
             held: Vec::new(),
             spawned: Vec::new(),
             reaped: Vec::new(),
-            subplan: None,
-        })
+            subplan: record
+                .record
+                .extra
+                .get("subplan")
+                .and_then(Value::as_str)
+                .and_then(|id| PlanId::new(id).ok()),
+            notices: vec![format!(
+                "request {} was already applied as record {}; replayed",
+                txn.request, record.seq
+            )],
+            standing: Default::default(),
+        }))
     }
 
-    fn framed<F>(
+    pub(super) fn framed(
         &self,
         plan: Option<PlanId>,
-        op: OpKind,
         actor: &Actor,
-        label: Option<TodoLabel>,
-        mutate: F,
-    ) -> Result<Outcome, PlanOpError>
-    where
-        F: FnOnce(&mut PlanFile, &PlanId) -> Result<Delta, PlanOpError>,
-    {
+        op: Op,
+        request: RequestId,
+        expected: Option<TouchCount>,
+    ) -> Result<Outcome, PlanOpError> {
         let id = self.resolve(plan)?;
         let root = root_of(&id)?;
-        let mut file = self.store.read(&id)?;
-        check_plan_state(&file.plan, op)?;
-        let mut delta = Delta::default();
-        self.fold_user_edits(&mut file, &mut delta)?;
-        let flight = self.family_flight(&root)?;
-        let before = admissible(&file.plan, self.width.get().saturating_sub(flight));
-        let was = label
-            .as_ref()
-            .and_then(|name| file.plan.todo(name))
-            .map(|found| TodoStateName::of(&found.state));
-        let mutated = mutate(&mut file, &root)?;
-        delta.spawned.extend(mutated.spawned);
-        delta.reaped.extend(mutated.reaped);
-        delta.subplan = mutated.subplan;
-        delta.extra.extend(mutated.extra);
-        file.plan.touched = file.plan.touched.bump();
-        if matches!(file.plan.state, PlanState::Active | PlanState::Done) {
-            file.plan.state = if file.plan.finished() {
-                PlanState::Done
-            } else {
-                PlanState::Active
-            };
+        let mut txn = self.begin(&root, actor, request, expected, false)?;
+        if let Some(replayed) = self.replay(&txn, &op)? {
+            return Ok(replayed);
         }
-        if let Err(refused) = self.write_all(&file, &delta.extra) {
-            for (_, agent) in &delta.spawned {
-                let _ = self.delegate.reap(agent, &[]);
-            }
-            return Err(refused);
-        }
-        self.emit(&file.plan, op, actor, label, was);
-        self.conclude(&id, &root, &before, delta)
+        self.check_revision(&txn, &id, expected)?;
+        self.settle(&mut txn, &id, &root, &op)
     }
 
-    /// Invariant: the plan file's second sanctioned writer is the user's editor, so a
-    /// divergence moves [`Plan::touched`] and reaps any Running child it displaced.
-    fn fold_user_edits(&self, file: &mut PlanFile, delta: &mut Delta) -> Result<(), PlanOpError> {
-        let snapshot = match self.known.lock() {
-            Ok(known) => known.get(&file.plan.id).cloned(),
-            Err(_) => None,
-        };
-        let Some(snapshot) = snapshot else {
-            return Ok(());
-        };
-        let Some(edit) = self.store.user_edits(&snapshot)? else {
-            return Ok(());
-        };
-        for was in edit
-            .left_running
-            .iter()
-            .filter_map(|label| snapshot.plan.todo(label))
+    pub(super) fn check_revision(
+        &self,
+        txn: &Txn,
+        id: &PlanId,
+        expected: Option<TouchCount>,
+    ) -> Result<(), PlanOpError> {
+        let current = txn.state.plan(id)?;
+        if let Some(expected) = expected
+            && current.touched != expected
         {
-            self.reap_leaving_running(&file.plan.id, was, delta)?;
+            return Err(PlanOpError::StaleRevision {
+                expected: expected.0,
+                current: current.touched.0,
+            });
         }
-        file.plan.touched = file.plan.touched.bump();
         Ok(())
     }
 
-    fn conclude(
+    /// The tail of a framed op: transact, conclude, and record a refusal the caller reads.
+    pub(super) fn settle(
         &self,
+        txn: &mut Txn,
         id: &PlanId,
         root: &PlanId,
+        op: &Op,
+    ) -> Result<Outcome, PlanOpError> {
+        let before = admitted(txn.state.plan(id)?, self.slots(&txn.state));
+        match self.transact(txn, id, root, op) {
+            Ok(delta) => self.conclude(id, &txn.state, &before, delta),
+            Err(error) => {
+                let raced =
+                    matches!(txn.principal, Actor::Engine) && super::schedule::raced(&error);
+                if error.is_recordable() && !raced {
+                    self.record_refusal(txn, id, op, &error);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    pub(super) fn transact(
+        &self,
+        txn: &mut Txn,
+        id: &PlanId,
+        root: &PlanId,
+        op: &Op,
+    ) -> Result<Delta, PlanOpError> {
+        let plan = txn.state.plan(id)?;
+        check_plan_state(plan, op.kind())?;
+        if let Op::Done { label, output } = op {
+            check_output(self.output_resolve.as_deref(), plan, label, output.as_ref())?;
+        }
+        let mut decided = Decided {
+            resolution: txn.resolution,
+            ..Decided::default()
+        };
+        super::done::admit(txn, plan, op, &mut decided)?;
+        if let Op::Decompose { label, .. } = op
+            && plan.tier == yi_types::plan::doc::PlanTier::Root
+        {
+            decided.subplan = Some(self.allocate_child(&id.child(label)?)?);
+        }
+        if let Op::Start { label } = op
+            && let Some(contract) = plan.todo(label).and_then(|todo| todo.contract.as_ref())
+        {
+            // Invariant: the criteria are frozen here, before any effect, so a start that
+            // names an unservable criterion spawns nothing.
+            let frozen =
+                super::verify::freeze(&self.store.artifacts(id), contract).map_err(|detail| {
+                    PlanOpError::Contract {
+                        label: label.clone(),
+                        detail,
+                    }
+                })?;
+            decided.contract_hash = Some(frozen.contract_digest);
+        }
+        let leaving = leaving_running(&txn.state, id, op)?;
+        // Invariant: every refusable check runs before the first effect, so a refused op has
+        // killed and spawned nothing and the idempotent reaps make a retry safe.
+        if let Op::Start { label } = op {
+            super::table::locate_step(plan, label, OpKind::Start)?;
+            admit(plan, label, self.slots(&txn.state)).map_err(PlanOpError::Admission)?;
+        } else {
+            let mut dry = txn.state.clone();
+            let rehearsal = Decided {
+                reaped: leaving
+                    .iter()
+                    .filter_map(|(plan_id, todo)| match &todo.state {
+                        TodoState::Running { by } => Some(Reaped {
+                            plan: plan_id.clone(),
+                            todo: todo.label.clone(),
+                            agent: by.clone(),
+                            last: None,
+                        }),
+                        _ => None,
+                    })
+                    .collect(),
+                subplan: decided.subplan.clone(),
+                resolution: decided.resolution,
+                contract_hash: decided.contract_hash,
+            };
+            let rehearsed = state::apply_op(&mut dry, id, op, &rehearsal)?;
+            for plan in dry.plans.values() {
+                PlanStore::render(plan)?;
+            }
+            // Invariant: the record cap is refused here, before the reaps, not at commit.
+            let record = self.record_for(txn, id, op, &dry, rehearsal, rehearsed.from)?;
+            txn.journal
+                .rehearse(record, txn.last(), REAP_ENVELOPE_BYTES)?;
+        }
+        let mut delta = Delta::default();
+        self.reap_leaving(txn, op, leaving, &mut delta, &mut decided)?;
+        if let Op::Start { label } = op {
+            self.ensure_spawned(txn, id, root, label, &mut delta)?;
+        }
+        let mut probe = txn.state.clone();
+        let applied = state::apply_op(&mut probe, id, op, &decided)?;
+        let record = self.record_for(txn, id, op, &probe, decided, applied.from)?;
+        for plan in probe.plans.values() {
+            PlanStore::render(plan)?;
+        }
+        let committed = self.commit(txn, record)?;
+        self.store.checkpoint_family(&txn.state)?;
+        self.emit(&committed);
+        delta.subplan = applied.subplan;
+        Ok(delta)
+    }
+
+    pub(super) fn record_for(
+        &self,
+        txn: &Txn,
+        id: &PlanId,
+        op: &Op,
+        after: &RootState,
+        decided: Decided,
+        from: Option<TodoStateName>,
+    ) -> Result<JournalRecord, PlanOpError> {
+        let plan = after.plan(id)?;
+        let label = op.label().cloned();
+        let to = label
+            .as_ref()
+            .and_then(|label| plan.todo(label))
+            .map(|todo| TodoStateName::of(&todo.state));
+        let attempt = label
+            .as_ref()
+            .and_then(|label| plan.todo(label))
+            .map(|todo| todo.attempt);
+        let mut record = draft(
+            id,
+            op_name(op.kind()),
+            txn.actor.clone(),
+            self.store.now_ms(),
+            u32::try_from(plan.todos.len()).unwrap_or(u32::MAX),
+            op.args()?,
+            txn.request.clone(),
+            txn.expected,
+            attempt,
+        );
+        record.record.todo = label;
+        record.record.from = from;
+        record.record.to = to;
+        record.record.extra = decided.into_extra()?;
+        if let Some(Value::Object(acceptance)) = &txn.accepted {
+            record.record.op = super::acceptance::KIND_ACCEPTED.to_owned();
+            if let Value::Object(args) = &mut record.args {
+                args.extend(acceptance.clone());
+            }
+        }
+        if let Some(verdict) = &txn.verdict {
+            record.verdict = Some(serde_json::to_value(verdict)?);
+            if let Some(votes) = super::done::juror_votes(verdict) {
+                record.record.extra.insert("jurors".to_owned(), votes);
+            }
+        }
+        if let Some(effect) = &txn.effect {
+            record
+                .record
+                .extra
+                .insert("effect_id".to_owned(), Value::String(effect.to_string()));
+        }
+        if let Op::Program {
+            cell_id,
+            source_ref,
+        } = op
+        {
+            let at = record.record.at;
+            record.program_hash =
+                Some(self.program_hash(id, plan.version.0, cell_id, source_ref, at)?);
+        }
+        if matches!(op, Op::FuseReset) {
+            let prior = txn.state.plan(&txn.root)?.spawns().get();
+            record
+                .record
+                .extra
+                .insert("prior".to_owned(), Value::from(prior));
+        }
+        Ok(record)
+    }
+
+    pub(super) fn record_refusal(&self, txn: &mut Txn, id: &PlanId, op: &Op, error: &PlanOpError) {
+        let Ok(plan) = txn.state.plan(id) else {
+            return;
+        };
+        let Ok(args) = op.args() else {
+            return;
+        };
+        let label = op.label().cloned().or_else(|| match error {
+            PlanOpError::NoVerifiedCompletion { label } => Some(label.clone()),
+            _ => None,
+        });
+        let attempt = label
+            .as_ref()
+            .and_then(|label| plan.todo(label))
+            .map(|todo| todo.attempt);
+        let mut record = draft(
+            id,
+            op_name(op.kind()),
+            txn.actor.clone(),
+            self.store.now_ms(),
+            u32::try_from(plan.todos.len()).unwrap_or(u32::MAX),
+            args,
+            txn.request.clone(),
+            txn.expected,
+            attempt,
+        );
+        record.record.todo = label;
+        record.record.extra.insert(
+            "refusal".to_owned(),
+            serde_json::json!({"code": error.code(), "detail": error.to_string()}),
+        );
+        let _a_refusal_record_never_changes_the_answer = self
+            .commit(txn, record)
+            .and_then(|_| Ok(self.store.checkpoint_family(&txn.state)?));
+    }
+
+    pub(super) fn slots(&self, state: &RootState) -> usize {
+        let flight: usize = state
+            .plans
+            .values()
+            .filter(|plan| plan.state == PlanState::Active)
+            .map(in_flight)
+            .sum();
+        self.width.get().saturating_sub(flight)
+    }
+
+    pub(super) fn conclude(
+        &self,
+        id: &PlanId,
+        state: &RootState,
         admissible_before: &[TodoLabel],
         delta: Delta,
     ) -> Result<Outcome, PlanOpError> {
-        let after = self.store.read(id)?;
-        let flight = self.family_flight(root)?;
-        let now = admissible(&after.plan, self.width.get().saturating_sub(flight));
-        let ready = ready_labels(&after.plan);
+        let mut after = state.plan(id)?.clone();
+        after.journal = state
+            .mark
+            .map(|(seq, digest)| yi_types::plan::doc::JournalMark { seq, digest });
+        let now = admitted(&after, self.slots(state));
+        let ready = ready_labels(&after);
         let dispatched: Vec<TodoLabel> = now
             .iter()
             .filter(|label| !admissible_before.contains(label))
@@ -587,29 +1072,32 @@ impl PlanEngine {
             .filter(|label| !now.contains(label))
             .cloned()
             .collect();
-        if !dispatched.is_empty() || !held.is_empty() {
-            self.delegate.follow_up(&dispatched, held.len());
-        }
         Ok(Outcome {
-            plan: after.plan,
+            plan: after,
             ready,
             dispatched,
             held,
-            spawned: delta.spawned.into_iter().map(|(url, _)| url).collect(),
+            spawned: delta.spawned,
             reaped: delta.reaped,
             subplan: delta.subplan,
+            notices: delta.notices,
+            standing: Default::default(),
         })
     }
 
     /// Invariant: unnamed resolution finds the Active root, else the newest finished root
     /// still carrying a Failed todo; without one it never matches, so closed work stays shut.
-    fn resolve(&self, plan: Option<PlanId>) -> Result<PlanId, PlanOpError> {
+    pub(super) fn resolve(&self, plan: Option<PlanId>) -> Result<PlanId, PlanOpError> {
         if let Some(id) = plan {
             return Ok(id);
         }
         let mut failed: Option<(PlanId, std::time::SystemTime)> = None;
         for id in self.store.roots()? {
-            let plan = self.store.read(&id)?.plan;
+            let plan = match self.store.read(&id) {
+                Ok(plan) => plan,
+                Err(StoreError::JournalMissing { .. } | StoreError::NeedsImport { .. }) => continue,
+                Err(error) => return Err(error.into()),
+            };
             if plan.state == PlanState::Active {
                 return Ok(id);
             }
@@ -630,327 +1118,7 @@ impl PlanEngine {
         failed.map(|(id, _)| id).ok_or(PlanOpError::NoPlan)
     }
 
-    /// Every document is rendered before the first is written, so a cap
-    /// refusal leaves the whole family as it was.
-    fn write_all(&self, target: &PlanFile, extra: &[PlanFile]) -> Result<(), PlanOpError> {
-        PlanStore::render(&target.plan)?;
-        for file in extra {
-            PlanStore::render(&file.plan)?;
-        }
-        for file in extra {
-            self.store.write(file)?;
-        }
-        self.store.write(target)?;
-        if let Ok(mut known) = self.known.lock() {
-            known.insert(target.plan.id.clone(), target.clone());
-            for file in extra {
-                known.insert(file.plan.id.clone(), file.clone());
-            }
-        }
-        Ok(())
-    }
-
-    fn read_family(&self, root: &PlanId) -> Result<Vec<PlanFile>, PlanOpError> {
-        let mut family = Vec::new();
-        for id in self.store.list()? {
-            let kin = &id == root
-                || id
-                    .as_str()
-                    .strip_prefix(root.as_str())
-                    .is_some_and(|rest| rest.starts_with('.'));
-            if kin {
-                family.push(self.store.read(&id)?);
-            }
-        }
-        Ok(family)
-    }
-
-    fn family_flight(&self, root: &PlanId) -> Result<usize, PlanOpError> {
-        Ok(self
-            .read_family(root)?
-            .iter()
-            .filter(|file| file.plan.state == PlanState::Active)
-            .map(|file| in_flight(&file.plan))
-            .sum())
-    }
-
-    /// Invariant: every todo state write goes through here, so any exit from Running for a
-    /// delegated todo reaps the child and hands its product on; no exit can forget it.
-    fn step_todo<F>(
-        &self,
-        file: &mut PlanFile,
-        label: &TodoLabel,
-        op: OpKind,
-        delta: &mut Delta,
-        make: F,
-    ) -> Result<(), PlanOpError>
-    where
-        F: FnOnce(Option<Url>) -> TodoState,
-    {
-        let index = locate_step(&file.plan, label, op)?;
-        let plan_id = file.plan.id.clone();
-        let missing = || PlanOpError::UnknownLabel {
-            plan: plan_id.clone(),
-            label: label.clone(),
-        };
-        let Some(todo) = file.plan.todos.get(index) else {
-            return Err(missing());
-        };
-        let last = match step(&todo.state, op) {
-            Some(TodoStateName::Running) | None => None,
-            Some(
-                TodoStateName::Pending
-                | TodoStateName::Blocked
-                | TodoStateName::Done
-                | TodoStateName::Failed
-                | TodoStateName::Abandoned
-                | TodoStateName::Other(_),
-            ) => self.reap_leaving_running(&plan_id, todo, delta)?,
-        };
-        let Some(todo) = file.plan.todos.get_mut(index) else {
-            return Err(missing());
-        };
-        todo.state = make(last);
-        Ok(())
-    }
-
-    fn reap_leaving_running(
-        &self,
-        plan: &PlanId,
-        todo: &Todo,
-        delta: &mut Delta,
-    ) -> Result<Option<Url>, PlanOpError> {
-        if todo.delegation.is_none() {
-            return Ok(None);
-        }
-        let TodoState::Running { by } = &todo.state else {
-            return Ok(None);
-        };
-        let agent = by.clone();
-        let supplied = todo
-            .delegation
-            .as_ref()
-            .map(|delegation| delegation.context.clone())
-            .unwrap_or_default();
-        let last = self
-            .delegate
-            .reap(&agent, &supplied)
-            .map_err(|reason| PlanOpError::ReapFailed { agent, reason })?;
-        check_terminal(&todo.label, last.as_ref())?;
-        delta.reaped.push(agent_url(&TodoAddr {
-            plan: plan.clone(),
-            todo: todo.label.clone(),
-        })?);
-        Ok(last)
-    }
-
-    fn do_mark(
-        &self,
-        file: &mut PlanFile,
-        label: &TodoLabel,
-        op: OpKind,
-        state: TodoState,
-    ) -> Result<Delta, PlanOpError> {
-        let mut delta = Delta::default();
-        self.step_todo(file, label, op, &mut delta, move |_| state)?;
-        Ok(delta)
-    }
-
-    fn do_start(
-        &self,
-        file: &mut PlanFile,
-        root: &PlanId,
-        label: TodoLabel,
-    ) -> Result<Delta, PlanOpError> {
-        let index = locate_step(&file.plan, &label, OpKind::Start)?;
-        let plan_id = file.plan.id.clone();
-        let Some(todo) = file.plan.todos.get(index) else {
-            return Err(PlanOpError::UnknownLabel {
-                plan: plan_id,
-                label,
-            });
-        };
-        let mut delta = Delta::default();
-        let by = match todo.delegation.clone() {
-            None => AgentId::new(OWNER_AGENT)?,
-            Some(delegation) => {
-                let addr = TodoAddr {
-                    plan: file.plan.id.clone(),
-                    todo: label.clone(),
-                };
-                let url = agent_url(&addr)?;
-                if &file.plan.id == root {
-                    charge_spawn(&mut file.plan)?;
-                } else {
-                    let mut root_file = self.store.read(root)?;
-                    charge_spawn(&mut root_file.plan)?;
-                    delta.extra.push(root_file);
-                }
-                let agent = self
-                    .delegate
-                    .spawn(&addr, &delegation)
-                    .map_err(|reason| PlanOpError::SpawnFailed { at: addr, reason })?;
-                delta.spawned.push((url, agent.clone()));
-                agent
-            }
-        };
-        self.step_todo(file, &label, OpKind::Start, &mut delta, move |_| {
-            TodoState::Running { by }
-        })?;
-        Ok(delta)
-    }
-
-    fn do_done(
-        &self,
-        file: &mut PlanFile,
-        label: TodoLabel,
-        output: Option<Url>,
-    ) -> Result<Delta, PlanOpError> {
-        let index = locate_step(&file.plan, &label, OpKind::Done)?;
-        if let Some(todo) = file.plan.todos.get(index)
-            && let Some(delegation) = &todo.delegation
-            && let Some(declared) = &delegation.output
-        {
-            match &output {
-                None => {
-                    return Err(PlanOpError::MissingDeclaredOutput {
-                        label,
-                        schema: declared.schema.clone(),
-                    });
-                }
-                Some(url) => {
-                    if let Some(resolve) = &self.output_resolve {
-                        let product = resolve.resolve(url).map_err(|cause| {
-                            PlanOpError::UnresolvedOutput {
-                                label: label.clone(),
-                                url: url.clone(),
-                                cause,
-                            }
-                        })?;
-                        let schema = &declared.schema;
-                        let document = resolve.resolve(schema).map_err(|cause| {
-                            PlanOpError::UnusableSchema {
-                                label: label.clone(),
-                                schema: Box::new(schema.clone()),
-                                cause,
-                            }
-                        })?;
-                        if let (Some(product), Some(document)) = (product, document) {
-                            validate_product(&label, url, schema, &product, &document)?;
-                        }
-                    }
-                }
-            }
-        }
-        check_terminal(&label, output.as_ref())?;
-        let mut delta = Delta::default();
-        self.step_todo(file, &label, OpKind::Done, &mut delta, move |_| {
-            TodoState::Done { output }
-        })?;
-        Ok(delta)
-    }
-
-    fn do_fail(
-        &self,
-        file: &mut PlanFile,
-        label: TodoLabel,
-        cause: String,
-    ) -> Result<Delta, PlanOpError> {
-        let mut delta = Delta::default();
-        self.step_todo(file, &label, OpKind::Fail, &mut delta, move |last| {
-            TodoState::Failed { cause, last }
-        })?;
-        Ok(delta)
-    }
-
-    fn do_retry(
-        &self,
-        file: &mut PlanFile,
-        label: TodoLabel,
-        delegation: Option<Box<Delegation>>,
-    ) -> Result<Delta, PlanOpError> {
-        let index = locate_step(&file.plan, &label, OpKind::Retry)?;
-        let plan_id = file.plan.id.clone();
-        let missing = || PlanOpError::UnknownLabel {
-            plan: plan_id.clone(),
-            label: label.clone(),
-        };
-        let spent = match file.plan.todos.get(index) {
-            Some(todo) => todo.retries,
-            None => return Err(missing()),
-        };
-        let bumped = charge_retry(&label, spent)?;
-        let mut delta = Delta::default();
-        self.step_todo(file, &label, OpKind::Retry, &mut delta, |_| {
-            TodoState::Pending
-        })?;
-        let Some(todo) = file.plan.todos.get_mut(index) else {
-            return Err(missing());
-        };
-        todo.retries = bumped;
-        if let Some(replacement) = delegation {
-            todo.delegation = Some(*replacement);
-        }
-        Ok(delta)
-    }
-
-    fn do_decompose(
-        &self,
-        file: &mut PlanFile,
-        label: TodoLabel,
-        specs: Vec<TodoSpec>,
-    ) -> Result<Delta, PlanOpError> {
-        match &file.plan.tier {
-            PlanTier::Root => {}
-            PlanTier::Sub { .. } | PlanTier::Other { .. } => {
-                return Err(PlanOpError::DepthExhausted {
-                    plan: file.plan.id.clone(),
-                });
-            }
-        }
-        let index = locate_step(&file.plan, &label, OpKind::Decompose)?;
-        let plan_id = file.plan.id.clone();
-        let missing = || PlanOpError::UnknownLabel {
-            plan: plan_id.clone(),
-            label: label.clone(),
-        };
-        let Some(todo) = file.plan.todos.get(index) else {
-            return Err(missing());
-        };
-        if let Some(existing) = &todo.subplan {
-            return Err(PlanOpError::PlanExists {
-                id: existing.clone(),
-            });
-        }
-        let sub_id = self.allocate_child(&file.plan.id.child(&label)?)?;
-        let sub = Plan::opening(
-            sub_id.clone(),
-            GoalText::new(label.as_str())?,
-            PlanTier::Sub {
-                parent: TodoAddr {
-                    plan: file.plan.id.clone(),
-                    todo: label.clone(),
-                },
-            },
-            specs.into_iter().map(new_todo).collect(),
-        );
-        validate_plan(&sub)?;
-        let Some(todo) = file.plan.todos.get_mut(index) else {
-            return Err(missing());
-        };
-        todo.subplan = Some(sub_id.clone());
-        Ok(Delta {
-            spawned: Vec::new(),
-            reaped: Vec::new(),
-            subplan: Some(sub_id),
-            extra: vec![PlanFile {
-                plan: sub,
-                body: String::new(),
-            }],
-        })
-    }
-
-    /// Invariant: a superseded generation keeps its ledger file, so a recycled todo label
+    /// Invariant: a superseded generation keeps its directory, so a recycled todo label
     /// allocates a suffixed child id rather than overwrite the abandoned sub-plan.
     fn allocate_child(&self, base: &PlanId) -> Result<PlanId, PlanOpError> {
         if !self.store.exists(base) {
@@ -967,104 +1135,22 @@ impl PlanEngine {
             tried: CHILD_SUFFIX_MAX,
         }))
     }
+}
 
-    fn do_supersede(
-        &self,
-        file: &mut PlanFile,
-        reason: String,
-        specs: Vec<TodoSpec>,
-    ) -> Result<Delta, PlanOpError> {
-        let mut subs = Vec::new();
-        for id in self.store.list()? {
-            let kin = id
-                .as_str()
-                .strip_prefix(file.plan.id.as_str())
-                .is_some_and(|rest| rest.starts_with('.'));
-            if kin {
-                subs.push(self.store.read(&id)?);
-            }
-        }
-        // Invariant: every refusable check runs before the first reap, so a supersede that
-        // refuses has killed nothing and the idempotent reaps make a retry safe.
-        let mut next = file.plan.clone();
-        next.version = next.version.bump();
-        next.todos = specs.into_iter().map(new_todo).collect();
-        validate_plan(&next)?;
-        PlanStore::render(&next)?;
-        let mut delta = Delta::default();
-        self.reap_superseded(&mut file.plan, &reason, &mut delta)?;
-        for sub in &mut subs {
-            self.reap_superseded(&mut sub.plan, &reason, &mut delta)?;
-            sub.plan.state = PlanState::Abandoned;
-        }
-        delta.extra.append(&mut subs);
-        file.plan = next;
-        Ok(delta)
-    }
+/// The ready labels `admit` does not refuse at `slots`; the rest are the held list.
+pub(super) fn admitted(plan: &Plan, slots: usize) -> Vec<TodoLabel> {
+    ready_labels(plan)
+        .into_iter()
+        .filter(|label| admit(plan, label, slots).is_ok())
+        .collect()
+}
 
-    /// The checklist is the whole cut: a surviving label keeps its edges, delegation and
-    /// sub-plan, a new one starts plain, a missing one leaves, and every state is as written.
-    fn do_set(&self, file: &mut PlanFile, rows: Vec<SetRow>) -> Result<Delta, PlanOpError> {
-        let mut delta = Delta::default();
-        let id = file.plan.id.clone();
-        let kept: Vec<&TodoLabel> = rows.iter().map(|row| &row.spec.label).collect();
-        for todo in &file.plan.todos {
-            if !kept.contains(&&todo.label) {
-                self.reap_leaving_running(&id, todo, &mut delta)?;
-            }
-        }
-        let mut todos: Vec<Todo> = Vec::with_capacity(rows.len());
-        for row in rows {
-            let existing = file
-                .plan
-                .todos
-                .iter()
-                .find(|todo| todo.label == row.spec.label);
-            let mut todo = match existing {
-                Some(existing) => existing.clone(),
-                None => new_todo(row.spec.clone()),
-            };
-            todo.children = row.spec.children;
-            let unchanged = TodoStateName::of(&todo.state) == row.state;
-            if !unchanged {
-                todo.state = match row.state {
-                    TodoStateName::Running => TodoState::Running {
-                        by: AgentId::new(OWNER_AGENT)?,
-                    },
-                    TodoStateName::Done => TodoState::Done { output: None },
-                    TodoStateName::Pending
-                    | TodoStateName::Blocked
-                    | TodoStateName::Failed
-                    | TodoStateName::Abandoned
-                    | TodoStateName::Other(_) => TodoState::Pending,
-                };
-            }
-            todos.push(todo);
-        }
-        file.plan.todos = todos;
-        file.plan.version = file.plan.version.bump();
-        validate_plan(&file.plan)?;
-        Ok(delta)
-    }
-
-    fn reap_superseded(
-        &self,
-        plan: &mut Plan,
-        reason: &str,
-        delta: &mut Delta,
-    ) -> Result<(), PlanOpError> {
-        let id = plan.id.clone();
-        for todo in &mut plan.todos {
-            if todo.delegation.is_none() || !matches!(todo.state, TodoState::Running { .. }) {
-                continue;
-            }
-            let last = self.reap_leaving_running(&id, todo, delta)?;
-            todo.state = TodoState::Failed {
-                cause: format!("superseded: {reason}"),
-                last,
-            };
-        }
-        Ok(())
+/// Invariant: `by` is compared to the actor, not its word: a child named `main` is no owner.
+pub(super) fn runs(actor: &Actor, by: &AgentId) -> bool {
+    match actor {
+        Actor::Owner => by.as_str() == OWNER_AGENT,
+        Actor::Child(agent) => agent == by && agent.as_str() != OWNER_AGENT,
+        Actor::User(_) | Actor::Host | Actor::Engine => false,
     }
 }
 
@@ -1072,19 +1158,13 @@ fn actor_word(actor: &Actor) -> String {
     match actor {
         Actor::Owner => OWNER_AGENT.to_owned(),
         Actor::Child(agent) => agent.as_str().to_owned(),
-        Actor::User(_) => "user".to_owned(),
+        Actor::User(citation) => citation.to_string(),
         Actor::Host => "host".to_owned(),
+        Actor::Engine => ENGINE_AGENT.to_owned(),
     }
 }
 
-fn root_of(id: &PlanId) -> Result<PlanId, PlanOpError> {
-    match id.as_str().split_once('.') {
-        Some((root, _)) => Ok(PlanId::new(root)?),
-        None => Ok(id.clone()),
-    }
-}
-
-fn agent_url(addr: &TodoAddr) -> Result<Url, PlanOpError> {
+pub(super) fn agent_url(addr: &TodoAddr) -> Result<Url, PlanOpError> {
     let plan_url = addr.to_url()?;
     let rendered = format!("agent://{}", plan_url.path());
     rendered.parse().map_err(|cause| {
@@ -1093,4 +1173,25 @@ fn agent_url(addr: &TodoAddr) -> Result<Url, PlanOpError> {
             cause,
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_op_round_trips_through_its_wire_shape() -> Result<(), Box<dyn std::error::Error>> {
+        let op = Op::Fail {
+            label: TodoLabel::new("cut")?,
+            cause: "no".to_owned(),
+            disposition: None,
+        };
+        let args = op.args()?;
+        assert_eq!(args, serde_json::json!({"label": "cut", "cause": "no"}));
+        let mut tagged = args;
+        tagged["op"] = Value::String("fail".to_owned());
+        assert_eq!(serde_json::from_value::<Op>(tagged)?, op);
+        assert_eq!(Op::FuseReset.args()?, serde_json::json!({}));
+        Ok(())
+    }
 }

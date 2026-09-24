@@ -5,12 +5,10 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde_json::{Map, Value};
 use yi_types::lane::SlotState;
 
-use crate::subagent::{ChildStatus, SubagentHost};
-
 pub mod land;
+pub mod settle;
 pub mod toolchain;
 
 const GIT_TIMEOUT_MS: u64 = 120_000;
@@ -210,6 +208,12 @@ pub enum LaneError {
     },
     #[error("no forge: the repository has no `origin` remote")]
     NoForge,
+    #[error("the lane is not quiescent: {} still running: {}", running.len(), running.join("; "))]
+    Busy { running: Vec<String> },
+    #[error("the run's deadline passed before the lane settled")]
+    Deadline,
+    #[error("{path}: HEAD is detached, so there is no branch to publish onto")]
+    Unpublishable { path: PathBuf },
     #[error("{0}")]
     Forge(String),
 }
@@ -630,6 +634,11 @@ impl Pool {
         Err(last.unwrap_or(LaneError::NotARepo(self.repo.clone())))
     }
 
+    /// How many lanes this pool holds, so a caller can size its own share of them.
+    pub fn slots(&self) -> u8 {
+        self.slots
+    }
+
     pub fn claim(&self, session: &str, base: ClaimBase) -> Result<Lane, LaneError> {
         let _pool = self.lock()?;
         let (mut held, mut orphans) = (0_u8, 0_u8);
@@ -912,24 +921,6 @@ impl Lane {
         Ok(())
     }
 
-    /// Incident: uncommitted child work merged as nothing, so it is committed first.
-    pub fn merge_into(self, into: &Path, label: &str) -> Result<String, LaneError> {
-        let status = git(&self.path, &["status", "--porcelain"])?;
-        if !status.trim().is_empty() {
-            git(&self.path, &["add", "-A"])?;
-            git(
-                &self.path,
-                &["commit", "-q", "-m", &format!("subagent {label} work")],
-            )?;
-        }
-        let output = git(
-            into,
-            &["merge", "--no-ff", "--no-edit", self.branch.as_str()],
-        )?;
-        self.release_inner(false)?;
-        Ok(output)
-    }
-
     pub fn discard(self) -> Result<(), LaneError> {
         let branch = self.branch.as_str().to_owned();
         let pool = self.pool.clone();
@@ -968,62 +959,5 @@ impl Lane {
 
     pub fn session(&self) -> &str {
         &self.session
-    }
-
-    pub(crate) fn as_reply(&self) -> Map<String, Value> {
-        let mut reply = Map::new();
-        reply.insert(
-            "branch".to_owned(),
-            Value::String(self.branch.as_str().to_owned()),
-        );
-        reply.insert(
-            "path".to_owned(),
-            Value::String(self.path.to_string_lossy().into_owned()),
-        );
-        reply
-    }
-}
-
-impl SubagentHost {
-    /// B11 hand-back into the parent's own checkout, which is its lane when it has one.
-    pub fn merge_worktree(&self, target: &str) -> Result<Map<String, Value>, String> {
-        let (lane, name) = self.take_settled_worktree(target)?;
-        let mut reply = lane.as_reply();
-        let output = lane
-            .merge_into(&self.options.cwd, &name)
-            .map_err(|error| error.to_string())?;
-        reply.insert("merged".to_owned(), Value::Bool(true));
-        reply.insert("output".to_owned(), Value::String(output));
-        Ok(reply)
-    }
-
-    pub fn discard_worktree(&self, target: &str) -> Result<Map<String, Value>, String> {
-        let (lane, _) = self.take_settled_worktree(target)?;
-        let mut reply = lane.as_reply();
-        lane.discard().map_err(|error| error.to_string())?;
-        reply.insert("discarded".to_owned(), Value::Bool(true));
-        Ok(reply)
-    }
-
-    /// Invariant: taken off the record, so a tree is never handed back twice.
-    fn take_settled_worktree(&self, target: &str) -> Result<(Lane, String), String> {
-        let mut children = self
-            .children
-            .lock()
-            .map_err(|_| "subagent state poisoned")?;
-        let key = Self::key_of(&children, target)?;
-        let record = children
-            .get_mut(&key)
-            .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
-        if record.status == ChildStatus::Running {
-            return Err(format!(
-                "child \"{target}\" is still running; wait for it before touching its worktree"
-            ));
-        }
-        let lane = record
-            .worktree
-            .take()
-            .ok_or_else(|| format!("child \"{target}\" has no worktree (isolation was none)"))?;
-        Ok((lane, record.session_name.clone()))
     }
 }

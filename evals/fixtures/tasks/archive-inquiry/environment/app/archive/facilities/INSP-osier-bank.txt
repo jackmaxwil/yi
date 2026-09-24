@@ -1,0 +1,102 @@
+Quillfen Water Cooperative
+SITE INSPECTION REPORT
+Site: Osier Bank
+Inspected: 2031-05-02
+Inspector: Bram Ketteridge
+
+Condition
+---------
+
+Flooding on the lane to Harrow Weir delayed the delivery by a day; no cost was
+incurred by the cooperative. Flooding on the lane to Low Fennick delayed the delivery
+by a day; no cost was incurred by the cooperative. It was noted that access to
+Eastmere Intake remains difficult after heavy rain and that the track will be regraded
+when crews allow.
+
+Standby power
+-------------
+
+A 60 kVA standby generator was delivered and commissioned at Osier Bank in March 2031.
+The monthly run test passed.
+
+Annex A. Housekeeping
+---------------------
+
+Ansel Brightwater confirmed that spares for the penstock actuator are held at the
+central store and that the reorder level is 16 units. Mirela Stanck reported that the
+sample tap at Cindergate Station had been inspected and found serviceable, with minor
+wear noted on the seals. Ansel Brightwater noted that the calibration certificate for
+the telemetry outstation expires next quarter and has booked the visit. Ansel
+Brightwater presented a short paper on sensor drift and recommended a comparison check
+at Pike Hollow every 19 weeks. It was noted that access to Harrow Weir remains
+difficult after heavy rain and that the track will be regraded when crews allow.
+
+Mirela Stanck confirmed that spares for the level sensor are held at the central store
+and that the reorder level is 34 units. Members of the control room asked for the
+seasonal demand figures to be circulated before the next meeting. A minor oil weep
+from the dosing skid at Tolland Sluice was cleaned up and a drip tray fitted pending
+the next service. The handover notes between shifts were sampled by the control room
+and found complete in all but 28 cases. Ysolde Quint reported that the penstock
+actuator at Eastmere Intake had been inspected and found serviceable, with minor wear
+noted on the seals.
+
+Mirela Stanck raised the question of lone working at Pike Hollow and was referred to
+the existing guidance held by the finance office. It was noted that access to Merrow
+Basin remains difficult after heavy rain and that the track will be regraded when
+crews allow. Lucan Marsh confirmed that spares for the wet well ladder are held at the
+central store and that the reorder level is 14 units. The telemetry link to Osier Bank
+dropped twice in the period; both outages were under 29 minutes and no alarms were
+missed.
+
+Annex B. Housekeeping
+---------------------
+
+Flooding on the lane to Pike Hollow delayed the delivery by a day; no cost was
+incurred by the cooperative. The telemetry link to Osier Bank dropped twice in the
+period; both outages were under 17 minutes and no alarms were missed. the finance
+office will coordinate with Tamsin Orrel on the training calendar, which currently
+shows 13 open places.
+
+Tamsin Orrel presented a short paper on sensor drift and recommended a comparison
+check at Tolland Sluice every 18 weeks. The stores count showed 4 discrepancies, all
+traced to items issued to vans without a ticket. Lucan Marsh thanked the networks team
+for covering the holiday rota at short notice.
+
+Annex C. Site notes
+-------------------
+
+It was noted that access to Low Fennick remains difficult after heavy rain and that
+the track will be regraded when crews allow. A minor oil weep from the surge vessel at
+Harrow Weir was cleaned up and a drip tray fitted pending the next service. Dov
+Callender thanked the safety committee for covering the holiday rota at short notice.
+The stores count showed 4 discrepancies, all traced to items issued to vans without a
+ticket. Ysolde Quint reported that the wet well ladder at Tolland Sluice had been
+inspected and found serviceable, with minor wear noted on the seals.
+
+The draft drawing register for Eastmere Intake is 13 percent complete and will be
+issued once the as-built survey is checked. The stores count showed 2 discrepancies,
+all traced to items issued to vans without a ticket. Sampling results for the quarter
+were within the expected band at every point except one, which is being resampled.
+
+The telemetry link to Merrow Basin dropped twice in the period; both outages were
+under 4 minutes and no alarms were missed. Members of the networks team asked for the
+seasonal demand figures to be circulated before the next meeting. Hollis Wray reported
+that the wet well ladder at Eastmere Intake had been inspected and found serviceable,
+with minor wear noted on the seals. The handover notes between shifts were sampled by
+the field crews and found complete in all but 14 cases.
+
+Annex D. Routine matters
+------------------------
+
+Ysolde Quint noted that the calibration certificate for the wet well ladder expires
+next quarter and has booked the visit. The handover notes between shifts were sampled
+by the networks team and found complete in all but 16 cases. The draft drawing
+register for Tolland Sluice is 11 percent complete and will be issued once the as-
+built survey is checked.
+
+Oona Farrow thanked the safety committee for covering the holiday rota at short
+notice. The draft drawing register for Eastmere Intake is 23 percent complete and will
+be issued once the as-built survey is checked. A walkdown of Brackwater Lock found the
+signage faded; replacement boards have been ordered under the routine budget. The
+telemetry link to Tolland Sluice dropped twice in the period; both outages were under
+33 minutes and no alarms were missed.

@@ -66,7 +66,7 @@ pub(crate) fn set_focus(app: &mut App, target: Option<String>) {
             .and_then(|state| state.session.clone())
         {
             Some(session) => {
-                let entries = crate::port::branch_of(&session);
+                let entries = crate::port::branch_in(session.store());
                 app.replay_entries(&entries);
             }
             None => app.pending_focus = Some(child_id.clone()),

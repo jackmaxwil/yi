@@ -1,6 +1,14 @@
+pub mod acceptance;
+pub mod canonical;
+#[macro_use]
+pub mod ledger;
+pub mod contract;
 pub mod doc;
 pub mod ids;
-pub mod ledger;
+pub mod op;
+
+/// The format-2 checkpoint schema, published to `.yi/schemas/plan.schema.json` on store open.
+pub const PLAN_SCHEMA: &str = include_str!("plan/plan.schema.json");
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -57,18 +65,7 @@ pub struct Task {
     pub blocked_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
-    /// Consecutive red done-claims, the escalation ladder's only input. It
-    /// rides the task because the ladder must survive a resume unlaundered.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub red_count: Option<u8>,
-    /// Hex digest of the last rejection, compared for equality only — a
-    /// hasher change costs one missed repeat hint, never a wrong refusal.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub red_fingerprint: Option<String>,
-    /// One structural move buys one further done-claim at a rung that refuses
-    /// them. It rides the fact, or a resume mints an unearned attempt.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub readmit: Option<bool>,
+    /// D77's ladder fields (`redCount`, `redFingerprint`, `readmit`) land here unread since F0c.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

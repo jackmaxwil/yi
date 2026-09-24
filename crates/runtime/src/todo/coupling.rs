@@ -10,7 +10,7 @@ use yi_types::todo::{
 
 use super::{DEFAULT_PHASE, Op, TodoStore, text, tool};
 use crate::goal::StoreHandle;
-use crate::plan::loop_coupling::gate::{ENUMERATED_ITEMS_MIN, eager_init, enumerated};
+use crate::plan::loop_coupling::gate::{eager_init, enumerated};
 use crate::session::{AgentSession, InterceptStopFn, PromptChoiceFn, TurnCoupling, TurnObserveFn};
 
 pub const NUDGE_CUSTOM_TYPE: &str = "todo_nudge";
@@ -58,8 +58,9 @@ impl Cycle {
     }
 
     pub fn work(&mut self, landed: u32) -> bool {
+        let levers = crate::levers::get();
         self.work = self.work.saturating_add(landed);
-        if self.work >= gate::NUDGE_WORK && self.nudges < gate::NUDGE_CAP_PER_CYCLE {
+        if self.work >= levers.todo_nudge_work && self.nudges < levers.todo_nudge_cap {
             self.nudges = self.nudges.saturating_add(1);
             self.work = 0;
             return true;
@@ -78,7 +79,8 @@ impl Cycle {
         } else {
             0
         };
-        if self.quiet_turns < gate::QUIET_TURNS || self.closed_nudged.as_deref() == Some(closed_key)
+        if self.quiet_turns < crate::levers::get().todo_quiet_turns
+            || self.closed_nudged.as_deref() == Some(closed_key)
         {
             return false;
         }
@@ -89,7 +91,7 @@ impl Cycle {
 
     pub fn first_list(&mut self, landed: u32) -> bool {
         self.work = self.work.saturating_add(landed);
-        if self.first_listed || self.work < gate::FIRST_LIST_WORK {
+        if self.first_listed || self.work < crate::levers::get().todo_first_list_work {
             return false;
         }
         self.first_listed = true;
@@ -98,7 +100,7 @@ impl Cycle {
     }
 
     pub fn intercept(&mut self, fingerprint: &str) -> Option<u8> {
-        if self.intercepts >= gate::INTERCEPT_CAP_PER_CYCLE {
+        if self.intercepts >= crate::levers::get().todo_intercept_cap {
             return None;
         }
         let unchanged = self.last_fingerprint.as_deref() == Some(fingerprint);
@@ -117,7 +119,7 @@ impl Cycle {
     }
 
     pub fn empty_stop(&mut self) -> bool {
-        if self.empties >= gate::EMPTY_STOP_CAP {
+        if self.empties >= crate::levers::get().todo_empty_stop_cap {
             return false;
         }
         self.empties = self.empties.saturating_add(1);
@@ -134,7 +136,7 @@ pub enum StopPosture {
 }
 
 pub fn stop_posture(list: &TodoList, children_running: bool) -> StopPosture {
-    if children_running {
+    if children_running || super::mirror::plan_of(list).is_some() {
         return StopPosture::Quiet;
     }
     let mut open = false;
@@ -202,7 +204,7 @@ pub fn prelude_text(list: &TodoList) -> String {
 pub fn first_list_text() -> String {
     format!(
         "{} changes have landed with no todo list. `init` the list naming what remains, batched with your next call.",
-        gate::FIRST_LIST_WORK
+        crate::levers::get().todo_first_list_work
     )
 }
 
@@ -218,7 +220,7 @@ pub fn seed(todos: &TodoStore, prompt: &str) -> bool {
             items.push(item);
         }
     }
-    if items.len() < ENUMERATED_ITEMS_MIN {
+    if items.len() < crate::levers::get().plan_enumerated_min {
         return false;
     }
     let Ok(phase) = PhaseName::new(DEFAULT_PHASE) else {
@@ -626,17 +628,25 @@ pub struct Options {
     pub inner: Option<TurnCoupling>,
 }
 
+/// The ladder's last rung: the family reads its typed signal as `stuck`.
+const LET_GO: &str = "let go";
+
 fn record_intercept(store: &StoreHandle, rung: u8, reason: &str, fingerprint: &str, total: u32) {
     let Some(session) = store() else {
         return;
     };
+    let mut extra = serde_json::Map::new();
+    if reason == LET_GO {
+        let signal = yi_types::subagent::LoopSignal::LetGo;
+        extra.insert("signal".to_owned(), serde_json::json!(signal));
+    }
     let record = TodoInterceptRecord {
         at: yi_session::now_ms(),
         rung,
         reason: reason.to_owned(),
         fingerprint: fingerprint.to_owned(),
         cycle_total: total,
-        extra: serde_json::Map::new(),
+        extra,
     };
     let Ok(payload) = serde_json::to_value(&record) else {
         return;
@@ -740,9 +750,11 @@ fn prompt_hook(
         if let Ok(mut cycle) = cycle.lock() {
             cycle.prompt_claims_impossible = claims_impossible(text);
         }
+        todos.resync();
         let list = todos.list();
         let open = list.progress().open.saturating_add(list.progress().blocked) > 0;
-        if eager == Eager::Off || (!open && !eager_init(text)) {
+        let mirrored = super::mirror::plan_of(&list).is_some();
+        if eager == Eager::Off || mirrored || (!open && !eager_init(text)) {
             return inner.as_ref().and_then(|inner| inner(prompt));
         }
         let seeded = !open && seed(&todos, text);
@@ -796,6 +808,9 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
                 return;
             }
             let list = todos.list();
+            if super::mirror::plan_of(&list).is_some() {
+                return;
+            }
             let progress = list.progress();
             if progress.total > 0 && progress.open.saturating_add(progress.blocked) == 0 {
                 let quiet = quiet_turn(snapshot.message, snapshot.tool_results);
@@ -832,6 +847,9 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             if is_terminal(snapshot.message) {
                 return None;
             }
+            if called(snapshot.tool_results, "ask_user") {
+                return inner.as_ref().and_then(|inner| inner(snapshot));
+            }
             let Ok(mut cycle) = cycle.lock() else {
                 return None;
             };
@@ -851,13 +869,13 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             }
             let list = todos.list();
             let posture = stop_posture(&list, children_running());
-            if posture != StopPosture::Continue || called(snapshot.tool_results, "ask_user") {
+            if posture != StopPosture::Continue {
                 drop(cycle);
                 return inner.as_ref().and_then(|inner| inner(snapshot));
             }
             let fingerprint = list.fingerprint();
             let Some(rung) = cycle.intercept(&fingerprint) else {
-                record_intercept(&store, cycle.rung, "let go", &fingerprint, cycle.intercepts);
+                record_intercept(&store, cycle.rung, LET_GO, &fingerprint, cycle.intercepts);
                 return None;
             };
             record_intercept(&store, rung, "open", &fingerprint, cycle.intercepts);

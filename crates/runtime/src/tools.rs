@@ -20,6 +20,7 @@ pub struct ToolAdapter {
     rules: Option<Arc<crate::rules::RuleEngine>>,
     wall: crate::wall::Wall,
     ext: Option<crate::session::ExtHook>,
+    check: Option<Arc<crate::plan::covers::WriteCheck>>,
     rejections: std::sync::Mutex<std::collections::BTreeMap<String, u32>>,
 }
 
@@ -57,31 +58,44 @@ fn result_text(result: &yi_types::event::ToolResult) -> String {
         .join("\n")
 }
 
-fn grid_note(tool: &str, command: &str, result: &yi_types::event::ToolResult) -> Option<String> {
-    if tool != "bash" || !command.trim_start().starts_with("grid ") {
-        return None;
-    }
-    let text = result_text(result);
+/// The predicates that hold after this call; the needles are the states the old
+/// producers branched on, and one ipython needle wins, in the order they were tried.
+fn facts_of(tool: &str, command: &str, output: &yi_tools::ToolOutput) -> Vec<String> {
+    let text = result_text(&output.result);
     let body = text.trim();
-    (body.is_empty() || body.lines().count() <= 1 && body.contains("exit code"))
-        .then(crate::affordance::grid_empty)
-        .flatten()
-}
-
-fn ipython_note(tool: &str, result: &yi_types::event::ToolResult) -> Option<String> {
-    if tool != "ipython" {
-        return None;
-    }
-    let text = result_text(result);
-    if text.contains("<coroutine object ") {
-        return Some(crate::affordance::coroutine_leak());
+    let kind = output
+        .result
+        .details
+        .get("errorKind")
+        .and_then(Value::as_str);
+    let kind = kind.unwrap_or(yi_types::event::ToolErrorKind::ToolError.as_str());
+    let mut holds = vec![match output.is_error {
+        true => format!("{}({kind})", yi_types::graph::RESULT_ERROR),
+        false => yi_types::graph::RESULT_OK.to_owned(),
+    }];
+    if tool == "bash"
+        && command.trim_start().starts_with("grid ")
+        && (body.is_empty() || body.lines().count() <= 1 && body.contains("exit code"))
+    {
+        holds.push(yi_types::graph::GRID_ANSWER_EMPTY.to_owned());
     }
     // ponytail: CPython 3.11-3.13 wording; add a second needle if a venv rewords it.
-    if text.contains("can't be used in 'await' expression") {
-        return Some(crate::affordance::method_awaited());
+    let needle = if text.contains("<coroutine object ") {
+        Some(yi_types::graph::COROUTINE_UNAWAITED)
+    } else if text.contains("can't be used in 'await' expression") {
+        Some(yi_types::graph::METHOD_AWAITED)
+    } else if text.contains("AttributeError")
+        && text.contains("RLMSubagent")
+        && text.contains("'name'")
+    {
+        Some(yi_types::graph::LISTING_NAME_MISSED)
+    } else {
+        None
+    };
+    if let Some(needle) = needle.filter(|_| tool == "ipython") {
+        holds.push(needle.to_owned());
     }
-    (text.contains("AttributeError") && text.contains("RLMSubagent") && text.contains("'name'"))
-        .then(crate::affordance::listing_name)
+    holds
 }
 
 /// T19 tee target: the home root, never the user's working tree.
@@ -106,6 +120,7 @@ impl ToolAdapter {
             rules: None,
             wall: crate::wall::Wall::default(),
             ext: None,
+            check: None,
             rejections: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
     }
@@ -123,6 +138,11 @@ impl ToolAdapter {
 
     pub fn with_wall(mut self, wall: crate::wall::Wall) -> Self {
         self.wall = wall;
+        self
+    }
+
+    pub fn with_check(mut self, check: Option<Arc<crate::plan::covers::WriteCheck>>) -> Self {
+        self.check = check;
         self
     }
 
@@ -194,6 +214,7 @@ impl AgentTool for ToolAdapter {
         let rules = self.rules.clone();
         let wall = self.wall.clone();
         let ext = self.ext.clone();
+        let check = self.check.clone();
         let call_id = tool_call_id.to_owned();
         Box::pin(async move {
             if let Some(ext) = &ext {
@@ -205,8 +226,7 @@ impl AgentTool for ToolAdapter {
                         .map(|path| yi_permission::resolve_target(path, &context.cwd)),
                 });
             }
-            // User rules gate before permission: a matching eligible gate rule
-            // denies once with the rule body as evidence (D26 shape).
+            // User rules gate before permission: a matching gate rule denies with its body.
             let args_json = serde_json::to_string(&args).unwrap_or_default();
             if let Some(rules) = &rules
                 && let Some(denial) = rules.check_tool(tool.name(), &args_json)
@@ -279,6 +299,9 @@ impl AgentTool for ToolAdapter {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
+            let written = (tool.kind_for(&args) == yi_tools::ToolKind::Write)
+                .then(|| crate::permission::extract_targets(&name, &args, &context.cwd));
+            let (cwd, cancel) = (context.cwd.clone(), Arc::clone(&context.cancelled));
             let output = tokio::task::spawn_blocking(move || tool.execute(args, &context)).await;
             match output {
                 Ok(mut output) => {
@@ -293,11 +316,23 @@ impl AgentTool for ToolAdapter {
                     {
                         broker.note_containment_failure(&command);
                     }
-                    if let Some(line) = grid_note(&name, &command, &output.result) {
+                    let holds = facts_of(&name, &command, &output);
+                    let facts = crate::affordance::Facts {
+                        holds: &holds.iter().map(String::as_str).collect::<Vec<_>>(),
+                        name: "",
+                        cap: crate::affordance::TOOL_LINES,
+                    };
+                    for line in
+                        crate::affordance::render(crate::affordance::shipped(), &name, &facts)
+                    {
                         crate::affordance::append(&mut output.result, &line);
                     }
-                    if let Some(line) = ipython_note(&name, &output.result) {
-                        crate::affordance::append(&mut output.result, &line);
+                    if let (Some(check), Some(written), false) = (check, written, output.is_error) {
+                        let verdict =
+                            tokio::task::spawn_blocking(move || check(&written, &cwd, &cancel));
+                        if let Ok(Some(line)) = verdict.await {
+                            crate::affordance::append(&mut output.result, &line);
+                        }
                     }
                     let text = result_text(&output.result);
                     if let Some(rules) = &rules {
