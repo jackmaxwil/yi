@@ -85,8 +85,8 @@ pub struct Features {
 impl Features {
     pub fn route(self) -> Route {
         match self.score {
-            s if s <= -3 => Route::OneShot,
-            s if s >= 4 => Route::Complex,
+            s if s <= crate::levers::get().route_oneshot_at => Route::OneShot,
+            s if s >= crate::levers::get().route_complex_at => Route::Complex,
             _ => Route::Undecided,
         }
     }
@@ -131,8 +131,10 @@ pub fn prefilter(prompt: &str, repo_dirty: bool, named_paths: u32) -> Route {
     features(prompt, repo_dirty, named_paths).route()
 }
 
-const TOOL_CALLS_PER_TURN: u32 = 4;
-const FILES_MATCHED: u32 = 5;
+pub const COMPLEX_AT: i32 = 4;
+pub const ONESHOT_AT: i32 = -3;
+pub const TOOL_CALLS_PER_TURN: u32 = 4;
+pub const FILES_MATCHED: u32 = 5;
 
 pub struct Orchestrate {
     fragment: &'static str,
@@ -256,7 +258,7 @@ impl Extension for Orchestrate {
                 files_matched,
                 ..
             } => {
-                if *files_matched > FILES_MATCHED {
+                if *files_matched > crate::levers::get().route_files_matched {
                     self.attach(out, "files_matched", true);
                 }
                 if self.edited && name == "bash" && exit.is_some_and(|code| code != 0) {
@@ -269,7 +271,9 @@ impl Extension for Orchestrate {
             } => {
                 // Incident: twenty reads and no write nudged "write the plan now" after the
                 // answer had shipped; the model took the nudge for the user and burned a turn.
-                if *tool_calls_this_turn > TOOL_CALLS_PER_TURN && self.edited {
+                if *tool_calls_this_turn > crate::levers::get().route_tool_calls_per_turn
+                    && self.edited
+                {
                     self.attach(out, "tool_calls_per_turn", false);
                 }
             }

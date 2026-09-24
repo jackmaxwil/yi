@@ -21,11 +21,47 @@ type Replay = Arc<Mutex<VecDeque<(String, Digest, Map<String, Value>)>>>;
 /// The two refusals the engine never journals, so the ring is their only memory.
 const RING_CODES: [&str; 2] = ["bad_args", "not_owner"];
 
+/// Blobs one request may carry into the plan's store: a contract's criteria for every item
+/// (two for an `example`), a product and a cell's source.
+const ARTIFACTS_MAX: usize = 2 * yi_types::plan::contract::ITEMS_MAX + 2;
+const ARTIFACT_MAX_BYTES: usize = 1024 * 1024;
+
 /// A top-level `plan` merges into `args`; the guard reads the plan back from the parsed request.
 struct Payload {
     request_id: String,
     expected_revision: Option<u64>,
     args: Map<String, Value>,
+    /// `(media_type, text)` blobs the op's args name by digest, stored before the op applies.
+    artifacts: Vec<(String, String)>,
+}
+
+fn parse_artifacts(payload: &Map<String, Value>) -> Result<Vec<(String, String)>, String> {
+    let list = match payload.get("artifacts") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(list)) => list,
+        Some(other) => return Err(format!("plan.op artifacts must be a list, got {other}")),
+    };
+    if list.len() > ARTIFACTS_MAX {
+        return Err(format!(
+            "plan.op carries {} artifacts; the cap is {ARTIFACTS_MAX}",
+            list.len()
+        ));
+    }
+    list.iter()
+        .map(|entry| {
+            let field = |name: &str| entry.get(name).and_then(Value::as_str);
+            let (Some(media_type), Some(text)) = (field("media_type"), field("text")) else {
+                return Err("plan.op artifacts are {media_type, text} strings".to_owned());
+            };
+            if text.len() > ARTIFACT_MAX_BYTES {
+                return Err(format!(
+                    "plan.op artifact of {} bytes; the cap is {ARTIFACT_MAX_BYTES}",
+                    text.len()
+                ));
+            }
+            Ok((media_type.to_owned(), text.to_owned()))
+        })
+        .collect()
 }
 
 fn parse_payload(payload: &Map<String, Value>) -> Result<Payload, String> {
@@ -70,6 +106,7 @@ fn parse_payload(payload: &Map<String, Value>) -> Result<Payload, String> {
         request_id,
         expected_revision,
         args,
+        artifacts: parse_artifacts(payload)?,
     })
 }
 
@@ -108,6 +145,82 @@ fn code_of(error: &PlanToolError) -> &'static str {
     }
 }
 
+const OWNER_ONLY: &str = "only the plan owner stores artifacts";
+
+/// Invariant: a child writes one blob, the product of the attempt the plan says it is running.
+fn own_product(
+    engine: &PlanEngine,
+    actor: &Actor,
+    id: &PlanId,
+    op: &Op,
+    artifacts: &[(String, String)],
+) -> Result<(), String> {
+    let (Actor::Child(agent), Op::Submit { label, attempt, .. }) = (actor, op) else {
+        return Err(OWNER_ONLY.to_owned());
+    };
+    if artifacts.len() != 1 {
+        return Err(format!(
+            "{OWNER_ONLY}; a submit carries the one product it cites"
+        ));
+    }
+    let plan = engine.store().read(id).map_err(|error| error.to_string())?;
+    let running = plan.todo(label).is_some_and(|todo| {
+        todo.attempt == *attempt
+            && matches!(&todo.state, yi_types::plan::doc::TodoState::Running { by } if super::ops::runs(actor, by))
+    });
+    if !running {
+        return Err(format!(
+            "{OWNER_ONLY}; {label:?} is not running by {agent} on attempt {}",
+            attempt.get()
+        ));
+    }
+    Ok(())
+}
+
+/// Invariant: only the owner writes blobs, into a plan that already exists, and the store names
+/// each by its own digest: an op that cites a digest the bytes do not have finds nothing.
+fn store_artifacts(
+    engine: &PlanEngine,
+    actor: &Actor,
+    plan: Option<PlanId>,
+    op: &Op,
+    artifacts: &[(String, String)],
+) -> Result<(), String> {
+    if artifacts.is_empty() {
+        return Ok(());
+    }
+    let id = engine.resolve(plan).map_err(|error| error.to_string())?;
+    if *actor != Actor::Owner {
+        own_product(engine, actor, &id, op, artifacts)?;
+    }
+    let store = engine.store();
+    for (media_type, text) in artifacts {
+        store
+            .artifacts(&id)
+            .put(text.as_bytes(), media_type, &store.nonce())
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// What a caller branches on: the engine's own code, the first refusal's on a replay, and
+/// the verdict a refused `done` carries.
+fn detail_of(error: &PlanToolError, refusal: &mut Map<String, Value>) {
+    let PlanToolError::Op(error) = error else {
+        return;
+    };
+    let kind = match error {
+        PlanOpError::RecordedRefusal { code, .. } => code.clone(),
+        other => other.code().to_owned(),
+    };
+    refusal.insert("kind".to_owned(), Value::String(kind));
+    if let PlanOpError::Refused { verdict, .. } = error
+        && let Ok(verdict) = serde_json::to_value(verdict)
+    {
+        refusal.insert("verdict".to_owned(), verdict);
+    }
+}
+
 /// `view` reads and `init` opens, so neither has a revision to compare.
 fn guarded(op: &Op) -> bool {
     !matches!(op.kind(), OpKind::View | OpKind::Init)
@@ -118,6 +231,7 @@ fn answer(engine: &PlanEngine, actor: &Actor, payload: Payload) -> Map<String, V
         request_id,
         expected_revision,
         args,
+        artifacts,
     } = payload;
     let mut request = match request(actor, &args) {
         Ok(request) => request,
@@ -144,6 +258,16 @@ fn answer(engine: &PlanEngine, actor: &Actor, payload: Payload) -> Map<String, V
         request.expected_revision = expected_revision.map(TouchCount);
     }
     let op = request.op.clone();
+    if let Err(message) = store_artifacts(engine, actor, plan.clone(), &op, &artifacts) {
+        // The rider refuses the principal, not the arguments, so a caller that may not write
+        // blobs reads the same code the step table gives it and can stop asking.
+        let code = if message.starts_with(OWNER_ONLY) {
+            "not_owner"
+        } else {
+            "bad_args"
+        };
+        return refusal(&request_id, None, code, message);
+    }
     match engine.apply(request) {
         Ok(outcome) => {
             let mut reply = Map::new();
@@ -154,6 +278,12 @@ fn answer(engine: &PlanEngine, actor: &Actor, payload: Payload) -> Map<String, V
                 "text".to_owned(),
                 Value::String(render_outcome(&op, &outcome)),
             );
+            // The typed result (plan section 4.3): a program reads state, never the text.
+            reply.insert(
+                "plan".to_owned(),
+                super::plan_json(&outcome.plan).unwrap_or(Value::Null),
+            );
+            reply.insert("notices".to_owned(), json!(outcome.notices));
             reply
         }
         Err(error) => {
@@ -162,7 +292,11 @@ fn answer(engine: &PlanEngine, actor: &Actor, payload: Payload) -> Map<String, V
                 _ => engine.revision(plan).ok().map(|touched| touched.0),
             };
             let error = PlanToolError::from(error);
-            refusal(&request_id, revision, code_of(&error), error.to_string())
+            let mut reply = refusal(&request_id, revision, code_of(&error), error.to_string());
+            if let Some(Value::Object(refusal)) = reply.get_mut("refusal") {
+                detail_of(&error, refusal);
+            }
+            reply
         }
     }
 }

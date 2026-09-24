@@ -123,7 +123,11 @@ pub(crate) fn slash_off_thread(
 /// The active branch only: the whole tree is for the tree view, and a transcript built
 /// from it leaves rewound turns on screen.
 pub fn branch_of(session: &AgentSession) -> Vec<Entry> {
-    let Some(store) = session.store() else {
+    branch_in(session.store())
+}
+
+pub(crate) fn branch_in(store: Option<yi_runtime::session_store::SharedSession>) -> Vec<Entry> {
+    let Some(store) = store else {
         return Vec::new();
     };
     lock_session(&store)

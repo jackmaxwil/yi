@@ -547,26 +547,21 @@ impl PermissionBroker {
             };
         };
         let (sender, receiver) = std::sync::mpsc::channel();
+        let timeout = std::time::Duration::from_secs(crate::levers::get().review_timeout_s);
         handle.spawn(async move {
             // Incident: nothing held the join handle, so a stalled provider kept streaming,
             // and billing, past the denial below. The deadline rides the future itself.
-            let outcome = tokio::time::timeout(
-                crate::auto_review::REVIEW_TIMEOUT,
-                reviewer.review(&request),
-            )
-            .await
-            .unwrap_or_else(|_elapsed| crate::auto_review::ReviewOutcome::Deny {
-                reason: "the reviewer did not answer in time".to_owned(),
-            });
+            let outcome = tokio::time::timeout(timeout, reviewer.review(&request))
+                .await
+                .unwrap_or_else(|_elapsed| crate::auto_review::ReviewOutcome::Deny {
+                    reason: "the reviewer did not answer in time".to_owned(),
+                });
             let _receiver_may_have_timed_out = sender.send(outcome);
         });
         receiver
-            .recv_timeout(crate::auto_review::REVIEW_TIMEOUT)
+            .recv_timeout(timeout)
             .unwrap_or_else(|_| crate::auto_review::ReviewOutcome::Deny {
-                reason: format!(
-                    "the reviewer did not answer within {}s",
-                    crate::auto_review::REVIEW_TIMEOUT.as_secs()
-                ),
+                reason: format!("the reviewer did not answer within {}s", timeout.as_secs()),
             })
     }
 
@@ -670,12 +665,15 @@ impl PermissionBroker {
                     tool_call_id: tool_call_id.to_owned(),
                     allowed: false,
                 });
+                let asked = yi_permission::Decision::Ask {
+                    title: ask.title.to_owned(),
+                    description: rendered,
+                    reviewable: false,
+                };
                 return CallOutcome {
                     allowed: false,
                     contained: false,
-                    reason: format!(
-                        "Permission required but no interactive surface is available. {rendered} Run with --yolo, or add an allow rule for this call."
-                    ),
+                    reason: crate::gate::Report::reason_of(&crate::gate::compile_ask(asked, false)),
                 };
             }
         };

@@ -17,7 +17,7 @@ use yi_types::plan::op::{Op, Reaped, Reconciliation, Resolution, Resolve, SetRow
 use super::ops::{OWNER_AGENT, PlanOpError};
 use super::table::{
     OpKind, add_edge, append_todos, charge_retry, check_plan_state, check_terminal, locate_step,
-    new_todo, reorder_todos, step, validate_plan,
+    new_todo, reorder_todos, step, validate_plan, validate_shape,
 };
 
 pub const KIND_IMPORT: &str = "import";
@@ -335,7 +335,9 @@ pub fn apply(state: &mut RootState, record: &JournalRecord) -> Result<(), Reduce
                 .and_then(|value| {
                     serde_json::from_value(value).map_err(|e| bad_args(e.to_string()))
                 })?;
-            validate_plan(&plan).map_err(failed)?;
+            // Invariant: an import is read as it was written, so the reduce holds a legacy
+            // document to the shape alone, exactly as `import` itself does.
+            validate_shape(&plan).map_err(failed)?;
             state.plans.insert(plan.id.clone(), plan.unmarked());
         }
         KIND_SPAWN_INTENT => {
@@ -575,7 +577,8 @@ pub fn leaving_running(
         | Op::Import { .. }
         | Op::Reconcile { .. }
         | Op::Submit { .. }
-        | Op::Resolve { .. } => Vec::new(),
+        | Op::Resolve { .. }
+        | Op::Program { .. } => Vec::new(),
     })
 }
 
@@ -649,6 +652,7 @@ pub fn apply_op(
         Op::Init { .. } | Op::View { .. } | Op::Import { .. } => {
             return Err(PlanOpError::NotJournaled { op: kind });
         }
+        Op::Program { .. } => {}
         Op::Append { todos } => append_todos(state.plan_mut(id)?, todos.clone())?,
         Op::Drop { label, .. } => {
             step_todo(state.plan_mut(id)?, label, OpKind::Drop, decided, |_| {
@@ -939,6 +943,7 @@ fn apply_retry(
     todo.extra.remove(SUBMITTED_KEY);
     if let Some(replacement) = delegation {
         todo.delegation = Some(replacement.clone());
+        return validate_plan(plan);
     }
     Ok(())
 }

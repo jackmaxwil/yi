@@ -677,6 +677,7 @@ impl PlanEngine {
                     root: root_path,
                     output: contracted.product.as_deref().map(str::as_bytes),
                     artifacts: &artifacts,
+                    jury: None,
                 },
             ),
             None => self.verifier.abstained(
@@ -699,6 +700,7 @@ impl PlanEngine {
                 contract: contracted.contract,
                 product: contracted.product,
                 effect,
+                jury: (0, None),
             };
             return match self.refuse(&mut txn, &prepared, call.op, verdict) {
                 Ok(_) => Err(verification(&label, "a refusal returned an outcome")),
@@ -1040,8 +1042,19 @@ impl PlanEngine {
             let TodoState::Running { by } = &todo.state else {
                 continue;
             };
-            if is_worktree(&todo) && !accepting {
-                self.dispose(txn, &plan_id, &todo, by, op)?;
+            if is_worktree(&todo) {
+                if accepting {
+                    // The acceptance record is this branch's journaled fate: the host is told
+                    // the choice here too, so the reap settles the lane instead of refusing it.
+                    self.delegate.mark(by, Choice::Retained).map_err(|reason| {
+                        PlanOpError::ReapFailed {
+                            agent: by.clone(),
+                            reason,
+                        }
+                    })?;
+                } else {
+                    self.dispose(txn, &plan_id, &todo, by, op)?;
+                }
             }
             let supplied = todo
                 .delegation

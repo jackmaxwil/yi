@@ -13,7 +13,7 @@ use yi_kernel::client::HostHandlers;
 use yi_runtime::HostRegistry;
 use yi_runtime::plan::loop_coupling::{StopPosture, gate, stop_posture};
 use yi_runtime::plan::ops::{
-    Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec, dispatch_width,
+    Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec,
 };
 use yi_runtime::plan::store::PlanStore;
 use yi_runtime::todo::coupling::Cycle;
@@ -31,13 +31,12 @@ const FIXTURE_STEMS: [&str; 3] = [
     "typo-fix-never-opens-a-plan",
 ];
 
-const FIXTURE_KEYS: [&str; 11] = [
+const FIXTURE_KEYS: [&str; 10] = [
     "id",
     "description",
     "decisions",
     "prompt",
     "eagerInit",
-    "cores",
     "width",
     "goal",
     "plan",
@@ -777,30 +776,18 @@ fn build_engine(
     doc: &Map<String, Value>,
     store: &PlanStore,
     stub: &Arc<Stub>,
-    failures: &mut Vec<String>,
 ) -> Fallible<PlanEngine> {
     let engine = PlanEngine::new(store.clone(), stub.clone());
-    let Some(raw) = doc.get("cores") else {
-        if doc.get("width").is_some() {
-            return Err("fixture pins width without cores".into());
-        }
+    // The width no longer follows the host (#468), so a fixture pins it directly and the
+    // default rule is asserted in plan_ops::width_is_the_family_cap_not_the_host.
+    let Some(raw) = doc.get("width") else {
         return Ok(engine);
     };
-    let cores = raw
+    let width = raw
         .as_u64()
-        .ok_or_else(|| "cores is not an integer".to_owned())?;
-    let cores =
-        NonZeroUsize::new(usize::try_from(cores)?).ok_or_else(|| "cores is zero".to_owned())?;
-    let width = dispatch_width(cores);
-    if let Some(raw) = doc.get("width") {
-        cmp_u64(
-            "[fixture]",
-            "width",
-            raw,
-            u64::try_from(width.get())?,
-            failures,
-        )?;
-    }
+        .ok_or_else(|| "width is not an integer".to_owned())?;
+    let width =
+        NonZeroUsize::new(usize::try_from(width)?).ok_or_else(|| "width is zero".to_owned())?;
     Ok(engine.with_width(width))
 }
 
@@ -826,7 +813,7 @@ fn run_fixture(stem: &str) -> Fallible<()> {
         ));
     }
     let mut nudge = Cycle::default();
-    let engine = build_engine(doc, &store, &stub, &mut failures)?;
+    let engine = build_engine(doc, &store, &stub)?;
     let steps = require(doc, "steps", "fixture")?
         .as_array()
         .ok_or_else(|| "steps is not an array".to_owned())?;
@@ -1078,13 +1065,8 @@ async fn replay_through_plan_op(stem: &str) -> Fallible<()> {
     let tool_stub = Arc::new(Stub::default());
     let request_stub = Arc::new(Stub::default());
     let mut failures = Vec::new();
-    let tool_engine = build_engine(doc, &tool_store, &tool_stub, &mut failures)?;
-    let request_engine = Arc::new(build_engine(
-        doc,
-        &request_store,
-        &request_stub,
-        &mut failures,
-    )?);
+    let tool_engine = build_engine(doc, &tool_store, &tool_stub)?;
+    let request_engine = Arc::new(build_engine(doc, &request_store, &request_stub)?);
     let mut registries: std::collections::HashMap<String, HostRegistry> =
         std::collections::HashMap::new();
     let steps = require(doc, "steps", "fixture")?
@@ -1185,6 +1167,158 @@ async fn replay_through_plan_op(stem: &str) -> Fallible<()> {
 async fn every_fixture_replays_identically_through_plan_op() -> Fallible<()> {
     for stem in FIXTURE_STEMS {
         replay_through_plan_op(stem).await?;
+    }
+    Ok(())
+}
+
+/// What a fixture and its program are compared on: every plan's state and version, its todos in
+/// order (labels by slug, since a program's key is the label in lower case) with their edges,
+/// attempt, retries, whether they are delegated and what a done one output, and the committed
+/// transitions in journal order.
+///
+/// What is not: `refusals` and `touched`, because the fixture's refused steps are its own; the
+/// text of a cause or a block note; a delegation's or a contract's contents; and the campaign
+/// fixture's `reorder` and `add_edge`, which the library has no surface for and whose generation
+/// its `supersede` closes before this reads the store.
+fn reached(store: &PlanStore) -> Fallible<Vec<String>> {
+    const TRANSITIONS: [&str; 9] = [
+        "start",
+        "done",
+        "fail",
+        "retry",
+        "block",
+        "unblock",
+        "drop",
+        "decompose",
+        "supersede",
+    ];
+    let slug = |label: &TodoLabel| PlanId::slug(label.as_str()).map(|id| id.as_str().to_owned());
+    let mut lines = Vec::new();
+    for id in store.list()? {
+        let plan = store.read(&id)?;
+        lines.push(format!(
+            "{id} {} v{}",
+            plan_state_tag(&plan.state),
+            plan.version.0
+        ));
+        for todo in &plan.todos {
+            let after: Vec<String> = todo.after.iter().map(slug).collect::<Result<_, _>>()?;
+            let output = match &todo.state {
+                TodoState::Done { output, .. } => output.as_ref().map(ToString::to_string),
+                _ => None,
+            };
+            lines.push(format!(
+                "  {} {} after {after:?} attempt {} retries {} delegated {} output {output:?}",
+                slug(&todo.label)?,
+                todo_state_tag(&todo.state),
+                todo.attempt.get(),
+                todo.retries.0,
+                todo.delegation.is_some()
+            ));
+        }
+    }
+    for root in store.roots()? {
+        for record in store.journal(&root).read()?.records {
+            let op = record.record.op.as_str();
+            if TRANSITIONS.contains(&op) && !record.record.extra.contains_key("refusal") {
+                let todo = record.record.todo.as_ref().map(slug).transpose()?;
+                lines.push(format!("{} {op} {todo:?}", record.record.plan));
+            }
+        }
+    }
+    Ok(lines)
+}
+
+/// The F1b journey: each walkthrough fixture applied to one engine, and its program under
+/// `python/yi_runtime/tests/programs` run as a cell of a real kernel over a second one. Dies
+/// with the control: let the library send another op, order or edge than the JSON surface
+/// does and the two stores no longer reach the same plans.
+#[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn a_program_and_its_json_fixture_reach_the_same_plan_json() -> Fallible<()> {
+    let programs =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/yi_runtime/tests/programs");
+    for (stem, program) in FIXTURE_STEMS
+        .iter()
+        .zip(["arc-game", "campaign", "typo-fix"])
+    {
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(
+            fixtures_dir().join(format!("{stem}.json")),
+        )?)?;
+        let doc = object(&doc, "fixture")?;
+        let failures: Vec<String> = Vec::new();
+        let json_dir = Scratch::new(&format!("yi-plan-program-json-{program}"))?;
+        let json_store = PlanStore::open(json_dir.to_path_buf())?;
+        let stub = Arc::new(Stub::default());
+        let engine = build_engine(doc, &json_store, &stub)?;
+        let steps = require(doc, "steps", "fixture")?
+            .as_array()
+            .ok_or("steps is not an array")?;
+        for step in steps {
+            let step = object(step, stem)?;
+            if step.contains_key("work") {
+                continue;
+            }
+            let args = step.get("args").and_then(Value::as_object).cloned();
+            let (op, reap_fails) = parse_op(
+                text(require(step, "op", stem)?, stem)?,
+                &args.unwrap_or_default(),
+            )?;
+            stub.fail_reap.store(reap_fails, Ordering::SeqCst);
+            let plan = match step.get("plan") {
+                Some(raw) => Some(PlanId::new(text(raw, stem)?)?),
+                None => None,
+            };
+            // A refusal is the fixture's expectation, which `run_fixture` already holds it to.
+            let _refused = engine.apply(OpRequest {
+                plan,
+                actor: parse_actor(text(require(step, "actor", stem)?, stem)?)?,
+                op,
+                request_id: None,
+                expected_revision: None,
+            });
+        }
+
+        let cell_dir = Scratch::new(&format!("yi-plan-program-cell-{program}"))?;
+        let cell_store = PlanStore::open(cell_dir.to_path_buf())?;
+        let engine = build_engine(doc, &cell_store, &Arc::new(Stub::default()))?;
+        let mut registry = HostRegistry::default();
+        yi_runtime::plan::request::register(Arc::new(engine), Actor::Owner, &mut registry);
+        registry.register_mcp_stubs();
+        let service = Arc::new(yi_runtime::KernelService::new(
+            yi_runtime::KernelServiceOptions {
+                cwd: std::env::temp_dir(),
+                home: std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_default(),
+                session_dir: None,
+                family_dir: None,
+                host: Arc::new(registry),
+                on_restore: None,
+                sandbox: None,
+                snapshot_key: None,
+                cell_ceiling: None,
+            },
+        ));
+        let source = std::fs::read_to_string(programs.join(format!("{program}.py")))?;
+        let kernel = Arc::clone(&service);
+        let outcome = tokio::task::spawn_blocking(move || {
+            let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
+            yi_tools::KernelBridge::execute_cell(kernel.as_ref(), &source, &cancelled)
+        })
+        .await??;
+        service.dispose().await;
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(
+            outcome.result.error.is_none(),
+            "{program}.py raised: {:?}",
+            outcome.result.error
+        );
+        assert_eq!(
+            reached(&cell_store)?,
+            reached(&json_store)?,
+            "{program}.py and {stem}.json part ways"
+        );
     }
     Ok(())
 }

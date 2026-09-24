@@ -1,16 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::subagent::ChildStatus;
-
 use serde_json::{Map, Value};
 use yi_types::model::Model;
 
 use crate::mailbox::{ParentLink, register_child_messaging};
 use crate::session::AgentSession;
-use crate::subagent::{
-    ChildBuild, ChildFactory, DEFAULT_MAX_CHILDREN, SubagentHost, SubagentHostOptions,
-};
+use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOptions};
 
 /// A child is a fresh session: it runs its own extensions against its own cwd
 /// and shares the universal cached prefix with its parent.
@@ -39,7 +35,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             schema_instruction: None,
             context_window: child.model().context_window,
         }));
-        attach_runtime(
+        let host = attach_runtime(
             &mut child,
             RuntimeWiring {
                 depth: wiring.depth.saturating_add(1),
@@ -47,10 +43,12 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
                 cwd: child_cwd,
                 parent_link: Some(build.link),
                 wall: build.wall,
+                deadline: build.deadline,
                 kernel_prewarm: false,
                 ..wiring.clone()
             },
         );
+        host.set_grant(child.wall(), build.tokens);
         Ok(child)
     })
 }
@@ -225,8 +223,14 @@ fn wire_fetch(
             let url: yi_types::url::Url = raw
                 .parse()
                 .map_err(|error: yi_types::url::UrlError| format!("{raw}: {error}"))?;
+            let page = crate::fetch::Page::from_payload(&payload)?;
             // a family member asks for the object; the owner dills it to the family dir (D164).
             if payload.get("object").and_then(Value::as_bool) == Some(true) {
+                if page.is_some() {
+                    return Err(
+                        "fetch pages text; drop \"object\" to page a kernel:// read".to_owned()
+                    );
+                }
                 let dump = Arc::clone(&resolver);
                 let (path, bytes) = tokio::task::spawn_blocking(move || dump.dump_kernel(&url))
                     .await
@@ -241,16 +245,11 @@ fn wire_fetch(
                 reply.insert("bytes".to_owned(), Value::from(bytes));
                 return Ok(reply);
             }
-            let fetched = tokio::task::spawn_blocking(move || resolver.fetch(&url))
+            let fetched = tokio::task::spawn_blocking(move || resolver.fetch_page(&url, page))
                 .await
                 .map_err(|error| format!("fetch task failed: {error}"))?
                 .map_err(|error| error.to_string())?;
-            let mut reply = Map::new();
-            reply.insert("url".to_owned(), Value::String(fetched.url.to_string()));
-            reply.insert("text".to_owned(), Value::String(fetched.text));
-            reply.insert("hash".to_owned(), Value::String(fetched.hash));
-            reply.insert("servedBy".to_owned(), Value::String(fetched.served_by));
-            Ok(reply)
+            Ok(fetched.into_reply(page.is_some()))
         })
     });
     register_history_grep(registry, session.store_handle());
@@ -360,16 +359,17 @@ fn wire_plan_request(
         .with_op_sink(ops)
         .with_liveness(liveness)
         .with_cwd(cwd.clone());
-    // A verification never outlives the run (D177): the verifier reads the session's deadline
-    // as well as its own clock, and so does every lane settle the host runs.
+    // This session's host seats the juries (plan section 6.4). A verification never outlives
+    // the run (D177): the verifier and every lane settle read the session's deadline too.
+    let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
+        .with_judge(Arc::new(crate::plan::judge::Jury::new(Arc::clone(host))));
     if let Some(deadline) = session.deadline()
         && let Some(ends) = deadline.started.checked_add(deadline.total)
     {
-        let verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
-            .with_deadline(ends);
-        engine = engine.with_verifier(verifier);
+        verifier = verifier.with_deadline(ends);
         host.set_deadline(Some(ends));
     }
+    engine = engine.with_verifier(verifier);
     // The staging and verification checkouts come from the lane pool, split with the host's
     // workers over one object (sections 6.6 and 7.6); no repository, no worktree children.
     if let Ok(pool) = crate::lane::Pool::open(&wiring.home, &cwd, wiring.lane_slots) {
@@ -418,13 +418,32 @@ fn wire_plan_engine(
     session.set_todos(Arc::clone(&todos));
     let inner = (wiring.depth == 0).then(|| {
         let children = Arc::clone(host);
-        crate::plan::probe::spawn(Arc::new(
+        let leased = Arc::clone(host);
+        let ladder = Arc::new(
             crate::plan::probe::ProbeLadder::new(engine, plans_dir.to_path_buf(), probe_deliver)
                 .with_children(
                     Arc::new(move || children.states()),
                     lifecycle_notice(session),
-                ),
-        ));
+                )
+                .with_leases(Arc::new(move || {
+                    let host = Arc::clone(&leased);
+                    tokio::spawn(async move { host.expire().await });
+                })),
+        );
+        // A grace rides the loop's own due-time set, so an earlier one interrupts its sleep.
+        let timer = Arc::clone(&ladder);
+        host.set_lease_clock(
+            None,
+            Some(Arc::new(move |grace| {
+                timer.wake_at(
+                    timer
+                        .now()
+                        .checked_add(grace)
+                        .unwrap_or_else(|| timer.now()),
+                );
+            })),
+        );
+        crate::plan::probe::spawn(ladder);
         crate::plan::loop_coupling::coupling(
             session,
             crate::plan::loop_coupling::CouplingOptions {
@@ -442,11 +461,7 @@ fn wire_plan_engine(
                 children
                     .children
                     .lock()
-                    .map(|children| {
-                        children
-                            .values()
-                            .any(|child| child.status == ChildStatus::Running)
-                    })
+                    .map(|children| children.values().any(|child| child.exit.is_none()))
                     .unwrap_or(false)
             }),
             inner,
@@ -564,6 +579,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         });
     }
     let host = subagent_host(session, &wiring, &plans_dir);
+    host.set_grant(wiring.wall.clone(), None);
     host.register(&mut registry);
     session.set_environment(crate::environment::hook(
         session,
@@ -677,7 +693,7 @@ fn subagent_host(
     Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: wiring.depth,
         max_depth: wiring.max_depth,
-        max_children: DEFAULT_MAX_CHILDREN,
+        max_children: crate::levers::get().family_max_children,
         parent_session_dir: wiring.rlm_dir.clone(),
         defaults: session.settings_handle(),
         factory,
@@ -741,7 +757,11 @@ fn wire_compacted(
             let file = handle
                 .as_ref()
                 .and_then(|store| yi_session::lock_session(store).file_path().cloned());
-            notice(&crate::affordance::compacted(file.as_deref()));
+            let kept = match file.is_some() {
+                true => yi_types::graph::SESSION_ON_DISK,
+                false => yi_types::graph::SESSION_IN_MEMORY,
+            };
+            notice(&crate::affordance::next("compact.run", &[kept], ""));
             crate::advisor::note_last_compaction(advisor.as_deref(), handle.as_ref());
             tokio::spawn(async move {
                 if let Some(text) = service.sync_after_compaction().await {

@@ -375,8 +375,24 @@ fn nth_mut(list: &mut TodoList, index: usize) -> Option<&mut TodoItem> {
     None
 }
 
-/// Exact label; label or id with surrounding backticks stripped; an id and its own label
-/// (`t1 read the spec`); a unique case-insensitive label prefix of [`PREFIX_MIN`] chars or more.
+/// Incident: the renderer marks a cut label with an ellipsis and models retype one without
+/// its backticks; both name one item, so both sides normalise before comparison (#474).
+fn normalized(text: &str) -> String {
+    let stripped = text
+        .trim()
+        .trim_end_matches('…')
+        .trim_end_matches("...")
+        .trim();
+    stripped
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('`', "")
+        .to_lowercase()
+}
+
+/// Exact label; label or id with backticks stripped; an id and its own label (`t1 read the
+/// spec`); the same label [`normalized`]; a unique case-insensitive prefix of [`PREFIX_MIN`].
 fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
     let items: Vec<&TodoItem> = list.items().collect();
     if let Some(index) = items.iter().position(|item| item.label.as_str() == needle) {
@@ -394,6 +410,18 @@ fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
         })
     {
         return Ok(index);
+    }
+    let wanted = normalized(needle);
+    if !wanted.is_empty() {
+        let same: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| normalized(item.label.as_str()) == wanted)
+            .map(|(index, _)| index)
+            .collect();
+        if let [one] = same.as_slice() {
+            return Ok(*one);
+        }
     }
     let prefix = bare.to_lowercase();
     let hits: Vec<usize> = if bare.chars().count() >= PREFIX_MIN {

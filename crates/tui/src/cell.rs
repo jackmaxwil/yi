@@ -653,6 +653,14 @@ impl ToolCell {
     }
 }
 
+pub(crate) fn activity_label(activity: ChildActivity) -> &'static str {
+    match activity {
+        ChildActivity::Waiting => "waiting",
+        ChildActivity::Writing => "writing",
+        ChildActivity::Executing => "executing",
+    }
+}
+
 impl TaskCell {
     pub fn lines(
         &self,
@@ -661,11 +669,7 @@ impl TaskCell {
         mode: TranscriptMode,
         spinner_phase: usize,
     ) -> Vec<Line<'static>> {
-        let activity = match self.activity {
-            ChildActivity::Waiting => "waiting",
-            ChildActivity::Writing => "writing",
-            ChildActivity::Executing => "executing",
-        };
+        let activity = activity_label(self.activity);
         let pulse = crate::motion::pulse_frame(crate::motion::elapsed_of(spinner_phase));
         let (glyph, state, tone) = match self.status {
             TaskStatus::Running => (pulse, activity, theme.purple),

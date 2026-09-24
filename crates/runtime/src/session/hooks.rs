@@ -39,6 +39,24 @@ fn take_queued(queue: &std::sync::Mutex<Vec<AgentMessage>>, message: &AgentMessa
 }
 
 impl AgentSession {
+    pub fn abort(&self) {
+        self.shared.signal.fire();
+    }
+
+    /// The interrupt's epoch, read when a run is requested for [`Self::prompt_requested`].
+    pub fn abort_epoch(&self) -> u64 {
+        self.shared.signal.epoch()
+    }
+
+    pub async fn wait_idle(&self) {
+        loop {
+            if self.status() == Status::Idle {
+                return;
+            }
+            self.shared.idle.notified().await;
+        }
+    }
+
     pub fn ext_hook(&self) -> ExtHook {
         let shared = Arc::clone(&self.shared);
         Arc::new(move |event| dispatch_ext(&shared, &event))
@@ -103,8 +121,18 @@ impl AgentSession {
         Arc::new(move |message| {
             let shared = Arc::clone(&shared);
             let run = Arc::clone(&run);
+            // Queued here and not in the task, so two messages to one turn keep their order.
+            let running = shared
+                .status
+                .lock()
+                .is_ok_and(|status| *status == Status::Running);
+            let mut queued = running
+                && shared
+                    .follow_up
+                    .lock()
+                    .map(|mut pending| pending.push(message.clone()))
+                    .is_ok();
             tokio::spawn(async move {
-                let mut queued = false;
                 loop {
                     // Armed before the status read: `notify_waiters` stores no permit.
                     let idle = shared.idle.notified();
@@ -219,6 +247,16 @@ impl AgentSession {
                 queue.push(user_message(text));
             }
         })
+    }
+
+    pub fn take_pending(&self) -> (Vec<AgentMessage>, Vec<AgentMessage>) {
+        let take = |queue: &std::sync::Mutex<Vec<AgentMessage>>| {
+            queue
+                .lock()
+                .map(|mut queue| std::mem::take(&mut *queue))
+                .unwrap_or_default()
+        };
+        (take(&self.shared.steer), take(&self.shared.follow_up))
     }
 
     pub fn notice_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {

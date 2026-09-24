@@ -244,6 +244,23 @@ class BlackboardTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(rlm, "host_request", text_host_request):
             self.assertEqual(await rlm.fetch("kernel://main/df", as_text=True), "[4, 5]")
 
+    async def test_a_paged_fetch_sends_only_the_keys_it_was_given_and_carries_the_next_offset(self) -> None:
+        calls: list[dict] = []
+
+        async def fake_host_request(kind, payload):
+            calls.append(payload)
+            return {"text": "ab", "next_offset": 2 if "limit" in payload else None}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            whole = await rlm.fetch("local://notes.md")
+            page = await rlm.fetch("kernel://sub-1/df", limit=2)
+            last = await rlm.fetch("local://notes.md", offset=2)
+        self.assertEqual((type(whole), whole), (str, "ab"))
+        self.assertEqual((page, page.next_offset, last.next_offset), ("ab", 2, None))
+        self.assertEqual(calls[0], {"url": "local://notes.md", "object": False})
+        self.assertEqual(calls[1], {"url": "kernel://sub-1/df", "object": False, "limit": 2})
+        self.assertEqual(calls[2], {"url": "local://notes.md", "object": False, "offset": 2})
+
 
 class StatusTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_reads_the_member_list_and_filters_by_name(self) -> None:
@@ -260,6 +277,31 @@ class StatusTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await rlm.status(), members)
             self.assertEqual(await rlm.status("d"), [members[1]])
 
+    async def test_revoke_sends_the_grace_in_milliseconds(self) -> None:
+        sent = []
+
+        async def fake_host_request(kind, payload):
+            sent.append((kind, payload))
+            return {"revoked": payload["target"]}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            await rlm.revoke("d", grace_s=1.5, reason="out of scope")
+        self.assertEqual(sent, [("rlm.revoke", {"target": "d", "grace_ms": 1500, "reason": "out of scope"})])
+
+    async def test_service_sends_its_name_brief_and_restart_intensity(self) -> None:
+        sent = []
+
+        async def fake_host_request(kind, payload):
+            sent.append((kind, payload))
+            return {"rlm_child_id": "sub-1", "name": "index", "session_dir": "/tmp/s", "model": "faux/faux-1"}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            handle = await rlm.service("index", "serve the index", restart=1, tokens=500)
+            with self.assertRaises(ValueError):
+                await rlm.service("index", "serve the index", restart=-1)
+        self.assertEqual(handle.name, "index")
+        wanted = {"name": "index", "prompt": "serve the index", "restart": 1, "kwargs": {"tokens": 500}}
+        self.assertEqual(sent, [("rlm.service", wanted)])
 
 
 class PlanOpTests(unittest.IsolatedAsyncioTestCase):

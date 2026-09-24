@@ -1,0 +1,77 @@
+[
+ {
+  "id": "ascii",
+  "args": [],
+  "stdin": "item\tcount\tnote\napple\t3\tfresh\npear\t12\t\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "+-------+-------+-------+\n| item  | count | note  |\n+-------+-------+-------+\n| apple |     3 | fresh |\n| pear  |    12 |       |\n+-------+-------+-------+\n",
+  "files_after": {}
+ },
+ {
+  "id": "plain",
+  "args": [
+   "--style",
+   "plain"
+  ],
+  "stdin": "item\tcount\tnote\napple\t3\tfresh\npear\t12\t\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "item   count  note\n-----  -----  -----\napple      3  fresh\npear      12\n",
+  "files_after": {}
+ },
+ {
+  "id": "wide-and-combining",
+  "args": [],
+  "stdin": "name\tqty\tnote\n漢字テスト\t12\tcafé au lait, long\nx\t-3.5\t\nzed\t7\tＡＢ\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "+------------+------+--------------------+\n| name       |  qty | note               |\n+------------+------+--------------------+\n| 漢字テスト |   12 | café au lait, long |\n| x          | -3.5 |                    |\n| zed        |    7 | ＡＢ               |\n+------------+------+--------------------+\n",
+  "files_after": {}
+ },
+ {
+  "id": "clip",
+  "args": [
+   "--max-width",
+   "8"
+  ],
+  "stdin": "name\tqty\tnote\n漢字テスト\t12\tcafé au lait, long\nx\t-3.5\t\nzed\t7\tＡＢ\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "+----------+------+----------+\n| name     |  qty | note     |\n+----------+------+----------+\n| 漢字テ…  |   12 | café au… |\n| x        | -3.5 |          |\n| zed      |    7 | ＡＢ     |\n+----------+------+----------+\n",
+  "files_after": {}
+ },
+ {
+  "id": "align",
+  "args": [
+   "--align",
+   "r,c,l"
+  ],
+  "stdin": "a\tb\tc\nxx\tyyyy\tz\nxxxx\ty\tzzz\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "+------+------+-----+\n|    a |  b   | c   |\n+------+------+-----+\n|   xx | yyyy | z   |\n| xxxx |  y   | zzz |\n+------+------+-----+\n",
+  "files_after": {}
+ },
+ {
+  "id": "bad-align",
+  "args": [
+   "--align",
+   "l,x"
+  ],
+  "stdin": "a\tb\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "empty",
+  "args": [],
+  "stdin": "",
+  "files": {},
+  "exit": 0,
+  "stdout": "",
+  "files_after": {}
+ }
+]

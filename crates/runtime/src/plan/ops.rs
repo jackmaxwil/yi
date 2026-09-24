@@ -29,13 +29,24 @@ use super::table::{
 use super::verify::Verifier;
 use yi_types::plan::op::Reaped;
 
-pub(super) const OWNER_AGENT: &str = "main";
+pub(crate) const OWNER_AGENT: &str = "main";
 
 const CHILD_SUFFIX_MAX: u32 = 9_999;
 
 /// Bytes a rehearsed record may still grow by after the reaps: at most the dispatch width
 /// (8) of `Reaped.last` urls the host mints as `history://<agent>`; the commit seal backstops.
 const REAP_ENVELOPE_BYTES: usize = 8 * 1024;
+
+/// The legal move a refusal named the rule for and not the road to: F0e sessions repeated
+/// `done` on three sibling pending todos in a row because nothing said what to do (#472).
+fn illegal_hint(op: OpKind, from: &TodoStateName) -> &'static str {
+    match (op, from) {
+        (OpKind::Done, TodoStateName::Pending) => {
+            "; start it first (with a delegation, start hands it to a child), or resend set with the row marked \"- [x]\" for a todo carrying no contract"
+        }
+        _ => "",
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Actor {
@@ -68,15 +79,15 @@ pub struct Outcome {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlanOpError {
-    #[error("no plan is open; init opens one")]
+    #[error("no plan is open; add goal to this set to open one, or init")]
     NoPlan,
-    #[error("plan {id} already exists and is open")]
+    #[error("plan {id} already exists and is open; Plan.attach({id:?}) resumes it")]
     PlanExists { id: PlanId },
     #[error("no todo labelled {label:?} in plan {plan}")]
     UnknownLabel { plan: PlanId, label: TodoLabel },
     #[error("only the plan owner may {op:?}; propose to the owner instead")]
     NotOwner { op: OpKind },
-    #[error("{} is illegal for todo {label} in state {from}", op_name(*op))]
+    #[error("{} is illegal for todo {label} in state {from}{}", op_name(*op), illegal_hint(*op, from))]
     IllegalStep {
         label: TodoLabel,
         from: TodoStateName,
@@ -185,10 +196,13 @@ pub enum PlanOpError {
     )]
     ContractDrift { label: TodoLabel },
     #[error(
-        "done for {label:?} refused: a worktree todo completes only through the acceptance of its contracted candidate (plan section 6.6)"
+        "done for {label:?} refused: a worktree todo completes only through the acceptance of its contracted candidate (plan section 6.6); one with no `contract` takes it from a `set` row (a delegation `accept` is not a contract) and then `submit` the candidate, and `fail` or `drop` takes the disposition road"
     )]
     AcceptanceUnavailable { label: TodoLabel },
-    #[error("done for {label:?} refused at phase {phase}: no {missing} record on this attempt")]
+    #[error(
+        "done for {label:?} refused at phase {phase}: no {missing} record on this attempt{}",
+        if *phase == "unsubmitted" { "; the child records one with op=submit" } else { "" }
+    )]
     PhaseMissing {
         label: TodoLabel,
         phase: &'static str,
@@ -230,6 +244,8 @@ pub enum PlanOpError {
     },
     #[error("{label:?} is not running by {agent}; an agent submits for its own attempt only")]
     NotRunningBy { label: TodoLabel, agent: String },
+    #[error("program refused: {detail}")]
+    Program { detail: String },
     #[error("import refused: {0}")]
     Import(#[from] super::import::ImportError),
     #[error("record did not serialize: {0}")]
@@ -298,6 +314,7 @@ impl PlanOpError {
             Self::Verification { .. } => "verification",
             Self::WrongAttempt { .. } => "wrong_attempt",
             Self::NotRunningBy { .. } => "not_running_by",
+            Self::Program { .. } => "program",
             Self::Import(_) => "import",
             Self::Serialize(_) | Self::Canonical(_) => "serialize",
             Self::Reduce(_) => "reduce",
@@ -351,8 +368,14 @@ pub trait OpSink: Send + Sync {
     fn record(&self, record: PlanOpRecord) -> Result<(), String>;
 }
 
-pub fn dispatch_width(cores: NonZeroUsize) -> NonZeroUsize {
-    NonZeroUsize::new(cores.get().saturating_sub(1).clamp(1, 8)).unwrap_or(NonZeroUsize::MIN)
+pub const WIDTH_MAX: usize = 8;
+
+/// Invariant: a delegated child waits on a network model, not on a core, so the bound is what
+/// bounds children, the family cap and the lever, and never the host's cores (#468).
+pub fn dispatch_width() -> NonZeroUsize {
+    let levers = crate::levers::get();
+    NonZeroUsize::new(levers.family_max_children.min(levers.plan_width_max))
+        .unwrap_or(NonZeroUsize::MIN)
 }
 
 #[derive(Debug, Default)]
@@ -369,6 +392,7 @@ pub(super) struct Txn {
     pub(super) records: Vec<JournalRecord>,
     pub(super) journal: Journal,
     pub(super) actor: String,
+    pub(super) principal: Actor,
     pub(super) request: RequestId,
     pub(super) expected: u64,
     /// The resolution a `done` in this transaction lands with; the done path decides it.
@@ -418,12 +442,11 @@ pub struct PlanEngine {
 
 impl PlanEngine {
     pub fn new(store: PlanStore, delegate: Arc<dyn Delegate>) -> Self {
-        let cores = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
         let snapshotter = Arc::new(TreeHash::excluding(store.dir()));
         Self {
             store,
             delegate,
-            width: dispatch_width(cores),
+            width: dispatch_width(),
             output_resolve: None,
             op_sink: None,
             liveness: Arc::new(recovery::Unknown),
@@ -555,6 +578,9 @@ impl PlanEngine {
                 };
                 self.framed(Some(opened.plan.id), &actor, set, request, None)
             }
+            program @ Op::Program { .. } => {
+                self.program(plan, &actor, program, request, expected_revision)
+            }
             other => self.framed(plan, &actor, other, request, expected_revision),
         }
     }
@@ -575,6 +601,7 @@ impl PlanEngine {
             records,
             journal: self.store.journal(root),
             actor: actor_word(actor),
+            principal: actor.clone(),
             request,
             expected: expected.map_or(0, |touched| touched.0),
             resolution: None,
@@ -921,12 +948,24 @@ impl PlanEngine {
         }
         if let Some(verdict) = &txn.verdict {
             record.verdict = Some(serde_json::to_value(verdict)?);
+            if let Some(votes) = super::done::juror_votes(verdict) {
+                record.record.extra.insert("jurors".to_owned(), votes);
+            }
         }
         if let Some(effect) = &txn.effect {
             record
                 .record
                 .extra
                 .insert("effect_id".to_owned(), Value::String(effect.to_string()));
+        }
+        if let Op::Program {
+            cell_id,
+            source_ref,
+        } = op
+        {
+            let at = record.record.at;
+            record.program_hash =
+                Some(self.program_hash(id, plan.version.0, cell_id, source_ref, at)?);
         }
         if matches!(op, Op::FuseReset) {
             let prior = txn.state.plan(&txn.root)?.spawns().get();
@@ -1080,6 +1119,15 @@ fn admitted(plan: &Plan, slots: usize) -> Vec<TodoLabel> {
         .into_iter()
         .filter(|label| admit(plan, label, slots).is_ok())
         .collect()
+}
+
+/// Invariant: `by` is compared to the actor, not its word: a child named `main` is no owner.
+pub(super) fn runs(actor: &Actor, by: &AgentId) -> bool {
+    match actor {
+        Actor::Owner => by.as_str() == OWNER_AGENT,
+        Actor::Child(agent) => agent == by && agent.as_str() != OWNER_AGENT,
+        Actor::User(_) | Actor::Host => false,
+    }
 }
 
 fn actor_word(actor: &Actor) -> String {

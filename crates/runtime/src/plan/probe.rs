@@ -40,8 +40,9 @@ impl Rung {
     /// Incident: `checked_shl` refuses only a shift of 64 or more, so rungs 62
     /// and 63 shifted every bit out and read as a zero-second delay.
     pub fn delay(self) -> Duration {
-        let seconds = FIRST_DELAY.as_secs() << self.0.min(SATURATED_SHIFT);
-        Duration::from_secs(seconds.min(MAX_DELAY.as_secs()))
+        let levers = crate::levers::get();
+        let seconds = levers.plan_probe_first_s << self.0.min(SATURATED_SHIFT);
+        Duration::from_secs(seconds.min(levers.plan_probe_max_s))
     }
 
     pub fn next(self) -> Self {
@@ -85,6 +86,9 @@ pub struct ProbeLadder {
     probing: AtomicBool,
     children: Option<(Children, Arc<NoticeFn>)>,
     latch: Mutex<StuckLatch>,
+    /// The lease timer's job (plan section 7.4): run on every wake, before the probe tick is
+    /// even looked at, so a probe still in flight never delays a cancel's expiry.
+    leases: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl ProbeLadder {
@@ -101,6 +105,7 @@ impl ProbeLadder {
             probing: AtomicBool::new(false),
             children: None,
             latch: Mutex::new(StuckLatch::default()),
+            leases: None,
         }
     }
 
@@ -119,6 +124,16 @@ impl ProbeLadder {
     pub fn with_children(mut self, children: Children, notice: Arc<NoticeFn>) -> Self {
         self.children = Some((children, notice));
         self
+    }
+
+    pub fn with_leases(mut self, expire: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.leases = Some(expire);
+        self
+    }
+
+    /// The injected clock's now, for a caller turning a grace into a due time.
+    pub fn now(&self) -> Instant {
+        (self.clock)()
     }
 
     /// Registers a due time; one earlier than every other registered interrupts the loop's
@@ -237,7 +252,7 @@ impl ProbeLadder {
         };
         let entry = pending.entry(slot.to_owned()).or_insert_with(|| Pending {
             rung: Rung::default(),
-            due: now.checked_add(FIRST_DELAY).unwrap_or(now),
+            due: now.checked_add(Rung::default().delay()).unwrap_or(now),
         });
         entry.due <= now
     }
@@ -259,7 +274,8 @@ impl ProbeLadder {
             && let Some(entry) = pending.get_mut(slot)
         {
             entry.rung = entry.rung.next();
-            entry.due = now.checked_add(MAX_DELAY).unwrap_or(now);
+            let max = Duration::from_secs(crate::levers::get().plan_probe_max_s);
+            entry.due = now.checked_add(max).unwrap_or(now);
         }
         self.say(format!(
             "external block {label} carries no probe, so nothing can clear it \
@@ -340,6 +356,9 @@ impl ProbeLadder {
     /// for, so a slow probe never delays a stuck check and neither stalls the reactor.
     fn wake_once(self: &Arc<Self>) {
         let now = (self.clock)();
+        if let Some(expire) = &self.leases {
+            expire();
+        }
         let watching = Arc::clone(self);
         tokio::task::spawn_blocking(move || {
             watching.watch();

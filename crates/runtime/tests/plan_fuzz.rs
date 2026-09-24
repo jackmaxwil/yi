@@ -221,6 +221,7 @@ fn delegation(declares: bool) -> Result<Delegation, TestCaseError> {
             isolation: None,
             budget: None,
             wall: None,
+            parent_close: None,
             extra: serde_json::Map::new(),
         },
         accept: Check::Command("true".to_owned()),

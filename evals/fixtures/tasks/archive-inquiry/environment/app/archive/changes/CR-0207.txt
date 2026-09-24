@@ -1,0 +1,84 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0207
+Title: Swap duty and standby pump roles
+Site: Harrow Weir
+Requested by: Tamsin Orrel
+Implemented: 2030-12-29
+
+Outcome: ROLLED BACK
+
+Description
+-----------
+
+A minor oil weep from the sample tap at Harrow Weir was cleaned up and a drip tray
+fitted pending the next service. Dov Callender thanked the networks team for covering
+the holiday rota at short notice.
+
+The change was implemented on 2030-12-29 and rolled back on 2031-01-03 after vibration
+alarms.
+
+Risk and rollback plan
+----------------------
+
+A rollback was prepared but was not needed.
+
+Petra Vosk presented a short paper on sensor drift and recommended a comparison check
+at Eastmere Intake every 13 weeks. A walkdown of Pike Hollow found the signage faded;
+replacement boards have been ordered under the routine budget.
+
+Verification
+------------
+
+Dov Callender thanked the finance office for covering the holiday rota at short
+notice. A minor oil weep from the dosing skid at Low Fennick was cleaned up and a drip
+tray fitted pending the next service. Petra Vosk reported that the level sensor at
+Brackwater Lock had been inspected and found serviceable, with minor wear noted on the
+seals. Members of the safety committee asked for the seasonal demand figures to be
+circulated before the next meeting. The draft drawing register for Cindergate Station
+is 32 percent complete and will be issued once the as-built survey is checked.
+
+Annex A. Housekeeping
+---------------------
+
+the control room reminded everyone that permits for confined spaces must be closed out
+the same day. The handover notes between shifts were sampled by the asset planning
+group and found complete in all but 35 cases. It was noted that access to Brackwater
+Lock remains difficult after heavy rain and that the track will be regraded when crews
+allow. Ysolde Quint confirmed that spares for the duty pump are held at the central
+store and that the reorder level is 21 units. A walkdown of Merrow Basin found the
+signage faded; replacement boards have been ordered under the routine budget.
+
+the finance office will coordinate with Ysolde Quint on the training calendar, which
+currently shows 31 open places. Vegetation clearance around the surge vessel at
+Eastmere Intake was completed and the area photographed for the asset record. A
+walkdown of Brackwater Lock found the signage faded; replacement boards have been
+ordered under the routine budget. The contractor's method statement for work at
+Eastmere Intake was reviewed by the asset planning group and returned with 36
+comments. Bram Ketteridge reported that the standby pump at Tolland Sluice had been
+inspected and found serviceable, with minor wear noted on the seals.
+
+Annex B. Routine matters
+------------------------
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. Dov Callender confirmed that spares for the flow meter
+are held at the central store and that the reorder level is 27 units. It was noted
+that access to Brackwater Lock remains difficult after heavy rain and that the track
+will be regraded when crews allow. Vegetation clearance around the surge vessel at
+Cindergate Station was completed and the area photographed for the asset record.
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. The telemetry link to Cindergate Station dropped twice
+in the period; both outages were under 25 minutes and no alarms were missed. The
+handover notes between shifts were sampled by the asset planning group and found
+complete in all but 34 cases. the asset planning group will coordinate with Mirela
+Stanck on the training calendar, which currently shows 7 open places. No complaints
+were received from neighbours of Cindergate Station during the works, and the liaison
+log has been closed.
+
+No complaints were received from neighbours of Tolland Sluice during the works, and
+the liaison log has been closed. Hollis Wray thanked the asset planning group for
+covering the holiday rota at short notice. Bram Ketteridge raised the question of lone
+working at Low Fennick and was referred to the existing guidance held by the control
+room. The telemetry link to Cindergate Station dropped twice in the period; both
+outages were under 28 minutes and no alarms were missed.

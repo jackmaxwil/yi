@@ -6,15 +6,17 @@ import ast, re, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail
 
-rlm = ROOT / "python/yi_runtime/src/rlm/__init__.py"
-srcs = [rlm] + sorted(ROOT.glob("python/skills/*/src/*/__init__.py"))
+pkgs = sorted(ROOT.glob("python/yi_runtime/src/*/__init__.py"))
+srcs = pkgs + sorted(ROOT.glob("python/skills/*/src/*/__init__.py"))
 api = sorted({n for s in srcs for n in re.findall(r"async def (\w+)", s.read_text())})
 mods = sorted({s.parent.name for s in srcs})
-handle = sorted({f.name for c in ast.parse(rlm.read_text()).body
-                 if isinstance(c, ast.ClassDef) and c.name.endswith("Handle")
-                 for f in c.body if isinstance(f, ast.AsyncFunctionDef)})
+# A handle is any `*Handle` class, and every class of the `yi` library (Plan, Todo, Run).
+classes = [c for p in pkgs for f in sorted(p.parent.glob("*.py")) for c in ast.parse(f.read_text()).body
+           if isinstance(c, ast.ClassDef) and (c.name.endswith("Handle") or p.parent.name == "yi")]
+handle = sorted({f.name for c in classes for f in c.body if isinstance(f, ast.AsyncFunctionDef)})
 mod_call = re.compile(rf"(await\s+)?\b({'|'.join(mods)})\.({'|'.join(api)})\s*\(")
 handle_call = re.compile(rf"(await\s+)?\w+\.({'|'.join(handle)})\s*\(")
+kernel_block = re.compile(rf"{mod_call.pattern}|\b({'|'.join(c.name for c in classes)})\.\w+\(")
 
 docs = (sorted(ROOT.glob("crates/runtime/src/prompts/*.md"))
         + sorted(ROOT.glob("skills/**/SKILL.md"))
@@ -35,7 +37,7 @@ for d in docs:
     # A handle is held in a variable, so `h.result(` parses the same as a Rust example's
     # `table.get(`. The block's own company is the discriminator.
     for b in blocks:
-        pats = [mod_call, handle_call] if mod_call.search("\n".join(l for _, l in b)) else [mod_call]
+        pats = [mod_call, handle_call] if kernel_block.search("\n".join(l for _, l in b)) else [mod_call]
         errs += [f"{d.relative_to(ROOT)}:{n}: {m.group(0)}...) needs await"
                  for n, l in b for p in pats for m in p.finditer(l) if not m.group(1)]
 fail(list(dict.fromkeys(errs)), f"prompt_examples ({len(api)} coroutines in {len(mods)} modules, "

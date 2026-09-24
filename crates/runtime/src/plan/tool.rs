@@ -25,6 +25,26 @@ fn legal_ops() -> String {
         .join(", ")
 }
 
+/// What the caller evidently meant, per argument: F0e sessions sent prose or a bare path as
+/// `output`, and a todo spec without its `spec`, against a schema text they had not read (#472).
+fn field_hint(field: &str) -> &'static str {
+    match field {
+        "output" => {
+            "; output is a url of the product (tree://<child>/<path> or file:///abs/path), omitted when there is none, and a check's output line belongs to the todo tool's evidence"
+        }
+        "todos" | "delegation" => {
+            "; a todo is {label, after?, delegation?: {spec: {role?, isolation?}, accept: {command: \"...\"}}}"
+        }
+        "evidence" => "; evidence is the todo tool's field, done takes output (a url) or nothing",
+        // Incident: three worktree children quoted the attempt nine times between them; the
+        // refusal named the wanted type without saying it was the todo's own counter.
+        "attempt" => {
+            "; attempt is a bare integer, the attempt this todo is on, and 1 unless it was retried"
+        }
+        _ => "",
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ArgError {
     #[error("op is required; legal ops are {}", legal_ops())]
@@ -33,7 +53,7 @@ pub enum ArgError {
     UnknownOp { got: String },
     #[error("{} requires the {field:?} argument", op_name(*op))]
     Missing { op: OpKind, field: &'static str },
-    #[error("{} argument {field:?} is malformed: {cause}", op_name(*op))]
+    #[error("{} argument {field:?} is malformed: {cause}{}", op_name(*op), field_hint(field))]
     Malformed {
         op: OpKind,
         field: &'static str,
@@ -51,11 +71,17 @@ pub enum ArgError {
     TooDeep { line: usize, max: usize },
     #[error("actor is not an argument; the surface a request arrives on fixes its principal")]
     ActorArg,
-    #[error("{} does not take {key:?}; its arguments are {legal}", op_name(*op))]
+    #[error("{} does not take {key:?}; its arguments are {legal}{}", op_name(*op), field_hint(key))]
     UnknownKey {
         op: OpKind,
         key: String,
         legal: String,
+    },
+    #[error("set line {line}: label is {chars} chars, the cap is {max}")]
+    LabelTooLong {
+        line: usize,
+        chars: usize,
+        max: usize,
     },
 }
 
@@ -83,6 +109,7 @@ fn known_keys(kind: OpKind) -> &'static [&'static str] {
         OpKind::Submit => &["op", "plan", "label", "todo", "attempt", "output"],
         OpKind::Resolve => &["op", "plan", "label", "todo", "attempt", "resolution"],
         OpKind::Accept => &["op", "plan", "label", "todo", "note", "output"],
+        OpKind::Program => &["op", "plan", "cell_id", "source_ref"],
     }
 }
 
@@ -147,9 +174,18 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                 max: CHECKLIST_DEPTH,
             });
         }
-        let label = TodoLabel::new(label).map_err(|cause| ArgError::Checklist {
-            line,
-            text: cause.to_string(),
+        // Incident: one F0e session shortened a label three times and never got under 80,
+        // because the headline said the row was not a checklist row (#472).
+        let label = TodoLabel::new(label).map_err(|cause| match cause {
+            yi_types::plan::doc::DocError::LabelTooLong { label, max } => ArgError::LabelTooLong {
+                line,
+                chars: label.chars().count(),
+                max,
+            },
+            cause => ArgError::Checklist {
+                line,
+                text: cause.to_string(),
+            },
         })?;
         let todo = Todo {
             label,
@@ -276,6 +312,8 @@ from_arg!(
     Reconciliation,
     Resolve,
     yi_types::plan::op::Choice,
+    yi_types::plan::op::CellId,
+    yi_types::plan::canonical::ArtifactRef,
 );
 
 fn opt<T: FromArg>(
@@ -427,6 +465,10 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
             label: label(args, kind)?,
             note: need(args, kind, "note")?,
             output: opt(args, kind, "output")?,
+        },
+        OpKind::Program => Op::Program {
+            cell_id: need(args, kind, "cell_id")?,
+            source_ref: need(args, kind, "source_ref")?,
         },
     })
 }
@@ -645,8 +687,21 @@ impl Tool for PlanTool {
         DESCRIPTION
     }
 
+    /// A child's schema adds `submit`, which its brief names; the owner's is the priced [`schema`].
     fn schema(&self) -> Value {
-        schema()
+        let mut schema = schema();
+        if let Actor::Child(_) = self.actor
+            && let Some(properties) = schema["properties"].as_object_mut()
+        {
+            if let Some(ops) = properties["op"]["enum"].as_array_mut() {
+                ops.push(json!("submit"));
+            }
+            properties.insert(
+                "attempt".to_owned(),
+                json!({"type": "integer", "description": "submit: the todo's attempt, 1 unless it was retried; output is the product's url"}),
+            );
+        }
+        schema
     }
 
     fn kind(&self) -> ToolKind {
@@ -759,6 +814,7 @@ mod tests {
                 }
                 let parsed = request(&Actor::Owner, &input);
                 assert!(parsed.is_ok(), "{name}: {:?}", parsed.err());
+                assert!(templated(&input).is_ok(), "{name}: {:?}", templated(&input));
                 // The CLI reads one line: the same args must parse to the same request.
                 let mut line = name.to_owned();
                 if let Some(plan) = step.get("plan").and_then(Value::as_str) {
@@ -781,6 +837,37 @@ mod tests {
             }
         }
         assert!(seen > 30, "only {seen} fixture ops exercised");
+        Ok(())
+    }
+
+    /// The call a repeated refusal prints back, parsed by the parser that refused it.
+    fn templated(args: &Map<String, Value>) -> Result<(), String> {
+        let line = crate::affordance::call_template("plan", &schema(), args);
+        let shape = line
+            .strip_prefix(&format!("{}call plan as ", crate::affordance::NEXT))
+            .ok_or_else(|| format!("no template in {line}"))?;
+        let Ok(Value::Object(shape)) = serde_json::from_str::<Value>(shape) else {
+            return Err(format!("{shape} is not an object"));
+        };
+        request(&Actor::Owner, &shape)
+            .map(|_| ())
+            .map_err(|error| format!("{shape:?}: {error}"))
+    }
+
+    /// Incident: the template printed a submit without `attempt`, a key the flat schema does not
+    /// name, so the surface taught the one call its own parser refuses (#478).
+    #[test]
+    fn a_submit_template_carries_the_attempt_its_parser_needs() -> Fallible {
+        let Value::Object(args) = json!({
+            "op": "submit",
+            "plan": "three-independent-one-file-writes-alpha",
+            "label": "gamma",
+            "attempt": 1,
+            "output": "local://gamma.txt"
+        }) else {
+            return Err("case is not an object".into());
+        };
+        templated(&args)?;
         Ok(())
     }
 

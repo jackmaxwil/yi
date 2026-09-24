@@ -1536,8 +1536,10 @@ fn a_stopped_chain_says_so_beside_the_exit_code() -> TestResult {
         })
         .collect();
     assert!(text.contains("exit code: 1"), "{text}");
+    // The annotation cannot know which segment failed, and in 15 of 59 F0e chained failures
+    // it was the last one, so it states the rule rather than claiming the fact (#476).
     assert!(
-        text.contains("[chain stopped at exit 1: the segments after the failing one did not run]"),
+        text.contains("[exit 1 inside a && chain: any segment after the failing one did not run]"),
         "{text}"
     );
     assert!(!text.contains("never"), "{text}");
@@ -1647,5 +1649,162 @@ fn a_file_with_no_checker_gets_no_verdict() -> TestResult {
     let text = output_text(&written);
     assert!(!text.contains("syntax:"), "{text}");
     assert_eq!(written.result.details["syntax"], Value::Null);
+    Ok(())
+}
+
+/// Incident: `write` minted the edit tag and never showed it, so 30 F0e edits after a write
+/// cited an invented tag such as `#unknown` or the prompt's own `#A1B2` (#473).
+#[test]
+fn a_write_result_carries_the_tag_an_edit_must_cite() -> TestResult {
+    let dir = temp_dir("write-tag")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let written = WriteTool {
+        hashline: Some(std::sync::Arc::clone(&state)),
+    }
+    .execute(
+        args(&[
+            ("path", json!("w.py")),
+            ("content", json!("a = 1\nb = 2\nc = 3\n")),
+        ]),
+        &context,
+    );
+    let text = output_text(&written);
+    assert!(text.starts_with("[w.py#"), "{text}");
+    assert!(text.contains("Wrote "), "{text}");
+    let tag = text
+        .lines()
+        .next()
+        .and_then(|header| header.rsplit_once('#'))
+        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
+        .ok_or("no tag on the write result")?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: std::sync::Arc::clone(&state),
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[(
+            "patch",
+            json!(format!("[w.py#{tag}]\nPUT 2.=2:\n+b = 20\n")),
+        )]),
+        &context,
+    );
+    assert!(!edit.is_error, "{}", output_text(&edit));
+    assert_eq!(
+        fs::read_to_string(dir.join("w.py"))?,
+        "a = 1\nb = 20\nc = 3\n"
+    );
+    Ok(())
+}
+
+/// A placeholder tag names the road back rather than only the rule it broke (#473).
+#[test]
+fn a_placeholder_tag_refusal_names_where_the_tag_comes_from() -> TestResult {
+    let dir = temp_dir("write-tag-refusal")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    fs::write(dir.join("p.py"), "x = 1\n")?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: std::sync::Arc::clone(&state),
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[("patch", json!("[p.py#unknown]\nPUT 1.=1:\n+x = 2\n"))]),
+        &context,
+    );
+    assert!(edit.is_error, "{}", output_text(&edit));
+    let text = output_text(&edit);
+    assert!(text.contains("read, write or edit result"), "{text}");
+    assert!(text.contains("omit it"), "{text}");
+    Ok(())
+}
+
+/// Incident: 10 F0e edits anchored to lines the model had seen under the previous tag and
+/// the edit result's 3-line hunk windows did not repeat, which read as never shown (#473).
+#[test]
+fn an_edit_carries_the_seen_lines_it_did_not_move() -> TestResult {
+    let dir = temp_dir("seen-carry")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let body: String = (1..=60).map(|line| format!("line {line}\n")).collect();
+    let written = WriteTool {
+        hashline: Some(std::sync::Arc::clone(&state)),
+    }
+    .execute(
+        args(&[("path", json!("long.txt")), ("content", json!(body))]),
+        &context,
+    );
+    let tag_of = |text: &str| -> Option<String> {
+        text.lines()
+            .next()
+            .and_then(|header| header.rsplit_once('#'))
+            .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
+    };
+    let first = tag_of(&output_text(&written)).ok_or("no write tag")?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: std::sync::Arc::clone(&state),
+        freeform_grammar: false,
+    };
+    let one = edit.execute(
+        args(&[(
+            "patch",
+            json!(format!("[long.txt#{first}]\nPUT 10.=10:\n+TEN\n")),
+        )]),
+        &context,
+    );
+    assert!(!one.is_error, "{}", output_text(&one));
+    let second = tag_of(&output_text(&one)).ok_or("no edit tag")?;
+    // Line 50 is 40 lines outside the hunk window and was never reprinted; it is a line the
+    // write showed and this edit did not touch, so it stays an anchor.
+    let two = edit.execute(
+        args(&[(
+            "patch",
+            json!(format!("[long.txt#{second}]\nPUT 50.=50:\n+FIFTY\n")),
+        )]),
+        &context,
+    );
+    assert!(!two.is_error, "{}", output_text(&two));
+    let final_text = fs::read_to_string(dir.join("long.txt"))?;
+    assert!(final_text.contains("TEN\n"), "{final_text}");
+    assert!(final_text.contains("FIFTY\n"), "{final_text}");
+    Ok(())
+}
+
+/// Incident: 11 of 179 F0e bash failures were a bashism refused by dash, 10 of them process
+/// substitution, because the tool named `bash` spawned `sh -c` (#476).
+#[test]
+fn bash_runs_process_substitution() -> TestResult {
+    let dir = temp_dir("bash-bashism")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let run = BashTool::default().execute(
+        args(&[("command", json!("diff <(echo a) <(echo b)"))]),
+        &context,
+    );
+    let text = output_text(&run);
+    assert!(!text.contains("Syntax error"), "{text}");
+    // diff ran and found a difference: exit 1, not the shell's exit 2.
+    assert_eq!(run.result.details["exitCode"], json!(1), "{text}");
+    assert!(text.contains("a"), "{text}");
+    Ok(())
+}
+
+/// Incident: nine F0e `write` calls passed a JSON object as `content` and read the refusal's
+/// "missing" as absent, so each repeated the same call (#472).
+#[test]
+fn a_wrong_typed_argument_is_not_reported_as_missing() -> TestResult {
+    let dir = temp_dir("write-typed")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let written = WriteTool::default().execute(
+        args(&[
+            ("path", json!("a.json")),
+            ("content", json!({"key": "value"})),
+        ]),
+        &context,
+    );
+    assert!(written.is_error);
+    let text = output_text(&written);
+    assert!(!text.contains("missing"), "{text}");
+    assert!(text.contains("a JSON object, not a string"), "{text}");
+    assert!(text.contains("json.dumps"), "{text}");
     Ok(())
 }

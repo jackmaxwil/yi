@@ -46,7 +46,7 @@ pub mod gate {
     /// True for multi-step work: the verdict is advisory to the loop and never
     /// to the model — false suppresses the forced tool_choice, nothing more.
     pub fn eager_init(prompt: &str) -> bool {
-        let trimmed = prompt.trim();
+        let (trimmed, levers) = (prompt.trim(), crate::levers::get());
         if trimmed.is_empty() || trimmed.ends_with('?') {
             return false;
         }
@@ -57,7 +57,7 @@ pub mod gate {
         {
             return false;
         }
-        if trimmed.lines().filter_map(enumerated).count() >= ENUMERATED_ITEMS_MIN {
+        if trimmed.lines().filter_map(enumerated).count() >= levers.plan_enumerated_min {
             return true;
         }
         let conjunctions = words
@@ -69,11 +69,11 @@ pub mod gate {
             .count()
             .saturating_add(trimmed.matches("! ").count())
             .saturating_add(trimmed.matches("? ").count());
-        let long = usize::from(words.len() >= LONG_PROMPT_WORDS);
+        let long = usize::from(words.len() >= levers.plan_long_prompt_words);
         conjunctions
             .saturating_add(extra_sentences)
             .saturating_add(long)
-            >= MULTI_STEP_SCORE
+            >= levers.plan_multi_step_score
     }
 }
 
@@ -211,7 +211,7 @@ pub fn coupling(session: &AgentSession, options: CouplingOptions) -> TurnCouplin
             }
             if cycle
                 .lock()
-                .map(|cycle| cycle.interceptions >= gate::STOP_CAP_PER_CYCLE)
+                .map(|cycle| cycle.interceptions >= crate::levers::get().plan_stop_cap)
                 .unwrap_or(true)
             {
                 return None;

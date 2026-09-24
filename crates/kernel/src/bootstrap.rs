@@ -573,7 +573,7 @@ pub fn resolve_python_identity(
     skills_dir: Option<&Path>,
 ) -> Result<String, String> {
     let mut files = vec![source_dir.join("pyproject.toml")];
-    collect_py_files(&source_dir.join("src").join("rlm"), &mut files)?;
+    collect_py_files(&source_dir.join("src"), &mut files)?;
     if let Some(skills_dir) = skills_dir {
         for (_, subdir) in PYTHON_SKILLS {
             let skill_dir = skills_dir.join(subdir);
@@ -1079,6 +1079,14 @@ mod tests {
             "a runtime source edit must invalidate the venv"
         );
         assert!(before.starts_with("sha256:"));
+        let yi = root.join("src").join("yi");
+        std::fs::create_dir_all(&yi).map_err(|error| error.to_string())?;
+        std::fs::write(yi.join("plan.py"), "y = 1\n").map_err(|error| error.to_string())?;
+        assert_ne!(
+            after,
+            resolve_runtime_identity(&root)?,
+            "every package of the wheel counts, not `rlm` alone"
+        );
         Ok(())
     }
 

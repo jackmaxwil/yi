@@ -235,6 +235,7 @@ fn cli_done_validates_a_declared_output_schema() -> TestResult {
             isolation: None,
             budget: None,
             wall: None,
+            parent_close: None,
             extra: Map::new(),
         },
         accept: Check::Command("true".to_owned()),

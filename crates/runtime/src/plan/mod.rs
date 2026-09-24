@@ -19,11 +19,13 @@ pub mod dispatch;
 pub mod done;
 pub mod import;
 pub mod journal;
+pub mod judge;
 pub mod ledger;
 pub mod loop_coupling;
 pub mod ops;
 pub mod output;
 pub mod probe;
+pub mod program;
 pub mod recovery;
 pub mod request;
 pub mod snapshot;
@@ -268,7 +270,7 @@ impl PlanService {
             plans_dir: default_plans_dir(),
             deliver,
             stale: Mutex::new(StaleTracker::default()),
-            stale_turns: DEFAULT_STALE_TURNS,
+            stale_turns: crate::levers::get().plan_stale_turns,
             on_change: Mutex::new(None),
             engine: std::sync::OnceLock::new(),
         }

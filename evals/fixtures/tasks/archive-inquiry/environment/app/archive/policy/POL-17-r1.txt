@@ -1,0 +1,104 @@
+Quillfen Water Cooperative
+POLICY POL-17: Attendance at treatment works
+Revision: 1
+Effective from: 2030-06-01
+Supersedes: none
+Owner: Ansel Brightwater
+
+1. Purpose
+----------
+
+Petra Vosk presented a short paper on sensor drift and recommended a comparison check
+at Tolland Sluice every 27 weeks. The telemetry link to Merrow Basin dropped twice in
+the period; both outages were under 9 minutes and no alarms were missed.
+
+2. Scope
+--------
+
+the control room will coordinate with Tamsin Orrel on the training calendar, which
+currently shows 26 open places. Flooding on the lane to Low Fennick delayed the
+delivery by a day; no cost was incurred by the cooperative.
+
+3. Requirements
+---------------
+
+3.1 A treatment works must not be left unattended for longer than 4 hours while dosing
+is in service.
+
+3.2 Class B does not apply to treatment works; see POL-07 for pump stations.
+
+4. Responsibilities
+-------------------
+
+Lucan Marsh reported that the telemetry outstation at Cindergate Station had been
+inspected and found serviceable, with minor wear noted on the seals. No complaints
+were received from neighbours of Low Fennick during the works, and the liaison log has
+been closed. The contractor's method statement for work at Eastmere Intake was
+reviewed by the finance office and returned with 14 comments.
+
+5. Review
+---------
+
+This policy is reviewed every two years or after any incident that calls its
+requirements into question.
+
+Annex A. Any other business
+---------------------------
+
+The draft drawing register for Tolland Sluice is 9 percent complete and will be issued
+once the as-built survey is checked. Flooding on the lane to Low Fennick delayed the
+delivery by a day; no cost was incurred by the cooperative. The contractor's method
+statement for work at Tolland Sluice was reviewed by the safety committee and returned
+with 36 comments.
+
+The handover notes between shifts were sampled by the asset planning group and found
+complete in all but 8 cases. It was noted that access to Eastmere Intake remains
+difficult after heavy rain and that the track will be regraded when crews allow. No
+complaints were received from neighbours of Osier Bank during the works, and the
+liaison log has been closed.
+
+A minor oil weep from the duty pump at Low Fennick was cleaned up and a drip tray
+fitted pending the next service. A walkdown of Harrow Weir found the signage faded;
+replacement boards have been ordered under the routine budget. Bram Ketteridge
+presented a short paper on sensor drift and recommended a comparison check at Low
+Fennick every 27 weeks. Mirela Stanck presented a short paper on sensor drift and
+recommended a comparison check at Tolland Sluice every 26 weeks.
+
+Annex B. Training and rota
+--------------------------
+
+Tamsin Orrel raised the question of lone working at Tolland Sluice and was referred to
+the existing guidance held by the field crews. Ysolde Quint confirmed that spares for
+the surge vessel are held at the central store and that the reorder level is 39 units.
+Mirela Stanck confirmed that spares for the standby pump are held at the central store
+and that the reorder level is 32 units.
+
+The stores count showed 39 discrepancies, all traced to items issued to vans without a
+ticket. the asset planning group will coordinate with Ysolde Quint on the training
+calendar, which currently shows 16 open places. The telemetry link to Tolland Sluice
+dropped twice in the period; both outages were under 2 minutes and no alarms were
+missed. Hollis Wray thanked the safety committee for covering the holiday rota at
+short notice. No complaints were received from neighbours of Harrow Weir during the
+works, and the liaison log has been closed.
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. Lucan Marsh raised the question of lone working at
+Merrow Basin and was referred to the existing guidance held by the asset planning
+group. the control room reminded everyone that permits for confined spaces must be
+closed out the same day. The contractor's method statement for work at Pike Hollow was
+reviewed by the asset planning group and returned with 32 comments.
+
+Annex C. Housekeeping
+---------------------
+
+The draft drawing register for Pike Hollow is 30 percent complete and will be issued
+once the as-built survey is checked. the safety committee will coordinate with Dov
+Callender on the training calendar, which currently shows 37 open places. Mirela
+Stanck reported that the sample tap at Osier Bank had been inspected and found
+serviceable, with minor wear noted on the seals.
+
+It was noted that access to Merrow Basin remains difficult after heavy rain and that
+the track will be regraded when crews allow. Tamsin Orrel confirmed that spares for
+the penstock actuator are held at the central store and that the reorder level is 21
+units. An energy audit of Brackwater Lock suggested that running the level sensor off-
+peak would reduce cost without affecting service.

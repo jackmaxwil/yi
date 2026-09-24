@@ -1,0 +1,93 @@
+Quillfen Water Cooperative
+POLICY POL-09: Stores and issue of spares
+Revision: 1
+Effective from: 2030-10-01
+Supersedes: none
+Owner: Oona Farrow
+
+1. Purpose
+----------
+
+the networks team reminded everyone that permits for confined spaces must be closed
+out the same day. Flooding on the lane to Merrow Basin delayed the delivery by a day;
+no cost was incurred by the cooperative.
+
+2. Scope
+--------
+
+A minor oil weep from the penstock actuator at Merrow Basin was cleaned up and a drip
+tray fitted pending the next service. An energy audit of Tolland Sluice suggested that
+running the penstock actuator off-peak would reduce cost without affecting service.
+
+3. Requirements
+---------------
+
+3.1 A breach of this policy is reported to the duty manager on the same shift.
+
+3.2 Supervisors brief their teams on this policy once a year and keep a note of who
+attended.
+
+3.3 Equipment bought for the purposes of this policy is entered in the asset register
+before use.
+
+3.4 Contractors working for the cooperative follow this policy as if they were staff.
+
+4. Responsibilities
+-------------------
+
+Vegetation clearance around the surge vessel at Merrow Basin was completed and the
+area photographed for the asset record. Flooding on the lane to Eastmere Intake
+delayed the delivery by a day; no cost was incurred by the cooperative. No complaints
+were received from neighbours of Brackwater Lock during the works, and the liaison log
+has been closed. the safety committee will coordinate with Ansel Brightwater on the
+training calendar, which currently shows 30 open places. The stores count showed 23
+discrepancies, all traced to items issued to vans without a ticket.
+
+5. Review
+---------
+
+This policy is reviewed every two years or after any incident that calls its
+requirements into question.
+
+Annex A. Housekeeping
+---------------------
+
+The contractor's method statement for work at Pike Hollow was reviewed by the finance
+office and returned with 16 comments. A minor oil weep from the duty pump at Harrow
+Weir was cleaned up and a drip tray fitted pending the next service. Petra Vosk
+presented a short paper on sensor drift and recommended a comparison check at Eastmere
+Intake every 20 weeks. Hollis Wray raised the question of lone working at Osier Bank
+and was referred to the existing guidance held by the networks team.
+
+It was noted that access to Merrow Basin remains difficult after heavy rain and that
+the track will be regraded when crews allow. A walkdown of Harrow Weir found the
+signage faded; replacement boards have been ordered under the routine budget. The
+contractor's method statement for work at Tolland Sluice was reviewed by the asset
+planning group and returned with 17 comments. It was noted that access to Eastmere
+Intake remains difficult after heavy rain and that the track will be regraded when
+crews allow. It was noted that access to Eastmere Intake remains difficult after heavy
+rain and that the track will be regraded when crews allow.
+
+Mirela Stanck reported that the sample tap at Low Fennick had been inspected and found
+serviceable, with minor wear noted on the seals. Members of the control room asked for
+the seasonal demand figures to be circulated before the next meeting. An energy audit
+of Tolland Sluice suggested that running the level sensor off-peak would reduce cost
+without affecting service.
+
+Annex B. Routine matters
+------------------------
+
+A walkdown of Low Fennick found the signage faded; replacement boards have been
+ordered under the routine budget. The handover notes between shifts were sampled by
+the finance office and found complete in all but 15 cases. Ysolde Quint raised the
+question of lone working at Harrow Weir and was referred to the existing guidance held
+by the field crews. Ansel Brightwater noted that the calibration certificate for the
+dosing skid expires next quarter and has booked the visit.
+
+Annex C. Housekeeping
+---------------------
+
+Hollis Wray confirmed that spares for the surge vessel are held at the central store
+and that the reorder level is 4 units. Lucan Marsh thanked the control room for
+covering the holiday rota at short notice. The telemetry link to Harrow Weir dropped
+twice in the period; both outages were under 3 minutes and no alarms were missed.

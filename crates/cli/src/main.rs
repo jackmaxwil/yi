@@ -46,6 +46,8 @@ struct Args {
     faux: Option<String>,
     record: Option<String>,
     snap: Option<String>,
+    /// An eval harness launched this run: `YI_LEVERS` is read, and nothing else (D220).
+    eval: bool,
     deadline: Option<u64>,
     resume: Resume,
     schema: Option<String>,
@@ -83,6 +85,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut faux = None;
     let mut record = None;
     let mut snap = None;
+    let mut eval = false;
     let mut deadline = None;
     let mut continue_leaf = false;
     let mut session = None;
@@ -120,6 +123,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("faux") => faux = Some(parser.value()?.string()?),
             Long("record") => record = Some(parser.value()?.string()?),
             Long("snap") => snap = Some(parser.value()?.string()?),
+            Long("eval") => eval = true,
             Long("deadline") => deadline = Some(parser.value()?.parse()?),
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
@@ -174,6 +178,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         faux,
         record,
         snap,
+        eval,
         deadline,
         resume: match (session, continue_leaf) {
             (Some(id), _) => Resume::Named(id),
@@ -376,6 +381,13 @@ fn build_session(
     asker: Option<yi_runtime::Asker>,
     session_id: Option<&str>,
 ) -> Result<(AgentSession, std::sync::Arc<yi_runtime::SubagentHost>), Refused> {
+    // Invariant: the first statement here, so no lever is read on both sides of the
+    // override and a refused file stops the run before the session, and any model call.
+    yi_runtime::levers::init(args.eval).map_err(|reason| Refused {
+        code: 1,
+        reason,
+        class: yi_types::telemetry::ErrorClass::RefusalConfig,
+    })?;
     if args.model.is_empty() {
         return Err(Refused {
             code: 2,

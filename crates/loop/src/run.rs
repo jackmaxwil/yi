@@ -6,6 +6,7 @@ use tokio::sync::mpsc::Receiver;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
+use yi_types::subagent::LoopSignal;
 
 use crate::config::{ExecutionMode, LoopConfig, TurnSnapshot};
 use crate::interrupt::InterruptSignal;
@@ -397,8 +398,10 @@ struct Cut {
 /// sent back to act; from the prompt's second cut it is told what to write and where it stopped.
 fn length_redrive(rung: u32, cut: Option<&Cut>) -> AgentMessage {
     let details = match cut {
-        Some(cut) => json!({"rung": rung, "cut": true, "reasoningChars": cut.chars}),
-        None => json!({"rung": rung, "cut": false}),
+        Some(cut) => {
+            json!({"rung": rung, "cut": true, "reasoningChars": cut.chars, "signal": LoopSignal::LengthRedrive})
+        }
+        None => json!({"rung": rung, "cut": false, "signal": LoopSignal::LengthRedrive}),
     };
     // Incident: coq-block-bound's cut requests carried only the nudge; six turns derived from zero
     let text = match cut {
@@ -546,7 +549,7 @@ fn repeat_break() -> AgentMessage {
         custom_type: REPEAT_BREAK_CUSTOM_TYPE.to_owned(),
         content: yi_types::message::UserContent::Text(REPEAT_BREAK_TEXT.to_owned()),
         display: false,
-        details: None,
+        details: Some(json!({"signal": LoopSignal::RepeatBreak})),
         timestamp: 0,
     }
 }

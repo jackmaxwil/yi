@@ -1,0 +1,120 @@
+Quillfen Water Cooperative
+INCIDENT REVIEW IR-2031-04
+Stage: PRELIMINARY
+Site: Tolland Sluice
+
+Occurred: 2031-04-09. Severity as assessed at this stage: 3.
+
+Summary
+-------
+
+Vegetation clearance around the control panel at Eastmere Intake was completed and the
+area photographed for the asset record. A minor oil weep from the duty pump at Harrow
+Weir was cleaned up and a drip tray fitted pending the next service.
+
+Timeline
+--------
+
+  06:30  plant isolated
+  06:56  alarm received in the control room
+  07:02  plant isolated
+  07:28  standby plant started
+  08:02  duty manager informed
+  08:24  plant isolated
+  08:39  alarm received in the control room
+
+Findings
+--------
+
+the asset planning group reminded everyone that permits for confined spaces must be
+closed out the same day. The draft drawing register for Osier Bank is 11 percent
+complete and will be issued once the as-built survey is checked. A walkdown of
+Brackwater Lock found the signage faded; replacement boards have been ordered under
+the routine budget.
+
+Root cause
+----------
+
+Valve V-114 failed to seat. The cause of the failure is not yet known.
+
+Recommendations
+---------------
+
+1. Replace valve V-114 at the earliest opportunity.
+
+Annex A. Follow-up from the last period
+---------------------------------------
+
+Flooding on the lane to Cindergate Station delayed the delivery by a day; no cost was
+incurred by the cooperative. The handover notes between shifts were sampled by the
+control room and found complete in all but 12 cases. A walkdown of Harrow Weir found
+the signage faded; replacement boards have been ordered under the routine budget. Oona
+Farrow presented a short paper on sensor drift and recommended a comparison check at
+Osier Bank every 28 weeks.
+
+Oona Farrow raised the question of lone working at Harrow Weir and was referred to the
+existing guidance held by the control room. An energy audit of Merrow Basin suggested
+that running the standby pump off-peak would reduce cost without affecting service. It
+was noted that access to Pike Hollow remains difficult after heavy rain and that the
+track will be regraded when crews allow. Dov Callender confirmed that spares for the
+control panel are held at the central store and that the reorder level is 7 units.
+
+The draft drawing register for Merrow Basin is 24 percent complete and will be issued
+once the as-built survey is checked. the finance office reminded everyone that permits
+for confined spaces must be closed out the same day. The draft drawing register for
+Brackwater Lock is 12 percent complete and will be issued once the as-built survey is
+checked. Vegetation clearance around the dosing skid at Low Fennick was completed and
+the area photographed for the asset record.
+
+Annex B. Follow-up from the last period
+---------------------------------------
+
+Lucan Marsh raised the question of lone working at Cindergate Station and was referred
+to the existing guidance held by the field crews. The stores count showed 10
+discrepancies, all traced to items issued to vans without a ticket. The contractor's
+method statement for work at Eastmere Intake was reviewed by the asset planning group
+and returned with 18 comments. A walkdown of Brackwater Lock found the signage faded;
+replacement boards have been ordered under the routine budget. Bram Ketteridge raised
+the question of lone working at Tolland Sluice and was referred to the existing
+guidance held by the finance office.
+
+the networks team reminded everyone that permits for confined spaces must be closed
+out the same day. Petra Vosk thanked the asset planning group for covering the holiday
+rota at short notice. The handover notes between shifts were sampled by the field
+crews and found complete in all but 3 cases. Ysolde Quint confirmed that spares for
+the surge vessel are held at the central store and that the reorder level is 37 units.
+
+the control room reminded everyone that permits for confined spaces must be closed out
+the same day. Oona Farrow noted that the calibration certificate for the control panel
+expires next quarter and has booked the visit. Sampling results for the quarter were
+within the expected band at every point except one, which is being resampled. A minor
+oil weep from the inlet screen at Tolland Sluice was cleaned up and a drip tray fitted
+pending the next service.
+
+Annex C. Any other business
+---------------------------
+
+Petra Vosk reported that the standby pump at Tolland Sluice had been inspected and
+found serviceable, with minor wear noted on the seals. Vegetation clearance around the
+level sensor at Osier Bank was completed and the area photographed for the asset
+record. Flooding on the lane to Low Fennick delayed the delivery by a day; no cost was
+incurred by the cooperative. Bram Ketteridge presented a short paper on sensor drift
+and recommended a comparison check at Harrow Weir every 28 weeks. No complaints were
+received from neighbours of Eastmere Intake during the works, and the liaison log has
+been closed.
+
+The handover notes between shifts were sampled by the networks team and found complete
+in all but 14 cases. The stores count showed 7 discrepancies, all traced to items
+issued to vans without a ticket. the safety committee reminded everyone that permits
+for confined spaces must be closed out the same day. Vegetation clearance around the
+control panel at Cindergate Station was completed and the area photographed for the
+asset record.
+
+No complaints were received from neighbours of Cindergate Station during the works,
+and the liaison log has been closed. Sampling results for the quarter were within the
+expected band at every point except one, which is being resampled. The contractor's
+method statement for work at Cindergate Station was reviewed by the networks team and
+returned with 13 comments. the asset planning group reminded everyone that permits for
+confined spaces must be closed out the same day. Dov Callender noted that the
+calibration certificate for the flow meter expires next quarter and has booked the
+visit.

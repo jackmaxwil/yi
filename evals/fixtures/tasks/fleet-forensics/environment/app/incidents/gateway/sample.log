@@ -1,0 +1,916 @@
+2031-05-14T09:00:07.842Z edge-01 blobd[5938]: ERROR req=R-53b505 attempt=1 route=/v1/blob/stat failed: HandlerError: handler gave up
+2031-05-14T09:00:07.843Z edge-01 blobd[5938]:     at ledger.post.commit (store.py:858)
+2031-05-14T09:00:07.844Z edge-01 blobd[5938]:     at router.plan.run (frame.py:278)
+2031-05-14T09:00:07.845Z edge-01 blobd[5938]:     at authz.check.run (post.py:214)
+2031-05-14T09:00:07.846Z edge-01 blobd[5938]:   Caused by: RpcError: local call for req=R-53b505 aborted
+2031-05-14T09:00:07.847Z edge-01 blobd[5938]:     at router.plan.open (post.py:692)
+2031-05-14T09:00:07.848Z edge-01 blobd[5938]:   Caused by: SchemaMismatch: refused by peer
+2031-05-14T09:00:07.848Z edge-05 authz[5129]: ERROR req=R-5c78ba attempt=1 route=/v1/blob/stat failed: RpcError: upstream call failed
+2031-05-14T09:00:07.849Z edge-05 authz[5129]:     at ledger.post.call (post.py:628)
+2031-05-14T09:00:07.850Z edge-05 authz[5129]:     at rpc.pool.send (store.py:874)
+2031-05-14T09:00:07.850Z edge-01 blobd[5938]: ERROR req=R-afa0ae attempt=1 route=/v1/blob/stat failed: RpcError: upstream call failed
+2031-05-14T09:00:07.851Z edge-05 authz[5129]:     at rpc.pool.run (frame.py:785)
+2031-05-14T09:00:07.851Z edge-01 blobd[5938]:     at ledger.post.send (plan.py:489)
+2031-05-14T09:00:07.852Z edge-05 authz[5129]:     at codec.frame.open (store.py:338)
+2031-05-14T09:00:07.852Z edge-01 blobd[5938]:     at rpc.pool.open (store.py:314)
+2031-05-14T09:00:07.853Z edge-05 authz[5129]:   Caused by: UpstreamFailure: req=R-53b505 attempt=1 returned 502
+2031-05-14T09:00:07.853Z edge-01 blobd[5938]:     at authz.check.commit (pool.py:828)
+2031-05-14T09:00:07.854Z edge-05 authz[5129]:     at rpc.client.run (pool.py:568)
+2031-05-14T09:00:07.854Z edge-01 blobd[5938]:   Caused by: UpstreamFailure: req=R-53b505 attempt=1 returned 503
+2031-05-14T09:00:07.855Z edge-01 blobd[5938]:     at rpc.client.send (pool.py:801)
+2031-05-14T09:00:07.856Z edge-01 blobd[5938]:     at authz.check.open (frame.py:163)
+2031-05-14T09:00:07.857Z edge-06 blobd[6470]: ERROR req=R-ea6527 attempt=1 route=/v1/ledger/read failed: RpcError: upstream call failed
+2031-05-14T09:00:07.858Z edge-06 blobd[6470]:     at blobd.store.call (plan.py:563)
+2031-05-14T09:00:07.859Z edge-06 blobd[6470]:     at router.plan.call (store.py:94)
+2031-05-14T09:00:07.860Z edge-06 blobd[6470]:   Caused by: RpcError: call for req=R-ea6527 timed out after 527ms
+2031-05-14T09:00:07.861Z edge-06 blobd[6470]:     at codec.frame.open (post.py:859)
+2031-05-14T09:00:07.862Z edge-06 blobd[6470]:   Caused by: UpstreamFailure: req=R-5c78ba attempt=1 returned 503
+2031-05-14T09:00:07.875Z edge-04 blobd[3270]: ERROR req=R-ef7eaf attempt=1 route=/v1/ledger/post failed: RpcError: request aborted
+2031-05-14T09:00:07.876Z edge-04 blobd[3270]:     at codec.frame.send (frame.py:405)
+2031-05-14T09:00:07.877Z edge-04 blobd[3270]:     at authz.check.call (pool.py:531)
+2031-05-14T09:00:07.878Z edge-04 blobd[3270]:     at rpc.pool.open (store.py:466)
+2031-05-14T09:00:07.879Z edge-04 blobd[3270]:   Caused by: UpstreamFailure: req=R-53b505 attempt=1 returned 504
+2031-05-14T09:00:07.880Z edge-02 blobd[9403]: ERROR req=R-5c78ba attempt=2 route=/v1/ledger/post failed: RpcError: upstream call failed
+2031-05-14T09:00:07.881Z edge-02 blobd[9403]:     at router.plan.commit (frame.py:562)
+2031-05-14T09:00:07.882Z edge-02 blobd[9403]:     at router.plan.commit (post.py:241)
+2031-05-14T09:00:07.883Z edge-02 blobd[9403]:     at authz.check.call (post.py:750)
+2031-05-14T09:00:07.884Z edge-02 blobd[9403]:   Caused by: UpstreamFailure: req=R-5c78ba attempt=1 returned 502
+2031-05-14T09:00:07.885Z edge-02 blobd[9403]:     at authz.check.commit (store.py:889)
+2031-05-14T09:00:07.887Z edge-06 blobd[6470]: ERROR req=R-88ce80 attempt=1 route=/v1/ledger/read failed: HandlerError: handler gave up
+2031-05-14T09:00:07.888Z edge-06 blobd[6470]:     at ledger.post.commit (post.py:661)
+2031-05-14T09:00:07.889Z edge-06 blobd[6470]:     at codec.frame.call (store.py:253)
+2031-05-14T09:00:07.890Z edge-06 blobd[6470]:   Caused by: UpstreamFailure: req=R-5c78ba attempt=1 returned 502
+2031-05-14T09:00:07.896Z edge-05 authz[5129]: ERROR req=R-6df460 attempt=1 route=/v1/ledger/post failed: RpcError: upstream call failed
+2031-05-14T09:00:07.897Z edge-05 authz[5129]:     at ledger.post.send (post.py:419)
+2031-05-14T09:00:07.898Z edge-05 authz[5129]:     at blobd.store.call (plan.py:535)
+2031-05-14T09:00:07.899Z edge-05 authz[5129]:   Caused by: RpcError: call for req=R-6df460 timed out after 3982ms
+2031-05-14T09:00:07.900Z edge-05 authz[5129]:     at authz.check.open (plan.py:747)
+2031-05-14T09:00:07.901Z edge-05 authz[5129]:   Caused by: UpstreamFailure: req=R-ef7eaf attempt=1 returned 502
+2031-05-14T09:00:07.902Z edge-05 authz[5129]:     at rpc.pool.call (frame.py:257)
+2031-05-14T09:00:07.904Z edge-05 blobd[1050]: ERROR req=R-3a3949 attempt=1 route=/v1/ledger/read failed: HandlerError: upstream call failed
+2031-05-14T09:00:07.905Z edge-05 blobd[1050]:     at rpc.client.call (frame.py:629)
+2031-05-14T09:00:07.906Z edge-05 blobd[1050]:     at ledger.post.call (post.py:592)
+2031-05-14T09:00:07.907Z edge-05 blobd[1050]:   Caused by: UpstreamFailure: req=R-6df460 attempt=1 returned 504
+2031-05-14T09:00:07.908Z edge-05 blobd[1050]:     at rpc.pool.send (plan.py:775)
+2031-05-14T09:00:07.909Z edge-04 ledger[8204]: ERROR req=R-78769a attempt=1 route=/v1/ledger/read failed: RpcError: upstream call failed
+2031-05-14T09:00:07.910Z edge-04 ledger[8204]:     at codec.frame.open (store.py:280)
+2031-05-14T09:00:07.911Z edge-04 ledger[8204]:     at authz.check.commit (frame.py:274)
+2031-05-14T09:00:07.912Z edge-04 ledger[8204]:     at router.plan.open (store.py:850)
+2031-05-14T09:00:07.913Z edge-04 ledger[8204]:     at authz.check.commit (frame.py:225)
+2031-05-14T09:00:07.914Z edge-06 authz[4117]: ERROR req=R-ef7eaf attempt=2 route=/v1/blob/stat failed: HandlerError: handler gave up
+2031-05-14T09:00:07.914Z edge-04 ledger[8204]:   Caused by: UpstreamFailure: req=R-88ce80 attempt=1 returned 502
+2031-05-14T09:00:07.915Z edge-06 authz[4117]:     at blobd.store.run (post.py:709)
+2031-05-14T09:00:07.915Z edge-04 ledger[8204]:     at authz.check.send (frame.py:271)
+2031-05-14T09:00:07.916Z edge-06 authz[4117]:     at codec.frame.run (frame.py:16)
+2031-05-14T09:00:07.917Z edge-06 authz[4117]:     at blobd.store.send (pool.py:543)
+2031-05-14T09:00:07.918Z edge-06 authz[4117]:     at blobd.store.run (store.py:117)
+2031-05-14T09:00:07.919Z edge-06 authz[4117]:   Caused by: RpcError: call for req=R-ef7eaf timed out after 570ms
+2031-05-14T09:00:07.920Z edge-06 authz[4117]:     at router.plan.run (store.py:39)
+2031-05-14T09:00:07.921Z edge-06 authz[4117]:   Caused by: UpstreamFailure: req=R-88ce80 attempt=1 returned 502
+2031-05-14T09:00:07.923Z edge-06 blobd[6470]: ERROR req=R-67decb attempt=1 route=/v1/authz/check failed: HandlerError: request aborted
+2031-05-14T09:00:07.924Z edge-06 blobd[6470]:     at rpc.client.send (post.py:704)
+2031-05-14T09:00:07.925Z edge-06 blobd[6470]:     at ledger.post.commit (pool.py:218)
+2031-05-14T09:00:07.926Z edge-06 blobd[6470]:     at blobd.store.call (frame.py:65)
+2031-05-14T09:00:07.927Z edge-06 blobd[6470]:   Caused by: RpcError: call for req=R-67decb timed out after 2454ms
+2031-05-14T09:00:07.928Z edge-06 blobd[6470]:     at router.plan.run (frame.py:342)
+2031-05-14T09:00:07.929Z edge-06 blobd[6470]:     at rpc.pool.commit (store.py:326)
+2031-05-14T09:00:07.930Z edge-06 blobd[6470]:   Caused by: UpstreamFailure: req=R-3a3949 attempt=1 returned 504
+2031-05-14T09:00:07.931Z edge-06 blobd[6470]:     at rpc.client.send (store.py:157)
+2031-05-14T09:00:07.936Z edge-05 router[6553]: ERROR req=R-de1753 attempt=1 route=/v1/blob/put failed: HandlerError: upstream call failed
+2031-05-14T09:00:07.937Z edge-05 router[6553]:     at rpc.client.call (pool.py:330)
+2031-05-14T09:00:07.938Z edge-05 router[6553]:     at blobd.store.send (post.py:778)
+2031-05-14T09:00:07.939Z edge-05 router[6553]:     at rpc.client.open (post.py:690)
+2031-05-14T09:00:07.940Z edge-05 router[6553]:     at authz.check.run (plan.py:316)
+2031-05-14T09:00:07.941Z edge-05 router[6553]:   Caused by: RpcError: call for req=R-de1753 timed out after 3351ms
+2031-05-14T09:00:07.942Z edge-05 router[6553]:     at ledger.post.run (frame.py:12)
+2031-05-14T09:00:07.943Z edge-05 router[6553]:   Caused by: UpstreamFailure: req=R-ef7eaf attempt=2 returned 503
+2031-05-14T09:00:07.944Z edge-05 router[6553]:     at authz.check.open (pool.py:215)
+2031-05-14T09:00:11.226Z edge-06 router[7262]: INFO req=R-1dc40e attempt=1 route=/v1/blob/put status=200 dur_ms=82 msg="ok"
+2031-05-14T09:00:20.089Z edge-04 router[4549]: WARN req=R-2f7f33 attempt=1 route=/v1/route/plan status=200 dur_ms=127 msg="ok"
+2031-05-14T09:00:27.104Z edge-02 authz[6815]: INFO req=R-dad51f attempt=1 route=/v1/ledger/post status=200 dur_ms=149 msg="ok"
+2031-05-14T09:00:39.257Z edge-01 blobd[5938]: INFO req=R-87d17d attempt=1 route=/v1/ledger/read status=200 dur_ms=371 msg="ok"
+2031-05-14T09:01:46.863Z edge-04 router[4549]: ERROR req=R-f9918e attempt=1 route=/v1/ledger/post failed: HandlerError: request aborted
+2031-05-14T09:01:46.864Z edge-04 router[4549]:     at rpc.client.send (post.py:649)
+2031-05-14T09:01:46.865Z edge-04 router[4549]:     at authz.check.open (pool.py:780)
+2031-05-14T09:01:46.866Z edge-04 router[4549]:     at authz.check.run (pool.py:311)
+2031-05-14T09:01:46.867Z edge-04 router[4549]:     at blobd.store.run (post.py:225)
+2031-05-14T09:01:46.868Z edge-04 router[4549]:   Caused by: RpcError: local call for req=R-f9918e aborted
+2031-05-14T09:01:46.869Z edge-04 router[4549]:     at rpc.pool.open (pool.py:556)
+2031-05-14T09:01:46.870Z edge-04 router[4549]:   Caused by: CertRevoked: refused by peer
+2031-05-14T09:01:46.882Z edge-05 ledger[9611]: ERROR req=R-78769a attempt=2 route=/v1/route/plan failed: RpcError: upstream call failed
+2031-05-14T09:01:46.883Z edge-05 ledger[9611]:     at router.plan.open (post.py:345)
+2031-05-14T09:01:46.884Z edge-05 ledger[9611]:     at rpc.pool.commit (post.py:166)
+2031-05-14T09:01:46.885Z edge-05 ledger[9611]:     at rpc.client.open (frame.py:22)
+2031-05-14T09:01:46.886Z edge-05 ledger[9611]:   Caused by: RpcError: call for req=R-78769a timed out after 3933ms
+2031-05-14T09:01:46.887Z edge-05 blobd[1050]: ERROR req=R-cd48a4 attempt=1 route=/v1/ledger/read failed: HandlerError: upstream call failed
+2031-05-14T09:01:46.887Z edge-05 ledger[9611]:     at blobd.store.send (plan.py:655)
+2031-05-14T09:01:46.888Z edge-05 blobd[1050]:     at codec.frame.run (frame.py:91)
+2031-05-14T09:01:46.888Z edge-05 ledger[9611]:   Caused by: UpstreamFailure: req=R-f9918e attempt=1 returned 504
+2031-05-14T09:01:46.889Z edge-05 blobd[1050]:     at authz.check.commit (post.py:719)
+2031-05-14T09:01:46.889Z edge-05 ledger[9611]:     at authz.check.open (frame.py:625)
+2031-05-14T09:01:46.890Z edge-05 blobd[1050]:     at rpc.pool.commit (plan.py:304)
+2031-05-14T09:01:46.891Z edge-05 blobd[1050]:   Caused by: RpcError: call for req=R-cd48a4 timed out after 3408ms
+2031-05-14T09:01:46.892Z edge-05 blobd[1050]:     at ledger.post.send (store.py:19)
+2031-05-14T09:01:46.893Z edge-05 blobd[1050]:   Caused by: UpstreamFailure: req=R-f9918e attempt=1 returned 503
+2031-05-14T09:01:46.894Z edge-05 blobd[1050]:     at rpc.client.call (store.py:501)
+2031-05-14T09:01:46.911Z edge-06 authz[4117]: ERROR req=R-575274 attempt=1 route=/v1/blob/put failed: HandlerError: upstream call failed
+2031-05-14T09:01:46.912Z edge-06 authz[4117]:     at codec.frame.commit (pool.py:100)
+2031-05-14T09:01:46.913Z edge-06 authz[4117]:     at ledger.post.commit (store.py:875)
+2031-05-14T09:01:46.914Z edge-06 authz[4117]:     at rpc.client.call (pool.py:67)
+2031-05-14T09:01:46.915Z edge-06 authz[4117]:     at codec.frame.send (post.py:78)
+2031-05-14T09:01:46.916Z edge-06 authz[4117]:   Caused by: UpstreamFailure: req=R-cd48a4 attempt=1 returned 504
+2031-05-14T09:01:46.925Z edge-06 ledger[4281]: ERROR req=R-637ce0 attempt=1 route=/v1/authz/check failed: RpcError: handler gave up
+2031-05-14T09:01:46.926Z edge-06 ledger[4281]:     at rpc.client.send (pool.py:75)
+2031-05-14T09:01:46.927Z edge-06 ledger[4281]:     at blobd.store.open (frame.py:546)
+2031-05-14T09:01:46.928Z edge-06 ledger[4281]:     at codec.frame.commit (post.py:229)
+2031-05-14T09:01:46.929Z edge-06 ledger[4281]:   Caused by: UpstreamFailure: req=R-cd48a4 attempt=1 returned 503
+2031-05-14T09:01:46.930Z edge-06 ledger[4281]:     at authz.check.open (post.py:525)
+2031-05-14T09:01:46.934Z edge-06 blobd[6470]: ERROR req=R-48510b attempt=1 route=/v1/authz/check failed: HandlerError: request aborted
+2031-05-14T09:01:46.935Z edge-06 blobd[6470]:     at router.plan.run (frame.py:553)
+2031-05-14T09:01:46.936Z edge-06 blobd[6470]:     at authz.check.call (frame.py:75)
+2031-05-14T09:01:46.937Z edge-06 blobd[6470]:     at router.plan.run (pool.py:217)
+2031-05-14T09:01:46.938Z edge-06 blobd[6470]:     at router.plan.call (pool.py:242)
+2031-05-14T09:01:46.939Z edge-06 blobd[6470]:   Caused by: RpcError: call for req=R-48510b timed out after 2192ms
+2031-05-14T09:01:46.939Z edge-02 router[7127]: ERROR req=R-abf0eb attempt=1 route=/v1/route/plan failed: RpcError: handler gave up
+2031-05-14T09:01:46.940Z edge-06 blobd[6470]:     at authz.check.commit (store.py:651)
+2031-05-14T09:01:46.940Z edge-02 router[7127]:     at rpc.pool.run (frame.py:559)
+2031-05-14T09:01:46.941Z edge-06 blobd[6470]:     at rpc.pool.run (plan.py:787)
+2031-05-14T09:01:46.941Z edge-02 router[7127]:     at rpc.pool.run (plan.py:547)
+2031-05-14T09:01:46.942Z edge-06 blobd[6470]:   Caused by: UpstreamFailure: req=R-575274 attempt=1 returned 502
+2031-05-14T09:01:46.942Z edge-02 router[7127]:     at authz.check.call (store.py:884)
+2031-05-14T09:01:46.943Z edge-02 router[7127]:   Caused by: RpcError: call for req=R-abf0eb timed out after 645ms
+2031-05-14T09:01:46.944Z edge-02 router[7127]:     at rpc.client.open (frame.py:619)
+2031-05-14T09:01:46.945Z edge-02 router[7127]:     at blobd.store.run (store.py:516)
+2031-05-14T09:01:46.946Z edge-02 router[7127]:   Caused by: UpstreamFailure: req=R-48510b attempt=1 returned 503
+2031-05-14T09:01:46.947Z edge-02 router[7127]:     at codec.frame.run (plan.py:652)
+2031-05-14T09:01:46.950Z edge-04 authz[5922]: ERROR req=R-afce6b attempt=1 route=/v1/route/plan failed: RpcError: handler gave up
+2031-05-14T09:01:46.951Z edge-04 authz[5922]:     at router.plan.open (pool.py:265)
+2031-05-14T09:01:46.952Z edge-04 authz[5922]:     at router.plan.send (pool.py:62)
+2031-05-14T09:01:46.952Z edge-02 blobd[9403]: ERROR req=R-ef7eaf attempt=3 route=/v1/blob/stat failed: HandlerError: handler gave up
+2031-05-14T09:01:46.953Z edge-04 authz[5922]:   Caused by: RpcError: call for req=R-afce6b timed out after 1016ms
+2031-05-14T09:01:46.953Z edge-02 blobd[9403]:     at codec.frame.commit (plan.py:497)
+2031-05-14T09:01:46.954Z edge-04 authz[5922]:     at rpc.client.run (plan.py:114)
+2031-05-14T09:01:46.954Z edge-02 blobd[9403]:     at rpc.pool.open (frame.py:871)
+2031-05-14T09:01:46.955Z edge-04 authz[5922]:   Caused by: UpstreamFailure: req=R-48510b attempt=1 returned 503
+2031-05-14T09:01:46.955Z edge-02 blobd[9403]:     at authz.check.commit (post.py:552)
+2031-05-14T09:01:46.956Z edge-04 authz[5922]:     at router.plan.call (store.py:469)
+2031-05-14T09:01:46.956Z edge-02 blobd[9403]:     at rpc.client.send (pool.py:772)
+2031-05-14T09:01:46.957Z edge-02 ledger[7480]: ERROR req=R-3a3949 attempt=2 route=/v1/blob/stat failed: RpcError: upstream call failed
+2031-05-14T09:01:46.957Z edge-04 authz[5922]:     at ledger.post.send (frame.py:747)
+2031-05-14T09:01:46.957Z edge-02 blobd[9403]:   Caused by: RpcError: call for req=R-ef7eaf timed out after 2276ms
+2031-05-14T09:01:46.958Z edge-02 ledger[7480]:     at blobd.store.send (post.py:76)
+2031-05-14T09:01:46.958Z edge-02 blobd[9403]:     at router.plan.open (pool.py:140)
+2031-05-14T09:01:46.959Z edge-02 ledger[7480]:     at blobd.store.call (store.py:562)
+2031-05-14T09:01:46.959Z edge-02 blobd[9403]:     at codec.frame.commit (frame.py:826)
+2031-05-14T09:01:46.960Z edge-02 ledger[7480]:   Caused by: RpcError: call for req=R-3a3949 timed out after 2847ms
+2031-05-14T09:01:46.960Z edge-02 blobd[9403]:   Caused by: UpstreamFailure: req=R-48510b attempt=1 returned 503
+2031-05-14T09:01:46.961Z edge-02 ledger[7480]:     at ledger.post.run (post.py:414)
+2031-05-14T09:01:46.961Z edge-02 blobd[9403]:     at rpc.client.open (post.py:683)
+2031-05-14T09:01:46.962Z edge-02 ledger[7480]:     at blobd.store.call (post.py:665)
+2031-05-14T09:01:46.962Z edge-02 blobd[9403]:     at codec.frame.send (pool.py:491)
+2031-05-14T09:01:46.963Z edge-02 ledger[7480]:   Caused by: UpstreamFailure: req=R-637ce0 attempt=1 returned 502
+2031-05-14T09:01:46.964Z edge-02 ledger[7480]:     at blobd.store.call (plan.py:845)
+2031-05-14T09:01:46.968Z edge-01 authz[1743]: ERROR req=R-ea5220 attempt=1 route=/v1/blob/put failed: RpcError: request aborted
+2031-05-14T09:01:46.969Z edge-01 authz[1743]:     at codec.frame.open (store.py:492)
+2031-05-14T09:01:46.970Z edge-01 authz[1743]:     at rpc.pool.call (store.py:294)
+2031-05-14T09:01:46.971Z edge-01 authz[1743]:   Caused by: UpstreamFailure: req=R-3a3949 attempt=2 returned 504
+2031-05-14T09:01:46.972Z edge-01 authz[1743]:     at codec.frame.run (pool.py:755)
+2031-05-14T09:01:46.973Z edge-01 authz[1743]:     at rpc.pool.commit (pool.py:771)
+2031-05-14T09:02:04.221Z edge-04 authz[5922]: INFO req=R-78769a attempt=3 route=/v1/blob/stat status=200 dur_ms=5 msg="ok after retry"
+2031-05-14T09:03:05.910Z edge-06 authz[4117]: WARN req=R-57b4ab attempt=1 route=/v1/blob/stat status=200 dur_ms=201 msg="ok"
+2031-05-14T09:03:10.715Z edge-04 authz[5922]: ERROR req=R-32b1b8 attempt=1 route=/v1/blob/stat failed: CertRevoked: request aborted
+2031-05-14T09:03:10.716Z edge-04 authz[5922]:     at authz.check.send (plan.py:108)
+2031-05-14T09:03:10.717Z edge-04 authz[5922]:     at authz.check.open (plan.py:597)
+2031-05-14T09:03:10.718Z edge-04 authz[5922]:     at rpc.pool.commit (frame.py:873)
+2031-05-14T09:03:10.722Z edge-01 ledger[7827]: ERROR req=R-e94d1f attempt=1 route=/v1/blob/put failed: RpcError: handler gave up
+2031-05-14T09:03:10.723Z edge-01 ledger[7827]:     at rpc.pool.call (pool.py:608)
+2031-05-14T09:03:10.724Z edge-04 router[4549]: ERROR req=R-aec83e attempt=1 route=/v1/ledger/post failed: RpcError: upstream call failed
+2031-05-14T09:03:10.724Z edge-01 ledger[7827]:     at rpc.client.run (frame.py:763)
+2031-05-14T09:03:10.725Z edge-04 router[4549]:     at codec.frame.call (post.py:241)
+2031-05-14T09:03:10.725Z edge-01 ledger[7827]:     at rpc.client.call (pool.py:859)
+2031-05-14T09:03:10.726Z edge-04 router[4549]:     at ledger.post.commit (post.py:395)
+2031-05-14T09:03:10.726Z edge-01 ledger[7827]:   Caused by: UpstreamFailure: req=R-32b1b8 attempt=1 returned 502
+2031-05-14T09:03:10.727Z edge-04 router[4549]:   Caused by: RpcError: call for req=R-aec83e timed out after 2588ms
+2031-05-14T09:03:10.727Z edge-01 ledger[7827]:     at codec.frame.commit (store.py:444)
+2031-05-14T09:03:10.728Z edge-04 router[4549]:     at rpc.pool.commit (post.py:291)
+2031-05-14T09:03:10.728Z edge-01 ledger[7827]:     at rpc.client.run (frame.py:538)
+2031-05-14T09:03:10.729Z edge-04 router[4549]:     at rpc.pool.open (frame.py:350)
+2031-05-14T09:03:10.730Z edge-04 router[4549]:   Caused by: UpstreamFailure: req=R-32b1b8 attempt=1 returned 504
+2031-05-14T09:03:10.731Z edge-04 router[4549]:     at rpc.pool.call (store.py:391)
+2031-05-14T09:03:10.737Z edge-02 authz[6815]: ERROR req=R-de1753 attempt=2 route=/v1/route/plan failed: HandlerError: handler gave up
+2031-05-14T09:03:10.738Z edge-02 authz[6815]:     at ledger.post.open (store.py:703)
+2031-05-14T09:03:10.739Z edge-02 authz[6815]:     at rpc.pool.run (plan.py:178)
+2031-05-14T09:03:10.740Z edge-02 authz[6815]:     at codec.frame.run (plan.py:260)
+2031-05-14T09:03:10.741Z edge-02 authz[6815]:     at authz.check.commit (pool.py:92)
+2031-05-14T09:03:10.742Z edge-02 authz[6815]:   Caused by: RpcError: call for req=R-de1753 timed out after 2568ms
+2031-05-14T09:03:10.743Z edge-02 authz[6815]:     at rpc.client.run (frame.py:899)
+2031-05-14T09:03:10.744Z edge-02 authz[6815]:   Caused by: UpstreamFailure: req=R-32b1b8 attempt=1 returned 502
+2031-05-14T09:03:10.745Z edge-02 authz[6815]:     at rpc.pool.commit (pool.py:307)
+2031-05-14T09:03:10.746Z edge-02 authz[6815]:     at authz.check.call (store.py:329)
+2031-05-14T09:03:10.749Z edge-04 ledger[8204]: ERROR req=R-7aed51 attempt=1 route=/v1/ledger/post failed: HandlerError: handler gave up
+2031-05-14T09:03:10.750Z edge-04 ledger[8204]:     at ledger.post.commit (store.py:716)
+2031-05-14T09:03:10.751Z edge-04 ledger[8204]:     at rpc.client.open (pool.py:874)
+2031-05-14T09:03:10.752Z edge-04 ledger[8204]:     at authz.check.run (plan.py:794)
+2031-05-14T09:03:10.753Z edge-04 ledger[8204]:   Caused by: UpstreamFailure: req=R-32b1b8 attempt=1 returned 504
+2031-05-14T09:03:10.754Z edge-04 ledger[8204]:     at blobd.store.call (pool.py:343)
+2031-05-14T09:03:10.755Z edge-04 ledger[8204]:     at codec.frame.send (pool.py:166)
+2031-05-14T09:03:10.758Z edge-05 ledger[9611]: ERROR req=R-48510b attempt=2 route=/v1/ledger/post failed: HandlerError: handler gave up
+2031-05-14T09:03:10.759Z edge-05 ledger[9611]:     at rpc.client.send (plan.py:338)
+2031-05-14T09:03:10.760Z edge-05 ledger[9611]:     at authz.check.run (post.py:450)
+2031-05-14T09:03:10.761Z edge-06 router[7262]: ERROR req=R-3a3949 attempt=3 route=/v1/blob/put failed: HandlerError: handler gave up
+2031-05-14T09:03:10.761Z edge-05 ledger[9611]:   Caused by: RpcError: call for req=R-48510b timed out after 907ms
+2031-05-14T09:03:10.762Z edge-06 router[7262]:     at rpc.pool.send (store.py:382)
+2031-05-14T09:03:10.762Z edge-05 ledger[9611]:     at codec.frame.run (frame.py:50)
+2031-05-14T09:03:10.763Z edge-06 router[7262]:     at rpc.client.send (frame.py:621)
+2031-05-14T09:03:10.763Z edge-05 ledger[9611]:   Caused by: UpstreamFailure: req=R-7aed51 attempt=1 returned 503
+2031-05-14T09:03:10.764Z edge-06 router[7262]:     at codec.frame.call (post.py:709)
+2031-05-14T09:03:10.764Z edge-05 ledger[9611]:     at authz.check.send (frame.py:364)
+2031-05-14T09:03:10.765Z edge-06 router[7262]:   Caused by: RpcError: call for req=R-3a3949 timed out after 3272ms
+2031-05-14T09:03:10.766Z edge-06 router[7262]:     at codec.frame.send (store.py:59)
+2031-05-14T09:03:10.767Z edge-06 router[7262]:     at codec.frame.send (frame.py:890)
+2031-05-14T09:03:10.768Z edge-06 router[7262]:   Caused by: UpstreamFailure: req=R-aec83e attempt=1 returned 502
+2031-05-14T09:03:10.769Z edge-06 router[7262]:     at rpc.client.commit (plan.py:844)
+2031-05-14T09:03:10.787Z edge-03 ledger[2121]: ERROR req=R-079e99 attempt=1 route=/v1/blob/put failed: HandlerError: handler gave up
+2031-05-14T09:03:10.788Z edge-03 ledger[2121]:     at ledger.post.send (frame.py:372)
+2031-05-14T09:03:10.789Z edge-03 ledger[2121]:     at blobd.store.run (frame.py:671)
+2031-05-14T09:03:10.790Z edge-03 ledger[2121]:     at router.plan.commit (frame.py:591)
+2031-05-14T09:03:10.791Z edge-03 ledger[2121]:     at blobd.store.call (store.py:113)
+2031-05-14T09:03:10.792Z edge-03 ledger[2121]:   Caused by: RpcError: call for req=R-079e99 timed out after 3379ms
+2031-05-14T09:03:10.793Z edge-03 ledger[2121]:     at rpc.client.send (frame.py:804)
+2031-05-14T09:03:10.794Z edge-03 ledger[2121]:   Caused by: UpstreamFailure: req=R-3a3949 attempt=3 returned 502
+2031-05-14T09:03:10.799Z edge-06 authz[4117]: ERROR req=R-c84780 attempt=1 route=/v1/route/plan failed: HandlerError: request aborted
+2031-05-14T09:03:10.800Z edge-06 authz[4117]:     at router.plan.run (store.py:640)
+2031-05-14T09:03:10.801Z edge-06 authz[4117]:     at blobd.store.send (store.py:480)
+2031-05-14T09:03:10.802Z edge-06 authz[4117]:   Caused by: RpcError: call for req=R-c84780 timed out after 2476ms
+2031-05-14T09:03:10.803Z edge-06 authz[4117]:     at blobd.store.run (post.py:867)
+2031-05-14T09:03:10.804Z edge-06 authz[4117]:   Caused by: UpstreamFailure: req=R-3a3949 attempt=3 returned 503
+2031-05-14T09:03:10.805Z edge-06 authz[4117]:     at codec.frame.send (pool.py:843)
+2031-05-14T09:03:10.813Z edge-04 authz[5922]: ERROR req=R-09af57 attempt=1 route=/v1/route/plan failed: HandlerError: request aborted
+2031-05-14T09:03:10.814Z edge-04 authz[5922]:     at rpc.pool.run (frame.py:270)
+2031-05-14T09:03:10.815Z edge-04 authz[5922]:     at blobd.store.commit (post.py:32)
+2031-05-14T09:03:10.815Z edge-05 router[6553]: ERROR req=R-cd2a11 attempt=1 route=/v1/ledger/read failed: RpcError: upstream call failed
+2031-05-14T09:03:10.816Z edge-04 authz[5922]:     at rpc.client.run (post.py:287)
+2031-05-14T09:03:10.816Z edge-05 router[6553]:     at router.plan.send (store.py:610)
+2031-05-14T09:03:10.817Z edge-04 authz[5922]:     at authz.check.commit (plan.py:318)
+2031-05-14T09:03:10.817Z edge-05 router[6553]:     at router.plan.run (frame.py:255)
+2031-05-14T09:03:10.818Z edge-04 authz[5922]:   Caused by: RpcError: call for req=R-09af57 timed out after 2975ms
+2031-05-14T09:03:10.818Z edge-05 router[6553]:     at blobd.store.open (pool.py:539)
+2031-05-14T09:03:10.819Z edge-04 authz[5922]:     at router.plan.send (frame.py:167)
+2031-05-14T09:03:10.819Z edge-05 router[6553]:     at blobd.store.send (frame.py:274)
+2031-05-14T09:03:10.820Z edge-04 authz[5922]:   Caused by: UpstreamFailure: req=R-c84780 attempt=1 returned 502
+2031-05-14T09:03:10.820Z edge-05 router[6553]:   Caused by: RpcError: call for req=R-cd2a11 timed out after 2644ms
+2031-05-14T09:03:10.821Z edge-05 router[6553]:     at router.plan.open (frame.py:772)
+2031-05-14T09:03:10.822Z edge-05 router[6553]:   Caused by: UpstreamFailure: req=R-c84780 attempt=1 returned 502
+2031-05-14T09:03:10.833Z edge-03 authz[7033]: ERROR req=R-d11b16 attempt=1 route=/v1/ledger/read failed: RpcError: handler gave up
+2031-05-14T09:03:10.834Z edge-03 authz[7033]:     at rpc.client.run (plan.py:53)
+2031-05-14T09:03:10.835Z edge-03 authz[7033]:     at router.plan.open (pool.py:436)
+2031-05-14T09:03:10.836Z edge-03 authz[7033]:     at authz.check.open (post.py:221)
+2031-05-14T09:03:10.837Z edge-03 authz[7033]:   Caused by: RpcError: call for req=R-d11b16 timed out after 2255ms
+2031-05-14T09:03:10.838Z edge-03 authz[7033]:     at rpc.pool.commit (post.py:290)
+2031-05-14T09:03:10.839Z edge-03 authz[7033]:     at ledger.post.run (plan.py:388)
+2031-05-14T09:03:10.840Z edge-03 authz[7033]:   Caused by: UpstreamFailure: req=R-c84780 attempt=1 returned 503
+2031-05-14T09:03:10.841Z edge-03 authz[7033]:     at rpc.pool.call (store.py:668)
+2031-05-14T09:03:18.133Z edge-05 ledger[9611]: INFO req=R-d11b16 attempt=2 route=/v1/blob/stat status=200 dur_ms=61 msg="ok after retry"
+2031-05-14T09:03:22.985Z edge-05 ledger[9611]: INFO req=R-48510b attempt=3 route=/v1/ledger/read status=200 dur_ms=12 msg="ok after retry"
+2031-05-14T09:03:24.929Z edge-04 blobd[3270]: INFO req=R-925d9e attempt=1 route=/v1/route/plan status=200 dur_ms=253 msg="ok"
+2031-05-14T09:03:29.190Z edge-06 ledger[4281]: INFO req=R-524702 attempt=1 route=/v1/route/plan status=200 dur_ms=380 msg="peer reported Caused by: UpstreamFailure: req=R-847fa2 attempt=1 returned 503"
+2031-05-14T09:03:54.407Z edge-03 blobd[8477]: INFO req=R-85050b attempt=1 route=/v1/ledger/post status=404 dur_ms=188 msg="ok"
+2031-05-14T09:04:51.505Z edge-04 authz[5922]: INFO req=R-e6f43a attempt=1 route=/v1/ledger/post status=200 dur_ms=393 msg="ok"
+2031-05-14T09:04:53.941Z edge-06 authz[4117]: ERROR req=R-7f0522 attempt=1 route=/v1/blob/put failed: HandlerError: upstream call failed
+2031-05-14T09:04:53.942Z edge-06 authz[4117]:     at codec.frame.open (plan.py:755)
+2031-05-14T09:04:53.943Z edge-06 authz[4117]:     at ledger.post.call (store.py:130)
+2031-05-14T09:04:53.944Z edge-06 authz[4117]:     at router.plan.commit (post.py:720)
+2031-05-14T09:04:53.945Z edge-06 authz[4117]:   Caused by: RpcError: local call for req=R-7f0522 aborted
+2031-05-14T09:04:53.946Z edge-06 authz[4117]:     at ledger.post.send (plan.py:100)
+2031-05-14T09:04:53.947Z edge-06 authz[4117]:   Caused by: LeaseExpired: volume vol-7 is full
+2031-05-14T09:04:53.967Z edge-03 ledger[2121]: ERROR req=R-264948 attempt=1 route=/v1/blob/put failed: HandlerError: request aborted
+2031-05-14T09:04:53.967Z edge-04 blobd[3270]: ERROR req=R-cd2a11 attempt=2 route=/v1/blob/put failed: RpcError: request aborted
+2031-05-14T09:04:53.968Z edge-03 ledger[2121]:     at rpc.pool.commit (store.py:511)
+2031-05-14T09:04:53.968Z edge-04 blobd[3270]:     at blobd.store.call (frame.py:616)
+2031-05-14T09:04:53.969Z edge-03 ledger[2121]:     at rpc.client.send (post.py:625)
+2031-05-14T09:04:53.969Z edge-04 blobd[3270]:     at rpc.client.run (pool.py:493)
+2031-05-14T09:04:53.970Z edge-03 ledger[2121]:     at rpc.pool.open (post.py:79)
+2031-05-14T09:04:53.970Z edge-04 blobd[3270]:     at codec.frame.call (store.py:252)
+2031-05-14T09:04:53.971Z edge-03 ledger[2121]:   Caused by: RpcError: call for req=R-264948 timed out after 1111ms
+2031-05-14T09:04:53.971Z edge-04 blobd[3270]:   Caused by: RpcError: call for req=R-cd2a11 timed out after 1757ms
+2031-05-14T09:04:53.972Z edge-03 ledger[2121]:     at rpc.pool.run (post.py:519)
+2031-05-14T09:04:53.972Z edge-04 blobd[3270]:     at rpc.client.commit (pool.py:78)
+2031-05-14T09:04:53.973Z edge-03 ledger[2121]:   Caused by: UpstreamFailure: req=R-7f0522 attempt=1 returned 503
+2031-05-14T09:04:53.973Z edge-04 blobd[3270]:   Caused by: UpstreamFailure: req=R-7f0522 attempt=1 returned 502
+2031-05-14T09:04:53.974Z edge-03 ledger[2121]:     at ledger.post.call (plan.py:713)
+2031-05-14T09:04:53.974Z edge-02 router[7127]: ERROR req=R-fa38a9 attempt=1 route=/v1/ledger/post failed: HandlerError: upstream call failed
+2031-05-14T09:04:53.974Z edge-04 blobd[3270]:     at router.plan.run (plan.py:587)
+2031-05-14T09:04:53.975Z edge-02 router[7127]:     at ledger.post.open (plan.py:710)
+2031-05-14T09:04:53.976Z edge-02 router[7127]:     at codec.frame.run (store.py:278)
+2031-05-14T09:04:53.977Z edge-02 router[7127]:     at codec.frame.send (post.py:655)
+2031-05-14T09:04:53.978Z edge-02 router[7127]:     at codec.frame.commit (frame.py:520)
+2031-05-14T09:04:53.978Z edge-06 authz[4117]: ERROR req=R-079e99 attempt=2 route=/v1/route/plan failed: RpcError: request aborted
+2031-05-14T09:04:53.979Z edge-02 router[7127]:   Caused by: RpcError: call for req=R-fa38a9 timed out after 2796ms
+2031-05-14T09:04:53.979Z edge-06 authz[4117]:     at rpc.client.open (frame.py:148)
+2031-05-14T09:04:53.980Z edge-02 router[7127]:     at ledger.post.run (frame.py:760)
+2031-05-14T09:04:53.980Z edge-06 authz[4117]:     at router.plan.run (post.py:41)
+2031-05-14T09:04:53.981Z edge-02 router[7127]:     at rpc.pool.commit (frame.py:283)
+2031-05-14T09:04:53.981Z edge-06 authz[4117]:     at ledger.post.run (pool.py:629)
+2031-05-14T09:04:53.982Z edge-02 router[7127]:   Caused by: UpstreamFailure: req=R-7f0522 attempt=1 returned 503
+2031-05-14T09:04:53.982Z edge-06 authz[4117]:   Caused by: RpcError: call for req=R-079e99 timed out after 2042ms
+2031-05-14T09:04:53.983Z edge-02 router[7127]:     at ledger.post.call (frame.py:127)
+2031-05-14T09:04:53.983Z edge-06 authz[4117]:     at codec.frame.call (frame.py:58)
+2031-05-14T09:04:53.983Z edge-04 blobd[3270]: ERROR req=R-ef7eaf attempt=4 route=/v1/blob/put failed: RpcError: handler gave up
+2031-05-14T09:04:53.984Z edge-06 authz[4117]:     at rpc.pool.send (frame.py:744)
+2031-05-14T09:04:53.984Z edge-04 blobd[3270]:     at router.plan.run (post.py:411)
+2031-05-14T09:04:53.985Z edge-06 authz[4117]:   Caused by: UpstreamFailure: req=R-7f0522 attempt=1 returned 503
+2031-05-14T09:04:53.985Z edge-04 blobd[3270]:     at router.plan.call (plan.py:665)
+2031-05-14T09:04:53.986Z edge-06 authz[4117]:     at authz.check.open (plan.py:24)
+2031-05-14T09:04:53.986Z edge-04 blobd[3270]:     at authz.check.commit (plan.py:333)
+2031-05-14T09:04:53.987Z edge-06 authz[4117]:     at ledger.post.send (pool.py:231)
+2031-05-14T09:04:53.987Z edge-04 blobd[3270]:     at blobd.store.run (store.py:250)
+2031-05-14T09:04:53.988Z edge-04 blobd[3270]:   Caused by: UpstreamFailure: req=R-cd2a11 attempt=2 returned 502
+2031-05-14T09:04:53.989Z edge-04 blobd[3270]:     at rpc.pool.commit (post.py:608)
+2031-05-14T09:04:53.990Z edge-04 blobd[3270]:     at ledger.post.open (plan.py:461)
+2031-05-14T09:04:54.001Z edge-06 authz[4117]: ERROR req=R-e92c87 attempt=1 route=/v1/ledger/post failed: HandlerError: upstream call failed
+2031-05-14T09:04:54.002Z edge-06 authz[4117]:     at codec.frame.call (post.py:78)
+2031-05-14T09:04:54.003Z edge-06 authz[4117]:     at ledger.post.run (plan.py:417)
+2031-05-14T09:04:54.004Z edge-06 authz[4117]:     at router.plan.commit (plan.py:103)
+2031-05-14T09:04:54.005Z edge-06 authz[4117]:   Caused by: UpstreamFailure: req=R-264948 attempt=1 returned 503
+2031-05-14T09:04:54.006Z edge-06 authz[4117]:     at rpc.client.run (post.py:269)
+2031-05-14T09:04:54.020Z edge-05 router[6553]: ERROR req=R-b59bad attempt=1 route=/v1/ledger/post failed: HandlerError: request aborted
+2031-05-14T09:04:54.021Z edge-05 router[6553]:     at rpc.pool.call (pool.py:794)
+2031-05-14T09:04:54.022Z edge-04 ledger[8204]: ERROR req=R-79a838 attempt=1 route=/v1/ledger/post failed: HandlerError: request aborted
+2031-05-14T09:04:54.022Z edge-05 router[6553]:     at blobd.store.open (store.py:370)
+2031-05-14T09:04:54.023Z edge-04 ledger[8204]:     at rpc.client.commit (frame.py:612)
+2031-05-14T09:04:54.023Z edge-05 router[6553]:   Caused by: UpstreamFailure: req=R-ef7eaf attempt=4 returned 503
+2031-05-14T09:04:54.024Z edge-04 ledger[8204]:     at rpc.client.open (frame.py:751)
+2031-05-14T09:04:54.025Z edge-04 ledger[8204]:     at ledger.post.open (post.py:700)
+2031-05-14T09:04:54.026Z edge-04 ledger[8204]:   Caused by: RpcError: call for req=R-79a838 timed out after 842ms
+2031-05-14T09:04:54.027Z edge-04 ledger[8204]:     at blobd.store.run (store.py:319)
+2031-05-14T09:04:54.028Z edge-04 ledger[8204]:   Caused by: UpstreamFailure: req=R-ef7eaf attempt=4 returned 502
+2031-05-14T09:04:54.029Z edge-04 ledger[8204]:     at router.plan.run (pool.py:660)
+2031-05-14T09:04:54.030Z edge-04 ledger[8204]:     at rpc.client.run (plan.py:852)
+2031-05-14T09:04:54.030Z edge-01 authz[1743]: ERROR req=R-76a925 attempt=1 route=/v1/ledger/read failed: HandlerError: handler gave up
+2031-05-14T09:04:54.031Z edge-01 authz[1743]:     at authz.check.open (plan.py:828)
+2031-05-14T09:04:54.032Z edge-02 authz[6815]: ERROR req=R-d31068 attempt=1 route=/v1/route/plan failed: RpcError: request aborted
+2031-05-14T09:04:54.032Z edge-01 authz[1743]:     at authz.check.commit (post.py:398)
+2031-05-14T09:04:54.033Z edge-02 authz[6815]:     at router.plan.call (store.py:739)
+2031-05-14T09:04:54.033Z edge-01 authz[1743]:     at authz.check.commit (store.py:864)
+2031-05-14T09:04:54.034Z edge-02 authz[6815]:     at codec.frame.commit (post.py:262)
+2031-05-14T09:04:54.034Z edge-01 authz[1743]:     at codec.frame.open (post.py:784)
+2031-05-14T09:04:54.035Z edge-02 authz[6815]:     at rpc.client.commit (store.py:507)
+2031-05-14T09:04:54.035Z edge-01 authz[1743]:   Caused by: RpcError: call for req=R-76a925 timed out after 477ms
+2031-05-14T09:04:54.036Z edge-02 authz[6815]:     at router.plan.open (plan.py:526)
+2031-05-14T09:04:54.036Z edge-01 authz[1743]:     at rpc.pool.commit (frame.py:486)
+2031-05-14T09:04:54.037Z edge-02 authz[6815]:   Caused by: UpstreamFailure: req=R-e92c87 attempt=1 returned 503
+2031-05-14T09:04:54.037Z edge-01 authz[1743]:     at blobd.store.run (store.py:710)
+2031-05-14T09:04:54.038Z edge-02 authz[6815]:     at rpc.client.send (pool.py:807)
+2031-05-14T09:04:54.038Z edge-01 authz[1743]:   Caused by: UpstreamFailure: req=R-b59bad attempt=1 returned 502
+2031-05-14T09:04:54.046Z edge-04 authz[5922]: ERROR req=R-c874b3 attempt=1 route=/v1/ledger/read failed: RpcError: request aborted
+2031-05-14T09:04:54.047Z edge-04 authz[5922]:     at router.plan.open (store.py:821)
+2031-05-14T09:04:54.048Z edge-04 authz[5922]:     at router.plan.send (post.py:799)
+2031-05-14T09:04:54.048Z edge-01 blobd[5938]: ERROR req=R-7e942a attempt=1 route=/v1/ledger/read failed: HandlerError: upstream call failed
+2031-05-14T09:04:54.049Z edge-04 authz[5922]:     at authz.check.run (store.py:839)
+2031-05-14T09:04:54.049Z edge-01 blobd[5938]:     at rpc.client.run (plan.py:212)
+2031-05-14T09:04:54.050Z edge-04 authz[5922]:   Caused by: UpstreamFailure: req=R-d31068 attempt=1 returned 503
+2031-05-14T09:04:54.050Z edge-01 blobd[5938]:     at authz.check.call (store.py:192)
+2031-05-14T09:04:54.051Z edge-04 authz[5922]:     at rpc.pool.commit (pool.py:168)
+2031-05-14T09:04:54.051Z edge-01 blobd[5938]:     at router.plan.open (plan.py:217)
+2031-05-14T09:04:54.052Z edge-01 blobd[5938]:   Caused by: RpcError: call for req=R-7e942a timed out after 2182ms
+2031-05-14T09:04:54.053Z edge-01 blobd[5938]:     at rpc.client.run (store.py:110)
+2031-05-14T09:04:54.054Z edge-01 blobd[5938]:   Caused by: UpstreamFailure: req=R-79a838 attempt=1 returned 504
+2031-05-14T09:04:54.055Z edge-01 blobd[5938]:     at codec.frame.commit (store.py:539)
+2031-05-14T09:04:54.056Z edge-02 blobd[9403]: ERROR req=R-b30bc7 attempt=1 route=/v1/route/plan failed: RpcError: request aborted
+2031-05-14T09:04:54.057Z edge-02 blobd[9403]:     at codec.frame.call (store.py:539)
+2031-05-14T09:04:54.058Z edge-02 blobd[9403]:     at authz.check.send (plan.py:105)
+2031-05-14T09:04:54.059Z edge-02 blobd[9403]:   Caused by: RpcError: call for req=R-b30bc7 timed out after 3686ms
+2031-05-14T09:04:54.060Z edge-02 blobd[9403]:     at rpc.client.run (post.py:302)
+2031-05-14T09:04:54.061Z edge-02 blobd[9403]:   Caused by: UpstreamFailure: req=R-79a838 attempt=1 returned 504
+2031-05-14T09:05:04.289Z edge-06 ledger[4281]: INFO req=R-dc0626 attempt=1 route=/v1/authz/check status=404 dur_ms=27 msg="ok"
+2031-05-14T09:05:08.268Z edge-06 blobd[6470]: INFO req=R-7e942a attempt=2 route=/v1/blob/stat status=200 dur_ms=86 msg="ok after retry"
+2031-05-14T09:05:11.688Z edge-01 ledger[7827]: INFO req=R-76a925 attempt=2 route=/v1/blob/stat status=200 dur_ms=83 msg="ok after retry"
+2031-05-14T09:05:13.901Z edge-03 blobd[8477]: INFO req=R-79a838 attempt=2 route=/v1/blob/stat status=200 dur_ms=79 msg="ok after retry"
+2031-05-14T09:05:31.375Z edge-01 blobd[5938]: INFO req=R-4dd0cd attempt=1 route=/v1/ledger/read status=204 dur_ms=296 msg="ok"
+2031-05-14T09:05:56.377Z edge-01 authz[1743]: INFO req=R-2401b9 attempt=1 route=/v1/authz/check status=200 dur_ms=141 msg="ok"
+2031-05-14T09:06:38.586Z edge-02 blobd[9403]: ERROR req=R-72ed8d attempt=1 route=/v1/ledger/read failed: HandlerError: upstream call failed
+2031-05-14T09:06:38.587Z edge-02 blobd[9403]:     at blobd.store.run (frame.py:833)
+2031-05-14T09:06:38.587Z edge-05 authz[5129]: INFO req=R-3c995f attempt=1 route=/v1/route/plan status=200 dur_ms=61 msg="ok"
+2031-05-14T09:06:38.588Z edge-02 blobd[9403]:     at rpc.pool.send (frame.py:112)
+2031-05-14T09:06:38.589Z edge-02 blobd[9403]:     at blobd.store.run (plan.py:76)
+2031-05-14T09:06:38.590Z edge-02 blobd[9403]:   Caused by: RpcError: local call for req=R-72ed8d aborted
+2031-05-14T09:06:38.591Z edge-02 blobd[9403]:     at rpc.pool.open (pool.py:443)
+2031-05-14T09:06:38.592Z edge-02 blobd[9403]:   Caused by: LeaseExpired: resource gone
+2031-05-14T09:06:38.593Z edge-02 blobd[9403]:     at codec.frame.commit (frame.py:306)
+2031-05-14T09:06:38.593Z edge-04 authz[5922]: ERROR req=R-0792d2 attempt=1 route=/v1/blob/stat failed: HandlerError: upstream call failed
+2031-05-14T09:06:38.594Z edge-04 authz[5922]:     at ledger.post.commit (store.py:518)
+2031-05-14T09:06:38.595Z edge-04 authz[5922]:     at ledger.post.run (store.py:410)
+2031-05-14T09:06:38.596Z edge-04 authz[5922]:     at router.plan.open (frame.py:193)
+2031-05-14T09:06:38.597Z edge-04 authz[5922]:   Caused by: UpstreamFailure: req=R-72ed8d attempt=1 returned 503
+2031-05-14T09:06:38.598Z edge-04 authz[5922]:     at ledger.post.commit (frame.py:175)
+2031-05-14T09:06:38.599Z edge-04 authz[5922]:     at rpc.client.open (post.py:883)
+2031-05-14T09:06:38.603Z edge-06 blobd[6470]: ERROR req=R-b30bc7 attempt=2 route=/v1/blob/stat failed: HandlerError: request aborted
+2031-05-14T09:06:38.604Z edge-06 blobd[6470]:     at rpc.pool.run (pool.py:337)
+2031-05-14T09:06:38.605Z edge-06 blobd[6470]:     at rpc.pool.send (plan.py:458)
+2031-05-14T09:06:38.606Z edge-06 blobd[6470]:     at authz.check.commit (pool.py:896)
+2031-05-14T09:06:38.607Z edge-06 blobd[6470]:     at rpc.client.commit (frame.py:495)
+2031-05-14T09:06:38.608Z edge-06 blobd[6470]:   Caused by: RpcError: call for req=R-b30bc7 timed out after 1300ms
+2031-05-14T09:06:38.609Z edge-06 blobd[6470]:     at codec.frame.run (store.py:556)
+2031-05-14T09:06:38.610Z edge-06 blobd[6470]:   Caused by: UpstreamFailure: req=R-0792d2 attempt=1 returned 502
+2031-05-14T09:06:38.610Z edge-05 router[6553]: ERROR req=R-14ba73 attempt=1 route=/v1/ledger/read failed: HandlerError: upstream call failed
+2031-05-14T09:06:38.611Z edge-06 blobd[6470]:     at blobd.store.commit (frame.py:425)
+2031-05-14T09:06:38.611Z edge-05 router[6553]:     at codec.frame.open (pool.py:707)
+2031-05-14T09:06:38.611Z edge-01 ledger[7827]: INFO req=R-efd147 attempt=1 route=/v1/ledger/post status=200 dur_ms=27 msg="ok"
+2031-05-14T09:06:38.612Z edge-06 blobd[6470]:     at router.plan.send (frame.py:621)
+2031-05-14T09:06:38.612Z edge-05 router[6553]:     at codec.frame.send (pool.py:875)
+2031-05-14T09:06:38.613Z edge-02 ledger[7480]: ERROR req=R-274714 attempt=1 route=/v1/blob/stat failed: HandlerError: request aborted
+2031-05-14T09:06:38.613Z edge-05 router[6553]:     at router.plan.call (plan.py:813)
+2031-05-14T09:06:38.614Z edge-02 ledger[7480]:     at blobd.store.run (plan.py:844)
+2031-05-14T09:06:38.614Z edge-05 router[6553]:   Caused by: RpcError: call for req=R-14ba73 timed out after 1196ms
+2031-05-14T09:06:38.615Z edge-02 ledger[7480]:     at codec.frame.send (frame.py:236)
+2031-05-14T09:06:38.615Z edge-05 router[6553]:     at authz.check.open (plan.py:794)
+2031-05-14T09:06:38.616Z edge-02 ledger[7480]:     at codec.frame.run (store.py:837)
+2031-05-14T09:06:38.616Z edge-05 router[6553]:     at codec.frame.send (post.py:894)
+2031-05-14T09:06:38.617Z edge-02 ledger[7480]:   Caused by: UpstreamFailure: req=R-b30bc7 attempt=2 returned 504
+2031-05-14T09:06:38.617Z edge-05 router[6553]:   Caused by: UpstreamFailure: req=R-72ed8d attempt=1 returned 503
+2031-05-14T09:06:38.618Z edge-02 ledger[7480]:     at rpc.pool.commit (plan.py:869)
+2031-05-14T09:06:38.618Z edge-05 router[6553]:     at router.plan.run (plan.py:544)
+2031-05-14T09:06:38.619Z edge-02 ledger[7480]:     at rpc.pool.call (pool.py:707)
+2031-05-14T09:06:38.619Z edge-05 router[6553]:     at codec.frame.send (post.py:713)
+2031-05-14T09:06:38.625Z edge-04 ledger[8204]: ERROR req=R-ecdaee attempt=1 route=/v1/blob/put failed: RpcError: request aborted
+2031-05-14T09:06:38.626Z edge-04 ledger[8204]:     at router.plan.send (plan.py:153)
+2031-05-14T09:06:38.627Z edge-04 ledger[8204]:     at authz.check.commit (pool.py:217)
+2031-05-14T09:06:38.628Z edge-04 ledger[8204]:     at codec.frame.send (store.py:321)
+2031-05-14T09:06:38.629Z edge-04 ledger[8204]:     at codec.frame.open (post.py:593)
+2031-05-14T09:06:38.630Z edge-04 ledger[8204]:   Caused by: RpcError: call for req=R-ecdaee timed out after 620ms
+2031-05-14T09:06:38.631Z edge-04 ledger[8204]:     at codec.frame.run (pool.py:59)
+2031-05-14T09:06:38.632Z edge-04 ledger[8204]:   Caused by: UpstreamFailure: req=R-72ed8d attempt=1 returned 504
+2031-05-14T09:06:38.633Z edge-04 ledger[8204]:     at router.plan.send (plan.py:316)
+2031-05-14T09:06:38.634Z edge-04 ledger[8204]:     at blobd.store.call (store.py:708)
+2031-05-14T09:06:38.635Z edge-02 ledger[7480]: ERROR req=R-fb79b5 attempt=1 route=/v1/blob/put failed: RpcError: handler gave up
+2031-05-14T09:06:38.636Z edge-02 ledger[7480]:     at blobd.store.open (pool.py:744)
+2031-05-14T09:06:38.637Z edge-02 ledger[7480]:     at codec.frame.run (post.py:474)
+2031-05-14T09:06:38.638Z edge-02 ledger[7480]:     at ledger.post.send (frame.py:321)
+2031-05-14T09:06:38.639Z edge-02 ledger[7480]:   Caused by: UpstreamFailure: req=R-b30bc7 attempt=2 returned 504
+2031-05-14T09:06:38.645Z edge-05 blobd[1050]: ERROR req=R-7aed51 attempt=2 route=/v1/route/plan failed: HandlerError: upstream call failed
+2031-05-14T09:06:38.646Z edge-05 blobd[1050]:     at codec.frame.run (store.py:679)
+2031-05-14T09:06:38.646Z edge-02 blobd[9403]: INFO req=R-b86adf attempt=1 route=/v1/ledger/post status=200 dur_ms=45 msg="ok"
+2031-05-14T09:06:38.647Z edge-05 blobd[1050]:     at ledger.post.open (frame.py:21)
+2031-05-14T09:06:38.648Z edge-05 blobd[1050]:     at codec.frame.run (plan.py:279)
+2031-05-14T09:06:38.649Z edge-05 blobd[1050]:   Caused by: UpstreamFailure: req=R-14ba73 attempt=1 returned 502
+2031-05-14T09:06:38.650Z edge-05 blobd[1050]:     at blobd.store.commit (post.py:285)
+2031-05-14T09:06:38.657Z edge-02 router[7127]: ERROR req=R-0792d2 attempt=2 route=/v1/ledger/post failed: RpcError: handler gave up
+2031-05-14T09:06:38.658Z edge-02 router[7127]:     at router.plan.run (pool.py:377)
+2031-05-14T09:06:38.659Z edge-02 router[7127]:     at codec.frame.run (pool.py:118)
+2031-05-14T09:06:38.660Z edge-02 router[7127]:     at authz.check.send (frame.py:101)
+2031-05-14T09:06:38.661Z edge-02 router[7127]:   Caused by: RpcError: call for req=R-0792d2 timed out after 2479ms
+2031-05-14T09:06:38.662Z edge-02 router[7127]:     at router.plan.send (plan.py:551)
+2031-05-14T09:06:38.663Z edge-02 router[7127]:     at router.plan.run (plan.py:611)
+2031-05-14T09:06:38.664Z edge-02 router[7127]:   Caused by: UpstreamFailure: req=R-ecdaee attempt=1 returned 503
+2031-05-14T09:06:38.665Z edge-02 router[7127]:     at rpc.client.open (plan.py:502)
+2031-05-14T09:06:38.666Z edge-02 router[7127]:     at blobd.store.run (pool.py:351)
+2031-05-14T09:06:38.673Z edge-01 ledger[7827]: ERROR req=R-0792d2 attempt=3 route=/v1/route/plan failed: HandlerError: handler gave up
+2031-05-14T09:06:38.673Z edge-01 blobd[5938]: ERROR req=R-90fb49 attempt=1 route=/v1/ledger/read failed: RpcError: request aborted
+2031-05-14T09:06:38.674Z edge-01 ledger[7827]:     at blobd.store.call (post.py:127)
+2031-05-14T09:06:38.674Z edge-01 blobd[5938]:     at rpc.client.commit (frame.py:721)
+2031-05-14T09:06:38.674Z edge-06 router[7262]: INFO req=R-d1c884 attempt=1 route=/v1/ledger/read status=200 dur_ms=74 msg="ok"
+2031-05-14T09:06:38.675Z edge-01 ledger[7827]:     at codec.frame.call (plan.py:287)
+2031-05-14T09:06:38.675Z edge-01 blobd[5938]:     at ledger.post.open (frame.py:18)
+2031-05-14T09:06:38.676Z edge-01 ledger[7827]:     at router.plan.send (frame.py:607)
+2031-05-14T09:06:38.676Z edge-01 blobd[5938]:   Caused by: UpstreamFailure: req=R-7aed51 attempt=2 returned 504
+2031-05-14T09:06:38.677Z edge-01 ledger[7827]:     at router.plan.open (plan.py:617)
+2031-05-14T09:06:38.677Z edge-01 blobd[5938]:     at router.plan.commit (frame.py:481)
+2031-05-14T09:06:38.678Z edge-01 ledger[7827]:   Caused by: RpcError: call for req=R-0792d2 timed out after 2962ms
+2031-05-14T09:06:38.679Z edge-01 ledger[7827]:     at blobd.store.commit (frame.py:78)
+2031-05-14T09:06:38.680Z edge-01 ledger[7827]:     at blobd.store.run (pool.py:411)
+2031-05-14T09:06:38.681Z edge-01 ledger[7827]:   Caused by: UpstreamFailure: req=R-0792d2 attempt=2 returned 502
+2031-05-14T09:06:38.682Z edge-01 ledger[7827]:     at blobd.store.run (pool.py:739)
+2031-05-14T09:06:38.691Z edge-02 authz[6815]: ERROR req=R-b30bc7 attempt=3 route=/v1/route/plan failed: RpcError: request aborted
+2031-05-14T09:06:38.691Z edge-01 authz[1743]: ERROR req=R-88ce80 attempt=2 route=/v1/blob/stat failed: HandlerError: handler gave up
+2031-05-14T09:06:38.692Z edge-02 authz[6815]:     at codec.frame.call (pool.py:183)
+2031-05-14T09:06:38.692Z edge-01 authz[1743]:     at ledger.post.run (pool.py:456)
+2031-05-14T09:06:38.692Z edge-01 ledger[7827]: INFO req=R-0e439a attempt=1 route=/v1/authz/check status=200 dur_ms=53 msg="ok"
+2031-05-14T09:06:38.693Z edge-02 authz[6815]:     at codec.frame.run (post.py:48)
+2031-05-14T09:06:38.693Z edge-01 authz[1743]:     at ledger.post.run (plan.py:741)
+2031-05-14T09:06:38.694Z edge-02 authz[6815]:     at blobd.store.run (post.py:669)
+2031-05-14T09:06:38.694Z edge-01 authz[1743]:   Caused by: RpcError: call for req=R-88ce80 timed out after 3404ms
+2031-05-14T09:06:38.695Z edge-02 authz[6815]:     at authz.check.call (plan.py:242)
+2031-05-14T09:06:38.695Z edge-01 authz[1743]:     at ledger.post.send (store.py:589)
+2031-05-14T09:06:38.696Z edge-02 authz[6815]:   Caused by: RpcError: call for req=R-b30bc7 timed out after 3707ms
+2031-05-14T09:06:38.696Z edge-01 authz[1743]:     at blobd.store.run (pool.py:610)
+2031-05-14T09:06:38.697Z edge-02 authz[6815]:     at rpc.client.open (post.py:430)
+2031-05-14T09:06:38.697Z edge-01 authz[1743]:   Caused by: UpstreamFailure: req=R-90fb49 attempt=1 returned 503
+2031-05-14T09:06:38.698Z edge-02 authz[6815]:     at authz.check.commit (store.py:122)
+2031-05-14T09:06:38.698Z edge-01 authz[1743]:     at authz.check.call (post.py:475)
+2031-05-14T09:06:38.699Z edge-02 authz[6815]:   Caused by: UpstreamFailure: req=R-0792d2 attempt=2 returned 503
+2031-05-14T09:06:49.548Z edge-02 ledger[7480]: INFO req=R-274714 attempt=2 route=/v1/blob/put status=200 dur_ms=84 msg="ok after retry"
+2031-05-14T09:06:53.232Z edge-03 router[6984]: INFO req=R-b30bc7 attempt=4 route=/v1/blob/stat status=200 dur_ms=41 msg="ok after retry"
+2031-05-14T09:08:03.339Z edge-04 router[4549]: ERROR req=R-52a434 attempt=1 route=/v1/blob/stat failed: HandlerError: request aborted
+2031-05-14T09:08:03.340Z edge-04 router[4549]:     at rpc.pool.commit (pool.py:190)
+2031-05-14T09:08:03.341Z edge-04 router[4549]:     at rpc.pool.call (pool.py:879)
+2031-05-14T09:08:03.342Z edge-04 router[4549]:     at ledger.post.call (post.py:510)
+2031-05-14T09:08:03.343Z edge-04 router[4549]:     at blobd.store.call (store.py:412)
+2031-05-14T09:08:03.344Z edge-04 router[4549]:   Caused by: RpcError: local call for req=R-52a434 aborted
+2031-05-14T09:08:03.345Z edge-04 router[4549]:     at rpc.pool.open (store.py:805)
+2031-05-14T09:08:03.346Z edge-04 router[4549]:   Caused by: PoolExhausted: volume vol-6 is full
+2031-05-14T09:08:03.347Z edge-04 router[4549]:     at authz.check.open (pool.py:551)
+2031-05-14T09:08:03.347Z edge-06 blobd[6470]: ERROR req=R-042fd9 attempt=1 route=/v1/route/plan failed: HandlerError: request aborted
+2031-05-14T09:08:03.348Z edge-06 blobd[6470]:     at rpc.client.open (frame.py:253)
+2031-05-14T09:08:03.349Z edge-06 blobd[6470]:     at ledger.post.send (plan.py:206)
+2031-05-14T09:08:03.350Z edge-06 blobd[6470]:   Caused by: UpstreamFailure: req=R-52a434 attempt=1 returned 504
+2031-05-14T09:08:03.351Z edge-06 blobd[6470]:     at rpc.client.send (plan.py:250)
+2031-05-14T09:08:03.352Z edge-06 blobd[6470]:     at codec.frame.run (post.py:694)
+2031-05-14T09:08:03.358Z edge-01 ledger[7827]: ERROR req=R-f28b6d attempt=1 route=/v1/ledger/read failed: RpcError: request aborted
+2031-05-14T09:08:03.358Z edge-04 ledger[8204]: ERROR req=R-0e733d attempt=1 route=/v1/route/plan failed: HandlerError: request aborted
+2031-05-14T09:08:03.359Z edge-01 ledger[7827]:     at rpc.pool.call (plan.py:462)
+2031-05-14T09:08:03.359Z edge-04 ledger[8204]:     at rpc.pool.run (plan.py:758)
+2031-05-14T09:08:03.360Z edge-01 ledger[7827]:     at codec.frame.send (store.py:795)
+2031-05-14T09:08:03.360Z edge-04 ledger[8204]:     at ledger.post.commit (post.py:795)
+2031-05-14T09:08:03.361Z edge-01 ledger[7827]:     at codec.frame.call (store.py:568)
+2031-05-14T09:08:03.361Z edge-04 ledger[8204]:     at blobd.store.send (frame.py:876)
+2031-05-14T09:08:03.362Z edge-01 ledger[7827]:     at router.plan.call (plan.py:511)
+2031-05-14T09:08:03.362Z edge-04 ledger[8204]:     at rpc.pool.commit (store.py:292)
+2031-05-14T09:08:03.363Z edge-01 ledger[7827]:   Caused by: RpcError: call for req=R-f28b6d timed out after 2698ms
+2031-05-14T09:08:03.363Z edge-04 ledger[8204]:   Caused by: UpstreamFailure: req=R-52a434 attempt=1 returned 502
+2031-05-14T09:08:03.364Z edge-01 ledger[7827]:     at rpc.client.run (store.py:138)
+2031-05-14T09:08:03.364Z edge-04 ledger[8204]:     at rpc.pool.open (pool.py:23)
+2031-05-14T09:08:03.365Z edge-01 ledger[7827]:   Caused by: UpstreamFailure: req=R-52a434 attempt=1 returned 504
+2031-05-14T09:08:03.366Z edge-01 ledger[7827]:     at codec.frame.run (post.py:19)
+2031-05-14T09:08:03.366Z edge-03 ledger[2121]: ERROR req=R-e3f5ac attempt=1 route=/v1/ledger/post failed: HandlerError: handler gave up
+2031-05-14T09:08:03.367Z edge-03 ledger[2121]:     at ledger.post.call (store.py:165)
+2031-05-14T09:08:03.368Z edge-03 ledger[2121]:     at ledger.post.open (frame.py:466)
+2031-05-14T09:08:03.369Z edge-03 ledger[2121]:     at router.plan.run (pool.py:88)
+2031-05-14T09:08:03.370Z edge-03 ledger[2121]:     at ledger.post.call (post.py:446)
+2031-05-14T09:08:03.371Z edge-03 ledger[2121]:   Caused by: RpcError: call for req=R-e3f5ac timed out after 3471ms
+2031-05-14T09:08:03.372Z edge-03 ledger[2121]:     at codec.frame.send (frame.py:893)
+2031-05-14T09:08:03.373Z edge-03 ledger[2121]:     at router.plan.open (frame.py:173)
+2031-05-14T09:08:03.373Z edge-01 authz[1743]: ERROR req=R-0537e5 attempt=1 route=/v1/blob/stat failed: RpcError: request aborted
+2031-05-14T09:08:03.374Z edge-03 ledger[2121]:   Caused by: UpstreamFailure: req=R-52a434 attempt=1 returned 503
+2031-05-14T09:08:03.374Z edge-01 authz[1743]:     at blobd.store.run (post.py:252)
+2031-05-14T09:08:03.375Z edge-01 authz[1743]:     at rpc.client.open (pool.py:194)
+2031-05-14T09:08:03.376Z edge-01 authz[1743]:     at blobd.store.open (pool.py:615)
+2031-05-14T09:08:03.377Z edge-01 authz[1743]:     at rpc.pool.send (frame.py:421)
+2031-05-14T09:08:03.378Z edge-01 authz[1743]:   Caused by: UpstreamFailure: req=R-e3f5ac attempt=1 returned 503
+2031-05-14T09:08:03.379Z edge-01 authz[1743]:     at router.plan.commit (post.py:409)
+2031-05-14T09:08:03.386Z edge-06 authz[4117]: ERROR req=R-74f516 attempt=1 route=/v1/ledger/read failed: HandlerError: request aborted
+2031-05-14T09:08:03.387Z edge-06 authz[4117]:     at rpc.pool.commit (plan.py:868)
+2031-05-14T09:08:03.388Z edge-06 authz[4117]:     at blobd.store.open (store.py:797)
+2031-05-14T09:08:03.388Z edge-03 authz[7033]: ERROR req=R-8af121 attempt=1 route=/v1/authz/check failed: RpcError: handler gave up
+2031-05-14T09:08:03.389Z edge-06 authz[4117]:     at authz.check.send (plan.py:587)
+2031-05-14T09:08:03.389Z edge-03 authz[7033]:     at rpc.client.open (store.py:795)
+2031-05-14T09:08:03.389Z edge-05 blobd[1050]: ERROR req=R-1e9bcc attempt=1 route=/v1/route/plan failed: RpcError: request aborted
+2031-05-14T09:08:03.390Z edge-06 authz[4117]:   Caused by: RpcError: call for req=R-74f516 timed out after 2101ms
+2031-05-14T09:08:03.390Z edge-03 authz[7033]:     at codec.frame.call (frame.py:574)
+2031-05-14T09:08:03.390Z edge-05 blobd[1050]:     at router.plan.open (plan.py:461)
+2031-05-14T09:08:03.391Z edge-06 authz[4117]:     at authz.check.run (store.py:88)
+2031-05-14T09:08:03.391Z edge-03 authz[7033]:     at codec.frame.commit (post.py:567)
+2031-05-14T09:08:03.391Z edge-05 blobd[1050]:     at router.plan.send (plan.py:560)
+2031-05-14T09:08:03.392Z edge-06 authz[4117]:   Caused by: UpstreamFailure: req=R-e3f5ac attempt=1 returned 502
+2031-05-14T09:08:03.392Z edge-03 authz[7033]:   Caused by: UpstreamFailure: req=R-0537e5 attempt=1 returned 504
+2031-05-14T09:08:03.392Z edge-05 blobd[1050]:   Caused by: RpcError: call for req=R-1e9bcc timed out after 755ms
+2031-05-14T09:08:03.393Z edge-06 authz[4117]:     at router.plan.commit (plan.py:403)
+2031-05-14T09:08:03.393Z edge-03 authz[7033]:     at ledger.post.send (store.py:131)
+2031-05-14T09:08:03.393Z edge-05 blobd[1050]:     at router.plan.run (pool.py:733)
+2031-05-14T09:08:03.394Z edge-06 authz[4117]:     at blobd.store.send (frame.py:854)
+2031-05-14T09:08:03.394Z edge-03 authz[7033]:     at router.plan.open (pool.py:778)
+2031-05-14T09:08:03.394Z edge-05 blobd[1050]:     at authz.check.run (post.py:864)
+2031-05-14T09:08:03.395Z edge-05 blobd[1050]:   Caused by: UpstreamFailure: req=R-0537e5 attempt=1 returned 502
+2031-05-14T09:08:03.396Z edge-01 blobd[5938]: ERROR req=R-0e733d attempt=2 route=/v1/authz/check failed: RpcError: handler gave up
+2031-05-14T09:08:03.397Z edge-01 blobd[5938]:     at ledger.post.send (plan.py:877)
+2031-05-14T09:08:03.398Z edge-01 blobd[5938]:     at rpc.pool.call (plan.py:293)
+2031-05-14T09:08:03.399Z edge-01 blobd[5938]:     at authz.check.run (plan.py:498)
+2031-05-14T09:08:03.400Z edge-01 blobd[5938]:   Caused by: UpstreamFailure: req=R-e3f5ac attempt=1 returned 504
+2031-05-14T09:08:03.401Z edge-01 blobd[5938]:     at authz.check.call (plan.py:279)
+2031-05-14T09:08:03.402Z edge-01 blobd[5938]:     at authz.check.open (pool.py:43)
+2031-05-14T09:08:03.404Z edge-04 blobd[3270]: ERROR req=R-2ae586 attempt=1 route=/v1/ledger/read failed: RpcError: handler gave up
+2031-05-14T09:08:03.405Z edge-04 blobd[3270]:     at blobd.store.run (store.py:245)
+2031-05-14T09:08:03.406Z edge-04 blobd[3270]:     at ledger.post.send (frame.py:119)
+2031-05-14T09:08:03.407Z edge-04 blobd[3270]:     at rpc.client.open (store.py:88)
+2031-05-14T09:08:03.408Z edge-04 blobd[3270]:     at router.plan.commit (frame.py:106)
+2031-05-14T09:08:03.409Z edge-04 blobd[3270]:   Caused by: UpstreamFailure: req=R-0e733d attempt=2 returned 504
+2031-05-14T09:08:03.410Z edge-04 blobd[3270]:     at codec.frame.call (plan.py:146)
+2031-05-14T09:08:03.414Z edge-02 authz[6815]: ERROR req=R-1f77dd attempt=1 route=/v1/blob/put failed: RpcError: upstream call failed
+2031-05-14T09:08:03.415Z edge-02 authz[6815]:     at rpc.pool.send (pool.py:605)
+2031-05-14T09:08:03.416Z edge-02 authz[6815]:     at ledger.post.run (pool.py:172)
+2031-05-14T09:08:03.417Z edge-02 authz[6815]:   Caused by: UpstreamFailure: req=R-1e9bcc attempt=1 returned 502
+2031-05-14T09:08:03.421Z edge-06 blobd[6470]: ERROR req=R-954ce7 attempt=1 route=/v1/route/plan failed: RpcError: handler gave up
+2031-05-14T09:08:03.422Z edge-06 blobd[6470]:     at router.plan.call (store.py:730)
+2031-05-14T09:08:03.423Z edge-06 blobd[6470]:     at ledger.post.call (pool.py:408)
+2031-05-14T09:08:03.424Z edge-06 blobd[6470]:   Caused by: UpstreamFailure: req=R-2ae586 attempt=1 returned 503
+2031-05-14T09:08:03.425Z edge-06 blobd[6470]:     at rpc.client.send (plan.py:182)
+2031-05-14T09:08:03.430Z edge-06 router[7262]: ERROR req=R-b438d9 attempt=1 route=/v1/route/plan failed: RpcError: upstream call failed
+2031-05-14T09:08:03.431Z edge-06 router[7262]:     at ledger.post.commit (plan.py:225)
+2031-05-14T09:08:03.432Z edge-06 router[7262]:     at authz.check.send (pool.py:520)
+2031-05-14T09:08:03.433Z edge-06 router[7262]:   Caused by: UpstreamFailure: req=R-2ae586 attempt=1 returned 503
+2031-05-14T09:08:03.441Z edge-06 authz[4117]: ERROR req=R-6c9f3c attempt=1 route=/v1/ledger/read failed: RpcError: upstream call failed
+2031-05-14T09:08:03.442Z edge-06 authz[4117]:     at authz.check.run (pool.py:842)
+2031-05-14T09:08:03.443Z edge-06 authz[4117]:     at rpc.pool.open (pool.py:102)
+2031-05-14T09:08:03.444Z edge-06 authz[4117]:     at authz.check.send (store.py:864)
+2031-05-14T09:08:03.445Z edge-06 authz[4117]:     at rpc.pool.run (plan.py:630)
+2031-05-14T09:08:03.446Z edge-06 authz[4117]:   Caused by: RpcError: call for req=R-6c9f3c timed out after 3316ms
+2031-05-14T09:08:03.447Z edge-06 authz[4117]:     at authz.check.call (frame.py:201)
+2031-05-14T09:08:03.448Z edge-06 authz[4117]:     at router.plan.run (post.py:279)
+2031-05-14T09:08:03.449Z edge-06 authz[4117]:   Caused by: UpstreamFailure: req=R-2ae586 attempt=1 returned 504
+2031-05-14T09:08:03.450Z edge-06 authz[4117]:     at rpc.client.call (post.py:524)
+2031-05-14T09:08:03.451Z edge-06 authz[4117]:     at authz.check.send (frame.py:126)
+2031-05-14T09:08:06.339Z edge-03 router[6984]: INFO req=R-72ed8d attempt=2 route=/v1/blob/stat status=200 dur_ms=82 msg="ok after retry"
+2031-05-14T09:08:09.975Z edge-06 authz[4117]: INFO req=R-0537e5 attempt=2 route=/v1/blob/stat status=200 dur_ms=59 msg="ok after retry"
+2031-05-14T09:08:20.687Z edge-06 authz[4117]: INFO req=R-8af121 attempt=2 route=/v1/blob/put status=200 dur_ms=80 msg="ok after retry"
+2031-05-14T09:08:21.187Z edge-01 authz[1743]: INFO req=R-b438d9 attempt=2 route=/v1/ledger/post status=200 dur_ms=69 msg="ok after retry"
+2031-05-14T09:08:32.967Z edge-04 authz[5922]: INFO req=R-f09f99 attempt=1 route=/v1/route/plan status=200 dur_ms=95 msg="ok"
+2031-05-14T09:09:06.630Z edge-02 authz[6815]: INFO req=R-efae3f attempt=1 route=/v1/blob/put status=200 dur_ms=185 msg="ok"
+2031-05-14T09:09:19.698Z edge-06 ledger[4281]: INFO req=R-8fa881 attempt=1 route=/v1/authz/check status=200 dur_ms=4 msg="ok"
+2031-05-14T09:09:22.035Z edge-01 authz[1743]: WARN req=R-0876d2 attempt=1 route=/v1/route/plan status=200 dur_ms=157 msg="ok"
+2031-05-14T09:09:23.385Z edge-04 blobd[3270]: WARN req=R-2cec3d attempt=1 route=/v1/ledger/read status=200 dur_ms=78 msg="ok"
+2031-05-14T09:09:31.485Z edge-03 ledger[2121]: ERROR req=R-7bb964 attempt=1 route=/v1/ledger/read failed: SchemaMismatch: request aborted
+2031-05-14T09:09:31.486Z edge-03 ledger[2121]:     at codec.frame.send (store.py:527)
+2031-05-14T09:09:31.487Z edge-03 ledger[2121]:     at rpc.pool.send (pool.py:458)
+2031-05-14T09:09:31.488Z edge-03 ledger[2121]:     at rpc.pool.run (store.py:484)
+2031-05-14T09:09:31.489Z edge-03 ledger[2121]:     at rpc.client.call (pool.py:657)
+2031-05-14T09:09:31.509Z edge-01 blobd[5938]: ERROR req=R-7aed51 attempt=3 route=/v1/blob/put failed: HandlerError: handler gave up
+2031-05-14T09:09:31.510Z edge-01 blobd[5938]:     at codec.frame.call (plan.py:789)
+2031-05-14T09:09:31.511Z edge-01 blobd[5938]:     at codec.frame.send (frame.py:240)
+2031-05-14T09:09:31.512Z edge-01 blobd[5938]:     at authz.check.run (post.py:421)
+2031-05-14T09:09:31.513Z edge-01 blobd[5938]:     at authz.check.send (post.py:639)
+2031-05-14T09:09:31.514Z edge-01 blobd[5938]:   Caused by: RpcError: call for req=R-7aed51 timed out after 532ms
+2031-05-14T09:09:31.514Z edge-02 router[7127]: ERROR req=R-d3fd73 attempt=1 route=/v1/ledger/post failed: HandlerError: upstream call failed
+2031-05-14T09:09:31.515Z edge-01 blobd[5938]:     at codec.frame.commit (store.py:179)
+2031-05-14T09:09:31.515Z edge-02 router[7127]:     at rpc.client.run (plan.py:886)
+2031-05-14T09:09:31.516Z edge-01 blobd[5938]:   Caused by: UpstreamFailure: req=R-7bb964 attempt=1 returned 503
+2031-05-14T09:09:31.516Z edge-02 router[7127]:     at rpc.client.call (store.py:342)
+2031-05-14T09:09:31.517Z edge-01 blobd[5938]:     at codec.frame.open (post.py:882)
+2031-05-14T09:09:31.517Z edge-02 router[7127]:     at blobd.store.commit (pool.py:815)
+2031-05-14T09:09:31.518Z edge-01 blobd[5938]:     at router.plan.open (frame.py:470)
+2031-05-14T09:09:31.518Z edge-02 router[7127]:     at router.plan.run (post.py:259)
+2031-05-14T09:09:31.519Z edge-02 router[7127]:   Caused by: RpcError: call for req=R-d3fd73 timed out after 830ms
+2031-05-14T09:09:31.520Z edge-02 router[7127]:     at rpc.pool.send (pool.py:751)
+2031-05-14T09:09:31.521Z edge-02 router[7127]:   Caused by: UpstreamFailure: req=R-7aed51 attempt=3 returned 504
+2031-05-14T09:09:31.523Z edge-03 router[6984]: ERROR req=R-f67730 attempt=1 route=/v1/authz/check failed: RpcError: handler gave up
+2031-05-14T09:09:31.524Z edge-03 router[6984]:     at rpc.client.commit (pool.py:166)
+2031-05-14T09:09:31.524Z edge-03 authz[7033]: ERROR req=R-1f77dd attempt=2 route=/v1/route/plan failed: HandlerError: handler gave up
+2031-05-14T09:09:31.525Z edge-03 router[6984]:     at ledger.post.commit (pool.py:329)
+2031-05-14T09:09:31.525Z edge-03 authz[7033]:     at codec.frame.open (pool.py:24)
+2031-05-14T09:09:31.526Z edge-03 router[6984]:   Caused by: RpcError: call for req=R-f67730 timed out after 952ms
+2031-05-14T09:09:31.526Z edge-03 authz[7033]:     at blobd.store.run (plan.py:366)
+2031-05-14T09:09:31.527Z edge-03 router[6984]:     at ledger.post.call (post.py:519)
+2031-05-14T09:09:31.527Z edge-03 authz[7033]:     at blobd.store.run (pool.py:746)
+2031-05-14T09:09:31.528Z edge-03 router[6984]:   Caused by: UpstreamFailure: req=R-7bb964 attempt=1 returned 503
+2031-05-14T09:09:31.528Z edge-03 authz[7033]:     at codec.frame.commit (store.py:143)
+2031-05-14T09:09:31.529Z edge-03 authz[7033]:   Caused by: RpcError: call for req=R-1f77dd timed out after 201ms
+2031-05-14T09:09:31.530Z edge-03 authz[7033]:     at rpc.client.open (store.py:146)
+2031-05-14T09:09:31.531Z edge-03 authz[7033]:   Caused by: UpstreamFailure: req=R-7bb964 attempt=1 returned 504
+2031-05-14T09:09:31.532Z edge-03 authz[7033]:     at ledger.post.open (frame.py:374)
+2031-05-14T09:09:31.534Z edge-02 authz[6815]: ERROR req=R-1a9465 attempt=1 route=/v1/blob/put failed: HandlerError: handler gave up
+2031-05-14T09:09:31.535Z edge-02 authz[6815]:     at router.plan.send (frame.py:612)
+2031-05-14T09:09:31.536Z edge-02 authz[6815]:     at blobd.store.commit (post.py:570)
+2031-05-14T09:09:31.537Z edge-02 authz[6815]:   Caused by: RpcError: call for req=R-1a9465 timed out after 342ms
+2031-05-14T09:09:31.538Z edge-02 authz[6815]:     at blobd.store.send (pool.py:795)
+2031-05-14T09:09:31.539Z edge-02 authz[6815]:     at authz.check.send (pool.py:807)
+2031-05-14T09:09:31.540Z edge-02 ledger[7480]: ERROR req=R-b17e3b attempt=1 route=/v1/blob/stat failed: RpcError: upstream call failed
+2031-05-14T09:09:31.540Z edge-02 authz[6815]:   Caused by: UpstreamFailure: req=R-d3fd73 attempt=1 returned 502
+2031-05-14T09:09:31.541Z edge-02 ledger[7480]:     at codec.frame.commit (frame.py:487)
+2031-05-14T09:09:31.541Z edge-02 authz[6815]:     at blobd.store.send (post.py:52)
+2031-05-14T09:09:31.542Z edge-02 ledger[7480]:     at blobd.store.send (pool.py:711)
+2031-05-14T09:09:31.542Z edge-02 authz[6815]:     at codec.frame.run (plan.py:503)
+2031-05-14T09:09:31.543Z edge-02 ledger[7480]:     at router.plan.open (store.py:375)
+2031-05-14T09:09:31.544Z edge-02 ledger[7480]:   Caused by: UpstreamFailure: req=R-1f77dd attempt=2 returned 503
+2031-05-14T09:09:31.559Z edge-02 ledger[7480]: ERROR req=R-ce4967 attempt=1 route=/v1/route/plan failed: HandlerError: request aborted
+2031-05-14T09:09:31.560Z edge-02 ledger[7480]:     at rpc.pool.commit (post.py:288)
+2031-05-14T09:09:31.561Z edge-02 ledger[7480]:     at blobd.store.send (store.py:767)
+2031-05-14T09:09:31.562Z edge-02 ledger[7480]:     at authz.check.call (pool.py:668)
+2031-05-14T09:09:31.563Z edge-02 ledger[7480]:     at blobd.store.send (frame.py:499)
+2031-05-14T09:09:31.564Z edge-02 ledger[7480]:   Caused by: UpstreamFailure: req=R-b17e3b attempt=1 returned 504
+2031-05-14T09:09:31.570Z edge-02 authz[6815]: ERROR req=R-1f77dd attempt=3 route=/v1/blob/stat failed: RpcError: handler gave up
+2031-05-14T09:09:31.571Z edge-02 authz[6815]:     at codec.frame.send (post.py:350)
+2031-05-14T09:09:31.572Z edge-02 authz[6815]:     at authz.check.send (store.py:121)
+2031-05-14T09:09:31.573Z edge-02 authz[6815]:     at ledger.post.call (pool.py:480)
+2031-05-14T09:09:31.574Z edge-02 authz[6815]:     at router.plan.run (frame.py:498)
+2031-05-14T09:09:31.575Z edge-02 authz[6815]:   Caused by: RpcError: call for req=R-1f77dd timed out after 1091ms
+2031-05-14T09:09:31.576Z edge-02 authz[6815]:     at codec.frame.send (pool.py:64)
+2031-05-14T09:09:31.577Z edge-02 authz[6815]:   Caused by: UpstreamFailure: req=R-ce4967 attempt=1 returned 503
+2031-05-14T09:09:31.578Z edge-02 authz[6815]:     at codec.frame.open (store.py:117)
+2031-05-14T09:09:31.587Z edge-02 blobd[9403]: ERROR req=R-5497ff attempt=1 route=/v1/ledger/read failed: RpcError: upstream call failed
+2031-05-14T09:09:31.588Z edge-02 blobd[9403]:     at codec.frame.commit (post.py:777)
+2031-05-14T09:09:31.589Z edge-02 blobd[9403]:     at ledger.post.run (pool.py:672)
+2031-05-14T09:09:31.590Z edge-02 blobd[9403]:   Caused by: RpcError: call for req=R-5497ff timed out after 2961ms
+2031-05-14T09:09:31.591Z edge-02 blobd[9403]:     at authz.check.open (pool.py:548)
+2031-05-14T09:09:31.592Z edge-02 blobd[9403]:   Caused by: UpstreamFailure: req=R-ce4967 attempt=1 returned 502
+2031-05-14T09:09:31.593Z edge-02 blobd[9403]:     at blobd.store.run (pool.py:690)
+2031-05-14T09:09:31.594Z edge-02 blobd[9403]:     at authz.check.send (pool.py:170)
+2031-05-14T09:09:31.599Z edge-05 router[6553]: ERROR req=R-6c9f3c attempt=2 route=/v1/ledger/read failed: RpcError: upstream call failed
+2031-05-14T09:09:31.600Z edge-05 router[6553]:     at rpc.client.open (plan.py:74)
+2031-05-14T09:09:31.601Z edge-05 router[6553]:     at authz.check.run (pool.py:149)
+2031-05-14T09:09:31.602Z edge-05 router[6553]:   Caused by: UpstreamFailure: req=R-1f77dd attempt=3 returned 504
+2031-05-14T09:09:31.603Z edge-01 router[1615]: ERROR req=R-1f77dd attempt=4 route=/v1/blob/put failed: RpcError: request aborted
+2031-05-14T09:09:31.604Z edge-01 router[1615]:     at ledger.post.open (pool.py:421)
+2031-05-14T09:09:31.604Z edge-03 router[6984]: ERROR req=R-8f80db attempt=1 route=/v1/blob/stat failed: HandlerError: upstream call failed
+2031-05-14T09:09:31.605Z edge-01 router[1615]:     at rpc.pool.commit (frame.py:882)
+2031-05-14T09:09:31.605Z edge-03 router[6984]:     at blobd.store.send (store.py:96)
+2031-05-14T09:09:31.606Z edge-01 router[1615]:     at router.plan.open (plan.py:334)
+2031-05-14T09:09:31.606Z edge-03 router[6984]:     at blobd.store.call (post.py:228)
+2031-05-14T09:09:31.607Z edge-01 router[1615]:   Caused by: UpstreamFailure: req=R-1f77dd attempt=3 returned 503
+2031-05-14T09:09:31.607Z edge-03 router[6984]:     at router.plan.run (plan.py:623)
+2031-05-14T09:09:31.608Z edge-01 router[1615]:     at codec.frame.run (store.py:866)
+2031-05-14T09:09:31.608Z edge-03 router[6984]:   Caused by: UpstreamFailure: req=R-5497ff attempt=1 returned 504
+2031-05-14T09:09:31.609Z edge-01 router[1615]:     at router.plan.call (pool.py:715)
+2031-05-14T09:09:31.626Z edge-05 blobd[1050]: ERROR req=R-847fa2 attempt=1 route=/v1/ledger/post failed: HandlerError: request aborted
+2031-05-14T09:09:31.627Z edge-05 blobd[1050]:     at rpc.pool.run (plan.py:698)
+2031-05-14T09:09:31.628Z edge-05 blobd[1050]:     at ledger.post.send (pool.py:796)
+2031-05-14T09:09:31.629Z edge-05 blobd[1050]:     at blobd.store.commit (pool.py:398)
+2031-05-14T09:09:31.630Z edge-05 blobd[1050]:   Caused by: UpstreamFailure: req=R-5497ff attempt=1 returned 504
+2031-05-14T09:09:31.631Z edge-05 blobd[1050]:     at router.plan.run (store.py:438)
+2031-05-14T09:09:31.632Z edge-05 blobd[1050]:     at router.plan.commit (post.py:257)
+2031-05-14T09:09:38.521Z edge-05 blobd[1050]: INFO req=R-b17e3b attempt=2 route=/v1/route/plan status=200 dur_ms=19 msg="ok after retry"
+2031-05-14T09:09:47.149Z edge-04 authz[5922]: INFO req=R-ce4967 attempt=2 route=/v1/route/plan status=200 dur_ms=71 msg="ok after retry"
+2031-05-14T09:10:35.813Z edge-02 router[7127]: INFO req=R-bf81a5 attempt=1 route=/v1/blob/stat status=200 dur_ms=247 msg="ok"
+2031-05-14T09:10:44.610Z edge-01 ledger[7827]: INFO req=R-5c0846 attempt=1 route=/v1/route/plan status=200 dur_ms=161 msg="ok"
+2031-05-14T09:10:53.514Z edge-01 authz[1743]: INFO req=R-37811e attempt=1 route=/v1/blob/stat status=200 dur_ms=121 msg="peer reported Caused by: UpstreamFailure: req=R-e25e0c attempt=1 returned 503"
+2031-05-14T09:11:02.068Z edge-05 ledger[9611]: WARN req=R-194b2a attempt=1 route=/v1/ledger/read status=204 dur_ms=118 msg="ok"
+2031-05-14T09:11:02.839Z edge-01 authz[1743]: WARN req=R-9edb73 attempt=1 route=/v1/authz/check status=200 dur_ms=6 msg="ok"
+2031-05-14T09:11:13.044Z edge-02 authz[6815]: ERROR req=R-a1a945 attempt=1 route=/v1/blob/put failed: SchemaMismatch: request aborted
+2031-05-14T09:11:13.045Z edge-02 authz[6815]:     at codec.frame.run (plan.py:575)
+2031-05-14T09:11:13.046Z edge-02 authz[6815]:     at codec.frame.send (pool.py:369)
+2031-05-14T09:11:13.050Z edge-02 router[7127]: ERROR req=R-1f14c1 attempt=1 route=/v1/blob/stat failed: HandlerError: handler gave up
+2031-05-14T09:11:13.051Z edge-02 router[7127]:     at rpc.pool.commit (pool.py:754)
+2031-05-14T09:11:13.052Z edge-02 router[7127]:     at router.plan.send (pool.py:720)
+2031-05-14T09:11:13.053Z edge-02 router[7127]:   Caused by: RpcError: call for req=R-1f14c1 timed out after 2436ms
+2031-05-14T09:11:13.054Z edge-02 router[7127]:     at rpc.pool.send (post.py:91)
+2031-05-14T09:11:13.055Z edge-02 router[7127]:   Caused by: UpstreamFailure: req=R-a1a945 attempt=1 returned 504
+2031-05-14T09:11:13.056Z edge-02 router[7127]:     at rpc.client.commit (frame.py:362)
+2031-05-14T09:11:13.057Z edge-02 router[7127]:     at router.plan.commit (store.py:574)
+2031-05-14T09:11:13.065Z edge-05 authz[5129]: ERROR req=R-d0138e attempt=1 route=/v1/ledger/post failed: HandlerError: handler gave up
+2031-05-14T09:11:13.066Z edge-05 authz[5129]:     at rpc.client.open (pool.py:814)
+2031-05-14T09:11:13.067Z edge-04 ledger[8204]: ERROR req=R-847fa2 attempt=2 route=/v1/ledger/read failed: RpcError: upstream call failed
+2031-05-14T09:11:13.067Z edge-05 authz[5129]:     at blobd.store.commit (pool.py:63)
+2031-05-14T09:11:13.068Z edge-04 ledger[8204]:     at blobd.store.open (frame.py:253)
+2031-05-14T09:11:13.068Z edge-05 authz[5129]:   Caused by: RpcError: call for req=R-d0138e timed out after 2172ms
+2031-05-14T09:11:13.069Z edge-04 ledger[8204]:     at ledger.post.open (pool.py:571)
+2031-05-14T09:11:13.069Z edge-05 authz[5129]:     at router.plan.run (plan.py:428)
+2031-05-14T09:11:13.070Z edge-04 ledger[8204]:     at codec.frame.open (frame.py:632)
+2031-05-14T09:11:13.070Z edge-05 authz[5129]:   Caused by: UpstreamFailure: req=R-1f14c1 attempt=1 returned 503
+2031-05-14T09:11:13.071Z edge-04 ledger[8204]:   Caused by: RpcError: call for req=R-847fa2 timed out after 3528ms
+2031-05-14T09:11:13.071Z edge-05 authz[5129]:     at authz.check.commit (post.py:86)
+2031-05-14T09:11:13.072Z edge-04 ledger[8204]:     at rpc.client.open (frame.py:539)
+2031-05-14T09:11:13.073Z edge-04 ledger[8204]:   Caused by: UpstreamFailure: req=R-1f14c1 attempt=1 returned 502
+2031-05-14T09:11:13.074Z edge-04 ledger[8204]:     at authz.check.open (store.py:667)
+2031-05-14T09:11:13.075Z edge-04 ledger[8204]:     at authz.check.run (store.py:229)
+2031-05-14T09:11:13.080Z edge-03 blobd[8477]: ERROR req=R-68fb52 attempt=1 route=/v1/ledger/read failed: RpcError: handler gave up
+2031-05-14T09:11:13.081Z edge-05 router[6553]: ERROR req=R-9a2570 attempt=1 route=/v1/blob/stat failed: HandlerError: handler gave up
+2031-05-14T09:11:13.081Z edge-03 blobd[8477]:     at authz.check.run (store.py:678)
+2031-05-14T09:11:13.082Z edge-05 router[6553]:     at blobd.store.commit (post.py:651)
+2031-05-14T09:11:13.082Z edge-03 blobd[8477]:     at router.plan.commit (frame.py:40)
+2031-05-14T09:11:13.083Z edge-05 router[6553]:     at router.plan.commit (pool.py:596)
+2031-05-14T09:11:13.083Z edge-03 blobd[8477]:     at codec.frame.call (plan.py:327)
+2031-05-14T09:11:13.084Z edge-05 router[6553]:     at authz.check.run (store.py:158)
+2031-05-14T09:11:13.084Z edge-03 blobd[8477]:     at blobd.store.call (store.py:228)
+2031-05-14T09:11:13.085Z edge-05 router[6553]:   Caused by: UpstreamFailure: req=R-a1a945 attempt=1 returned 504
+2031-05-14T09:11:13.085Z edge-03 blobd[8477]:   Caused by: RpcError: call for req=R-68fb52 timed out after 333ms
+2031-05-14T09:11:13.086Z edge-05 router[6553]:     at blobd.store.run (frame.py:674)
+2031-05-14T09:11:13.086Z edge-03 blobd[8477]:     at rpc.client.send (pool.py:666)
+2031-05-14T09:11:13.087Z edge-03 blobd[8477]:   Caused by: UpstreamFailure: req=R-a1a945 attempt=1 returned 504
+2031-05-14T09:11:13.088Z edge-03 blobd[8477]:     at blobd.store.call (frame.py:895)
+2031-05-14T09:11:13.089Z edge-03 blobd[8477]:     at rpc.pool.run (plan.py:65)
+2031-05-14T09:11:13.101Z edge-01 router[1615]: ERROR req=R-5e4746 attempt=1 route=/v1/ledger/post failed: RpcError: request aborted
+2031-05-14T09:11:13.102Z edge-01 router[1615]:     at codec.frame.send (plan.py:637)
+2031-05-14T09:11:13.103Z edge-01 router[1615]:     at ledger.post.commit (store.py:723)
+2031-05-14T09:11:13.104Z edge-01 router[1615]:     at authz.check.commit (plan.py:117)
+2031-05-14T09:11:13.105Z edge-01 router[1615]:     at codec.frame.open (frame.py:297)
+2031-05-14T09:11:13.106Z edge-01 router[1615]:   Caused by: UpstreamFailure: req=R-847fa2 attempt=2 returned 502
+2031-05-14T09:11:13.113Z edge-04 ledger[8204]: ERROR req=R-76cb4a attempt=1 route=/v1/ledger/post failed: RpcError: request aborted
+2031-05-14T09:11:13.114Z edge-04 ledger[8204]:     at rpc.client.run (plan.py:48)
+2031-05-14T09:11:13.115Z edge-04 ledger[8204]:     at ledger.post.send (pool.py:681)
+2031-05-14T09:11:13.116Z edge-04 ledger[8204]:   Caused by: UpstreamFailure: req=R-9a2570 attempt=1 returned 504
+2031-05-14T09:11:13.117Z edge-04 ledger[8204]:     at codec.frame.commit (post.py:253)
+2031-05-14T09:11:13.118Z edge-04 ledger[8204]:     at ledger.post.call (plan.py:379)
+2031-05-14T09:11:13.121Z edge-05 blobd[1050]: ERROR req=R-e25e0c attempt=1 route=/v1/blob/put failed: RpcError: upstream call failed
+2031-05-14T09:11:13.122Z edge-05 blobd[1050]:     at ledger.post.call (store.py:117)
+2031-05-14T09:11:13.123Z edge-05 blobd[1050]:     at authz.check.open (pool.py:209)
+2031-05-14T09:11:13.124Z edge-04 ledger[8204]: ERROR req=R-d0138e attempt=2 route=/v1/authz/check failed: RpcError: request aborted
+2031-05-14T09:11:13.124Z edge-05 blobd[1050]:     at blobd.store.run (pool.py:329)
+2031-05-14T09:11:13.125Z edge-04 ledger[8204]:     at ledger.post.open (plan.py:71)
+2031-05-14T09:11:13.125Z edge-05 blobd[1050]:     at router.plan.open (store.py:155)
+2031-05-14T09:11:13.126Z edge-04 ledger[8204]:     at authz.check.call (frame.py:498)
+2031-05-14T09:11:13.126Z edge-05 blobd[1050]:   Caused by: UpstreamFailure: req=R-5e4746 attempt=1 returned 503
+2031-05-14T09:11:13.127Z edge-04 ledger[8204]:     at authz.check.call (frame.py:309)
+2031-05-14T09:11:13.128Z edge-04 ledger[8204]:   Caused by: UpstreamFailure: req=R-76cb4a attempt=1 returned 502
+2031-05-14T09:11:13.129Z edge-04 ledger[8204]:     at authz.check.open (store.py:798)
+2031-05-14T09:11:13.130Z edge-04 ledger[8204]:     at ledger.post.send (plan.py:184)
+2031-05-14T09:11:13.135Z edge-04 blobd[3270]: ERROR req=R-2e6faf attempt=1 route=/v1/ledger/post failed: HandlerError: request aborted
+2031-05-14T09:11:13.136Z edge-04 blobd[3270]:     at rpc.client.call (pool.py:182)
+2031-05-14T09:11:13.137Z edge-04 blobd[3270]:     at codec.frame.commit (pool.py:741)
+2031-05-14T09:11:13.138Z edge-04 blobd[3270]:     at blobd.store.commit (post.py:576)
+2031-05-14T09:11:13.139Z edge-04 blobd[3270]:     at router.plan.commit (pool.py:527)
+2031-05-14T09:11:13.139Z edge-02 authz[6815]: ERROR req=R-df5fd4 attempt=1 route=/v1/ledger/read failed: HandlerError: upstream call failed
+2031-05-14T09:11:13.140Z edge-04 blobd[3270]:   Caused by: RpcError: call for req=R-2e6faf timed out after 2241ms
+2031-05-14T09:11:13.140Z edge-02 authz[6815]:     at rpc.client.open (pool.py:565)
+2031-05-14T09:11:13.141Z edge-04 blobd[3270]:     at blobd.store.commit (frame.py:197)
+2031-05-14T09:11:13.141Z edge-02 authz[6815]:     at router.plan.open (store.py:525)
+2031-05-14T09:11:13.142Z edge-04 blobd[3270]:   Caused by: UpstreamFailure: req=R-76cb4a attempt=1 returned 502
+2031-05-14T09:11:13.142Z edge-02 authz[6815]:     at codec.frame.open (store.py:53)
+2031-05-14T09:11:13.143Z edge-02 authz[6815]:   Caused by: UpstreamFailure: req=R-5e4746 attempt=1 returned 503
+2031-05-14T09:11:13.144Z edge-02 authz[6815]:     at rpc.pool.commit (pool.py:889)
+2031-05-14T09:11:13.145Z edge-02 authz[6815]:     at rpc.client.commit (post.py:886)
+2031-05-14T09:11:13.149Z edge-04 authz[5922]: ERROR req=R-419313 attempt=1 route=/v1/blob/stat failed: RpcError: request aborted
+2031-05-14T09:11:13.150Z edge-04 authz[5922]:     at rpc.pool.commit (pool.py:33)
+2031-05-14T09:11:13.151Z edge-04 authz[5922]:     at ledger.post.send (frame.py:793)
+2031-05-14T09:11:13.152Z edge-04 authz[5922]:     at blobd.store.run (pool.py:39)
+2031-05-14T09:11:13.153Z edge-04 authz[5922]:     at rpc.pool.send (pool.py:347)
+2031-05-14T09:11:13.154Z edge-04 authz[5922]:   Caused by: UpstreamFailure: req=R-76cb4a attempt=1 returned 504
+2031-05-14T09:11:28.266Z edge-02 blobd[9403]: INFO req=R-419313 attempt=2 route=/v1/ledger/read status=200 dur_ms=43 msg="ok after retry"
+2031-05-14T09:11:57.061Z edge-03 blobd[8477]: INFO req=R-45fcfe attempt=1 route=/v1/blob/put status=200 dur_ms=323 msg="ok"
+2031-05-14T09:12:54.633Z edge-02 ledger[7480]: ERROR req=R-9b8ca9 attempt=1 route=/v1/blob/put failed: HandlerError: upstream call failed
+2031-05-14T09:12:54.634Z edge-02 ledger[7480]:     at ledger.post.run (post.py:352)
+2031-05-14T09:12:54.635Z edge-02 ledger[7480]:     at router.plan.run (post.py:758)
+2031-05-14T09:12:54.636Z edge-02 ledger[7480]:   Caused by: RpcError: local call for req=R-9b8ca9 aborted
+2031-05-14T09:12:54.637Z edge-02 ledger[7480]:     at blobd.store.call (pool.py:326)
+2031-05-14T09:12:54.638Z edge-02 ledger[7480]:   Caused by: LeaseExpired: volume vol-1 is full
+2031-05-14T09:12:54.639Z edge-02 ledger[7480]:     at router.plan.run (post.py:683)
+2031-05-14T09:12:54.642Z edge-05 router[6553]: ERROR req=R-229a56 attempt=1 route=/v1/authz/check failed: HandlerError: request aborted
+2031-05-14T09:12:54.643Z edge-05 router[6553]:     at rpc.client.call (store.py:291)
+2031-05-14T09:12:54.644Z edge-05 router[6553]:     at authz.check.open (store.py:78)
+2031-05-14T09:12:54.645Z edge-05 router[6553]:   Caused by: RpcError: call for req=R-229a56 timed out after 1983ms
+2031-05-14T09:12:54.646Z edge-05 router[6553]:     at authz.check.commit (post.py:389)
+2031-05-14T09:12:54.647Z edge-05 router[6553]:     at router.plan.open (store.py:868)
+2031-05-14T09:12:54.648Z edge-05 router[6553]:   Caused by: UpstreamFailure: req=R-9b8ca9 attempt=1 returned 502
+2031-05-14T09:12:54.649Z edge-05 router[6553]:     at authz.check.run (frame.py:298)
+2031-05-14T09:12:54.650Z edge-05 router[6553]:     at router.plan.open (post.py:489)
+2031-05-14T09:12:54.658Z edge-05 blobd[1050]: ERROR req=R-fb54a3 attempt=1 route=/v1/authz/check failed: RpcError: upstream call failed
+2031-05-14T09:12:54.659Z edge-05 blobd[1050]:     at codec.frame.run (post.py:150)
+2031-05-14T09:12:54.660Z edge-05 blobd[1050]:     at router.plan.commit (plan.py:399)
+2031-05-14T09:12:54.661Z edge-05 blobd[1050]:     at blobd.store.call (store.py:752)
+2031-05-14T09:12:54.662Z edge-05 blobd[1050]:   Caused by: UpstreamFailure: req=R-9b8ca9 attempt=1 returned 504
+2031-05-14T09:12:54.663Z edge-05 blobd[1050]:     at router.plan.open (frame.py:814)
+2031-05-14T09:12:54.677Z edge-03 ledger[2121]: ERROR req=R-e25e0c attempt=2 route=/v1/ledger/read failed: RpcError: handler gave up
+2031-05-14T09:12:54.678Z edge-02 ledger[7480]: ERROR req=R-cd6599 attempt=1 route=/v1/blob/stat failed: HandlerError: request aborted
+2031-05-14T09:12:54.678Z edge-03 ledger[2121]:     at router.plan.run (plan.py:592)
+2031-05-14T09:12:54.679Z edge-02 ledger[7480]:     at ledger.post.call (frame.py:629)
+2031-05-14T09:12:54.679Z edge-03 ledger[2121]:     at ledger.post.run (store.py:561)
+2031-05-14T09:12:54.680Z edge-02 ledger[7480]:     at rpc.client.send (pool.py:108)
+2031-05-14T09:12:54.680Z edge-03 ledger[2121]:     at router.plan.run (frame.py:851)
+2031-05-14T09:12:54.681Z edge-02 ledger[7480]:   Caused by: RpcError: call for req=R-cd6599 timed out after 1672ms
+2031-05-14T09:12:54.681Z edge-03 ledger[2121]:   Caused by: RpcError: call for req=R-e25e0c timed out after 2613ms
+2031-05-14T09:12:54.682Z edge-02 ledger[7480]:     at codec.frame.send (plan.py:26)
+2031-05-14T09:12:54.682Z edge-03 ledger[2121]:     at authz.check.commit (pool.py:547)
+2031-05-14T09:12:54.683Z edge-02 ledger[7480]:   Caused by: UpstreamFailure: req=R-fb54a3 attempt=1 returned 503
+2031-05-14T09:12:54.683Z edge-03 ledger[2121]:     at authz.check.send (pool.py:863)
+2031-05-14T09:12:54.684Z edge-03 ledger[2121]:   Caused by: UpstreamFailure: req=R-229a56 attempt=1 returned 502
+2031-05-14T09:12:54.684Z edge-04 blobd[3270]: ERROR req=R-149a5f attempt=1 route=/v1/blob/put failed: HandlerError: request aborted
+2031-05-14T09:12:54.685Z edge-03 ledger[2121]:     at ledger.post.open (plan.py:187)
+2031-05-14T09:12:54.685Z edge-04 blobd[3270]:     at authz.check.open (frame.py:787)
+2031-05-14T09:12:54.686Z edge-03 ledger[2121]:     at rpc.pool.open (plan.py:668)
+2031-05-14T09:12:54.686Z edge-04 blobd[3270]:     at blobd.store.run (pool.py:182)
+2031-05-14T09:12:54.687Z edge-04 blobd[3270]:     at codec.frame.send (frame.py:769)
+2031-05-14T09:12:54.688Z edge-04 blobd[3270]:   Caused by: RpcError: call for req=R-149a5f timed out after 478ms
+2031-05-14T09:12:54.689Z edge-04 blobd[3270]:     at authz.check.run (post.py:259)
+2031-05-14T09:12:54.690Z edge-04 blobd[3270]:   Caused by: UpstreamFailure: req=R-e25e0c attempt=2 returned 503
+2031-05-14T09:12:54.693Z edge-03 blobd[8477]: ERROR req=R-84f10a attempt=1 route=/v1/ledger/read failed: RpcError: handler gave up
+2031-05-14T09:12:54.694Z edge-03 blobd[8477]:     at ledger.post.commit (plan.py:320)
+2031-05-14T09:12:54.695Z edge-03 blobd[8477]:     at codec.frame.send (store.py:576)
+2031-05-14T09:12:54.696Z edge-03 blobd[8477]:   Caused by: RpcError: call for req=R-84f10a timed out after 408ms
+2031-05-14T09:12:54.697Z edge-03 blobd[8477]:     at ledger.post.open (frame.py:105)
+2031-05-14T09:12:54.698Z edge-03 blobd[8477]:   Caused by: UpstreamFailure: req=R-fb54a3 attempt=1 returned 504
+2031-05-14T09:12:54.701Z edge-05 blobd[1050]: ERROR req=R-a2951b attempt=1 route=/v1/blob/stat failed: RpcError: request aborted
+2031-05-14T09:12:54.702Z edge-05 blobd[1050]:     at router.plan.run (frame.py:478)
+2031-05-14T09:12:54.703Z edge-05 blobd[1050]:     at blobd.store.call (post.py:168)
+2031-05-14T09:12:54.704Z edge-05 blobd[1050]:     at ledger.post.open (frame.py:476)
+2031-05-14T09:12:54.705Z edge-05 blobd[1050]:   Caused by: RpcError: call for req=R-a2951b timed out after 2764ms
+2031-05-14T09:12:54.706Z edge-05 blobd[1050]:     at codec.frame.run (post.py:18)
+2031-05-14T09:12:54.707Z edge-05 blobd[1050]:     at blobd.store.call (post.py:75)
+2031-05-14T09:12:54.708Z edge-05 blobd[1050]:   Caused by: UpstreamFailure: req=R-e25e0c attempt=2 returned 502
+2031-05-14T09:12:54.709Z edge-05 blobd[1050]:     at rpc.client.send (plan.py:778)
+2031-05-14T09:12:54.710Z edge-05 blobd[1050]:     at router.plan.call (store.py:821)
+2031-05-14T09:12:54.716Z edge-03 router[6984]: ERROR req=R-1ab7f6 attempt=1 route=/v1/route/plan failed: RpcError: handler gave up
+2031-05-14T09:12:54.717Z edge-03 router[6984]:     at rpc.pool.commit (plan.py:857)
+2031-05-14T09:12:54.718Z edge-03 router[6984]:     at router.plan.open (pool.py:320)
+2031-05-14T09:12:54.719Z edge-03 router[6984]:     at blobd.store.commit (pool.py:579)
+2031-05-14T09:12:54.720Z edge-03 router[6984]:   Caused by: UpstreamFailure: req=R-84f10a attempt=1 returned 503
+2031-05-14T09:12:54.720Z edge-05 authz[5129]: ERROR req=R-b895d1 attempt=1 route=/v1/blob/stat failed: RpcError: upstream call failed
+2031-05-14T09:12:54.721Z edge-05 authz[5129]:     at codec.frame.send (store.py:120)
+2031-05-14T09:12:54.722Z edge-05 authz[5129]:     at router.plan.run (pool.py:368)
+2031-05-14T09:12:54.723Z edge-05 authz[5129]:     at blobd.store.open (post.py:48)
+2031-05-14T09:12:54.724Z edge-05 authz[5129]:     at codec.frame.open (plan.py:181)
+2031-05-14T09:12:54.724Z edge-05 router[6553]: ERROR req=R-c493df attempt=1 route=/v1/ledger/post failed: HandlerError: upstream call failed
+2031-05-14T09:12:54.725Z edge-05 authz[5129]:   Caused by: UpstreamFailure: req=R-84f10a attempt=1 returned 503
+2031-05-14T09:12:54.725Z edge-05 router[6553]:     at ledger.post.run (pool.py:556)
+2031-05-14T09:12:54.726Z edge-05 authz[5129]:     at rpc.pool.open (post.py:621)
+2031-05-14T09:12:54.726Z edge-05 router[6553]:     at blobd.store.call (post.py:310)
+2031-05-14T09:12:54.727Z edge-05 router[6553]:   Caused by: RpcError: call for req=R-c493df timed out after 785ms
+2031-05-14T09:12:54.728Z edge-05 router[6553]:     at rpc.pool.open (pool.py:421)
+2031-05-14T09:12:54.729Z edge-05 router[6553]:     at blobd.store.call (pool.py:186)
+2031-05-14T09:12:54.730Z edge-05 router[6553]:   Caused by: UpstreamFailure: req=R-1ab7f6 attempt=1 returned 503
+2031-05-14T09:12:54.731Z edge-05 router[6553]:     at ledger.post.send (frame.py:182)
+2031-05-14T09:12:54.732Z edge-05 router[6553]:     at rpc.client.commit (post.py:328)
+2031-05-14T09:12:54.737Z edge-05 router[6553]: ERROR req=R-149a5f attempt=2 route=/v1/ledger/post failed: RpcError: upstream call failed
+2031-05-14T09:12:54.738Z edge-05 router[6553]:     at blobd.store.send (store.py:316)
+2031-05-14T09:12:54.739Z edge-05 router[6553]:     at rpc.client.open (store.py:825)
+2031-05-14T09:12:54.740Z edge-05 router[6553]:     at blobd.store.commit (plan.py:813)
+2031-05-14T09:12:54.741Z edge-05 router[6553]:     at ledger.post.run (frame.py:523)
+2031-05-14T09:12:54.742Z edge-05 router[6553]:   Caused by: UpstreamFailure: req=R-a2951b attempt=1 returned 504
+2031-05-14T09:12:54.743Z edge-05 router[6553]:     at rpc.client.commit (frame.py:682)
+2031-05-14T09:12:54.756Z edge-02 authz[6815]: ERROR req=R-bc9a25 attempt=1 route=/v1/blob/stat failed: HandlerError: upstream call failed
+2031-05-14T09:12:54.757Z edge-02 authz[6815]:     at ledger.post.send (pool.py:536)
+2031-05-14T09:12:54.758Z edge-02 authz[6815]:     at ledger.post.call (pool.py:411)
+2031-05-14T09:12:54.759Z edge-02 authz[6815]:     at codec.frame.commit (store.py:780)
+2031-05-14T09:12:54.760Z edge-02 authz[6815]:     at codec.frame.commit (store.py:697)
+2031-05-14T09:12:54.761Z edge-02 authz[6815]:   Caused by: RpcError: call for req=R-bc9a25 timed out after 2825ms
+2031-05-14T09:12:54.762Z edge-02 authz[6815]:     at codec.frame.open (frame.py:399)
+2031-05-14T09:12:54.763Z edge-02 authz[6815]:   Caused by: UpstreamFailure: req=R-b895d1 attempt=1 returned 502
+2031-05-14T09:13:03.127Z edge-05 ledger[9611]: INFO req=R-149a5f attempt=3 route=/v1/authz/check status=200 dur_ms=57 msg="ok after retry"
+2031-05-14T09:13:10.214Z edge-01 authz[1743]: INFO req=R-cd6599 attempt=2 route=/v1/route/plan status=200 dur_ms=66 msg="ok after retry"
+2031-05-14T09:13:53.652Z edge-06 blobd[6470]: INFO req=R-51f9d2 attempt=1 route=/v1/route/plan status=204 dur_ms=394 msg="ok"
+2031-05-14T09:14:13.512Z edge-06 ledger[4281]: WARN req=R-c20966 attempt=1 route=/v1/ledger/post status=404 dur_ms=277 msg="ok"

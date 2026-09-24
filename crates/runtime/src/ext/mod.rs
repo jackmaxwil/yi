@@ -1,7 +1,7 @@
 mod assemble;
 mod grid;
 mod install;
-mod orchestrate;
+pub(crate) mod orchestrate;
 mod pack;
 mod project;
 mod telemetry;

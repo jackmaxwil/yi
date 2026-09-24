@@ -8,7 +8,7 @@
     "A superseded plan's sub-plans go to Abandoned, not Superseded: Superseded{by} names a version of the same plan identity, and a sub-plan has no successor version -- its parent todo ceased to exist.",
     "'drop' marks Abandoned and Abandoned is terminal: a plan is finished when every todo is in a terminal state (Done, Failed, or Abandoned), not when every todo is Done. The landed is_finished() required all-Done, which one dropped todo would have wedged forever.",
     "'append' inserts at the end of the Vec, because Vec order is priority and a discovery is not automatically more urgent than what is already queued. 'reorder' is the op that says otherwise, and it takes a full permutation of the plan's labels so a partial reorder cannot silently drop a todo.",
-    "The dispatch width is measured from the machine, never configured: clamp(cores - 1, 1, 8). This fixture pins cores at 2 -- the container case the prompt describes -- so the width is 1 and backpressure is observable. The width gates CHILDREN only: a ready todo with no delegation costs no child and is always dispatchable, and bash() handles are not children and never charge it.",
+    "The dispatch width is min(family.max_children, plan.width_max), never the host's core count: a delegated child waits on a network model, not on a core. This fixture pins the width at 1 -- the narrow case the prompt describes -- so backpressure is observable. The width gates CHILDREN only: a ready todo with no delegation costs no child and is always dispatchable, and bash() handles are not children and never charge it.",
     "Backpressure is invisible and automatic: the queued follow-up names only the dispatchable slice, so there is no refusal to handle. A held todo stays Pending -- marking it Running before its child exists would read as crashed to the rehydration rule -- and 'start' is never refused for width. The follow-up names the held count too, or an ordinary hold reads as an empty ready set.",
     "Promotion runs at reap whatever the outcome, not at Done. A child reaped on a failure carries its last product as Failed{cause, last}, host-minted from what the reap found; the model never supplies it. A todo worked inline has no child, so its failure carries last: null.",
     "The spawn ceiling is a fuse and not a budget: monotonic, on the root plan, charged once per dispatch, never reset by supersede. This fixture asserts it counts every child the run ever started, including the one supersede reaped and the one that failed.",
@@ -16,7 +16,6 @@
   ],
   "prompt": "Ship logrotate-lite: a CLI that rotates a log file by size and by age, with a test suite and a manpage, packaged as a tarball at /app/dist/logrotate-lite.tar.gz. You have 2 CPUs and 8 hours.",
   "eagerInit": true,
-  "cores": 2,
   "width": 1,
   "goal": "Ship logrotate-lite with a packaged tarball",
   "plan": "ship-logrotate-lite-with-a-packaged",
@@ -45,7 +44,7 @@
             "label": "Write the test suite",
             "after": ["Freeze the CLI argument surface"],
             "delegation": {
-              "spec": { "role": "coder", "effort": "med", "isolation": "worktree" },
+              "spec": { "role": "coder", "effort": "med" },
               "accept": { "command": "pytest -q tests/" },
               "context": ["plan://ship-logrotate-lite-with-a-packaged/freeze-the-cli-argument-surface"],
               "output": { "schema": "local://.yi/schemas/test_report.json" }

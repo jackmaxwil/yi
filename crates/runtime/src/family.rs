@@ -3,7 +3,7 @@
 use serde_json::Value;
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content};
-use yi_types::subagent::ChildStatus;
+use yi_types::subagent::{ChildExit, ChildStatus, LoopSignal};
 
 /// A running member with no new record for this long is `stuck` with note `idle Ns`.
 pub const STUCK_IDLE_MS: u64 = 300_000;
@@ -12,22 +12,66 @@ const NOTE_CHARS: usize = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemberState {
+    /// Admitted and not yet polled.
+    Queued,
     Running,
     Finished,
     Failed,
     NeedsYou,
     Stuck,
+    /// A revoked child whose stop, settle or record failed; everything it held is kept.
+    RepossessionPending,
 }
 
 impl MemberState {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Queued => "queued",
             Self::Running => "running",
             Self::Finished => "finished",
             Self::Failed => "failed",
             Self::NeedsYou => "needs_you",
             Self::Stuck => "stuck",
+            Self::RepossessionPending => "repossession_pending",
         }
+    }
+}
+
+/// Where a record with no exit stands: admitted and not yet polled, live, told by the child
+/// itself that its work failed, or held by a repossession that has not finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Queued,
+    Live,
+    Failed,
+    Repossessing,
+    Pending,
+}
+
+/// One exit read three ways: the wire status, the member state and the notice's verb.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reading {
+    pub status: ChildStatus,
+    pub state: MemberState,
+    pub verb: &'static str,
+}
+
+/// Invariant: every surface reads a child's ending through here, so the TUI's status, the
+/// model's `wait` state and the parent's notice cannot disagree. `None` is a live run.
+pub fn read_exit(exit: Option<ChildExit>) -> Reading {
+    let (status, state, verb) = match exit {
+        None => (ChildStatus::Running, MemberState::Running, "running"),
+        Some(ChildExit::Completed) => (ChildStatus::Completed, MemberState::Finished, "finished"),
+        Some(ChildExit::Failed { .. }) => (ChildStatus::Error, MemberState::Failed, "failed"),
+        Some(ChildExit::Interrupted) => (ChildStatus::Error, MemberState::Failed, "interrupted"),
+        Some(ChildExit::Reaped) => (ChildStatus::Error, MemberState::Failed, "reaped"),
+        Some(ChildExit::Repossessed) => (ChildStatus::Error, MemberState::Failed, "repossessed"),
+        Some(ChildExit::Other) => (ChildStatus::Error, MemberState::Failed, "ended"),
+    };
+    Reading {
+        status,
+        state,
+        verb,
     }
 }
 
@@ -71,51 +115,32 @@ pub fn pending_question(messages: &[AgentMessage]) -> Option<String> {
     })
 }
 
-/// A stuck or waiting signal in one recent record, as the loop and the coupling wrote it.
+/// A stuck or waiting signal in one recent record. `stuck` is the loop's typed `signal`,
+/// never a record's name: a renamed or look-alike record cannot make or hide a stuck child.
 fn signal_of(entry: &Entry) -> Option<(MemberState, String)> {
-    match entry {
+    let (data, blocked) = match entry {
         Entry::Message {
-            message:
-                AgentMessage::Custom {
-                    custom_type,
-                    details,
-                    ..
-                },
+            message: AgentMessage::Custom { details, .. },
             ..
-        } => match custom_type.as_str() {
-            "repeat_break" => Some((MemberState::Stuck, "repeat_break".to_owned())),
-            "length_redrive" => {
-                let rung = details
-                    .as_ref()
-                    .and_then(|d| d.get("rung"))
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                (rung >= 2).then(|| (MemberState::Stuck, format!("length_redrive rung {rung}")))
-            }
-            _ => None,
-        },
+        } => (details.as_ref()?, false),
         Entry::Custom {
             custom_type, data, ..
-        } => {
-            let field = |key: &str| {
-                data.as_ref()
-                    .and_then(|d| d.get(key))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned()
-            };
-            match custom_type.as_str() {
-                "todo_intercept" if field("reason") == "let go" => {
-                    Some((MemberState::Stuck, "todo_intercept let go".to_owned()))
-                }
-                "todo" if field("op") == "block" && field("on") == "user" => {
-                    Some((MemberState::NeedsYou, "blocked on user".to_owned()))
-                }
-                _ => None,
-            }
-        }
-        _ => None,
+        } => (data.as_ref()?, custom_type == "todo"),
+        _ => return None,
+    };
+    let text = |key: &str| data.get(key).and_then(Value::as_str).unwrap_or_default();
+    if blocked && text("op") == "block" && text("on") == "user" {
+        return Some((MemberState::NeedsYou, "blocked on user".to_owned()));
     }
+    let signal = serde_json::from_value::<LoopSignal>(data.get("signal")?.clone()).ok()?;
+    let rung = data.get("rung").and_then(Value::as_u64).unwrap_or(0);
+    let note = match signal {
+        LoopSignal::RepeatBreak => "repeat_break".to_owned(),
+        LoopSignal::LengthRedrive if rung >= 2 => format!("length_redrive rung {rung}"),
+        LoopSignal::LengthRedrive => return None,
+        LoopSignal::LetGo => "todo_intercept let go".to_owned(),
+    };
+    Some((MemberState::Stuck, note))
 }
 
 fn timestamp_of(entry: &Entry) -> u64 {
@@ -130,11 +155,10 @@ fn timestamp_of(entry: &Entry) -> u64 {
     }
 }
 
-/// The state a member's own newest records show: `needs_you` when it ended on `ask_user` or
-/// blocked a todo on the user, `stuck` when the loop or the coupling re-drove it in its last
-/// records or nothing moved for [`STUCK_IDLE_MS`]; the note names which.
+/// The state a member's newest records show: `needs_you` after `ask_user` or a todo blocked
+/// on the user, `stuck` after a re-drive in them or [`STUCK_IDLE_MS`] idle; the note says which.
 pub fn state_from_records(
-    status: ChildStatus,
+    (exit, phase): (Option<ChildExit>, Phase),
     error: Option<&str>,
     messages: &[AgentMessage],
     recent: &[Entry],
@@ -142,21 +166,32 @@ pub fn state_from_records(
 ) -> (MemberState, Option<String>, u64) {
     let newest = recent.iter().map(timestamp_of).max().unwrap_or(now_ms);
     let idle_s = now_ms.saturating_sub(newest) / 1000;
-    match status {
-        ChildStatus::Error => (MemberState::Failed, error.map(cut), idle_s),
-        ChildStatus::Completed => match pending_question(messages) {
+    match read_exit(exit).state {
+        MemberState::Finished => match pending_question(messages) {
             Some(question) => (MemberState::NeedsYou, Some(question), idle_s),
             None => (MemberState::Finished, None, idle_s),
         },
-        ChildStatus::Running => {
+        MemberState::Running if phase == Phase::Queued => (MemberState::Queued, None, idle_s),
+        MemberState::Running if phase == Phase::Failed => {
+            (MemberState::Failed, error.map(cut), idle_s)
+        }
+        MemberState::Running if phase == Phase::Pending => {
+            (MemberState::RepossessionPending, error.map(cut), idle_s)
+        }
+        MemberState::Running => {
             if let Some((state, note)) = recent.iter().find_map(signal_of) {
                 return (state, Some(note), idle_s);
             }
-            if now_ms.saturating_sub(newest) >= STUCK_IDLE_MS {
+            if now_ms.saturating_sub(newest)
+                >= crate::levers::get()
+                    .family_stuck_idle_s
+                    .saturating_mul(1000)
+            {
                 return (MemberState::Stuck, Some(format!("idle {idle_s}s")), idle_s);
             }
             (MemberState::Running, None, idle_s)
         }
+        state => (state, error.map(cut), idle_s),
     }
 }
 
@@ -199,11 +234,13 @@ pub fn children_line(views: &[MemberView]) -> Option<String> {
         return None;
     }
     let groups = [
+        (MemberState::Queued, "queued"),
         (MemberState::Running, "running"),
         (MemberState::Finished, "finished"),
         (MemberState::Failed, "failed"),
         (MemberState::NeedsYou, "needs you"),
         (MemberState::Stuck, "stuck"),
+        (MemberState::RepossessionPending, "repossession pending"),
     ];
     let parts: Vec<String> = groups
         .iter()
