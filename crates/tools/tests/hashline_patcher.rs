@@ -666,3 +666,31 @@ fn an_ambiguous_near_miss_header_is_still_refused() -> TestResult {
     assert_eq!(fixture.content("rows.txt")?, "a\nb\nc\nd\ne\nf\n");
     Ok(())
 }
+
+/// All four `never displayed` refusals in the confirmation corpora cited lines past the end of
+/// a file the model had just written in full; the refusal must name the length instead.
+#[test]
+fn an_anchor_past_the_end_is_not_called_unseen() -> TestResult {
+    let fixture = Fixture::new("past-eof")?;
+    let content: String = (1..=135).map(|n| format!("line {n}\n")).collect();
+    let write = WriteTool {
+        hashline: Some(std::sync::Arc::clone(&fixture.state)),
+    }
+    .execute(
+        args(&[("path", json!("rot.py")), ("content", json!(content))]),
+        &fixture.context,
+    );
+    assert!(!write.is_error, "{}", output_text(&write));
+    let tag = output_text(&write)
+        .lines()
+        .next()
+        .and_then(|line| line.rsplit_once('#'))
+        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
+        .ok_or("no tag on the write result")?;
+    let edit = fixture.edit(&format!("[rot.py#{tag}]\nPUT 134.=148:\n+x\n"));
+    assert!(edit.is_error);
+    let text = output_text(&edit);
+    assert!(!text.contains("never displayed"), "{text}");
+    assert!(text.contains("136 lines"), "{text}");
+    Ok(())
+}
