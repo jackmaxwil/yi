@@ -258,6 +258,49 @@ async fn a_plain_send_answers_a_question_its_sender_read_off_a_wait() -> TestRes
     Ok(())
 }
 
+/// Dies with a reply the model never read counting as shown: `h.result`'s own wait, or a
+/// `status` naming one child, let a plain send answer another child's question.
+#[tokio::test]
+async fn only_a_question_a_read_reply_quoted_counts_as_shown() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    let parent = Arc::new(session((0..4).map(|_| said("noted")).collect()));
+    let (_root, host, _store) = family(&parent, Child::Asks)?;
+    let mut registry = yi_runtime::HostRegistry::default();
+    host.register(&mut registry);
+    for name in ["a", "b"] {
+        spawn(&host, name)?;
+    }
+    for _ in 0..400 {
+        if host.open_requests().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+    let call = |kind: &str, payload: Value| {
+        let payload = payload.as_object().cloned().unwrap_or_default();
+        registry.dispatch(kind, payload).ok_or("no handler")
+    };
+    let plain = |to: &str| -> Result<Value, Box<dyn Error>> {
+        let mail = json!({"target": to, "message": "Also write tests."});
+        Ok(host.send("parent", mail.as_object().ok_or("mail")?)?["receipts"][0].clone())
+    };
+    let helper = json!({"timeout_ms": 1_000, "cursor": 0, "quiet": true});
+    call("rlm.wait", helper)?.await?;
+    assert_ne!(
+        plain("b")?["state"],
+        "answered",
+        "a helper's wait showed it"
+    );
+    call("rlm.status", json!({"name": "a"}))?.await?;
+    assert_ne!(
+        plain("b")?["state"],
+        "answered",
+        "a's entry showed b's question"
+    );
+    call("rlm.status", json!({"name": "b"}))?.await?;
+    assert_eq!(plain("b")?["state"], "answered");
+    Ok(())
+}
+
 /// Dies with progress write-only: a child's `progress` was inboxed and never read. Dies too
 /// with it waking an idle parent, or with each step presented instead of the latest.
 #[tokio::test]
