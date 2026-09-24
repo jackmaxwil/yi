@@ -737,6 +737,7 @@ fn clipped(verdict: &Verdict, budget: usize) -> Verdict {
     };
     let mut out = verdict.clone();
     for line in &mut out.items {
+        line.evidence = line.evidence.as_deref().map(clip);
         line.verdict = match &line.verdict {
             ItemVerdict::Fail { detail } => ItemVerdict::Fail {
                 detail: clip(detail),

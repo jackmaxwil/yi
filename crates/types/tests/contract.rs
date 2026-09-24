@@ -143,6 +143,7 @@ fn aggregate_never_panics_for_any_item_set() -> TestResult {
             id: ItemId::new(id)?,
             verdict: ItemVerdict::Pass,
             jurors: Vec::new(),
+            evidence: None,
         })
     };
     assert!(matches!(
