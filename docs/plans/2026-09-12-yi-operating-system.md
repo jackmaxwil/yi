@@ -8,6 +8,15 @@ status:  planned 2026-09-12; revised 2026-09-13 after an external review (§0).
          Owner's answers of 2026-09-13: the journal stays in .yi/plans/<slug>/;
          the original format-1 bytes are kept as an artifact blob; F1b ships
          fork_join and scatter; the value gate's tolerance is 10 percent.
+         As done (recorded 2026-09-23): the owner overrode the F0e gate on
+         2026-09-20 ("continue until full plan completion") and F1 started
+         without the decision. F0e, measured 2026-09-20/21, found activation
+         without value, so the gate did not pass (docs/eval-ledger.md row
+         0056). F1-F4 landed as one stacked PR, #467, opened on #427 before
+         #427 merged, with seventeen changelog rows (0.269.0-0.285.0) and
+         thirteen ADRs (D210-D222) by the owner's choice; #427 itself carries
+         F0a-F0d as four rows and four ADRs (D192-D195). The rules in this
+         header, §3.1 and §11 stay as written; they were overridden.
 tree:    0.244.0 (docs/ARCHITECTURE.md:4), last decision row D190 (:146);
          D169-D171 are in the log (:164-166) and under docs/solutions/adr/.
          Every D below is a D-next placeholder; claim against the header at
@@ -197,7 +206,7 @@ C: docs and governance).
 | C6 | YI_DESIGN says done is host-verified | `docs/YI_DESIGN.md:1231-1233` and :1220-1222 (§8.17.1 at :1211); §8.10 at :869; §8.17 at :1195 | matches, stale |
 | C7 | guardrails | file 1,200 (`scripts/guardrails/check_file_size.py:11-12`), function 150 (`check_fn_size.py:8`), growth memo in the version's changelog row past +150 and a D cite past +2000 (`check_growth.py:2-5,13`; `_common.py:7`), ratchets are one JSON each under `scripts/guardrails/baselines/` and shrink only (`.ruler/040-guardrails.md:6-8`), schemas lock (`check_schemas_lock.py`), env surface 6 of 40 (`baselines/env_vars.json`; `check_env_surface.py:12-13`), test tiers marker (`check_test_tiers.py:11`), subject 72 (`check_commit_style.py:24`), PR metadata gate (`check_pr_metadata.py:8-16,300-316`) | verified |
 | C8 | event vocabulary cap | design-time only: `docs/YI_DESIGN.md:1260` (Event ≤ 13) and :1282-1284 (≤ 18 across layers); no script counts it; `AgentEvent` has fourteen variants today (`crates/types/src/event.rs:216-279`) | no enforcing gate; the rule here is "add none" |
-| C9 | one issue per stage, one row and one ADR per PR | issue and row: `.ruler/095-tracking.md:3-16`, `.ruler/090-workflow.md:34-38`, `check_pr_metadata.py`; ADR: `.ruler/090-workflow.md:41-42`, `just adr` (`justfile:251-253`, `scripts/adr.py`); template `docs/solutions/adr/d166.md` (`# D<n>: title`, `Status`, `## Decision`, `## Why`, `## Reversible via`); stacked PRs undocumented, linear history required (`docs/FORGE.md:188-189`) | verified |
+| C9 | one issue per stage, one row and one ADR per PR | issue and row: `.ruler/095-tracking.md:3-16`, `.ruler/090-workflow.md:34-38`, `check_pr_metadata.py`; ADR: `.ruler/090-workflow.md:41-42`, `just adr` (`justfile:251-253`, `scripts/adr.py`); template `docs/solutions/adr/d166.md` (`# D<n>: title`, `Status`, `## Decision`, `## Why`, `## Reversible via`); stacked PRs undocumented, linear history required (`docs/FORGE.md:188-189`) | verified; this stack overrode "one row and one ADR per PR" (§3.1): #427 carries four rows and four ADRs, #467 seventeen rows and thirteen ADRs |
 | C10 | held-out split, slice file | none exist; the slice is `TASKS` in `evals/drivers/tbv4_baseline.sh:10`, dataset digest :9, one-hour ceiling :13-15; `evals/` is stdlib-only (`evals/README.md:3-5`) | absent; §10 creates both |
 | C11 | `.yi/schemas`, `help(yi)` | neither exists (`.yi/` holds `mining/` only; no `help(` in `python/yi_runtime/src/rlm/`) | absent; §5 and §8 create them |
 | C12 | the kernel-side Python packages | `python/yi_runtime/pyproject.toml:16-17` packages `src/rlm`; four skills installed by `PYTHON_SKILLS` (`crates/kernel/src/bootstrap.rs:270-275`): compact, attach_image, goal, plan; the gate runs `python/yi_runtime/tests` (`check_guardrails.sh:36`) | verified |
@@ -341,7 +350,12 @@ Stage impacts
   time; fixtures before source; every kernel invariant gets a test that dies
   with it (§11 tables); never relax a linter; stacked PRs land in order; the
   forge holds the issues, one per stage under one milestone, opened before
-  the row.
+  the row. As landed, the stack did not keep "one changelog row and one ADR
+  per PR": #427 carries F0a-F0d as four rows (0.265.0-0.268.0) and four
+  ADRs (D192-D195), and #467 carries F1-F4 and their measured follow-ups as
+  seventeen rows (0.269.0-0.285.0) and thirteen ADRs (D210-D222), by the
+  owner's choice of one stacked PR for F1-F4. The rule is overridden, not
+  withdrawn.
 - **The plan never requires the kernel.** The JSON plan tool stays a complete
   degraded surface over the same engine; the typed store stays the durable
   path; the program is the rich path. The kernel was dead in every early paid
@@ -1684,6 +1698,10 @@ charges or a labelled estimate), wall, recovery outcomes, and the §10.3
 decision. If the run shows activation without value, the next move is the
 mechanism or the evaluation, not F1; an independently proven fix (F0a) may
 land on its own correctness evidence without claiming the platform passed.
+As run: the F0e run showed activation without value (docs/eval-ledger.md
+row 0056), and F1 went ahead anyway because the owner overrode this rule on
+2026-09-20; the mechanism fixes the run pointed at (#468-#471) landed in
+#467 as 0.283.0, after F1-F4.
 Row 0025's own numbers are read honestly: 3/18 is one task passing three
 times (`html-js-filter` 3/3, :63), and a signal that misses engine spawns
 proves nothing about them.
@@ -1694,7 +1712,8 @@ Conventions for every stage: forge issue first (milestone in the header),
 fixtures before source, `just check` green, `Ratchet:` commits for
 `test_size_budget.json` and `src_loc.json` in their own commits, one
 changelog row with a `growth +N:` memo, `just adr`, `pr open`, `pr merge`,
-the next PR of the stack opens after its predecessor merges. Tiers per D85:
+the next PR of the stack opens after its predecessor merges (not followed:
+#467 opened on #427 before #427 merged, by the owner's choice). Tiers per D85:
 T0 unit, T1 faux, T2 real-binary journey (`just journeys` marker exact),
 T3 paid. Kernel-dead path named per stage. File placement respects the
 1,200-line cap (§2 B21): new behaviour goes in new files where the host file
@@ -1986,6 +2005,13 @@ protocol manifest; the §10.7 runs; one ledger row with the §10.3 decision
 F1-F4:** the decision recorded. Activation without value sends the work back
 to the mechanism or the evaluation; F0a and any independently proven fix may
 land on their own evidence.
+**Result.** docs/eval-ledger.md row 0056, recorded 2026-09-23: correctness
+held on the fixtures (23/24 baseline, 22/24 candidate, cost a wash), zero
+undirected activation in either build, and directed runs that fired the new
+ops but made 2 starts and 0 dones, cost more and scored no better. That is
+activation without value, so the gate did not pass. The owner overrode it on
+2026-09-20 ("continue until full plan completion") and F1-F4 proceeded in
+#467 without the recorded decision.
 
 ### F1a · The `yi` library: plans as programs, explicit resume (D-next-5; extends D166)
 
