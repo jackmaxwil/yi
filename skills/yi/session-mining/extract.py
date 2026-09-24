@@ -23,7 +23,9 @@ import tempfile
 import time
 from pathlib import Path
 
-EXTRACTOR_VERSION = 5
+import error_class
+
+EXTRACTOR_VERSION = 6
 SCHEMA_VERSION = 2
 
 # Tool names from the crates/tools registry that cannot change the tree; the
@@ -536,6 +538,7 @@ def extract_session(path, header, entries, census):
     ended_at = header.get("createdAt", 0)
     child = dict(input=0, output=0, cacheRead=0, cacheWrite=0, costUsd=0.0)
     models, providers = [], []
+    error_classes = collections.Counter()
 
     for entry in entries:
         etype = entry.get("type") or f"kind:{entry.get('kind', '?')}"
@@ -619,12 +622,16 @@ def extract_session(path, header, entries, census):
             if message.get("isError"):
                 failures += 1
                 census["error"][name] += 1
+                blame = error_class.classify(name, body, message.get("details"))
+                census.setdefault("errorClass", collections.Counter())[blame] += 1
+                error_classes[blame] += 1
                 streak += 1
                 streak_max = max(streak_max, streak)
                 if body.strip().startswith("Permission denied"):
                     denials += 1
                 if index is not None:
                     calls[index]["error"] = body
+                    calls[index]["errorClass"] = blame
             else:
                 streak = 0
 
@@ -643,6 +650,7 @@ def extract_session(path, header, entries, census):
         "repeatedCalls": repeated,
         "failedStreakMax": streak_max,
         "failures": failures,
+        "errorClasses": dict(sorted(error_classes.items())),
         "tokens": {**tokens, "costUsd": round(tokens["costUsd"], 6)},
         "childTokens": {**child, "costUsd": round(child["costUsd"], 6)},
         "readRatio": round(reads / total_calls, 4) if total_calls else 0.0,
@@ -715,6 +723,7 @@ def failure_events(sid, calls, ts):
         events.append(
             {
                 "tool": call["tool"],
+                "errorClass": call["errorClass"],
                 "fingerprint": fingerprint(call["tool"], first),
                 "argsHash": call["key"][1],
                 "resolvedInSession": action != "unresolved",
@@ -768,6 +777,7 @@ def build_board(events, marks):
                 "v": SCHEMA_VERSION,
                 "fingerprint": fp,
                 "tool": rows[0]["tool"],
+                "errorClass": rows[0]["errorClass"],
                 "count": len(rows),
                 "sessions": sorted({r["sessionId"] for r in rows}),
                 "firstSeen": min(stamps),
@@ -792,7 +802,7 @@ def write_store(out_dir, name, rows):
 def sweep(sessions_dir, out_dir):
     files = sorted(sessions_dir.glob("*.jsonl"))
     mu_rows, events, orientation_rows, delegation_rows = [], [], [], []
-    census = {k: collections.Counter() for k in ("entry", "role", "tool", "error", "custom")}
+    census = {k: collections.Counter() for k in ("entry", "role", "tool", "error", "errorClass", "custom")}
     skipped, corrupt_lines, parents = [], 0, collections.Counter()
     for path in files:
         header, entries, corrupt = read_session(path)
@@ -862,7 +872,7 @@ def report(result, sessions_dir, out_dir):
     out.append(f"corpus: {sessions_dir}  ->  {out_dir}")
     out.append("")
     out.append("signal census")
-    for name in ("entry", "role", "tool", "error", "custom"):
+    for name in ("entry", "role", "tool", "error", "errorClass", "custom"):
         counts = result["census"][name]
         body = ", ".join(f"{k}={v}" for k, v in counts.most_common()) or "-"
         out.append(f"  {name:<7} {body}")
@@ -1204,9 +1214,16 @@ def selfcheck():
         assert gold["model"] == "claude-opus-4-5", gold
         assert gold["provider"] == "anthropic", gold
         assert gold["childTokens"]["input"] == 0, gold["childTokens"]
+
+        labelled = error_class.selfcheck(fixtures / "error-classes" / "labelled.jsonl")
+        blamed = sweep(error_class.session(labelled, Path(tmp) / "ec-in"), Path(tmp) / "ec-out")
+        want = dict(sorted(collections.Counter(r["label"] for r in labelled).items()))
+        assert blamed["mu"][0]["errorClasses"] == want, blamed["mu"][0]["errorClasses"]
+        assert {r["errorClass"] for r in blamed["board"]} == set(want), blamed["board"]
     print(
         "ok   selfcheck: redaction, determinism, corrupt tolerance, lifecycle,"
-        " dedupe, orientation, rust mirrors, model slice, childTokens, v4 golden, signals"
+        " dedupe, orientation, rust mirrors, model slice, childTokens, v4 golden, signals,"
+        " error classes"
     )
     return 0
 
