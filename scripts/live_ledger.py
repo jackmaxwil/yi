@@ -96,14 +96,14 @@ def ratchets(record, baseline):
     out, run = {}, measures(record)
     base, ttft = baseline.get("ttftP50Ms"), run["ttftP50Ms"]
     if base and ttft is not None and ttft > max(base * (1 + RATCHETS["ttftP50Ms"]), baseline.get("ttftP50MsWorst") or 0):
-        out["ttft"] = f"ratchet: ttft p50 {ttft} ms is +{(ttft / base - 1):.0%} over the baseline {base:.0f} ms"
+        out["ttftP50Ms"] = f"ratchet: ttft p50 {ttft} ms is +{(ttft / base - 1):.0%} over the baseline {base:.0f} ms"
     base, rate = baseline.get("warmHitRate"), run["warmHitRate"]
     worst = baseline.get("warmHitRateWorst")
     if base is not None and rate is not None and rate < min(base - RATCHETS["warmHitDrop"], 1 if worst is None else worst):
-        out["warm"] = f"ratchet: warm-turn cache hit {rate:.0%} is {(base - rate):.0%} points under the baseline {base:.0%}"
+        out["warmHitRate"] = f"ratchet: warm-turn cache hit {rate:.0%} is {(base - rate):.0%} points under the baseline {base:.0%}"
     base, per = baseline.get("costPerScenario"), run["costPerScenario"]
     if base and per is not None and per > max(base * (1 + RATCHETS["costPerScenario"]), baseline.get("costPerScenarioWorst") or 0):
-        out["cost"] = f"ratchet: cost per scenario ${per:.4f} is +{(per / base - 1):.0%} over the baseline ${base:.4f}"
+        out["costPerScenario"] = f"ratchet: cost per scenario ${per:.4f} is +{(per / base - 1):.0%} over the baseline ${base:.4f}"
     return out
 
 
@@ -132,10 +132,13 @@ def judge(record, baseline, again=()):
     if new and baseline.get("runs"):
         findings.append("new error class(es) absent from the last runs: " + ", ".join(new))
     if baseline.get("runs"):
-        crossed = [ratchets(run, baseline) for run in (record, *again) if not run.get("skipped")]
-        for key, finding in crossed[0].items():
-            if all(key in run for run in crossed):
-                findings.append(finding + (f" in {len(crossed)} of {len(crossed)} runs" if len(crossed) > 1 else ""))
+        # A run with no number for a ratchet abstains: a missing measure is not a run that held.
+        runs = [run for run in (record, *again) if not run.get("skipped")]
+        crossed = [(ratchets(run, baseline), measures(run)) for run in runs]
+        for key, finding in crossed[0][0].items():
+            voted = [key in found for found, measured in crossed if measured[key] is not None]
+            if all(voted):
+                findings.append(finding + (f" in {len(voted)} of {len(voted)} runs" if len(voted) > 1 else ""))
     fails = [row["task"] for row in rows if row.get("status") == "fail"]
     if fails:
         findings.append("scenario(s) failed: " + ", ".join(fails))
@@ -191,6 +194,9 @@ def selfcheck():
     thrice = judge(drift, base, [drift, drift])["findings"]
     assert sum("in 3 of 3 runs" in f for f in thrice) == 2, thrice
     assert again(base, [drift]) and not again(base, [drift, clean]) and not again(base, [drift] * RUNS)
+    blind = json.loads(json.dumps(drift)); blind["telemetry"] = {}; blind["rows"] = blind["rows"][:1]
+    mute = judge(drift, base, [blind, drift])["findings"]
+    assert sum("in 2 of 2 runs" in f for f in mute) == 2, f"a run with no number is no vote: {mute}"
     banded = judge(drift, {**base, "ttftP50MsWorst": 1200, "warmHitRateWorst": 0.0})["findings"]
     assert not any(f.startswith("ratchet:") for f in banded), "a run inside the history's worst is not news"
     novel = json.loads(json.dumps(clean)); novel["rows"][0]["classes"] = ["Invariant::lanes"]
