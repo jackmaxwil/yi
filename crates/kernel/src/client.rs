@@ -241,6 +241,8 @@ fn spawn_kernel_process(
     command
         .args(["-m", "ipykernel_launcher", "-f"])
         .arg(connection_path)
+        // Incident: every cell, Yi's own included, landed in the user's ~/.ipython history.
+        .arg("--HistoryManager.enabled=False")
         // ipykernel's parent poller exits the kernel if this pid dies
         // (covers SIGKILL of the owner).
         .env("JPY_PARENT_PID", std::process::id().to_string())
