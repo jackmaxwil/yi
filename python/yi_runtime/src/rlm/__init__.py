@@ -446,6 +446,8 @@ async def host_request(request_type: str, payload: dict[str, Any] | None = None)
         comm.close()
 
 
+# The host's per-value cap; the kernel sends one char past it so the host's clamp, the one
+# place that writes the truncation marker, fires.
 CONTEXT_VALUE_CAP = 4096
 
 
@@ -470,7 +472,7 @@ def _resolve_context(kwargs: dict[str, Any]) -> dict[str, Any]:
             text = json.dumps(namespace[key], default=repr)
         except Exception:
             text = repr(namespace[key])
-        context[key] = text[:CONTEXT_VALUE_CAP]
+        context[key] = text[: CONTEXT_VALUE_CAP + 1]
     kwargs["context"] = context
     return kwargs
 

@@ -235,6 +235,16 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ContextKeysTests(unittest.TestCase):
+    def test_an_oversized_value_reaches_the_host_long_enough_to_be_marked(self) -> None:
+        # Incident: the kernel cut at exactly the host's cap, so the host's truncation marker never
+        # fired and the child read JSON cut mid-list with nothing saying so.
+        shell = mock.Mock(user_ns={"xs": list(range(3000))})
+        with mock.patch.object(rlm, "get_ipython", lambda: shell):
+            resolved = rlm._resolve_context({"context_keys": ["xs"]})
+        self.assertGreater(len(resolved["context"]["xs"]), rlm.CONTEXT_VALUE_CAP)
+
+
 class BlackboardTests(unittest.IsolatedAsyncioTestCase):
     """D164: put/get/ls over RLM_FAMILY_DIR, and a kernel:// object fetch."""
 
