@@ -363,8 +363,6 @@ impl Delegate for Stub {
             Err(_) => Err("poisoned".to_owned()),
         }
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 /// `expected` mirrors what the engine may legally have changed: touched moves
@@ -479,11 +477,28 @@ impl Case {
         Ok(total)
     }
 
+    fn engine_starts(&self) -> Result<HashMap<String, u64>, TestCaseError> {
+        let mut starts = HashMap::new();
+        for root in self.store.roots().map_err(fail)? {
+            for record in self.store.journal(&root).read().map_err(fail)?.records {
+                if record.record.actor == "engine"
+                    && record.record.op == "start"
+                    && !record.record.extra.contains_key("refusal")
+                {
+                    let count = starts.entry(record.record.plan.to_string()).or_insert(0);
+                    *count = u64::saturating_add(*count, 1);
+                }
+            }
+        }
+        Ok(starts)
+    }
+
     fn apply(
         &mut self,
         request: OpRequest,
         bump: Bump,
     ) -> Result<Result<Outcome, PlanOpError>, TestCaseError> {
+        let before = self.engine_starts()?;
         let result = self.engine.apply(request);
         if let Ok(outcome) = &result {
             self.check_outcome(outcome, !matches!(bump, Bump::ReadOnly))?;
@@ -505,6 +520,15 @@ impl Case {
             }
             if let Some(sub) = &outcome.subplan {
                 self.expected.insert(sub.to_string(), (1, 1));
+            }
+        }
+        // The engine's own starts after an op are applied ops too, one touch on their plan.
+        for (id, count) in self.engine_starts()? {
+            let started = count.saturating_sub(before.get(&id).copied().unwrap_or(0));
+            if started > 0
+                && let Some(entry) = self.expected.get_mut(&id)
+            {
+                entry.0 = entry.0.saturating_add(started);
             }
         }
         Ok(result)
@@ -736,7 +760,17 @@ fn act_start(case: &mut Case, target: Target, slot: usize) -> Result<(), TestCas
         // never started, so the fuzzer holds it too.
         return Ok(());
     }
-    let _refused = case.apply(owner(plan, Op::Start { label: lbl }), Bump::Touch)?;
+    // An owner's start on a delegated todo only reads its standing: the engine starts it.
+    let delegated = case.read_target(&plan)?.is_some_and(|file| {
+        file.todo(&lbl)
+            .is_some_and(|todo| todo.delegation.is_some())
+    });
+    let bump = if delegated {
+        Bump::ReadOnly
+    } else {
+        Bump::Touch
+    };
+    let _refused = case.apply(owner(plan, Op::Start { label: lbl }), bump)?;
     Ok(())
 }
 
@@ -940,10 +974,18 @@ fn act_import(case: &mut Case, serial: u8, slots: &[usize]) -> Result<(), TestCa
     std::fs::write(case.dir.join("ws").join(format!("{id}.md")), &document).map_err(fail)?;
     let source: Url = format!("local://{id}.md").parse().map_err(fail)?;
     let existed = case.store.list().map_err(fail)?.contains(&id);
+    let open = case.store.roots().map_err(fail)?.into_iter().any(|root| {
+        root != id
+            && case
+                .store
+                .read(&root)
+                .is_ok_and(|plan| plan.state == PlanState::Active)
+    });
     let result = case.apply(owner(None, Op::Import { source }), Bump::ReadOnly)?;
     match result {
         Ok(_) => {
             proptest::prop_assert!(!existed, "the live root {id} was imported over");
+            proptest::prop_assert!(!open, "{id} was imported active beside an open plan");
             let digest = Digest::of(document.as_bytes());
             let named = format!("artifact:{digest}");
             let genesis = case
@@ -967,9 +1009,11 @@ fn act_import(case: &mut Case, serial: u8, slots: &[usize]) -> Result<(), TestCa
             proptest::prop_assert_eq!(blob, document.into_bytes(), "the artifact is the original");
         }
         Err(error) => {
+            let said = error.to_string();
             proptest::prop_assert!(
-                existed && error.to_string().contains("already format 2"),
-                "import of {id} (existed: {existed}) refused: {error}"
+                existed && said.contains("already format 2")
+                    || open && said.contains("already exists and is open"),
+                "import of {id} (existed: {existed}, open: {open}) refused: {error}"
             );
         }
     }

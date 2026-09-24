@@ -112,7 +112,9 @@ def run_command(model_name, instruction, resume=False, deadline_sec=None):
 
     E6: no `grep` stage -- under harbor's `set -o pipefail` a fully filtered
     stream exits 1 and scores the trial 0. E7: the instruction is one shell
-    quoted argv. E8: `--yolo`, because a permission prompt is a hang.
+    quoted argv. E8: `--yolo`, because a permission prompt is a hang. `--here`:
+    the grader reads the task's checkout, and an ask in a repository takes a
+    lane outside it (D119).
     """
     if not model_name or "/" not in model_name:
         raise ValueError("model name must be 'provider/model'")
@@ -129,7 +131,7 @@ def run_command(model_name, instruction, resume=False, deadline_sec=None):
     # mid-event at 172,032 bytes; `stdbuf -oL`, since busybox grep has no
     # `--line-buffered`.
     return (
-        "yi ask --json --yolo "
+        "yi ask --json --yolo --here "
         f"--model {shlex.quote(model_name)} "
         f"--session-dir {REMOTE_SESSION_DIR} "
         f"{deadline_flag}{resume_flag}{shlex.quote(instruction)} "

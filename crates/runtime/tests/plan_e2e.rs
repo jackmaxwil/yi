@@ -325,8 +325,6 @@ impl Delegate for NoChildren {
     ) -> Result<Option<yi_types::url::Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 async fn plan_op(
@@ -362,8 +360,6 @@ impl Delegate for Named {
     ) -> Result<Option<yi_types::url::Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 fn delegated(label: &str) -> Result<yi_runtime::plan::ops::TodoSpec, Box<dyn Error>> {
@@ -413,11 +409,6 @@ async fn a_child_may_submit_only_for_its_own_attempt() -> TestResult {
         goal: GoalText::new("ship the seam end to end")?,
         todos: vec![delegated("cut")?, delegated("ship")?],
     }))?;
-    for label in ["cut", "ship"] {
-        engine.apply(owner(yi_runtime::plan::ops::Op::Start {
-            label: TodoLabel::new(label)?,
-        }))?;
-    }
     let mut registry = HostRegistry::default();
     yi_runtime::plan::request::register(
         Arc::clone(&engine),
@@ -493,11 +484,6 @@ async fn a_child_stores_the_product_of_the_attempt_it_submits() -> TestResult {
         goal: GoalText::new("ship the seam end to end")?,
         todos: vec![delegated("cut")?, delegated("ship")?],
     }))?;
-    for label in ["cut", "ship"] {
-        engine.apply(owner(yi_runtime::plan::ops::Op::Start {
-            label: TodoLabel::new(label)?,
-        }))?;
-    }
     let id = PlanId::slug("ship the seam end to end")?;
     let mut registry = HostRegistry::default();
     yi_runtime::plan::request::register(
@@ -525,25 +511,36 @@ async fn a_child_stores_the_product_of_the_attempt_it_submits() -> TestResult {
         "the child's product is not in the plan store"
     );
     // Every other blob write a non-owner can try: another todo's attempt, a batch beside the
-    // product, and an op that is not a submit at all.
-    for (request, op, args, blobs) in [
+    // product, an op past a view, which authority refuses before any parse, and a view.
+    let stores = "only the plan owner stores artifacts";
+    for (request, op, args, blobs, said) in [
         (
             "p2",
             "submit",
             submitting("ship"),
             serde_json::json!([blob]),
+            stores,
         ),
         (
             "p3",
             "submit",
             submitting("cut"),
             serde_json::json!([blob, blob]),
+            stores,
         ),
         (
             "p4",
             "done",
             serde_json::json!({"label": "cut", "output": url}),
             serde_json::json!([blob]),
+            "only the plan owner may done; your plan tool only views",
+        ),
+        (
+            "p5",
+            "view",
+            serde_json::json!({}),
+            serde_json::json!([blob]),
+            stores,
         ),
     ] {
         let refused = plan_op(&registry, send(request, op, args, blobs)).await?;
@@ -552,7 +549,7 @@ async fn a_child_stores_the_product_of_the_attempt_it_submits() -> TestResult {
         assert!(
             refused["refusal"]["message"]
                 .as_str()
-                .is_some_and(|text| text.starts_with("only the plan owner stores artifacts")),
+                .is_some_and(|text| text.starts_with(said)),
             "{refused:?}"
         );
     }

@@ -169,6 +169,7 @@ pub fn suffix(item: &TodoItem) -> String {
         }
         (TodoStateName::Blocked, Some(on), None) => format!(" (blocked on {})", on.as_str()),
         (TodoStateName::Abandoned, _, Some(note)) => format!(" (dropped: {note})"),
+        (TodoStateName::Failed, _, Some(note)) => format!(" (failed: {note})"),
         _ => String::new(),
     }
 }
@@ -176,7 +177,12 @@ pub fn suffix(item: &TodoItem) -> String {
 pub fn header(list: &TodoList) -> String {
     let progress = list.progress();
     let mut line = format!("Todos {}/{}", progress.done, progress.total);
-    if let Some(running) = list.running() {
+    let planned = super::mirror::plan_of(list).and_then(|_| {
+        list.items().find(|item| {
+            item.state == TodoStateName::Running && item.extra.contains_key(super::mirror::PLAN_KEY)
+        })
+    });
+    if let Some(running) = planned.or_else(|| list.running()) {
         let cut = if running.is_cut() { "…" } else { "" };
         line.push_str(&format!(" · running: {}{cut}", running.label));
     }
@@ -213,6 +219,9 @@ fn moves(item: &TodoItem) -> Option<String> {
 }
 
 pub fn next_lines(list: &TodoList) -> Vec<String> {
+    if super::mirror::plan_of(list).is_some() {
+        return Vec::new();
+    }
     let mut out: Vec<String> = list.running().and_then(moves).into_iter().collect();
     let pending = list
         .items()

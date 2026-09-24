@@ -1012,6 +1012,11 @@ fn a_label_the_renderer_cut_names_its_item_back() -> TestResult {
         json!({"op": "start", "label": "billing: the ledger"}),
     );
     assert!(!is_error, "backticks dropped still names it: {text}");
+    // Three confirmation calls sent the id and the request's whole line the label was cut from.
+    let (is_error, text) = call(&tool, json!({"op": "init", "items": [long]}));
+    assert!(!is_error, "{text}");
+    let (is_error, text) = call(&tool, json!({"op": "start", "label": format!("t1 {long}")}));
+    assert!(!is_error, "the id and the uncut line name it: {text}");
     Ok(())
 }
 

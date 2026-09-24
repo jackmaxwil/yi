@@ -116,6 +116,12 @@ fn sha_of(text: &str) -> Result<Sha, LaneError> {
     })
 }
 
+const UNTRACKED_NOISE: [&str; 3] = [
+    ":(exclude,glob)**/__pycache__/**",
+    ":(exclude,glob)**/*.pyc",
+    ":(exclude,glob)**/.pytest_cache/**",
+];
+
 /// Incident: uncommitted child work merged as nothing, so it is committed first. Free of the
 /// `Lane`, so a host reads it with the path cloned and no lock held across the git calls.
 pub fn candidate_of(
@@ -129,9 +135,16 @@ pub fn candidate_of(
     quiet(quiescence)?;
     let status = git_by(path, &["status", "--porcelain"], deadline)?;
     if !status.trim().is_empty() {
-        git_by(path, &["add", "-A"], deadline)?;
+        git_by(
+            path,
+            &[&["add", "-A", "--", "."][..], &UNTRACKED_NOISE].concat(),
+            deadline,
+        )?;
+        let staged = git_by(path, &["diff", "--cached", "--name-only"], deadline)?;
         let message = format!("session {session} work");
-        git_by(path, &["commit", "-q", "-m", &message], deadline)?;
+        if !staged.trim().is_empty() {
+            git_by(path, &["commit", "-q", "-m", &message], deadline)?;
+        }
     }
     let commit = sha_of(&git_by(path, &["rev-parse", "HEAD"], deadline)?)?;
     Ok(Candidate {

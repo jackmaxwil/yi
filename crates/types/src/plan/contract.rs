@@ -278,6 +278,9 @@ pub struct Contract {
     pub threshold: Permille,
     #[serde(default = "Permille::full")]
     pub min_coverage: Permille,
+    /// Globs relative to the checkout; a write to a covered path previews the `cmd` items.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covers: Vec<String>,
 }
 
 impl Contract {

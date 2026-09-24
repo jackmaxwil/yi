@@ -347,3 +347,44 @@ fn a_format_one_document_reads_only_through_the_legacy_parser() -> TestResult {
     assert!(Plan::parse_legacy(&json.replace("\"format\":1", "\"format\":2")).is_err());
     Ok(())
 }
+
+// Dies with the `try_from` on `TodoSpec`: parse the fields straight and a worktree todo with
+// no contract is declarable on every op, then never submitted and never completed.
+#[test]
+fn an_uncontracted_worktree_spec_is_refused_at_parse_and_a_stored_todo_is_not() -> TestResult {
+    use yi_types::plan::op::{Op, TodoSpec};
+    let delegation = serde_json::json!({
+        "spec": {"role": "writer", "isolation": "worktree"},
+        "accept": {"stated": "the contract decides"}
+    });
+    let bare = serde_json::json!({"label": "build it apart", "delegation": delegation});
+    let refused = serde_json::from_value::<TodoSpec>(bare.clone());
+    let text = refused
+        .as_ref()
+        .err()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    assert!(
+        text.contains("todo build it apart: a worktree delegation needs a `contract`"),
+        "{refused:?}"
+    );
+    let tagged = serde_json::json!({"op": "append", "todos": [bare.clone()]});
+    assert!(serde_json::from_value::<Op>(tagged).is_err());
+    let mut contracted = bare.clone();
+    contracted["contract"] = serde_json::json!({
+        "class": "writer",
+        "items": [{"id": "green", "critical": true, "weight": 100, "decider": {"cmd": {
+            "checker": {"digest": "sha256:c827887362974b2cb2878a9d3d3cf125df0a17b52eb4e92fefa70a11fe8b4b48", "media_type": "text/plain", "length": 4},
+            "timeout_ms": 1000
+        }}}],
+        "threshold": 1000,
+        "min_coverage": 1000
+    });
+    let spec = serde_json::from_value::<TodoSpec>(contracted);
+    assert!(spec.is_ok(), "{spec:?}");
+    // A stored todo is history: the same shape with a state reads as it was written.
+    let mut stored = bare;
+    stored["state"] = serde_json::json!("pending");
+    assert!(serde_json::from_value::<Todo>(stored).is_ok());
+    Ok(())
+}

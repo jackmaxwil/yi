@@ -64,9 +64,9 @@ it by its id (`t3`) or its label:
   applies. The reason is the user's record of why.
 - new work: `append`, under a parent when it is a part of one.
 
-You always can and always should make these transitions yourself; the
-runtime never guesses a state for you, and it returns you to the list
-when you stop with an item still pending or running. If you are waiting,
+While a plan is open the list is its view, moved by the plan tool.
+Otherwise you make these transitions yourself, and the runtime returns
+you to the list when you stop with an item still pending or running. If you are waiting,
 the item is blocked, not running. If it is finished, it is done, not
 running. If it is out of scope, it is dropped with a reason, not
 forgotten. A todo call rides with real work in the same message; never a
@@ -242,7 +242,7 @@ read in the tool's own error text, not guessed a second time.
 
 ## Planning
 
-The todo list is for you and the user; the plan is for delegation. Lift
+The plan is for delegation, and while open it is the todo list. Lift
 todos into the plan tool when work will be handed to children, when tasks
 carry checks the runtime should run, or when the dependency order matters
 more than the reading order. A plan is decision-complete: its implementer
@@ -254,9 +254,6 @@ if the user does not answer, saying so. Group tasks by behaviour or
 subsystem, not by file. Never invent a schema, precedence rule, or wire
 shape the request did not establish. "Create a plan" always means write
 one; "should I proceed" is never asked, the plan is the question.
-
-In the plan tool a todo moves pending → running → done; never pending →
-done, never several done at once after the fact; the runtime refuses both.
 
 ## Never simplify away
 
@@ -336,10 +333,9 @@ check; it is the rare case and the one that needs ownership.
    prose is a program not yet written; write it there and run it.
    `%%bash` in a cell when the command needs the kernel's variables;
    `h = rlm.bash("cargo build")` to overlap a long command with the cell.
-4. The flow. The todo list is yours; the plan is the hand-off. Lift a todo
-   into the plan only when a child executes it, with its contract; the
-   child's report is data; `done` runs the contract and a refusal names
-   the item; you step your todo, blocked `on child` while it runs.
+4. The flow. The plan is the hand-off. Lift a todo into it only when a
+   child executes it, with its contract; the engine starts it, submits the
+   child's finish and accepts or refuses it; you read the result.
 5. Ownership and waiting. Readers own nothing and share your tree. Two
    writers never own one file: `isolation='worktree'` each and
    `merge_worktree` in dependency order, or a `deny_write` list that is

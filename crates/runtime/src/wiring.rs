@@ -319,7 +319,7 @@ fn wire_plan_request(
     registry: &mut crate::kernel::HostRegistry,
     log: Arc<crate::fetch::FetchLog>,
     resolver: Arc<crate::fetch::Resolver>,
-) -> Option<(Arc<crate::plan::ops::PlanEngine>, crate::plan::ops::Actor)> {
+) -> Option<PlanWiring> {
     // Invariant: a child's engine stands on its parent's host and checkout, since its `submit`
     // settles the lane the parent holds and integrates onto the parent's generation (6.6).
     let (actor, host, cwd) = if wiring.depth == 0 {
@@ -352,7 +352,22 @@ fn wire_plan_request(
         deliver,
         log,
     ));
-    let ops = Arc::new(crate::plan::ledger::SessionOpSink(session.store_handle()));
+    let todo_actor = wiring
+        .parent_link
+        .as_ref()
+        .map_or_else(|| "main".to_owned(), |link| link.child_name.clone());
+    let todos = crate::todo::TodoStore::new(session.store_handle(), todo_actor);
+    let mut ops: Arc<dyn crate::plan::ops::OpSink> =
+        Arc::new(crate::plan::ledger::SessionOpSink(session.store_handle()));
+    if wiring.depth == 0 {
+        todos.set_resync(crate::todo::mirror::Mirror::resync(store.clone()));
+        todos.resync();
+        ops = Arc::new(crate::todo::mirror::Mirror {
+            inner: ops,
+            todos: Arc::clone(&todos),
+            store: store.clone(),
+        });
+    }
     let liveness: Arc<dyn crate::plan::recovery::Liveness> = delegate.clone();
     let mut engine = crate::plan::ops::PlanEngine::new(store, delegate)
         .with_output_resolve(resolver)
@@ -371,19 +386,28 @@ fn wire_plan_request(
     }
     engine = engine.with_verifier(verifier);
     // The staging and verification checkouts come from the lane pool, split with the host's
-    // workers over one object (sections 6.6 and 7.6); no repository, no worktree children.
-    if let Ok(pool) = crate::lane::Pool::open(&wiring.home, &cwd, wiring.lane_slots) {
-        engine = engine.with_lanes(pool).with_capacity(host.capacity());
-    }
+    // workers over one object (sections 6.6 and 7.6), opened at the first checkout needed.
+    engine = engine
+        .with_lane_home(wiring.home.clone(), wiring.lane_slots)
+        .with_capacity(host.capacity());
     // The verification snapshot is the shadow gitdir tree the turn checkpoints capture (plan
     // section 6.3); without git the engine hashes the workspace itself.
     if let Some(snapshotter) = crate::plan::snapshot::shadow_tree(&wiring.home, &cwd, plans_dir) {
         engine = engine.with_snapshotter(snapshotter);
     }
     let engine = Arc::new(engine);
+    if wiring.depth == 0 {
+        todos.set_carry(crate::todo::mirror::carry(Arc::downgrade(&engine)));
+    }
     crate::plan::request::register(Arc::clone(&engine), actor.clone(), registry);
-    Some((engine, actor))
+    Some((engine, actor, todos))
 }
+
+type PlanWiring = (
+    Arc<crate::plan::ops::PlanEngine>,
+    crate::plan::ops::Actor,
+    Arc<crate::todo::TodoStore>,
+);
 
 fn wire_plan_engine(
     session: &AgentSession,
@@ -391,9 +415,9 @@ fn wire_plan_engine(
     plans_dir: &Path,
     host: &Arc<SubagentHost>,
     tools: &mut Vec<Arc<dyn yi_tools::Tool>>,
-    plan: Option<(Arc<crate::plan::ops::PlanEngine>, crate::plan::ops::Actor)>,
+    plan: Option<PlanWiring>,
 ) {
-    let Some((engine, actor)) = plan else {
+    let Some((engine, actor, todos)) = plan else {
         return;
     };
     let probe_deliver: crate::goal::DeliverFn = {
@@ -407,16 +431,15 @@ fn wire_plan_engine(
         Arc::clone(&engine),
         actor,
     )));
-    let todo_actor = wiring
-        .parent_link
-        .as_ref()
-        .map_or_else(|| "main".to_owned(), |link| link.child_name.clone());
-    let todos = crate::todo::TodoStore::new(session.store_handle(), todo_actor);
     tools.push(Arc::new(crate::todo::tool::TodoTool::new(Arc::clone(
         &todos,
     ))));
     session.set_todos(Arc::clone(&todos));
     let inner = (wiring.depth == 0).then(|| {
+        crate::plan::finish::install(host, &engine, {
+            let hook = session.heartbeat_hook();
+            Arc::new(move |message, mode| hook(message, mode))
+        });
         let children = Arc::clone(host);
         let leased = Arc::clone(host);
         let ladder = Arc::new(
@@ -428,7 +451,15 @@ fn wire_plan_engine(
                 .with_leases(Arc::new(move || {
                     let host = Arc::clone(&leased);
                     tokio::spawn(async move { host.expire().await });
-                })),
+                }))
+                .with_owned({
+                    let store = session.store_handle();
+                    Arc::new(move || {
+                        store()
+                            .map(|session| crate::plan::ledger::owned_roots(&session))
+                            .unwrap_or_default()
+                    })
+                }),
         );
         // A grace rides the loop's own due-time set, so an earlier one interrupts its sleep.
         let timer = Arc::clone(&ladder);
@@ -457,13 +488,7 @@ fn wire_plan_engine(
         todos,
         crate::todo::coupling::Options {
             eager: crate::todo::coupling::Eager::Prelude,
-            children_running: Arc::new(move || {
-                children
-                    .children
-                    .lock()
-                    .map(|children| children.values().any(|child| child.exit.is_none()))
-                    .unwrap_or(false)
-            }),
+            children_running: Arc::new(move || children.busy()),
             inner,
         },
     );
@@ -611,7 +636,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         &host,
         &mut registry,
         Arc::clone(&fetch_log),
-        resolver,
+        Arc::clone(&resolver),
     );
     let restore_notice = session.notice_hook();
     let service = Arc::new(crate::kernel::KernelService::new(
@@ -643,6 +668,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         &service,
     );
     let mut tools = (wiring.tools)();
+    crate::fetch::route_urls(&mut tools, &resolver);
     tools.push(crate::kernel::ipython_tool(Arc::clone(&service)));
     crate::auto_review::wire(session, &wiring, &mut tools);
     let fetch_for_rules = Arc::clone(&fetch_log);

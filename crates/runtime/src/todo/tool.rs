@@ -10,7 +10,7 @@ use super::{Op, Target, TodoError, TodoStore, text};
 
 pub const NAME: &str = "todo";
 
-pub const DESCRIPTION: &str = "Your task list; the user sees every change live. Create it before multi-step work (init with phases, or set with a checklist: `## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked, two spaces nest one level). Every item is in one state and one op moves it: start (pending→running, one at a time), done with evidence (running→done, only after its check passed), block on user|external|child with a note saying what would unblock it, unblock, drop with a reason, append (optionally under a parent), rm, view. Labels are verbatim and unique; if you lost the text, view. A todo call rides with real work in the same message. Every result ends with next: lines you can copy.";
+pub const DESCRIPTION: &str = "Your task list; the user sees every change live. Create it before multi-step work (init with phases, or set with a checklist: `## Phase`, `- [ ] label`, `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked, two spaces nest one level). While a plan is open the plan is the list: its todos move by the plan tool, and these ops move only your own items. Every item is in one state and one op moves it: start (pending→running, one at a time), done with evidence (running→done, only after its check passed), block on user|external|child with a note on what unblocks it, unblock, drop with a reason, append (optionally under a parent), rm, view. Labels are verbatim and unique. A todo call rides with real work in the same message. Every result ends with next: lines you can copy.";
 
 const OPS: [&str; 10] = [
     "set", "init", "append", "start", "done", "drop", "block", "unblock", "rm", "view",
@@ -20,7 +20,7 @@ pub fn schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "op": {"type": "string", "enum": OPS, "description": "set/init replace the list; append adds; start/done/drop/block/unblock move one item (done/drop/rm also take a phase, or nothing for all); rm removes; view echoes"},
+            "op": {"type": "string", "enum": OPS, "description": "done/drop/rm also take a phase, or nothing for all"},
             "list": {"type": "string", "description": "set: the checklist"},
             "phases": {"type": "array", "items": {"type": "object"}, "description": "init: [{name, items: [label]}]"},
             "items": {"type": "array", "items": {"type": "string"}, "description": "init (flat, one phase) or append: labels to add"},
@@ -67,7 +67,6 @@ pub enum ArgError {
     },
 }
 
-/// The call a refused argument was reaching for, spelled out so the retry lands.
 fn example(op: &str) -> &'static str {
     match op {
         "set" => r###"{"op": "set", "list": "## Phase\n- [ ] first task\n- [ ] second task"}"###,
@@ -333,6 +332,8 @@ pub enum TodoToolError {
     Arg(#[from] ArgError),
     #[error(transparent)]
     Todo(#[from] TodoError),
+    #[error("{0}")]
+    Plan(String),
 }
 
 pub struct TodoTool {
@@ -351,6 +352,13 @@ impl TodoTool {
         } else {
             format!("(op inferred: {})\n", op.name())
         };
+        if let Some(carried) = self.store.carry(&op) {
+            let text = carried.map_err(TodoToolError::Plan)?;
+            return Ok(format!(
+                "{inferred}(the plan tool's {} on the plan's list)\n{text}",
+                op.name()
+            ));
+        }
         let expected = args.get("touched").and_then(Value::as_u64);
         let whole = matches!(op, Op::Set { .. } | Op::Init { .. });
         let applied = self.store.apply(op, expected)?;

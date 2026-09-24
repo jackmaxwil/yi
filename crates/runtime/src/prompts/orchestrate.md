@@ -87,8 +87,8 @@ message it again after it reports.
     plan = await Plan.create("port foo and bar to the new API")
     for name in ("foo", "bar"):
         brief = f"Port crates/{name} to the new API. Scope: crates/{name}/** only. Read kernel://main/api_notes."
-        await plan.todo(key=name, delegate=Writer(deny_write=["docs/"], note=brief),
-                        accept=contract(cmd(f"cargo test -p {name}", critical=True)))
+        await plan.todo(key=name, delegate=Writer(accept=contract(cmd(f"cargo test -p {name}", critical=True)),
+                                                  deny_write=["docs/"], note=brief))
     run = await plan.run(shape=fork_join, budget="8m")
     print(run.outcome, run.refusals)
 

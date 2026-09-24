@@ -82,6 +82,7 @@ pub struct TurnCoupling {
     pub on_prompt: Arc<PromptChoiceFn>,
     pub on_turn: Arc<TurnObserveFn>,
     pub intercept_stop: Arc<InterceptStopFn>,
+    pub waiting: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 /// The start hook captures the tree the turn is about to change, the end hook
@@ -534,6 +535,7 @@ impl AgentSession {
                     )
                     .with_auto_background(auto_background)
                     .with_rules(self.rules_engine())
+                    .with_check(crate::plan::covers::write_check(self.plan_service()))
                     .with_wall(self.wall())
                     .with_extensions(Some(self.ext_hook())),
                 ) as Arc<dyn yi_loop::AgentTool>
@@ -776,8 +778,7 @@ impl AgentSession {
         self.prompt_message(user_message(text))
     }
 
-    /// Starts an idle session's turn without re-wrapping the message as plain
-    /// user text.
+    /// Starts an idle session's turn without re-wrapping the message as plain user text.
     pub fn prompt_message(&self, prompt: AgentMessage) -> Result<(), SessionError> {
         self.prompt_requested(prompt, None)
     }
@@ -1072,6 +1073,7 @@ fn wire_queues_and_coupling(config: &mut LoopConfig, shared: &Arc<Shared>, promp
         }));
         let intercept = Arc::clone(&coupling.intercept_stop);
         config.intercept_stop = Some(Box::new(move |snapshot| intercept(snapshot)));
+        config.waiting = coupling.waiting;
     }
 }
 

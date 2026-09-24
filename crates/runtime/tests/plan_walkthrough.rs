@@ -78,8 +78,6 @@ impl Delegate for Stub {
             Err(_) => Err("poisoned".to_owned()),
         }
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 fn object<'a>(value: &'a Value, what: &str) -> Fallible<&'a Map<String, Value>> {

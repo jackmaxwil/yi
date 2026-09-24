@@ -10,6 +10,7 @@ use yi_runtime::plan::ops::{Actor, Delegate, PlanEngine};
 use yi_runtime::plan::store::PlanStore;
 use yi_runtime::{HostRegistry, KernelService, KernelServiceOptions};
 use yi_tools::{CancelFlag, KernelBridge};
+use yi_types::subagent::ChildExit;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -129,8 +130,6 @@ impl Delegate for NoChildren {
     ) -> Result<Option<yi_types::url::Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[yi_types::plan::doc::TodoLabel], _held: usize) {}
 }
 
 fn service() -> Arc<KernelService> {
@@ -297,8 +296,6 @@ impl Delegate for Kids {
     ) -> Result<Option<yi_types::url::Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[yi_types::plan::doc::TodoLabel], _held: usize) {}
 }
 
 impl yi_runtime::plan::recovery::Liveness for Kids {
@@ -342,11 +339,21 @@ impl PlanRig {
         let mut registry = HostRegistry::default();
         yi_runtime::plan::request::register(Arc::clone(&self.engine), Actor::Owner, &mut registry);
         let kids = Arc::clone(&self.kids);
+        let engine = Arc::clone(&self.engine);
         registry.register("rlm.wait", move |_payload| {
             let kids = Arc::clone(&kids);
+            let engine = Arc::clone(&engine);
             Box::pin(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 let finished = kids.finished.load(std::sync::atomic::Ordering::SeqCst);
+                // The host's finish hook, at the wait that reports the child's end.
+                if finished {
+                    tokio::task::spawn_blocking(move || {
+                        engine.finish_child("kid", ChildExit::Completed, None, Some("{}".to_owned()))
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?;
+                }
                 let state = if finished { "finished" } else { "running" };
                 let reply = serde_json::json!({"cursor": 1, "changed": [], "states": {"kid": state}, "notes": {}});
                 reply.as_object().cloned().ok_or_else(|| "reply".to_owned())
@@ -368,7 +375,7 @@ async def declare(plan):
     freeze = await plan.todo(key="freeze", label="freeze the CLI surface", run=freeze_surface,
         accept=contract(schema({"type": "object", "required": ["flags"]}, critical=True)))
     await plan.todo(key="tests", label="write the test suite", after=[freeze],
-        delegate=Writer(isolation=None), accept=contract(cmd("true", critical=True)))
+        delegate=Writer(accept=contract(cmd("true", critical=True)), isolation=None))
 "#;
 
 impl PlanRig {
@@ -436,8 +443,9 @@ async fn an_inline_todo_completes_with_a_host_minted_artifact() -> TestResult {
 }
 
 /// The exit journey: the section 8.2 program on a real kernel, the kernel killed mid-plan, and
-/// a second kernel resuming. Dies with the control: replay the recorded cell, restart the
-/// running todo, or re-run the done one, and the mark file or the spawn count says so.
+/// a second kernel resuming and declaring the step after it. Dies with the control: replay the
+/// recorded cell, restart the running todo, or re-run the done one, and the mark file or the
+/// spawn count says so; record the new cell after its append, or not at all, and the journal does.
 #[tokio::test]
 #[ignore = "tier-2 journey: `just journeys`"]
 async fn resume_after_a_kernel_death_reuses_results_and_replays_no_cell() -> TestResult {
@@ -473,7 +481,9 @@ async fn resume_after_a_kernel_death_reuses_results_and_replays_no_cell() -> Tes
     rig.kids.alive.store(true, Ordering::SeqCst);
     rig.kids.finished.store(true, Ordering::SeqCst);
     let second = rig.kernel();
-    let tail = "plan = await Plan.resume('ship-logrotate-lite')\nawait declare(plan)\nprint('unresolved', plan.unresolved)\nr = await plan.run(budget=20)\nprint('outcome', r.outcome, await r.status())";
+    // The engine completes `tests` from its child's finish, so the owner's own op in this cell
+    // is declaring and running `package`, an inline step after it.
+    let tail = "plan = await Plan.resume('ship-logrotate-lite')\nawait declare(plan)\nprint('unresolved', plan.unresolved)\nasync def package():\n    return {'tarball': 'logrotate-lite.tgz'}\nawait plan.todo(key='package', after=['tests'], run=package, accept=contract(schema({'type': 'object', 'required': ['tarball']}, critical=True)))\nr = await plan.run(budget=20)\nprint('outcome', r.outcome, await r.status())";
     let printed = rig.run(&second, tail).await?;
     second.dispose().await;
     assert!(
@@ -494,12 +504,22 @@ async fn resume_after_a_kernel_death_reuses_results_and_replays_no_cell() -> Tes
     assert!(rig.plan()?.finished());
     let program = std::fs::read_to_string(rig.store.plan_dir(&rig.plan()?.id).join("program.py"))?;
     assert_eq!(program.matches("# --- cell ").count(), 2, "{program}");
+    let records = rig.store.journal(&rig.plan()?.id).read()?.records;
+    let last = |kind: &str| records.iter().rposition(|record| record.record.op == kind);
+    assert!(
+        last("program") < last("append"),
+        "the resumed cell is recorded before its first effect"
+    );
     Ok(())
 }
 
-/// A delegate whose children are named for their todos, with the names it spawned.
+/// A delegate whose children are named for their todos: the names it spawned, and those it
+/// holds from spawn to reap, as `SubagentHost::holds` does behind `SessionDelegate`.
 #[derive(Default)]
-struct Crew(std::sync::Mutex<Vec<String>>);
+struct Crew(
+    std::sync::Mutex<Vec<String>>,
+    std::sync::Mutex<std::collections::BTreeSet<String>>,
+);
 
 impl Delegate for Crew {
     fn spawn(
@@ -510,22 +530,33 @@ impl Delegate for Crew {
         let slug = yi_types::plan::doc::PlanId::slug(at.todo.as_str());
         let name = slug.map_err(|error| error.to_string())?.to_string();
         self.0.lock().map_err(|_| "poisoned")?.push(name.clone());
+        self.1.lock().map_err(|_| "poisoned")?.insert(name.clone());
         yi_types::plan::doc::AgentId::new(name).map_err(|error| error.to_string())
     }
 
     fn reap(
         &self,
-        _agent: &yi_types::plan::doc::AgentId,
+        agent: &yi_types::plan::doc::AgentId,
         _supplied: &[yi_types::url::Url],
     ) -> Result<Option<yi_types::url::Url>, String> {
+        self.1
+            .lock()
+            .map_err(|_| "poisoned")?
+            .remove(agent.as_str());
         Ok(None)
     }
+}
 
-    fn follow_up(&self, _dispatched: &[yi_types::plan::doc::TodoLabel], _held: usize) {}
+/// `SessionDelegate`'s liveness (`plan/dispatch.rs`): a held child is alive, finished or not.
+impl yi_runtime::plan::recovery::Liveness for Crew {
+    fn alive(&self, agent: &yi_types::plan::doc::AgentId) -> Option<bool> {
+        Some(self.1.lock().ok()?.contains(agent.as_str()))
+    }
 }
 
 /// The real engine at width one behind `plan.op`, over a `Crew` whose children all finish
-/// (a name starting `fails` never comes back) and answer what `said` gives their name.
+/// (a name starting `fails` fails) and answer what `said` gives their name, handed to the
+/// engine's finish at the wait that reports them, as the host's finish hook does.
 fn crewed(
     plans: PathBuf,
     workspace: PathBuf,
@@ -538,18 +569,36 @@ fn crewed(
             .with_plans_dir(plans.clone()),
     );
     let store = PlanStore::open(plans)?;
-    let engine = PlanEngine::new(store.clone(), crew.clone())
-        .with_cwd(workspace)
-        .with_output_resolve(resolver.clone())
-        .with_width(std::num::NonZeroUsize::MIN);
+    let engine = Arc::new(
+        PlanEngine::new(store.clone(), crew.clone())
+            .with_cwd(workspace)
+            .with_output_resolve(resolver.clone())
+            .with_liveness(crew.clone())
+            .with_width(std::num::NonZeroUsize::MIN),
+    );
     let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(Arc::new(engine), Actor::Owner, &mut registry);
+    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, &mut registry);
     let reply = |value: serde_json::Value| value.as_object().cloned().ok_or("reply".to_owned());
     registry.register("rlm.wait", move |_payload| {
         let spawned = Arc::clone(&crew);
+        let engine = Arc::clone(&engine);
         Box::pin(async move {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             let names = spawned.0.lock().map_err(|_| "poisoned")?.clone();
+            let ended = names.clone();
+            tokio::task::spawn_blocking(move || {
+                for name in ended {
+                    let (exit, error) = if name.starts_with(fails) {
+                        (ChildExit::Interrupted, Some("never came back".to_owned()))
+                    } else {
+                        (ChildExit::Completed, None)
+                    };
+                    let answer = Some(said(&name).to_string());
+                    let _told_the_owner = engine.finish_child(&name, exit, error, answer);
+                }
+            })
+            .await
+            .map_err(|error| error.to_string())?;
             let states: serde_json::Map<_, _> = names
                 .into_iter()
                 .map(|name| {
@@ -644,8 +693,8 @@ async fn both_shapes_schedule_under_the_real_admission_and_step_table() -> TestR
         .collect();
     assert_eq!(
         starts,
-        ["a", "b", "b", "c", "c"],
-        "one slot: each refused start is journaled, asked again, and never overtaken"
+        ["a", "b", "c"],
+        "one slot: each starts as the one before it is accepted, and a held one is never tried"
     );
     assert!(
         printed.contains("round 1 [('api', ['rotate(size)'])]"),
@@ -666,11 +715,11 @@ async fn both_shapes_schedule_under_the_real_admission_and_step_table() -> TestR
 /// A pod whose readers block and whose command is green, then one whose readers are clean and
 /// whose command is red, over `fixtures/plans/worktree/repo.sh`.
 const POD: &str = r#"
-from yi import Plan, Writer, cmd, review_pod
+from yi import Plan, Writer, cmd, contract, review_pod
 from yi.recipes.review_pod import declare
 for goal, check in (("review the launcher", "grep -q 'subcommands: list' rotate.sh"), ("review it again", "grep -q compress rotate.sh")):
     plan = await Plan.create(goal, request_id=goal.replace(" ", "-"))
-    await declare(plan, ["local://rotate.sh"], cmd(check, critical=True), arbiter=Writer(isolation=None))
+    await declare(plan, ["local://rotate.sh"], cmd(check, critical=True), arbiter=Writer(accept=contract(cmd(check, critical=True)), isolation=None))
     r = await plan.run(shape=review_pod, budget=20)
     print(goal, r.outcome, [(t.key, t._doc["state"]) for t in plan.todos])
     print(plan["arbiter-r2"]._doc["delegation"]["note"])

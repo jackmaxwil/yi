@@ -136,7 +136,7 @@ pub enum StopPosture {
 }
 
 pub fn stop_posture(list: &TodoList, children_running: bool) -> StopPosture {
-    if children_running {
+    if children_running || super::mirror::plan_of(list).is_some() {
         return StopPosture::Quiet;
     }
     let mut open = false;
@@ -750,9 +750,11 @@ fn prompt_hook(
         if let Ok(mut cycle) = cycle.lock() {
             cycle.prompt_claims_impossible = claims_impossible(text);
         }
+        todos.resync();
         let list = todos.list();
         let open = list.progress().open.saturating_add(list.progress().blocked) > 0;
-        if eager == Eager::Off || (!open && !eager_init(text)) {
+        let mirrored = super::mirror::plan_of(&list).is_some();
+        if eager == Eager::Off || mirrored || (!open && !eager_init(text)) {
             return inner.as_ref().and_then(|inner| inner(prompt));
         }
         let seeded = !open && seed(&todos, text);
@@ -806,6 +808,9 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
                 return;
             }
             let list = todos.list();
+            if super::mirror::plan_of(&list).is_some() {
+                return;
+            }
             let progress = list.progress();
             if progress.total > 0 && progress.open.saturating_add(progress.blocked) == 0 {
                 let quiet = quiet_turn(snapshot.message, snapshot.tool_results);
@@ -832,6 +837,7 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
         })
     };
 
+    let waiting: Arc<dyn Fn() -> bool + Send + Sync> = Arc::clone(&children_running);
     let intercept_stop: Arc<InterceptStopFn> = {
         let cycle = Arc::clone(&cycle);
         let todos = Arc::clone(&todos);
@@ -883,6 +889,7 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
         on_prompt,
         on_turn,
         intercept_stop,
+        waiting: Some(waiting),
     }
 }
 

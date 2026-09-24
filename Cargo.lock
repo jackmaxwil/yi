@@ -2303,6 +2303,7 @@ dependencies = [
 name = "yi-runtime"
 version = "0.2.0"
 dependencies = [
+ "globset",
  "proptest",
  "serde_json",
  "sha2",

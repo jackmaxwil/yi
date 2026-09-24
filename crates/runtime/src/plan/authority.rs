@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use yi_session::{SharedSession, lock_session};
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::plan::canonical::canonical_digest;
-use yi_types::plan::doc::{AgentId, Delegation, PlanId, TodoAddr, TodoLabel, TouchCount};
+use yi_types::plan::doc::{AgentId, Delegation, PlanId, TodoAddr, TouchCount};
 use yi_types::plan::ledger::RequestId;
 use yi_types::url::Url;
 
@@ -229,7 +229,9 @@ impl Delegate for Unhosted {
         Ok(None)
     }
 
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
+    fn hosts(&self) -> bool {
+        false
+    }
 }
 
 /// `<op> [<plan>] [<json args>]`, the one line the CLI reads; `fuse reset` spells `fuse_reset`.

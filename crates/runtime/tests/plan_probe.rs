@@ -28,7 +28,8 @@ use yi_runtime::plan::probe::{FIRST_DELAY, MAX_DELAY, ProbeLadder, Rung, Verdict
 use yi_runtime::plan::store::PlanStore;
 use yi_types::message::AgentMessage;
 use yi_types::plan::doc::{
-    AgentId, BlockedOn, Delegation, GoalText, PlanId, ProbeCommand, TodoAddr, TodoLabel, TodoState,
+    AgentId, BlockedOn, Check, Delegation, GoalText, PlanId, ProbeCommand, SpawnSpec, TodoAddr,
+    TodoLabel, TodoState,
 };
 use yi_types::url::Url;
 
@@ -44,8 +45,6 @@ impl Delegate for Nobody {
     fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 struct Rig {
@@ -256,6 +255,100 @@ fn state_of(rig: &Rig, label: &str) -> Result<TodoState, Box<dyn Error>> {
         .ok_or("todo missing")?
         .state
         .clone())
+}
+
+/// Refuses its first spawn, as a host whose roster is full, and takes every later one.
+struct FullOnce(AtomicU32);
+
+impl Delegate for FullOnce {
+    fn spawn(&self, _at: &TodoAddr, _delegation: &Delegation) -> Result<AgentId, String> {
+        if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err("RLM child limit reached".to_owned());
+        }
+        AgentId::new("child-1").map_err(|error| error.to_string())
+    }
+
+    fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
+        Ok(None)
+    }
+}
+
+/// Dies with the tick walking every root in the directory (probe.rs): a sibling session's
+/// tick starts this session's todo under a host that will never report it.
+#[test]
+fn the_backstop_starts_only_the_roots_this_session_owns() -> TestResult {
+    let dir = Scratch::new("yi-plan-probe-owned")?;
+    let engine = Arc::new(PlanEngine::new(
+        PlanStore::open(dir.to_path_buf())?,
+        Arc::new(FullOnce(AtomicU32::new(0))),
+    ));
+    let accept = Check::Command("true".to_owned());
+    let opened = engine.apply(OpRequest {
+        plan: None,
+        actor: Actor::Owner,
+        op: Op::Init {
+            goal: GoalText::new("write the notes")?,
+            todos: vec![TodoSpec {
+                label: TodoLabel::new("notes")?,
+                after: Vec::new(),
+                delegation: Some(Delegation {
+                    spec: SpawnSpec {
+                        role: None,
+                        model: None,
+                        effort: None,
+                        tools: Vec::new(),
+                        isolation: None,
+                        budget: None,
+                        wall: None,
+                        parent_close: None,
+                        extra: serde_json::Map::new(),
+                    },
+                    accept,
+                    output: None,
+                    context: Vec::new(),
+                    note: None,
+                    extra: serde_json::Map::new(),
+                }),
+                contract: None,
+                children: Vec::new(),
+            }],
+        },
+        request_id: None,
+        expected_revision: None,
+    })?;
+    let root = opened.plan.id.clone();
+    let state = |engine: &PlanEngine| -> Result<TodoState, Box<dyn Error>> {
+        let plan = engine.store().read(&root)?;
+        Ok(plan
+            .todo(&TodoLabel::new("notes")?)
+            .ok_or("missing")?
+            .state
+            .clone())
+    };
+    assert_eq!(
+        state(&engine)?,
+        TodoState::Pending,
+        "the first spawn was refused"
+    );
+    let deliver: yi_runtime::goal::DeliverFn = Arc::new(|_message, _mode| {});
+    let sibling = ProbeLadder::new(Arc::clone(&engine), dir.to_path_buf(), Arc::clone(&deliver))
+        .with_owned(Arc::new(Vec::new));
+    let _ = sibling.tick(Instant::now());
+    assert_eq!(
+        state(&engine)?,
+        TodoState::Pending,
+        "a sibling's tick starts nothing here"
+    );
+    let owned = root.clone();
+    let own = ProbeLadder::new(Arc::clone(&engine), dir.to_path_buf(), deliver)
+        .with_owned(Arc::new(move || vec![owned.clone()]));
+    let _ = own.tick(Instant::now());
+    assert!(
+        matches!(state(&engine)?, TodoState::Running { .. }),
+        "{:?}",
+        state(&engine)?
+    );
+    Ok(())
 }
 
 #[test]

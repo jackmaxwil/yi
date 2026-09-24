@@ -73,7 +73,9 @@ class RLMSpawnHandle:
         _check_schema(schema)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        cursor: int | None = None
+        # Invariant: a bare wait resumes from the model's last bare wait, which may already
+        # have seen this child finish; cursor 0 reads the family as it stands now.
+        cursor = 0
         while True:
             # Float rounding can put `(now + timeout) - now` an ulp past `timeout`.
             remaining = min(timeout, deadline - loop.time())
@@ -484,8 +486,9 @@ async def wait(timeout: float = 300.0, cursor: int | None = None) -> dict[str, A
     waiter can steal your updates), ``changed`` and its one-release alias
     ``updated`` (the names that moved), ``states`` (every registered child by
     name: ``running``, ``finished``, ``failed``, ``needs_you`` or ``stuck``)
-    and ``notes``. Called with no cursor you see the family as it stands now,
-    so a child that finished before you called is still terminal in ``states``.
+    and ``notes``. With no cursor the host keeps your last one: the first call
+    answers at once with the family as it stands, each later one blocks until a
+    child moves, so ``await rlm.wait(300)`` in a loop waits instead of spinning.
     The host clamps the timeout and says so in the reply (``clamped``), so a
     caller is never silently given a different one.
     """

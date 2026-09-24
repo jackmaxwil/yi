@@ -9,6 +9,7 @@ use yi_types::todo::{
 use crate::goal::StoreHandle;
 
 pub mod coupling;
+pub mod mirror;
 pub mod text;
 pub mod tool;
 
@@ -142,6 +143,10 @@ pub enum TodoError {
         "the list changed since you last saw it (touched {now}, you sent {sent}); view it first"
     )]
     Stale { now: u64, sent: u64 },
+    #[error(
+        "the list is plan {plan}; the plan tool changes it (append, block, drop, start and done on your own todos; the engine steps delegated todos)"
+    )]
+    Mirrored { plan: String },
     #[error(transparent)]
     Doc(#[from] DocError),
 }
@@ -152,11 +157,16 @@ struct State {
     touched: u64,
 }
 
+pub type ResyncFn = dyn Fn(&TodoList) -> Option<TodoList> + Send + Sync;
+pub type CarryFn = dyn Fn(&TodoLabel, bool, bool) -> Result<String, String> + Send + Sync;
+
 pub struct TodoStore {
     state: Mutex<State>,
     store: StoreHandle,
     actor: String,
     on_change: Mutex<Vec<ChangeHook>>,
+    resync: Mutex<Option<Arc<ResyncFn>>>,
+    carry: Mutex<Option<Arc<CarryFn>>>,
 }
 
 pub struct Applied {
@@ -173,6 +183,8 @@ impl TodoStore {
             store,
             actor: actor.into(),
             on_change: Mutex::new(Vec::new()),
+            resync: Mutex::new(None),
+            carry: Mutex::new(None),
         });
         this.rehydrate();
         this
@@ -181,6 +193,48 @@ impl TodoStore {
     pub fn on_change(&self, hook: ChangeHook) {
         if let Ok(mut hooks) = self.on_change.lock() {
             hooks.push(hook);
+        }
+    }
+
+    pub fn set_resync(&self, resync: Arc<ResyncFn>) {
+        if let Ok(mut slot) = self.resync.lock() {
+            *slot = Some(resync);
+        }
+    }
+
+    pub fn set_carry(&self, carry: Arc<CarryFn>) {
+        if let Ok(mut slot) = self.carry.lock() {
+            *slot = Some(carry);
+        }
+    }
+
+    pub fn carry(&self, op: &Op) -> Option<Result<String, String>> {
+        let done = match op {
+            Op::Start { .. } => false,
+            Op::Done {
+                target: Target::Label(_),
+                ..
+            } => true,
+            _ => return None,
+        };
+        self.resync();
+        let list = self.list();
+        mirror::plan_of(&list)?;
+        let index = locate(&list, op.label()?.as_str()).ok()?;
+        let item = list.items().nth(index)?;
+        item.extra.get(mirror::PLAN_KEY)?;
+        let carry = self.carry.lock().ok()?.clone()?;
+        Some(carry(
+            &item.label,
+            done,
+            item.state == TodoStateName::Pending,
+        ))
+    }
+
+    /// Re-reads a mirrored list's plan: another engine, or a crash before the replace, moved it.
+    pub fn resync(&self) {
+        if let Some(resync) = self.resync.lock().ok().and_then(|slot| slot.clone()) {
+            self.replace_with(|list| resync(list), mirror::ENGINE_ACTOR);
         }
     }
 
@@ -223,6 +277,7 @@ impl TodoStore {
         expected_touched: Option<u64>,
         actor: &str,
     ) -> Result<Applied, TodoError> {
+        self.resync();
         let mut state = self.state.lock().map_err(|_| TodoError::Empty)?;
         if let Some(sent) = expected_touched
             && sent != state.touched
@@ -241,28 +296,79 @@ impl TodoStore {
             });
         }
         let before = state.list.clone();
-        let mut list = before.clone();
+        let mirrored = mirror::plan_of(&before).map(str::to_owned);
+        let mut list = match &mirrored {
+            Some(plan) => {
+                let own = mirror::own(&before);
+                let whole = matches!(op, Op::Set { .. } | Op::Init { .. } | Op::Append { .. });
+                if !whole
+                    && op
+                        .label()
+                        .is_none_or(|label| locate(&own, label.as_str()).is_err())
+                {
+                    return Err(TodoError::Mirrored { plan: plan.clone() });
+                }
+                own
+            }
+            None => before.clone(),
+        };
         let label = op.label().cloned();
         let name = op.name();
         step(&mut list, op)?;
+        if mirrored.is_some() {
+            let planned: Vec<TodoId> = before
+                .items()
+                .filter(|item| item.extra.contains_key(mirror::PLAN_KEY))
+                .filter_map(|item| item.id.clone())
+                .collect();
+            list.for_each_mut(|item| {
+                if item.id.as_ref().is_some_and(|id| planned.contains(id)) {
+                    item.id = None;
+                }
+            });
+            list.next_id = list.next_id.max(before.next_id);
+        }
         mint(&mut list);
-        normalize(&mut list);
+        normalize(&mut list, mirrored.is_none());
+        if mirrored.is_some() {
+            list = mirror::rejoin(&before, list);
+        }
         state.list = list.clone();
         state.touched = state.touched.saturating_add(1);
         let touched = state.touched;
         drop(state);
         self.record(name, actor, label, touched, &list);
-        if let Ok(hooks) = self.on_change.lock() {
-            for hook in hooks.iter() {
-                hook(&list);
-            }
-        }
+        self.changed(&list);
         Ok(Applied {
             before,
             list,
             touched,
             changed: true,
         })
+    }
+
+    /// Invariant: projected from the list under the lock, so no owner-row write is undone.
+    pub fn replace_with(&self, project: impl FnOnce(&TodoList) -> Option<TodoList>, actor: &str) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        let Some(list) = project(&state.list).filter(|list| *list != state.list) else {
+            return;
+        };
+        state.list = list.clone();
+        state.touched = state.touched.saturating_add(1);
+        let touched = state.touched;
+        drop(state);
+        self.record("plan", actor, None, touched, &list);
+        self.changed(&list);
+    }
+
+    fn changed(&self, list: &TodoList) {
+        if let Ok(hooks) = self.on_change.lock() {
+            for hook in hooks.iter() {
+                hook(list);
+            }
+        }
     }
 
     fn record(
@@ -406,7 +512,9 @@ fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
     }
     if let Some((id, rest)) = bare.split_once(' ')
         && let Some(index) = items.iter().position(|item| {
-            item.label.as_str() == rest && item.id.as_ref().is_some_and(|own| own.as_str() == id)
+            let (label, rest) = (normalized(item.label.as_str()), normalized(rest));
+            let same = !rest.is_empty() && (label.starts_with(&rest) || rest.starts_with(&label));
+            same && item.id.as_ref().is_some_and(|own| own.as_str() == id)
         })
     {
         return Ok(index);
@@ -743,7 +851,8 @@ fn demote(item: &mut TodoItem, keep: &TodoLabel) {
     }
 }
 
-pub fn normalize(list: &mut TodoList) {
+/// `promote` is off while a plan owns the list: its rows are the running work, not the owner's.
+pub fn normalize(list: &mut TodoList, promote: bool) {
     let mut seen_running = false;
     for phase in &mut list.phases {
         for item in &mut phase.items {
@@ -753,7 +862,7 @@ pub fn normalize(list: &mut TodoList) {
             }
         }
     }
-    if seen_running {
+    if seen_running || !promote {
         return;
     }
     for phase in &mut list.phases {

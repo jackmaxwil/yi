@@ -74,7 +74,12 @@ pub(crate) struct Children {
     pub(crate) epoch: u64,
     /// Children being built outside the lock; each holds a slot, its name and its tokens.
     building: Vec<(String, u64)>,
+    /// Removed names at their reap's epoch: a cursor from before the reap reads them as moved.
+    removed: std::collections::VecDeque<(String, u64)>,
+    forgotten: u64,
 }
+
+const REMOVED_KEPT: usize = 64;
 
 impl Children {
     /// Tokens out on lease: every record still held, and every build in flight.
@@ -92,7 +97,6 @@ impl Children {
         self.building.retain(|(held, _)| held != name);
     }
 
-    /// A reaped record still moves the epoch, so an older cursor wakes and re-reads `states`.
     pub(crate) fn touch(&mut self, key: &str) -> u64 {
         self.epoch = self.epoch.saturating_add(1);
         let epoch = self.epoch;
@@ -100,6 +104,24 @@ impl Children {
             record.changed_at_epoch = epoch;
         }
         epoch
+    }
+
+    pub(crate) fn take(&mut self, key: &str) -> Option<ChildRecord> {
+        let record = self.records.remove(key)?;
+        let moved = self.touch(key);
+        if self.removed.len() >= REMOVED_KEPT
+            && let Some((_, lost)) = self.removed.pop_front()
+        {
+            self.forgotten = self.forgotten.max(lost);
+        }
+        self.removed.push_back((record.session_name.clone(), moved));
+        Some(record)
+    }
+
+    pub(crate) fn removed_since(&self, since: u64) -> (Vec<String>, bool) {
+        let names = self.removed.iter().filter(|(_, moved)| *moved > since);
+        let names = names.map(|(name, _)| name.clone()).collect();
+        (names, since >= self.forgotten)
     }
 }
 
@@ -140,6 +162,7 @@ pub struct ChildBuild<'a> {
 pub type ChildFactory = dyn Fn(ChildBuild<'_>) -> Result<AgentSession, String> + Send + Sync;
 pub type NoticeFn = dyn Fn(&str) + Send + Sync;
 pub type AttributeFn = dyn Fn(&Usage) + Send + Sync;
+pub type FinishFn = dyn Fn(String, ChildExit, Option<String>) -> bool + Send + Sync;
 
 pub struct SubagentHostOptions {
     pub depth: u8,
@@ -185,6 +208,8 @@ pub struct SubagentHost {
     pub(crate) mail: Mutex<crate::mail::Desk>,
     /// Lock order: `mail`, then `children`, then `grant`, then a session store.
     pub(crate) grant: Mutex<crate::lease::Grant>,
+    pub(crate) finished: Mutex<Option<Arc<FinishFn>>>,
+    pub(crate) settling: std::sync::atomic::AtomicUsize,
 }
 
 impl SubagentHost {
@@ -472,6 +497,8 @@ impl SubagentHost {
             reaped: Mutex::new(HashMap::new()),
             mail: Mutex::default(),
             grant: Mutex::default(),
+            finished: Mutex::new(None),
+            settling: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -766,6 +793,8 @@ impl SubagentHost {
         let Some((exit, error)) = self.respawn(child_id, exit, error) else {
             return;
         };
+        // Invariant: held from before the exit is visible, so `busy` never reads a gap.
+        let _settling = crate::plan::finish::Settling::hold(self);
         // A retired child has no record left: `retire` already published its terminal update,
         // so a second one, a notice or a bill would only echo a closed slot.
         let (mut replied, mut juror) = (None, false);
@@ -800,6 +829,17 @@ impl SubagentHost {
         // something that can read as user instructions from the child.
         // a child that ended on `ask_user` is asking its parent, not finishing (D165).
         let question = crate::family::pending_question(&session.messages());
+        let taken = match exit {
+            ChildExit::Completed if question.is_some() || service => false,
+            ChildExit::Completed
+            | ChildExit::Failed { .. }
+            | ChildExit::Interrupted
+            | ChildExit::Other => self.finish_taken(session_name, exit, error.clone()),
+            ChildExit::Reaped | ChildExit::Repossessed => false,
+        };
+        if taken {
+            return;
+        }
         let verb = crate::family::read_exit(Some(exit)).verb;
         let notice = match (exit, question) {
             (ChildExit::Completed, Some(question)) => format!(
@@ -1002,11 +1042,21 @@ impl SubagentHost {
             Box::pin(async move { Ok(reply) })
         });
         let host = Arc::clone(self);
+        let seen = Arc::new(std::sync::atomic::AtomicU64::new(0));
         registry.register("rlm.wait", move |payload| {
             let timeout = timeout_of(&payload);
-            let cursor = payload.get("cursor").and_then(Value::as_u64);
-            let host = Arc::clone(&host);
-            Box::pin(async move { Ok(host.wait(timeout, cursor).await) })
+            let kept = seen.load(std::sync::atomic::Ordering::Relaxed);
+            let given = payload.get("cursor").and_then(Value::as_u64);
+            let cursor = given.or((kept > 0).then_some(kept));
+            let (host, seen) = (Arc::clone(&host), Arc::clone(&seen));
+            Box::pin(async move {
+                let reply = host.wait_for(timeout, cursor, given.is_none()).await;
+                let epoch = reply.get("cursor").and_then(Value::as_u64).unwrap_or(0);
+                if given.is_none() {
+                    seen.fetch_max(epoch, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(reply)
+            })
         });
         self.register_stops(registry);
         self.register_service(registry);

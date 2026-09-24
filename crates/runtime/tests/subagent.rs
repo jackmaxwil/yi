@@ -211,3 +211,175 @@ async fn a_child_cannot_spawn_with_a_smaller_wall_than_its_parent() -> TestResul
     assert_eq!(built[1].wall.deny_url, ["plan://", "kernel://"]);
     Ok(())
 }
+
+/// Dies with `seen` advanced by every reply: the run loop's own cursor moves the model's bare
+/// one past a child it never saw, so its next bare wait blocks to the cap on a finished child.
+#[tokio::test]
+async fn a_cursor_carrying_wait_leaves_the_bare_cursor_alone() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    let (_root, family) = family("yi-wait-cursor")?;
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let wait = |cursor: Option<u64>| {
+        let mut payload = kwargs(&[("timeout_ms", json!(1_000))]);
+        if let Some(cursor) = cursor {
+            payload.insert("cursor".to_owned(), json!(cursor));
+        }
+        registry.dispatch("rlm.wait", payload)
+    };
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("a"))]))?;
+    assert!(family.reaches("a", "finished").await);
+    let bare = wait(None).ok_or("rlm.wait")?.await?;
+    let epoch = bare["cursor"].as_u64().ok_or("cursor")?;
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("b"))]))?;
+    assert!(family.reaches("b", "finished").await);
+    wait(Some(epoch)).ok_or("rlm.wait")?.await?;
+    let started = Instant::now();
+    let again = wait(None).ok_or("rlm.wait")?.await?;
+    assert!(
+        started.elapsed() < Duration::from_millis(900),
+        "b moved since the bare waiter last looked"
+    );
+    assert!(
+        again["changed"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|name| name.as_str() == Some("b"))),
+        "{again:?}"
+    );
+    Ok(())
+}
+
+/// Dies with the reap recorded at the finish's epoch: the waiter had read `a` finish, so the reap
+/// was no news, and with `b` live the next bare wait slept to its timeout. The reap wakes it once,
+/// named: a wake naming no one answered `rlm.wait(300)` in 20 ms, four times.
+#[tokio::test]
+async fn a_bare_wait_wakes_once_on_the_reap_of_a_child_it_saw_finish() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    let root = scratch::Scratch::new("yi-wait-reap")?;
+    let store = support::memory_store("yi-wait-reap");
+    let family = support::family(
+        root.to_path_buf(),
+        std::env::temp_dir(),
+        store,
+        Some("sleep 3"),
+    );
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let wait = || {
+        let payload = kwargs(&[("timeout_ms", json!(1_000))]);
+        registry.dispatch("rlm.wait", payload)
+    };
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("a"))]))?;
+    assert!(family.reaches("a", "finished").await);
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("b"))]))?;
+    wait().ok_or("rlm.wait")?.await?;
+    family.host.delete("a")?;
+    let started = Instant::now();
+    let again = wait().ok_or("rlm.wait")?.await?;
+    assert!(
+        started.elapsed() < Duration::from_millis(900),
+        "the reap is news: {again:?}"
+    );
+    let names = again["changed"].as_array().ok_or("changed")?;
+    assert!(names.contains(&json!("a")), "{again:?}");
+    let later = wait().ok_or("rlm.wait")?.await?;
+    let names = later["changed"].as_array().ok_or("changed")?;
+    assert!(!names.contains(&json!("a")), "a reap wakes once: {later:?}");
+    Ok(())
+}
+
+/// Dies with a reap erasing the move it ends: `a` exits and is reaped between two bare waits
+/// while `b` runs, so the second read nothing, slept, and held the plan's notice on `a`.
+#[tokio::test]
+async fn a_bare_wait_wakes_on_a_child_that_ended_and_was_reaped_unseen() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    let root = scratch::Scratch::new("yi-wait-unseen")?;
+    let store = support::memory_store("yi-wait-unseen");
+    let family = support::family(
+        root.to_path_buf(),
+        std::env::temp_dir(),
+        store,
+        Some("sleep 3"),
+    );
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let wait = || {
+        let payload = kwargs(&[("timeout_ms", json!(1_000))]);
+        registry.dispatch("rlm.wait", payload)
+    };
+    for name in ["a", "b"] {
+        let named = kwargs(&[("name", json!(name))]);
+        family.host.spawn("work".to_owned(), named)?;
+    }
+    wait().ok_or("rlm.wait")?.await?;
+    family.host.interrupt("a")?;
+    assert!(family.reaches("a", "failed").await);
+    family.host.delete("a")?;
+    let started = Instant::now();
+    let again = wait().ok_or("rlm.wait")?.await?;
+    assert!(
+        started.elapsed() < Duration::from_millis(900),
+        "a's end is news to this waiter: {again:?}"
+    );
+    let names = again["changed"].as_array().ok_or("changed")?;
+    assert!(names.contains(&json!("a")), "{again:?}");
+    Ok(())
+}
+
+/// Dies with `yi ask` holding on `busy`: a stuck or owner-spawned child kept a finished run open
+/// until its deadline, 1303 s after the last answer in the confirmation.
+#[tokio::test]
+async fn an_ended_owner_turn_waits_only_on_a_moving_plan_child() -> TestResult {
+    let root = scratch::Scratch::new("yi-ask-hold")?;
+    let store = support::memory_store("yi-ask-hold");
+    let family = support::family(
+        root.to_path_buf(),
+        std::env::temp_dir(),
+        store,
+        Some("sleep 3"),
+    );
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("mine"))]))?;
+    assert!(family.host.busy());
+    assert!(!family.host.holds_owner(), "an rlm.run child holds nothing");
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("plan/todo"))]))?;
+    assert!(
+        family.host.holds_owner(),
+        "a moving plan child holds the run"
+    );
+    Ok(())
+}
+
+/// Dies with `settling` bumped inside the finish hook: between the exit and the hook `busy`
+/// reads false, and `yi ask` ends before the finish reaches the owner.
+#[tokio::test]
+async fn a_finishing_child_keeps_the_host_busy_from_its_exit() -> TestResult {
+    let (_root, family) = family("yi-settling-gap")?;
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<bool>>> = std::sync::Arc::default();
+    let (host, told) = (std::sync::Arc::downgrade(&family.host), seen.clone());
+    let hook: std::sync::Arc<yi_runtime::subagent::FinishFn> =
+        std::sync::Arc::new(move |_name, _exit, _error| {
+            if let (Some(host), Ok(mut told)) = (host.upgrade(), told.lock()) {
+                told.push(host.busy());
+            }
+            false
+        });
+    family.host.set_finished(hook);
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("a"))]))?;
+    assert!(family.reaches("a", "finished").await);
+    assert_eq!(*seen.lock().map_err(|_| "poisoned")?, [true]);
+    Ok(())
+}

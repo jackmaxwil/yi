@@ -10,26 +10,27 @@ stub = await plan.todo(key="create-the-declared-tarball-path-with-a-stub")
 freeze = await plan.todo(key="freeze-the-cli-argument-surface")
 manpage = await plan.todo(
     key="write-the-manpage",
-    delegate=Writer(isolation=None, effort="low", context=["local://README.md"]),
-    accept=contract(cmd("man -l logrotate-lite.1", critical=True)),
+    delegate=Writer(
+        accept=contract(cmd("man -l logrotate-lite.1", critical=True)),
+        isolation=None,
+        effort="low",
+        context=["local://README.md"],
+    ),
 )
 rotation = await plan.todo(key="implement-rotation-with-size-and-age-triggers", after=[freeze])
 tests = await plan.todo(
     key="write-the-test-suite",
     after=[freeze],
-    delegate=Writer(effort="med"),
-    accept=contract(cmd("pytest -q tests/", critical=True)),
+    delegate=Writer(accept=contract(cmd("pytest -q tests/", critical=True)), effort="med"),
 )
 await plan.todo(key="repackage-the-tarball-from-the-finished-build", after=[stub, rotation, tests])
 
-await manpage.start()
 await stub.start()
 await stub.done("local://dist/logrotate-lite.tar.gz")
 await freeze.start()
 await freeze.done("kernel://main/cli_surface")
 await manpage.fail("the child documented the flags it invented rather than the frozen surface")
 flag = await plan.todo(key="handle-the-compressed-rotation-flag", after=[rotation])
-await tests.start()
 await rotation.start()
 sub = await rotation.decompose(
     [{"key": "rotate-on-a-size-threshold"}, {"key": "rotate-on-an-age-threshold", "after": ["rotate-on-a-size-threshold"]}]
@@ -37,7 +38,7 @@ sub = await rotation.decompose(
 size = sub["rotate-on-a-size-threshold"]
 await size.start()
 await size.fail("the size check raced the writer and truncated a partial line")
-await size.retry(delegate=Writer(isolation=None, effort="high"))
+await size.retry(delegate=Writer(accept=contract(cmd("true", critical=True)), isolation=None, effort="high"))
 await flag.block({"external": {"probe": "test -e /app/vendor/zstd"}}, "the image has no zstd; the vendor mount is still syncing")
 await flag.unblock()
 await flag.cancel()
