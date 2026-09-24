@@ -57,8 +57,7 @@ impl Flight {
     }
 }
 
-/// How long a `done` waits for a lease another `done` in this process holds around its own
-/// step 1 or 5 before giving up; every other op keeps the store's refuse-at-once rule.
+/// How long a `done` waits for a lease another `done` in this process holds at step 1 or 5.
 const LEASE_WAIT: Duration = Duration::from_secs(10);
 const LEASE_POLL: Duration = Duration::from_millis(20);
 /// The grace past the verifier's own deadline before another process's claim counts as dead.
@@ -623,7 +622,7 @@ impl PlanEngine {
 }
 
 /// The materialized tree a verification ran in, removed with the run whatever it decided.
-struct Workspace(std::path::PathBuf);
+pub(super) struct Workspace(pub(super) std::path::PathBuf);
 
 impl Drop for Workspace {
     fn drop(&mut self) {
@@ -681,8 +680,8 @@ fn refused_verdicts(records: &[JournalRecord], label: &TodoLabel, attempt: Attem
     u32::try_from(count).unwrap_or(u32::MAX)
 }
 
-/// The administrative completions (plan sections 3.6 and 5.6), checked before any effect: a
-/// `submit` is the running agent's own, and an `accept` lands as `AcceptedByUser`.
+/// Administrative completions (plan sections 3.6 and 5.6), checked before any effect: a `submit`
+/// is the running agent's own or the engine's for it; an `accept` lands as `AcceptedByUser`.
 pub(super) fn admit(
     txn: &Txn,
     plan: &Plan,
@@ -692,6 +691,7 @@ pub(super) fn admit(
     match op {
         Op::Submit { label, .. } => {
             if let Some(TodoState::Running { by }) = plan.todo(label).map(|todo| &todo.state)
+                && !matches!(txn.principal, Actor::Engine)
                 && !super::ops::runs(&txn.principal, by)
             {
                 return Err(PlanOpError::NotRunningBy {

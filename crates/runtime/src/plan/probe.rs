@@ -89,6 +89,7 @@ pub struct ProbeLadder {
     /// The lease timer's job (plan section 7.4): run on every wake, before the probe tick is
     /// even looked at, so a probe still in flight never delays a cancel's expiry.
     leases: Option<Arc<dyn Fn() + Send + Sync>>,
+    owned: Option<Arc<dyn Fn() -> Vec<PlanId> + Send + Sync>>,
 }
 
 impl ProbeLadder {
@@ -106,7 +107,13 @@ impl ProbeLadder {
             children: None,
             latch: Mutex::new(StuckLatch::default()),
             leases: None,
+            owned: None,
         }
+    }
+
+    pub fn with_owned(mut self, owned: Arc<dyn Fn() -> Vec<PlanId> + Send + Sync>) -> Self {
+        self.owned = Some(owned);
+        self
     }
 
     pub fn with_run(mut self, run: ProbeRun) -> Self {
@@ -182,6 +189,9 @@ impl ProbeLadder {
     /// at the first rung; a probe is cheap and is not the runaway the spawn fuse guards.
     pub fn tick(&self, now: Instant) -> Vec<Verdict> {
         self.take_due(now);
+        if let Some(owned) = &self.owned {
+            self.engine.dispatch_ready_in(&owned());
+        }
         let mut verdicts = Vec::new();
         let mut live = Vec::new();
         for plan in self.plans() {

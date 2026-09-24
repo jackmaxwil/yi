@@ -5,12 +5,12 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 use yi_types::plan::canonical::{Digest, canonical_digest};
-use yi_types::plan::doc::{PlanId, TouchCount};
+use yi_types::plan::doc::{PlanId, TodoLabel, TouchCount};
 use yi_types::plan::ledger::RequestId;
 
 use super::ops::{Actor, Op, PlanEngine, PlanOpError};
 use super::table::OpKind;
-use super::tool::{PlanToolError, render_outcome, request};
+use super::tool::{PlanToolError, declared, render_outcome};
 
 /// ponytail: a linear scan over 64 replies keyed on request id and args digest, holding only
 /// refusals that never reached the journal (a refused parse or actor); the journal replays the rest.
@@ -135,6 +135,7 @@ fn refusal(
 
 fn code_of(error: &PlanToolError) -> &'static str {
     match error {
+        PlanToolError::Arg(super::tool::ArgError::ChildViews { .. }) => "not_owner",
         PlanToolError::Arg(_) => "bad_args",
         PlanToolError::Op(
             error @ (PlanOpError::NotOwner { .. }
@@ -233,8 +234,8 @@ fn answer(engine: &PlanEngine, actor: &Actor, payload: Payload) -> Map<String, V
         args,
         artifacts,
     } = payload;
-    let mut request = match request(actor, &args) {
-        Ok(request) => request,
+    let (mut request, blobs) = match declared(actor, &args) {
+        Ok(declared) => declared,
         Err(error) => {
             let error = PlanToolError::from(error);
             return refusal(&request_id, None, code_of(&error), error.to_string());
@@ -268,7 +269,7 @@ fn answer(engine: &PlanEngine, actor: &Actor, payload: Payload) -> Map<String, V
         };
         return refusal(&request_id, None, code, message);
     }
-    match engine.apply(request) {
+    match engine.apply_with(request, &blobs) {
         Ok(outcome) => {
             let mut reply = Map::new();
             reply.insert("ok".to_owned(), Value::Bool(true));
@@ -284,6 +285,18 @@ fn answer(engine: &PlanEngine, actor: &Actor, payload: Payload) -> Map<String, V
                 super::plan_json(&outcome.plan).unwrap_or(Value::Null),
             );
             reply.insert("notices".to_owned(), json!(outcome.notices));
+            reply.insert("held".to_owned(), json!(outcome.held));
+            let by_label = |pairs: &[(TodoLabel, String)]| {
+                let named = pairs
+                    .iter()
+                    .map(|(label, detail)| (label.to_string(), json!(detail)));
+                Value::Object(named.collect())
+            };
+            reply.insert("left".to_owned(), by_label(&outcome.standing.left));
+            reply.insert(
+                "unstarted".to_owned(),
+                by_label(&outcome.standing.unstarted),
+            );
             reply
         }
         Err(error) => {
@@ -353,7 +366,7 @@ pub fn register(engine: Arc<PlanEngine>, actor: Actor, registry: &mut crate::ker
 
 #[cfg(test)]
 pub(super) fn refusal_of(actor: &Actor, args: &Map<String, Value>) -> Map<String, Value> {
-    match request(actor, args) {
+    match declared(actor, args) {
         Ok(_) => Map::new(),
         Err(error) => {
             let error = PlanToolError::from(error);

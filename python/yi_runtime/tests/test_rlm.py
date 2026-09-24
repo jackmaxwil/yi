@@ -93,7 +93,7 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
             rlm, "wait", wait_to_finished
         ), mock.patch.object(rlm, "result", fake_result):
             self.assertEqual(await _handle().result(), {"text": "ok"})
-        self.assertEqual([cursor for _, cursor in seen], [None, 1])
+        self.assertEqual([cursor for _, cursor in seen], [0, 1])
         self.assertLessEqual(seen[0][0], 540.0)
 
         async def wait_without_the_child(timeout: float, cursor: int | None = None) -> dict:
@@ -156,7 +156,7 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
             rlm, "result", refuse_then_answer
         ):
             self.assertEqual(await _handle().result(timeout=1.0), {"text": "ok"})
-        self.assertEqual(seen, [None, 1])
+        self.assertEqual(seen, [0, 1])
         self.assertEqual(len(results), 2)
 
     async def test_a_finished_child_forwards_the_schema_as_a_keyword(self) -> None:

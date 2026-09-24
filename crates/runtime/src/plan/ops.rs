@@ -30,6 +30,7 @@ use super::verify::Verifier;
 use yi_types::plan::op::Reaped;
 
 pub(crate) const OWNER_AGENT: &str = "main";
+pub(crate) const ENGINE_AGENT: &str = "engine";
 
 const CHILD_SUFFIX_MAX: u32 = 9_999;
 
@@ -42,7 +43,7 @@ const REAP_ENVELOPE_BYTES: usize = 8 * 1024;
 fn illegal_hint(op: OpKind, from: &TodoStateName) -> &'static str {
     match (op, from) {
         (OpKind::Done, TodoStateName::Pending) => {
-            "; start it first (with a delegation, start hands it to a child), or resend set with the row marked \"- [x]\" for a todo carrying no contract"
+            "; start it first, or resend set with the row marked \"- [x]\" for a todo carrying no contract"
         }
         _ => "",
     }
@@ -54,6 +55,7 @@ pub enum Actor {
     Child(AgentId),
     User(Url),
     Host,
+    Engine,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -75,6 +77,7 @@ pub struct Outcome {
     pub reaped: Vec<Url>,
     pub subplan: Option<PlanId>,
     pub notices: Vec<String>,
+    pub standing: super::schedule::Standing,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -200,8 +203,8 @@ pub enum PlanOpError {
     )]
     AcceptanceUnavailable { label: TodoLabel },
     #[error(
-        "done for {label:?} refused at phase {phase}: no {missing} record on this attempt{}",
-        if *phase == "unsubmitted" { "; the child records one with op=submit" } else { "" }
+        "done for {label:?} refused at phase {phase}: it needs {missing}{}",
+        if *phase == "unsubmitted" { "; the engine records one when the child ends, or the child with op=submit" } else { "" }
     )]
     PhaseMissing {
         label: TodoLabel,
@@ -349,7 +352,13 @@ pub trait Delegate: Send + Sync {
     /// `supplied` is the delegation's context, so the seam that frees the child
     /// is also the one that can say how much of it the child ever read.
     fn reap(&self, agent: &AgentId, supplied: &[Url]) -> Result<Option<Url>, String>;
-    fn follow_up(&self, dispatched: &[TodoLabel], held: usize);
+    /// Invariant: a delegate with no session behind it (the CLI) never has the engine start.
+    fn hosts(&self) -> bool {
+        true
+    }
+    fn finishes(&self) -> bool {
+        false
+    }
     /// A worktree child's candidate, committed on its branch with the child quiescent, read
     /// with nothing marked on the host; `None` when the host holds no lane for it.
     fn candidate(&self, agent: &AgentId) -> Result<Option<crate::lane::settle::Held>, String> {
@@ -435,9 +444,12 @@ pub struct PlanEngine {
     pub(super) snapshotter: Arc<dyn Snapshotter>,
     pub(super) verify_hook: Option<VerifyHook>,
     pub(super) in_flight: Mutex<super::done::InFlight>,
-    pub(super) lanes: Option<crate::lane::Pool>,
+    pub(super) lanes: std::sync::OnceLock<crate::lane::Pool>,
+    pub(super) lane_home: Option<(PathBuf, u8)>,
     /// The pool's slots split between workers and verification (plan section 7.6).
     pub(super) capacity: Arc<super::capacity::Capacity>,
+    pub(super) refused: super::schedule::Refused,
+    pub(super) previewed: super::covers::Previewed,
 }
 
 impl PlanEngine {
@@ -455,8 +467,11 @@ impl PlanEngine {
             snapshotter,
             verify_hook: None,
             in_flight: Mutex::new(super::done::InFlight::default()),
-            lanes: None,
+            lanes: std::sync::OnceLock::new(),
+            lane_home: None,
             capacity: super::capacity::Capacity::for_slots(crate::lane::DEFAULT_SLOTS),
+            refused: super::schedule::Refused::default(),
+            previewed: super::covers::Previewed::default(),
         }
     }
 
@@ -515,6 +530,10 @@ impl PlanEngine {
     }
 
     pub fn apply(&self, request: OpRequest) -> Result<Outcome, PlanOpError> {
+        self.apply_with(request, &[])
+    }
+
+    pub(super) fn apply_once(&self, request: OpRequest) -> Result<Outcome, PlanOpError> {
         let OpRequest {
             plan,
             actor,
@@ -552,7 +571,7 @@ impl PlanEngine {
             }
             _ => {}
         }
-        let _lease = self.store.lease()?;
+        let _lease = self.lease_waiting()?;
         match op {
             Op::Init { goal, todos } => self.init(goal, todos, &actor, request),
             Op::Import { source } => self.import(&source, &actor, request),
@@ -676,18 +695,22 @@ impl PlanEngine {
     }
 
     pub(super) fn view(&self, plan: Option<PlanId>, _full: bool) -> Result<Outcome, PlanOpError> {
-        let id = self.resolve(plan)?;
+        let id = self
+            .resolve(plan)
+            .or_else(|error| self.latest().ok_or(error))?;
         let plan = self.store.read(&id)?;
         let ready = ready_labels(&plan);
+        let (held, standing) = self.standing(&plan);
         Ok(Outcome {
             plan,
             ready,
             dispatched: Vec::new(),
-            held: Vec::new(),
+            held,
             spawned: Vec::new(),
             reaped: Vec::new(),
             subplan: None,
-            notices: Vec::new(),
+            notices: standing.notices(),
+            standing,
         })
     }
 
@@ -759,6 +782,7 @@ impl PlanEngine {
                 "request {} was already applied as record {}; replayed",
                 txn.request, record.seq
             )],
+            standing: Default::default(),
         }))
     }
 
@@ -810,7 +834,9 @@ impl PlanEngine {
         match self.transact(txn, id, root, op) {
             Ok(delta) => self.conclude(id, &txn.state, &before, delta),
             Err(error) => {
-                if error.is_recordable() {
+                let raced =
+                    matches!(txn.principal, Actor::Engine) && super::schedule::raced(&error);
+                if error.is_recordable() && !raced {
                     self.record_refusal(txn, id, op, &error);
                 }
                 Err(error)
@@ -1046,9 +1072,6 @@ impl PlanEngine {
             .filter(|label| !now.contains(label))
             .cloned()
             .collect();
-        if !dispatched.is_empty() || !held.is_empty() {
-            self.delegate.follow_up(&dispatched, held.len());
-        }
         Ok(Outcome {
             plan: after,
             ready,
@@ -1058,6 +1081,7 @@ impl PlanEngine {
             reaped: delta.reaped,
             subplan: delta.subplan,
             notices: delta.notices,
+            standing: Default::default(),
         })
     }
 
@@ -1114,7 +1138,7 @@ impl PlanEngine {
 }
 
 /// The ready labels `admit` does not refuse at `slots`; the rest are the held list.
-fn admitted(plan: &Plan, slots: usize) -> Vec<TodoLabel> {
+pub(super) fn admitted(plan: &Plan, slots: usize) -> Vec<TodoLabel> {
     ready_labels(plan)
         .into_iter()
         .filter(|label| admit(plan, label, slots).is_ok())
@@ -1126,7 +1150,7 @@ pub(super) fn runs(actor: &Actor, by: &AgentId) -> bool {
     match actor {
         Actor::Owner => by.as_str() == OWNER_AGENT,
         Actor::Child(agent) => agent == by && agent.as_str() != OWNER_AGENT,
-        Actor::User(_) | Actor::Host => false,
+        Actor::User(_) | Actor::Host | Actor::Engine => false,
     }
 }
 
@@ -1136,6 +1160,7 @@ fn actor_word(actor: &Actor) -> String {
         Actor::Child(agent) => agent.as_str().to_owned(),
         Actor::User(citation) => citation.to_string(),
         Actor::Host => "host".to_owned(),
+        Actor::Engine => ENGINE_AGENT.to_owned(),
     }
 }
 

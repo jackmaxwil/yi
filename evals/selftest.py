@@ -57,6 +57,9 @@ def check_command():
     argv = shlex.split(command)
     assert "--json" in argv, "E1: the adapter must run the JSON event stream"
     assert "--yolo" in argv, "E8: a permission prompt hangs the trial to timeout"
+    # Incident: without it the owner worked in lane 0 and accepted work never reached /app
+    # (fan-out and fleet-forensics scored 0, and 1.0 with it).
+    assert "--here" in argv, "the grader reads the task's checkout, not a lane"
     # E6: a bare `grep -v` exits 1 when nothing survives and pipefail scores the
     # trial 0; the delta filter is guarded, and tee's stdout is not harbor's to hold.
     assert "grep -v" in command and "|| [ $? -eq 1 ]" in command, "E6: the delta filter must be guarded"

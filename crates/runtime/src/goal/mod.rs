@@ -44,8 +44,19 @@ pub(crate) fn output_tail(capture: &yi_tools::CommandCapture) -> String {
 
 /// Exit 0 is the only pass; the Err carries the model-facing evidence.
 pub(crate) fn run_check(check: &str, timeout_ms: u64) -> Result<(), String> {
+    run_check_at(check, None, timeout_ms)
+}
+
+pub(crate) fn run_check_at(
+    check: &str,
+    cwd: Option<&std::path::Path>,
+    timeout_ms: u64,
+) -> Result<(), String> {
     let mut command = yi_tools::command("sh");
     command.arg("-c").arg(check);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
     let deadline = Instant::now()
         .checked_add(std::time::Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
@@ -78,6 +89,7 @@ pub(crate) fn run_check_in(
     env_names: &[String],
     stdin: Option<Vec<u8>>,
     deadline: Instant,
+    stop: Option<&yi_tools::CancelFlag>,
 ) -> Result<yi_tools::CommandCapture, String> {
     let mut shell = yi_tools::command("/bin/sh");
     shell.arg("-c").arg(command).current_dir(cwd).env_clear();
@@ -90,7 +102,9 @@ pub(crate) fn run_check_in(
             shell.env(name, value);
         }
     }
-    let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
+    let stop = stop.cloned();
+    let cancelled: yi_tools::CancelFlag =
+        Arc::new(move || Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop()));
     yi_tools::run_captured(shell, stdin, &cancelled, yi_tools::OUTPUT_CAP)
 }
 

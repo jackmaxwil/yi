@@ -93,8 +93,6 @@ impl Delegate for NoChildren {
     fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 fn fixtures() -> PathBuf {
@@ -530,5 +528,40 @@ fn an_invalid_graph_is_refused_before_the_genesis_record() -> TestResult {
         !rig.store.plan_dir(&id).exists(),
         "an invalid document writes no blob and no record"
     );
+    Ok(())
+}
+
+/// Dies with the open-plan check in `import`: the second active root lands, and the session's
+/// mirrored list flips between the two plans on every op.
+#[test]
+fn an_active_import_beside_an_open_plan_is_refused() -> TestResult {
+    let rig = rig("beside-open")?;
+    rig.engine.apply(OpRequest {
+        plan: None,
+        actor: Actor::Owner,
+        op: Op::Init {
+            goal: yi_types::plan::doc::GoalText::new("ship the widget")?,
+            todos: Vec::new(),
+        },
+        request_id: None,
+        expected_revision: None,
+    })?;
+    let id = PlanId::new("vendor-the-zstd-backend")?;
+    let front = r#"{"format": 1, "plan": "vendor-the-zstd-backend", "goal": "Vendor the zstd backend",
+  "version": 1, "touched": 1, "tier": "root", "state": "active",
+  "todos": [{"label": "Pin the version", "state": "pending"}]}"#;
+    let source = rig.legacy(&id, &format!("---\n{front}\n---\n"))?;
+    let refused = rig.import(&source, "r-beside-1");
+    let error = refused
+        .err()
+        .ok_or("an active import beside an open plan must be refused")?;
+    assert!(error.to_string().contains("ship-the-widget"), "{error}");
+    assert!(matches!(
+        rig.store.read(&id),
+        Err(StoreError::NeedsImport { .. })
+    ));
+    let done = PlanId::new("ship-logrotate-lite-with-a-packaged")?;
+    let original = std::fs::read_to_string(fixtures().join("format1/campaign.md"))?;
+    rig.import(&rig.legacy(&done, &original)?, "r-beside-2")?;
     Ok(())
 }

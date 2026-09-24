@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
+mod ask;
 mod catalog;
 mod doctor;
 mod fetch;
@@ -21,7 +22,6 @@ use lanes::{claim_lane, configured_lanes, release_lane, run_lanes};
 
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, resolve_model};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
-use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Effort, Model, ModelCost, UnknownEffort};
 
 #[derive(Clone)]
@@ -719,120 +719,6 @@ fn default_session_dir(args: &Args) -> std::path::PathBuf {
     )
 }
 
-fn run(args: &Args) -> i32 {
-    use std::io::IsTerminal;
-    let interactive = std::io::stdin().is_terminal();
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return 1;
-        }
-    };
-    // Session wiring spawns runtime tasks (the H4 scheduler timer), so the
-    // runtime context must exist before build_session.
-    let session = {
-        let _guard = runtime.enter();
-        let asker: Option<yi_runtime::Asker> =
-            interactive.then(|| std::sync::Arc::new(tty::tty_ask) as yi_runtime::Asker);
-        match build_session(args, asker, None) {
-            Ok((session, _host)) => session,
-            Err(refused) => return exit_refused(refused),
-        }
-    };
-    match attach_store(args, &session) {
-        Ok(_id) => {}
-        // A requested resume that cannot be honoured is an error; an
-        // unavailable store for a fresh turn only costs the recording.
-        Err(error) if args.resume == Resume::Fresh => {
-            eprintln!("warning: session store unavailable: {error}");
-        }
-        Err(error) => {
-            eprintln!("error: {error}");
-            return 1;
-        }
-    }
-    let json = args.json;
-    let prompt = args.prompt.clone();
-    let schema = match args.schema.as_deref().map(yi_runtime::schema::Schema::load) {
-        Some(Ok(schema)) => Some(schema),
-        Some(Err(error)) => {
-            eprintln!("error: {error}");
-            return 2;
-        }
-        None => None,
-    };
-    let mut answer = String::new();
-    let lane = session.lane();
-    let code = runtime.block_on(async move {
-        let mut events = session.subscribe();
-        if session
-            .prompt_message(yi_runtime::session::user_input(&prompt))
-            .is_err()
-        {
-            eprintln!("error: session busy");
-            return 1;
-        }
-        let mut exit = 0;
-        loop {
-            let event = match events.recv().await {
-                Ok(event) => event,
-                // A slow reader is not the end of the run: breaking here exited 0 mid-turn.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                    eprintln!("warning: {missed} events dropped behind a slow reader");
-                    continue;
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            };
-            if json && let Ok(line) = serde_json::to_string(&event) {
-                println!("{line}");
-            }
-            if let Some(chunk) = render_text(&event) {
-                if schema.is_some() {
-                    answer.push_str(&chunk);
-                } else if !json {
-                    print!("{chunk}");
-                    use std::io::Write;
-                    let _ = std::io::stdout().flush();
-                }
-            }
-            match &event {
-                AgentEvent::MessageEnd {
-                    message:
-                        AgentMessage::Assistant {
-                            stop_reason: StopReason::Error,
-                            error_message,
-                            ..
-                        },
-                } => {
-                    if !json {
-                        eprintln!(
-                            "error: {}",
-                            error_message.as_deref().unwrap_or("provider error")
-                        );
-                        exit = 1;
-                    }
-                }
-                AgentEvent::AgentEnd { .. } => {
-                    if let Some(schema) = &schema {
-                        exit = emit_structured(schema, &answer, json);
-                    } else if !json {
-                        println!();
-                    }
-                    break;
-                }
-                _ => {}
-            }
-        }
-        exit
-    });
-    release_lane(lane.as_deref());
-    code
-}
-
 /// A flag names what the user wants now, a resumed session what they wanted last time.
 /// Flags apply after `attach_store` or `--continue --model X` silently keeps the old model.
 fn repin(args: &Args, session: &AgentSession) {
@@ -1075,7 +961,7 @@ fn main() {
                 );
                 std::process::exit(2);
             }
-            std::process::exit(run(&args));
+            std::process::exit(ask::run(&args));
         }
         "rpc" => {
             let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -1190,7 +1076,7 @@ fn main() {
             }
             let mut ask_args = args.clone();
             ask_args.prompt = full;
-            std::process::exit(run(&ask_args));
+            std::process::exit(ask::run(&ask_args));
         }
     }
 }

@@ -13,7 +13,7 @@ use super::ops::{
     SetRow, TodoSpec,
 };
 use super::table::{ALL_OPS, OpKind, op_name};
-use yi_types::plan::op::MODEL_OPS;
+use yi_types::plan::op::{MODEL_OPS, SpecError, TodoSpecRepr};
 
 const WINDOW: usize = 8;
 
@@ -34,6 +34,9 @@ fn field_hint(field: &str) -> &'static str {
         }
         "todos" | "delegation" => {
             "; a todo is {label, after?, delegation?: {spec: {role?, isolation?}, accept: {command: \"...\"}}}"
+        }
+        "contract" => {
+            "; a contract is {class, items: [{id, critical, weight, decider: {cmd: \"shell command\"}}]}, or omit it and a worktree delegation's accept {command} is its contract"
         }
         "evidence" => "; evidence is the todo tool's field, done takes output (a url) or nothing",
         // Incident: three worktree children quoted the attempt nine times between them; the
@@ -61,6 +64,8 @@ pub enum ArgError {
     },
     #[error("{} todo {index} is not an object", op_name(*op))]
     TodoShape { op: OpKind, index: usize },
+    #[error(transparent)]
+    Spec(#[from] SpecError),
     #[error(
         "set line {line} is not a checklist row (`- [ ] label`, `- [>] label`, `- [x] label`; two spaces nest): {text:?}"
     )]
@@ -71,12 +76,18 @@ pub enum ArgError {
     TooDeep { line: usize, max: usize },
     #[error("actor is not an argument; the surface a request arrives on fixes its principal")]
     ActorArg,
+    #[error("{0}")]
+    Declared(String),
     #[error("{} does not take {key:?}; its arguments are {legal}{}", op_name(*op), field_hint(key))]
     UnknownKey {
         op: OpKind,
         key: String,
         legal: String,
     },
+    #[error(
+        "only the plan owner may {op}; your plan tool only views: end your turn with your answer and the engine takes it as your work"
+    )]
+    ChildViews { op: String },
     #[error("set line {line}: label is {chars} chars, the cap is {max}")]
     LabelTooLong {
         line: usize,
@@ -356,13 +367,13 @@ fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, Ar
             return Err(ArgError::TodoShape { op, index });
         };
         refuse_unknown(spec, op, &TODO_SPEC_KEYS)?;
-        specs.push(TodoSpec {
+        specs.push(TodoSpec::try_from(TodoSpecRepr {
             label: need(spec, op, "label")?,
             after: opt(spec, op, "after")?.unwrap_or_default(),
             delegation: opt(spec, op, "delegation")?,
             contract: opt(spec, op, "contract")?,
             children: Vec::new(),
-        });
+        })?);
     }
     Ok(specs)
 }
@@ -471,6 +482,20 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
             source_ref: need(args, kind, "source_ref")?,
         },
     })
+}
+
+pub(super) fn declared(
+    actor: &Actor,
+    args: &Map<String, Value>,
+) -> Result<(OpRequest, Vec<super::declare::Blob>), ArgError> {
+    if let (Actor::Child(_), Some(op)) = (actor, args.get("op").and_then(Value::as_str))
+        && !args.contains_key("actor")
+        && !matches!(op, "view" | "submit")
+    {
+        return Err(ArgError::ChildViews { op: op.to_owned() });
+    }
+    let (args, blobs) = super::declare::normalize(args).map_err(ArgError::Declared)?;
+    Ok((request(actor, &args)?, blobs))
 }
 
 /// Invariant: the principal is a channel, never a string (§3.6): `actor` is refused, never read.
@@ -646,6 +671,7 @@ fn render(outcome: &Outcome, full: bool, stepped: Option<&TodoLabel>) -> String 
     for url in &outcome.spawned {
         out.push(format!("spawned {url}"));
     }
+    out.extend(outcome.notices.iter().cloned());
     for url in &outcome.reaped {
         out.push(format!("reaped {url}"));
     }
@@ -655,7 +681,7 @@ fn render(outcome: &Outcome, full: bool, stepped: Option<&TodoLabel>) -> String 
     out.join("\n")
 }
 
-pub(super) fn render_outcome(op: &Op, outcome: &Outcome) -> String {
+pub(crate) fn render_outcome(op: &Op, outcome: &Outcome) -> String {
     let full = matches!(op, Op::View { full: true });
     render(outcome, full, op.label())
 }
@@ -671,9 +697,9 @@ impl PlanTool {
     }
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
-        let request = request(&self.actor, args)?;
+        let (request, blobs) = declared(&self.actor, args)?;
         let op = request.op.clone();
-        let outcome = self.engine.apply(request)?;
+        let outcome = self.engine.apply_with(request, &blobs)?;
         Ok(render_outcome(&op, &outcome))
     }
 }
@@ -684,24 +710,24 @@ impl Tool for PlanTool {
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        match self.actor {
+            Actor::Child(_) => CHILD_DESCRIPTION,
+            _ => DESCRIPTION,
+        }
     }
 
-    /// A child's schema adds `submit`, which its brief names; the owner's is the priced [`schema`].
     fn schema(&self) -> Value {
-        let mut schema = schema();
-        if let Actor::Child(_) = self.actor
-            && let Some(properties) = schema["properties"].as_object_mut()
-        {
-            if let Some(ops) = properties["op"]["enum"].as_array_mut() {
-                ops.push(json!("submit"));
-            }
-            properties.insert(
-                "attempt".to_owned(),
-                json!({"type": "integer", "description": "submit: the todo's attempt, 1 unless it was retried; output is the product's url"}),
-            );
+        match self.actor {
+            Actor::Child(_) => json!({
+                "type": "object",
+                "properties": {
+                    "op": {"type": "string", "enum": ["view"]},
+                    "full": {"type": "boolean", "description": "every todo instead of counts plus the frontier"}
+                },
+                "required": ["op"]
+            }),
+            _ => schema(),
         }
-        schema
     }
 
     fn kind(&self) -> ToolKind {
@@ -713,7 +739,7 @@ impl Tool for PlanTool {
     }
 
     fn validate(&self, input: &Map<String, Value>) -> Result<(), String> {
-        request(&self.actor, input)
+        declared(&self.actor, input)
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
@@ -728,7 +754,9 @@ impl Tool for PlanTool {
 
 /// Invariant: the request-prefix gate prices this tool through these two
 /// items rather than a live [`PlanTool`], so what is measured is what ships.
-pub const DESCRIPTION: &str = "The plan ledger. op=set with a markdown checklist (`- [ ] todo`, `- [>] running`, `- [x] done`, two spaces nest) is the whole list in one call: send it again to change anything. The other ops step single todos, hand one to a child, or park it. A todo is a unit of decision, not of iteration. Batch ops with real work; never call it alone. This is the delegation ledger, for work handed to children with checks and edges; the todo tool is the list. A todo moves pending, running, done in order: done on a pending todo and several done at once are refused.";
+pub const DESCRIPTION: &str = "The plan ledger. op=set with a markdown checklist (`- [ ] todo`, `- [>] running`, `- [x] done`, two spaces nest) is the whole list in one call: send it again to change anything. Declare todos with contracts and delegations; the engine starts, verifies and accepts delegated ones. done closes your own todos. A todo is a unit of decision, not of iteration. Batch ops with real work; never call it alone. It is the delegation ledger; the todo list shows it.";
+
+const CHILD_DESCRIPTION: &str = "The plan that dispatched you, read-only: op=view. When your work is done, end your turn with your answer; the engine takes it as your work and accepts or refuses it.";
 
 /// Invariant: a flat object, because one provider rebuilds the schema from `properties` and
 /// `required` alone, so a root `oneOf` would vanish there. No live state: cached prefix.
@@ -747,7 +775,7 @@ pub fn schema() -> Value {
                 "todos": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "init/append/decompose/supersede: [{label, after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, items: [{id, critical: bool, weight: 1..100, decider: {cmd: {checker: artifact, timeout_ms}} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; done runs the contract (an artifact is {digest, media_type, length} from the plan's store) and a todo without one completes unverified",
+                    "description": "init/append/decompose/supersede: [{label, after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, covers?: [glob], items: [{id, critical: bool, weight: 1..100, decider: {cmd: \"shell command\"} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract; done runs the contract (an artifact is {digest, media_type, length})",
                     "minItems": 1
                 },
                 "label": {"type": "string", "description": "drop/block/unblock/start/done/fail/retry/decompose: the todo"},
@@ -966,6 +994,7 @@ mod tests {
             reaped: Vec::new(),
             subplan: None,
             notices: Vec::new(),
+            standing: Default::default(),
         };
         let windowed = render(&outcome, false, None);
         assert!(
@@ -1053,6 +1082,84 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_childs_plan_tool_views_and_is_refused_before_the_parse() -> Fallible {
+        let dir = crate::scratch::Scratch::new("yi-plan-tool-child")?;
+        let store = super::super::store::PlanStore::open(dir.to_path_buf())?;
+        let engine = Arc::new(PlanEngine::new(store, Arc::new(NoChildren)));
+        let child = Actor::Child(yi_types::plan::doc::AgentId::new("helper")?);
+        let tool = PlanTool::new(engine, child.clone());
+        assert_eq!(tool.schema()["properties"]["op"]["enum"], json!(["view"]));
+        assert!(tool.description().contains("end your turn"));
+        let mut args = Map::new();
+        args.insert("op".to_owned(), Value::String("done".to_owned()));
+        let refusal = super::super::request::refusal_of(&child, &args);
+        assert_eq!(
+            refusal["refusal"]["code"],
+            json!("not_owner"),
+            "{refusal:?}"
+        );
+        assert!(
+            refusal["refusal"]["message"]
+                .as_str()
+                .is_some_and(|text| text.contains("end your turn")),
+            "{refusal:?}"
+        );
+        Ok(())
+    }
+
+    /// Dies with the `try_from` on `TodoSpec`: build the fields straight and an uncontracted
+    /// worktree todo lands through `init`, `append`, `decompose` and `supersede` on both roads.
+    #[test]
+    fn an_uncontracted_worktree_todo_is_refused_by_the_parse_on_every_declaring_op() -> Fallible {
+        let bare = json!({"label": "build it apart", "delegation": {
+            "spec": {"role": "writer", "isolation": "worktree"},
+            "accept": {"stated": "the contract decides"}
+        }});
+        for (op, extra) in [
+            ("init", json!({"goal": "ship it"})),
+            ("append", json!({})),
+            ("decompose", json!({"label": "parent"})),
+            ("supersede", json!({"reason": "again"})),
+        ] {
+            let mut args = extra.as_object().cloned().unwrap_or_default();
+            args.insert("op".to_owned(), Value::String(op.to_owned()));
+            args.insert("todos".to_owned(), json!([bare.clone()]));
+            let parsed = parse_op(&args);
+            assert!(
+                matches!(&parsed, Err(ArgError::Spec(_))),
+                "{op} parsed the uncontracted shape: {parsed:?}"
+            );
+            let text = parsed
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            assert!(
+                text.starts_with("todo build it apart: a worktree delegation needs a `contract`"),
+                "{text}"
+            );
+            let refusal = super::super::request::refusal_of(&Actor::Owner, &args);
+            assert_eq!(
+                refusal["refusal"]["code"],
+                json!("bad_args"),
+                "{op}: {refusal:?}"
+            );
+        }
+        let mut args = Map::new();
+        args.insert("op".to_owned(), Value::String("append".to_owned()));
+        args.insert(
+            "todos".to_owned(),
+            json!([{"label": "build it here", "delegation": {
+                "spec": {"role": "writer"}, "accept": {"stated": "the contract decides"}
+            }}]),
+        );
+        assert!(
+            parse_op(&args).is_ok(),
+            "an inline delegation needs no contract"
+        );
+        Ok(())
+    }
+
     struct NoChildren;
 
     impl super::super::ops::Delegate for NoChildren {
@@ -1071,7 +1178,5 @@ mod tests {
         ) -> Result<Option<Url>, String> {
             Ok(None)
         }
-
-        fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
     }
 }

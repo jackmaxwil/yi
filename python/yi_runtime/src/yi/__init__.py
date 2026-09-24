@@ -1,7 +1,8 @@
 """yi: plans as programs. ``help(yi.Plan)`` is the place to start.
 
     Plan      open, attach to or resume a plan; declare todos; run a scheduler
-    Todo      one todo's ops: start, submit, done, fail, retry, cancel, result
+    Todo      one todo's ops: start and done (your own), fail, retry, block, cancel, result;
+              the engine starts, submits and accepts a delegated one
     Run       a scheduler's lease: outcome, status, stop; launch and settle for shapes
     contract  group cmd, schema and example items into what ``done`` verifies
     Writer    a child that changes files behind a wall; Reader, one that only answers

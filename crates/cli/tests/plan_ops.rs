@@ -188,7 +188,7 @@ fn the_import_commands_the_store_prints_run_as_printed() -> TestResult {
     Ok(())
 }
 
-/// A session that has started a delegated todo: the child is a name, nothing runs.
+/// A session whose engine starts a delegated todo: the child is a name, nothing runs.
 struct Hosted;
 
 impl yi_runtime::plan::ops::Delegate for Hosted {
@@ -199,8 +199,6 @@ impl yi_runtime::plan::ops::Delegate for Hosted {
     fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 // Dies with the CLI engine's output resolver (cli/src/plan.rs): without it `yi plan done`
@@ -257,7 +255,6 @@ fn cli_done_validates_a_declared_output_schema() -> TestResult {
             children: Vec::new(),
         }],
     }))?;
-    engine.apply(owner(Op::Start { label }))?;
 
     let done = r#"{"label":"write the report","output":"local://report.json"}"#;
     let refused = yi_plan(&root, &["done", done])?;

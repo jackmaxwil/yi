@@ -268,11 +268,11 @@ impl Resolver {
         if let Some(session) = self.transcript_of(path) {
             return render_history(url, &session, None, page);
         }
-        // The agent is the first segment: what follows is an entry id or a D165 window.
-        if let Some((agent, entry)) = path.split_once('/')
-            && let Some(session) = self.transcript_of(agent)
-        {
-            return render_history(url, &session, Some(entry), page);
+        for (at, _) in path.rmatch_indices('/') {
+            let (agent, entry) = path.split_at(at);
+            if let Some(session) = self.transcript_of(agent) {
+                return render_history(url, &session, entry.get(1..), page);
+            }
         }
         if self.session_store().is_none() && self.transcripts().is_none() {
             return Err(unsupported(url, SESSION_MISSING));
@@ -993,6 +993,20 @@ mod tests {
             resolver.fetch(&other),
             Err(FetchError::NotFound { .. })
         ));
+        Ok(())
+    }
+
+    /// Incident: `history://<plan>/<todo>/tail/1` read `<plan>` as the agent and missed.
+    #[test]
+    fn a_window_follows_an_agent_whose_name_has_a_slash() -> TestResult {
+        let workspace = Scratch::new("yi-schemes-history-slash")?;
+        let mut store = in_memory_session();
+        store.append_custom("main", "note", None)?;
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(store));
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
+            .with_session("plan-a/confmerge", shared);
+        let tail: Url = "history://plan-a/confmerge/tail/1".parse()?;
+        assert_eq!(resolver.fetch(&tail)?.served_by, "session-tail");
         Ok(())
     }
 

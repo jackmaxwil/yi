@@ -2622,7 +2622,11 @@ async fn a_delete_wakes_a_waiter_with_the_child_gone() -> TestResult {
         started.elapsed() < std::time::Duration::from_secs(5),
         "a delete wakes the waiter, not the deadline"
     );
-    assert_eq!(woken["changed"], json!([]), "{woken:?}");
+    assert_eq!(
+        woken["changed"],
+        json!(["gone"]),
+        "the reap is a named move: {woken:?}"
+    );
     assert!(
         woken["states"].get("gone").is_none(),
         "the reaped child is off the state map: {woken:?}"

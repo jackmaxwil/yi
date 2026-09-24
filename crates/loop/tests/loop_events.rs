@@ -2005,3 +2005,156 @@ async fn unparsed_call_markup_ends_the_turn_as_an_error() -> Result<(), Box<dyn 
     );
     Ok(())
 }
+
+/// Incident: a parent waiting on its plan's children sent the same `rlm.wait` batch each turn,
+/// the breaker told it nothing was changing, and its session ended with the children in it.
+#[tokio::test]
+async fn a_repeated_batch_while_launched_work_is_live_is_a_wait() {
+    let mut arguments = Map::new();
+    arguments.insert(
+        "code".to_owned(),
+        json!("r = await rlm.wait(300)\nprint(r)"),
+    );
+    let mut script: Vec<_> = (0..8)
+        .map(|_| {
+            faux_assistant_message(
+                vec![faux_tool_call("c", "ipython", arguments.clone())],
+                StopReason::ToolUse,
+            )
+        })
+        .collect();
+    script.push(faux_assistant_message(
+        vec![faux_text("done")],
+        StopReason::Stop,
+    ));
+    let stream = Scripted::new(script);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let mut config = LoopConfig::new(faux_model());
+    config.waiting = Some(Arc::new(|| true));
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let breaks = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE))
+        .count();
+    assert_eq!(breaks, 0, "a wait on live work is never steered");
+    let answers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .count();
+    assert_eq!(
+        answers, 9,
+        "every wait ran and the run ended on its own answer"
+    );
+}
+
+/// Dies with every batch exempt while a child is live: a parent repeating a failing call for
+/// twenty minutes beside its children is never stopped.
+#[tokio::test]
+async fn a_repeated_call_that_is_not_a_wait_is_broken_while_work_is_live() {
+    let mut arguments = Map::new();
+    arguments.insert("word".to_owned(), json!("make check"));
+    let script: Vec<_> = (0..8)
+        .map(|_| {
+            faux_assistant_message(
+                vec![faux_tool_call("c", "echo", arguments.clone())],
+                StopReason::ToolUse,
+            )
+        })
+        .collect();
+    let stream = Scripted::new(script);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let mut config = LoopConfig::new(faux_model());
+    config.waiting = Some(Arc::new(|| true));
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let breaks = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE))
+        .count();
+    assert_eq!(
+        breaks, 1,
+        "a repeat that is not a wait is steered as before"
+    );
+}
+
+/// The repeat breaks eight identical `ipython` cells get while a child is live.
+async fn breaks_while_live(code: &str) -> usize {
+    let mut arguments = Map::new();
+    arguments.insert("code".to_owned(), json!(code));
+    let script: Vec<_> = (0..8)
+        .map(|_| {
+            faux_assistant_message(
+                vec![faux_tool_call("c", "ipython", arguments.clone())],
+                StopReason::ToolUse,
+            )
+        })
+        .collect();
+    let stream = Scripted::new(script);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let mut config = LoopConfig::new(faux_model());
+    config.waiting = Some(Arc::new(|| true));
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE))
+        .count()
+}
+
+/// Dies with the substring exemption: `print(` exempts a repeated `print(run_tests())`, and a
+/// wait loop's `for` and `if` lines are read as work, so the loop is steered as a repeat.
+#[tokio::test]
+async fn only_a_cell_of_wait_calls_and_control_flow_is_a_wait() {
+    let looped = "for _ in range(5):\n    r = await rlm.wait(60)\n    if r['changed']:\n        break\nprint(r)";
+    assert_eq!(breaks_while_live(looped).await, 0, "a wait loop is a wait");
+    assert_eq!(
+        breaks_while_live("print(run_tests())").await,
+        1,
+        "printing a call's result is the call"
+    );
+    assert_eq!(
+        breaks_while_live("x = sleep_result(1)\nprint(x)").await,
+        1,
+        "a name that merely contains a wait head is not one"
+    );
+}

@@ -14,8 +14,7 @@ class Idempotent(unittest.IsolatedAsyncioTestCase):
             key="tests",
             label="write the test suite",
             after=[freeze],
-            delegate=Writer(deny_write=["docs/"]),
-            accept=contract(cmd(command, critical=True)),
+            delegate=Writer(accept=contract(cmd(command, critical=True)), deny_write=["docs/"]),
         )
 
     async def test_a_rerun_cell_writes_nothing_and_a_changed_spec_is_refused(self) -> None:

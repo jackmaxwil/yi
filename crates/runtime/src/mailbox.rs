@@ -21,7 +21,6 @@ pub(crate) const CONTEXT_VALUE_CAP: usize = 4_096;
 pub(crate) const CONTEXT_TOTAL_CAP: usize = 16_384;
 const RESULT_TAIL_CHARS: usize = 2_000;
 
-/// A removed record with its key and how its lane settled.
 pub(crate) type Retired = (
     String,
     ChildRecord,
@@ -390,18 +389,26 @@ impl SubagentHost {
         reply
     }
 
-    /// B13 wait with a per-caller cursor (§7.5): nothing shared is drained, so two waiters
-    /// never steal each other's updates; `updated` mirrors `changed` for one release.
+    /// B13 wait with a per-caller cursor (§7.5): nothing shared is drained, so no waiter steals.
     pub async fn wait(&self, timeout_ms: u64, cursor: Option<u64>) -> Map<String, Value> {
+        self.wait_for(timeout_ms, cursor, false).await
+    }
+
+    pub(crate) async fn wait_for(
+        &self,
+        timeout_ms: u64,
+        cursor: Option<u64>,
+        named: bool,
+    ) -> Map<String, Value> {
         let clamped = timeout_ms.clamp(WAIT_MIN_MS, WAIT_MAX_MS);
         let deadline = std::time::Instant::now()
             .checked_add(std::time::Duration::from_millis(clamped))
             .unwrap_or_else(std::time::Instant::now);
         let since = cursor.unwrap_or(0);
         loop {
-            let (epoch, changed) = self.changed_since(since);
-            // Any family move wakes a waiter: a delete names nothing in `changed`.
-            if epoch > since || std::time::Instant::now() >= deadline {
+            let (epoch, changed, live) = self.changed_since(since);
+            let quiet = named && changed.is_empty() && live;
+            if (epoch > since && !quiet) || std::time::Instant::now() >= deadline {
                 let mut states = Map::new();
                 let mut notes = Map::new();
                 for view in self.states() {
@@ -427,22 +434,26 @@ impl SubagentHost {
         }
     }
 
-    fn changed_since(&self, since: u64) -> (u64, Vec<String>) {
+    fn changed_since(&self, since: u64) -> (u64, Vec<String>, bool) {
         let Ok(children) = self.children.lock() else {
-            return (since, Vec::new());
+            return (since, Vec::new(), false);
         };
         let mut moved: Vec<String> = children
             .values()
             .filter(|record| record.changed_at_epoch > since)
             .map(|record| record.session_name.clone())
             .collect();
+        let (gone, whole) = children.removed_since(since);
+        moved.extend(gone);
         moved.sort();
-        (children.epoch, moved)
+        moved.dedup();
+        let live = whole && children.values().any(|record| record.exit.is_none());
+        (children.epoch, moved, live)
     }
 
     // Incident: nine of twelve F0e "text, not JSON" refusals were a valid object inside a
     // fenced block, so one fence line and any trailer are framing, not the answer (#475).
-    fn json_answer(text: &str) -> Option<Value> {
+    pub(crate) fn json_answer(text: &str) -> Option<Value> {
         let body = text.trim();
         let body = match body.strip_prefix("```") {
             Some(rest) => rest
@@ -555,7 +566,11 @@ impl SubagentHost {
 
     /// L5 criticality is derived, never declared: the ancestor todo is looked up, its check
     /// re-run, and only a red one is HIGH. Fails closed: an unadjudicable row holds the result.
-    fn route_discoveries(&self, child: &str, discoveries: &[Discovery]) -> Result<(), String> {
+    pub(crate) fn route_discoveries(
+        &self,
+        child: &str,
+        discoveries: &[Discovery],
+    ) -> Result<(), String> {
         let plan = if discoveries
             .iter()
             .any(|row| row.violates_check_of.is_some())
@@ -661,9 +676,8 @@ impl SubagentHost {
                 ));
             }
             let record = children
-                .remove(&key)
+                .take(&key)
                 .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
-            children.touch(&key);
             (key, record)
         };
         if record.exit.is_none() {
@@ -679,8 +693,7 @@ impl SubagentHost {
             record.step(Step::Exit(exit, Some(cause)));
         }
         SubagentHost::dispose_child_kernel(&record.session);
-        // The lane settles under the choice journaled before this removal; a lane that cannot
-        // settle goes back on the record with its slot, and the removal fails.
+        // The lane settles under the journaled choice; one that cannot restores the record.
         let (mut record, settled) = self.settle_or_restore(&key, record)?;
         if let Err(reason) = commit(&record, settled.as_ref().map(|(_, candidate)| candidate)) {
             self.restore(&key, record, &reason);

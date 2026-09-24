@@ -19,6 +19,7 @@ KEY = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 SOURCE_TYPE = "text/x-python"
 READ_ONLY = ("view", "repair")
 WAIT_SECONDS = 300.0
+REAPED_POLL = 0.5
 
 # The cell the kernel is executing: its id, its source as submitted, the plans it touched.
 _CELL: dict[str, Any] | None = None
@@ -221,7 +222,7 @@ class Todo:
         return self
 
     async def start(self) -> "Todo":
-        """Step to running; a delegated todo's child is spawned by the host.
+        """Step your own todo to running; the engine starts a delegated one itself.
 
             await todo.start()
         """
@@ -271,7 +272,9 @@ class Todo:
     async def retry(self, delegate: Role | None = None) -> "Todo":
         """Open a new attempt after a failure, optionally with another delegate.
 
-            await todo.retry(delegate=Writer(model="strong"))
+        The todo keeps its contract; a new delegate's ``accept`` is not read here.
+
+            await todo.retry(delegate=Writer(accept=contract(cmd("make -s check", critical=True)), model="strong"))
         """
         return await self._op("retry", delegation=delegate.delegation() if delegate else None)
 
@@ -301,7 +304,7 @@ class Todo:
         if child is None:
             raise PlanError(f"todo {self.key!r} has no child; only a running delegated todo does")
         loop = asyncio.get_running_loop()
-        deadline, cursor = loop.time() + timeout, None
+        deadline, cursor = loop.time() + timeout, 0
         while (remaining := deadline - loop.time()) > 0:
             reply = await rlm.wait(timeout=min(remaining, WAIT_SECONDS), cursor=cursor)
             cursor = reply.get("cursor", cursor)
@@ -318,7 +321,7 @@ class Todo:
         raise TimeoutError(f"child {child} did not finish within {timeout}s")
 
     async def cancel(self) -> "Todo":
-        """Stop this todo: a pending one is dropped, a running one interrupted and failed.
+        """Stop this todo: a pending one is dropped, a running one failed, which stops its child.
 
         An inline coroutine is cancelled and what it submitted is kept.
 
@@ -330,8 +333,8 @@ class Todo:
         task = self.plan._tasks.pop(self.label, None)
         if task is not None:
             task.cancel()
-        elif self.child:
-            await rlm.interrupt(self.child)
+        # A delegated child is reaped by the fail itself: an interrupt first would hand its end
+        # to the engine, which fails the todo before this call can.
         return await self.fail("cancelled")
 
 
@@ -345,6 +348,11 @@ class Plan:
     def __init__(self, doc: dict[str, Any], notices: list[str] | None = None) -> None:
         self._doc = doc
         self._notices = notices or []
+        # What the last view said the engine left standing: held by the width, a start it was
+        # refused and a finish it left running, each by label with the engine's reason.
+        self._held: list[str] = []
+        self._unstarted: dict[str, str] = {}
+        self._engine_left: dict[str, str] = {}
         self._inline: dict[str, Callable[[], Awaitable[Any]]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
 
@@ -440,7 +448,9 @@ class Plan:
 
             await plan.refresh()
         """
-        self._doc = (await _send("view", {"full": True}, plan=self.id))["plan"]
+        reply = await _send("view", {"full": True}, plan=self.id)
+        self._doc, self._held = reply["plan"], reply.get("held") or []
+        self._unstarted, self._engine_left = reply.get("unstarted") or {}, reply.get("left") or {}
         return self
 
     async def _op(self, op: str, args: dict | None = None, **kwargs: Any) -> dict[str, Any]:
@@ -467,27 +477,33 @@ class Plan:
             raise TypeError("run= takes an async function, and an inline todo has no delegate")
         # A sub-plan's todos name each other before any of them exists: `among` is that batch.
         edges = [item.label if isinstance(item, Todo) else (among or {}).get(item) or self[item].label for item in after]
+        if accept is None and delegate is not None:
+            accept = delegate.accept
+        if accept is None and delegate is not None and delegate.isolation == "worktree":
+            raise TypeError("a worktree Writer needs accept=")
         contract, blobs = None, []
         if accept is not None:
             contract_class = delegate.contract_class if delegate else "inline"
             contract, blobs = await accept.render(contract_class, lambda url: rlm.fetch(url, as_text=True))
+        delegation, noted = delegate.note_blobs() if delegate else (None, [])
         wire = {
             "label": f"{key}: {label}" if label else key,
             "after": edges,
-            "delegation": delegate.delegation() if delegate else None,
+            "delegation": delegation,
             "contract": contract,
         }
-        return _pruned(wire), blobs, key
+        return _pruned(wire), blobs + noted, key
 
     async def todo(self, key: str, label: str | None = None, **spec: Any) -> Todo:
         """Declare a todo once: ``after``, ``delegate``, ``accept`` and ``run`` say what it is.
 
         The same declaration again returns the handle and writes nothing; a
         changed one raises ``SpecDrift`` and writes nothing. ``run=`` names an
-        async function executed in this kernel; ``delegate=`` a child's role.
+        async function executed in this kernel; ``delegate=`` a child's role,
+        whose ``accept`` is the contract unless ``accept=`` names another.
 
             tests = await plan.todo(key="tests", label="write the test suite", after=["freeze"],
-                delegate=Writer(), accept=contract(cmd("pytest -q tests/", critical=True)))
+                delegate=Writer(accept=contract(cmd("pytest -q tests/", critical=True))))
         """
         wire, blobs, key = await self._spec(key, label, **spec)
         for _ in range(2):
@@ -568,11 +584,15 @@ class Run:
         self.outcome: str | None = None
         self.refusals: dict[str, PlanError] = {}
         self.active: dict[str, Todo] = {}
+        self._left: set[tuple[str, Any]] = set()
         self._deadline = None if budget is None else asyncio.get_running_loop().time() + budget
         self._stop = asyncio.Event()
         self._cancelled = False
         self._waiting: asyncio.Task | None = None
-        self._cursor: int | None = None
+        self._states: dict[str, str] = {}
+        self._reaped = False
+        # Cursor 0, not a bare wait: the model's own bare waits may have seen a child end already.
+        self._cursor = 0
         self._task: asyncio.Task | None = None
 
     def __await__(self):
@@ -591,15 +611,29 @@ class Run:
     async def launch(self, todo: Todo) -> PlanError | None:
         """Start one todo; returns the host's refusal instead of raising it.
 
-        A refusal of kind ``admission`` means wait for a slot and try again.
+        The engine starts a delegated todo once admission lets it, so launching one
+        adopts it; a refusal of kind ``admission`` means wait for a slot and try again,
+        any other is the engine's own refusal to start it.
 
             refusal = await run.launch(plan["tests"])
         """
-        try:
-            await todo.start()
-        except PlanError as refusal:
-            self.refusals[todo.key] = refusal
-            return refusal
+        if todo._doc.get("delegation"):
+            if (todo.label, todo._doc.get("attempt")) in self._left:
+                return PlanError(f"the engine left {todo.key} running for you", {"code": "left"})
+            if await todo.state() != "running":
+                if todo.label in self.plan._held or todo.label not in self.plan._doc.get("ready", []):
+                    return PlanError(f"{todo.key} waits on the dispatch width", {"code": "admission"})
+                said = self.plan._unstarted.get(todo.label)
+                message = f"the engine could not start {todo.key}: {said}" if said else f"the engine has not started {todo.key}"
+                refusal = PlanError(message, {"code": "not_started"})
+                self.refusals[todo.key] = refusal
+                return refusal
+        else:
+            try:
+                await todo.start()
+            except PlanError as refusal:
+                self.refusals[todo.key] = refusal
+                return refusal
         self.active[todo.label] = todo
         inline = self.plan._inline.get(todo.label)
         if inline is not None:
@@ -607,14 +641,9 @@ class Run:
         return None
 
     async def _complete(self, todo: Todo, product: Any) -> None:
+        """An inline todo's ending; the engine completes a delegated one from its child's finish."""
         try:
-            if product is None:
-                await todo.done()
-            elif todo.child is None:
-                await todo.done(await todo.submit(product))
-            else:
-                url, blob = _product(self.plan.id, product)
-                await self.plan._op("done", {"label": todo.label, "output": url}, artifacts=[blob])
+            await todo.done(await todo.submit(product) if product is not None else None)
         except PlanError as refusal:
             self.refusals[todo.key] = refusal
             # Invariant: only a verdict on the product fails the attempt; an abstention is an
@@ -623,21 +652,24 @@ class Run:
                 await todo.fail(f"done refused: {refusal}"[:500])
 
     async def settle(self) -> list[Todo]:
-        """Wait until an active attempt ends, then complete or fail it through the host.
+        """Wait until an active attempt ends, then collect it.
 
-        A finished child or a returned coroutine goes to ``done`` (the contract
-        decides), a failed one to ``fail``; a stuck child is waited on, and one
-        the host cannot vouch for blocks its todo on you.
+        A returned coroutine goes to ``done`` (the contract decides), a raised one
+        to ``fail``. The engine submits and accepts, refuses or fails a delegated
+        todo when its child ends, so the state is read, never written; a stuck or
+        reaped child is waited on, and only a child asking you something blocks its todo.
 
             settled = await run.settle()
         """
         tasks = {self.plan._tasks[label]: label for label in self.active if label in self.plan._tasks}
-        children = [todo for todo in self.active.values() if todo.child]
+        children = {todo.label: todo.child for todo in self.active.values() if todo.child}
         if children and self._waiting is None:
             self._waiting = asyncio.ensure_future(rlm.wait(timeout=self._remaining(), cursor=self._cursor))
         stop = asyncio.ensure_future(self._stop.wait())
         waiters = [*tasks, stop, *([self._waiting] if self._waiting else [])]
-        done, _ = await asyncio.wait(waiters, timeout=self._remaining(), return_when=asyncio.FIRST_COMPLETED)
+        # A reaped child, or one whose finish the engine has not settled, is re-read on a short poll.
+        timeout = min(self._remaining(), REAPED_POLL) if self._reaped else self._remaining()
+        done, _ = await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
         stop.cancel()
         settled = []
         for task in done & set(tasks):
@@ -651,23 +683,27 @@ class Run:
         if self._waiting in done:
             reply, self._waiting = self._waiting.result(), None
             self._cursor = reply.get("cursor", self._cursor)
-            states = reply.get("states") or {}
-            for todo in children:
-                state = states.get(todo.child)
-                if state in ("queued", "running", "stuck"):
+            self._states = reply.get("states") or {}
+        elif not self._reaped:
+            return settled
+        self._reaped = False
+        for label, child in children.items():
+            state = self._states.get(child)
+            if state in ("queued", "running", "stuck"):
+                continue
+            todo = self.active[label]
+            now = await todo.state()
+            if now == "running" and state == "needs_you":
+                await todo.block("user", f"child {child} is {state}")
+            elif now == "running":
+                # Invariant: the engine settles a delegated todo, so a finish in flight or a reaped
+                # child is waited on; only the engine's word that it left the todo collects it.
+                if state not in ("finished", "failed") or label not in self.plan._engine_left:
+                    self._reaped = True
                     continue
-                self.active.pop(todo.label)
-                if state == "finished":
-                    needs = (todo._doc.get("contract") or {}).get("items", [])
-                    answer = await rlm.result(todo.child) if any("schema" in item["decider"] for item in needs) else None
-                    await self._complete(todo, answer and answer.get("json", answer.get("text")))
-                elif state == "failed":
-                    await todo.fail(f"child {todo.child} failed")
-                else:
-                    # Invariant: a child the host cannot vouch for is a decision, never a
-                    # silent drop; `needs_you` and an unregistered name both land here.
-                    await todo.block("user", f"child {todo.child} is {state or 'not registered'}")
-                settled.append(todo)
+                self._left.add((label, todo._doc.get("attempt")))
+            self.active.pop(label)
+            settled.append(todo)
         return settled
 
     async def _drive(self) -> "Run":
@@ -734,7 +770,7 @@ class Run:
 
 
 async def in_order(plan: Plan, run: Run) -> None:
-    """The default shape: start what is ready in plan order, settle, repeat.
+    """The default shape: settle what the engine starts, start ready ``run=`` todos, repeat.
 
     The host's admission count bounds the width; a todo with neither a
     delegate nor ``run=`` is the owner's own and is left alone.
@@ -744,13 +780,16 @@ async def in_order(plan: Plan, run: Run) -> None:
     while not run.over:
         await plan.refresh()
         unresolved = {todo.label for todo in plan.unresolved}
+        for todo in plan.todos:
+            if todo.child and todo.label not in run.active and todo.label not in unresolved:
+                await run.launch(todo)
         for todo in plan.ready():
             mine = todo._doc.get("delegation") or todo.label in plan._inline
             if not mine or todo.key in run.refusals or todo.label in unresolved:
                 continue
             refusal = await run.launch(todo)
             if refusal is not None and refusal.kind == "admission":
-                del run.refusals[todo.key]
+                run.refusals.pop(todo.key, None)
                 break
         if not run.active:
             return

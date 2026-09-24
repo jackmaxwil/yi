@@ -13,13 +13,13 @@ class Resume(unittest.IsolatedAsyncioTestCase):
         host = FakeHost()
         plan = await Plan.create("ship it")
         accept = contract(cmd("true", critical=True))
-        await plan.todo(key="deploy", delegate=Writer(), accept=accept)
-        await plan.todo(key="announce", after=["deploy"], delegate=Writer(), accept=accept)
-        await plan["deploy"].start()
+        await plan.todo(key="deploy", delegate=Writer(accept=accept))
+        await plan.todo(key="announce", after=["deploy"], delegate=Writer(accept=accept))
+        self.assertEqual(plan["deploy"]._doc["state"], "running", "the engine started it")
 
         # The kernel died: no scheduler, no handles, and the host cannot show the child alive.
         yi.plan._RUNS.clear()
-        host.children[f"{plan.id}/deploy"] = "failed"
+        host.children.pop(f"{plan.id}/deploy")
         host.notices = [f"{plan.id}/deploy needs reconciliation: child cannot be shown alive"]
         written = list(host.journal)
 
@@ -41,7 +41,7 @@ class Resume(unittest.IsolatedAsyncioTestCase):
             ran.append("build")
 
         await plan.todo(key="build", run=build, accept=accept)
-        await plan.todo(key="deploy", after=["build"], delegate=Writer(), accept=accept)
+        await plan.todo(key="deploy", after=["build"], delegate=Writer(accept=accept))
         first = await plan.run(budget=0.2)
         self.assertEqual((first.outcome, ran, host.spawns), ("unresolved", ["build"], 1))
 

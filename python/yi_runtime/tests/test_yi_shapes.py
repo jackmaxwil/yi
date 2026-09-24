@@ -28,7 +28,7 @@ def product(host: FakeHost, todo) -> str:
 
 async def writers(plan: Plan, host: FakeHost, *keys: str, state: str = "finished") -> None:
     for key in keys:
-        await plan.todo(key=key, delegate=Writer(), accept=GREEN)
+        await plan.todo(key=key, delegate=Writer(accept=GREEN))
         host.children[f"{plan.id}/{key}"] = state
 
 
@@ -55,8 +55,8 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         """Dies with the control: check after the first start, or stop at the first problem."""
         host = FakeHost()
         plan = await Plan.create("ship it")
-        await plan.todo(key="man", delegate=Writer(isolation=None), accept=GREEN)
-        await plan.todo(key="tests", after=["man"], delegate=Writer(isolation=None), accept=GREEN)
+        await plan.todo(key="man", delegate=Writer(accept=GREEN, isolation=None))
+        await plan.todo(key="tests", after=["man"], delegate=Writer(accept=GREEN, isolation=None))
 
         async def notes() -> None:
             return None
@@ -68,21 +68,20 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(problems), 4, problems)
         for name in ("at least two", "man writes", "tests writes", "notes is inline"):
             self.assertTrue(any(name in problem for problem in problems), (name, problems))
-        self.assertEqual((host.starts, host.spawns), ([], 0), "refused before any start")
+        self.assertEqual((host.starts, host.spawns), (["man"], 1), "the refusal starts nothing the engine did not")
 
     async def test_a_done_arm_is_not_one_of_the_two_that_run_side_by_side(self) -> None:
         """Dies with the control: count a done todo and one ready writer passes as a fork."""
         host = FakeHost()
         plan = await Plan.create("ship it")
         await writers(plan, host, "a", "b")
-        await plan["a"].start()
         await plan["a"].done()
         with self.assertRaises(Geometry) as refused:
             await plan.run(shape=fork_join, budget=5)
         self.assertIn("1 found", refused.exception.problems[0])
 
-    async def test_fork_join_retries_a_refused_start_and_never_reorders_the_kernel(self) -> None:
-        """Dies with the control: skip past a refused start and `c` is asked for before `b` runs."""
+    async def test_the_engine_starts_in_plan_order_as_slots_free_and_never_tries_a_held_todo(self) -> None:
+        """Dies with the control: try a held todo and the starts repeat it; skip one and `c` runs before `b`."""
         host = FakeHost()
         host.slots = 1
         plan = await Plan.create("ship it")
@@ -91,7 +90,7 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertIs(await plan.run(shape=fork_join, detach=True), run, "a module-level shape attaches to itself")
         await run
         self.assertEqual(run.outcome, "verified_success", await run.status())
-        self.assertEqual(host.starts, ["a", "b", "b", "c", "c"], "each refusal is retried, nothing behind it is tried")
+        self.assertEqual(host.starts, ["a", "b", "c"], "each starts as a slot frees, and a held one is never tried")
         self.assertEqual([args["label"] for op, args in host.journal if op == "start"], ["a", "b", "c"])
         self.assertEqual(run.refusals, {})
 
@@ -114,8 +113,31 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((run.outcome, run.refusals["red"].kind), ("failed", "retries_exhausted"))
         self.assertEqual(plan["red"]._doc["attempt"], 5, "no retry past the refusal")
 
+    async def test_a_finish_still_in_flight_is_waited_on_and_its_refusal_retried(self) -> None:
+        """Dies with the control: collect a finished child the engine has not stepped once another
+        child's end wakes the wait, and `a`'s red verdict lands after it, so it is never retried."""
+        host = FakeHost()
+        plan = await Plan.create("ship it")
+        await writers(plan, host, "a", "b")
+        host.verdicts["a"] = ["fail", "pass"]
+        host.lag["a"] = 3
+        run = await plan.run(shape=fork_join, budget=30)
+        self.assertEqual(run.outcome, "verified_success", await run.status())
+        self.assertEqual(host.starts.count("a"), 2, "the red verdict is retried once the engine lands it")
+
+    async def test_a_finish_the_engine_settles_later_is_read_on_a_short_poll(self) -> None:
+        """Dies with the short poll armed only for a reaped child: the wait already reported `a`
+        finished, nothing moves while the engine settles it, and the run sleeps out its budget."""
+        host = FakeHost()
+        host.settles_after = 0.3
+        plan = await Plan.create("ship it")
+        await writers(plan, host, "a", "b")
+        run = await asyncio.wait_for(plan.run(shape=fork_join, budget=30), timeout=5)
+        self.assertEqual(run.outcome, "verified_success", await run.status())
+
     async def test_the_scheduler_and_the_model_wait_without_stealing_updates(self) -> None:
-        """Dies with the control: wait without the run's own cursor and its waits all start at None."""
+        """Dies with the control: wait without the run's own cursor and its waits are all bare;
+        wait from 0 again after the first and every wait answers at once, a busy poll."""
         host = FakeHost()
         plan = await Plan.create("ship it")
         await writers(plan, host, "a", "b", state="running")
@@ -128,10 +150,12 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         host.children[f"{plan.id}/b"] = "finished"
         await run
         self.assertEqual(run.outcome, "verified_success")
-        cursors = [cursor for cursor, _ in host.waits if cursor != 0]
-        self.assertEqual(cursors[0], None)
-        self.assertEqual(cursors[1:], sorted(cursors[1:]), "the scheduler resumes from its own last reply")
-        self.assertGreater(cursors[-1], 0)
+        cursors = [cursor for cursor, _ in host.waits]
+        self.assertEqual(cursors[0], 0, "the scheduler's first wait reads the family as it stands")
+        later = cursors[1:]
+        later.remove(0)  # the model's own wait above
+        self.assertNotIn(0, later, "only the scheduler's first wait reads from 0")
+        self.assertEqual(later, sorted(later), "the scheduler resumes from its own last reply")
         self.assertEqual(mine["cursor"], len(host.changes) - 1, "and the model's cursor is its own")
 
     async def test_scatter_drops_an_unverifiable_quote_before_the_lead_sees_it(self) -> None:
@@ -206,13 +230,13 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         problems = " | ".join(refused.exception.problems)
         for name in ("a and b share local://docs", "a declares no answer schema", "exactly one lead"):
             self.assertIn(name, problems)
-        self.assertEqual(host.starts, [])
+        self.assertEqual(host.starts, ["a", "b"], "the engine's starts at declaration; the refused shape adds none")
 
     async def pod(self, said: dict[str, dict], verdict: str) -> tuple[FakeHost, Plan, str]:
         """A declared pod over the archive whose readers say `said` and whose command says `verdict`."""
         host = FakeHost()
         plan = await Plan.create("review the rotate change")
-        await declare(plan, ["local://docs"], cmd("make -s check", critical=True), arbiter=Writer(isolation=None))
+        await declare(plan, ["local://docs"], cmd("make -s check", critical=True), arbiter=Writer(accept=contract(cmd("make -s check", critical=True)), isolation=None))
         host.files.update(ARCHIVE)
         for key in BRIEFS:
             child = f"{plan.id}/read-{key}"
@@ -236,6 +260,8 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("no tests at all", delegation["note"])
         self.assertEqual(delegation["context"], [plan[f"read-{key}"]._doc["output"] for key in BRIEFS])
         self.assertEqual(plan["arbiter"]._doc["state"], "abandoned", "the declared arbiter ran as its issue")
+        held = [args["on"] for op, args in host.journal if op == "block" and args["label"] == "arbiter"]
+        self.assertEqual(held, [{"child": plan["read-correctness"].child}], "held on a reader, never on the user")
         self.assertEqual(host.starts.count("arbiter-r2"), 1)
 
         host, plan, outcome = await self.pod({"scope": {"answer": "x" * 4000, "quotes": [quote(api, 2, "rotate(size)")]}}, "pass")
@@ -255,7 +281,7 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         answer = contract(schema(shapes.ANSWER, critical=True))
         for key in ("one", "two"):
             await plan.todo(key=key, delegate=Reader(partition=["local://docs"], note="read it"), accept=answer)
-        await plan.todo(key="arbiter", delegate=Writer(), accept=GREEN)
+        await plan.todo(key="arbiter", delegate=Writer(accept=GREEN))
         items = host.plans[plan.id]["todos"][-1]["contract"]["items"]
         items[0]["critical"] = False
         items.append({"id": "taste", "critical": False, "weight": 1, "decider": {"judge": {}}})
@@ -264,7 +290,7 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         problems = "; ".join(refused.exception.problems)
         for name in ("a brief of its own", "needs a critical cmd or example", "carries a judge item"):
             self.assertIn(name, problems)
-        self.assertEqual(host.starts, [])
+        self.assertEqual(host.starts, ["one", "two", "arbiter"], "the engine's starts; the refused shape adds none")
 
 
     async def test_both_shapes_do_useful_work_and_the_overhead_is_counted(self) -> None:
@@ -274,8 +300,8 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         await writers(plan, host, "a", "b")
         before = sum(host.requests.values())
         self.assertEqual((await plan.run(shape=fork_join, budget=30)).outcome, "verified_success")
-        shaped, direct = sum(host.requests.values()) - before, 2 * 2
-        self.assertEqual((shaped, direct), (9, 4), "fork_join: a repair, three views and a wait over two starts and two dones")
+        shaped, direct = sum(host.requests.values()) - before, 2
+        self.assertEqual((shaped, direct), (9, 2), "fork_join: a repair, seven views and a wait over a wait and a view; the engine steps both")
 
         host = FakeHost()
         plan = await Plan.create("which module rotates by size?")
@@ -291,7 +317,7 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await plan.run(shape=scatter, budget=30)).outcome, "verified_success")
         self.assertEqual(json.loads(product(host, plan["lead"]))["answer"], ["api", "cli"])
         shaped, direct = sum(host.requests.values()) - before, len(ARCHIVE)
-        self.assertEqual((shaped, direct), (18, 2), "scatter: seven ops, four reads, a wait, two results and four fetches")
+        self.assertEqual((shaped, direct), (16, 2), "scatter: seven ops, four reads, a wait and four fetches")
 
 
 if __name__ == "__main__":

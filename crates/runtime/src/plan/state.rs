@@ -16,8 +16,8 @@ use yi_types::plan::op::{Op, Reaped, Reconciliation, Resolution, Resolve, SetRow
 
 use super::ops::{OWNER_AGENT, PlanOpError};
 use super::table::{
-    OpKind, add_edge, append_todos, charge_retry, check_plan_state, check_terminal, locate_step,
-    new_todo, reorder_todos, step, validate_plan, validate_shape,
+    OpKind, add_edge, append_todos, charge_retry, check_contracted, check_plan_state,
+    check_terminal, locate_step, new_todo, reorder_todos, step, validate_plan,
 };
 
 pub const KIND_IMPORT: &str = "import";
@@ -29,6 +29,7 @@ pub const SUBMITTED_KEY: &str = "submitted";
 pub const KIND_VERIFICATION_REQUESTED: &str = "verification_requested";
 pub const KIND_DONE_REFUSED: &str = "done_refused";
 pub const KIND_VERIFICATION_STALE: &str = "verification_stale";
+pub const KIND_LEFT: &str = "left";
 use super::acceptance::{
     KIND_ACCEPTED, KIND_CANDIDATE_SUBMITTED, KIND_CANDIDATE_VERIFIED, KIND_DISPOSITION,
     KIND_INTEGRATION_INTENT, KIND_INTEGRATION_PREPARED, KIND_INTEGRATION_STALE,
@@ -335,9 +336,7 @@ pub fn apply(state: &mut RootState, record: &JournalRecord) -> Result<(), Reduce
                 .and_then(|value| {
                     serde_json::from_value(value).map_err(|e| bad_args(e.to_string()))
                 })?;
-            // Invariant: an import is read as it was written, so the reduce holds a legacy
-            // document to the shape alone, exactly as `import` itself does.
-            validate_shape(&plan).map_err(failed)?;
+            validate_plan(&plan).map_err(failed)?;
             state.plans.insert(plan.id.clone(), plan.unmarked());
         }
         KIND_SPAWN_INTENT => {
@@ -393,6 +392,7 @@ pub fn apply(state: &mut RootState, record: &JournalRecord) -> Result<(), Reduce
         | KIND_INTEGRATION_INTENT
         | KIND_INTEGRATION_PREPARED
         | KIND_INTEGRATION_STALE
+        | KIND_LEFT
         | KIND_DISPOSITION => {}
         // A verified candidate or integration settles the effect it names; the acceptance
         // record is the `done` transition with its body (plan section 6.6).
@@ -943,7 +943,7 @@ fn apply_retry(
     todo.extra.remove(SUBMITTED_KEY);
     if let Some(replacement) = delegation {
         todo.delegation = Some(replacement.clone());
-        return validate_plan(plan);
+        return check_contracted(todo);
     }
     Ok(())
 }
