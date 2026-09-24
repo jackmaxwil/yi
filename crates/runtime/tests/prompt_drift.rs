@@ -69,6 +69,27 @@ fn doctrine_names_only_ops_the_todo_tool_accepts() -> TestResult {
     Ok(())
 }
 
+/// Dies with the text a model reads behind the engine: with a plan open the todo tool sold its
+/// ops as the list's, and the plan schema offered a worktree with no contract (D223, D226).
+#[test]
+fn the_tool_text_says_the_plan_is_the_list_and_a_worktree_needs_a_contract() -> TestResult {
+    let todo = yi_runtime::todo::tool::DESCRIPTION;
+    assert!(
+        todo.contains("While a plan is open the plan is the list"),
+        "{todo}"
+    );
+    let schema = yi_runtime::plan::tool::schema();
+    let todos = schema["properties"]["todos"]["description"]
+        .as_str()
+        .ok_or("no todos text")?;
+    assert!(
+        todos.contains("isolation worktree requires a contract"),
+        "{todos}"
+    );
+    assert!(!todos.contains("completes unverified"), "{todos}");
+    Ok(())
+}
+
 /// Listing formats in `read`'s description is a claim about the installed wheel, so the list is
 /// checked against the wheel itself, both ways.
 #[test]

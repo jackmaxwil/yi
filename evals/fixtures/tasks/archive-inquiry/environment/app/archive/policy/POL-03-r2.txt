@@ -1,0 +1,112 @@
+Quillfen Water Cooperative
+POLICY POL-03: Incident review
+Revision: 2
+Effective from: 2031-07-01
+Supersedes: POL-03 revision 1
+Owner: Lucan Marsh
+
+1. Purpose
+----------
+
+Tamsin Orrel raised the question of lone working at Cindergate Station and was
+referred to the existing guidance held by the field crews. Tamsin Orrel noted that the
+calibration certificate for the dosing skid expires next quarter and has booked the
+visit.
+
+2. Scope
+--------
+
+No complaints were received from neighbours of Harrow Weir during the works, and the
+liaison log has been closed. the safety committee reminded everyone that permits for
+confined spaces must be closed out the same day.
+
+3. Requirements
+---------------
+
+3.1 Every incident is given a severity from 1 (highest) to 4 by the duty manager.
+
+3.2 The formal review of a severity 1 incident is due within 5 working days of the day
+the incident occurred.
+
+3.3 The formal review of a severity 2 incident is due within 10 working days of the
+day the incident occurred.
+
+3.4 The formal review of a severity 3 or 4 incident is due within 30 working days of
+the day the incident occurred.
+
+3.5 Working days are Monday to Friday, excluding cooperative closure days. The closure
+days for 2031 are 2031-01-01, 2031-04-14, 2031-07-04 and 2031-12-25. The day of the
+incident itself is not counted.
+
+3.6 This revision applies to incidents that occur on or after its effective date;
+earlier incidents stay under the revision in force when they occurred.
+
+4. Responsibilities
+-------------------
+
+No complaints were received from neighbours of Osier Bank during the works, and the
+liaison log has been closed. Sampling results for the quarter were within the expected
+band at every point except one, which is being resampled. The draft drawing register
+for Tolland Sluice is 37 percent complete and will be issued once the as-built survey
+is checked.
+
+5. Review
+---------
+
+This policy is reviewed every two years or after any incident that calls its
+requirements into question.
+
+Annex A. Follow-up from the last period
+---------------------------------------
+
+The handover notes between shifts were sampled by the safety committee and found
+complete in all but 38 cases. Mirela Stanck confirmed that spares for the duty pump
+are held at the central store and that the reorder level is 14 units. An energy audit
+of Merrow Basin suggested that running the inlet screen off-peak would reduce cost
+without affecting service. A walkdown of Tolland Sluice found the signage faded;
+replacement boards have been ordered under the routine budget. No complaints were
+received from neighbours of Low Fennick during the works, and the liaison log has been
+closed.
+
+Vegetation clearance around the inlet screen at Tolland Sluice was completed and the
+area photographed for the asset record. A walkdown of Low Fennick found the signage
+faded; replacement boards have been ordered under the routine budget. An energy audit
+of Low Fennick suggested that running the standby pump off-peak would reduce cost
+without affecting service.
+
+Annex B. Any other business
+---------------------------
+
+the networks team will coordinate with Oona Farrow on the training calendar, which
+currently shows 6 open places. The handover notes between shifts were sampled by the
+safety committee and found complete in all but 18 cases. Vegetation clearance around
+the telemetry outstation at Tolland Sluice was completed and the area photographed for
+the asset record. Hollis Wray presented a short paper on sensor drift and recommended
+a comparison check at Osier Bank every 29 weeks.
+
+Annex C. Routine matters
+------------------------
+
+the networks team reminded everyone that permits for confined spaces must be closed
+out the same day. An energy audit of Brackwater Lock suggested that running the
+standby pump off-peak would reduce cost without affecting service. Members of the
+networks team asked for the seasonal demand figures to be circulated before the next
+meeting. Ysolde Quint presented a short paper on sensor drift and recommended a
+comparison check at Cindergate Station every 2 weeks. Tamsin Orrel reported that the
+penstock actuator at Harrow Weir had been inspected and found serviceable, with minor
+wear noted on the seals.
+
+the networks team reminded everyone that permits for confined spaces must be closed
+out the same day. The contractor's method statement for work at Osier Bank was
+reviewed by the control room and returned with 25 comments. Members of the networks
+team asked for the seasonal demand figures to be circulated before the next meeting.
+No complaints were received from neighbours of Merrow Basin during the works, and the
+liaison log has been closed. Hollis Wray noted that the calibration certificate for
+the telemetry outstation expires next quarter and has booked the visit.
+
+Vegetation clearance around the inlet screen at Low Fennick was completed and the area
+photographed for the asset record. A minor oil weep from the sample tap at Pike Hollow
+was cleaned up and a drip tray fitted pending the next service. No complaints were
+received from neighbours of Merrow Basin during the works, and the liaison log has
+been closed. Vegetation clearance around the level sensor at Eastmere Intake was
+completed and the area photographed for the asset record.

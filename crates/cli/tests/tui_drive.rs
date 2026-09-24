@@ -420,6 +420,27 @@ fn one_path_for_both_capture_sinks_is_refused() -> TestResult {
     Ok(())
 }
 
+/// Dies with the cassette dropped on the console road: `yi console --faux` reused a listening
+/// daemon that never saw the cassette, so the scripted family met a real model.
+#[test]
+fn a_cassette_is_refused_where_it_cannot_reach_the_model() -> TestResult {
+    let dir = Scratch::new("yi-faux-console")?;
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(&cassette, "")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the flag contract is the spawned binary's argument parser"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args(["console", "--faux", &cassette.display().to_string()])
+        .env("HOME", dir.home()?)
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("--faux runs in-process only"), "{stderr}");
+    Ok(())
+}
+
 /// A paced `type` step holds the outer loop for its whole duration, and the
 /// wall clock is read there: without a check inside the step, a long paced
 /// line ran to completion past the deadline meant to bound it. Counting the
@@ -776,6 +797,66 @@ fn an_always_allowed_directory_edits_without_a_second_prompt() -> TestResult {
     assert_eq!(
         std::fs::read_to_string(dir.join("notes/two.md"))?,
         "second\n"
+    );
+    Ok(())
+}
+
+/// Quit while a kernel cell sleeps: the process has to leave before the cell would end.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn quitting_during_a_running_kernel_cell_exits_promptly() -> TestResult {
+    let dir = Scratch::new("yi-tui-quit-cell")?;
+    let home = dir.home()?;
+    let calls = [
+        ("ipython", serde_json::json!({ "code": "print('booted')" })),
+        (
+            "ipython",
+            serde_json::json!({ "code": "import time\ntime.sleep(900)" }),
+        ),
+    ];
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(&cassette, cassette_lines(&calls, "done"))?;
+    let keys = dir.join("script.keys");
+    std::fs::write(&keys, "wait-frame 600000 time.sleep(900)\nquit\n")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--deadline",
+            "600",
+            "--model",
+            "faux/faux-1",
+        ])
+        .args(["--faux", &cassette.display().to_string()])
+        .args(["--session-dir", &dir.join("sessions").display().to_string()])
+        .args(["--keys", &keys.display().to_string(), "go"])
+        .env("HOME", &home)
+        // One venv per target dir, reused by every run rather than rebuilt under each HOME.
+        .env(
+            "YI_KERNEL_VENV",
+            std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("drive-kernel-venv"),
+        )
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill()?;
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    assert!(
+        status.is_some_and(|status| status.success()),
+        "the drive was still running a 900 s cell 300 s in, after its quit: {status:?}"
     );
     Ok(())
 }

@@ -116,6 +116,53 @@ async fn a_faux_turn_leaves_a_request_and_a_turn_span_beside_the_session() -> Te
     Ok(())
 }
 
+/// Guards the run-start read of the model: the wake handle is minted at wiring, before a
+/// `/model` switch, and a snapshot would call the startup model on every woken turn.
+#[tokio::test]
+async fn a_wake_built_before_a_model_switch_runs_the_woken_turn_on_the_new_model() -> TestResult {
+    let root = Scratch::new("yi-telemetry-wake-model")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-telemetry".to_owned());
+    let store = repo.create(CreateOptions::default())?;
+    let telemetry = Arc::new(Telemetry::default());
+    let provider = ProviderStream::new(None, None).with_telemetry(Some(Arc::clone(&telemetry)));
+    provider.queue_faux(vec![reply_with_usage("woke", 1, 1)]);
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::new(provider),
+    );
+    session.set_telemetry(Arc::clone(&telemetry));
+    session.attach_store(store)?;
+    let wake = yi_runtime::wiring::lifecycle_notice(&session);
+    let mut switched = faux_model();
+    switched.id = "faux-2".to_owned();
+    session.set_model(switched);
+    wake(
+        "[subagent helper (sub-1) finished]\nLast answer: done",
+        None,
+    );
+    let path = telemetry.path().ok_or("no sidecar bound")?;
+    let mut request = None;
+    for _ in 0..200 {
+        if path.exists() {
+            request = spans_in(&path)?
+                .into_iter()
+                .find(|s| s.span == SpanKind::Request);
+        }
+        if request.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let request = request.ok_or("the wake never reached the provider")?;
+    assert_eq!(request.model.as_deref(), Some("faux-2"));
+    Ok(())
+}
+
 /// A tool span is a projection of the end event: its duration is the one the loop stamped.
 #[test]
 fn a_tool_end_event_becomes_a_tool_span_with_the_loops_duration() -> TestResult {

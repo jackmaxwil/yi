@@ -1,0 +1,68 @@
+# capture started 2031-09-17 (UTC); collector clocks are not synchronised
+[col-c] 23:39:03.460 id=w-1fca6b tenant=borealis op=put key=idx/1 ver=1
+[col-c] 23:39:06.952 id=w-049694 tenant=acme op=put key=idx/0 ver=2
+[col-b] 23:41:16.277 id=w-5f8f63 tenant=borealis op=put key=idx/0 ver=1
+[col-a] 23:39:11.521 id=w-63c2b8 tenant=acme op=put key=idx/2 ver=1
+[col-a] 23:39:13.505 id=w-1ce31b tenant=acme op=get key=idx/0
+[col-b] 23:41:24.917 id=w-5cf690 tenant=borealis op=get key=idx/1
+[col-c] 23:39:22.648 id=w-22b2c6 tenant=borealis op=get key=idx/1
+[col-a] 23:39:20.914 id=w-e5b430 tenant=acme op=get key=idx/1
+[col-a] 23:39:23.768 id=w-9a2cb9 tenant=borealis op=put key=idx/2 ver=1
+[col-c] 23:39:29.377 sync ref=1947454828471
+[col-b] 23:41:34.723 id=w-d55697 tenant=borealis op=del key=cfg/2
+[col-a] 23:39:28.683 sync ref=1947454829727
+[col-c] 23:39:31.180 id=w-e877f5 tenant=borealis op=get key=idx/1
+[col-d] 23:41:59.117 id=w-35b2a6 tenant=acme op=put key=idx/2 ver=3
+[col-c] 23:39:31.268 id=w-4b7750 tenant=borealis op=put key=idx/1 ver=2
+[col-d] 23:41:59.525 id=w-543d25 tenant=borealis op=get key=idx/1
+[col-d] 23:42:01.983 sync ref=1947454834466
+[col-b] 23:41:43.987 id=w-32cf9c tenant=borealis op=put key=idx/1 ver=3
+[col-c] 23:39:37.497 id=w-0a462e tenant=acme op=del key=idx/2
+[col-b] 23:41:49.233 id=w-e3ea63 tenant=acme op=get key=cfg/2
+[col-d] 23:42:10.477 id=w-0c9cb7 tenant=borealis op=put key=cfg/2 ver=1
+[col-b] 23:41:52.667 id=w-55b4d6 tenant=acme op=get key=idx/0
+[col-d] 23:42:14.610 id=w-e27fe8 tenant=acme op=put key=cfg/2 ver=1
+[col-c] 23:39:49.836 id=w-b8895e tenant=acme op=del key=cfg/0
+[col-d] 23:42:20.079 id=w-9d79e5 tenant=borealis op=del key=idx/1
+[col-b] 23:42:02.861 id=w-5b37da tenant=borealis op=put key=cfg/2 ver=3
+[col-b] 23:42:06.885 id=w-01210e tenant=acme op=put key=cfg/1 ver=2
+[col-c] 23:40:02.501 id=w-892511 tenant=borealis op=get key=idx/0
+[col-a] 23:40:03.564 id=w-a9a60c tenant=borealis op=get key=idx/2
+[col-c] 23:40:08.720 id=w-36b03e tenant=borealis op=get key=idx/1
+[col-c] 23:40:11.996 id=w-e579f3 tenant=borealis op=put key=cfg/1 ver=1
+[col-a] 23:40:12.288 id=w-e9ccbe tenant=acme op=put key=cfg/2 ver=2
+[col-a] 23:40:15.250 id=w-69996c tenant=borealis op=put key=cfg/0 ver=2
+[col-c] 23:40:17.686 id=w-561475 tenant=borealis op=put key=idx/0 ver=3
+[col-c] 23:40:22.612 id=w-6be703 tenant=borealis op=put key=idx/1 ver=4
+[col-b] 23:42:30.718 sync ref=1947454882888
+[col-d] 23:42:52.897 id=w-289d4e tenant=borealis op=put key=cfg/0 ver=4
+[col-a] 23:40:24.228 id=w-3930fe tenant=acme op=put key=idx/0 ver=4
+[col-b] 23:42:37.747 id=w-08c4d5 tenant=borealis op=put key=idx/1 ver=5
+[col-a] 23:40:31.296 id=w-d5d688 tenant=acme op=put key=cfg/2 ver=4
+[col-b] 23:42:44.342 id=w-642a9e tenant=acme op=put key=cfg/1 ver=4
+[col-d] 23:43:07.303 id=w-5bf328 tenant=borealis op=put key=cfg/0 ver=5
+[col-c] 23:40:45.399 id=w-d433e1 tenant=acme op=put key=idx/2 ver=4
+[col-b] 23:42:56.953 id=w-7bf6b6 tenant=acme op=get key=cfg/1
+[col-d] 23:43:17.888 sync ref=1947454913127
+[col-c] 23:40:52.985 id=w-e9984a tenant=borealis op=put key=cfg/1 ver=2
+[col-c] 23:40:58.241 sync ref=1947454916109
+[col-a] 23:40:54.778 id=w-2ca8f9 tenant=borealis op=put key=cfg/1 ver=3
+[col-b] 23:43:05.493 id=w-936050 tenant=borealis op=put key=idx/2 ver=2
+[col-c] 23:41:00.976 id=w-5ac74e tenant=borealis op=put key=cfg/1 ver=5
+[col-d] 23:43:26.631 id=w-2471d5 tenant=borealis op=put key=cfg/0 ver=7
+[col-b] 23:43:11.277 id=w-ae15eb tenant=borealis op=put key=cfg/2 ver=4
+[col-c] 23:41:09.727 id=w-90da4b tenant=acme op=get key=cfg/0
+[col-a] 23:41:05.956 id=w-c929ac tenant=borealis op=get key=cfg/0
+[col-d] 23:43:35.455 id=w-d77d62 tenant=borealis op=put key=cfg/2 ver=3
+[col-b] 23:43:19.526 id=w-83ab6c tenant=borealis op=get key=cfg/2
+[col-b] 23:43:23.611 id=w-468329 tenant=borealis op=put key=cfg/1 ver=3
+[col-b] 23:43:28.247 id=w-25f2ae tenant=acme op=put key=idx/2 ver=3
+[col-c] 23:41:23.406 id=w-e30481 tenant=borealis op=get key=cfg/2
+[col-a] 23:41:21.598 id=w-5893ff tenant=acme op=get key=cfg/0
+[col-a] 23:41:23.535 sync ref=1947454944579
+[col-d] 23:43:48.236 id=w-158a12 tenant=acme op=put key=cfg/0 ver=2
+[col-b] 23:43:35.791 id=w-c69d46 tenant=acme op=put key=idx/0 ver=6
+[col-c] 23:41:31.945 id=w-81eecb tenant=borealis op=get key=idx/1
+[col-a] 23:41:33.089 id=w-1068bf tenant=borealis op=put key=idx/0 ver=4
+[col-d] 23:44:03.611 id=w-18a36f tenant=acme op=put key=cfg/2 ver=6
+[col-b] 23:43:51.175 id=w-78b3b9 tenant=borealis op=put key=cfg/1 ver=7

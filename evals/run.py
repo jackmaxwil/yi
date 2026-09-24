@@ -142,6 +142,9 @@ def run_task(task_dir, binary, model, out=None):
             str(sessions),
             "--deadline",
             str(spec.get("timeoutSec", 600)),
+            # The binary reads YI_LEVERS only under this flag, and only a harness passes
+            # it (D220); an older binary that has no flag never sees it either.
+            *(["--eval"] if os.environ.get(yi_usage.LEVERS_ENV) else []),
             prompt,
         ]
         timed_out = False
@@ -334,7 +337,7 @@ def run_live(args):
     if args.task:
         specs = [spec for spec in specs if spec.name in set(args.task)]
     suite = f"live@{_capture(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'])}"
-    mode = "live" + yi_usage.routing_label(os.environ)
+    mode = "live" + yi_usage.routing_label(os.environ) + yi_usage.levers_label(os.environ)
     fingerprint = yi_usage.config_fingerprint(_capture([args.binary, "--version"]), args.model, mode, suite)
     rows, spent, budget_hit = [], 0.0, False
     for task_dir in specs:
@@ -435,7 +438,7 @@ def main(argv=None):
         return report(errors, 0)
 
     suite = f"fixtures@{_capture(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'])}"
-    mode = (f"yolo+{args.variant}" if args.variant else "yolo") + yi_usage.routing_label(os.environ)
+    mode = (f"yolo+{args.variant}" if args.variant else "yolo") + yi_usage.routing_label(os.environ) + yi_usage.levers_label(os.environ)
     fingerprint = yi_usage.config_fingerprint(
         _capture([args.binary, "--version"]), args.model, mode, suite
     )

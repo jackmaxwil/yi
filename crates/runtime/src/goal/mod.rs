@@ -23,7 +23,7 @@ pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one wit
 pub const DEFAULT_CHECK_TIMEOUT_MS: u64 = 600_000;
 const CHECK_TAIL_CHARS: usize = 2_000;
 
-fn output_tail(capture: &yi_tools::CommandCapture) -> String {
+pub(crate) fn output_tail(capture: &yi_tools::CommandCapture) -> String {
     let mut combined = String::new();
     if !capture.stdout.trim().is_empty() {
         combined.push_str(capture.stdout.trim_end());
@@ -43,9 +43,9 @@ fn output_tail(capture: &yi_tools::CommandCapture) -> String {
 }
 
 /// Exit 0 is the only pass; the Err carries the model-facing evidence.
-pub(crate) fn run_check(check: &str, timeout_ms: u64) -> Result<(), String> {
+pub(crate) fn run_check(check: &str, cwd: &std::path::Path, timeout_ms: u64) -> Result<(), String> {
     let mut command = yi_tools::command("sh");
-    command.arg("-c").arg(check);
+    command.arg("-c").arg(check).current_dir(cwd);
     let deadline = Instant::now()
         .checked_add(std::time::Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
@@ -65,6 +65,36 @@ pub(crate) fn run_check(check: &str, timeout_ms: u64) -> Result<(), String> {
             ))
         }
     }
+}
+
+/// The environment a checker may see beyond what its manifest declares (plan section 6.3).
+pub const CHECKER_ENV_BASE: [&str; 4] = ["PATH", "HOME", "LANG", "TMPDIR"];
+
+/// # Errors
+/// The shell did not spawn. Runs `/bin/sh -c` with `env_clear()` plus the base allowlist.
+pub(crate) fn run_check_in(
+    cwd: &std::path::Path,
+    command: &str,
+    env_names: &[String],
+    stdin: Option<Vec<u8>>,
+    deadline: Instant,
+    stop: Option<&yi_tools::CancelFlag>,
+) -> Result<yi_tools::CommandCapture, String> {
+    let mut shell = yi_tools::command("/bin/sh");
+    shell.arg("-c").arg(command).current_dir(cwd).env_clear();
+    for name in CHECKER_ENV_BASE
+        .iter()
+        .map(|name| (*name).to_owned())
+        .chain(env_names.iter().cloned())
+    {
+        if let Some(value) = std::env::var_os(&name) {
+            shell.env(name, value);
+        }
+    }
+    let stop = stop.cloned();
+    let cancelled: yi_tools::CancelFlag =
+        Arc::new(move || Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop()));
+    yi_tools::run_captured(shell, stdin, &cancelled, yi_tools::OUTPUT_CAP)
 }
 
 pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
@@ -214,6 +244,7 @@ fn usage_delta(usage: &yi_types::message::Usage) -> u64 {
 pub struct GoalService {
     store: StoreHandle,
     plans_dir: std::path::PathBuf,
+    cwd: std::path::PathBuf,
     deliver: DeliverFn,
     /// Set by an abort: auto-continuation stops until the next real user input.
     deferred: Mutex<bool>,
@@ -223,10 +254,11 @@ pub struct GoalService {
 }
 
 impl GoalService {
-    pub fn new(store: StoreHandle, deliver: DeliverFn) -> Self {
+    pub fn new(store: StoreHandle, deliver: DeliverFn, cwd: std::path::PathBuf) -> Self {
         Self {
             store,
             plans_dir: crate::plan::default_plans_dir(),
+            cwd,
             deliver,
             deferred: Mutex::new(false),
             pending: Mutex::new(false),
@@ -326,7 +358,7 @@ impl GoalService {
             && let Some(check) = goal.check.clone()
         {
             let timeout = goal.check_timeout_ms.unwrap_or(DEFAULT_CHECK_TIMEOUT_MS);
-            if let Err(evidence) = run_check(&check, timeout) {
+            if let Err(evidence) = run_check(&check, &self.cwd, timeout) {
                 goal.check_failure = Some(evidence.clone());
                 goal.updated = yi_session::now_ms();
                 self.write_goal(goal)?;
@@ -369,7 +401,9 @@ impl GoalService {
                 Some((id, check)) => {
                     let evidence = adjudged
                         .entry(id.clone())
-                        .or_insert_with(|| run_check(&check, DISCOVERY_CHECK_TIMEOUT_MS).err())
+                        .or_insert_with(|| {
+                            run_check(&check, &self.cwd, DISCOVERY_CHECK_TIMEOUT_MS).err()
+                        })
                         .clone();
                     match evidence {
                         None => {
@@ -610,15 +644,11 @@ fn as_object(value: Value) -> Result<Map<String, Value>, String> {
 pub fn attach_goal(
     session: &crate::AgentSession,
     plans_dir: std::path::PathBuf,
+    cwd: std::path::PathBuf,
 ) -> Arc<GoalService> {
-    let steer = session.heartbeat_hook();
-    let wake = session.wake_idle_hook();
-    let deliver: DeliverFn = Arc::new(move |message, mode| match mode {
-        DeliveryMode::Steer => steer(message, DeliveryMode::Steer),
-        DeliveryMode::FollowUp => wake(message),
-    });
+    let deliver: DeliverFn = session.heartbeat_hook();
     let service =
-        Arc::new(GoalService::new(session.store_handle(), deliver).with_plans_dir(plans_dir));
+        Arc::new(GoalService::new(session.store_handle(), deliver, cwd).with_plans_dir(plans_dir));
     let mut events = session.subscribe();
     let observer = Arc::clone(&service);
     tokio::spawn(async move {

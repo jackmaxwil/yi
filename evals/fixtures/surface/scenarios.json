@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "write-then-edit",
+      "road": "#473 write mints the edit tag and never shows it, so the model invents one",
+      "prompt": "In the current directory, write a file `stats.py` holding a function `mean(xs)` that returns the arithmetic mean of a list of numbers, and a `__main__` block printing `mean([1,2,3])`. Then edit exactly one line of that file so the function returns 0.0 for an empty list instead of raising. Run it once to show it works. Do not rewrite the whole file for the second step: use the edit tool.",
+      "timeoutSec": 420,
+      "seed": {},
+      "clean": {"files": ["stats.py"], "noRefusalsFrom": ["edit"]}
+    },
+    {
+      "id": "long-todo-label",
+      "road": "#474 a todo the renderer cut at 80 chars cannot be named back",
+      "prompt": "Set up a todo list with exactly these three items, verbatim:\n- `gateway`: trace the root failure behind an alert in an interleaved multi-process log file\n- `billing`: reconcile the ledger against the daily settlement export\n- `quota`: report the first daily quota breach per account\nThen do the first item's work in miniature: write a file `gateway.md` with one sentence saying what such a trace would need. Then mark that first todo done with evidence, naming it by its label rather than its id.",
+      "timeoutSec": 420,
+      "seed": {},
+      "clean": {"files": ["gateway.md"], "noRefusalsFrom": ["todo"]}
+    },
+    {
+      "id": "process-substitution",
+      "road": "#476 the bash tool spawns sh, so process substitution is a syntax error",
+      "prompt": "Compare a.json and b.json by their pretty-printed forms without writing any temporary file: use one shell command with process substitution. Then write the differing key name alone into `diff.txt`.",
+      "timeoutSec": 420,
+      "seed": {"a.json": "{\"b\": 2, \"a\": 1}\n", "b.json": "{\"a\": 1, \"b\": 3}\n"},
+      "clean": {"files": ["diff.txt"], "noRefusalsFrom": ["bash"]}
+    },
+    {
+      "id": "child-json-answer",
+      "road": "#475 a child's fenced JSON answer is refused as text",
+      "prompt": "Spawn one child agent with rlm.run and ask it to read notes.txt and answer with JSON matching the schema {\"type\":\"object\",\"properties\":{\"lines\":{\"type\":\"integer\"},\"topic\":{\"type\":\"string\"}},\"required\":[\"lines\",\"topic\"]}. Collect its answer with that schema and write the JSON you got into `answer.json`.",
+      "timeoutSec": 600,
+      "seed": {"notes.txt": "the parser handles quotas\nthe ledger is reconciled nightly\n"},
+      "clean": {"files": ["answer.json"], "noRefusalsFrom": []}
+    },
+    {
+      "id": "plan-fanout",
+      "road": "#468 #469 #470 dispatch width, the submit a child is never told about, and who must act",
+      "prompt": "Open a plan with three independent todos, each delegated to a worktree child: 'alpha' writes alpha.txt holding the word alpha, 'beta' writes beta.txt holding beta, 'gamma' writes gamma.txt holding gamma. The engine starts, verifies and accepts delegated todos: wait until the plan shows them done. Report at the end how many were dispatched at once and how many were held.",
+      "timeoutSec": 900,
+      "seed": {},
+      "clean": {"files": [], "noRefusalsFrom": ["todo"]}
+    },
+    {
+      "id": "plan-width-lever",
+      "road": "#468 plan.width_max must be able to raise the width on a small host",
+      "prompt": "Open a plan with two independent todos, each delegated to a worktree child: 'one' writes one.txt holding the word one, 'two' writes two.txt holding two. Report the exact text of the plan dispatch notice you receive, verbatim, then stop. Do not start any todo and do not do the work yourself.",
+      "timeoutSec": 300,
+      "seed": {},
+      "levers": {"plan.width_max": 1},
+      "clean": {"files": [], "noRefusalsFrom": ["plan"]}
+    },
+    {
+      "id": "awkward-calls",
+      "road": "#472 a refusal names the rule and not the caller's own mistake",
+      "prompt": "Update cfg.json so n is 2. Then add a todo item called `verify cfg` and mark it done with evidence. Then read cfg.json back to confirm.",
+      "timeoutSec": 420,
+      "seed": {"cfg.json": "{\"n\": 1}\n"},
+      "clean": {"files": ["cfg.json"], "noRefusalsFrom": ["edit", "todo"]}
+    },
+    {
+      "id": "plan-child-submit",
+      "road": "#478 a dispatched child is told to submit and neither submit road is open to it",
+      "prompt": "Open a plan with exactly one todo, delegated to a worktree child: 'alpha' writes a file alpha.txt holding the word alpha. The engine starts it and accepts the child's finish; wait until the plan shows the todo done or failed. Report the todo's final state and the exact text of any refusal you met.",
+      "timeoutSec": 900,
+      "seed": {},
+      "clean": {"files": [], "noRefusalsFrom": []}
+    },
+    {
+      "id": "plan-covered-write",
+      "road": "#488 a covered write carries the contract checker's verdict",
+      "prompt": "Open a plan with exactly one todo, delegated to a worktree child: 'alpha' writes a file alpha.txt holding the word alpha. Give the todo this contract so every write the child makes to alpha.txt is checked: {\"class\": \"writer\", \"covers\": [\"alpha.txt\"], \"items\": [{\"id\": \"alpha\", \"critical\": true, \"weight\": 1, \"decider\": {\"cmd\": \"grep -qx alpha alpha.txt\"}}]}. The engine starts it and accepts the child's finish; wait until the plan shows the todo done or failed. Report the todo's final state and the exact text of any refusal you met.",
+      "timeoutSec": 900,
+      "seed": {},
+      "clean": {"files": [], "noRefusalsFrom": []}
+    },
+    {
+      "id": "mbx-ask",
+      "road": "child asks its parent, parent answers, child finishes",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn exactly one child with rlm.run(brief, name='asker') where brief is: 'You need a file name from your parent before you can work. Ask your parent which file name to use and wait for the answer. Then create that file in the current directory containing the single word hello, and reply with the file name you used.' When the child asks you, answer with the file name greeting.txt. Then collect the child's final answer and tell me: the question it asked, how the question reached you, and the child's final answer. Finally check that greeting.txt exists.",
+      "timeoutSec": 420,
+      "seed": {},
+      "clean": {"files": ["greeting.txt"], "noRefusalsFrom": ["ipython"]}
+    },
+    {
+      "id": "mbx-steer",
+      "road": "plain send vs followup send to a child busy in its first bash call",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn one child with rlm.run(brief, name='counter') where brief is: 'Run the bash command `sleep 15` three separate times, one call per turn. Then reply with the word DONE, and obey every instruction your parent sent you while you worked.' In the same cell, first poll await rlm.status('counter') every second until its entry shows tools of at least 1, so the child is inside its first bash call; only then call rlm.send('counter', 'Include the word BANANA in your final answer.') and print its receipt, then call rlm.send('counter', 'Include the word CHERRY in your final answer.', followup=True) and print that receipt. Then wait for the child's result and report both receipts and whether BANANA and CHERRY appear in its final answer.",
+      "timeoutSec": 420,
+      "seed": {},
+      "clean": {"files": [], "noRefusalsFrom": ["ipython"]}
+    },
+    {
+      "id": "mbx-siblings",
+      "road": "one sibling mails another directly",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn two children in one cell. First rlm.run(brief_b, name='beta') with brief_b: 'A sibling named alpha will send you a number. Wait until you have received it, then answer with that number plus one, and nothing else.' Then rlm.run(brief_a, name='alpha') with brief_a: 'Compute 17*23. Send the result to your sibling beta with rlm.send(\"beta\", str(n)). Then answer with the number.' Wait for both, then report each child's final answer and whether beta answered 392.",
+      "timeoutSec": 420,
+      "seed": {},
+      "clean": {"files": [], "noRefusalsFrom": ["ipython"]}
+    },
+    {
+      "id": "mbx-service",
+      "road": "requests and sends to a service across idle turns",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Start a service with rlm.service('tally', brief) where brief is: 'You keep a running total starting at 0. Each message you receive is a number: add it to the total. When the message is a request, answer it with rlm.send(sender, str(total), reply_to=<its id>).' Then call rlm.request('tally', '5') and print the reply, then rlm.request('tally', '7') and print the reply, then rlm.send('tally', '10') without followup and print the receipt, then rlm.request('tally', '0') and print the reply. Finally print rlm.status() and report the totals you got back and whether the last one is 22.",
+      "timeoutSec": 420,
+      "seed": {},
+      "clean": {"files": [], "noRefusalsFrom": ["ipython"]}
+    },
+    {
+      "id": "mbx-fanout",
+      "road": "waiting on several children with the wait cursor",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn three children in one cell: name='s1' with brief 'Run the bash command sleep 5, then reply with exactly the word ONE', name='s2' with brief 'Run the bash command sleep 25, then reply with exactly the word TWO', name='s3' with brief 'Run the bash command sleep 45, then reply with exactly the word THREE'. Then, in a loop over rlm.wait with its cursor, collect each child's result as soon as that child finishes, printing the elapsed seconds and the answer for each. Report the order they finished and each answer.",
+      "timeoutSec": 420,
+      "seed": {},
+      "clean": {"files": [], "noRefusalsFrom": ["ipython"]}
+    },
+    {
+      "id": "mbx-discovery",
+      "road": "a protocol child reports a discovery",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn a child with rlm.run(brief, name='auditor', check='test -f notes.txt') where brief is: 'Create notes.txt containing ok. Your final answer must be exactly this JSON object and nothing else: {\"value\": \"created\", \"discoveries\": [{\"text\": \"the repository has no README\", \"fingerprint\": \"no-readme\"}]}'. Collect the result with h.result(timeout=300) and print it whole. Report what discoveries reached you and through which channel.",
+      "timeoutSec": 360,
+      "seed": {},
+      "clean": {"files": ["notes.txt"], "noRefusalsFrom": ["ipython"]}
+    },
+    {
+      "id": "mbx-detach",
+      "road": "parent ends its turn while a child runs",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn one child with rlm.run(brief, name='slow') where brief is: 'Run the bash command sleep 30, then create done.txt containing yes, then answer DONE.' Do not wait for it in the cell: end your turn right away, saying the child is started and that its completion notice will come to you. When the notice arrives, confirm done.txt exists.",
+      "timeoutSec": 240,
+      "seed": {},
+      "clean": {"files": ["done.txt"], "noRefusalsFrom": ["ipython"]}
+    },
+    {
+      "id": "mbx-request",
+      "road": "child asks its parent through rlm.request",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn exactly one child with rlm.run(brief, name='asker') where brief is: 'You need a file name from your parent before you can work. In the ipython tool run: r = await rlm.request(\"parent\", \"Which file name should I use?\", timeout=240) and use r[\"reply\"] as the file name. Then create that file in the current directory containing the single word hello, and reply with the file name you used.' When the child's question reaches you, answer it with the file name greeting.txt, using the reply call the message names. Then collect the child's final answer and tell me the question, how it reached you, and the final answer. Check that greeting.txt exists.",
+      "timeoutSec": 360,
+      "seed": {},
+      "clean": {"files": ["greeting.txt"], "noRefusalsFrom": ["ipython"]}
+    }
+  ]
+}

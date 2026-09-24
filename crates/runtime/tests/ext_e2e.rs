@@ -372,11 +372,17 @@ fn fragment_examples_name_real_kernel_apis() -> TestResult {
         .and_then(Path::parent)
         .ok_or("no repo root")?
         .to_path_buf();
+    // Top-level defs for a module prefix; every def, methods included, for a handle's.
     let api = |path: &str, prefix: &str| -> Result<Vec<String>, Box<dyn Error>> {
         let source = std::fs::read_to_string(root.join(path))?;
         Ok(source
             .lines()
             .filter_map(|line| {
+                let line = if prefix == "plan." {
+                    line.trim_start()
+                } else {
+                    line
+                };
                 let rest = line
                     .strip_prefix("async def ")
                     .or_else(|| line.strip_prefix("def "))?;
@@ -386,23 +392,46 @@ fn fragment_examples_name_real_kernel_apis() -> TestResult {
     };
     let mut names = api("python/yi_runtime/src/rlm/__init__.py", "rlm.")?;
     names.extend(api("python/skills/goal/src/goal/__init__.py", "goal.")?);
-    let fragments = [
+    names.extend(api("python/yi_runtime/src/yi/plan.py", "plan.")?);
+    // `yi` re-exports: its names are the quoted entries of `__all__`.
+    let exported = std::fs::read_to_string(root.join("python/yi_runtime/src/yi/__init__.py"))?;
+    names.extend(exported.lines().filter_map(|line| {
+        let name = line.trim().strip_prefix('"')?.strip_suffix("\",")?;
+        Some(format!("yi.{name}"))
+    }));
+    let unknown = |fragment: &str| -> Option<String> {
+        fragment
+            .split(|ch: char| !(ch.is_alphanumeric() || ch == '.' || ch == '_'))
+            .filter(|word| {
+                ["rlm.", "goal.", "yi.", "plan."]
+                    .iter()
+                    .any(|p| word.starts_with(p))
+            })
+            .map(|word| word.trim_end_matches('.'))
+            // A sentence that ends in "plan." names no API; `yi.Plan.create` is judged as `yi.Plan`.
+            .filter(|name| name.contains('.'))
+            .map(|name| name.splitn(3, '.').take(2).collect::<Vec<_>>().join("."))
+            .find(|name| !names.iter().any(|known| known == name))
+    };
+    for fragment in [
         include_str!("../src/prompts/orchestrate.md"),
         include_str!("../src/prompts/identity.md"),
         include_str!("../src/prompts/doctrine.md"),
-    ];
-    for fragment in fragments {
-        for word in fragment.split(|ch: char| !(ch.is_alphanumeric() || ch == '.' || ch == '_')) {
-            let is_call = word.starts_with("rlm.") || word.starts_with("goal.");
-            if !is_call {
-                continue;
-            }
-            let name = word.trim_end_matches('.');
-            assert!(
-                names.iter().any(|known| known == name),
-                "fragment names {name}, which the kernel API does not export"
-            );
-        }
+    ] {
+        assert_eq!(
+            unknown(fragment),
+            None,
+            "a fragment names an API the kernel does not export"
+        );
+    }
+    let known = "p = await yi.Plan.create(goal); t = await plan.todo(key='a'); await plan.run()";
+    assert_eq!(unknown(known), None, "the gate must know the yi library");
+    for gone in [
+        "await plan.split(todo)",
+        "yi.Planner",
+        "await rlm.background(x)",
+    ] {
+        assert!(unknown(gone).is_some(), "the gate must refuse {gone}");
     }
     Ok(())
 }

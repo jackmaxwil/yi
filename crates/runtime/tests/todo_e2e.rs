@@ -975,3 +975,106 @@ fn the_header_marks_a_cut_running_label() -> TestResult {
     );
     Ok(())
 }
+
+/// Incident: 11 of 22 F0e `todo` refusals were a label the renderer had cut and marked with
+/// an ellipsis, or the same label with its backticks dropped; the refusal then echoed the
+/// stored label cut to 80 chars, which read as identical to what was sent (#474).
+#[test]
+fn a_label_the_renderer_cut_names_its_item_back() -> TestResult {
+    let (_root, session) = session("cut-label")?;
+    let tool = TodoTool::new(store_for(&session));
+    let long =
+        "`gateway`: the root failure behind an alert in an interleaved multi-process log file";
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "init", "items": [long, "`billing`: the ledger"]}),
+    );
+    assert!(!is_error, "{text}");
+    let rendered = text
+        .lines()
+        .find(|line| line.contains("t1"))
+        .ok_or("no rendered row")?
+        .to_owned();
+    assert!(rendered.contains('…'), "the row is cut: {rendered}");
+    // What the model copies out of the render, ellipsis and all.
+    let copied = rendered
+        .split_once("t1 ")
+        .map(|(_, tail)| tail.to_owned())
+        .ok_or("no label in the row")?;
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "done", "label": copied, "evidence": "`python3 check.py gateway` -> ok"}),
+    );
+    assert!(!is_error, "{text}");
+
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "start", "label": "billing: the ledger"}),
+    );
+    assert!(!is_error, "backticks dropped still names it: {text}");
+    // Three confirmation calls sent the id and the request's whole line the label was cut from.
+    let (is_error, text) = call(&tool, json!({"op": "init", "items": [long]}));
+    assert!(!is_error, "{text}");
+    let (is_error, text) = call(&tool, json!({"op": "start", "label": format!("t1 {long}")}));
+    assert!(!is_error, "the id and the uncut line name it: {text}");
+    Ok(())
+}
+
+/// Incident: four F0e `done` calls put the op in the key with the id as its value; that has
+/// one reading, while `op is required` cost the whole composed evidence string (#474).
+#[test]
+fn an_op_passed_as_a_key_lands_as_that_op() -> TestResult {
+    let (_root, session) = session("op-key")?;
+    let tool = TodoTool::new(store_for(&session));
+    let (is_error, text) = call(&tool, json!({"op": "init", "items": ["one", "two"]}));
+    assert!(!is_error, "{text}");
+    let (is_error, text) = call(
+        &tool,
+        json!({"done": "t1", "evidence": "`python3 check.py cronnext` -> ok 9 of 9 pass"}),
+    );
+    assert!(!is_error, "{text}");
+    let list = latest_record(&session).ok_or("no record")?.list;
+    let first = list.items().next().ok_or("no items")?;
+    assert_eq!(first.state, TodoStateName::Done);
+    // A set's own argument is not an id, so the repair stays off the ops that take a list.
+    let (is_error, text) = call(&tool, json!({"set": "- [ ] rebuilt"}));
+    assert!(
+        is_error,
+        "an op with no id argument is still refused: {text}"
+    );
+    Ok(())
+}
+
+/// Dies with a done that names no item closing every open item, or refused for evidence
+/// in the name of t1 that was already done, instead of landing on the one running item.
+#[test]
+fn a_done_naming_no_item_lands_on_the_running_one() -> TestResult {
+    let (_root, session) = session("done-running")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(store.clone());
+    store.apply(
+        Op::Set {
+            list: "- [x] a\n- [>] b\n- [ ] c\n".to_owned(),
+        },
+        None,
+    )?;
+    let (is_error, text) = call(&tool, json!({"op": "done"}));
+    assert!(is_error && text.contains("proves \"b\""), "{text}");
+    let (is_error, text) = call(&tool, json!({"op": "done", "evidence": "`make` ok"}));
+    assert!(!is_error, "{text}");
+    let list = store.list();
+    let done = |name: &str| {
+        list.items()
+            .any(|item| item.label.as_str() == name && item.state == TodoStateName::Done)
+    };
+    assert!(done("b") && !done("c"), "{:?}", states(&list));
+    let mut two = list.clone();
+    two.for_each_mut(|item| item.state = TodoStateName::Running);
+    store.replace_with(|_| Some(two), "engine");
+    let (is_error, text) = call(&tool, json!({"op": "done", "evidence": "`make` ok"}));
+    assert!(
+        is_error && text.contains("t1") && text.contains("t3"),
+        "{text}"
+    );
+    Ok(())
+}

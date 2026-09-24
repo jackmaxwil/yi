@@ -1,0 +1,6 @@
+{
+  "id": "archive-inquiry",
+  "dryReward": 0,
+  "timeoutSec": 3600,
+  "note": "faux never writes answers.json, so all eight questions fail"
+}

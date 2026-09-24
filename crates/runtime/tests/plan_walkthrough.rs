@@ -4,16 +4,18 @@ use scratch::Scratch;
 
 use std::error::Error;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
+use yi_kernel::client::HostHandlers;
+use yi_runtime::HostRegistry;
 use yi_runtime::plan::loop_coupling::{StopPosture, gate, stop_posture};
 use yi_runtime::plan::ops::{
-    Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec, dispatch_width,
+    Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec,
 };
-use yi_runtime::plan::store::{PlanFile, PlanStore};
+use yi_runtime::plan::store::PlanStore;
 use yi_runtime::todo::coupling::Cycle;
 use yi_types::plan::doc::{
     AgentId, BlockedOn, Delegation, GoalText, Plan, PlanId, PlanState, PlanTier, TodoAddr,
@@ -29,13 +31,12 @@ const FIXTURE_STEMS: [&str; 3] = [
     "typo-fix-never-opens-a-plan",
 ];
 
-const FIXTURE_KEYS: [&str; 11] = [
+const FIXTURE_KEYS: [&str; 10] = [
     "id",
     "description",
     "decisions",
     "prompt",
     "eagerInit",
-    "cores",
     "width",
     "goal",
     "plan",
@@ -77,8 +78,6 @@ impl Delegate for Stub {
             Err(_) => Err("poisoned".to_owned()),
         }
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 fn object<'a>(value: &'a Value, what: &str) -> Fallible<&'a Map<String, Value>> {
@@ -150,6 +149,7 @@ fn parse_specs(value: &Value, what: &str) -> Fallible<Vec<TodoSpec>> {
                 label: TodoLabel::new(label)?,
                 after,
                 delegation,
+                contract: None,
                 children: Vec::new(),
             }),
             Some(raw) => {
@@ -161,6 +161,7 @@ fn parse_specs(value: &Value, what: &str) -> Fallible<Vec<TodoSpec>> {
                         label: TodoLabel::new(format!("{label} {serial}"))?,
                         after: after.clone(),
                         delegation: delegation.clone(),
+                        contract: None,
                         children: Vec::new(),
                     });
                 }
@@ -210,6 +211,7 @@ fn parse_op(name: &str, args: &Map<String, Value>) -> Fallible<(Op, bool)> {
             reject_unknown(args, &["label"], &what)?;
             Op::Drop {
                 label: label("label")?,
+                disposition: None,
             }
         }
         "block" => {
@@ -261,6 +263,7 @@ fn parse_op(name: &str, args: &Map<String, Value>) -> Fallible<(Op, bool)> {
             Op::Fail {
                 label: label("label")?,
                 cause: string("cause")?,
+                disposition: None,
             }
         }
         "retry" => {
@@ -356,7 +359,7 @@ fn root_id(id: &PlanId) -> Fallible<PlanId> {
 
 fn active_root(store: &PlanStore) -> Fallible<Option<PlanId>> {
     for id in store.roots()? {
-        if store.read(&id)?.plan.state == PlanState::Active {
+        if store.read(&id)?.state == PlanState::Active {
             return Ok(Some(id));
         }
     }
@@ -480,7 +483,7 @@ fn check_todos(ctx: &str, value: &Value, plan: &Plan, failures: &mut Vec<String>
         }
         if let Some(raw) = map.get("output") {
             match &todo.state {
-                TodoState::Done { output } => {
+                TodoState::Done { output, .. } => {
                     cmp_opt_url(&tctx, "output", raw, output.as_ref(), failures)?;
                 }
                 other => failures.push(format!(
@@ -535,7 +538,7 @@ fn check_plan_key(
     ctx: &str,
     key: &str,
     value: &Value,
-    file: Option<&PlanFile>,
+    file: Option<&Plan>,
     store: &PlanStore,
     failures: &mut Vec<String>,
 ) -> Fallible<()> {
@@ -543,13 +546,13 @@ fn check_plan_key(
         failures.push(format!("{ctx} {key} asserted but no plan exists on disk"));
         return Ok(());
     };
-    let plan = &file.plan;
+    let plan = &file;
     match key {
         "version" => cmp_u64(ctx, key, value, plan.version.0, failures),
         "touched" => cmp_u64(ctx, key, value, plan.touched.0, failures),
         "spawns" => {
             let root = root_id(&plan.id)?;
-            let spawns = u64::from(store.read(&root)?.plan.spawns().get());
+            let spawns = u64::from(store.read(&root)?.spawns().get());
             cmp_u64(ctx, key, value, spawns, failures)
         }
         "planState" => cmp_str(ctx, key, value, &plan_state_tag(&plan.state), failures),
@@ -604,7 +607,7 @@ fn check_outcome_key(
             let map = object(value, key)?;
             for (id, raw) in map {
                 let want = text(raw, key)?;
-                let got = plan_state_tag(&store.read(&PlanId::new(id.as_str())?)?.plan.state);
+                let got = plan_state_tag(&store.read(&PlanId::new(id.as_str())?)?.state);
                 if want != got {
                     failures.push(format!(
                         "{ctx} subplanStates[{id}]: expected {want:?}, got {got:?}"
@@ -669,7 +672,7 @@ fn check_expect(
                 check_outcome_key(ctx, key, value, outcome, store, failures)?;
             }
             "stopPosture" | "stopInterception" => {
-                let posture = file.as_ref().map(|file| stop_posture(&file.plan));
+                let posture = file.as_ref().map(stop_posture);
                 match key.as_str() {
                     "stopPosture" => {
                         let got = posture.map_or("quiet", StopPosture::as_str);
@@ -739,7 +742,7 @@ fn check_final(
     if let Some(raw) = map.get("superseded") {
         let mut total = 0u64;
         for id in &ids {
-            total = total.saturating_add(store.read(id)?.plan.version.0.saturating_sub(1));
+            total = total.saturating_add(store.read(id)?.version.0.saturating_sub(1));
         }
         cmp_u64(&ctx, "superseded", raw, total, failures)?;
     }
@@ -747,7 +750,7 @@ fn check_final(
         let mut total = 0u64;
         for id in &ids {
             if id.is_root() {
-                total = total.saturating_add(u64::from(store.read(id)?.plan.spawns().get()));
+                total = total.saturating_add(u64::from(store.read(id)?.spawns().get()));
             }
         }
         cmp_u64(&ctx, "spawns", raw, total, failures)?;
@@ -755,7 +758,7 @@ fn check_final(
     if let Some(raw) = map.get("stopInterception") {
         let want = boolean(raw, "stopInterception")?;
         let got = match active_root(store)? {
-            Some(id) => stop_posture(&store.read(&id)?.plan) == StopPosture::Continue,
+            Some(id) => stop_posture(&store.read(&id)?) == StopPosture::Continue,
             None => false,
         };
         if want != got {
@@ -771,30 +774,18 @@ fn build_engine(
     doc: &Map<String, Value>,
     store: &PlanStore,
     stub: &Arc<Stub>,
-    failures: &mut Vec<String>,
 ) -> Fallible<PlanEngine> {
     let engine = PlanEngine::new(store.clone(), stub.clone());
-    let Some(raw) = doc.get("cores") else {
-        if doc.get("width").is_some() {
-            return Err("fixture pins width without cores".into());
-        }
+    // The width no longer follows the host (#468), so a fixture pins it directly and the
+    // default rule is asserted in plan_ops::width_is_the_family_cap_not_the_host.
+    let Some(raw) = doc.get("width") else {
         return Ok(engine);
     };
-    let cores = raw
+    let width = raw
         .as_u64()
-        .ok_or_else(|| "cores is not an integer".to_owned())?;
-    let cores =
-        NonZeroUsize::new(usize::try_from(cores)?).ok_or_else(|| "cores is zero".to_owned())?;
-    let width = dispatch_width(cores);
-    if let Some(raw) = doc.get("width") {
-        cmp_u64(
-            "[fixture]",
-            "width",
-            raw,
-            u64::try_from(width.get())?,
-            failures,
-        )?;
-    }
+        .ok_or_else(|| "width is not an integer".to_owned())?;
+    let width =
+        NonZeroUsize::new(usize::try_from(width)?).ok_or_else(|| "width is zero".to_owned())?;
     Ok(engine.with_width(width))
 }
 
@@ -820,7 +811,7 @@ fn run_fixture(stem: &str) -> Fallible<()> {
         ));
     }
     let mut nudge = Cycle::default();
-    let engine = build_engine(doc, &store, &stub, &mut failures)?;
+    let engine = build_engine(doc, &store, &stub)?;
     let steps = require(doc, "steps", "fixture")?
         .as_array()
         .ok_or_else(|| "steps is not an array".to_owned())?;
@@ -858,6 +849,8 @@ fn run_fixture(stem: &str) -> Fallible<()> {
             plan: plan.clone(),
             actor,
             op,
+            request_id: None,
+            expected_revision: None,
         });
         stub.fail_reap.store(false, Ordering::SeqCst);
         stub.set_produced(None);
@@ -952,6 +945,378 @@ fn every_fixture_has_a_named_runner() -> Fallible<()> {
         if !stems.iter().any(|found| found == stem) {
             return Err(format!("expected fixture {stem}.json is missing").into());
         }
+    }
+    Ok(())
+}
+
+/// Every `.json` under `fixtures/plans`, at any depth, is opened by a test: its file name or
+/// its quoted stem sits on a non-comment line of some file in `tests/`. A `.example.json` is
+/// documentation, named by `contracts.md`, and is exempt. A fixture nothing reads rots unseen.
+#[test]
+fn every_fixture_at_any_depth_is_named_by_a_test_source() -> Fallible<()> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Fallible<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                walk(&path, out)?;
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut fixtures = Vec::new();
+    walk(&fixtures_dir(), &mut fixtures)?;
+    let mut sources = String::new();
+    for entry in std::fs::read_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests"))? {
+        let path = entry?.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        for line in std::fs::read_to_string(&path)?.lines() {
+            if !line.trim_start().starts_with("//") {
+                sources.push_str(line);
+                sources.push('\n');
+            }
+        }
+    }
+    for path in &fixtures {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("unreadable fixture name at {}", path.display()))?;
+        if name.ends_with(".example.json") {
+            continue;
+        }
+        let stem = name.trim_end_matches(".json");
+        if !sources.contains(name) && !sources.contains(&format!("\"{stem}\"")) {
+            return Err(format!(
+                "fixture {} exists but no test source names it; add a test that reads it",
+                path.display()
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// The fixture's step args in the shape the plan tool takes: `reapFails` is the driver's,
+/// and `repeat` is the fixture's shorthand the tool has no word for.
+fn tool_args(args: &Map<String, Value>) -> Fallible<Map<String, Value>> {
+    let mut out = args.clone();
+    out.remove("reapFails");
+    if let Some(Value::Array(todos)) = out.get("todos") {
+        let mut expanded = Vec::new();
+        for entry in todos {
+            let spec = object(entry, "todo spec")?;
+            let Some(raw) = spec.get("repeat") else {
+                expanded.push(entry.clone());
+                continue;
+            };
+            let count = raw
+                .as_u64()
+                .ok_or_else(|| "repeat is not an integer".to_owned())?;
+            let label = text(require(spec, "label", "todo spec")?, "todo spec")?;
+            for serial in 1..=count {
+                let mut one = spec.clone();
+                one.remove("repeat");
+                one.insert(
+                    "label".to_owned(),
+                    Value::String(format!("{label} {serial}")),
+                );
+                expanded.push(Value::Object(one));
+            }
+        }
+        out.insert("todos".to_owned(), Value::Array(expanded));
+    }
+    Ok(out)
+}
+
+/// The checkpoints, with the journal digest and the clock blanked: two runs of one fixture
+/// differ in wall-clock `at` fields and request ids, which the digest chain covers.
+fn plan_files(store: &PlanStore) -> Fallible<Vec<(String, String)>> {
+    let mut files = Vec::new();
+    for id in store.list()? {
+        let mut value: Value = serde_json::from_str(&std::fs::read_to_string(store.path(&id))?)?;
+        if let Some(map) = value.as_object_mut() {
+            map.insert("journal_digest".to_owned(), Value::Null);
+        }
+        files.push((
+            id.as_str().to_owned(),
+            serde_json::to_string_pretty(&value)?,
+        ));
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// One fixture down both surfaces, step for step: the engine as the tool drives it, and
+/// `plan.op` on a registry per fixture actor. Same refusals, same bytes on disk.
+async fn replay_through_plan_op(stem: &str) -> Fallible<()> {
+    let path = fixtures_dir().join(format!("{stem}.json"));
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    let doc = object(&doc, "fixture")?;
+    let tool_dir = Scratch::new(&format!("yi-plan-op-tool-{stem}"))?;
+    let request_dir = Scratch::new(&format!("yi-plan-op-request-{stem}"))?;
+    let tool_store = PlanStore::open(tool_dir.to_path_buf())?;
+    let request_store = PlanStore::open(request_dir.to_path_buf())?;
+    let tool_stub = Arc::new(Stub::default());
+    let request_stub = Arc::new(Stub::default());
+    let mut failures = Vec::new();
+    let tool_engine = build_engine(doc, &tool_store, &tool_stub)?;
+    let request_engine = Arc::new(build_engine(doc, &request_store, &request_stub)?);
+    let mut registries: std::collections::HashMap<String, HostRegistry> =
+        std::collections::HashMap::new();
+    let steps = require(doc, "steps", "fixture")?
+        .as_array()
+        .ok_or_else(|| "steps is not an array".to_owned())?;
+    for (index, raw_step) in steps.iter().enumerate() {
+        let ctx = format!("[{stem} step {index}]");
+        let step = object(raw_step, &ctx)?;
+        if step.contains_key("work") {
+            continue;
+        }
+        let name = text(require(step, "op", &ctx)?, &ctx)?;
+        let actor_word = text(require(step, "actor", &ctx)?, &ctx)?;
+        let actor = parse_actor(actor_word)?;
+        let plan = match step.get("plan") {
+            Some(raw) => Some(PlanId::new(text(raw, &ctx)?)?),
+            None => None,
+        };
+        let args = match step.get("args") {
+            Some(raw) => object(raw, &ctx)?.clone(),
+            None => Map::new(),
+        };
+        let (op, reap_fails) = parse_op(name, &args)?;
+        let produced = match step.get("childProduced") {
+            Some(raw) => Some(parse_url(raw, &ctx)?),
+            None => None,
+        };
+        for stub in [&tool_stub, &request_stub] {
+            stub.set_produced(produced.clone());
+            stub.fail_reap.store(reap_fails, Ordering::SeqCst);
+        }
+        let through_tool = tool_engine.apply(OpRequest {
+            plan: plan.clone(),
+            actor: actor.clone(),
+            op,
+            request_id: None,
+            expected_revision: None,
+        });
+        let registry = registries.entry(actor_word.to_owned()).or_insert_with(|| {
+            let mut registry = HostRegistry::default();
+            yi_runtime::plan::request::register(
+                Arc::clone(&request_engine),
+                actor.clone(),
+                &mut registry,
+            );
+            registry
+        });
+        let mut payload = Map::new();
+        payload.insert(
+            "request_id".to_owned(),
+            Value::String(format!("{stem}-{index}")),
+        );
+        payload.insert("op".to_owned(), Value::String(name.to_owned()));
+        if let Some(id) = &plan {
+            payload.insert("plan".to_owned(), Value::String(id.as_str().to_owned()));
+        }
+        payload.insert("args".to_owned(), Value::Object(tool_args(&args)?));
+        let through_request = registry
+            .dispatch("plan.op", payload)
+            .ok_or("plan.op is not registered")?
+            .await?;
+        for stub in [&tool_stub, &request_stub] {
+            stub.set_produced(None);
+            stub.fail_reap.store(false, Ordering::SeqCst);
+        }
+        if through_tool.is_ok() != (through_request["ok"] == Value::Bool(true)) {
+            failures.push(format!(
+                "{ctx} the tool said {:?}, plan.op said {through_request:?}",
+                through_tool.as_ref().err().map(ToString::to_string)
+            ));
+        }
+        if let Ok(outcome) = &through_tool
+            && through_request["revision"] != outcome.plan.touched.0
+        {
+            failures.push(format!(
+                "{ctx} revision {} differs from touched {}",
+                through_request["revision"], outcome.plan.touched.0
+            ));
+        }
+    }
+    let tool_files = plan_files(&tool_store)?;
+    let request_files = plan_files(&request_store)?;
+    if tool_files != request_files {
+        failures.push(format!(
+            "[{stem}] plan files differ:\n{tool_files:#?}\n{request_files:#?}"
+        ));
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n").into())
+    }
+}
+
+/// Guards the shared parser and engine: a `plan.op` that parsed or applied differently from
+/// the tool leaves different bytes in `.yi/plans`.
+#[tokio::test]
+async fn every_fixture_replays_identically_through_plan_op() -> Fallible<()> {
+    for stem in FIXTURE_STEMS {
+        replay_through_plan_op(stem).await?;
+    }
+    Ok(())
+}
+
+/// What a fixture and its program are compared on: every plan's state and version, its todos in
+/// order (labels by slug, since a program's key is the label in lower case) with their edges,
+/// attempt, retries, whether they are delegated and what a done one output, and the committed
+/// transitions in journal order.
+///
+/// What is not: `refusals` and `touched`, because the fixture's refused steps are its own; the
+/// text of a cause or a block note; a delegation's or a contract's contents; and the campaign
+/// fixture's `reorder` and `add_edge`, which the library has no surface for and whose generation
+/// its `supersede` closes before this reads the store.
+fn reached(store: &PlanStore) -> Fallible<Vec<String>> {
+    const TRANSITIONS: [&str; 9] = [
+        "start",
+        "done",
+        "fail",
+        "retry",
+        "block",
+        "unblock",
+        "drop",
+        "decompose",
+        "supersede",
+    ];
+    let slug = |label: &TodoLabel| PlanId::slug(label.as_str()).map(|id| id.as_str().to_owned());
+    let mut lines = Vec::new();
+    for id in store.list()? {
+        let plan = store.read(&id)?;
+        lines.push(format!(
+            "{id} {} v{}",
+            plan_state_tag(&plan.state),
+            plan.version.0
+        ));
+        for todo in &plan.todos {
+            let after: Vec<String> = todo.after.iter().map(slug).collect::<Result<_, _>>()?;
+            let output = match &todo.state {
+                TodoState::Done { output, .. } => output.as_ref().map(ToString::to_string),
+                _ => None,
+            };
+            lines.push(format!(
+                "  {} {} after {after:?} attempt {} retries {} delegated {} output {output:?}",
+                slug(&todo.label)?,
+                todo_state_tag(&todo.state),
+                todo.attempt.get(),
+                todo.retries.0,
+                todo.delegation.is_some()
+            ));
+        }
+    }
+    for root in store.roots()? {
+        for record in store.journal(&root).read()?.records {
+            let op = record.record.op.as_str();
+            if TRANSITIONS.contains(&op) && !record.record.extra.contains_key("refusal") {
+                let todo = record.record.todo.as_ref().map(slug).transpose()?;
+                lines.push(format!("{} {op} {todo:?}", record.record.plan));
+            }
+        }
+    }
+    Ok(lines)
+}
+
+/// The F1b journey: each walkthrough fixture applied to one engine, and its program under
+/// `python/yi_runtime/tests/programs` run as a cell of a real kernel over a second one. Dies
+/// with the control: let the library send another op, order or edge than the JSON surface
+/// does and the two stores no longer reach the same plans.
+#[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn a_program_and_its_json_fixture_reach_the_same_plan_json() -> Fallible<()> {
+    let programs =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/yi_runtime/tests/programs");
+    for (stem, program) in FIXTURE_STEMS
+        .iter()
+        .zip(["arc-game", "campaign", "typo-fix"])
+    {
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(
+            fixtures_dir().join(format!("{stem}.json")),
+        )?)?;
+        let doc = object(&doc, "fixture")?;
+        let failures: Vec<String> = Vec::new();
+        let json_dir = Scratch::new(&format!("yi-plan-program-json-{program}"))?;
+        let json_store = PlanStore::open(json_dir.to_path_buf())?;
+        let stub = Arc::new(Stub::default());
+        let engine = build_engine(doc, &json_store, &stub)?;
+        let steps = require(doc, "steps", "fixture")?
+            .as_array()
+            .ok_or("steps is not an array")?;
+        for step in steps {
+            let step = object(step, stem)?;
+            if step.contains_key("work") {
+                continue;
+            }
+            let args = step.get("args").and_then(Value::as_object).cloned();
+            let (op, reap_fails) = parse_op(
+                text(require(step, "op", stem)?, stem)?,
+                &args.unwrap_or_default(),
+            )?;
+            stub.fail_reap.store(reap_fails, Ordering::SeqCst);
+            let plan = match step.get("plan") {
+                Some(raw) => Some(PlanId::new(text(raw, stem)?)?),
+                None => None,
+            };
+            // A refusal is the fixture's expectation, which `run_fixture` already holds it to.
+            let _refused = engine.apply(OpRequest {
+                plan,
+                actor: parse_actor(text(require(step, "actor", stem)?, stem)?)?,
+                op,
+                request_id: None,
+                expected_revision: None,
+            });
+        }
+
+        let cell_dir = Scratch::new(&format!("yi-plan-program-cell-{program}"))?;
+        let cell_store = PlanStore::open(cell_dir.to_path_buf())?;
+        let engine = build_engine(doc, &cell_store, &Arc::new(Stub::default()))?;
+        let mut registry = HostRegistry::default();
+        yi_runtime::plan::request::register(Arc::new(engine), Actor::Owner, &mut registry);
+        registry.register_mcp_stubs();
+        let service = Arc::new(yi_runtime::KernelService::new(
+            yi_runtime::KernelServiceOptions {
+                cwd: std::env::temp_dir(),
+                home: std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_default(),
+                session_dir: None,
+                family_dir: None,
+                host: Arc::new(registry),
+                on_restore: None,
+                sandbox: None,
+                snapshot_key: None,
+                cell_ceiling: None,
+            },
+        ));
+        let source = std::fs::read_to_string(programs.join(format!("{program}.py")))?;
+        let kernel = Arc::clone(&service);
+        let outcome = tokio::task::spawn_blocking(move || {
+            let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
+            yi_tools::KernelBridge::execute_cell(kernel.as_ref(), &source, &cancelled)
+        })
+        .await??;
+        service.dispose().await;
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(
+            outcome.result.error.is_none(),
+            "{program}.py raised: {:?}",
+            outcome.result.error
+        );
+        assert_eq!(
+            reached(&cell_store)?,
+            reached(&json_store)?,
+            "{program}.py and {stem}.json part ways"
+        );
     }
     Ok(())
 }

@@ -770,6 +770,20 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
     if result.op != SectionOp::Delete {
         let lines: Vec<&str> = result.after.split('\n').collect();
         let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
+        // Invariant: an unchanged line the model saw is still a line it saw, so the prior
+        // seen set rebases onto the new tag rather than shrinking to the hunk windows (#473).
+        let carried: Vec<u64> = match snapshots.by_content(&result.canonical_path, &result.before) {
+            Some(prior) => {
+                let map = super::rebase::LineMap::between(&result.before, &result.after);
+                prior
+                    .seen_lines
+                    .iter()
+                    .flatten()
+                    .filter_map(|line| map.line(*line))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
         let mut seen: Vec<u64> = Vec::new();
         // Every hunk gets a window, not just the first: a window the model cannot see is a
         // line it cannot anchor to, forcing a full re-read after each multi-hunk edit.
@@ -787,6 +801,7 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
                 }
             }
         }
+        seen.extend(carried);
         snapshots.record_seen_lines(&result.canonical_path, result.file_hash, &seen);
     }
     for warning in &result.warnings {
@@ -1090,10 +1105,14 @@ fn grid_check(context: &ToolContext) -> GridLayer {
     }
 }
 
-pub fn record_write_snapshot(state: &SharedHashline, path: &Path, content: &str) {
+pub fn record_write_snapshot(
+    state: &SharedHashline,
+    path: &Path,
+    content: &str,
+) -> super::format::FileTag {
     let line_count = u64::try_from(content.split('\n').count()).unwrap_or(u64::MAX);
     let seen: Vec<u64> = (1..=line_count).collect();
-    record_view_snapshot(state, path, content, &seen);
+    record_view_snapshot(state, path, content, &seen)
 }
 
 /// A view of `content` the model has just seen through some other tool: the rows in `seen`

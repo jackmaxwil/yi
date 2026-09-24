@@ -186,6 +186,8 @@ struct SessionHandle {
 impl Drop for SessionHandle {
     fn drop(&mut self) {
         self.forwarder.abort();
+        // Each running child is revoked under its own `parent_close`, its work kept.
+        let _revoked = self.host.close();
         self.session.dispose_kernel();
     }
 }
@@ -631,7 +633,7 @@ impl AcpState {
             "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/kernel_execute"
             | "_yi/kernel_cancel" | "_yi/slash" => self.handle_extension(method, params),
             "_yi/steer" | "_yi/rewind" | "_yi/plan" | "_yi/todo" | "_yi/child_replay"
-            | "_yi/child_abort" => self.handle_control(method, params),
+            | "_yi/child_abort" | "_yi/child_answer" => self.handle_control(method, params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
     }
@@ -671,11 +673,21 @@ impl AcpState {
                     .session
                     .plan_service()
                     .ok_or((INTERNAL_ERROR, "no plan service is attached".to_owned()))?;
+                if text("action") == "submit" {
+                    return submit_plan(&service, params);
+                }
                 let plan = service
                     .read_plan()
                     .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
                 let subplans = yi_runtime::plan::subplans_of(&plan, service.plans_dir());
                 Ok(json!({"plan": plan, "subplans": subplans}))
+            }
+            "_yi/child_answer" => {
+                let told =
+                    handle
+                        .host
+                        .answer_told(text("childId"), text("questionId"), text("text"));
+                Ok(json!({ "text": told }))
             }
             "_yi/child_replay" | "_yi/child_abort" => {
                 let child_id = ChildId(text("childId").to_owned());
@@ -686,7 +698,7 @@ impl AcpState {
                     .find(|child| child.update.id == child_id)
                     .ok_or((INVALID_PARAMS, format!("unknown child {}", child_id.0)))?;
                 if method == "_yi/child_abort" {
-                    child.session.abort();
+                    let _stopped = handle.host.interrupt(&child_id.0);
                     return Ok(json!({}));
                 }
                 let store = child
@@ -952,6 +964,36 @@ impl AcpState {
         }
         Ok(total)
     }
+}
+
+/// Invariant: the daemon fans this worker's asks out to every attached client, so a submit
+/// carries no principal and is never confirmed here: an administrative op is `NoConfirmer`.
+fn submit_plan(
+    service: &yi_runtime::plan::PlanService,
+    params: &Value,
+) -> Result<Value, (i64, String)> {
+    use yi_runtime::plan::authority::{submission_of, submit};
+    let payload = params
+        .as_object()
+        .ok_or((INVALID_PARAMS, "params must be an object".to_owned()))?;
+    if payload.contains_key("actor") {
+        return Err((
+            INVALID_PARAMS,
+            yi_runtime::plan::tool::ArgError::ActorArg.to_string(),
+        ));
+    }
+    let (engine, actor) = service
+        .engine()
+        .ok_or((INTERNAL_ERROR, "no plan engine is attached".to_owned()))?;
+    let submission = submission_of(payload).map_err(|error| (INVALID_PARAMS, error))?;
+    let applied = submit(&engine, &actor, None, submission)
+        .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
+    Ok(json!({
+        "plan": applied.outcome.plan.id.as_str(),
+        "revision": applied.outcome.plan.touched.0,
+        "text": applied.text(),
+        "notices": applied.outcome.notices,
+    }))
 }
 
 fn respond(sink: &LineSink, id: Value, outcome: Result<Value, (i64, String)>) {
