@@ -172,3 +172,96 @@ async fn a_profile_change_restarts_the_kernel() -> TestResult {
     let _ = std::fs::remove_dir_all(&extra);
     Ok(())
 }
+
+fn faux_model() -> yi_types::model::Model {
+    let zero = || serde_json::Number::from(0u64);
+    yi_types::model::Model {
+        id: "faux-1".to_owned(),
+        name: "Faux".to_owned(),
+        api: "faux".to_owned(),
+        provider: "faux".to_owned(),
+        base_url: "http://localhost:0".to_owned(),
+        reasoning: false,
+        input: vec!["text".to_owned()],
+        cost: yi_types::model::ModelCost {
+            input: zero(),
+            output: zero(),
+            cache_read: zero(),
+            cache_write: zero(),
+            tiers: None,
+        },
+        context_window: 128_000,
+        max_tokens: 16_384,
+        compat: None,
+        thinking_level_map: None,
+        headers: None,
+    }
+}
+
+/// Incident: `exec.spawn`, the host half of the kernel's `bash()`, ran with no sandbox, so a
+/// contained kernel wrote anywhere by shelling out.
+#[tokio::test]
+async fn the_kernels_bash_is_contained_like_the_kernel() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, home, _session) = workspace("bash")?;
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+    let mut session = yi_runtime::AgentSession::new(
+        yi_runtime::SessionConfig {
+            system_prompt: String::new(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: String::new(),
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+            cwd: project.clone(),
+            home: home.clone(),
+            lane_slots: 1,
+            broker: None,
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, Some(&root.join("rlm")));
+    let probe = uncovered(&sandbox, &home).ok_or("no directory outside the sandbox")?;
+    let escape = probe.join(format!("yi-bash-escape-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&escape);
+    let code = format!("print(await bash(\"touch '{}'\"))", escape.display());
+    let ran = cell(&kernel, code).await;
+    kernel.dispose().await;
+    let escaped = escape.is_file();
+    let _ = std::fs::remove_file(&escape);
+    let ran = ran?;
+    assert!(
+        !escaped,
+        "the kernel's bash() wrote outside the sandbox: {}",
+        ran.result.stdout
+    );
+    Ok(())
+}
