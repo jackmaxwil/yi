@@ -184,6 +184,34 @@ impl PlanEngine {
         .map(drop)
     }
 
+    /// Incident: in all eight G5 trials the owner re-ran the check the engine had just passed.
+    fn accepted_evidence(&self, held: &Held) -> String {
+        let reading = root_of(&held.plan).map(|root| self.store.journal(&root).read());
+        let records = match reading {
+            Ok(Ok(reading)) => reading.records,
+            _ => Vec::new(),
+        };
+        let verdict = records
+            .iter()
+            .rev()
+            .filter(|record| record.record.plan == held.plan)
+            .filter(|record| record.record.todo.as_ref() == Some(&held.label))
+            .find_map(|record| serde_json::from_value::<Verdict>(record.verdict.clone()?).ok())
+            .filter(|verdict| verdict.outcome == ContractOutcome::Pass);
+        let Some(verdict) = verdict else {
+            return String::new();
+        };
+        let lines: String = verdict
+            .items
+            .iter()
+            .map(|line| match &line.evidence {
+                Some(said) => format!("\n- {} {}: {said}", line.id, line.verdict),
+                None => format!("\n- {} {}", line.id, line.verdict),
+            })
+            .collect();
+        format!(". The engine ran its checks and they passed, so do not run them again:{lines}")
+    }
+
     fn fail_finish(&self, held: &Held, cause: String) -> Result<(), PlanOpError> {
         self.step(
             &held.plan,
@@ -308,7 +336,8 @@ impl PlanEngine {
                     todo: held.label.clone(),
                 };
                 let url = agent_url(&addr).map_or_else(|_| agent.to_owned(), |url| url.to_string());
-                return Some(format!("plan: accepted {label:?} ({url})"));
+                let evidence = self.accepted_evidence(&held);
+                return Some(format!("plan: accepted {label:?} ({url}){evidence}"));
             }
             Err(refusal) => refusal,
         };
@@ -562,6 +591,39 @@ mod tests {
             todo.state,
             texts(&rig.said)
         );
+        Ok(())
+    }
+
+    /// Dies with a bare `plan: accepted` (G5: 8 of 8 owners re-ran it), or an unnamed cut.
+    #[tokio::test]
+    async fn an_accepted_notice_quotes_each_check_the_engine_passed() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut")])?;
+        let long = "head -c 1000 /dev/zero | tr '\\0' x";
+        let args = serde_json::json!({"op": "init", "goal": "ship the widget", "todos": [{
+            "label": "cut the seam",
+            "delegation": {"spec": {"role": "worker"}, "accept": {"command": "true"}},
+            "contract": {"class": "inline", "items": [
+                {"id": "tests", "critical": true, "weight": 1, "decider": {"cmd": "echo 12 passed"}},
+                {"id": "long", "critical": true, "weight": 1, "decider": {"cmd": long}}
+            ]},
+        }]});
+        let args = args.as_object().cloned().ok_or("args")?;
+        let (request, blobs) =
+            super::super::tool::declared(&super::super::ops::Actor::Owner, &args)?;
+        let out = rig.engine.apply_with(request, &blobs)?;
+        let todo = settled(&rig, &out.plan.id, "cut the seam").await?;
+        assert!(
+            matches!(todo.state, TodoState::Done { .. }),
+            "{:?}",
+            todo.state
+        );
+        let said = texts(&rig.said).join("\n");
+        assert!(said.contains("do not run them again"), "{said}");
+        assert!(
+            said.contains("- tests pass: `echo 12 passed` exit 0\n12 passed"),
+            "{said}"
+        );
+        assert!(said.contains("[… last 300 of 1000 chars"), "{said}");
         Ok(())
     }
 
@@ -844,13 +906,16 @@ mod tests {
     /// Dies with `refold` reading only a live session: a lagged woken run never concluded.
     #[tokio::test]
     async fn a_lagged_watch_concludes_a_woken_run_it_never_saw_start() -> TestResult {
-        let rig = hooked(vec![reply("the seam is cut")])?;
+        let rig = hooked(vec![reply("the seam is cut"), reply("cut again")])?;
         let named = serde_json::Map::from_iter([("name".to_owned(), "kid".into())]);
         rig.host.spawn("cut".to_owned(), named)?;
         assert!(ended(&rig.host).await, "child never completed");
         let key = {
             let mut children = rig.host.children.lock().map_err(|_| "poisoned")?;
             let (key, record) = children.iter_mut().next().ok_or("no record")?;
+            record
+                .session
+                .deliver(crate::session::user_message("again"), true);
             record.step(crate::subagent::Step::Resumed);
             key.clone()
         };
@@ -858,6 +923,30 @@ mod tests {
             rig.host.resume(&key);
         }
         assert!(ended(&rig.host).await, "the woken run was never concluded");
+        Ok(())
+    }
+
+    /// Dies with a late `AgentStart` claiming a concluded run again: a second ending, one run.
+    #[tokio::test]
+    async fn a_late_start_of_a_concluded_run_concludes_nothing() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut")])?;
+        let named = serde_json::Map::from_iter([("name".to_owned(), "kid".into())]);
+        rig.host.spawn("cut".to_owned(), named)?;
+        assert!(ended(&rig.host).await, "child never completed");
+        let endings = || rig.notices.lock().map(|sink| sink.len()).unwrap_or(0);
+        let before = endings();
+        let key = rig
+            .host
+            .children_view()
+            .pop()
+            .ok_or("no child")?
+            .update
+            .id
+            .0;
+        rig.host.resume(&key);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(endings(), before, "a second ending for one run");
+        assert!(ended(&rig.host).await, "the concluded run reads live again");
         Ok(())
     }
 

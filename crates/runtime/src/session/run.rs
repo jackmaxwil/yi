@@ -37,8 +37,11 @@ impl Queued {
     }
 }
 
-/// Invariant: an envelope is queued once, whether a respawn moved it or an attach re-read it.
+/// Invariant: an envelope is queued once; a sender's newer progress replaces its queued one.
 pub(super) fn push(queue: &mut VecDeque<Queued>, entry: Queued) {
+    if let Some(from) = crate::mail::progress_from(&entry.message) {
+        queue.retain(|held| crate::mail::progress_from(&held.message) != Some(from));
+    }
     let id = crate::mail::envelope_id(&entry.message);
     let queued = |held: &Queued| crate::mail::envelope_id(&held.message) == id;
     if id.is_none() || !queue.iter().any(queued) {
@@ -97,27 +100,28 @@ pub(super) fn enqueue(parts: &RunParts, entry: Queued) -> Delivery {
     let Some(prompt) = wakes.then(|| owed(&parts.shared, false)).flatten() else {
         return Delivery::Inboxed;
     };
-    *status = Status::Running;
+    admit(&parts.shared, &mut status);
     drop(status);
     launch(parts.clone(), prompt, None);
     Delivery::Woken
 }
 
-pub(super) fn follow(parts: &RunParts, message: AgentMessage) {
+pub(super) fn follow(parts: &RunParts, message: AgentMessage) -> bool {
     let Ok(mut status) = parts.shared.status.lock() else {
-        return;
+        return false;
     };
     if let Ok(mut queue) = parts.shared.follow_up.lock() {
         queue.push(message);
     }
     if *status == Status::Running {
-        return;
+        return true;
     }
     if let Some(prompt) = owed(&parts.shared, true) {
-        *status = Status::Running;
+        admit(&parts.shared, &mut status);
         drop(status);
         launch(parts.clone(), prompt, None);
     }
+    false
 }
 
 pub(super) fn spawn_run(
@@ -132,10 +136,18 @@ pub(super) fn spawn_run(
         if *status == Status::Running {
             return Err(SessionError::Busy);
         }
-        *status = Status::Running;
+        admit(&parts.shared, &mut status);
     }
     launch(parts, prompt, requested);
     Ok(())
+}
+
+/// Invariant: every run is counted under the status lock that admits it.
+fn admit(shared: &Shared, status: &mut Status) {
+    *status = Status::Running;
+    shared
+        .runs
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
 fn launch(parts: RunParts, prompt: AgentMessage, requested: Option<u64>) {
@@ -155,8 +167,9 @@ async fn settle(parts: RunParts) {
         Ok(mut status) => {
             // An abort keeps what was queued for after the answer until the user's next turn.
             let next = owed(&shared, !shared.signal.is_fired());
-            if next.is_none() {
-                *status = Status::Idle;
+            match next {
+                Some(_) => admit(&shared, &mut status),
+                None => *status = Status::Idle,
             }
             next
         }

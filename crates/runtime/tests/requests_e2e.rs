@@ -258,6 +258,72 @@ async fn a_plain_send_answers_a_question_its_sender_read_off_a_wait() -> TestRes
     Ok(())
 }
 
+/// Dies with progress write-only: a child's `progress` was inboxed and never read. Dies too
+/// with it waking an idle parent, or with each step presented instead of the latest.
+#[tokio::test]
+async fn progress_reaches_an_idle_parent_at_its_next_turn_coalesced() -> TestResult {
+    let parent = Arc::new(session(vec![said("noted")]));
+    let (_root, host, _store) = family(&parent, Child::Says(&["done"]))?;
+    for step in ["25% of the rows", "75% of the rows"] {
+        let progress = json!({"target": "parent", "message": step, "kind": "progress"});
+        host.send("scout", progress.as_object().ok_or("progress")?)?;
+    }
+    assert_eq!(
+        parent.status(),
+        yi_runtime::Status::Idle,
+        "progress woke it"
+    );
+    parent.prompt("go")?;
+    parent.wait_idle().await;
+    let seen = serde_json::to_string(&parent.messages())?;
+    assert!(
+        seen.contains("75% of") && !seen.contains("25% of"),
+        "{seen}"
+    );
+    Ok(())
+}
+
+/// Dies with plan children answering only to `<plan>/<todo>` (four corpus sends to "billing"
+/// failed). An ambiguous label is refused naming every child it could mean.
+#[tokio::test]
+async fn a_todo_label_alone_names_a_plan_child_unless_it_is_ambiguous() -> TestResult {
+    let parent = Arc::new(session(Vec::new()));
+    let (_root, host, _store) = family(&parent, Child::Says(&["done"]))?;
+    for name in ["audit/ledger", "audit/billing", "fix/billing"] {
+        spawn(&host, name)?;
+    }
+    let send = |target: &str| {
+        let mail = json!({"target": target, "message": "the totals are in"});
+        host.send("parent", &mail.as_object().cloned().unwrap_or_default())
+    };
+    let sent = send("ledger")?;
+    assert_eq!(sent["receipts"][0]["target"], "audit/ledger", "{sent:?}");
+    let refused = send("billing").err().unwrap_or_default();
+    assert!(refused.contains("audit/billing, fix/billing"), "{refused}");
+    Ok(())
+}
+
+/// Dies with a derived `stuck` moving no epoch: a cell blocked in `rlm.wait` slept through a
+/// child the repeat breaker had stopped.
+#[tokio::test]
+async fn a_child_going_stuck_wakes_a_wait() -> TestResult {
+    let parent = Arc::new(session(Vec::new()));
+    let (_root, host, _store) = family(&parent, Child::Holds("sleep 5"))?;
+    spawn(&host, "looper")?;
+    let mut cursor = host.wait(1_000, None).await?["cursor"].as_u64();
+    let store = host.transcript("looper").ok_or("no transcript")?;
+    let signal = json!({"signal": "repeat_break"});
+    yi_session::lock_session(&store).append_custom("main", "loop_signal", Some(signal))?;
+    let mut causes = Vec::new();
+    for _ in 0..3 {
+        let reply = host.wait(1_000, cursor).await?;
+        cursor = reply["cursor"].as_u64();
+        causes.push(reply["causes"]["looper"].clone());
+    }
+    assert!(causes.contains(&json!("stuck")), "{causes:?}");
+    Ok(())
+}
+
 /// Dies with a wait blocked on a child asking its caller (`mbx-ask` round 3 waited 20, 60 and
 /// 90 s each time), and with a wait on a family with nothing live (`mbx-fanout`, 540 s). Dies
 /// too with a repeat of either spinning: the second wait at the same state refuses, naming it.

@@ -542,3 +542,15 @@ async fn a_deadline_ends_the_run_after_the_turn_in_flight() -> Result<(), Box<dy
     assert_eq!(serde_json::to_value(last)?[0]["text"], "done", "{asked}");
     Ok(())
 }
+
+/// Dies with a follow-up only queued: an ACP or RPC follow-up that reached an idle session
+/// waited for a turn nobody started.
+#[tokio::test]
+async fn a_follow_up_to_an_idle_session_starts_its_turn() -> Result<(), Box<dyn Error>> {
+    let session = session_with_reply("taken");
+    session.follow_up_message(yi_runtime::session::user_input("one more thing"));
+    tokio::time::timeout(Duration::from_secs(5), session.wait_idle()).await?;
+    let said = serde_json::to_string(&session.messages())?;
+    assert!(said.contains("taken"), "{said}");
+    Ok(())
+}

@@ -31,6 +31,7 @@ pub const FAMILY_CAP: usize = 16;
 pub const PARENT_NAME: &str = "parent";
 /// The cause a cut-short run carries on its terminal update and in the parent's notice.
 pub(crate) const INTERRUPTED: &str = "interrupted";
+pub(crate) const AMBIGUOUS: &str = "names more than one child, so give its full name:";
 
 pub(crate) struct ChildRecord {
     pub(crate) session_name: String,
@@ -68,6 +69,7 @@ pub(crate) struct ChildRecord {
     pub(crate) seen: u64,
     /// Invariant: one reader concludes a run, [`SubagentHost::run_child`] or a resume reader.
     pub(crate) concluding: bool,
+    pub(crate) concluded_runs: u64,
     attributed: usize,
     pub(crate) session: Arc<AgentSession>,
 }
@@ -219,6 +221,7 @@ pub struct SubagentHost {
     pub(crate) harvests: Mutex<HashMap<String, Option<String>>>,
     pub(crate) waits: std::sync::atomic::AtomicU64,
     pub(crate) told: Mutex<Option<(String, u64)>>,
+    pub(crate) stuck: Mutex<std::collections::HashSet<String>>,
 }
 
 impl SubagentHost {
@@ -489,6 +492,7 @@ impl SubagentHost {
             harvests: Mutex::default(),
             waits: std::sync::atomic::AtomicU64::new(0),
             told: Mutex::new(None),
+            stuck: Mutex::default(),
         }
     }
 
@@ -720,6 +724,7 @@ impl SubagentHost {
                     cause: crate::family::Cause::Spawned,
                     seen: 0,
                     concluding: true,
+                    concluded_runs: 0,
                     attributed: 0,
                     session: Arc::clone(&session),
                 },
@@ -825,6 +830,8 @@ impl SubagentHost {
     }
 
     fn status_of(&self, name: Option<&str>) -> Map<String, Value> {
+        let name = name.map(|name| self.member_name(name));
+        let name = name.as_deref();
         self.saw(name);
         let members: Vec<Value> = self
             .states()
@@ -876,11 +883,27 @@ impl SubagentHost {
         children: &HashMap<String, ChildRecord>,
         target: &str,
     ) -> Result<String, String> {
-        children
+        if let Some((id, _)) = children
             .iter()
             .find(|(id, record)| id.as_str() == target || record.session_name == target)
-            .map(|(id, _)| id.clone())
-            .ok_or_else(|| format!("No RLM child matches \"{target}\""))
+        {
+            return Ok(id.clone());
+        }
+        let suffix = format!("/{target}");
+        let mut named: Vec<(&String, &str)> = children
+            .iter()
+            .filter(|(_, record)| !target.contains('/') && record.session_name.ends_with(&suffix))
+            .map(|(id, record)| (id, record.session_name.as_str()))
+            .collect();
+        named.sort_unstable_by_key(|(_, name)| *name);
+        match named.as_slice() {
+            [(id, _)] => Ok((*id).clone()),
+            [] => Err(format!("No RLM child matches \"{target}\"")),
+            many => {
+                let names: Vec<&str> = many.iter().map(|(_, name)| *name).collect();
+                Err(format!("\"{target}\" {AMBIGUOUS} {}", names.join(", ")))
+            }
+        }
     }
 
     pub fn transcript(&self, target: &str) -> Option<yi_session::SharedSession> {
@@ -911,9 +934,11 @@ impl SubagentHost {
     /// Invariant: a reap asks that a child no longer run, so a host holding no such child has
     /// answered it; the caller skips rather than refuses, keeping a cascade retryable.
     pub fn holds(&self, target: &str) -> bool {
-        self.children
-            .lock()
-            .is_ok_and(|children| Self::key_of(&children, target).is_ok())
+        self.children.lock().is_ok_and(|children| {
+            children
+                .iter()
+                .any(|(id, record)| id == target || record.session_name == target)
+        })
     }
 
     pub fn delete(&self, target: &str) -> Result<Map<String, Value>, String> {
