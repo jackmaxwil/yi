@@ -105,6 +105,7 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
             depth: 0,
             max_depth: 1,
             rlm_dir: root.join("rlm"),
+            family_dir: None,
             summarizer: None,
             advisor: None,
             auto_review: None,
@@ -146,5 +147,100 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
     let (path, bytes) = tokio::task::spawn_blocking(move || dumper.dump_kernel(&object)).await??;
     assert_eq!(path, family.join("helper.answer.dill"));
     assert!(bytes > 0 && path.is_file(), "{path:?} {bytes}");
+    Ok(())
+}
+
+/// One root session wired as `build_session` wires it once the session id is known.
+fn root_session(
+    root: &std::path::Path,
+    rlm: &str,
+    family: &str,
+) -> Result<(AgentSession, Arc<yi_runtime::KernelService>), Box<dyn Error>> {
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: String::new(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    attach_runtime(
+        &mut session,
+        RuntimeWiring {
+            provider,
+            system_prompt: String::new(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: root.to_path_buf(),
+            lane_slots: 1,
+            deadline: None,
+            home: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
+            broker: None,
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join(rlm),
+            family_dir: Some(root.join("family").join(family)),
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: Wall::default(),
+            auto_background: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: KernelServiceMap::new(),
+        },
+    );
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    Ok((session, kernel))
+}
+
+async fn printed(
+    kernel: &Arc<yi_runtime::KernelService>,
+    code: &'static str,
+) -> Result<String, Box<dyn Error>> {
+    let service = Arc::clone(kernel);
+    let outcome = tokio::task::spawn_blocking(move || {
+        let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
+        yi_tools::KernelBridge::execute_cell(service.as_ref(), code, &cancelled)
+    })
+    .await??;
+    Ok(format!(
+        "{}{}",
+        outcome.result.stdout, outcome.result.stderr
+    ))
+}
+
+/// Incident: the board was `rlm-<pid>/family`, so two sessions one `yi acp` worker hosts
+/// read each other's entries, and a `--continue` in a new process found an empty board.
+#[tokio::test]
+async fn the_family_board_belongs_to_the_root_session() -> TestResult {
+    let root = Scratch::new("yi-family-by-session")?;
+    let (_a, first) = root_session(&root, "rlm-1", "session-a")?;
+    printed(&first, "rlm.put('k', 'from a')").await?;
+    let (_b, neighbour) = root_session(&root, "rlm-1", "session-b")?;
+    let seen = printed(&neighbour, "print([entry['name'] for entry in rlm.ls()])").await?;
+    let (_c, resumed) = root_session(&root, "rlm-2", "session-a")?;
+    let kept = printed(&resumed, "print(rlm.get('k'))").await?;
+    for kernel in [first, neighbour, resumed] {
+        kernel.dispose().await;
+    }
+    assert!(
+        seen.contains("[]"),
+        "another session in the process read the board: {seen}"
+    );
+    assert!(
+        kept.contains("from a"),
+        "the continued session lost its board: {kept}"
+    );
     Ok(())
 }

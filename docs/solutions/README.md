@@ -216,5 +216,6 @@ when it changes rather than editing them by hand.
 - [D236](adr/d236.md) - the mailbox's leftovers close
 - [D237](adr/d237.md) - tool ergonomics and harness fixes
 - [D238](adr/d238.md) - the last rung of the kernel toolchain is a pinned, verified uv, not a piped...
+- [D242](adr/d242.md) - the family board belongs to the root session, not the process (amends D164)
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

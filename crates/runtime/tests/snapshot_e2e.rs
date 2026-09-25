@@ -74,6 +74,7 @@ fn process(
             depth: 0,
             max_depth: 1,
             rlm_dir: sessions.join(format!("rlm-{pid}")),
+            family_dir: None,
             summarizer: None,
             advisor: None,
             auto_review: None,
