@@ -13,8 +13,9 @@ impl Tokens {
     }
 }
 
-// Estimate images as 4000 chars plus block overhead.
-const IMAGE_ESTIMATE_CHARS: u64 = 4800;
+// Invariant: the most an image costs on Claude's high-resolution tier, 4784 visual tokens
+// (a larger one is downscaled to that), at four chars a token.
+const IMAGE_ESTIMATE_CHARS: u64 = 19_136;
 
 fn chars_to_tokens(chars: u64) -> Tokens {
     Tokens(chars.div_ceil(4))
