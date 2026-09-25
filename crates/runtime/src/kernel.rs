@@ -665,6 +665,11 @@ pub enum VariableReadError {
     NotRunning,
     #[error("the kernel could not be read: {detail}")]
     Cell { detail: String },
+    #[error(
+        "the agent is running a cell; nothing was read within {} s",
+        yi_kernel::KERNEL_STATE_LISTING_TIMEOUT_MS / 1000
+    )]
+    Busy,
     #[error("repr({name}) raised {python}")]
     Unreadable { name: VariableName, python: String },
 }
@@ -717,10 +722,6 @@ impl KernelService {
         name: &VariableName,
         code: String,
     ) -> Result<Option<(String, usize)>, VariableReadError> {
-        let manager = self
-            .manager_if_running()
-            .await
-            .ok_or(VariableReadError::NotRunning)?;
         let abort = AbortFlag::default();
         let timer = {
             let abort = abort.clone();
@@ -732,20 +733,38 @@ impl KernelService {
                 abort.fire();
             })
         };
-        let outcome = manager
-            .execute(
-                &code,
-                ExecuteOptions {
-                    abort: Some(abort),
-                    internal: true,
-                    ..ExecuteOptions::default()
-                },
-            )
-            .await;
+        let outcome = async {
+            let manager = tokio::select! {
+                manager = self.manager_if_running() => manager.ok_or(VariableReadError::NotRunning)?,
+                () = abort.fired() => return Err(VariableReadError::Busy),
+            };
+            let options = ExecuteOptions {
+                abort: Some(abort.clone()),
+                internal: true,
+                ..ExecuteOptions::default()
+            };
+            manager
+                .execute(&code, options)
+                .await
+                .map_err(|error| VariableReadError::Cell {
+                    detail: error.to_string(),
+                })
+        }
+        .await;
         timer.abort();
-        let result = outcome.map_err(|error| VariableReadError::Cell {
-            detail: error.to_string(),
-        })?;
+        let result = outcome?;
+        // Invariant: only a cell the abort stopped before it was sent reports 0 ms.
+        if result.status == yi_types::kernel::ExecuteStatus::Aborted {
+            return Err(match result.duration_ms {
+                0 => VariableReadError::Busy,
+                _ => VariableReadError::Cell {
+                    detail: format!(
+                        "the read timed out after {} s",
+                        yi_kernel::KERNEL_STATE_LISTING_TIMEOUT_MS / 1000
+                    ),
+                },
+            });
+        }
         if result.status != yi_types::kernel::ExecuteStatus::Ok {
             return Err(VariableReadError::Cell {
                 detail: result
