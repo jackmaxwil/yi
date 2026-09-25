@@ -1,11 +1,11 @@
 # Solutions
 
-Distilled reference material for working on Yi. The design docs remain the law
-(docs/YI_DESIGN.md deep design, docs/ARCHITECTURE.md map + decision log); these
-files are the derived, readable views. Regenerate the ADRs from the decision log
-when it changes rather than editing them by hand.
+Derived views for working on Yi. The law is [YI_DESIGN.md](../YI_DESIGN.md) (what Yi is) and
+[ARCHITECTURE.md](../ARCHITECTURE.md) (feature ledger and decision log). Each ADR is rendered from
+its decision-log row by `just adr <N>`, which also appends its line to the index below; neither is
+edited by hand.
 
-- [architecture.md](architecture.md) - the system in one page
+- [architecture.md](architecture.md) - a one-page map into the design doc
 - [coding-practices.md](coding-practices.md) - how code is written and gated here
 - [comment-style.md](comment-style.md) - typed comment referents and named grants (D55)
 - [adr/](adr/) - one architecture decision record per decision-log row
