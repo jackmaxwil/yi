@@ -585,3 +585,67 @@ fn custom_tool_call_stream_maps_to_patch_argument() -> TestResult {
     );
     Ok(())
 }
+
+/// A kernel cell's tool call and its result: text, then the image it attached.
+fn image_exchange(api: &str, id: &str) -> Vec<AgentMessage> {
+    vec![
+        AgentMessage::Assistant {
+            content: vec![Content::ToolCall {
+                id: id.to_owned(),
+                name: "ipython".to_owned(),
+                arguments: serde_json::Map::new(),
+                thought_signature: None,
+                namespace: None,
+            }],
+            api: api.to_owned(),
+            provider: "test".to_owned(),
+            model: "m".to_owned(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: yi_types::message::Usage::zero(),
+            stop_reason: StopReason::ToolUse,
+            deferred: None,
+            error_message: None,
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 0,
+        },
+        AgentMessage::ToolResult {
+            tool_call_id: id.to_owned(),
+            tool_name: "ipython".to_owned(),
+            content: vec![
+                Content::Text {
+                    text: "attached".to_owned(),
+                    text_signature: None,
+                },
+                Content::Image {
+                    data: "iVBORw0KGgo=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                },
+            ],
+            details: None,
+            usage: None,
+            added_tool_names: None,
+            is_error: false,
+            timestamp: 0,
+        },
+    ]
+}
+
+#[test]
+fn a_tool_result_image_is_an_input_image_in_the_output() -> TestResult {
+    let mut ctx = context();
+    ctx.messages
+        .extend(image_exchange("openai-responses", "call_1|fc_1"));
+    let params = build_params(&model(true), &ctx, &OpenAiOptions::default());
+    let input = params["input"].as_array().ok_or("input array")?;
+    assert_eq!(
+        input.last().ok_or("last")?,
+        &json!({"type": "function_call_output", "call_id": "call_1", "output": [
+            {"type": "input_text", "text": "attached"},
+            {"type": "input_image", "detail": "auto", "image_url": "data:image/png;base64,iVBORw0KGgo="},
+        ]})
+    );
+    Ok(())
+}

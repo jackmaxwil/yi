@@ -338,3 +338,67 @@ fn a_claude_request_keeps_its_images_under_the_request_cap() -> Result<(), Box<d
     assert_eq!(sent.last().map(String::as_str), Some("0003"), "{sent:?}");
     Ok(())
 }
+
+/// A kernel cell's tool call and its result: text, then the image it attached.
+fn image_exchange(api: &str, id: &str) -> Vec<AgentMessage> {
+    vec![
+        AgentMessage::Assistant {
+            content: vec![Content::ToolCall {
+                id: id.to_owned(),
+                name: "ipython".to_owned(),
+                arguments: serde_json::Map::new(),
+                thought_signature: None,
+                namespace: None,
+            }],
+            api: api.to_owned(),
+            provider: "test".to_owned(),
+            model: "m".to_owned(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: yi_types::message::Usage::zero(),
+            stop_reason: StopReason::ToolUse,
+            deferred: None,
+            error_message: None,
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 0,
+        },
+        AgentMessage::ToolResult {
+            tool_call_id: id.to_owned(),
+            tool_name: "ipython".to_owned(),
+            content: vec![
+                Content::Text {
+                    text: "attached".to_owned(),
+                    text_signature: None,
+                },
+                Content::Image {
+                    data: "iVBORw0KGgo=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                },
+            ],
+            details: None,
+            usage: None,
+            added_tool_names: None,
+            is_error: false,
+            timestamp: 0,
+        },
+    ]
+}
+
+#[test]
+fn a_tool_result_image_rides_inside_the_tool_result_block() -> Result<(), Box<dyn Error>> {
+    let mut ctx = context();
+    ctx.messages
+        .extend(image_exchange("anthropic-messages", "toolu_1"));
+    let params = build_params(&model(), &ctx, &AnthropicOptions::default());
+    let messages = params["messages"].as_array().ok_or("messages")?;
+    assert_eq!(
+        messages.last().ok_or("last")?["content"],
+        json!([{"type": "tool_result", "tool_use_id": "toolu_1", "is_error": false, "content": [
+            {"type": "text", "text": "attached"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+        ]}])
+    );
+    Ok(())
+}
