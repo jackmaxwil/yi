@@ -139,10 +139,10 @@ fn estimate_uses_last_authoritative_usage_plus_trailing_chars() -> TestResult {
     Ok(())
 }
 
-/// An image under-counted lets the window fill past the compaction trigger: the
-/// largest one `attach_image` sends (1200×1200) is w*h/750 = 1920 tokens on Anthropic.
+/// An image under-counted lets the window fill past the compaction trigger: Claude's
+/// high-resolution tier charges up to 4784 visual tokens per image.
 #[test]
-fn an_image_is_estimated_at_the_largest_attach_image_sends() -> TestResult {
+fn an_image_is_estimated_at_the_most_a_high_resolution_image_costs() -> TestResult {
     let image = AgentMessage::host_user(
         UserContent::Blocks(vec![Content::Image {
             data: "iVBORw0KGgo=".to_owned(),
@@ -150,7 +150,7 @@ fn an_image_is_estimated_at_the_largest_attach_image_sends() -> TestResult {
         }]),
         1,
     );
-    assert!(yi_context::estimate_message(&image) >= Tokens(1920));
+    assert!(yi_context::estimate_message(&image) >= Tokens(4784));
     Ok(())
 }
 

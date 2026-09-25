@@ -13,9 +13,9 @@ impl Tokens {
     }
 }
 
-// Invariant: the largest image `attach_image` sends, 1200x1200, at Anthropic's
-// w*h/750 tokens: 1920 tokens, 7680 chars.
-const IMAGE_ESTIMATE_CHARS: u64 = 7680;
+// Invariant: the most an image costs on Claude's high-resolution tier, 4784 visual tokens
+// (a larger one is downscaled to that), at four chars a token.
+const IMAGE_ESTIMATE_CHARS: u64 = 19_136;
 
 fn chars_to_tokens(chars: u64) -> Tokens {
     Tokens(chars.div_ceil(4))
