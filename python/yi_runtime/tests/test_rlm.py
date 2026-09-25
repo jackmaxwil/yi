@@ -624,3 +624,16 @@ class ReplyTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(rlm, "host_request", fake_host_request):
             self.assertEqual(await _handle().result(timeout=5), {"text": "done"})
         self.assertEqual(len(seen), 2)
+
+
+class ControlCommTests(unittest.TestCase):
+    def test_a_kernel_without_the_comm_internals_is_refused_by_name(self) -> None:
+        shell = mock.Mock(spec=["kernel"], kernel=mock.Mock(spec=[]))
+        with mock.patch.object(rlm, "get_ipython", lambda: shell):
+            with self.assertRaisesRegex(RuntimeError, "YI_KERNEL_PYTHON"):
+                rlm._install_control_comm_handlers()
+
+    def test_a_shell_with_no_kernel_installs_nothing_and_does_not_raise(self) -> None:
+        shell = mock.Mock(spec=[])
+        with mock.patch.object(rlm, "get_ipython", lambda: shell):
+            rlm._install_control_comm_handlers()
