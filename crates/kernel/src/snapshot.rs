@@ -115,10 +115,18 @@ pub fn build_snapshot_code(
         payload[name] = blob
         total += _b.len(blob)
 
+    def fresh(path, mode):
+        try:
+            os.remove(path)
+        except _b.FileNotFoundError:
+            pass
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        return os.fdopen(os.open(path, flags, 0o600), mode)
+
     os.makedirs(os.path.dirname({out}), exist_ok=True)
     tmp = {out} + ".tmp-" + _b.str(os.getpid())
     try:
-        with _b.open(tmp, "wb") as fh:
+        with fresh(tmp, "wb") as fh:
             dill.dump(payload, fh)
         os.replace(tmp, {out})
     except _b.BaseException as _err:
@@ -145,7 +153,7 @@ pub fn build_snapshot_code(
     }}
     manifest_tmp = {manifest} + ".tmp-" + _b.str(os.getpid())
     try:
-        with _b.open(manifest_tmp, "w") as fh:
+        with fresh(manifest_tmp, "w") as fh:
             json.dump(manifest, fh)
         os.replace(manifest_tmp, {manifest})
     except _b.Exception:

@@ -266,7 +266,8 @@ class BlackboardTests(unittest.IsolatedAsyncioTestCase):
         # Incident: the sidecar was written in place, so ENOSPC mid-write left half a JSON file.
         rlm.put("shard", 1)
         before = (self.family / "shard.json").read_text()
-        real_open = open
+        real_os_open, real_fdopen = os.open, os.fdopen
+        paths: dict[int, str] = {}
 
         class Full:
             def __init__(self, handle):
@@ -282,15 +283,30 @@ class BlackboardTests(unittest.IsolatedAsyncioTestCase):
                 self.handle.write(data[: len(data) // 2])
                 raise OSError(28, "No space left on device")
 
-        def filling(path, mode="r", *args, **kwargs):
-            handle = real_open(path, mode, *args, **kwargs)
-            return Full(handle) if ".json" in str(path) and "w" in mode else handle
+        def opening(path, *args, **kwargs):
+            fd = real_os_open(path, *args, **kwargs)
+            paths[fd] = str(path)
+            return fd
 
-        with mock.patch("builtins.open", filling), mock.patch("io.open", filling):
+        def filling(fd, mode="r", *args, **kwargs):
+            handle = real_fdopen(fd, mode, *args, **kwargs)
+            return Full(handle) if ".json" in paths.get(fd, "") else handle
+
+        with mock.patch("os.open", opening), mock.patch("os.fdopen", filling):
             with self.assertRaises(OSError):
                 rlm.put("shard", 2)
         self.assertEqual(json.loads((self.family / "shard.json").read_text()), json.loads(before))
         self.assertEqual(sorted(path.name for path in self.family.iterdir()), ["shard.dill", "shard.json"])
+        self.assertEqual(rlm.get("shard"), 1)
+
+    def test_a_put_never_writes_through_a_link_planted_at_its_tmp_name(self) -> None:
+        outside = pathlib.Path(tempfile.mkdtemp(prefix="yi-outside-")) / "victim"
+        self.addCleanup(shutil.rmtree, outside.parent, ignore_errors=True)
+        outside.write_text("untouched")
+        for tmp in ("shard.dill", "shard.json"):
+            (self.family / f"{tmp}.tmp-{os.getpid()}").symlink_to(outside)
+        rlm.put("shard", 1)
+        self.assertEqual(outside.read_text(), "untouched")
         self.assertEqual(rlm.get("shard"), 1)
 
     async def test_a_kernel_object_fetch_undills_the_path_the_host_names(self) -> None:
