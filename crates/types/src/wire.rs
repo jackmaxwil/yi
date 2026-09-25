@@ -75,3 +75,36 @@ pub enum Mutation {
         fact: Fact,
     },
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStats {
+    pub message_count: u64,
+    pub cached_tokens: i64,
+    pub uncached_tokens: i64,
+    pub total_tokens: i64,
+    pub cost_total: f64,
+}
+
+impl SessionStats {
+    pub fn zero() -> Self {
+        Self {
+            message_count: 0,
+            cached_tokens: 0,
+            uncached_tokens: 0,
+            total_tokens: 0,
+            cost_total: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMetadata {
+    pub id: String,
+    pub created_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
