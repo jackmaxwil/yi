@@ -851,7 +851,7 @@ fn background_session_notifies_after_delay() -> TestResult {
     )
 }
 
-fn ipython_updates() -> Vec<Value> {
+fn ipython_updates(content: Value, media: Value) -> Vec<Value> {
     vec![
         update(
             "s-alpha",
@@ -863,31 +863,55 @@ fn ipython_updates() -> Vec<Value> {
         update(
             "s-alpha",
             json!({"sessionUpdate": "tool_call_update",
-            "toolCallId": "call_1", "status": "completed",
+            "toolCallId": "call_1", "status": "completed", "content": content,
             "rawOutput": {
                 "stdout": "computing drift…",
                 "result": "+4.1 mm",
-                "attachments": 1, "attachmentMedia": [{"mime_type": "image/png", "data": "aWJvcnk="}],
+                "attachments": 1, "attachmentMedia": media,
             }}),
         ),
     ]
 }
 
+/// A session written before the image moved to the result content still draws it.
 #[test]
 fn notebook_pane_shows_cells_and_image_placeholder() -> TestResult {
+    notebook_shows_image("notebook", |frame| {
+        ipython_prompt(
+            frame,
+            json!([{"type": "content", "content": {"type": "text", "text": "attached"}}]),
+            json!([{"mime_type": "image/png", "data": "aWJvcnk="}]),
+        )
+    })
+}
+
+#[test]
+fn notebook_pane_draws_the_image_from_the_result_content() -> TestResult {
+    notebook_shows_image("notebook-content", |frame| {
+        ipython_prompt(
+            frame,
+            json!([{"type": "content", "content": {"type": "image", "data": "aWJvcnk=", "mimeType": "image/png"}}]),
+            json!([{"mime_type": "image/png"}]),
+        )
+    })
+}
+
+fn ipython_prompt(frame: &Value, content: Value, media: Value) -> Vec<Value> {
+    let mut frames = vec![ok(frame, json!({}))];
+    frames.extend(ipython_updates(content, media));
+    frames
+}
+
+fn notebook_shows_image(name: &str, prompt: Responder) -> TestResult {
     run(
-        "notebook",
+        name,
         vec![
             Step::Expect("initialize", init_reply),
             Step::Expect("session/list", two_session_list),
             Step::Expect("session/list", empty_list),
             Step::Expect("session/resume", resume_alpha),
             Step::Expect("_yi/seen", seen_ok),
-            Step::Expect("session/prompt", |frame| {
-                let mut frames = vec![ok(frame, json!({}))];
-                frames.extend(ipython_updates());
-                frames
-            }),
+            Step::Expect("session/prompt", prompt),
         ],
         // Open the session and prompt: the first kernel cell opens the notebook pane
         // beside it, which renders code, streams and the image placeholder.
