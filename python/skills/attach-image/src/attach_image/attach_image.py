@@ -9,12 +9,11 @@ from pathlib import Path
 # Keep in sync with ATTACHMENT_DISPLAY_MIME in crates/kernel/src/lib.rs.
 _ATTACHMENT_DISPLAY_MIME = "application/vnd.yi.attachment+json"
 
-# Keep emitted attachments small enough that daemon clients can render and replay
-# image-heavy sessions without compressing megabytes of base64 on every update.
-_MAX_SOURCE_IMAGE_BYTES = 20_000_000
-_MAX_SOURCE_IMAGE_PIXELS = 36_000_000
-_MAX_ATTACHMENT_DATA_CHARS = 350_000
-_MAX_ATTACHMENT_DIMENSION = 1200
+# The provider's own per-image limits (Claude API vision docs, 2026-09): 10 MB of base64
+# and 8000 px a side. A larger source is resized to fit; Pillow's decompression-bomb check
+# is the only bound on what may be read.
+_MAX_ATTACHMENT_DATA_CHARS = 10_000_000
+_MAX_ATTACHMENT_DIMENSION = 8000
 _TRANSPARENCY_BACKGROUND = "#888888"
 _JPEG_QUALITIES = (82, 72, 60, 48, 36)
 
@@ -73,11 +72,6 @@ def _validate_image(path: str) -> tuple[Path, str, int, tuple[int, int]]:
         raise FileNotFoundError(f"{path} is not an existing regular file")
 
     size = filepath.stat().st_size
-    if size > _MAX_SOURCE_IMAGE_BYTES:
-        raise ValueError(
-            f"{path} is {size // 1_000_000}MB; images must be under "
-            f"{_MAX_SOURCE_IMAGE_BYTES // 1_000_000}MB. Resize it first."
-        )
 
     with filepath.open("rb") as f:
         head = f.read(16)
@@ -89,12 +83,6 @@ def _validate_image(path: str) -> tuple[Path, str, int, tuple[int, int]]:
         )
 
     dimensions = _image_dimensions(filepath)
-    pixel_count = dimensions[0] * dimensions[1]
-    if pixel_count > _MAX_SOURCE_IMAGE_PIXELS:
-        raise ValueError(
-            f"{path} is {dimensions[0]}x{dimensions[1]} ({pixel_count // 1_000_000}MP); "
-            f"images must be at most {_MAX_SOURCE_IMAGE_PIXELS // 1_000_000}MP. Resize it first."
-        )
     _validate_decodable_image(filepath)
 
     return filepath, mime, size, dimensions
@@ -186,7 +174,7 @@ def _resize_image(filepath: Path, mime_type: str, size: int, dimensions: tuple[i
 
     raise ValueError(
         f"{filepath} could not be compressed below "
-        f"{_MAX_ATTACHMENT_DATA_CHARS // 1000}KB base64 payload "
+        f"{_MAX_ATTACHMENT_DATA_CHARS // 1_000_000}MB base64 payload "
         f"(smallest was {_base64_chars(last_data or b'') // 1000}KB at {last_width}x{last_height})."
     )
 
