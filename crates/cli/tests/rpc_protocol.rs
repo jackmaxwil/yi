@@ -95,8 +95,9 @@ fn responds_per_command_streams_events_and_persists_v4() -> TestResult {
     assert!(message_ends >= 2, "user + assistant message_end expected");
 
     let sessions_dir = std::fs::read_dir(dir.join("sessions"))?
-        .next()
-        .ok_or("no cwd session directory")??;
+        .filter_map(Result::ok)
+        .find(|entry| entry.path().is_dir())
+        .ok_or("no cwd session directory")?;
     let session_file = std::fs::read_dir(sessions_dir.path())?
         .filter_map(Result::ok)
         .find(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
