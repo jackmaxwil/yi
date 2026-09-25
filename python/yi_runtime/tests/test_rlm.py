@@ -291,6 +291,7 @@ class BlackboardTests(unittest.IsolatedAsyncioTestCase):
                 rlm.put("shard", 2)
         self.assertEqual(json.loads((self.family / "shard.json").read_text()), json.loads(before))
         self.assertEqual(sorted(path.name for path in self.family.iterdir()), ["shard.dill", "shard.json"])
+        self.assertEqual(rlm.get("shard"), 1)
 
     async def test_a_kernel_object_fetch_undills_the_path_the_host_names(self) -> None:
         target = self.family / "main.df.dill"

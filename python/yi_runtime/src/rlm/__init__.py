@@ -999,29 +999,41 @@ def put(name: str, obj: Any) -> dict[str, Any]:
     directory.mkdir(parents=True, exist_ok=True)
     serializer = _serializer()
     target = directory / f"{name}.dill"
-    _publish(target, lambda handle: serializer.dump(obj, handle))
-    sidecar = {
-        "name": name,
-        "owner": _member_name(),
-        "at": time.time(),
-        "bytes": target.stat().st_size,
-        "type": type(obj).__name__,
-        "serializer": serializer.__name__,
-    }
-    _publish(directory / f"{name}.json", lambda handle: handle.write(json.dumps(sidecar).encode()))
+    # Invariant: both files are staged before either is renamed, so a put that fails while
+    # writing leaves `get`, `ls` and family:// all on the previous pair.
+    staged: list[tuple[Path, Path]] = []
+    try:
+        staged.append((_stage(target, lambda handle: serializer.dump(obj, handle)), target))
+        sidecar = {
+            "name": name,
+            "owner": _member_name(),
+            "at": time.time(),
+            "bytes": staged[0][0].stat().st_size,
+            "type": type(obj).__name__,
+            "serializer": serializer.__name__,
+        }
+        encoded = json.dumps(sidecar).encode()
+        sidecar_path = directory / f"{name}.json"
+        staged.append((_stage(sidecar_path, lambda handle: handle.write(encoded)), sidecar_path))
+        for tmp, path in staged:
+            os.replace(tmp, path)
+    except BaseException:
+        for tmp, _ in staged:
+            tmp.unlink(missing_ok=True)
+        raise
     return sidecar
 
 
-def _publish(path: Path, write: Any) -> None:
-    """Write through a per-process tmp and rename, so a reader sees the old file or the new."""
+def _stage(path: Path, write: Any) -> Path:
+    """Write a per-process tmp beside ``path`` for the caller to rename over it."""
     tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
     try:
         with open(tmp, "wb") as handle:
             write(handle)
-        os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    return tmp
 
 
 @_public
