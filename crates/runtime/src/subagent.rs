@@ -222,6 +222,8 @@ pub struct SubagentHost {
     pub(crate) waits: std::sync::atomic::AtomicU64,
     pub(crate) told: Mutex<Option<(String, u64)>>,
     pub(crate) stuck: Mutex<std::collections::HashSet<String>>,
+    /// The board a long reply is kept on: the wiring's, set once after construction (D242).
+    pub(crate) family: std::sync::OnceLock<PathBuf>,
 }
 
 impl SubagentHost {
@@ -493,6 +495,7 @@ impl SubagentHost {
             waits: std::sync::atomic::AtomicU64::new(0),
             told: Mutex::new(None),
             stuck: Mutex::default(),
+            family: std::sync::OnceLock::new(),
         }
     }
 

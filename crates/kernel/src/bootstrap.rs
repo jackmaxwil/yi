@@ -10,7 +10,8 @@ pub use crate::lock::{
 
 pub const BOOTSTRAP_SCHEMA: u64 = 1;
 const PYTHON_VERSION: &str = "3.11";
-const IPYKERNEL_REQUIREMENT: &str = "ipykernel";
+/// Incident: host replies ride ipykernel internals (`kernel.control_handlers`), unpinned.
+const IPYKERNEL_REQUIREMENT: &str = "ipykernel>=7,<8";
 const STATE_SNAPSHOT_REQUIREMENT: &str = "dill";
 pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 15] = [
     "requests",

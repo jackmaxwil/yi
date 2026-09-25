@@ -216,6 +216,11 @@ edited by hand.
 - [D236](adr/d236.md) - the mailbox's leftovers close
 - [D237](adr/d237.md) - tool ergonomics and harness fixes
 - [D238](adr/d238.md) - the last rung of the kernel toolchain is a pinned, verified uv, not a piped...
+- [D242](adr/d242.md) - the family board belongs to the root session, not the process (amends D164)
+- [D241](adr/d241.md) - the kernel's `bash()` runs inside the kernel's own sandbox
+- [D240](adr/d240.md) - a contained kernel may write its family board (amends D87)
+- [D239](adr/d239.md) - one process owns a session's kernel snapshot (amends K10)
+- [D244](adr/d244.md) - syntax highlighting reads bat's grammar set through `two-face` (default...
 - [D243](adr/d243.md) - the design states what is built and names no other agent
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

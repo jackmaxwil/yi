@@ -15,8 +15,6 @@ use crate::term;
 
 const LIVE_TAIL_MIN: usize = 6;
 
-/// A markdown table holds no blank line, so nothing commits until the message ends and the
-/// whole table sits here; a fixed six-row tail cut its head off mid-stream.
 pub fn live_tail_rows(rows: usize) -> usize {
     (rows / 2).max(LIVE_TAIL_MIN)
 }
@@ -30,7 +28,6 @@ pub fn live_tail(lines: Vec<Line<'static>>, rows: usize) -> Vec<Line<'static>> {
     keep_last(lines, live_tail_rows(rows))
 }
 
-/// Half the terminal, floor 5, less the panel's chrome.
 fn tree_rows(rows: usize) -> usize {
     (rows / 2).max(5).min(rows.saturating_sub(9)).max(1)
 }
@@ -102,10 +99,18 @@ fn draw_frame<B>(
     app.logo_target = if layout.orb { 1.0 } else { 0.0 };
 }
 
-/// The live region: the streaming thought tail, prose and tool rows of the turn in flight.
 fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Line<'static>> {
     let content_width = app.content_width();
     let mut live_lines: Vec<Line<'static>> = Vec::new();
+    // Invariant: a held run of reads ended before any live thought began, so it renders first.
+    if !app.explored.is_empty() {
+        live_lines.extend(Cell::Explored(app.explored.clone()).lines(
+            content_width,
+            theme,
+            app.mode,
+            spinner,
+        ));
+    }
     if app.live_thought.len() > app.live_thought_cut {
         // Reasoning-heavy models stream thought long before prose, so show its dim tail and
         // the screen is never silently blank mid-turn; prose does not displace it.
@@ -127,17 +132,7 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
             .live_markdown
             .get(app.live_cut..app.pacing.prose.shown())
             .unwrap_or_default();
-        live_lines.extend(live_tail(app.prose_block(tail).0, app.rows));
-    }
-    // The run is held back from scrollback until it closes, so the live region
-    // is the only place it can be seen while it is still growing.
-    if !app.explored.is_empty() {
-        live_lines.extend(Cell::Explored(app.explored.clone()).lines(
-            content_width,
-            theme,
-            app.mode,
-            spinner,
-        ));
+        live_lines.extend(app.prose_block(tail).0);
     }
     for tool in &app.live_tools {
         live_lines.extend(tool.lines(content_width, theme, app.mode, spinner));
@@ -381,8 +376,7 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
     }
 }
 
-/// The chat inside a rectangle: the retained transcript above, the live frame below it,
-/// `scroll` rows held back from the bottom and clamped to what exists.
+/// Transcript and live frame scroll as one column; `scroll` zero follows the turn, above holds.
 pub fn paint_pane(
     app: &mut App,
     goal: Option<GoalView>,
@@ -393,19 +387,55 @@ pub fn paint_pane(
     // A pane never scrolls anything off: `History` keeps every cell, so the
     // terminal-bound commits and the clear are drained here and dropped.
     let _ = app.take_commits();
-    let _ = app.take_pending_clear();
+    if app.take_pending_clear() {
+        *scroll = 0;
+    }
     let _ = app.take_title();
     let _ = app.take_pending_repaint();
     app.set_width(usize::from(area.width));
     app.set_rows(usize::from(area.height));
-    let layout = layout_chat(app, goal, None, area.height);
-    let chat_rows = layout.rows().min(area.height);
-    let above = usize::from(area.height.saturating_sub(chat_rows));
-    let history = app.reflowed(above.saturating_add(*scroll));
-    *scroll = (*scroll).min(history.len().saturating_sub(above));
-    let end = history.len().saturating_sub(*scroll);
-    let start = end.saturating_sub(above);
-    let shown: Vec<Line<'static>> = history.get(start..end).unwrap_or_default().to_vec();
+    let mut layout = layout_chat(app, goal, None, u16::MAX);
+    let live = std::mem::take(&mut layout.live);
+    let floor = layout.floor.min(area.height);
+    let above = usize::from(area.height.saturating_sub(floor));
+    let (width, theme, mode) = (app.content_width(), app.theme, app.mode);
+    let (shown, thumb) = if *scroll == 0 {
+        app.pane_hold = None;
+        let mut column = app.reflowed(above.saturating_sub(live.len()).max(1));
+        column.extend(live);
+        let start = column.len().saturating_sub(above);
+        (column.split_off(start), None)
+    } else {
+        // Incident: counting committed rows drifted a held view; now rows below a pinned cell.
+        let hold = app
+            .pane_hold
+            .filter(|&(w, m, _, _)| (w, m) == (width, mode));
+        if let Some((_, _, pinned, extent)) = hold {
+            let (at, now) = app.history.tail(width, &theme, mode, 0, pinned);
+            if at == pinned {
+                let grown = now.len().saturating_add(live.len()).saturating_sub(above);
+                *scroll = scroll.saturating_add(grown).saturating_sub(extent);
+            }
+        }
+        let need = above.saturating_add(*scroll).saturating_sub(live.len());
+        let at_most = hold.map_or(usize::MAX, |(_, _, pinned, _)| pinned);
+        let (from, mut column) = app.history.tail(width, &theme, mode, need, at_most);
+        let history_rows = column.len();
+        column.extend(live);
+        *scroll = (*scroll).min(column.len().saturating_sub(above));
+        app.pane_hold = Some((width, mode, from, column.len().saturating_sub(above)));
+        let end = column.len().saturating_sub(*scroll);
+        let start = end.saturating_sub(above);
+        let shown = column.get(start..end).unwrap_or_default().to_vec();
+        let cells = app.history.len().saturating_sub(from).max(1);
+        let before = from.saturating_mul(history_rows) / cells;
+        let total = before
+            .saturating_add(column.len())
+            .saturating_add(usize::from(floor));
+        let thumb =
+            (total > usize::from(area.height)).then_some((total, before.saturating_add(start)));
+        (shown, thumb)
+    };
     let rows = u16::try_from(shown.len()).unwrap_or(0);
     if rows > 0 {
         let rect = Rect::new(area.left(), area.top(), area.width, rows);
@@ -421,8 +451,7 @@ pub fn paint_pane(
     app.orb_placement = placed.orb;
     app.logo_rows = logo_rows(placed.bottom);
     app.logo_target = if layout.orb { 1.0 } else { 0.0 };
-    let total = history.len().saturating_add(usize::from(chat_rows));
-    (total > usize::from(area.height)).then_some((total, start))
+    thumb
 }
 
 /// The transcript above the viewport belongs to a branch that no longer exists and sits in
