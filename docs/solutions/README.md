@@ -216,6 +216,7 @@ when it changes rather than editing them by hand.
 - [D236](adr/d236.md) - the mailbox's leftovers close
 - [D237](adr/d237.md) - tool ergonomics and harness fixes
 - [D238](adr/d238.md) - the last rung of the kernel toolchain is a pinned, verified uv, not a piped...
+- [D242](adr/d242.md) - the family board belongs to the root session, not the process (amends D164)
 - [D241](adr/d241.md) - the kernel's `bash()` runs inside the kernel's own sandbox
 - [D240](adr/d240.md) - a contained kernel may write its family board (amends D87)
 - [D239](adr/d239.md) - one process owns a session's kernel snapshot (amends K10)
