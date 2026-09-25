@@ -164,7 +164,7 @@ pub enum DiffRowKind {
 }
 
 impl Theme {
-    /// Values ported verbatim: light needs a more saturated gutter to hold a
+    /// Fixed values: light needs a more saturated gutter to hold a
     /// number on the pastel, and at 16 colours the terminal owns the ground.
     pub fn diff_row(&self, kind: DiffRowKind) -> DiffRowStyle {
         let added = kind == DiffRowKind::Added;

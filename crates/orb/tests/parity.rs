@@ -19,10 +19,8 @@ fn mode_of(name: &str) -> Mode {
     }
 }
 
-/// The library's own golden vectors (spec/orbs-golden.json, 72 cases,
-/// 6-decimal, tolerance 1e-4): every dot of every state × size × timestamp
-/// must match the reference engine as numbers — the same contract its
-/// SwiftUI and React Native ports are held to.
+/// The golden vectors (spec/orbs-golden.json, 72 cases, 6-decimal, tolerance
+/// 1e-4): every dot of every state × size × timestamp must match as numbers.
 #[test]
 fn engine_matches_reference_golden_vectors() -> TestResult {
     let raw = include_str!("fixtures/orbs-golden.json");

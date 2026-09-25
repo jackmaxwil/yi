@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Job lifecycle (design §15.2). Wire strings match the reference cron statuses.
+/// Job lifecycle (design §15.2); each status serializes as its lowercase wire string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {

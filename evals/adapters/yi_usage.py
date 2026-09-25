@@ -21,7 +21,7 @@ REMOTE_EVENTS_PATH = "/logs/agent/yi.jsonl"
 EVENTS_FILENAME = "yi.jsonl"
 SESSIONS_SUBDIR = "yi/sessions"
 
-# E5: Pi's wire spells usage in camelCase. One definition, both parsers -- a
+# E5: the Pi v4 session format spells usage in camelCase. One definition, both parsers -- a
 # snake_case slip here reads every column as zero instead of failing loudly.
 TOKEN_KEYS = ("input", "output", "cacheRead", "cacheWrite")
 
