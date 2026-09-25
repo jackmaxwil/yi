@@ -188,12 +188,14 @@ impl Builder<'_> {
 
     fn text(&mut self, text: &str) {
         if self.table.is_some() {
-            let style = self.style();
+            let spans = self.prose(text);
             if let Some(table) = &mut self.table
                 && table.in_cell
                 && let Some(cell) = table.current.last_mut()
             {
-                cell.push_span(Span::styled(text.to_owned(), style));
+                for span in spans {
+                    cell.push_span(span);
+                }
             }
             return;
         }
@@ -218,7 +220,16 @@ impl Builder<'_> {
             return;
         }
         self.line_prologue();
-        self.spans.push(Span::styled(text.to_owned(), self.style()));
+        let spans = self.prose(text);
+        self.spans.extend(spans);
+    }
+
+    fn prose(&self, text: &str) -> Vec<Span<'static>> {
+        let style = self.style();
+        if self.link_dest.is_some() || style.fg != Some(self.theme.text) {
+            return vec![Span::styled(text.to_owned(), style)];
+        }
+        marked_words(text, style, self.theme)
     }
 }
 
@@ -332,15 +343,8 @@ fn reduce_table(b: &mut Builder, event: &Event) -> bool {
     true
 }
 
-/// A path takes the read tool's hue; every other code span keeps the code colour.
 fn code_hue(theme: &Theme, code: &str) -> Color {
-    let extension = code.rsplit_once('.').is_some_and(|(stem, ext)| {
-        !stem.is_empty() && !stem.contains(' ') && KNOWN_EXTENSIONS.contains(&ext)
-    });
-    let path_like = (code.contains('/') && !code.contains(' '))
-        || code.starts_with("~/")
-        || code.starts_with("./")
-        || extension;
+    let path_like = (code.contains('/') && !code.contains(' ')) || is_path(code);
     if path_like {
         crate::card::tool_hue(theme, "read")
     } else {
@@ -348,9 +352,76 @@ fn code_hue(theme: &Theme, code: &str) -> Color {
     }
 }
 
-const KNOWN_EXTENSIONS: [&str; 12] = [
-    "json", "lock", "md", "py", "rs", "sh", "toml", "ts", "tsx", "txt", "yaml", "yml",
+pub(crate) fn is_path(word: &str) -> bool {
+    if word.contains(char::is_whitespace) {
+        return false;
+    }
+    let rooted = ["./", "../", "~/"]
+        .iter()
+        .any(|root| word.starts_with(root))
+        || (word.starts_with('/') && word.get(1..).is_some_and(|rest| rest.contains('/')));
+    let mut bare = word;
+    for _ in 0..2 {
+        if let Some((head, number)) = bare.rsplit_once(':')
+            && !number.is_empty()
+            && number.bytes().all(|b| b.is_ascii_digit())
+        {
+            bare = head;
+        }
+    }
+    let name = bare.rsplit('/').next().unwrap_or(bare);
+    let extension = name.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty()
+            && stem
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            && KNOWN_EXTENSIONS.contains(&ext)
+    });
+    rooted || extension
+}
+
+const KNOWN_EXTENSIONS: [&str; 44] = [
+    "c", "cc", "cfg", "cpp", "css", "csv", "go", "h", "hpp", "html", "ini", "java", "jpg", "js",
+    "json", "jsonl", "jsx", "kt", "lock", "log", "lua", "md", "mjs", "patch", "pdf", "php", "png",
+    "py", "pyi", "rb", "rs", "scss", "sh", "sql", "svg", "swift", "toml", "ts", "tsx", "txt",
+    "xml", "yaml", "yml", "zsh",
 ];
+
+fn marked_words(text: &str, style: Style, theme: &Theme) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut plain = String::new();
+    for piece in text.split_inclusive(char::is_whitespace) {
+        let word = piece.trim_end();
+        let core = word
+            .trim_start_matches(['(', '[', '"', '\''])
+            .trim_end_matches(['.', ',', ';', ':', ')', ']', '!', '?', '"', '\'']);
+        let hue = if core.starts_with("https://") || core.starts_with("http://") {
+            Some(theme.blue5)
+        } else if is_path(core) {
+            Some(crate::card::tool_hue(theme, "read"))
+        } else {
+            None
+        };
+        let (Some(hue), Some(at)) = (hue, word.find(core).filter(|_| !core.is_empty())) else {
+            plain.push_str(piece);
+            continue;
+        };
+        plain.push_str(word.get(..at).unwrap_or_default());
+        if !plain.is_empty() {
+            out.push(Span::styled(std::mem::take(&mut plain), style));
+        }
+        out.push(Span::styled(core.to_owned(), style.fg(hue)));
+        plain.push_str(
+            piece
+                .get(at.saturating_add(core.len())..)
+                .unwrap_or_default(),
+        );
+    }
+    if !plain.is_empty() || out.is_empty() {
+        out.push(Span::styled(plain, style));
+    }
+    out
+}
 
 pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     render_stream(source, width, theme, false, &mut None)

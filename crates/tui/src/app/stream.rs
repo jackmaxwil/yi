@@ -63,9 +63,12 @@ fn overflow_cut(
     if tail.matches("```").count() % 2 == 1 || rows(tail) <= budget {
         return None;
     }
+    // Incident: a cut through a table's body left every row after it as raw pipes.
+    let table = table_start(tail).unwrap_or(tail.len());
     let breaks: Vec<usize> = tail
         .match_indices(char::is_whitespace)
         .map(|(at, ws)| at + ws.len())
+        .filter(|at| *at <= table)
         .collect();
     // Monotone in the cut, so the first break that fits is the least the reader
     // loses from the live region. Never `Equal`, so the search never succeeds.
@@ -78,12 +81,26 @@ fn overflow_cut(
             }
         })
         .unwrap_or_else(|index| index);
+    if index == breaks.len() && table < tail.len() {
+        return (table > 0).then_some(table);
+    }
     // Cutting on that arbitrary word leaves the head on a half-empty row every screenful.
     // The last word that fits the row the break lands on wraps the seam like any other.
     let rest = breaks.get(index..)?;
     let head = rows(tail.get(..*rest.first()?).unwrap_or_default());
     let fills = rest.partition_point(|&at| rows(tail.get(..at).unwrap_or_default()) <= head);
     rest.get(fills.saturating_sub(1)).copied()
+}
+
+fn table_start(tail: &str) -> Option<usize> {
+    let mut offset = 0;
+    for line in tail.split_inclusive('\n') {
+        if line.trim_start().starts_with('|') {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+    None
 }
 
 impl App {
@@ -127,6 +144,8 @@ impl App {
             .unwrap_or_default()
             .to_owned();
         if !slice.trim().is_empty() {
+            // Invariant: a held run of reads commits above the reasoning that follows it.
+            self.flush_explored();
             let lines = crate::cell::thought_lines(
                 &slice,
                 self.content_width(),
@@ -178,6 +197,7 @@ impl App {
             return;
         }
         self.flush_thought();
+        self.flush_explored();
         let slice = self
             .live_markdown
             .get(self.live_cut..cut)

@@ -1528,14 +1528,15 @@ fn editor_opens_types_and_saves() -> TestResult {
 #[test]
 fn editor_click_places_cursor_and_drag_selects() -> TestResult {
     let path = seed_editor_file("mouse", "abcdef\nsecond\n")?;
-    // Sidebar 29 wide, border at x=29, inner x=30, gutter "1 " puts text at x=32; row 0 at y=1.
+    // The sidebar fits `s-alpha` to its ten-column floor, 19 wide: border at x=19, inner
+    // x=20, gutter "1 " puts text at x=22; row 0 at y=1.
     run(
         "editor-mouse",
         session_fixture(),
         &open_editor_script(
             &path,
-            "wait-frame 3000 abcdef\nmouse down 34 1\nmouse up 34 1\ntype X\n\
-             wait-frame 3000 abXcdef\nmouse down 32 1\nmouse drag 34 1\nmouse up 34 1\n\
+            "wait-frame 3000 abcdef\nmouse down 24 1\nmouse up 24 1\ntype X\n\
+             wait-frame 3000 abXcdef\nmouse down 22 1\nmouse drag 24 1\nmouse up 24 1\n\
              key backspace\nwait-frame 3000 Xcdef\nwait-frame 3000 !abXcdef\nquit\n",
         ),
     )?;

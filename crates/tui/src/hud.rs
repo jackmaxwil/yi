@@ -117,15 +117,17 @@ pub fn todo_rows(
     let mut rows = Vec::new();
     let mut number = 0usize;
     for phase in &list.phases {
-        if full && (list.phases.len() > 1 || phase.name.as_str() != DEFAULT_PHASE) {
+        let headed = full && (list.phases.len() > 1 || phase.name.as_str() != DEFAULT_PHASE);
+        if headed {
             rows.push(Line::from(Span::styled(
-                format!("  {}", phase.name),
+                phase.name.as_str().to_owned(),
                 theme.muted_style(),
             )));
         }
+        let (top, nested) = if headed { ("  ", "    ") } else { ("", "  ") };
         for item in &phase.items {
-            for (row, indent) in
-                std::iter::once((item, "")).chain(item.children.iter().map(|child| (child, "  ")))
+            for (row, indent) in std::iter::once((item, top))
+                .chain(item.children.iter().map(|child| (child, nested)))
             {
                 if shown.contains(&number) {
                     rows.push(todo_row(row, number.saturating_add(1), indent, theme));
@@ -151,7 +153,7 @@ fn todo_row(item: &TodoItem, number: usize, indent: &str, theme: &Theme) -> Line
     let cut = if item.is_cut() { "…" } else { "" };
     Line::from(Span::styled(
         format!(
-            "  {indent}{number}. {glyph} {}{cut}{}",
+            "{indent}{number}. {glyph} {}{cut}{}",
             item.label,
             yi_runtime::todo::text::suffix(item)
         ),

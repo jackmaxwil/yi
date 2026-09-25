@@ -30,7 +30,6 @@ pub fn live_tail(lines: Vec<Line<'static>>, rows: usize) -> Vec<Line<'static>> {
     keep_last(lines, live_tail_rows(rows))
 }
 
-/// Half the terminal, floor 5, less the panel's chrome.
 fn tree_rows(rows: usize) -> usize {
     (rows / 2).max(5).min(rows.saturating_sub(9)).max(1)
 }
@@ -106,6 +105,15 @@ fn draw_frame<B>(
 fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Line<'static>> {
     let content_width = app.content_width();
     let mut live_lines: Vec<Line<'static>> = Vec::new();
+    // Invariant: a held run of reads ended before any live thought began, so it renders first.
+    if !app.explored.is_empty() {
+        live_lines.extend(Cell::Explored(app.explored.clone()).lines(
+            content_width,
+            theme,
+            app.mode,
+            spinner,
+        ));
+    }
     if app.live_thought.len() > app.live_thought_cut {
         // Reasoning-heavy models stream thought long before prose, so show its dim tail and
         // the screen is never silently blank mid-turn; prose does not displace it.
@@ -127,17 +135,7 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
             .live_markdown
             .get(app.live_cut..app.pacing.prose.shown())
             .unwrap_or_default();
-        live_lines.extend(live_tail(app.prose_block(tail).0, app.rows));
-    }
-    // The run is held back from scrollback until it closes, so the live region
-    // is the only place it can be seen while it is still growing.
-    if !app.explored.is_empty() {
-        live_lines.extend(Cell::Explored(app.explored.clone()).lines(
-            content_width,
-            theme,
-            app.mode,
-            spinner,
-        ));
+        live_lines.extend(app.prose_block(tail).0);
     }
     for tool in &app.live_tools {
         live_lines.extend(tool.lines(content_width, theme, app.mode, spinner));
@@ -381,8 +379,7 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
     }
 }
 
-/// The chat inside a rectangle: the retained transcript above, the live frame below it,
-/// `scroll` rows held back from the bottom and clamped to what exists.
+/// Transcript and live frame scroll as one column; `scroll` zero follows the turn, above holds.
 pub fn paint_pane(
     app: &mut App,
     goal: Option<GoalView>,
@@ -391,21 +388,33 @@ pub fn paint_pane(
     scroll: &mut usize,
 ) -> Option<(usize, usize)> {
     // A pane never scrolls anything off: `History` keeps every cell, so the
-    // terminal-bound commits and the clear are drained here and dropped.
-    let _ = app.take_commits();
-    let _ = app.take_pending_clear();
+    // terminal-bound commits are only counted, as rows that joined the column.
+    let committed = app.take_commits().len();
+    if app.take_pending_clear() {
+        *scroll = 0;
+    }
     let _ = app.take_title();
     let _ = app.take_pending_repaint();
     app.set_width(usize::from(area.width));
     app.set_rows(usize::from(area.height));
-    let layout = layout_chat(app, goal, None, area.height);
-    let chat_rows = layout.rows().min(area.height);
-    let above = usize::from(area.height.saturating_sub(chat_rows));
-    let history = app.reflowed(above.saturating_add(*scroll));
-    *scroll = (*scroll).min(history.len().saturating_sub(above));
-    let end = history.len().saturating_sub(*scroll);
+    let mut layout = layout_chat(app, goal, None, u16::MAX);
+    let live = std::mem::take(&mut layout.live);
+    if *scroll > 0 {
+        *scroll = scroll
+            .saturating_add(committed)
+            .saturating_add(live.len())
+            .saturating_sub(app.pane_live);
+    }
+    app.pane_live = live.len();
+    let floor = layout.floor.min(area.height);
+    let above = usize::from(area.height.saturating_sub(floor));
+    let wanted = above.saturating_add(*scroll);
+    let mut column = app.reflowed(wanted.saturating_sub(live.len()).max(1));
+    column.extend(live);
+    *scroll = (*scroll).min(column.len().saturating_sub(above));
+    let end = column.len().saturating_sub(*scroll);
     let start = end.saturating_sub(above);
-    let shown: Vec<Line<'static>> = history.get(start..end).unwrap_or_default().to_vec();
+    let shown: Vec<Line<'static>> = column.get(start..end).unwrap_or_default().to_vec();
     let rows = u16::try_from(shown.len()).unwrap_or(0);
     if rows > 0 {
         let rect = Rect::new(area.left(), area.top(), area.width, rows);
@@ -421,7 +430,7 @@ pub fn paint_pane(
     app.orb_placement = placed.orb;
     app.logo_rows = logo_rows(placed.bottom);
     app.logo_target = if layout.orb { 1.0 } else { 0.0 };
-    let total = history.len().saturating_add(usize::from(chat_rows));
+    let total = column.len().saturating_add(usize::from(floor));
     (total > usize::from(area.height)).then_some((total, start))
 }
 
