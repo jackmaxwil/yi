@@ -134,6 +134,7 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
         deny_write: Vec::new(),
+        loopback: false,
     };
 
     let (code, output) = run("echo contained > inside.txt", &project, Some(&sandbox))?;
@@ -169,6 +170,7 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
         deny_write: Vec::new(),
+        loopback: false,
     };
 
     let ordinary = format!("cat {}", home.join("notes.md").display());
