@@ -13,8 +13,9 @@ impl Tokens {
     }
 }
 
-// Estimate images as 4000 chars plus block overhead.
-const IMAGE_ESTIMATE_CHARS: u64 = 4800;
+// Invariant: the largest image `attach_image` sends, 1200x1200, at Anthropic's
+// w*h/750 tokens: 1920 tokens, 7680 chars.
+const IMAGE_ESTIMATE_CHARS: u64 = 7680;
 
 fn chars_to_tokens(chars: u64) -> Tokens {
     Tokens(chars.div_ceil(4))

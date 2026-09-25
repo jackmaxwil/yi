@@ -139,6 +139,21 @@ fn estimate_uses_last_authoritative_usage_plus_trailing_chars() -> TestResult {
     Ok(())
 }
 
+/// An image under-counted lets the window fill past the compaction trigger: the
+/// largest one `attach_image` sends (1200×1200) is w*h/750 = 1920 tokens on Anthropic.
+#[test]
+fn an_image_is_estimated_at_the_largest_attach_image_sends() -> TestResult {
+    let image = AgentMessage::host_user(
+        UserContent::Blocks(vec![Content::Image {
+            data: "iVBORw0KGgo=".to_owned(),
+            mime_type: "image/png".to_owned(),
+        }]),
+        1,
+    );
+    assert!(yi_context::estimate_message(&image) >= Tokens(1920));
+    Ok(())
+}
+
 #[test]
 fn aborted_and_error_assistants_carry_no_authoritative_usage() -> TestResult {
     let messages = vec![
