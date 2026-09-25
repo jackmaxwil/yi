@@ -671,7 +671,7 @@ fn reasoning_stays_on_screen_once_the_prose_starts() -> TestResult {
     Ok(())
 }
 
-/// U13 commits each stable paragraph to scrollback mid-stream, so the row the
+/// §17.3 commits each stable paragraph to scrollback mid-stream, so the row the
 /// mark used to occupy — the top of the viewport — is the commit boundary, not
 /// the top of the answer. Rendered there it sat between the committed prose and
 /// the streaming tail; a reader saw the agent's own mark spliced into the middle
@@ -744,7 +744,7 @@ fn a_short_screen_keeps_the_composer_and_status_under_a_long_tail() -> TestResul
     Ok(())
 }
 
-/// T13: the permission layer builds a diff for every mutating call, and the
+/// The permission layer builds a diff for every mutating call, and the
 /// prompt is where the user reads it. The description arrives newline-joined
 /// and `wrap_line` has no newline handling, so the whole patch used to flatten
 /// into one span and get cut to three rows of mangled prose.

@@ -331,7 +331,7 @@ impl KernelService {
                 .into_owned(),
         ));
         // Set but never read by Python; the host-side depth check is
-        // authoritative (design K11).
+        // authoritative (design §9).
         env.push(("RLM_DEPTH".to_owned(), "0".to_owned()));
         env.push(("RLM_MAX_DEPTH".to_owned(), "1".to_owned()));
         env
@@ -353,7 +353,7 @@ impl KernelService {
 
     async fn ensure_inner(&self) -> Result<Arc<KernelManager>, String> {
         let wrap = self.kernel_wrap(self.sandbox.lock().await.as_ref());
-        // Only an on-disk session is revivable (K10). Incident: `/new`, `switch_session` and
+        // Only an on-disk session is revivable (§9). Incident: `/new`, `switch_session` and
         // `fork` swap the store under a live kernel, which kept writing under the old id.
         let key = self.options.snapshot_key.as_ref().and_then(|key| key());
         let snapshot = self.options.session_dir.as_deref().map(|dir| {

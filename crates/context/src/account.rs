@@ -127,7 +127,7 @@ pub fn estimate_context(messages: &[AgentMessage]) -> Estimate {
     }
 }
 
-/// Which tokens count against the compaction budget (design P3): the whole context, or only
+/// Which tokens count against the compaction budget (design §4.4): the whole context, or only
 /// growth past the cached prefix — the ~10 %-priced prefix must not be charged full price.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Scope {

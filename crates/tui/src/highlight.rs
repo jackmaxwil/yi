@@ -31,7 +31,7 @@ pub struct Lang {
     poisoned: bool,
 }
 
-/// Decompressed on first use, never on the startup path §13.6 holds to 5 ms.
+/// Decompressed on first use, never on the startup path §18.6 holds to 5 ms.
 fn syntaxes() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
     SET.get_or_init(SyntaxSet::load_defaults_newlines)

@@ -1,6 +1,6 @@
 # Comment style: typed referents and named grants
 
-The law is YI_DESIGN.md §18; the decision is [D55](adr/d55.md). This is the
+The law is YI_DESIGN.md §19; the decision is [D55](adr/d55.md). This is the
 working recipe — what to type, how the resolver behaves, and what the gate says
 when it is wrong.
 
@@ -72,7 +72,7 @@ re-armed.
 
 ## Named grants
 
-A comment invoking §18's incident or invariant grant says which one on its first
+A comment invoking §19's incident or invariant grant says which one on its first
 line:
 
 ```rust
@@ -83,7 +83,7 @@ line:
 The vocabulary is closed. `check_comments.py` rejects anything else:
 
 ```
-crates/permission/src/decide.rs:88: 'Precedence:' is not a §18 grant (Incident|Invariant)
+crates/permission/src/decide.rs:88: 'Precedence:' is not a §19 grant (Incident|Invariant)
 ```
 
 Schema facts — grant (3) — need no tag; `crates/types/` is the tag. Untagged
@@ -105,6 +105,5 @@ text on lines that already exist, so comment volume is unchanged by a conversion
 
 ## Out of scope
 
-Design-doc anchors (§19, D47, U35) and `ref/` line spans are not Rust items.
-rustdoc cannot check them and this convention does not cover them; `ref/` spans
-are re-verified when a reference is re-cloned, per the Appendix A discipline.
+Design-doc anchors (§20, D47) are not Rust items. rustdoc cannot check them and
+this convention does not cover them.

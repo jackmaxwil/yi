@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 use yi_tools::ToolKind;
 use yi_types::url::{Scheme, Url};
 
-/// Design B1 overlay, plan §3.4: a reduction of the child's capability set, never an
+/// Design §11 overlay, plan §3.4: a reduction of the child's capability set, never an
 /// extension, so an implementer child cannot edit the standard it is measured against.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Wall {
