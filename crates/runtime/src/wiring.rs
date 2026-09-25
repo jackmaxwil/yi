@@ -118,8 +118,8 @@ pub(crate) fn family_dir_of(rlm_dir: &std::path::Path) -> PathBuf {
 }
 
 impl RuntimeWiring {
-    /// the root session's `family/` directory, shared by every member; a child's (D164)
-    /// `rlm_dir` sits under the root's as `sub-*`, so the root is the first non-`sub-` ancestor.
+    /// The shared board: the root session's `family/<id>` once its store is known (D242), else
+    /// the root `rlm_dir`'s `family/`, the first non-`sub-*` ancestor of a child's (D164).
     pub fn family_dir(&self) -> PathBuf {
         self.family_dir
             .clone()

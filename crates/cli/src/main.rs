@@ -536,7 +536,7 @@ fn build_session(
             depth: 0,
             max_depth: config().rlm.as_ref().map_or(1, RlmConfig::depth),
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
-            family_dir: session_id.map(|id| default_session_dir(args).join("family").join(id)),
+            family_dir: session_id.map(|id| sessions::board_dir(&default_session_dir(args), id)),
             sessions_dir: Some(default_session_dir(args)),
             summarizer: summarizer_model(args),
             advisor: advisor_model(),
