@@ -54,7 +54,7 @@ struct Args {
     prompt: String,
 }
 
-/// Which session file `yi ask` writes to (X1 `--continue` / `--session`).
+/// Which session file `yi ask` writes to (§17.1 `--continue` / `--session`).
 #[derive(Clone, PartialEq, Eq)]
 enum Resume {
     Fresh,
@@ -239,7 +239,7 @@ fn render_text(event: &AgentEvent) -> Option<String> {
 }
 
 /// Yi has no built-in default model; the user's config carries it, either as
-/// `"model"` or as the §12 `"models"` role table.
+/// `"model"` or as the §5 `"models"` role table.
 fn configured_model() -> Option<String> {
     let roles = configured_roles();
     if let Some(primary) = roles.primary {
@@ -250,7 +250,7 @@ fn configured_model() -> Option<String> {
 
 static CONFIG: std::sync::OnceLock<yi_types::config::UserConfig> = std::sync::OnceLock::new();
 
-/// X7: the one config load, strict, before dispatch — a typo that reads as an unset default
+/// The one config load, strict, before dispatch — a typo that reads as an unset default
 /// is the failure nobody sees. It lives here because no fs or `$HOME` may reach yi-types.
 fn load_config() -> Result<(), String> {
     let Some(home) = std::env::var_os("HOME") else {
@@ -272,7 +272,7 @@ fn load_config() -> Result<(), String> {
     set_config(config)
 }
 
-/// A relative home would read `<cwd>/.yi/config.json`, which is X7's project
+/// A relative home would read `<cwd>/.yi/config.json`, which is §17.1's project
 /// layer, not this one; [`load_config`] is the only caller for that reason.
 fn read_config(home: &std::path::Path) -> Result<(UserConfig, Vec<ConfigMigration>), String> {
     let path = home.join(".yi/config.json");
@@ -299,7 +299,7 @@ fn config() -> &'static yi_types::config::UserConfig {
     CONFIG.get_or_init(yi_types::config::UserConfig::default)
 }
 
-/// X7: `thinking` in the user config, overridden by `--thinking`.
+/// The `thinking` field in the user config, overridden by `--thinking`.
 fn configured_thinking() -> Option<Effort> {
     config().thinking
 }
@@ -313,7 +313,7 @@ fn configured_auto_background() -> Option<std::time::Duration> {
     (millis > 0).then(|| std::time::Duration::from_millis(millis))
 }
 
-/// §12: an unset role falls back to the primary model. Naming `models.advisor` is what turns
+/// §5: an unset role falls back to the primary model. Naming `models.advisor` is what turns
 /// the LLM reviewer on (D28/D50); an unknown selector warns and leaves the advisor silent.
 fn advisor_model() -> Option<Model> {
     let spec = configured_roles().advisor?;
@@ -324,7 +324,7 @@ fn advisor_model() -> Option<Model> {
     resolved
 }
 
-/// Naming `models.autoReview` is the switch for the M7 permission reviewer
+/// Naming `models.autoReview` is the switch for the §8 permission reviewer
 /// (D81); an unknown selector warns and auto mode stays deterministic.
 fn auto_review_model() -> Option<Model> {
     let spec = configured_roles().auto_review?;
@@ -736,7 +736,7 @@ fn repin(args: &Args, session: &AgentSession) {
     }
 }
 
-/// X1: every `yi ask` turn is recorded, so `--continue` has a leaf to resume.
+/// Every `yi ask` turn is recorded, so `--continue` has a leaf to resume.
 fn attach_store(args: &Args, session: &AgentSession) -> Result<String, String> {
     use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
     let mut repo = JsonlRepo::new(
@@ -777,7 +777,7 @@ fn print_resume_hint(session: &AgentSession, id: &str) {
     eprintln!("\n\x1b[2mResume this session with `yi --session {id}`\x1b[0m");
 }
 
-/// T14: restore the files the last turn changed, from the cwd's leaf session.
+/// Checkpoints (§7.7) restore the files the last turn changed, from the cwd's leaf session.
 fn run_undo(args: &Args) -> i32 {
     use yi_runtime::session_store::{JsonlRepo, SessionRepo};
     let cwd = effective_cwd(args);
@@ -1070,7 +1070,7 @@ fn main() {
             );
         }
         other => {
-            // X1: `yi <prompt words>` opens the TUI on a TTY, plain ask otherwise.
+            // §17.1: `yi <prompt words>` opens the TUI on a TTY, plain ask otherwise.
             use std::io::IsTerminal;
             let mut full = other.to_owned();
             if !args.prompt.is_empty() {

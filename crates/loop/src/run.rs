@@ -185,7 +185,7 @@ async fn execute_one(
         .map(|tool| tool.definition().name.clone())
         .collect();
     let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
-    // L13: one deterministic repair, then the call fails with the real error.
+    // One deterministic repair, then the call fails with the real error.
     let resolved = crate::repair::repair_tool_name(&call.name, &borrowed)
         .map(str::to_owned)
         .unwrap_or_else(|| call.name.clone());

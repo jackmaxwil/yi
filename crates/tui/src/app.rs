@@ -89,7 +89,7 @@ pub struct TuiOptions {
     pub pace: u16,
 }
 
-// U2: starting tall anchors the composer mid-screen until the first commit pushes it down,
+// Starting tall anchors the composer mid-screen until the first commit pushes it down,
 // so the viewport opens at an empty live region's height and grows upward from the cursor.
 const MIN_VIEWPORT_ROWS: u16 = 4;
 
@@ -136,7 +136,7 @@ pub struct App {
     pub selection: crate::model::Selection,
     pending_repaint: bool,
     pub(crate) pending_prompt_mark: bool,
-    /// U34: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots travel between the
+    /// §17.3: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots travel between the
     /// two; there is one orb, never a static one beside a moving one.
     pub(crate) logo_phase: f64,
     pub(crate) logo_target: f64,
@@ -843,7 +843,7 @@ impl App {
     }
 }
 
-/// U7 drain-then-draw loop, synchronous: the tokio runtime is on its own thread.
+/// §17.3 drain-then-draw loop, synchronous: the tokio runtime is on its own thread.
 pub fn run_tui(
     runtime: tokio::runtime::Runtime,
     session: Arc<AgentSession>,
@@ -936,7 +936,7 @@ pub fn run_tui(
         } else {
             timeout
         };
-        // U36: the reflow deadline is the only thing firing after a drag stops, and a settled
+        // §17.3: the reflow deadline is the only thing firing after a drag stops, and a settled
         // terminal sends no events, so without a wake the rebuild waits for a keypress.
         if let Some(deadline) = app.reflow.pending_until() {
             let now = Instant::now();

@@ -96,7 +96,7 @@ pub fn replay_update(frame: &ReplayFrame<'_>) -> AcpSessionUpdate {
     extension("_yi/replay", fields)
 }
 
-/// Per-session translation state (design C3): message ids are allocated
+/// Per-session translation state (design §17.2): message ids are allocated
 /// here, tool-call and terminal ids pass through from the event stream.
 #[derive(Debug, Default)]
 pub struct IdMap {
@@ -203,7 +203,7 @@ fn user_update(content: &UserContent, typed: bool, ids: &mut IdMap) -> AcpSessio
     }
 }
 
-/// Wraps a Custom message as a `_yi/<custom_type>` extension update (C9).
+/// Wraps a Custom message as a `_yi/<custom_type>` extension update (§17.2).
 fn extension_of(
     custom_type: &str,
     content: &UserContent,
@@ -263,7 +263,7 @@ fn tool_call_update(
     }
 }
 
-/// Pure event → update mapping (design C3, C7 terminal half, C9).
+/// Pure event → update mapping (design §17.2).
 /// Exhaustive over `AgentEvent` so a new variant fails compile, not wire.
 pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> {
     match event {
@@ -423,7 +423,7 @@ fn object_extension(name: &str, value: serde_json::Result<Value>) -> Vec<AcpSess
     })]
 }
 
-/// Replay (design C6): a stored branch walked into full-message updates.
+/// Replay (design §17.2): a stored branch walked into full-message updates.
 pub fn replay_updates(entries: &[Entry], ids: &mut IdMap) -> Vec<AcpSessionUpdate> {
     let mut updates = Vec::new();
     for entry in entries {

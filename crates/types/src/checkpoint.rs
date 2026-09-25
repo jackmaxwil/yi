@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// The `custom{checkpoint}` entry payload (design 5.3, T14): one shadow-gitdir
+/// The `custom{checkpoint}` entry payload (design §7.7): one shadow-gitdir
 /// tree id and the moment it was taken.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

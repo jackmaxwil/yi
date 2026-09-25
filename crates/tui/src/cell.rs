@@ -16,7 +16,7 @@ pub enum TranscriptMode {
     Verbose,
 }
 
-/// Reasoning is the default view (U32 revised): `normal` collapses a thought to
+/// Reasoning is the default view (§17.3): `normal` collapses a thought to
 /// a one-line count, which is only what a reader who asked for it should get.
 impl Default for TranscriptMode {
     fn default() -> Self {

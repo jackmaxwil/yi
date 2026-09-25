@@ -1,4 +1,4 @@
-"""Yi as a pier installed agent (YI_DESIGN 15.5; contracts in A.12).
+"""Yi as a pier installed agent (evals/README.md).
 
 Same run command and usage parse as the harbor adapter, plus pier's declarative
 install spec, its network allowlist, and its three extra context columns.

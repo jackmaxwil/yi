@@ -49,8 +49,8 @@ store -> AgentEvent broadcast -> renderer (text deltas or JSON lines).
   directly; nothing below yi-cli depends on yi-mcp-cli.
 - Nothing writes the session store but the runtime (from phase 2 on).
 - The kernel process holds no MCP sockets or SDK: kernel Python shells out
-  to the one-shot `yi mcp --json` CLI (design 5.2).
-- Wire schemas evolve additively only; fixtures never get deleted (design 19).
+  to the one-shot `yi mcp --json` CLI (design §7.6).
+- Wire schemas evolve additively only; fixtures never get deleted (design §20).
 - A terminal claim is measured, never accepted: goal and task completion run
   their own check host-side (D52), and a child's structured result is validated
   at the seam that hands it back.

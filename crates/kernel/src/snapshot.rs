@@ -322,7 +322,7 @@ impl KernelManager {
     }
 
     /// Persist the namespace, then remove variables above the per-variable cap
-    /// from the live namespace (post-compaction RAM relief, design K10).
+    /// from the live namespace (post-compaction RAM relief, design §9).
     pub async fn prune_oversized_variables(&self) -> Option<KernelSnapshotResult> {
         self.capture_snapshot(true, true).await
     }

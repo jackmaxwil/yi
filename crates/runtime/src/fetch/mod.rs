@@ -606,7 +606,7 @@ pub(crate) fn content_hash(text: &str) -> String {
     })
 }
 
-/// The E4 fence format applied to fetched content: the sentinel is escaped so
+/// The §6 fence format applied to fetched content: the sentinel is escaped so
 /// the body cannot close its own fence or forge the trust label.
 pub fn fence_untrusted(source: &str, text: &str) -> String {
     let clean = sanitize(text);

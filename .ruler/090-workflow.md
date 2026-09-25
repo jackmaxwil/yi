@@ -6,7 +6,7 @@
   reset + renumber (0.35.0/D55 and 0.38.0/D57 were both taken mid-change this way).
 - Revising a settled decision requires a new D-row (decision, why, reversible-via) before code.
 - Feature cuts are discussed before being written into the docs.
-- One-in-one-out: adding a top-level feature deletes or demotes one and edits YI_DESIGN.md §1.1
+- One-in-one-out: adding a top-level feature deletes or demotes one and edits YI_DESIGN.md §1.2
   in the same commit.
 - Instruction source of truth is .ruler/; generated AGENTS.md, CLAUDE.md, and propagated skill
   directories are untracked — edit .ruler and run `npx @intellectronica/ruler apply`, never the
