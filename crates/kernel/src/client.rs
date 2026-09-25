@@ -56,8 +56,15 @@ impl AbortFlag {
     }
 
     pub async fn fired(&self) {
-        while !self.is_fired() {
-            self.0.notify.notified().await;
+        loop {
+            // Invariant: registered before the check, so a fire() between them still wakes it.
+            let notified = self.0.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_fired() {
+                return;
+            }
+            notified.await;
         }
     }
 }
