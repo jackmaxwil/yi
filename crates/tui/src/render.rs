@@ -399,28 +399,43 @@ pub fn paint_pane(
     let floor = layout.floor.min(area.height);
     let above = usize::from(area.height.saturating_sub(floor));
     let (width, theme, mode) = (app.content_width(), app.theme, app.mode);
-    let (history, _) = app.history.column(width, &theme, mode, |_| 0..0);
-    let total = history.saturating_add(live.len());
-    let extent = total.saturating_sub(above);
-    // Incident: counting committed rows drifted a held view; cards commit unrendered separators.
-    if *scroll > 0
-        && let Some(previous) = app.pane_extent
-    {
-        *scroll = scroll.saturating_add(extent).saturating_sub(previous);
-    }
-    *scroll = (*scroll).min(extent);
-    app.pane_extent = Some(extent);
-    let start = extent.saturating_sub(*scroll);
-    let end = start.saturating_add(above).min(total);
-    let (_, mut shown) = app
-        .history
-        .column(width, &theme, mode, |rows| start.min(rows)..end.min(rows));
-    shown.extend(
-        live.get(start.saturating_sub(history)..end.saturating_sub(history))
-            .unwrap_or_default()
-            .iter()
-            .cloned(),
-    );
+    let (shown, thumb) = if *scroll == 0 {
+        app.pane_hold = None;
+        let mut column = app.reflowed(above.saturating_sub(live.len()).max(1));
+        column.extend(live);
+        let start = column.len().saturating_sub(above);
+        (column.split_off(start), None)
+    } else {
+        // Incident: counting committed rows drifted a held view; now rows below a pinned cell.
+        let hold = app
+            .pane_hold
+            .filter(|&(w, m, _, _)| (w, m) == (width, mode));
+        if let Some((_, _, pinned, extent)) = hold {
+            let (at, now) = app.history.tail(width, &theme, mode, 0, pinned);
+            if at == pinned {
+                let grown = now.len().saturating_add(live.len()).saturating_sub(above);
+                *scroll = scroll.saturating_add(grown).saturating_sub(extent);
+            }
+        }
+        let need = above.saturating_add(*scroll).saturating_sub(live.len());
+        let at_most = hold.map_or(usize::MAX, |(_, _, pinned, _)| pinned);
+        let (from, mut column) = app.history.tail(width, &theme, mode, need, at_most);
+        let history_rows = column.len();
+        column.extend(live);
+        *scroll = (*scroll).min(column.len().saturating_sub(above));
+        app.pane_hold = Some((width, mode, from, column.len().saturating_sub(above)));
+        let end = column.len().saturating_sub(*scroll);
+        let start = end.saturating_sub(above);
+        let shown = column.get(start..end).unwrap_or_default().to_vec();
+        let cells = app.history.len().saturating_sub(from).max(1);
+        let before = from.saturating_mul(history_rows) / cells;
+        let total = before
+            .saturating_add(column.len())
+            .saturating_add(usize::from(floor));
+        let thumb =
+            (total > usize::from(area.height)).then_some((total, before.saturating_add(start)));
+        (shown, thumb)
+    };
     let rows = u16::try_from(shown.len()).unwrap_or(0);
     if rows > 0 {
         let rect = Rect::new(area.left(), area.top(), area.width, rows);
@@ -436,8 +451,7 @@ pub fn paint_pane(
     app.orb_placement = placed.orb;
     app.logo_rows = logo_rows(placed.bottom);
     app.logo_target = if layout.orb { 1.0 } else { 0.0 };
-    let rows = total.saturating_add(usize::from(floor));
-    (rows > usize::from(area.height)).then_some((rows, start))
+    thumb
 }
 
 /// The transcript above the viewport belongs to a branch that no longer exists and sits in

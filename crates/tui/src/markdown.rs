@@ -123,7 +123,12 @@ impl Builder<'_> {
         if self.spans.is_empty() {
             return;
         }
-        let line = Line::from(mark_line(std::mem::take(&mut self.spans), self.theme));
+        let spans = std::mem::take(&mut self.spans);
+        let line = if self.in_code_block {
+            Line::from(spans)
+        } else {
+            Line::from(mark_line(spans, self.theme))
+        };
         // The hang is the width the markers actually occupy: a fixed two spaces
         // left `10. ` and every nested glyph wrapping two columns short.
         let hang: usize = self.list_stack.iter().map(|level| level.hang).sum();
@@ -389,8 +394,8 @@ pub(crate) fn is_path(word: &str) -> bool {
     }
     let name = bare.rsplit('/').next().unwrap_or(bare);
     let extension = name.rsplit_once('.').is_some_and(|(stem, ext)| {
-        let product = ext == "js" && stem.starts_with(|c: char| c.is_uppercase());
-        stem.contains(char::is_alphabetic)
+        let product = ext == "js" && RUNTIMES.contains(&stem);
+        (stem.contains(char::is_alphabetic) || ext.len() > 1)
             && !product
             && stem
                 .chars()
@@ -399,6 +404,8 @@ pub(crate) fn is_path(word: &str) -> bool {
     });
     rooted || extension
 }
+
+const RUNTIMES: [&str; 6] = ["Node", "Next", "Nuxt", "React", "Vue", "Three"];
 
 const KNOWN_EXTENSIONS: [&str; 44] = [
     "c", "cc", "cfg", "cpp", "css", "csv", "go", "h", "hpp", "html", "ini", "java", "jpg", "js",

@@ -2536,3 +2536,59 @@ fn a_fetch_head_colours_its_url_whole() -> TestResult {
     assert_eq!(url.style.fg, Some(theme.blue5));
     Ok(())
 }
+
+/// A code line flushed without its newline, the live tail of every streaming fence, took
+/// prose colouring; a capitalised `.js` file is still a file.
+#[test]
+fn prose_marking_stays_out_of_code_and_keeps_component_files() -> TestResult {
+    let theme = theme();
+    let code = yi_tui::markdown::render("```sh\ncat src/main.rs", 80, &theme);
+    assert!(
+        !code
+            .iter()
+            .flat_map(|l| &l.spans)
+            .any(|s| s.content.as_ref() == "src/main.rs" && s.style.fg == Some(theme.cyan)),
+        "{code:?}"
+    );
+    let prose = yi_tui::markdown::render("Open src/App.js, then 001.sql.", 80, &theme);
+    for needle in ["src/App.js", "001.sql"] {
+        assert!(
+            prose
+                .iter()
+                .flat_map(|l| &l.spans)
+                .any(|s| s.content.as_ref() == needle && s.style.fg == Some(theme.cyan)),
+            "{needle}: {prose:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A pipe-less line under a table's rows is still a row; a centred rule is still a rule.
+#[test]
+fn a_table_is_found_by_every_rule_spelling_and_ends_where_markdown_ends_it() -> TestResult {
+    let mut centred = "Here.\n\nname | value\n:---: | :---:\n".to_owned();
+    for index in 0..30 {
+        centred.push_str(&format!("| x{index} | y{index} |\n"));
+    }
+    let mut continued = "Here.\n\n| a | b |\n| --- | --- |\n| x | y |\n".to_owned();
+    continued.push_str(&"word ".repeat(200));
+    continued.push('\n');
+    for source in [centred, continued] {
+        let mut app = streamed(&source);
+        let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+        assert!(
+            !committed
+                .iter()
+                .any(|line| line.contains("| ") || line.contains(":---:")),
+            "{committed:?}"
+        );
+        assert!(
+            committed
+                .iter()
+                .filter(|line| line.contains("word"))
+                .all(|line| line.contains('│')),
+            "{committed:?}"
+        );
+    }
+    Ok(())
+}
