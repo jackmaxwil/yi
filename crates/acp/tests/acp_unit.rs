@@ -108,6 +108,45 @@ fn agent_lifecycle_maps_to_state_updates_with_stop_reason() -> TestResult {
     Ok(())
 }
 
+/// The console notebook draws a cell's image from the update's content, since the
+/// details record no longer carries the bytes.
+#[test]
+fn a_tool_result_image_reaches_the_tool_call_content() -> TestResult {
+    let end = to_updates(
+        &AgentEvent::ToolExecutionEnd {
+            tool_call_id: "t1".to_owned(),
+            tool_name: "ipython".to_owned(),
+            result: ToolResult {
+                content: vec![
+                    Content::Text {
+                        text: "attached".to_owned(),
+                        text_signature: None,
+                    },
+                    Content::Image {
+                        data: "iVBORw0KGgo=".to_owned(),
+                        mime_type: "image/png".to_owned(),
+                    },
+                ],
+                details: json!({}),
+                usage: None,
+                added_tool_names: None,
+                terminate: None,
+            },
+            is_error: false,
+        },
+        &mut IdMap::new(1000),
+    );
+    let json = serde_json::to_value(&end)?;
+    assert_eq!(
+        json[0]["content"],
+        json!([
+            {"type": "content", "content": {"type": "text", "text": "attached"}},
+            {"type": "content", "content": {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"}},
+        ])
+    );
+    Ok(())
+}
+
 #[test]
 fn tool_execution_maps_to_tool_call_updates_and_bash_to_terminals() -> TestResult {
     let mut ids = IdMap::new(1000);

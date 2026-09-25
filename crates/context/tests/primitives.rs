@@ -139,6 +139,21 @@ fn estimate_uses_last_authoritative_usage_plus_trailing_chars() -> TestResult {
     Ok(())
 }
 
+/// An image under-counted lets the window fill past the compaction trigger: Claude's
+/// high-resolution tier charges up to 4784 visual tokens per image.
+#[test]
+fn an_image_is_estimated_at_the_most_a_high_resolution_image_costs() -> TestResult {
+    let image = AgentMessage::host_user(
+        UserContent::Blocks(vec![Content::Image {
+            data: "iVBORw0KGgo=".to_owned(),
+            mime_type: "image/png".to_owned(),
+        }]),
+        1,
+    );
+    assert!(yi_context::estimate_message(&image) >= Tokens(4784));
+    Ok(())
+}
+
 #[test]
 fn aborted_and_error_assistants_carry_no_authoritative_usage() -> TestResult {
     let messages = vec![
