@@ -10,5 +10,5 @@
   (config is the deliberate exception: strict, failing key named).
 - Golden fixtures under yi-types/tests/fixtures/ deserialize forever; a fixture is never
   deleted, only added. A schemas.lock diff is a reviewed artifact.
-- Pi session files are an external anchor: byte-compatible JSONL, conformance fixtures shared
-  with Pi's own tests.
+- Pi's v4 session JSONL is the one external format anchor: the fixtures under
+  crates/types/tests/fixtures round-trip byte for byte (YI_DESIGN.md §4.1).

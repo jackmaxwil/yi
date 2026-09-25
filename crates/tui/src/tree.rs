@@ -90,7 +90,7 @@ fn keep(role: &str, filter: TreeFilter) -> bool {
 }
 
 impl TreeView {
-    /// Flatten the Pi entry tree depth-first with connector metadata;
+    /// Flatten the session entry tree depth-first with connector metadata;
     /// the branch containing `leaf` is marked so the active path renders lit.
     pub fn new(entries: &[Entry], leaf: Option<&str>, filter: TreeFilter) -> Self {
         let mut children: HashMap<Option<&str>, Vec<&Entry>> = HashMap::new();
