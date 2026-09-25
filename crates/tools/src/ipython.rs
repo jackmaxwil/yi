@@ -97,9 +97,9 @@ fn missing_module(evalue: &str) -> Option<&str> {
 }
 
 /// Invariant: an image the provider refuses stays in history and fails every later request;
-/// these are the types it takes and `attach_image`'s own `_MAX_ATTACHMENT_DATA_CHARS`.
+/// these are the types it takes and its 10 MB of base64 per image, `attach_image`'s cap too.
 const MODEL_IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-const MAX_MODEL_IMAGE_CHARS: usize = 350_000;
+const MAX_MODEL_IMAGE_CHARS: usize = 10_000_000;
 
 pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
     let result = outcome.result;
