@@ -208,6 +208,7 @@ pub struct App {
     turn_cost: f64,
     pub(crate) width: usize,
     pub(crate) rows: usize,
+    pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
 }
 
 pub use crate::frame::next_spinner_wake;
@@ -307,6 +308,7 @@ impl App {
             turn_cost: 0.0,
             width,
             rows: 24,
+            pane_hold: None,
         };
         app.branch = crate::port::git_branch(&app.options.cwd);
         app.scheduler.request();
