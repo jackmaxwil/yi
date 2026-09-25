@@ -1066,7 +1066,7 @@ fn main() {
                 std::process::exit(run_console_command(&args));
             }
             println!(
-                "yi {version} (yi [prompt], yi ask, yi sessions, yi stats, yi plan, yi why, yi trust, yi gate, yi fetch, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
+                "yi {version}: not a terminal; `yi ask <prompt>` answers once; `yi serve` / `yi rpc` / `yi acp` serve a program"
             );
         }
         other => {
