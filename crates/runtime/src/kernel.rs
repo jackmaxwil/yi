@@ -753,8 +753,17 @@ impl KernelService {
         .await;
         timer.abort();
         let result = outcome?;
+        // Invariant: only a cell the abort stopped before it was sent reports 0 ms.
         if result.status == yi_types::kernel::ExecuteStatus::Aborted {
-            return Err(VariableReadError::Busy);
+            return Err(match result.duration_ms {
+                0 => VariableReadError::Busy,
+                _ => VariableReadError::Cell {
+                    detail: format!(
+                        "the read timed out after {} s",
+                        yi_kernel::KERNEL_STATE_LISTING_TIMEOUT_MS / 1000
+                    ),
+                },
+            });
         }
         if result.status != yi_types::kernel::ExecuteStatus::Ok {
             return Err(VariableReadError::Cell {
