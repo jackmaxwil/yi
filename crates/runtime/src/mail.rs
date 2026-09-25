@@ -637,7 +637,11 @@ impl SubagentHost {
             return (text, None);
         }
         let name = format!("reply-{id}");
-        let dir = crate::wiring::family_dir_of(&self.options.parent_session_dir);
+        let dir = self
+            .family
+            .get()
+            .cloned()
+            .unwrap_or_else(|| crate::wiring::family_dir_of(&self.options.parent_session_dir));
         #[expect(
             clippy::cast_precision_loss,
             reason = "rlm.put's `at` is float seconds"

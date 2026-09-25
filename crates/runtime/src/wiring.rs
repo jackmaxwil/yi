@@ -68,6 +68,9 @@ pub struct RuntimeWiring {
     pub depth: u8,
     pub max_depth: u8,
     pub rlm_dir: PathBuf,
+    /// The family board keyed by the root session (D242); `None`, as before the store is
+    /// known, falls back to `rlm_dir`'s own `family/`. Children inherit it.
+    pub family_dir: Option<PathBuf>,
     /// §12 roles resolved to models; `None` keeps the session's own model.
     pub summarizer: Option<Model>,
     /// Naming `models.advisor` in config enables the LLM reviewer (D28).
@@ -118,7 +121,9 @@ impl RuntimeWiring {
     /// the root session's `family/` directory, shared by every member; a child's (D164)
     /// `rlm_dir` sits under the root's as `sub-*`, so the root is the first non-`sub-` ancestor.
     pub fn family_dir(&self) -> PathBuf {
-        family_dir_of(&self.rlm_dir)
+        self.family_dir
+            .clone()
+            .unwrap_or_else(|| family_dir_of(&self.rlm_dir))
     }
 
     /// The kernel's snapshot, `RLM_SESSION_DIR` and writable root. Incident: the root's was
@@ -747,6 +752,7 @@ fn subagent_host(
         },
     }));
     host.set_grant(wiring.wall.clone(), None);
+    host.family.get_or_init(|| wiring.family_dir());
     let counted = Arc::downgrade(&host);
     session.set_waits(Arc::new(move || {
         let host = counted.upgrade();
