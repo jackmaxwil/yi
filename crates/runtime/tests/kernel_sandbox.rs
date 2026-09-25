@@ -199,7 +199,8 @@ fn faux_model() -> yi_types::model::Model {
 }
 
 /// Incident: `exec.spawn`, the host half of the kernel's `bash()`, ran with no sandbox, so a
-/// contained kernel wrote anywhere by shelling out.
+/// contained kernel wrote anywhere by shelling out; then under a profile without the kernel's
+/// loopback grant, so a local server or test suite in it could not bind 127.0.0.1.
 #[tokio::test]
 async fn the_kernels_bash_is_contained_like_the_kernel() -> TestResult {
     if !Sandbox::available() {
@@ -254,6 +255,10 @@ async fn the_kernels_bash_is_contained_like_the_kernel() -> TestResult {
     let _ = std::fs::remove_file(&escape);
     let code = format!("print(await bash(\"touch '{}'\"))", escape.display());
     let ran = cell(&kernel, code).await;
+    let bind = r#"import sys
+bound = sys.executable + ''' -c "import socket; socket.socket().bind(('127.0.0.1', 0)); print('bound-' + 'ok')"'''
+print(await bash(bound))"#;
+    let bound = cell(&kernel, bind.to_owned()).await;
     kernel.dispose().await;
     let escaped = escape.is_file();
     let _ = std::fs::remove_file(&escape);
@@ -262,6 +267,11 @@ async fn the_kernels_bash_is_contained_like_the_kernel() -> TestResult {
         !escaped,
         "the kernel's bash() wrote outside the sandbox: {}",
         ran.result.stdout
+    );
+    let bound = bound?.result.stdout;
+    assert!(
+        bound.contains("bound-ok"),
+        "a loopback bind in bash() failed: {bound}"
     );
     Ok(())
 }

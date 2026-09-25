@@ -218,6 +218,7 @@ pub(crate) fn kernel_profile(
     let yi = home.join(".yi");
     profile.writable.push(yi.join("harness"));
     profile.writable.push(yi.join("mcp"));
+    profile.loopback = true;
     profile.writable.sort();
     profile.writable.dedup();
     profile
