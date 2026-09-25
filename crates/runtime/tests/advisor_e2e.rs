@@ -205,6 +205,103 @@ fn headless_hold_degrades_to_warn() -> TestResult {
     Ok(())
 }
 
+/// Incident: the `advise` schema leaves `target` optional, and a Hold without one became an
+/// empty-pattern hold that every call's subject contains, so each call asked for an hour.
+#[tokio::test]
+async fn an_untargeted_hold_warns_instead_of_holding_every_call() -> TestResult {
+    let root = Scratch::new("yi-untargeted-hold")?;
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let mut advise_args = Map::new();
+    for (key, value) in [
+        ("note", "Stop rewriting Cargo.lock by hand"),
+        ("severity", "hold"),
+        ("kind", "stop"),
+    ] {
+        advise_args.insert(key.to_owned(), Value::String(value.to_owned()));
+    }
+    provider.queue_faux(vec![
+        faux_assistant_message(
+            vec![faux_tool_call("a1", "advise", advise_args)],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("review done")], StopReason::Stop),
+    ]);
+    let scratch_runtime = Arc::new(yi_runtime::advisor::AdvisorRuntime::new(
+        AdvisorConfig::default(),
+        Arc::new(|_message| {}),
+        None,
+    ));
+    let advices = LlmReviewer::new(Arc::clone(&provider), faux_model(), None)
+        .review(&scratch_runtime, "m1 user: bump the deps")
+        .await;
+    assert_eq!(advices.len(), 1, "the advise tool call must be captured");
+
+    let asks = Arc::new(std::sync::Mutex::new(0_usize));
+    let counted = Arc::clone(&asks);
+    let asker: yi_runtime::Asker = Arc::new(move |_ask| {
+        if let Ok(mut count) = counted.lock() {
+            *count += 1;
+        }
+        yi_runtime::AskOutcome::Reject
+    });
+    let broker = Arc::new(yi_runtime::permission::PermissionBroker::new(
+        yi_runtime::PermissionMode::Auto,
+        root.to_path_buf(),
+        Vec::new(),
+        Some(asker),
+        tokio::sync::broadcast::channel(8).0,
+    ));
+    let mut session = session(Arc::clone(&provider));
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: "sys".to_owned(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: root.to_path_buf(),
+            home: root.join("home"),
+            lane_slots: 1,
+            broker: Some(Arc::clone(&broker)),
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            summarizer: None,
+            advisor: Some(faux_model()),
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    let advisor = session.advisor().ok_or("attach_runtime wires an advisor")?;
+    advisor.deliver_reviewed(advices, 0);
+
+    let mut ls = Map::new();
+    ls.insert("command".to_owned(), Value::String("ls".to_owned()));
+    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &ls, None);
+    let asked = *asks.lock().map_err(|_| "poisoned")?;
+    assert!(
+        outcome.allowed && asked == 0,
+        "an advisor Hold with no target must not gate an unrelated call: allowed={}, reason={:?}, asks={asked}",
+        outcome.allowed,
+        outcome.reason
+    );
+    let stats = advisor.stats();
+    assert!(
+        stats.contains("1 warn(s) / 0 hold(s)"),
+        "the untargeted Hold reaches the primary as a Warn: {stats}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn llm_reviewer_advises_through_the_advise_tool() -> TestResult {
     let provider = Arc::new(ProviderStream::new(None, None));
