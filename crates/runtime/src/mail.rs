@@ -637,7 +637,11 @@ impl SubagentHost {
             return (text, None);
         }
         let name = format!("reply-{id}");
-        let dir = crate::wiring::family_dir_of(&self.options.parent_session_dir);
+        let dir = self
+            .family
+            .get()
+            .cloned()
+            .unwrap_or_else(|| crate::wiring::family_dir_of(&self.options.parent_session_dir));
         #[expect(
             clippy::cast_precision_loss,
             reason = "rlm.put's `at` is float seconds"
@@ -646,8 +650,15 @@ impl SubagentHost {
         let sidecar = serde_json::json!({"name": name, "owner": owner, "at": at,
             "bytes": text.len(), "type": "str", "serializer": "pickle", "text": text});
         let kept = std::fs::create_dir_all(&dir)
-            .and_then(|()| std::fs::write(dir.join(format!("{name}.dill")), pickled(&text)))
-            .and_then(|()| std::fs::write(dir.join(format!("{name}.json")), sidecar.to_string()));
+            .and_then(|()| {
+                crate::wiring::write_board(&dir.join(format!("{name}.dill")), &pickled(&text))
+            })
+            .and_then(|()| {
+                crate::wiring::write_board(
+                    &dir.join(format!("{name}.json")),
+                    sidecar.to_string().as_bytes(),
+                )
+            });
         let cut = text
             .char_indices()
             .map(|(at, _)| at)
