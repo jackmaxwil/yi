@@ -115,17 +115,27 @@ pub fn build_snapshot_code(
         payload[name] = blob
         total += _b.len(blob)
 
+    def fresh(path, mode):
+        try:
+            os.remove(path)
+        except _b.FileNotFoundError:
+            pass
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        return os.fdopen(os.open(path, flags, 0o600), mode)
+
     os.makedirs(os.path.dirname({out}), exist_ok=True)
-    tmp = {out} + ".tmp"
+    tmp = {out} + ".tmp-" + _b.str(os.getpid())
     try:
-        with _b.open(tmp, "wb") as fh:
+        with fresh(tmp, "wb") as fh:
             dill.dump(payload, fh)
         os.replace(tmp, {out})
-    except _b.Exception as _err:
+    except _b.BaseException as _err:
         try:
             os.remove(tmp)
         except _b.Exception:
             pass
+        if not _b.isinstance(_err, _b.Exception):
+            raise
         _b.print({marker} + json.dumps({{"error": "write failed: " + _b.str(_err)}}))
         return
 
@@ -141,11 +151,16 @@ pub fn build_snapshot_code(
         "pythonVersion": sys.version.split()[0],
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }}
+    manifest_tmp = {manifest} + ".tmp-" + _b.str(os.getpid())
     try:
-        with _b.open({manifest}, "w") as fh:
+        with fresh(manifest_tmp, "w") as fh:
             json.dump(manifest, fh)
+        os.replace(manifest_tmp, {manifest})
     except _b.Exception:
-        pass
+        try:
+            os.remove(manifest_tmp)
+        except _b.Exception:
+            pass
     pruned_ids = {{_b.id(ns[name]) for name in pruned}}
     while True:
         try:
