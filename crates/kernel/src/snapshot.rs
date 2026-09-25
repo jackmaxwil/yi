@@ -83,6 +83,16 @@ pub fn build_snapshot_code(
     payload = {{}}
     skipped = []
     oversized = []
+    # ponytail: keyed by id, type and getsizeof, which an in-place edit of a list, dict or
+    # instance leaves unchanged, so such a variable stays skipped until rebound; a prune
+    # re-measures rather than trust it.
+    over_cap = _b.getattr(ip, "_yi_snapshot_over_cap", None) if ip is not None else None
+    if over_cap is None:
+        over_cap = {{}}
+        if ip is not None:
+            ip._yi_snapshot_over_cap = over_cap
+    for name in [name for name in over_cap if name not in ns]:
+        del over_cap[name]
     total = 0
     identify_oversized = {prune}
     for name in _b.list(ns.keys()):
@@ -92,6 +102,14 @@ pub fn build_snapshot_code(
         if name.startswith("_") or name in hidden or name in always_skip:
             continue
         value = ns[name]
+        try:
+            seen = (_b.id(value), _b.type(value), sys.getsizeof(value))
+        except _b.Exception:
+            seen = None
+        if seen is not None and not identify_oversized and over_cap.get(name) == seen:
+            skipped.append({{"name": name, "reason": "exceeds per-variable snapshot size cap"}})
+            oversized.append(name)
+            continue
         remaining = {max_bytes} - total
         buffer_limit = {max_variable_bytes} if identify_oversized else _b.min({max_variable_bytes}, remaining)
         buffer = SnapshotBuffer(buffer_limit)
@@ -99,12 +117,15 @@ pub fn build_snapshot_code(
         try:
             dill.dump(value, buffer)
             blob = buffer.getvalue()
+            over_cap.pop(name, None)
         except SnapshotSizeLimitExceeded:
             if not identify_oversized and remaining < {max_variable_bytes}:
                 skipped.append({{"name": name, "reason": "exceeds aggregate snapshot size cap"}})
             else:
                 skipped.append({{"name": name, "reason": "exceeds per-variable snapshot size cap"}})
                 oversized.append(name)
+                if seen is not None:
+                    over_cap[name] = seen
             continue
         except _b.Exception as _err:
             skipped.append({{"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]}})
@@ -115,17 +136,27 @@ pub fn build_snapshot_code(
         payload[name] = blob
         total += _b.len(blob)
 
+    def fresh(path, mode):
+        try:
+            os.remove(path)
+        except _b.FileNotFoundError:
+            pass
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        return os.fdopen(os.open(path, flags, 0o600), mode)
+
     os.makedirs(os.path.dirname({out}), exist_ok=True)
-    tmp = {out} + ".tmp"
+    tmp = {out} + ".tmp-" + _b.str(os.getpid())
     try:
-        with _b.open(tmp, "wb") as fh:
+        with fresh(tmp, "wb") as fh:
             dill.dump(payload, fh)
         os.replace(tmp, {out})
-    except _b.Exception as _err:
+    except _b.BaseException as _err:
         try:
             os.remove(tmp)
         except _b.Exception:
             pass
+        if not _b.isinstance(_err, _b.Exception):
+            raise
         _b.print({marker} + json.dumps({{"error": "write failed: " + _b.str(_err)}}))
         return
 
@@ -141,11 +172,16 @@ pub fn build_snapshot_code(
         "pythonVersion": sys.version.split()[0],
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }}
+    manifest_tmp = {manifest} + ".tmp-" + _b.str(os.getpid())
     try:
-        with _b.open({manifest}, "w") as fh:
+        with fresh(manifest_tmp, "w") as fh:
             json.dump(manifest, fh)
+        os.replace(manifest_tmp, {manifest})
     except _b.Exception:
-        pass
+        try:
+            os.remove(manifest_tmp)
+        except _b.Exception:
+            pass
     pruned_ids = {{_b.id(ns[name]) for name in pruned}}
     while True:
         try:
