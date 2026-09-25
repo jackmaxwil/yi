@@ -227,3 +227,15 @@ fn readmit_lands_in_extra() -> Result<(), Box<dyn std::error::Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn an_undo_checkpoint_recorded_before_after_still_round_trips_byte_identical()
+-> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/checkpoint-undo-v1.json");
+    let stored = fs::read_to_string(path)?;
+    let data: yi_types::checkpoint::CheckpointData = serde_json::from_str(&stored)?;
+    assert_eq!(data.at, yi_types::checkpoint::CheckpointAt::Undo);
+    assert_eq!(data.after, None);
+    assert_eq!(serde_json::to_string(&data)?, stored.trim_end());
+    Ok(())
+}
