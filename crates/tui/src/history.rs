@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::ops::Range;
 use std::sync::{Mutex, PoisonError};
 
 use ratatui::text::Line;
@@ -19,7 +18,8 @@ pub struct History {
 #[derive(Default)]
 struct Rendered {
     key: Option<(usize, TranscriptMode, ColorTier, bool)>,
-    rows: Vec<Vec<Line<'static>>>,
+    start: usize,
+    rows: VecDeque<Vec<Line<'static>>>,
 }
 
 fn is_blank(line: &Line<'_>) -> bool {
@@ -53,7 +53,9 @@ impl History {
             .rendered
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner);
-        rendered.rows.truncate(self.cells.len().saturating_sub(1));
+        if rendered.start.saturating_add(rendered.rows.len()) == self.cells.len() {
+            rendered.rows.pop_back();
+        }
     }
 
     fn rendered<R>(
@@ -61,21 +63,34 @@ impl History {
         width: usize,
         theme: &Theme,
         mode: TranscriptMode,
-        read: impl FnOnce(&[Vec<Line<'static>>]) -> R,
+        (cap, back_to): (usize, usize),
+        read: impl FnOnce(usize, &[Vec<Line<'static>>]) -> R,
     ) -> R {
         let mut rendered = self.rendered.lock().unwrap_or_else(PoisonError::into_inner);
         let key = Some((width, mode, theme.tier, theme.dark));
         if rendered.key != key {
             *rendered = Rendered {
                 key,
-                rows: Vec::new(),
+                start: self.cells.len(),
+                rows: VecDeque::new(),
             };
         }
-        let done = rendered.rows.len();
+        let done = rendered.start.saturating_add(rendered.rows.len());
         for cell in self.cells.iter().skip(done) {
-            rendered.rows.push(cell.lines(width, theme, mode, 0));
+            rendered.rows.push_back(cell.lines(width, theme, mode, 0));
         }
-        read(&rendered.rows)
+        let mut held: usize = rendered.rows.iter().map(Vec::len).sum();
+        while (held <= cap || rendered.start > back_to) && rendered.start > 0 {
+            rendered.start -= 1;
+            let Some(cell) = self.cells.get(rendered.start) else {
+                break;
+            };
+            let rows = cell.lines(width, theme, mode, 0);
+            held = held.saturating_add(rows.len());
+            rendered.rows.push_front(rows);
+        }
+        let start = rendered.start;
+        read(start, rendered.rows.make_contiguous())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -122,7 +137,7 @@ impl History {
         mode: TranscriptMode,
         cap: usize,
     ) -> Vec<Line<'static>> {
-        self.rendered(width, theme, mode, |cells| {
+        self.rendered(width, theme, mode, (cap, usize::MAX), |_, cells| {
             let mut rows = 0usize;
             let mut from = cells.len();
             for cell in cells.iter().rev() {
@@ -137,31 +152,33 @@ impl History {
         })
     }
 
-    pub fn column(
+    pub fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    pub fn tail(
         &self,
         width: usize,
         theme: &Theme,
         mode: TranscriptMode,
-        window: impl FnOnce(usize) -> Range<usize>,
+        rows: usize,
+        at_most: usize,
     ) -> (usize, Vec<Line<'static>>) {
-        self.rendered(width, theme, mode, |cells| {
-            let squeezed = || {
-                let mut previous = false;
-                cells.iter().flatten().filter(move |line| {
-                    let blank = is_blank(line);
-                    let keep = !(blank && previous);
-                    previous = blank;
-                    keep
-                })
-            };
-            let total = squeezed().count();
-            let range = window(total);
-            let rows = squeezed()
-                .skip(range.start)
-                .take(range.len())
-                .cloned()
-                .collect();
-            (total, rows)
+        self.rendered(width, theme, mode, (rows, at_most), |start, cells| {
+            let mut held = 0usize;
+            let mut from = start.saturating_add(cells.len());
+            for cell in cells.iter().rev() {
+                from = from.saturating_sub(1);
+                held = held.saturating_add(cell.len());
+                if from <= at_most && held > rows {
+                    break;
+                }
+            }
+            let tail = cells.get(from.saturating_sub(start)..).unwrap_or_default();
+            (
+                from,
+                squeeze_blanks(tail.iter().flatten().cloned().collect()),
+            )
         })
     }
 

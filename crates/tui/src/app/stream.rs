@@ -102,12 +102,17 @@ pub(crate) fn table_span(tail: &str) -> Option<std::ops::Range<usize>> {
     let (mut start, mut offset, mut previous) = (None, 0, 0);
     for line in tail.split_inclusive('\n') {
         let row = line.trim();
-        let rule = row.contains("-|") || row.contains("|-") || row.contains("| -");
-        let rule = rule && row.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '));
+        let rule = row.contains('|')
+            && row.contains('-')
+            && row.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '));
+        let ends = row.is_empty()
+            || ["- ", "* ", "+ ", "#", ">", "```", "~~~"]
+                .iter()
+                .any(|mark| row.starts_with(mark));
         match start {
             None if rule => start = Some(previous),
             None if row.starts_with('|') => start = Some(offset),
-            Some(from) if !row.contains('|') => return Some(from..offset),
+            Some(from) if ends => return Some(from..offset),
             _ => {}
         }
         previous = offset;

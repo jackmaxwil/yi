@@ -51,11 +51,19 @@ fn tool(id: &str, rows: usize) -> Cell {
 }
 
 fn paint(app: &mut App, scroll: &mut usize) -> (Vec<String>, Option<(usize, usize)>) {
-    let mut buffer = Buffer::empty(AREA);
-    let thumb = yi_tui::render::paint_pane(app, None, &mut buffer, AREA, scroll);
-    let rows = (0..AREA.height)
+    paint_in(app, AREA, scroll)
+}
+
+fn paint_in(
+    app: &mut App,
+    area: Rect,
+    scroll: &mut usize,
+) -> (Vec<String>, Option<(usize, usize)>) {
+    let mut buffer = Buffer::empty(area);
+    let thumb = yi_tui::render::paint_pane(app, None, &mut buffer, area, scroll);
+    let rows = (0..area.height)
         .map(|y| {
-            (0..AREA.width)
+            (0..area.width)
                 .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
                 .collect::<String>()
         })
@@ -197,17 +205,38 @@ fn a_held_view_stays_put_when_the_floor_grows() -> TestResult {
     Ok(())
 }
 
-/// The thumb reads the whole transcript: shown at the bottom, and away from the top when
-/// held just above it.
+/// Incident: the thumb sat at the top whatever the position. A held view sits away from the
+/// top, and one scrolled further up sits higher.
 #[test]
 fn the_thumb_places_the_view_in_the_whole_transcript() -> TestResult {
     let mut app = seeded();
-    let mut scroll = 0;
-    let (_, bottom) = paint(&mut app, &mut scroll);
-    let (total, top) = bottom.ok_or("no thumb at the bottom of a long transcript")?;
+    let mut scroll = 10;
+    let (_, near) = paint(&mut app, &mut scroll);
+    let (total, top) = near.ok_or("no thumb on a held view")?;
     assert!(top > 0 && total > usize::from(AREA.height), "{total} {top}");
-    scroll = 10;
-    let (_, held) = paint(&mut app, &mut scroll);
-    assert_eq!(held.map(|(_, top)| top), Some(top.saturating_sub(10)));
+    scroll = 40;
+    let (_, higher) = paint(&mut app, &mut scroll);
+    let (_, higher) = higher.ok_or("no thumb higher up")?;
+    assert!(higher < top, "{higher} {top}");
+    Ok(())
+}
+
+/// A re-wrap changes every row count above the view; read as growth below it, a narrowed
+/// pane threw a view held five rows up two hundred rows away.
+#[test]
+fn a_held_view_keeps_its_offset_across_a_resize() -> TestResult {
+    let mut app = seeded();
+    for i in 0..10 {
+        app.commit_cell(&Cell::Assistant {
+            markdown: format!(
+                "{} {i}\n",
+                "a long line that wraps again when narrowed".repeat(3)
+            ),
+        });
+    }
+    let mut scroll = 5;
+    let _ = paint(&mut app, &mut scroll);
+    let _ = paint_in(&mut app, Rect::new(0, 0, 40, 20), &mut scroll);
+    assert_eq!(scroll, 5);
     Ok(())
 }
