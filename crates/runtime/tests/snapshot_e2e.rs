@@ -307,7 +307,7 @@ async fn a_second_process_on_one_session_leaves_its_snapshot_alone() -> TestResu
 
     let second = service(&dir, &notices);
     let outcome = cell(&second, "intruder = 2\nprint('owner' in globals())").await?;
-    second.dispose().await;
+    second.kill().await;
     let after = saved()?;
     assert!(
         after.contains(&"owner".to_owned()) && !after.contains(&"intruder".to_owned()),
@@ -319,5 +319,47 @@ async fn a_second_process_on_one_session_leaves_its_snapshot_alone() -> TestResu
         outcome.result.stdout
     );
     owner.dispose().await;
+    let revived = cell(&second, "print('owner' in globals())").await?;
+    second.dispose().await;
+    assert!(
+        revived.result.stdout.contains("True"),
+        "a refused process never took over after the owner exited: {}",
+        revived.result.stdout
+    );
+    Ok(())
+}
+
+/// Incident: a prewarm took no lock, its bootstrap cell still wrote the snapshot, a later
+/// process then claimed it, and the prewarmed process's first cell flushed over that file.
+#[tokio::test]
+async fn a_prewarmed_kernel_owns_the_snapshot_its_bootstrap_writes() -> TestResult {
+    let dir = Scratch::new("yi-snap-prewarm")?;
+    let notices = Arc::new(Mutex::new(Vec::new()));
+    let first = service(&dir, &notices);
+    first.prewarm().await;
+    let dill = dir.join("kernel-state.dill");
+    for _ in 0..300 {
+        if dill.is_file() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        dill.is_file(),
+        "the prewarm's bootstrap cell wrote no snapshot"
+    );
+
+    let second = service(&dir, &notices);
+    cell(&second, "intruder = 2").await?;
+    cell(&first, "owner = 1").await?;
+    first.dispose().await;
+    second.dispose().await;
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("kernel-state.json"))?)?;
+    let saved: Vec<String> = serde_json::from_value(manifest["savedNames"].clone())?;
+    assert!(
+        saved.contains(&"owner".to_owned()) && !saved.contains(&"intruder".to_owned()),
+        "the prewarmed process lost its snapshot to a later one: {saved:?}"
+    );
     Ok(())
 }

@@ -342,24 +342,18 @@ impl KernelService {
     /// Boot the kernel now so the first cell pays execution only. A failed
     /// prewarm stays quiet: the next cell repeats [`Self::ensure`] and reports it.
     pub async fn prewarm(&self) {
-        let _first_cell_will_report = self.ensure_for(false).await;
+        let _first_cell_will_report = self.ensure().await;
     }
 
     async fn ensure(&self) -> Result<Arc<KernelManager>, String> {
-        self.ensure_for(true).await
-    }
-
-    /// `claim` is false only for a prewarm, which leaves no lock file for a session that
-    /// never runs a cell; a snapshot already on disk is claimed either way.
-    async fn ensure_for(&self, claim: bool) -> Result<Arc<KernelManager>, String> {
-        let outcome = self.ensure_inner(claim).await;
+        let outcome = self.ensure_inner().await;
         if let Ok(mut slot) = self.last_error.lock() {
             *slot = outcome.as_ref().err().cloned();
         }
         outcome
     }
 
-    async fn ensure_inner(&self, claim: bool) -> Result<Arc<KernelManager>, String> {
+    async fn ensure_inner(&self) -> Result<Arc<KernelManager>, String> {
         let wrap = self.kernel_wrap(self.sandbox.lock().await.as_ref());
         // Only an on-disk session is revivable (K10). Incident: `/new`, `switch_session` and
         // `fork` swap the store under a live kernel, which kept writing under the old id.
@@ -374,9 +368,16 @@ impl KernelService {
                 debounce_ms: None,
             }
         });
-        let snapshot = snapshot
-            .filter(|config| (!claim && !config.path.is_file()) || self.own_snapshot(&config.path));
         let mut slot = self.manager.lock().await;
+        let booting = !slot
+            .as_ref()
+            .is_some_and(|manager| manager.is_running() && manager.wrap() == wrap.as_ref());
+        let mut displaced = None;
+        let snapshot = snapshot.filter(|config| {
+            let (owned, lock) = self.own_snapshot(&config.path, booting);
+            displaced = lock;
+            owned
+        });
         if let Some(manager) = slot.as_ref()
             && manager.is_running()
             && manager.wrap() == wrap.as_ref()
@@ -387,6 +388,8 @@ impl KernelService {
         if let Some(old) = slot.take() {
             old.dispose().await;
         }
+        // Invariant: a rekeyed kernel's final flush runs under its old session's lock.
+        drop(displaced);
         let snapshot_existed = snapshot
             .as_ref()
             .is_some_and(|config| config.path.is_file());
@@ -510,16 +513,24 @@ impl KernelService {
     }
 
     /// Invariant: one process revives and writes a session's snapshot. The lock is an OS file
-    /// lock, so a crashed owner releases it; a refusal is reported once per snapshot path.
-    fn own_snapshot(&self, snapshot: &std::path::Path) -> bool {
+    /// lock, so a crashed owner releases it; a refusal is retried at each boot, said once.
+    fn own_snapshot(
+        &self,
+        snapshot: &std::path::Path,
+        booting: bool,
+    ) -> (bool, Option<std::fs::File>) {
         let path = snapshot.with_extension("lock");
         let Ok(mut held) = self.snapshot_lock.lock() else {
-            return false;
+            return (false, None);
         };
-        if let Some((locked, file)) = held.as_ref()
-            && *locked == path
-        {
-            return file.is_some();
+        let cached = held
+            .as_ref()
+            .filter(|(locked, _)| *locked == path)
+            .map(|(_, file)| file.is_some());
+        match cached {
+            Some(true) => return (true, None),
+            Some(false) if !booting => return (false, None),
+            _ => {}
         }
         // A lock file that cannot be created never stops the save; only a held lock does.
         let opened = path
@@ -533,18 +544,17 @@ impl KernelService {
                     .open(&path)
             });
         let Ok(file) = opened else {
-            return true;
+            return (true, None);
         };
-        let file = file.try_lock().is_ok().then_some(file);
-        if file.is_none() {
+        let owned = !matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock));
+        if !owned && cached.is_none() {
             eprintln!(
                 "kernel: another yi process holds this session's kernel state ({}); this kernel starts empty and saves nothing",
                 path.display()
             );
         }
-        let owned = file.is_some();
-        *held = Some((path, file));
-        owned
+        let displaced = held.replace((path, owned.then_some(file)));
+        (owned, displaced.and_then(|(_, file)| file))
     }
 
     pub async fn execute_user_cell(&self, code: &str, cancelled: &CancelFlag) -> ToolOutput {
