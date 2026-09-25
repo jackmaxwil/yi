@@ -154,6 +154,13 @@ impl RuntimeWiring {
         family_dir_of(&self.rlm_dir)
     }
 
+    /// The kernel's own profile, which its `bash()` jobs run under too (D241).
+    fn exec_sandbox(&self) -> Option<yi_tools::Sandbox> {
+        crate::workspace_sandbox(&self.cwd, &self.home, &self.kernel_dir()).map(|sandbox| {
+            crate::kernel::kernel_profile(&sandbox, &self.home, Some(&self.family_dir()))
+        })
+    }
+
     /// The kernel's snapshot, `RLM_SESSION_DIR` and writable root. Incident: the root's was
     /// `rlm-<pid>`, so `--continue` never found its snapshot; a child keeps its `sub-*`.
     fn kernel_dir(&self) -> PathBuf {
@@ -611,7 +618,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
-    registry.register_exec(wiring.cwd.clone());
+    registry.register_exec(wiring.cwd.clone(), wiring.exec_sandbox());
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort
         // the turn whose cell awaits the reply (design §6).
