@@ -96,6 +96,11 @@ fn missing_module(evalue: &str) -> Option<&str> {
     (!name.is_empty()).then_some(name)
 }
 
+/// Invariant: an image the provider refuses stays in history and fails every later request;
+/// these are the types it takes and `attach_image`'s own `_MAX_ATTACHMENT_DATA_CHARS`.
+const MODEL_IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const MAX_MODEL_IMAGE_CHARS: usize = 350_000;
+
 pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
     let result = outcome.result;
     let mut sections = Vec::new();
@@ -126,22 +131,34 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
         sections.push("[cell aborted]".to_owned());
     }
     sections.extend(outcome.notes.iter().cloned());
+    let (images, refused): (Vec<_>, Vec<_>) = result
+        .attachments
+        .iter()
+        .filter(|attachment| attachment.mime_type.starts_with("image/"))
+        .partition(|attachment| {
+            MODEL_IMAGE_TYPES.contains(&attachment.mime_type.as_str())
+                && attachment.data.len() <= MAX_MODEL_IMAGE_CHARS
+        });
+    sections.extend(refused.iter().map(|attachment| {
+        format!(
+            "[{} attachment of {} base64 chars not sent to the model: it takes png, jpeg, gif or webp up to {MAX_MODEL_IMAGE_CHARS}]",
+            attachment.mime_type,
+            attachment.data.len()
+        )
+    }));
     let text = if sections.is_empty() {
         "(no output)".to_owned()
     } else {
         sections.join("\n")
     };
     let mut output = text_output(text);
-    output.result.content.extend(
-        result
-            .attachments
-            .iter()
-            .filter(|attachment| attachment.mime_type.starts_with("image/"))
-            .map(|attachment| Content::Image {
-                data: attachment.data.clone(),
-                mime_type: attachment.mime_type.clone(),
-            }),
-    );
+    output
+        .result
+        .content
+        .extend(images.into_iter().map(|attachment| Content::Image {
+            data: attachment.data.clone(),
+            mime_type: attachment.mime_type.clone(),
+        }));
     // A kernel edit becomes a real patch here, where every other patch is
     // computed, rather than being reassembled by whoever renders it.
     let diffs: Vec<Value> = result
