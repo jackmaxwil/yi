@@ -56,8 +56,15 @@ impl AbortFlag {
     }
 
     pub async fn fired(&self) {
-        while !self.is_fired() {
-            self.0.notify.notified().await;
+        loop {
+            // Invariant: registered before the check, so a fire() between them still wakes it.
+            let notified = self.0.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_fired() {
+                return;
+            }
+            notified.await;
         }
     }
 }
@@ -845,7 +852,14 @@ impl KernelManager {
         if self.inner.state() == Lifecycle::Shutdown {
             return Err(ExecuteError::ShutDown);
         }
-        let _queue = self.inner.execution_queue.lock().await;
+        // Incident: a 5 s read waited out whole cells here; nothing is sent before this lock.
+        let _queue = match options.abort.as_ref() {
+            Some(abort) => tokio::select! {
+                queue = self.inner.execution_queue.lock() => queue,
+                () = abort.fired() => return Ok(aborted_result()),
+            },
+            None => self.inner.execution_queue.lock().await,
+        };
         self.wait_for_active_to_clear_for_reuse(options.abort.as_ref())
             .await?;
         if options.abort.as_ref().is_some_and(AbortFlag::is_fired) {

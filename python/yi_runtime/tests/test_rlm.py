@@ -235,6 +235,16 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ContextKeysTests(unittest.TestCase):
+    def test_an_oversized_value_reaches_the_host_long_enough_to_be_marked(self) -> None:
+        # Incident: the kernel cut at exactly the host's cap, so the host's truncation marker never
+        # fired and the child read JSON cut mid-list with nothing saying so.
+        shell = mock.Mock(user_ns={"xs": list(range(3000))})
+        with mock.patch.object(rlm, "get_ipython", lambda: shell):
+            resolved = rlm._resolve_context({"context_keys": ["xs"]})
+        self.assertGreater(len(resolved["context"]["xs"]), rlm.CONTEXT_VALUE_CAP)
+
+
 class BlackboardTests(unittest.IsolatedAsyncioTestCase):
     """D164: put/get/ls over RLM_FAMILY_DIR, and a kernel:// object fetch."""
 
@@ -261,6 +271,53 @@ class BlackboardTests(unittest.IsolatedAsyncioTestCase):
             rlm.get("nothing")
         with self.assertRaises(ValueError):
             rlm.put("../escape", 1)
+
+    def test_a_put_that_fails_midway_leaves_the_previous_sidecar_whole(self) -> None:
+        # Incident: the sidecar was written in place, so ENOSPC mid-write left half a JSON file.
+        rlm.put("shard", 1)
+        before = (self.family / "shard.json").read_text()
+        real_os_open, real_fdopen = os.open, os.fdopen
+        paths: dict[int, str] = {}
+
+        class Full:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.handle.close()
+
+            def write(self, data):
+                self.handle.write(data[: len(data) // 2])
+                raise OSError(28, "No space left on device")
+
+        def opening(path, *args, **kwargs):
+            fd = real_os_open(path, *args, **kwargs)
+            paths[fd] = str(path)
+            return fd
+
+        def filling(fd, mode="r", *args, **kwargs):
+            handle = real_fdopen(fd, mode, *args, **kwargs)
+            return Full(handle) if ".json" in paths.get(fd, "") else handle
+
+        with mock.patch("os.open", opening), mock.patch("os.fdopen", filling):
+            with self.assertRaises(OSError):
+                rlm.put("shard", 2)
+        self.assertEqual(json.loads((self.family / "shard.json").read_text()), json.loads(before))
+        self.assertEqual(sorted(path.name for path in self.family.iterdir()), ["shard.dill", "shard.json"])
+        self.assertEqual(rlm.get("shard"), 1)
+
+    def test_a_put_never_writes_through_a_link_planted_at_its_tmp_name(self) -> None:
+        outside = pathlib.Path(tempfile.mkdtemp(prefix="yi-outside-")) / "victim"
+        self.addCleanup(shutil.rmtree, outside.parent, ignore_errors=True)
+        outside.write_text("untouched")
+        for tmp in ("shard.dill", "shard.json"):
+            (self.family / f"{tmp}.tmp-{os.getpid()}").symlink_to(outside)
+        rlm.put("shard", 1)
+        self.assertEqual(outside.read_text(), "untouched")
+        self.assertEqual(rlm.get("shard"), 1)
 
     async def test_a_kernel_object_fetch_undills_the_path_the_host_names(self) -> None:
         target = self.family / "main.df.dill"
