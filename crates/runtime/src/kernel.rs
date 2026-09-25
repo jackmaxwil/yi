@@ -219,6 +219,7 @@ pub struct KernelService {
     restarted: Mutex<Option<String>>,
     surface: Mutex<Option<String>>,
     surface_shown: std::sync::atomic::AtomicBool,
+    snapshot_lock: Mutex<Option<(PathBuf, Option<std::fs::File>)>>,
 }
 
 impl KernelService {
@@ -234,6 +235,7 @@ impl KernelService {
             restarted: Mutex::new(None),
             surface: Mutex::new(None),
             surface_shown: std::sync::atomic::AtomicBool::new(false),
+            snapshot_lock: Mutex::new(None),
         }
     }
 
@@ -367,6 +369,15 @@ impl KernelService {
             }
         });
         let mut slot = self.manager.lock().await;
+        let booting = !slot
+            .as_ref()
+            .is_some_and(|manager| manager.is_running() && manager.wrap() == wrap.as_ref());
+        let mut displaced = None;
+        let snapshot = snapshot.filter(|config| {
+            let (owned, lock) = self.own_snapshot(&config.path, booting);
+            displaced = lock;
+            owned
+        });
         if let Some(manager) = slot.as_ref()
             && manager.is_running()
             && manager.wrap() == wrap.as_ref()
@@ -377,6 +388,8 @@ impl KernelService {
         if let Some(old) = slot.take() {
             old.dispose().await;
         }
+        // Invariant: a rekeyed kernel's final flush runs under its old session's lock.
+        drop(displaced);
         let snapshot_existed = snapshot
             .as_ref()
             .is_some_and(|config| config.path.is_file());
@@ -494,6 +507,54 @@ impl KernelService {
 
     pub async fn dispose(&self) {
         self.kill().await;
+        if let Ok(mut held) = self.snapshot_lock.lock() {
+            *held = None;
+        }
+    }
+
+    /// Invariant: one process revives and writes a session's snapshot. The lock is an OS file
+    /// lock, so a crashed owner releases it; a refusal is retried at each boot, said once.
+    fn own_snapshot(
+        &self,
+        snapshot: &std::path::Path,
+        booting: bool,
+    ) -> (bool, Option<std::fs::File>) {
+        let path = snapshot.with_extension("lock");
+        let Ok(mut held) = self.snapshot_lock.lock() else {
+            return (false, None);
+        };
+        let cached = held
+            .as_ref()
+            .filter(|(locked, _)| *locked == path)
+            .map(|(_, file)| file.is_some());
+        match cached {
+            Some(true) => return (true, None),
+            Some(false) if !booting => return (false, None),
+            _ => {}
+        }
+        // A lock file that cannot be created never stops the save; only a held lock does.
+        let opened = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .write(true)
+                    .open(&path)
+            });
+        let Ok(file) = opened else {
+            return (true, None);
+        };
+        let owned = !matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock));
+        if !owned && cached.is_none() {
+            eprintln!(
+                "kernel: another yi process holds this session's kernel state ({}); this kernel starts empty and saves nothing",
+                path.display()
+            );
+        }
+        let displaced = held.replace((path, owned.then_some(file)));
+        (owned, displaced.and_then(|(_, file)| file))
     }
 
     pub async fn execute_user_cell(&self, code: &str, cancelled: &CancelFlag) -> ToolOutput {
