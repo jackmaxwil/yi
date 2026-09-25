@@ -18,11 +18,11 @@ error, stale entry = error, undeclared internal dep = error. Standing rules (YI_
   `attach_runtime` and the `wire_*` helpers), never by line count; an inherent `impl` may live
   in the module that owns the seam.
 - Every dependency is declared once in [workspace.dependencies]; crate manifests add
-  `{ workspace = true }` plus features only. Cargo features exist only where §13.4 declares
+  `{ workspace = true }` plus features only. Cargo features exist only where §18.4 declares
   them (check_manifests.py allowlist).
 - yi-tools never depends on yi-kernel: the `ipython` tool reaches the kernel through the
   `KernelBridge` capability seam; yi-runtime implements it (KernelService) and owns the
-  host-handler vocabulary (HostRegistry, design §6).
+  host-handler vocabulary (HostRegistry, design §9).
 - python/yi_runtime is Yi's kernel-side Python package (module name `rlm`). It was seeded
   by copying a reference runtime at phase 4 to de-risk the port; Yi owns it outright and
   evolves it freely — there is no upstream to track. Mechanical facts on edits: keep

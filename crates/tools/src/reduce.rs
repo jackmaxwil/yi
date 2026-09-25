@@ -54,7 +54,7 @@ pub fn reduce(
     } else {
         None
     };
-    // T19: lossy with nowhere to recover from is worse than unreduced.
+    // Output that is lossy with nowhere to recover from is worse than unreduced.
     if out_bytes < raw_bytes && recovery.is_none() {
         return Reduced {
             out_bytes: raw_bytes,

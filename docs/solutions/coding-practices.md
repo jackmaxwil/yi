@@ -29,10 +29,8 @@ The .ruler/ rules are the enforced source; this is the narrative version.
   guardrail suite). Quote failures verbatim.
 - Ratchets only shrink; growth is --update in its own commit; budgets start at
   zero on every dimension (glob re-exports, duplication incl. prompts, panics).
-- New dependency = design 13.3 table row + deny.toml + size-ledger measurement
+- New dependency = design §18.3 table row + deny.toml + size-ledger measurement
   in the same change. deny.toml advisory ignores name their removal condition.
-- Port work reads only the spans cited in YI_DESIGN.md Appendix A; excise lists
-  are never opened. Verbatim = 1:1 with constants and error strings.
 - A structural change bumps ARCHITECTURE.md and adds a docs/CHANGELOG.md row; revising
   a settled decision needs a new D-row first; cuts get discussed before written.
 

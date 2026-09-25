@@ -1,4 +1,4 @@
-# Schema stability (YI_DESIGN.md §19 — load-bearing)
+# Schema stability (YI_DESIGN.md §20 — load-bearing)
 
 - Every serialized shape (wire and disk) lives in yi-types. No serde derive outside it except
   test fixtures.

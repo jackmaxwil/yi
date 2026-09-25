@@ -1,4 +1,4 @@
-//! U13's streaming commit path: prose and reasoning both reach scrollback a stable slice at a
+//! §17.3's streaming commit path: prose and reasoning both reach scrollback a stable slice at a
 //! time, so the live region holds only the unstable tail and outgrowing it loses nothing.
 
 use std::cmp::Ordering;
@@ -184,7 +184,7 @@ impl App {
         self.commit_thought_to(self.live_thought.len());
     }
 
-    /// U13: each newly stable slice renders standalone against a byte cursor. Re-rendering
+    /// Each newly stable slice renders standalone against a byte cursor. Re-rendering
     /// the whole prefix let trailing-blank trimming duplicate list items mid-stream.
     pub(super) fn commit_stable_prefix(&mut self) {
         let shown = self.pacing.prose.shown();

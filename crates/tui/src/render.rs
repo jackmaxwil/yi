@@ -236,7 +236,7 @@ pub fn layout_chat(
     };
     let show_working = app.running || matches!(app.bottom, Some(Bottom::Approval(..)));
     let orb_state = app.orb_state();
-    // U34: on kitty the mark is always on screen, spelling `Yi` at rest and rearranging into
+    // On kitty the mark is always on screen, spelling `Yi` at rest and rearranging into
     // the orb for the turn. Elsewhere the plain spinner line appears only while a turn runs.
     let working: Vec<Line<'static>> = if app.kitty {
         let mut rows: Vec<Line<'static>> = (0..ORB_ROWS).map(|_| Line::default()).collect();
@@ -341,7 +341,7 @@ pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rec
         *y = y.saturating_add(height);
     };
     put(buffer, &layout.live, &mut y);
-    // Incident (D46): the mark trails the live tail. U13 makes the viewport's top row the
+    // Incident (D46): the mark trails the live tail. §17.3 makes the viewport's top row the
     // commit boundary, so a leading mark walked down a paragraph at a time.
     if layout.show_working || layout.kitty {
         if layout.kitty && y < area.bottom() {
@@ -479,7 +479,7 @@ where
     terminal.invalidate_viewport();
 }
 
-/// U35/U36: a width change invalidates every wrapped row in scrollback. Each event pushes the
+/// A width change invalidates every wrapped row in scrollback. Each event pushes the
 /// deadline out, so a drag rebuilds once at the settled width.
 fn schedule_reflow(app: &mut App) {
     let width = u16::try_from(app.width).unwrap_or(u16::MAX);
@@ -499,7 +499,7 @@ fn schedule_reflow(app: &mut App) {
         .schedule_debounced(Some(width), std::time::Instant::now());
 }
 
-/// U36: clear scrollback and the visible screen, then re-emit the retained transcript at the
+/// §17.3: clear scrollback and the visible screen, then re-emit the retained transcript at the
 /// current width. Row-capped at render, so rows the terminal would not retain are not written.
 fn run_reflow<B>(
     app: &mut App,

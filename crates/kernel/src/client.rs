@@ -72,7 +72,7 @@ impl AbortFlag {
 pub type HostReply = Result<Map<String, Value>, String>;
 pub type HostFuture = Pin<Box<dyn Future<Output = HostReply> + Send>>;
 
-/// Host-side dispatch for `host.request` comms (design K7). Returning `None`
+/// Host-side dispatch for `host.request` comms (design §9.2). Returning `None`
 /// means the type is not registered and errors rather than replying.
 pub trait HostHandlers: Send + Sync {
     fn dispatch(&self, request_type: &str, payload: Map<String, Value>) -> Option<HostFuture>;
@@ -82,7 +82,7 @@ pub trait HostHandlers: Send + Sync {
     fn retire(&self) {}
 }
 
-/// Where and how the kernel namespace is persisted (design K10). Only
+/// Where and how the kernel namespace is persisted (design §9). Only
 /// sessions with an artifact directory get a revivable snapshot.
 #[derive(Debug, Clone)]
 pub struct KernelSnapshotConfig {
@@ -216,7 +216,7 @@ pub(crate) fn now_iso() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
-/// Hinnant civil-from-days, shared with the runtime scheduler (H1 cron math).
+/// Hinnant civil-from-days, shared with the runtime scheduler (§15.2 cron math).
 pub fn civil_from_days(days: u64) -> (u64, u64, u64) {
     // Howard Hinnant's civil-from-days, unsigned since the epoch is 1970.
     let z = days + 719_468;
@@ -609,7 +609,7 @@ impl KernelManager {
             Lifecycle::Idle | Lifecycle::Starting => {}
         }
         // The boot gate wraps start only — never bootstrap-cell or restore
-        // executes, which would pin a permit on a wedged kernel (design K9).
+        // executes, which would pin a permit on a wedged kernel (design §9).
         let permit = boot_gate()
             .clone()
             .acquire_owned()
@@ -990,7 +990,7 @@ impl KernelManager {
                 abort.fired().await;
                 inner.interrupt();
                 // 1 s grace, then force-Aborted; a user cell keeps the slot, since it may still
-                // run and busy-reuse owns recovery (K8), while Yi's own cell gives it up.
+                // run and busy-reuse owns recovery (§9), while Yi's own cell gives it up.
                 tokio::time::sleep(std::time::Duration::from_millis(KERNEL_ABORT_GRACE_MS)).await;
                 inner.resolve_active(Some(&request_id), internal, Some(ExecuteStatus::Aborted));
             })

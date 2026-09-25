@@ -20,7 +20,7 @@ pub struct StableStream {
     pub reopen: Option<String>,
 }
 
-/// U13 commit gate. Outside a fence only a blank line is stable (paragraphs re-wrap, lists
+/// The §17.3 commit gate. Outside a fence only a blank line is stable (paragraphs re-wrap, lists
 /// renumber); inside a top-level fence every completed line is. Indented fences stay opaque.
 pub fn stable_stream(source: &str) -> StableStream {
     let mut cut = 0;

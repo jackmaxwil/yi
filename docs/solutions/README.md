@@ -221,5 +221,6 @@ when it changes rather than editing them by hand.
 - [D240](adr/d240.md) - a contained kernel may write its family board (amends D87)
 - [D239](adr/d239.md) - one process owns a session's kernel snapshot (amends K10)
 - [D244](adr/d244.md) - syntax highlighting reads bat's grammar set through `two-face` (default...
+- [D243](adr/d243.md) - the design states what is built and names no other agent
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
