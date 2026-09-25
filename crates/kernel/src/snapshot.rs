@@ -121,11 +121,13 @@ pub fn build_snapshot_code(
         with _b.open(tmp, "wb") as fh:
             dill.dump(payload, fh)
         os.replace(tmp, {out})
-    except _b.Exception as _err:
+    except _b.BaseException as _err:
         try:
             os.remove(tmp)
         except _b.Exception:
             pass
+        if not _b.isinstance(_err, _b.Exception):
+            raise
         _b.print({marker} + json.dumps({{"error": "write failed: " + _b.str(_err)}}))
         return
 
