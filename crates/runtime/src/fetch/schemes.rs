@@ -337,11 +337,17 @@ impl Resolver {
         let Some(dir) = self.family_dir() else {
             return Err(unsupported(url, "this session has no family directory"));
         };
-        std::fs::read_to_string(dir.join(format!("{name}.json")))
+        crate::wiring::read_board(&dir.join(format!("{name}.json")))
             .map(|text| (text, "family-blackboard".to_owned()))
-            .map_err(|_| FetchError::NotFound {
-                url: url.to_string(),
-                what: format!("blackboard entry {name} (rlm.put writes one)"),
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => FetchError::NotFound {
+                    url: url.to_string(),
+                    what: format!("blackboard entry {name} (rlm.put writes one)"),
+                },
+                _ => FetchError::Denied {
+                    url: url.to_string(),
+                    refusal: error.to_string(),
+                },
             })
     }
 
@@ -407,6 +413,10 @@ impl Resolver {
         };
         let path = dir.join(format!("{agent}.{variable}.dill"));
         match kernels.dump(agent, &variable, &path) {
+            Ok(Some(_)) if !crate::wiring::is_board_file(&path) => Err(FetchError::Denied {
+                url: url.to_string(),
+                refusal: format!("{} is not a regular file on the board", path.display()),
+            }),
             Ok(Some(bytes)) => Ok((path, bytes)),
             Ok(None) => Err(FetchError::NotFound {
                 url: url.to_string(),
