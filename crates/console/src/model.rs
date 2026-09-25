@@ -106,13 +106,6 @@ impl SidebarMode {
             Self::Full => Self::Rail,
         }
     }
-
-    pub fn width(self) -> u16 {
-        match self {
-            Self::Rail => 9,
-            Self::Full => 29,
-        }
-    }
 }
 
 #[expect(

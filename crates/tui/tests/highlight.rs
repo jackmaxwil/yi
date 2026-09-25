@@ -72,8 +72,8 @@ fn a_comment_and_a_string_do_not_swallow_each_other() -> TestResult {
 }
 
 /// Every spelling a fence carries in Yi's own transcripts must colour. The
-/// bundled grammars answer to a file extension, so the spoken names — and
-/// TypeScript, which has no grammar at all — render plain without an alias.
+/// grammars answer to a name or a file extension, so spellings like `python3`
+/// or `jsonc` render plain without an alias.
 #[test]
 fn the_language_names_fences_actually_carry_all_resolve() -> TestResult {
     for name in [
@@ -95,6 +95,11 @@ fn the_language_names_fences_actually_carry_all_resolve() -> TestResult {
         "ts",
         "tsx",
         "typescript",
+        "toml",
+        "swift",
+        "kotlin",
+        "dockerfile",
+        "golang",
     ] {
         assert!(lang_for(name).is_some(), "{name} renders plain");
     }
@@ -470,5 +475,55 @@ fn a_clipped_row_stops_the_highlighting() -> TestResult {
     let wide = format!("1:const B: &str = \"{}\u{2026}", "a".repeat(512));
     let spans = tool_spans("read", "src/lib.rs", &[&wide, "2:let total = 1;"]);
     assert!(plain(&spans, "let total = 1;"), "{spans:?}");
+    Ok(())
+}
+
+/// A diff fence is the one place a model shows a change, and it rendered plain.
+#[test]
+fn a_diff_fence_colours_what_it_adds_and_removes() -> TestResult {
+    assert!(kinds("-old", "diff").contains(&("-old".to_owned(), Token::Deleted)));
+    assert!(kinds("+new", "diff").contains(&("+new".to_owned(), Token::Str)));
+    Ok(())
+}
+
+/// Rust's grammar leaves type names and most calls unscoped; their shape still names them.
+#[test]
+fn an_unscoped_type_and_call_colour_by_shape() -> TestResult {
+    let found = kinds("    let v: Vec<u8> = Self::bar(MAX);", "rust");
+    assert!(
+        found.contains(&("Vec".to_owned(), Token::Type)),
+        "{found:?}"
+    );
+    assert!(
+        found.contains(&("bar".to_owned(), Token::Function)),
+        "{found:?}"
+    );
+    assert!(
+        !found.contains(&("MAX".to_owned(), Token::Type)),
+        "{found:?}"
+    );
+    // Plain text has no shapes to read: a capitalised word is only a word.
+    assert!(kinds("Hello World(", "txt").is_empty());
+    Ok(())
+}
+
+/// syntect's own grammar set had no TOML, so every `Cargo.toml` a model quoted rendered plain.
+#[test]
+fn a_toml_fence_colours_its_keys_strings_and_comments() -> TestResult {
+    let found = kinds("name = \"yi\" # the binary", "toml");
+    assert!(
+        found.contains(&("name".to_owned(), Token::Type)),
+        "{found:?}"
+    );
+    assert!(
+        found.contains(&("\"yi\"".to_owned(), Token::Str)),
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|(text, token)| *token == Token::Comment && text.contains("binary")),
+        "{found:?}"
+    );
     Ok(())
 }

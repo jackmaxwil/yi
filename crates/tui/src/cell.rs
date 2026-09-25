@@ -328,6 +328,28 @@ fn counted(digest: &str) -> Option<(&str, &str)> {
     (numeric && !noun.is_empty() && !noun.contains(' ')).then_some((count, noun))
 }
 
+fn subject_spans(tool: &str, subject: &str, theme: &Theme, style: Style) -> Vec<Span<'static>> {
+    if !subject.contains(' ')
+        && let Some((dir, base)) = subject.rsplit_once('/')
+        && !base.is_empty()
+    {
+        return vec![
+            Span::styled(format!("{dir}/"), theme.dim_style()),
+            Span::styled(base.to_owned(), style),
+        ];
+    }
+    let plain = style.fg == Some(theme.text);
+    let hue = match tool {
+        "grep" | "glob" | "find" if plain => Some(theme.orange),
+        "fetch" | "web_search" if plain => Some(theme.blue5),
+        _ => None,
+    };
+    vec![Span::styled(
+        subject.to_owned(),
+        hue.map_or(style, |hue| style.fg(hue)),
+    )]
+}
+
 /// Read-only calls group under one bullet: a run of eight is one act of
 /// looking, and eight rows of it crowds out the answer.
 pub fn explore_verb(tool: &str) -> Option<&'static str> {
@@ -508,13 +530,12 @@ impl ToolCell {
             return match self.summary.split_once(label.as_str()) {
                 Some((glyph, rest)) => {
                     let mut spans = vec![Span::styled(format!("{glyph}{label}"), name)];
-                    // A path is read by its basename; the directories are context, so dim.
-                    match rest.rsplit_once('/') {
-                        Some((dir, base)) if !rest.contains(' ') && !base.is_empty() => {
-                            spans.push(Span::styled(format!("{dir}/"), theme.dim_style()));
-                            spans.push(Span::styled(base.to_owned(), style));
-                        }
-                        _ => spans.push(Span::styled(rest.to_owned(), style)),
+                    // Incident: the label's trailing space hid every path from the split.
+                    if let Some(subject) = rest.strip_prefix(' ') {
+                        spans.push(Span::raw(" "));
+                        spans.extend(subject_spans(&self.name, subject, theme, style));
+                    } else {
+                        spans.push(Span::styled(rest.to_owned(), style));
                     }
                     spans
                 }
@@ -989,13 +1010,16 @@ fn explored_lines(rows: &[ToolCell], width: usize, theme: &Theme) -> Vec<Line<'s
             .map(|(_, rest)| rest.trim())
             .unwrap_or(row.summary.as_str())
             .to_owned();
-        let mut spans = vec![
-            Span::styled(
-                format!("{verb:<VERB_WIDTH$} "),
-                Style::default().fg(theme.accent),
-            ),
-            Span::styled(subject, Style::default().fg(theme.text)),
-        ];
+        let mut spans = vec![Span::styled(
+            format!("{verb:<VERB_WIDTH$} "),
+            Style::default().fg(theme.accent),
+        )];
+        spans.extend(subject_spans(
+            &row.name,
+            &subject,
+            theme,
+            Style::default().fg(theme.text),
+        ));
         if let Some(digest) = &row.digest {
             spans.push(Span::styled(format!("  {digest}"), theme.dim_style()));
         }
