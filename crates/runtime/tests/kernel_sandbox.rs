@@ -236,6 +236,7 @@ async fn the_kernels_bash_is_contained_like_the_kernel() -> TestResult {
             depth: 0,
             max_depth: 1,
             rlm_dir: root.join("rlm"),
+            family_dir: None,
             summarizer: None,
             advisor: None,
             auto_review: None,
