@@ -161,6 +161,20 @@ fn text_of(content: &[Content]) -> String {
         .join("")
 }
 
+fn image_block(block: &Content) -> Option<AcpContentBlock> {
+    let Content::Image { data, mime_type } = block else {
+        return None;
+    };
+    Some(AcpContentBlock::Other(AcpOtherBlock {
+        block_type: "image".to_owned(),
+        fields: [
+            ("data".to_owned(), Value::String(data.clone())),
+            ("mimeType".to_owned(), Value::String(mime_type.clone())),
+        ]
+        .into(),
+    }))
+}
+
 fn user_blocks(content: &UserContent) -> Vec<AcpContentBlock> {
     match content {
         UserContent::Text(text) => vec![AcpContentBlock::Text { text: text.clone() }],
@@ -390,9 +404,12 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
                     tool_call_id,
                     status,
                     Some(result.details.clone()),
-                    Some(vec![AcpToolContent::Content {
-                        content: AcpContentBlock::Text { text },
-                    }]),
+                    Some(
+                        std::iter::once(AcpContentBlock::Text { text })
+                            .chain(result.content.iter().filter_map(image_block))
+                            .map(|content| AcpToolContent::Content { content })
+                            .collect(),
+                    ),
                 )]
             }
         }

@@ -71,6 +71,44 @@ fn fade(line: &mut Line<'static>, level: usize, theme: &Theme) {
 
 pub const RAIL_CAP: usize = 9;
 
+const NAME_FLOOR: usize = 10;
+
+/// Incident: a fixed twenty-column name padded short names out to a gap wider than they are.
+fn name_cols(app: &App) -> usize {
+    let roots = app.state.roots().into_iter().map(|root| {
+        let label = root.rsplit('/').next().unwrap_or(&root);
+        label.chars().count().saturating_sub(3)
+    });
+    app.state
+        .visible_rows()
+        .into_iter()
+        .filter_map(|index| app.state.order.get(index))
+        .filter_map(|id| {
+            let row = app.state.sessions.get(id)?;
+            let children = app.state.children.get(id).into_iter().flatten().take(3);
+            children
+                .map(|child| child.name.chars().count().saturating_add(3))
+                .chain(std::iter::once(row.label().chars().count()))
+                .max()
+        })
+        .chain(roots)
+        .max()
+        .unwrap_or(0)
+        .clamp(NAME_FLOOR, NAME_WIDTH)
+        .max(app.state.sidebar_cols)
+}
+
+pub fn width(app: &mut App) -> u16 {
+    match app.state.sidebar {
+        SidebarMode::Rail => 9,
+        SidebarMode::Full => {
+            // Incident: narrowing as a turn's children cleared re-wrapped every pane mid-turn.
+            app.state.sidebar_cols = name_cols(app);
+            u16::try_from(app.state.sidebar_cols.saturating_add(9)).unwrap_or(u16::MAX)
+        }
+    }
+}
+
 pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
     let mut rows = Vec::new();
     let rail = app.state.sidebar == SidebarMode::Rail;
@@ -81,6 +119,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
     let focused = app.state.focused_session();
     let now = now_ms();
     let mut slot = 0_usize;
+    let cols = name_cols(app);
     for index in app.state.visible_rows() {
         let Some(id) = app.state.order.get(index) else {
             continue;
@@ -156,7 +195,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
                 Some(index),
                 Line::from(Span::styled(" ".repeat(8), on_row(Style::default()))),
             ));
-            rows.extend(child_rows(app, id, theme, true));
+            rows.extend(child_rows(app, id, theme, true, cols));
             continue;
         }
         let mut spans = vec![
@@ -168,8 +207,8 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
                 on_row(status_style(theme, row.status)),
             ),
         ];
-        let name: String = label.chars().take(NAME_WIDTH).collect();
-        let pad = NAME_WIDTH.saturating_sub(name.chars().count());
+        let name: String = label.chars().take(cols).collect();
+        let pad = cols.saturating_sub(name.chars().count());
         let name_style = if is_focused {
             theme.accent_style().add_modifier(Modifier::BOLD)
         } else {
@@ -191,7 +230,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
             line: Line::from(spans),
             avatar: avatar_at(2, 2, 1, &id.0, hue),
         });
-        rows.extend(child_rows(app, id, theme, false));
+        rows.extend(child_rows(app, id, theme, false, cols));
     }
     if beyond > 0 {
         rows.push(SidebarRow::plain(
@@ -207,6 +246,7 @@ fn child_rows(
     id: &crate::model::SessionId,
     theme: &Theme,
     rail: bool,
+    cols: usize,
 ) -> Vec<SidebarRow> {
     let mut rows = Vec::new();
     for child in app.state.children.get(id).into_iter().flatten().take(3) {
@@ -214,7 +254,7 @@ fn child_rows(
             .name
             .chars()
             .filter(|c| !c.is_control())
-            .take(NAME_WIDTH.saturating_sub(3))
+            .take(cols.saturating_sub(3))
             .collect();
         use yi_types::subagent::{ChildFlag, ChildStatus};
         let glyph = match (child.status, &child.flag) {

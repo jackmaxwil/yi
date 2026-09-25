@@ -1,15 +1,25 @@
 use std::collections::VecDeque;
+use std::sync::{Mutex, PoisonError};
 
 use ratatui::text::Line;
 
 use crate::cell::{Cell, TranscriptMode};
-use crate::colors::Theme;
+use crate::colors::{ColorTier, Theme};
 
 /// The source a resize rebuild renders from (§17.3). The bound is the reflow row cap, not a
 /// cell count, since cells differ in height by two orders of magnitude.
 #[derive(Default)]
 pub struct History {
     cells: VecDeque<Cell>,
+    rendered: Mutex<Rendered>,
+}
+
+/// Incident: a scrolled pane re-rendered every cell each frame, 114 ms deep in a session.
+#[derive(Default)]
+struct Rendered {
+    key: Option<(usize, TranscriptMode, ColorTier, bool)>,
+    start: usize,
+    rows: VecDeque<Vec<Line<'static>>>,
 }
 
 fn is_blank(line: &Line<'_>) -> bool {
@@ -32,6 +42,55 @@ pub fn squeeze_blanks(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 impl History {
     pub fn clear(&mut self) {
         self.cells.clear();
+        *self
+            .rendered
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner) = Rendered::default();
+    }
+
+    fn forget_last(&mut self) {
+        let rendered = self
+            .rendered
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        if rendered.start.saturating_add(rendered.rows.len()) == self.cells.len() {
+            rendered.rows.pop_back();
+        }
+    }
+
+    fn rendered<R>(
+        &self,
+        width: usize,
+        theme: &Theme,
+        mode: TranscriptMode,
+        (cap, back_to): (usize, usize),
+        read: impl FnOnce(usize, &[Vec<Line<'static>>]) -> R,
+    ) -> R {
+        let mut rendered = self.rendered.lock().unwrap_or_else(PoisonError::into_inner);
+        let key = Some((width, mode, theme.tier, theme.dark));
+        if rendered.key != key {
+            *rendered = Rendered {
+                key,
+                start: self.cells.len(),
+                rows: VecDeque::new(),
+            };
+        }
+        let done = rendered.start.saturating_add(rendered.rows.len());
+        for cell in self.cells.iter().skip(done) {
+            rendered.rows.push_back(cell.lines(width, theme, mode, 0));
+        }
+        let mut held: usize = rendered.rows.iter().map(Vec::len).sum();
+        while (held <= cap || rendered.start > back_to) && rendered.start > 0 {
+            rendered.start -= 1;
+            let Some(cell) = self.cells.get(rendered.start) else {
+                break;
+            };
+            let rows = cell.lines(width, theme, mode, 0);
+            held = held.saturating_add(rows.len());
+            rendered.rows.push_front(rows);
+        }
+        let start = rendered.start;
+        read(start, rendered.rows.make_contiguous())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -45,7 +104,7 @@ impl History {
             && let Some(Cell::Assistant { markdown: head }) = self.cells.back_mut()
         {
             head.push_str(markdown);
-            return;
+            return self.forget_last();
         }
         // Thought merges for the same reason plus one of its own: `normal` renders it as a
         // line count, and a per-slice count would name the last paragraph, not the thought.
@@ -53,7 +112,7 @@ impl History {
             && let Some(Cell::Thought { markdown: head }) = self.cells.back_mut()
         {
             head.push_str(markdown);
-            return;
+            return self.forget_last();
         }
         if let Cell::Advisory { source, text } = &cell
             && let Some(Cell::Advisory {
@@ -64,7 +123,7 @@ impl History {
         {
             head.push('\n');
             head.push_str(text);
-            return;
+            return self.forget_last();
         }
         self.cells.push_back(cell);
     }
@@ -78,17 +137,49 @@ impl History {
         mode: TranscriptMode,
         cap: usize,
     ) -> Vec<Line<'static>> {
-        let mut blocks: VecDeque<Vec<Line<'static>>> = VecDeque::new();
-        let mut rows = 0usize;
-        for cell in self.cells.iter().rev() {
-            let rendered = cell.lines(width, theme, mode, 0);
-            rows = rows.saturating_add(rendered.len());
-            blocks.push_front(rendered);
-            if rows > cap {
-                break;
+        self.rendered(width, theme, mode, (cap, usize::MAX), |_, cells| {
+            let mut rows = 0usize;
+            let mut from = cells.len();
+            for cell in cells.iter().rev() {
+                rows = rows.saturating_add(cell.len());
+                from = from.saturating_sub(1);
+                if rows > cap {
+                    break;
+                }
             }
-        }
-        squeeze_blanks(blocks.into_iter().flatten().collect())
+            let tail = cells.get(from..).unwrap_or_default();
+            squeeze_blanks(tail.iter().flatten().cloned().collect())
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    pub fn tail(
+        &self,
+        width: usize,
+        theme: &Theme,
+        mode: TranscriptMode,
+        rows: usize,
+        at_most: usize,
+    ) -> (usize, Vec<Line<'static>>) {
+        self.rendered(width, theme, mode, (rows, at_most), |start, cells| {
+            let mut held = 0usize;
+            let mut from = start.saturating_add(cells.len());
+            for cell in cells.iter().rev() {
+                from = from.saturating_sub(1);
+                held = held.saturating_add(cell.len());
+                if from <= at_most && held > rows {
+                    break;
+                }
+            }
+            let tail = cells.get(from.saturating_sub(start)..).unwrap_or_default();
+            (
+                from,
+                squeeze_blanks(tail.iter().flatten().cloned().collect()),
+            )
+        })
     }
 
     pub fn lines(
