@@ -251,5 +251,47 @@ pub fn transform_messages(
         }
     }
     synthesize(&mut pending, &mut seen_results, &mut result);
+    if model.api == "anthropic-messages" || model.id.contains("claude") {
+        keep_newest_images(&mut result);
+    }
     result
+}
+
+// Invariant: Claude's vision limits (API docs, 2026-09). Past 20 images every image in the
+// request must be at most 2000 px, which the host cannot measure, and a request is capped at
+// 32 MB; resent history counts toward both, so the oldest images give way, newest first kept.
+const CLAUDE_MAX_IMAGES: usize = 20;
+const CLAUDE_MAX_IMAGE_CHARS: usize = 24_000_000;
+
+fn keep_newest_images(messages: &mut [AgentMessage]) {
+    let (mut kept, mut chars) = (0usize, 0usize);
+    for message in messages.iter_mut().rev() {
+        let blocks = match message {
+            AgentMessage::User {
+                content: yi_types::message::UserContent::Blocks(blocks),
+                ..
+            }
+            | AgentMessage::ToolResult {
+                content: blocks, ..
+            } => blocks,
+            _ => continue,
+        };
+        for block in blocks.iter_mut().rev() {
+            let Content::Image { data, mime_type } = block else {
+                continue;
+            };
+            let total = chars.saturating_add(data.len());
+            if kept < CLAUDE_MAX_IMAGES && total <= CLAUDE_MAX_IMAGE_CHARS {
+                (kept, chars) = (kept.saturating_add(1), total);
+                continue;
+            }
+            *block = Content::Text {
+                text: format!(
+                    "(earlier image omitted: {mime_type}, {} KB of base64; the request keeps its newest {CLAUDE_MAX_IMAGES})",
+                    data.len() / 1000
+                ),
+                text_signature: None,
+            };
+        }
+    }
 }

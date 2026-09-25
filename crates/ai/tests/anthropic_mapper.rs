@@ -267,3 +267,74 @@ fn the_breakpoint_stays_ahead_of_a_trailing_environment_block() -> Result<(), Bo
     );
     Ok(())
 }
+
+fn image_turns(count: usize, chars: usize) -> LlmContext {
+    let messages = (0..count)
+        .map(|turn| {
+            AgentMessage::host_user(
+                UserContent::Blocks(vec![
+                    Content::Text {
+                        text: format!("image {turn}"),
+                        text_signature: None,
+                    },
+                    Content::Image {
+                        data: format!("{turn:04}{}", "A".repeat(chars)),
+                        mime_type: "image/png".to_owned(),
+                    },
+                ]),
+                0,
+            )
+        })
+        .collect();
+    LlmContext {
+        system_prompt: String::new(),
+        messages,
+        tools: None,
+        tool_choice: None,
+    }
+}
+
+fn sent_images(params: &Value) -> Vec<String> {
+    params["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .filter(|block| block["type"] == "image")
+        .filter_map(|block| block["source"]["data"].as_str())
+        .map(|data| data.chars().take(4).collect())
+        .collect()
+}
+
+/// Incident: past 20 images a Claude request must hold every image to 2000 px, and every
+/// resent image counts, so an image-heavy session was refused on every later turn.
+#[test]
+fn a_claude_request_keeps_its_newest_twenty_images() -> Result<(), Box<dyn Error>> {
+    let params = build_params(&model(), &image_turns(25, 8), &AnthropicOptions::default());
+    let sent = sent_images(&params);
+    assert_eq!(sent.len(), 20, "{sent:?}");
+    assert_eq!(sent.first().map(String::as_str), Some("0005"));
+    assert_eq!(
+        params.to_string().matches("earlier image omitted").count(),
+        5
+    );
+    Ok(())
+}
+
+/// Incident: every resent image rides every request, and a Claude request is capped at 32 MB.
+#[test]
+fn a_claude_request_keeps_its_images_under_the_request_cap() -> Result<(), Box<dyn Error>> {
+    let params = build_params(
+        &model(),
+        &image_turns(4, 9_000_000),
+        &AnthropicOptions::default(),
+    );
+    let sent = sent_images(&params);
+    assert!(
+        params.to_string().len() < 32_000_000,
+        "{}",
+        params.to_string().len()
+    );
+    assert_eq!(sent.last().map(String::as_str), Some("0003"), "{sent:?}");
+    Ok(())
+}
