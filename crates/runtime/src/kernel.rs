@@ -301,6 +301,8 @@ impl KernelService {
         let yi = self.options.home.join(".yi");
         profile.writable.push(yi.join("harness"));
         profile.writable.push(yi.join("mcp"));
+        // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling.
+        profile.writable.extend(self.options.family_dir.clone());
         profile.writable.sort();
         profile.writable.dedup();
         Some(profile.kernel_prefix())
