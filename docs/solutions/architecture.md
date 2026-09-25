@@ -1,59 +1,35 @@
 # Architecture in one page
 
-Yi is a personal native-Rust coding agent: Pi's core shape and wire formats, a
-Jupyter-kernel runtime (context management, subagents, heartbeats), hashline
-editing, and a redesigned advisor.
+Yi is a coding agent in Rust: one `yi` binary, a persistent Python kernel beside it, and sessions
+stored in Pi's v4 session JSONL format. [YI_DESIGN.md](../YI_DESIGN.md) is the law; this page is
+a map into it and states nothing the design doc does not.
 
-## Crates
+## Where to read
 
-Thirteen crates under crates/, all in the default build; yi-mcp-cli is
-runtime-gated by `mcp.enabled` config (D36), the kernel is compiled in and
-boots lazily (D38). Folder x/ is crate yi-x. Dependency direction is an
-allowlist in scripts/guardrails/boundaries.toml.
-
-| crate | owns |
+| Question | Section |
 |---|---|
-| yi-types | every serde shape: messages, entries, events, model/tool wire. The schema authority; deps = serde only |
-| yi-loop | pure run_loop + interrupt module; no Result in its public API; <= 1,000 lines |
-| yi-ai | provider adapters (anthropic-messages, openai-completions incl. OpenRouter, openai-responses, faux), SSE decoder, JSON salvage, message transform, retry policy, bundled model catalog |
-| yi-session | Pi v4 entry-tree store: mutation-log replay, JSONL + memory repos, torn-tail repair, fork/branch, conformance-tested against Pi fixtures |
-| yi-context | context primitives P2-P18: projection, chars/4 accounting, compaction policy/cut/prompts, retention floor, window chain, ledger reader, source budgets, world-state diffs, convertToLlm |
-| yi-permission | pure decide() with fixed precedence, catastrophic denylist (all modes incl. yolo), sha256-sealed session rules, holds, mode prompt fragments |
-| yi-tools | Tool trait + builtins: bash, glob, grep, write, hashline read/edit (line+tag addressing, brace block resolver, snapshots, prepare/commit patcher), ipython over a KernelBridge seam |
-| yi-mcp-cli | one-shot `yi mcp` CLI: stdio + streamable-HTTP (ureq) transports, OAuth login/logout, session/snapshot stores, grep discovery |
-| yi-kernel | Jupyter client over pure-Rust zeromq: HMAC framing, uv venv bootstrap, execute queue + iopub reducer, host.request comm bridge, interrupt/lifecycle, boot gate |
-| yi-runtime | AgentSession composition; subagent (rlm.run depth 1, admission/attribution/notices, fork seeding, worktree isolation) with mailbox as its B6/B13 messaging half, goal + plan facts with host-verified completion, triggered rules, the wall (per-child capability reduction), KernelService provisioner + HostRegistry, schedule/advisor as modules; the only LoopConfig constructor |
-| yi-acp | ACP v2 server (phase 5b) |
-| yi-tui | inline-viewport TUI, feature-gated (phase 7) |
-| yi-cli | the yi binary: ask and rpc today; acp/serve/sessions later |
+| What is in and out of scope | [§1](../YI_DESIGN.md#1-scope) |
+| Which crate owns what, and which edges are allowed | [§2](../YI_DESIGN.md#2-crates-and-dependency-direction) |
+| The primitives and the capabilities composed from them | [§3](../YI_DESIGN.md#3-primitives-and-composition) |
+| Session file, loop, run queue, compaction, interrupt | [§4](../YI_DESIGN.md#4-session) |
+| Providers and the model catalog | [§5](../YI_DESIGN.md#5-provider) |
+| System prompt and extensions | [§6](../YI_DESIGN.md#6-prompt) |
+| Tools, editing, bash jobs, checkpoints, skills | [§7](../YI_DESIGN.md#7-tool) |
+| Permission modes, rules and the sandbox | [§8](../YI_DESIGN.md#8-permission) |
+| The kernel and its host requests | [§9](../YI_DESIGN.md#9-kernel) |
+| References and `fetch` | [§10](../YI_DESIGN.md#10-url-and-fetch) |
+| Children, mailbox, plans and contracts, lanes | [§11](../YI_DESIGN.md#11-child)-[§14](../YI_DESIGN.md#14-lane) |
+| Goal, schedule, advisor | [§15](../YI_DESIGN.md#15-goal-and-schedule), [§16](../YI_DESIGN.md#16-advisor) |
+| CLI, ACP daemon, TUI, console | [§17](../YI_DESIGN.md#17-surfaces) |
+| Dependencies, size, code style, schemas, gates | [§18](../YI_DESIGN.md#18-dependencies-and-size)-[§21](../YI_DESIGN.md#21-guardrails) |
+| Memory | [docs/memory.md](../memory.md) |
+| Benchmarks and eval gates | [evals/README.md](../../evals/README.md) |
+| Why a decision holds | the decision log in [ARCHITECTURE.md](../ARCHITECTURE.md), one ADR each in [adr/](adr/) |
 
-## Data flow
+## One request, end to end
 
-yi ask / yi rpc -> AgentSession.prompt (returns at admission, run spawned) ->
-run_loop: at each message boundary the compaction hook may replace the
-in-flight history (summary + retained tail, appended to the store as a v4
-Compaction entry) -> convertToLlm (L4: summaries/bash/custom become user
-messages, internal-context wrappers recognized) -> ProviderStream (StreamFn
-dispatching on model.api) -> adapter builds request, pumps SSE, maps to
-AssistantMessageEvents -> loop assembles turns; every tool call passes the
-PermissionBroker gate (catastrophic denylist > configured deny > session
-rule > configured allow/ask > hold > mode) before executing; steer and
-follow-up queues drain between turns -> MessageEnd persists to the session
-store -> AgentEvent broadcast -> renderer (text deltas or JSON lines).
-
-## Invariants (the absences that matter)
-
-- The loop never learns about protocols, providers, or tool names.
-- yi-types holds no channels, handles, runtime types, or a workspace error enum.
-- yi-tui / yi-acp / yi-cli never depend on yi-tools, yi-ai, or yi-permission
-  directly; nothing below yi-cli depends on yi-mcp-cli.
-- Nothing writes the session store but the runtime (from phase 2 on).
-- The kernel process holds no MCP sockets or SDK: kernel Python shells out
-  to the one-shot `yi mcp --json` CLI (design §7.6).
-- Wire schemas evolve additively only; fixtures never get deleted (design §20).
-- A terminal claim is measured, never accepted: goal and task completion run
-  their own check host-side (D52), and a child's structured result is validated
-  at the seam that hands it back.
-- A subagent overlay only ever *reduces* the child (deny lists, wall paths);
-  parent authority is never replaced, and nothing a child says arrives as
-  user-role text (D58).
+A surface (§17) hands a prompt to `AgentSession`, which returns at admission and queues it (§4.3).
+The loop (§4.2) compacts when due and assembles context (§4.4), streams one assistant message
+from the provider (§5), and passes every tool call through the permission decision (§8), in a
+child after its wall (§11), before the tool runs (§7). Each message is appended to the session file
+(§4.1) and broadcast as an `AgentEvent` to every attached surface.
