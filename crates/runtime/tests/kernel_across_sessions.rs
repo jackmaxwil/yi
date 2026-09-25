@@ -11,9 +11,10 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::ExecutionMode;
-use yi_runtime::fetch::{KernelServiceMap, Resolver};
+use yi_runtime::fetch::{FetchError, KernelServiceMap, Resolver};
 use yi_runtime::{
-    AgentSession, ProviderStream, RuntimeWiring, SessionConfig, SubagentHost, Wall, attach_runtime,
+    AgentSession, KernelService, ProviderStream, RuntimeWiring, SessionConfig, SubagentHost, Wall,
+    attach_runtime,
 };
 use yi_types::message::StopReason;
 use yi_types::model::{Model, ModelCost};
@@ -241,6 +242,116 @@ async fn the_family_board_belongs_to_the_root_session() -> TestResult {
     assert!(
         kept.contains("from a"),
         "the continued session lost its board: {kept}"
+    );
+    Ok(())
+}
+
+fn bare_service(root: &Scratch) -> Result<Arc<KernelService>, Box<dyn Error>> {
+    let mut registry = yi_runtime::HostRegistry::default();
+    registry.register_mcp_stubs();
+    Ok(Arc::new(yi_runtime::KernelService::new(
+        yi_runtime::KernelServiceOptions {
+            cwd: root.to_path_buf(),
+            home: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .ok_or("HOME is unset")?,
+            session_dir: None,
+            family_dir: None,
+            host: Arc::new(registry),
+            on_restore: None,
+            sandbox: None,
+            snapshot_key: None,
+            cell_ceiling: None,
+        },
+    )))
+}
+
+type Read = tokio::task::JoinHandle<Result<yi_runtime::fetch::Fetched, FetchError>>;
+
+fn read_main(
+    root: &Scratch,
+    service: &Arc<KernelService>,
+    name: &str,
+) -> Result<Read, Box<dyn Error>> {
+    let kernels = KernelServiceMap::new();
+    kernels.insert("main", service);
+    let resolver =
+        Resolver::new(root.to_path_buf(), Wall::default()).with_kernel_variables(kernels);
+    let url: yi_types::url::Url = format!("kernel://main/{name}").parse()?;
+    Ok(tokio::task::spawn_blocking(move || resolver.fetch(&url)))
+}
+
+/// Incident: a read of an agent mid-cell waited for the whole cell, up to the 600 s ceiling,
+/// then failed with an empty detail; its 5 s timer never raced the execution queue.
+#[tokio::test]
+async fn a_read_of_a_busy_kernel_gives_up_within_its_deadline() -> TestResult {
+    let root = Scratch::new("yi-kernel-busy-read")?;
+    let service = bare_service(&root)?;
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let run = |code: &'static str| {
+        let (service, stop) = (Arc::clone(&service), Arc::clone(&stop));
+        tokio::task::spawn_blocking(move || {
+            let cancelled: yi_tools::CancelFlag =
+                Arc::new(move || stop.load(std::sync::atomic::Ordering::SeqCst));
+            yi_tools::KernelBridge::execute_cell(service.as_ref(), code, &cancelled)
+        })
+    };
+    run("x = 1").await??;
+    let sleeper = run("import time\nopen('sleeping', 'w').close()\ntime.sleep(20)");
+    for _ in 0..600 {
+        if root.join("sleeping").is_file() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        root.join("sleeping").is_file(),
+        "the sleeper cell never started"
+    );
+
+    let started = std::time::Instant::now();
+    let read = read_main(&root, &service, "x")?.await?;
+    let waited = started.elapsed();
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _interrupted = sleeper.await?;
+    service.dispose().await;
+
+    let error = read
+        .err()
+        .ok_or("a read of a kernel mid-cell returned a value")?;
+    assert!(
+        waited < std::time::Duration::from_secs(8),
+        "the read waited {waited:?} for the running cell"
+    );
+    assert!(
+        error.to_string().contains("running a cell"),
+        "the read failed without saying why: {error}"
+    );
+    Ok(())
+}
+
+/// Incident: a read whose own repr outlived the 5 s deadline on an idle kernel was reported
+/// as the agent running a cell, so the model was told to wait for a cell that did not exist.
+#[tokio::test]
+async fn a_slow_read_of_an_idle_kernel_is_not_called_busy() -> TestResult {
+    let root = Scratch::new("yi-kernel-slow-read")?;
+    let service = bare_service(&root)?;
+    let define = Arc::clone(&service);
+    tokio::task::spawn_blocking(move || {
+        let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
+        yi_tools::KernelBridge::execute_cell(
+            define.as_ref(),
+            "import time\nclass Slow:\n    def __repr__(self):\n        end = time.monotonic() + 7\n        while time.monotonic() < end:\n            try:\n                time.sleep(0.1)\n            except KeyboardInterrupt:\n                pass\n        return 'slow'\nslow = Slow()",
+            &cancelled,
+        )
+    })
+    .await??;
+    let read = read_main(&root, &service, "slow")?.await?;
+    service.dispose().await;
+    let error = read.err().ok_or("a 7 s repr fit a 5 s read")?;
+    assert!(
+        !error.to_string().contains("running a cell"),
+        "an idle kernel's slow read was called busy: {error}"
     );
     Ok(())
 }

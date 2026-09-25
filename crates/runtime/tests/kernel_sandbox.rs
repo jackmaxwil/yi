@@ -38,14 +38,19 @@ fn workspace(tag: &str) -> Result<(Scratch, PathBuf, PathBuf, PathBuf), Box<dyn 
     Ok((root, project, home, session))
 }
 
-fn service(cwd: PathBuf, home: PathBuf, sandbox: Sandbox) -> Arc<KernelService> {
+fn service(
+    cwd: PathBuf,
+    home: PathBuf,
+    sandbox: Sandbox,
+    family_dir: Option<PathBuf>,
+) -> Arc<KernelService> {
     let mut registry = HostRegistry::default();
     registry.register_mcp_stubs();
     Arc::new(KernelService::new(KernelServiceOptions {
         cwd,
         home,
         session_dir: None,
-        family_dir: None,
+        family_dir,
         host: Arc::new(registry),
         on_restore: None,
         sandbox: Some(sandbox),
@@ -72,7 +77,7 @@ async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult
     }
     let (_root, project, home, session) = workspace("write")?;
     let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
-    let kernel = service(project.clone(), home.clone(), sandbox.clone());
+    let kernel = service(project.clone(), home.clone(), sandbox.clone(), None);
     let inside = cell(
         &kernel,
         "open('inside.txt','w').write('in')\nprint('ok')".to_owned(),
@@ -149,7 +154,7 @@ async fn a_profile_change_restarts_the_kernel() -> TestResult {
     }
     let (_root, project, home, session) = workspace("restart")?;
     let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
-    let kernel = service(project.clone(), home.clone(), sandbox.clone());
+    let kernel = service(project.clone(), home.clone(), sandbox.clone(), None);
     let first = cell(&kernel, "marker = 1\nprint(marker)".to_owned()).await?;
     assert_eq!(first.result.status, yi_types::kernel::ExecuteStatus::Ok);
 
@@ -273,6 +278,37 @@ print(await bash(bound))"#;
     assert!(
         bound.contains("bound-ok"),
         "a loopback bind in bash() failed: {bound}"
+    );
+    Ok(())
+}
+
+/// Incident: a child kernel's writable roots stopped at its own `sub-*` directory, so its
+/// `rlm.put` to the family board it shares with its parent failed with EPERM.
+#[tokio::test]
+async fn a_contained_kernel_can_write_its_family_board() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home, session) = workspace("family")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
+    // Under a tmp root the board would be writable anyway and the test would prove nothing.
+    let probe = uncovered(&sandbox, &home).ok_or("no directory outside the sandbox")?;
+    let family = probe.join(format!("yi-family-{}", std::process::id()));
+    std::fs::create_dir_all(&family)?;
+    let kernel = service(project, home, sandbox, Some(family.clone()));
+    let put = cell(
+        &kernel,
+        "print(rlm.put('shard', [1, 2])['name'])".to_owned(),
+    )
+    .await;
+    kernel.dispose().await;
+    let written = family.join("shard.dill").is_file();
+    let _ = std::fs::remove_dir_all(&family);
+    let put = put?;
+    assert!(
+        written,
+        "the board refused the put: {} {:?}",
+        put.result.stderr, put.result.error
     );
     Ok(())
 }

@@ -650,8 +650,15 @@ impl SubagentHost {
         let sidecar = serde_json::json!({"name": name, "owner": owner, "at": at,
             "bytes": text.len(), "type": "str", "serializer": "pickle", "text": text});
         let kept = std::fs::create_dir_all(&dir)
-            .and_then(|()| std::fs::write(dir.join(format!("{name}.dill")), pickled(&text)))
-            .and_then(|()| std::fs::write(dir.join(format!("{name}.json")), sidecar.to_string()));
+            .and_then(|()| {
+                crate::wiring::write_board(&dir.join(format!("{name}.dill")), &pickled(&text))
+            })
+            .and_then(|()| {
+                crate::wiring::write_board(
+                    &dir.join(format!("{name}.json")),
+                    sidecar.to_string().as_bytes(),
+                )
+            });
         let cut = text
             .char_indices()
             .map(|(at, _)| at)
