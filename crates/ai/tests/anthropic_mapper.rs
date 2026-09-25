@@ -267,3 +267,138 @@ fn the_breakpoint_stays_ahead_of_a_trailing_environment_block() -> Result<(), Bo
     );
     Ok(())
 }
+
+fn image_turns(count: usize, chars: usize) -> LlmContext {
+    let messages = (0..count)
+        .map(|turn| {
+            AgentMessage::host_user(
+                UserContent::Blocks(vec![
+                    Content::Text {
+                        text: format!("image {turn}"),
+                        text_signature: None,
+                    },
+                    Content::Image {
+                        data: format!("{turn:04}{}", "A".repeat(chars)),
+                        mime_type: "image/png".to_owned(),
+                    },
+                ]),
+                0,
+            )
+        })
+        .collect();
+    LlmContext {
+        system_prompt: String::new(),
+        messages,
+        tools: None,
+        tool_choice: None,
+    }
+}
+
+fn sent_images(params: &Value) -> Vec<String> {
+    params["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .filter(|block| block["type"] == "image")
+        .filter_map(|block| block["source"]["data"].as_str())
+        .map(|data| data.chars().take(4).collect())
+        .collect()
+}
+
+/// Incident: past 20 images a Claude request must hold every image to 2000 px, and every
+/// resent image counts, so an image-heavy session was refused on every later turn.
+#[test]
+fn a_claude_request_keeps_its_newest_twenty_images() -> Result<(), Box<dyn Error>> {
+    let params = build_params(&model(), &image_turns(25, 8), &AnthropicOptions::default());
+    let sent = sent_images(&params);
+    assert_eq!(sent.len(), 20, "{sent:?}");
+    assert_eq!(sent.first().map(String::as_str), Some("0005"));
+    assert_eq!(
+        params.to_string().matches("earlier image omitted").count(),
+        5
+    );
+    Ok(())
+}
+
+/// Incident: every resent image rides every request, and a Claude request is capped at 32 MB.
+#[test]
+fn a_claude_request_keeps_its_images_under_the_request_cap() -> Result<(), Box<dyn Error>> {
+    let params = build_params(
+        &model(),
+        &image_turns(4, 9_000_000),
+        &AnthropicOptions::default(),
+    );
+    let sent = sent_images(&params);
+    assert!(
+        params.to_string().len() < 32_000_000,
+        "{}",
+        params.to_string().len()
+    );
+    assert_eq!(sent.last().map(String::as_str), Some("0003"), "{sent:?}");
+    Ok(())
+}
+
+/// A kernel cell's tool call and its result: text, then the image it attached.
+fn image_exchange(api: &str, id: &str) -> Vec<AgentMessage> {
+    vec![
+        AgentMessage::Assistant {
+            content: vec![Content::ToolCall {
+                id: id.to_owned(),
+                name: "ipython".to_owned(),
+                arguments: serde_json::Map::new(),
+                thought_signature: None,
+                namespace: None,
+            }],
+            api: api.to_owned(),
+            provider: "test".to_owned(),
+            model: "m".to_owned(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: yi_types::message::Usage::zero(),
+            stop_reason: StopReason::ToolUse,
+            deferred: None,
+            error_message: None,
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 0,
+        },
+        AgentMessage::ToolResult {
+            tool_call_id: id.to_owned(),
+            tool_name: "ipython".to_owned(),
+            content: vec![
+                Content::Text {
+                    text: "attached".to_owned(),
+                    text_signature: None,
+                },
+                Content::Image {
+                    data: "iVBORw0KGgo=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                },
+            ],
+            details: None,
+            usage: None,
+            added_tool_names: None,
+            is_error: false,
+            timestamp: 0,
+        },
+    ]
+}
+
+#[test]
+fn a_tool_result_image_rides_inside_the_tool_result_block() -> Result<(), Box<dyn Error>> {
+    let mut ctx = context();
+    ctx.messages
+        .extend(image_exchange("anthropic-messages", "toolu_1"));
+    let params = build_params(&model(), &ctx, &AnthropicOptions::default());
+    let messages = params["messages"].as_array().ok_or("messages")?;
+    assert_eq!(
+        messages.last().ok_or("last")?["content"],
+        json!([{"type": "tool_result", "tool_use_id": "toolu_1", "is_error": false, "content": [
+            {"type": "text", "text": "attached"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+        ]}])
+    );
+    Ok(())
+}

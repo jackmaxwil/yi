@@ -191,7 +191,7 @@ fn service() -> Arc<KernelService> {
 
 fn service_with(mut registry: HostRegistry) -> Arc<KernelService> {
     registry.register_mcp_stubs();
-    registry.register_exec(std::env::temp_dir());
+    registry.register_exec(std::env::temp_dir(), None);
     Arc::new(KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),
         home: std::env::var_os("HOME")
@@ -275,6 +275,21 @@ async fn a_live_kernel_fetches_its_own_variables_and_runs_bash_handles() -> Test
     assert_eq!(seen, [(8192, Some(8192)), (810, None), (0, None)]);
     let (whole, next) = service.read_variable(&long, None).await?.ok_or("long")?;
     assert!(whole.ends_with("[... truncated: 8192 of 9002 chars ...]") && next.is_none());
+    let dir = Scratch::new("yi-dump")?;
+    let path = dir.join("long.dill");
+    service.dump_variable(&long, &path).await?.ok_or("dump")?;
+    let held = std::fs::File::open(&path)?;
+    let before = std::fs::read(&path)?;
+    cell(&service, "long = 'x'").await?;
+    service.dump_variable(&long, &path).await?.ok_or("redump")?;
+    assert_ne!(
+        std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&path)?),
+        std::os::unix::fs::MetadataExt::ino(&held.metadata()?),
+        "a family member reading the dump must keep the old file, not see it rewritten in place"
+    );
+    let mut kept = Vec::new();
+    std::io::Read::read_to_end(&mut &held, &mut kept)?;
+    assert_eq!(kept, before);
     service.dispose().await;
     Ok(())
 }

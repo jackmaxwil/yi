@@ -700,6 +700,64 @@ mod tests {
         Ok(())
     }
 
+    struct DumpsNothing;
+
+    impl KernelVariables for DumpsNothing {
+        fn read(
+            &self,
+            _agent: &str,
+            _variable: &VariableName,
+            _page: Option<Page>,
+        ) -> Result<Option<(String, Option<usize>)>, VariableReadError> {
+            Ok(None)
+        }
+
+        fn dump(
+            &self,
+            _agent: &str,
+            _variable: &VariableName,
+            _path: &std::path::Path,
+        ) -> Result<Option<u64>, VariableReadError> {
+            Ok(Some(1))
+        }
+    }
+
+    /// Dies with the host writing a spilled reply through, or serving a family:// read from, a
+    /// link a sandboxed child planted on the board toward a file outside it (D240).
+    #[cfg(unix)]
+    #[test]
+    fn a_link_planted_on_the_family_board_is_never_followed() -> TestResult {
+        let family = Scratch::new("yi-fetch-board-link")?;
+        let elsewhere = Scratch::new("yi-fetch-board-link-elsewhere")?;
+        let secret = elsewhere.join("id_ed25519");
+        std::fs::write(&secret, "PRIVATE KEY\n")?;
+        for link in ["reply-1.json", "k.json", "main.v.dill"] {
+            std::os::unix::fs::symlink(&secret, family.join(link))?;
+        }
+        crate::wiring::write_board(&family.join("reply-1.json"), b"spilled")?;
+        assert_eq!(std::fs::read_to_string(&secret)?, "PRIVATE KEY\n");
+        assert_eq!(
+            std::fs::read_to_string(family.join("reply-1.json"))?,
+            "spilled"
+        );
+        let resolver = Resolver::new(elsewhere.to_path_buf(), Wall::default())
+            .with_family_dir(family.to_path_buf())
+            .with_kernel_variables(Arc::new(DumpsNothing));
+        let entry: Url = "family://k".parse()?;
+        let error = resolver
+            .fetch(&entry)
+            .err()
+            .ok_or("a board link was read")?;
+        assert!(matches!(error, FetchError::Denied { .. }), "{error}");
+        let object: Url = "kernel://main/v".parse()?;
+        let error = resolver
+            .dump_kernel(&object)
+            .err()
+            .ok_or("a board link was served")?;
+        assert!(matches!(error, FetchError::Denied { .. }), "{error}");
+        Ok(())
+    }
+
     #[test]
     fn every_scheme_dispatches_to_its_own_arm() -> TestResult {
         let workspace = Scratch::new("yi-fetch-dispatch")?;

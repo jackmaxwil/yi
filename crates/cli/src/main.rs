@@ -536,6 +536,7 @@ fn build_session(
             depth: 0,
             max_depth: config().rlm.as_ref().map_or(1, RlmConfig::depth),
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
+            family_dir: session_id.map(|id| sessions::board_dir(&default_session_dir(args), id)),
             sessions_dir: Some(default_session_dir(args)),
             summarizer: summarizer_model(args),
             advisor: advisor_model(),
@@ -736,10 +737,15 @@ fn repin(args: &Args, session: &AgentSession) {
     }
 }
 
-/// Every `yi ask` turn is recorded, so `--continue` has a leaf to resume.
-fn attach_store(args: &Args, session: &AgentSession) -> Result<String, String> {
-    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
-    let mut repo = JsonlRepo::new(
+/// The session a run records into, settled before the session is built so its wiring can key
+/// the family board by the id (D242); the file itself is created only by [`attach_store`].
+pub(crate) struct SessionTarget {
+    pub(crate) id: String,
+    exists: bool,
+}
+
+pub(crate) fn session_target(args: &Args) -> SessionTarget {
+    let mut repo = yi_runtime::session_store::JsonlRepo::new(
         default_session_dir(args),
         effective_cwd(args).display().to_string(),
     );
@@ -748,12 +754,35 @@ fn attach_store(args: &Args, session: &AgentSession) -> Result<String, String> {
         Resume::Leaf => sessions::latest_id(&mut repo),
         Resume::Named(id) => Some(id.clone()),
     };
-    let store = match existing {
-        Some(id) => repo.open(&id).map_err(|error| error.to_string())?,
-        None => repo
-            .create(CreateOptions::default())
-            .map_err(|error| error.to_string())?,
-    };
+    match existing {
+        Some(id) => SessionTarget { id, exists: true },
+        None => SessionTarget {
+            id: yi_runtime::session_store::IdGenerator::new().next_id(),
+            exists: false,
+        },
+    }
+}
+
+/// X1: every `yi ask` turn is recorded, so `--continue` has a leaf to resume.
+fn attach_store(
+    args: &Args,
+    session: &AgentSession,
+    target: &SessionTarget,
+) -> Result<String, String> {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let mut repo = JsonlRepo::new(
+        default_session_dir(args),
+        effective_cwd(args).display().to_string(),
+    );
+    let store = if target.exists {
+        repo.open(&target.id)
+    } else {
+        repo.create(CreateOptions {
+            id: Some(target.id.clone()),
+            ..CreateOptions::default()
+        })
+    }
+    .map_err(|error| error.to_string())?;
     let id = lock_session(&store).metadata().id.clone();
     session
         .attach_store(store)
