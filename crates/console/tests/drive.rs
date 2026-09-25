@@ -2461,3 +2461,122 @@ fn a_drag_over_the_transcript_flashes_what_it_copied() -> TestResult {
          quit\n",
     )
 }
+
+fn resume_long(frame: &Value) -> Vec<Value> {
+    let text: String = (0..60).map(|row| format!("row {row}\n\n")).collect();
+    vec![
+        replay(
+            "s-alpha",
+            &[
+                entry("e1", None, 1, &user_message("hello agent")),
+                entry("e2", Some("e1"), 2, &assistant(&text)),
+            ],
+            0,
+            None,
+        ),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 2})),
+    ]
+}
+
+/// A newline typed into the draft is not a send: only a prompt that leaves the composer
+/// returns a scrolled reader to the bottom.
+#[test]
+fn only_a_sent_prompt_returns_a_scrolled_pane_to_the_bottom() -> TestResult {
+    run(
+        "scroll-send",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_long),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("session/prompt", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 row 59\n\
+         mouse scrollup 50 5\nmouse scrollup 50 5\nmouse scrollup 50 5\n\
+         mouse scrollup 50 5\nmouse scrollup 50 5\n\
+         wait-frame 2000 !row 59\n\
+         type more\n\
+         key shift-enter\n\
+         wait 200\n\
+         wait-frame 1000 !row 59\n\
+         key enter\n\
+         wait-frame 2000 row 59\n\
+         quit\n",
+    )
+}
+
+fn sibling_roots_ledger(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"sessions": [
+            {"sessionId": "s-fix", "name": "fix", "cwd": "/tmp/yi-feature-auth-fix",
+             "attached": false, "unseen": 0, "lastState": "idle", "lastEventMs": 1},
+            {"sessionId": "s-ui", "name": "ui", "cwd": "/tmp/yi-feature-auth-ui",
+             "attached": false, "unseen": 0, "lastState": "idle", "lastEventMs": 1},
+        ]}),
+    )]
+}
+
+/// Sibling worktrees share a prefix: a sidebar fitted to short session names cut both
+/// workspace names to the same `yi-feature-au`.
+#[test]
+fn a_fitted_sidebar_still_tells_sibling_workspaces_apart() -> TestResult {
+    run(
+        "sibling-roots",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/list", sibling_roots_ledger),
+        ],
+        "wait-frame 5000 workspaces\n\
+         wait-frame 3000 yi-feature-auth-fix 1\n\
+         wait-frame 3000 yi-feature-auth-ui 1\n\
+         quit\n",
+    )
+}
+
+fn prompt_starts_running(frame: &Value) -> Vec<Value> {
+    vec![
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "state_update", "state": "running"}),
+        ),
+        ok(frame, json!({"stopReason": "end_turn"})),
+    ]
+}
+
+/// A turn clears its children and spawns them again; a sidebar that narrowed with them
+/// re-wrapped every pane under a scrolled reader mid-turn.
+#[test]
+fn the_sidebar_does_not_narrow_when_children_clear() -> TestResult {
+    let frame = run_frames(
+        "no-narrow",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(subagent_push),
+            Step::Expect("session/prompt", prompt_starts_running),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 grep-bot-sub-1a2b\n\
+         type go\n\
+         key enter\n\
+         wait-frame 5000 !grep-bot\n\
+         quit\n",
+    )?;
+    let top = frame.lines().next().ok_or("no frame")?;
+    let at = top.find("s-alpha").ok_or(format!("no title: {top}"))?;
+    let column = top.get(..at).unwrap_or_default().chars().count();
+    assert!(
+        column >= 30,
+        "the pane moved left to column {column}: {top}"
+    );
+    Ok(())
+}

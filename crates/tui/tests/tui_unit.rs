@@ -425,6 +425,18 @@ fn a_streaming_table_keeps_its_header_on_a_normal_screen() -> TestResult {
 /// Feed `full` through the streaming path in small deltas, the way a provider
 /// delivers it, and hand back the app that rendered it.
 fn streamed(full: &str) -> yi_tui::app::App {
+    let mut app = streamed_open(full);
+    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd {
+        message: yi_runtime::faux::faux_assistant_message(
+            vec![yi_runtime::faux::faux_text(full)],
+            yi_types::message::StopReason::Stop,
+        ),
+    });
+    app
+}
+
+/// The same stream with the message still open, so only what streaming committed shows.
+fn streamed_open(full: &str) -> yi_tui::app::App {
     use yi_tui::app::{App, TuiOptions};
     use yi_tui::keymap::default_keymap;
     let mut app = App::new(
@@ -465,9 +477,6 @@ fn streamed(full: &str) -> yi_tui::app::App {
         });
         end += 17;
     }
-    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd {
-        message: assistant(full),
-    });
     app
 }
 
@@ -2406,5 +2415,124 @@ fn a_call_head_splits_its_path_into_context_and_name() -> TestResult {
         .ok_or(format!("{spans:?}"))?;
     assert_eq!(dir.style, theme.dim_style());
     assert!(spans.iter().any(|s| s.content.as_ref() == "app.rs"));
+    Ok(())
+}
+
+/// A table whose header has no leading pipe was cut between the header and its rule, so
+/// the header committed as a paragraph and the body could never render as a table.
+#[test]
+fn a_table_without_leading_pipes_keeps_its_header() -> TestResult {
+    let mut source = "Here it is.\n\ncrate | role\n| --- | --- |\n".to_owned();
+    for index in 0..30 {
+        source.push_str(&format!("| crate-{index} | role {index} |\n"));
+    }
+    let mut app = streamed(&source);
+    let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+    assert!(
+        !committed
+            .iter()
+            .any(|line| line.contains("| ") || line.contains("crate | role")),
+        "{committed:?}"
+    );
+    Ok(())
+}
+
+/// A table early in the unstable tail stopped every later forced cut, so the list items
+/// after it never reached scrollback until the list ended.
+#[test]
+fn text_after_a_streaming_table_still_commits() -> TestResult {
+    let mut source = "- crates:\n  | a | b |\n  | --- | --- |\n  | x | y |\n".to_owned();
+    for index in 2..60 {
+        source.push_str(&format!("- item {index} with a few more words\n"));
+    }
+    let mut app = streamed_open(&source);
+    let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+    assert!(
+        committed.iter().any(|line| line.contains("item 30")),
+        "{committed:?}"
+    );
+    Ok(())
+}
+
+/// A forced cut at a table's first row is a block break, so the table keeps its air.
+#[test]
+fn a_table_cut_at_its_head_keeps_the_blank_above_it() -> TestResult {
+    let mut source = "Here it is.\n\n\n| crate | role |\n| --- | --- |\n".to_owned();
+    for index in 0..30 {
+        source.push_str(&format!("| crate-{index} | role {index} |\n"));
+    }
+    let mut app = streamed(&source);
+    let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+    let at = committed
+        .iter()
+        .position(|line| line.contains("Here it is."))
+        .ok_or(format!("{committed:?}"))?;
+    assert_eq!(
+        committed.get(at + 1).map(|line| line.trim()),
+        Some(""),
+        "{committed:?}"
+    );
+    Ok(())
+}
+
+/// pulldown-cmark splits text at `~`, `[` and `_`, so a path marked per event was
+/// coloured from the split onward; `Node.js` is a name, not a file.
+#[test]
+fn prose_marks_a_path_split_across_text_events_whole() -> TestResult {
+    let theme = theme();
+    let lines = yi_tui::markdown::render(
+        "Config lives in ~/.config/yi/keys.toml and app/[id]/page.tsx; install Node.js first.",
+        100,
+        &theme,
+    );
+    let spans: Vec<&Span<'_>> = lines.iter().flat_map(|l| &l.spans).collect();
+    let hue = |needle: &str| {
+        spans
+            .iter()
+            .find(|s| s.content.as_ref() == needle)
+            .map(|s| s.style.fg)
+    };
+    assert_eq!(
+        hue("~/.config/yi/keys.toml"),
+        Some(Some(theme.cyan)),
+        "{spans:?}"
+    );
+    assert_eq!(
+        hue("app/[id]/page.tsx"),
+        Some(Some(theme.cyan)),
+        "{spans:?}"
+    );
+    assert!(
+        !spans
+            .iter()
+            .any(|s| s.content.contains("Node.js") && s.style.fg == Some(theme.cyan)),
+        "{spans:?}"
+    );
+    Ok(())
+}
+
+/// A URL always holds a slash, so the path split shadowed the fetch hue.
+#[test]
+fn a_fetch_head_colours_its_url_whole() -> TestResult {
+    let theme = theme();
+    let cell = ToolCell {
+        name: "fetch".to_owned(),
+        call_id: "t1".to_owned(),
+        intent: None,
+        status: ToolStatus::Done,
+        summary: ToolCell::summary_of("fetch", "https://docs.rs/syntect/latest"),
+        digest: None,
+        preview: Vec::new(),
+        elapsed_ms: 0,
+        calls: 1,
+        details: serde_json::Value::Null,
+    };
+    let lines = cell.lines(80, &theme, TranscriptMode::Thinking, 0);
+    let url = lines
+        .iter()
+        .flat_map(|l| &l.spans)
+        .find(|s| s.content.as_ref() == "https://docs.rs/syntect/latest")
+        .ok_or(format!("{lines:?}"))?;
+    assert_eq!(url.style.fg, Some(theme.blue5));
     Ok(())
 }

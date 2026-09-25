@@ -207,3 +207,33 @@ fn the_clock_restarts_only_for_a_new_list() -> TestResult {
     );
     Ok(())
 }
+
+/// Under a goal the list's title is a content row, so its items indent beneath it the way
+/// steering items sit beneath theirs.
+#[test]
+fn under_a_goal_the_items_sit_beneath_their_title() -> TestResult {
+    let input = yi_tui::hud::HudInput {
+        goal: Some(yi_tui::hud::GoalView {
+            objective: "ship".to_owned(),
+            status: "active".to_owned(),
+            tokens_used: 0,
+            token_budget: None,
+        }),
+        todos: Some(ten(0)?),
+        ..yi_tui::hud::HudInput::default()
+    };
+    let lines: Vec<String> = yi_tui::hud::render(&input, &theme())
+        .iter()
+        .map(text)
+        .collect();
+    let indent = |needle: &str| {
+        lines
+            .iter()
+            .find(|line| line.contains(needle))
+            .map(|line| line.len() - line.trim_start().len())
+    };
+    let title = indent("Todos 0/10").ok_or(format!("{lines:?}"))?;
+    let first = indent("item 1").ok_or(format!("{lines:?}"))?;
+    assert_eq!(first, title + 2, "{lines:#?}");
+    Ok(())
+}

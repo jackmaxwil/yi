@@ -75,6 +75,10 @@ const NAME_FLOOR: usize = 10;
 
 /// Incident: a fixed twenty-column name padded short names out to a gap wider than they are.
 fn name_cols(app: &App) -> usize {
+    let roots = app.state.roots().into_iter().map(|root| {
+        let label = root.rsplit('/').next().unwrap_or(&root);
+        label.chars().count().saturating_sub(3)
+    });
     app.state
         .visible_rows()
         .into_iter()
@@ -87,15 +91,21 @@ fn name_cols(app: &App) -> usize {
                 .chain(std::iter::once(row.label().chars().count()))
                 .max()
         })
+        .chain(roots)
         .max()
         .unwrap_or(0)
         .clamp(NAME_FLOOR, NAME_WIDTH)
+        .max(app.state.sidebar_cols)
 }
 
-pub fn width(app: &App) -> u16 {
+pub fn width(app: &mut App) -> u16 {
     match app.state.sidebar {
         SidebarMode::Rail => 9,
-        SidebarMode::Full => u16::try_from(name_cols(app).saturating_add(9)).unwrap_or(u16::MAX),
+        SidebarMode::Full => {
+            // Incident: narrowing as a turn's children cleared re-wrapped every pane mid-turn.
+            app.state.sidebar_cols = name_cols(app);
+            u16::try_from(app.state.sidebar_cols.saturating_add(9)).unwrap_or(u16::MAX)
+        }
     }
 }
 

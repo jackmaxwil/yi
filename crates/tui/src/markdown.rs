@@ -123,7 +123,7 @@ impl Builder<'_> {
         if self.spans.is_empty() {
             return;
         }
-        let line = Line::from(std::mem::take(&mut self.spans));
+        let line = Line::from(mark_line(std::mem::take(&mut self.spans), self.theme));
         // The hang is the width the markers actually occupy: a fixed two spaces
         // left `10. ` and every nested glyph wrapping two columns short.
         let hang: usize = self.list_stack.iter().map(|level| level.hang).sum();
@@ -171,7 +171,6 @@ impl Builder<'_> {
                 *index = index.saturating_add(1);
                 marker
             }
-            // Depth glyphs, so nesting reads.
             // The assistant's own gutter is `•`, so a list never borrows it.
             _ => match depth {
                 0 => "‣ ".to_owned(),
@@ -188,14 +187,12 @@ impl Builder<'_> {
 
     fn text(&mut self, text: &str) {
         if self.table.is_some() {
-            let spans = self.prose(text);
+            let style = self.style();
             if let Some(table) = &mut self.table
                 && table.in_cell
                 && let Some(cell) = table.current.last_mut()
             {
-                for span in spans {
-                    cell.push_span(span);
-                }
+                cell.push_span(Span::styled(text.to_owned(), style));
             }
             return;
         }
@@ -220,17 +217,33 @@ impl Builder<'_> {
             return;
         }
         self.line_prologue();
-        let spans = self.prose(text);
-        self.spans.extend(spans);
+        self.spans.push(Span::styled(text.to_owned(), self.style()));
     }
+}
 
-    fn prose(&self, text: &str) -> Vec<Span<'static>> {
-        let style = self.style();
-        if self.link_dest.is_some() || style.fg != Some(self.theme.text) {
-            return vec![Span::styled(text.to_owned(), style)];
+/// Incident: pulldown-cmark splits text at `~` and `[`, so a path marked per event half-coloured.
+fn mark_line(spans: Vec<Span<'static>>, theme: &Theme) -> Vec<Span<'static>> {
+    let mut out = Vec::with_capacity(spans.len());
+    let mut run: Option<(Style, String)> = None;
+    for span in spans {
+        match &mut run {
+            Some((style, text)) if *style == span.style => text.push_str(&span.content),
+            _ => {
+                if let Some((style, text)) = run.take() {
+                    out.extend(marked_words(&text, style, theme));
+                }
+                if span.style.fg == Some(theme.text) {
+                    run = Some((span.style, span.content.into_owned()));
+                } else {
+                    out.push(span);
+                }
+            }
         }
-        marked_words(text, style, self.theme)
     }
+    if let Some((style, text)) = run {
+        out.extend(marked_words(&text, style, theme));
+    }
+    out
 }
 
 fn reduce_inline<'e>(b: &mut Builder, event: Event<'e>) -> Option<Event<'e>> {
@@ -319,6 +332,11 @@ fn reduce_table(b: &mut Builder, event: &Event) -> bool {
         Event::End(TagEnd::TableCell) => {
             if let Some(table) = &mut b.table {
                 table.in_cell = false;
+                if let Some(cell) = table.current.last_mut() {
+                    for line in &mut cell.lines {
+                        line.spans = mark_line(std::mem::take(&mut line.spans), b.theme);
+                    }
+                }
             }
         }
         Event::End(TagEnd::Table) => {
@@ -371,7 +389,9 @@ pub(crate) fn is_path(word: &str) -> bool {
     }
     let name = bare.rsplit('/').next().unwrap_or(bare);
     let extension = name.rsplit_once('.').is_some_and(|(stem, ext)| {
-        !stem.is_empty()
+        let product = ext == "js" && stem.starts_with(|c: char| c.is_uppercase());
+        stem.contains(char::is_alphabetic)
+            && !product
             && stem
                 .chars()
                 .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
@@ -392,9 +412,15 @@ fn marked_words(text: &str, style: Style, theme: &Theme) -> Vec<Span<'static>> {
     let mut plain = String::new();
     for piece in text.split_inclusive(char::is_whitespace) {
         let word = piece.trim_end();
-        let core = word
+        let mut core = word
             .trim_start_matches(['(', '[', '"', '\''])
-            .trim_end_matches(['.', ',', ';', ':', ')', ']', '!', '?', '"', '\'']);
+            .trim_end_matches(['.', ',', ';', ':', ']', '!', '?', '"', '\'']);
+        while core.ends_with(')') && core.matches(')').count() > core.matches('(').count() {
+            core = core
+                .strip_suffix(')')
+                .unwrap_or(core)
+                .trim_end_matches(['.', ',', ';', ':']);
+        }
         let hue = if core.starts_with("https://") || core.starts_with("http://") {
             Some(theme.blue5)
         } else if is_path(core) {

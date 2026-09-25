@@ -527,3 +527,30 @@ fn a_toml_fence_colours_its_keys_strings_and_comments() -> TestResult {
     );
     Ok(())
 }
+
+/// TSX and the TypeScript object and property scopes painted every identifier magenta.
+#[test]
+fn typescript_leaves_plain_identifiers_plain() -> TestResult {
+    for (line, lang) in [
+        ("foo(bar, baz);", "tsx"),
+        ("const foo = bar(baz, qux.quux);", "ts"),
+    ] {
+        let found = kinds(line, lang);
+        assert!(
+            !found.iter().any(|(_, token)| *token == Token::Variable),
+            "{lang}: {found:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A call's shape is the whole identifier, not the ASCII tail after an accented capital.
+#[test]
+fn a_non_ascii_identifier_is_coloured_whole_or_not_at_all() -> TestResult {
+    let found = kinds("let x = Überfoo(1);", "rust");
+    assert!(
+        !found.contains(&("berfoo".to_owned(), Token::Function)),
+        "{found:?}"
+    );
+    Ok(())
+}
