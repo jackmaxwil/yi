@@ -348,3 +348,34 @@ fn a_call_streamed_as_text_finishes_as_a_tool_call() -> Result<(), Box<dyn Error
     );
     Ok(())
 }
+
+/// A Claude model reached through OpenRouter keeps Claude's limits: the newest 20 images ride,
+/// while a GPT model takes every one.
+#[test]
+fn a_routed_claude_request_keeps_its_newest_twenty_images() {
+    let turns = |count: usize| LlmContext {
+        system_prompt: String::new(),
+        messages: (0..count)
+            .map(|_| {
+                AgentMessage::host_user(
+                    UserContent::Blocks(vec![Content::Image {
+                        data: "iVBORw0KGgo=".to_owned(),
+                        mime_type: "image/png".to_owned(),
+                    }]),
+                    0,
+                )
+            })
+            .collect(),
+        tools: None,
+        tool_choice: None,
+    };
+    let images = |params: &Value| params.to_string().matches("data:image/png;base64").count();
+    let mut claude = model(false);
+    claude.id = "anthropic/claude-sonnet-5".to_owned();
+    let options = OpenAiOptions::default();
+    assert_eq!(images(&build_params(&claude, &turns(25), &options)), 20);
+    assert_eq!(
+        images(&build_params(&model(false), &turns(25), &options)),
+        25
+    );
+}
