@@ -83,6 +83,16 @@ pub fn build_snapshot_code(
     payload = {{}}
     skipped = []
     oversized = []
+    # ponytail: keyed by id, type and getsizeof, which an in-place edit of a list, dict or
+    # instance leaves unchanged, so such a variable stays skipped until rebound; a prune
+    # re-measures rather than trust it.
+    over_cap = _b.getattr(ip, "_yi_snapshot_over_cap", None) if ip is not None else None
+    if over_cap is None:
+        over_cap = {{}}
+        if ip is not None:
+            ip._yi_snapshot_over_cap = over_cap
+    for name in [name for name in over_cap if name not in ns]:
+        del over_cap[name]
     total = 0
     identify_oversized = {prune}
     for name in _b.list(ns.keys()):
@@ -92,6 +102,14 @@ pub fn build_snapshot_code(
         if name.startswith("_") or name in hidden or name in always_skip:
             continue
         value = ns[name]
+        try:
+            seen = (_b.id(value), _b.type(value), sys.getsizeof(value))
+        except _b.Exception:
+            seen = None
+        if seen is not None and not identify_oversized and over_cap.get(name) == seen:
+            skipped.append({{"name": name, "reason": "exceeds per-variable snapshot size cap"}})
+            oversized.append(name)
+            continue
         remaining = {max_bytes} - total
         buffer_limit = {max_variable_bytes} if identify_oversized else _b.min({max_variable_bytes}, remaining)
         buffer = SnapshotBuffer(buffer_limit)
@@ -99,12 +117,15 @@ pub fn build_snapshot_code(
         try:
             dill.dump(value, buffer)
             blob = buffer.getvalue()
+            over_cap.pop(name, None)
         except SnapshotSizeLimitExceeded:
             if not identify_oversized and remaining < {max_variable_bytes}:
                 skipped.append({{"name": name, "reason": "exceeds aggregate snapshot size cap"}})
             else:
                 skipped.append({{"name": name, "reason": "exceeds per-variable snapshot size cap"}})
                 oversized.append(name)
+                if seen is not None:
+                    over_cap[name] = seen
             continue
         except _b.Exception as _err:
             skipped.append({{"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]}})
