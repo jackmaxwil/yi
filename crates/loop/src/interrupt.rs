@@ -1,8 +1,7 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use tokio::sync::Notify;
-use yi_types::message::AgentMessage;
 
 #[derive(Debug, Default)]
 pub struct InterruptSignal {
@@ -54,49 +53,4 @@ impl InterruptSignal {
         }
         self.wake.notified().await;
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SoftInterrupt {
-    pub text: String,
-    pub source: String,
-}
-
-#[derive(Debug, Default)]
-pub struct SoftInterruptQueue {
-    items: Mutex<Vec<SoftInterrupt>>,
-}
-
-impl SoftInterruptQueue {
-    pub fn push(&self, item: SoftInterrupt) {
-        if let Ok(mut items) = self.items.lock() {
-            items.push(item);
-        }
-    }
-
-    pub fn drain(&self) -> Vec<SoftInterrupt> {
-        match self.items.lock() {
-            Ok(mut items) => std::mem::take(&mut *items),
-            Err(_) => Vec::new(),
-        }
-    }
-}
-
-pub fn synthesize_skipped(skipped: &[(String, String)], timestamp: u64) -> Vec<AgentMessage> {
-    skipped
-        .iter()
-        .map(|(tool_call_id, tool_name)| AgentMessage::ToolResult {
-            tool_call_id: tool_call_id.clone(),
-            tool_name: tool_name.clone(),
-            content: vec![yi_types::message::Content::Text {
-                text: "[Skipped: user interrupted]".to_owned(),
-                text_signature: None,
-            }],
-            details: None,
-            usage: None,
-            added_tool_names: None,
-            is_error: true,
-            timestamp,
-        })
-        .collect()
 }

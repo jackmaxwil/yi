@@ -218,5 +218,6 @@ when it changes rather than editing them by hand.
 - [D238](adr/d238.md) - the last rung of the kernel toolchain is a pinned, verified uv, not a piped...
 - [D240](adr/d240.md) - a contained kernel may write its family board (amends D87)
 - [D239](adr/d239.md) - one process owns a session's kernel snapshot (amends K10)
+- [D245](adr/d245.md) - a fired interrupt answers every unrun call as `Aborted` and sends no further...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

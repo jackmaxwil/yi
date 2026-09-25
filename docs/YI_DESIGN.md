@@ -61,7 +61,7 @@ enforceable with `cargo` (a crate cannot import what it does not depend on).
 crates/
   yi-types      DTO wall. pi-ai message/content/usage/stop types, AgentMessage, Entry, Event,
                 tool contract types, permission types. deps: serde only. No tokio, no fs, no net.
-  yi-loop       run_loop(ctx, new_msgs, cfg, signal, emit, stream) + interrupt module (InterruptSignal, SoftInterruptQueue).
+  yi-loop       run_loop(ctx, new_msgs, cfg, signal, emit, stream) + interrupt module (InterruptSignal).
                 ≤ 1,000 lines. deps: yi-types, tokio (Notify only).
   yi-ai         providers (anthropic-messages, openai-completions, openai-responses), model catalog, StreamFn impl. deps: yi-types, yi-oauth.
   yi-oauth      `yi login` / `yi logout`: PKCE, loopback, token files, profile loader. Ships no provider identity. deps: ureq, sha2, serde_json. Delete the crate to drop subscription OAuth.
@@ -762,10 +762,8 @@ provider-specific error. Anything that can fail is encoded as a value by L5 or L
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| I1 | InterruptSignal | `{fired: AtomicBool, wake: Notify, epoch: AtomicU64}`; `fire()`, `is_fired()` (sync, no await), `wait()`, `reset_if_epoch(e)`. The signal is per-session and outlives a turn, so a run reads `epoch()` at admission and `reset_if_epoch` at the start of the spawned run — an unreset signal makes the first abort poison every later turn, and an unconditional reset swallows an interrupt fired in the gap. `wait()` is the only interrupt checkpoint a streaming answer has: L5's providers take the signal but cannot cancel an in-flight HTTP body, so the stream consumer selects on it `biased` and ends the turn `Aborted` with the partial intact | data | — |
-| I2 | SoftInterruptQueue | `Mutex<Vec<SoftInterrupt{text, source, urgent}>>` — std mutex, enqueue without the session lock | data | — |
+| I1 | InterruptSignal | `{fired: AtomicBool, wake: Notify, epoch: AtomicU64}`; `fire()`, `is_fired()` (sync, no await), `wait()`, `reset_if_epoch(e)`. The signal is per-session and outlives a turn, so a run reads `epoch()` at admission and `reset_if_epoch` at the start of the spawned run — an unreset signal makes the first abort poison every later turn, and an unconditional reset swallows an interrupt fired in the gap. `wait()` is the only interrupt checkpoint a streaming answer has: L5's providers take the signal but cannot cancel an in-flight HTTP body, so the stream consumer selects on it `biased` and ends the turn `Aborted` with the partial intact. Once fired, every call not yet run is answered `Operation aborted` (`Aborted`) with its start and end events, and no further request is sent: the next turn settles `Aborted` without calling the provider (D245) | data | — |
 | I3 | InjectionPoint | enum `AfterTurnNoTools \| BetweenTools \| BeforeProvider`; outcome enums `NoToolCallOutcome`, `PostToolOutcome` | data | — |
-| I4 | synthesize_skipped | `fn(skipped: &[ToolCall]) -> Vec<ToolResultMessage>` — keeps the transcript valid when an urgent interrupt skips remaining calls | pure | — |
 
 ### 8.7 Permission (`yi-permission`, minus the reference's classifier)
 
