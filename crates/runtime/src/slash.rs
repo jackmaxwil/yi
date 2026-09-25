@@ -3,7 +3,7 @@
 use crate::{AgentSession, PermissionMode};
 
 /// The verbs a host advertises; `/pr` and `/base` still answer, as pointers to `/land`.
-pub const SESSION_VERBS: [&str; 8] = [
+pub const SESSION_VERBS: [&str; 9] = [
     "advisor",
     "plan",
     "goal",
@@ -12,6 +12,7 @@ pub const SESSION_VERBS: [&str; 8] = [
     "lanes",
     "land",
     "discard",
+    "heartbeat",
 ];
 
 pub fn run(session: &AgentSession, command: &str, args: &str) -> Option<String> {
@@ -26,8 +27,18 @@ pub fn run(session: &AgentSession, command: &str, args: &str) -> Option<String> 
         "pr" => lane_verb(session, "pr", args),
         "base" => lane_verb(session, "base", args),
         "discard" => lane_verb(session, "discard", args),
+        "heartbeat" => heartbeat(session, args),
         _ => return None,
     })
+}
+
+fn heartbeat(session: &AgentSession, args: &str) -> String {
+    let Some(service) = session.heartbeat_service() else {
+        return "/heartbeat: no scheduler is attached to this session".to_owned();
+    };
+    service
+        .run(args)
+        .unwrap_or_else(|error| format!("/heartbeat: {error}"))
 }
 
 /// Invariant: V11 promotion has no host request behind it, so this command is

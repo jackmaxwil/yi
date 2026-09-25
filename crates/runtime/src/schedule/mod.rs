@@ -1003,6 +1003,12 @@ impl HeartbeatService {
         }
     }
 
+    /// Parses and applies one `/heartbeat` line (design H10); the one entry
+    /// point RPC, ACP `_yi/heartbeat` and the `/heartbeat` slash verb share.
+    pub fn run(&self, line: &str) -> Result<String, String> {
+        parse_heartbeat_command(line).and_then(|command| self.apply(&command, yi_session::now_ms()))
+    }
+
     /// Registers the kernel-side vocabulary (design H10): list, create,
     /// update (pause/resume), delete.
     pub fn register(self: &std::sync::Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
