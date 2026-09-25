@@ -1027,8 +1027,12 @@ def put(name: str, obj: Any) -> dict[str, Any]:
 def _stage(path: Path, write: Any) -> Path:
     """Write a per-process tmp beside ``path`` for the caller to rename over it."""
     tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    # Incident: a family member could plant a symlink at this predictable name, and open(..., "wb")
+    # wrote through it to a file outside the board; O_EXCL|O_NOFOLLOW refuses any planted entry.
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        with open(tmp, "wb") as handle:
+        with os.fdopen(fd, "wb") as handle:
             write(handle)
     except BaseException:
         tmp.unlink(missing_ok=True)

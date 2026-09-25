@@ -72,7 +72,12 @@ pub(crate) fn dump_variable_code(name: &VariableName, path: &Path) -> String {
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".tmp-" + _b.str(os.getpid())
         try:
-            with _b.open(tmp, "wb") as handle:
+            try:
+                os.remove(tmp)
+            except _b.FileNotFoundError:
+                pass
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+            with os.fdopen(os.open(tmp, flags, 0o600), "wb") as handle:
                 _ser.dump(ns[name], handle)
             os.replace(tmp, path)
         finally:
