@@ -42,6 +42,7 @@ impl KernelBridge for NoKernel {
 
 /// Incident: `attach_image` promised the model the picture, which reached only `details`.
 /// A type or size the provider refuses would sit in history and fail every later request.
+/// Its bytes are stored once: the details copy doubled every session row and event.
 #[test]
 fn an_attached_image_is_in_the_models_view() -> TestResult {
     let result: yi_types::kernel::ExecuteResult = serde_json::from_value(serde_json::json!({
@@ -56,7 +57,11 @@ fn an_attached_image_is_in_the_models_view() -> TestResult {
         kernel_restarted: false,
         notes: Vec::new(),
     };
-    let content = yi_tools::cell_output("x", outcome).result.content;
+    let stored = yi_tools::cell_output("x", outcome).result;
+    let wire = serde_json::to_string(&stored)?;
+    assert_eq!(wire.matches("iVBORw0KGgo=").count(), 1, "{wire}");
+    assert_eq!(wire.matches("YSxi").count(), 1, "{wire}");
+    let content = stored.content;
     let text: String = content
         .iter()
         .filter_map(|block| match block {

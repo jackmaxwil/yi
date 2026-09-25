@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
-use yi_types::kernel::{ExecuteResult, ExecuteStatus};
+use yi_types::kernel::{ExecuteResult, ExecuteStatus, KernelAttachment};
 use yi_types::message::Content;
 
 use crate::tool::{
@@ -131,14 +131,15 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
         sections.push("[cell aborted]".to_owned());
     }
     sections.extend(outcome.notes.iter().cloned());
+    let to_model = |attachment: &&KernelAttachment| {
+        MODEL_IMAGE_TYPES.contains(&attachment.mime_type.as_str())
+            && attachment.data.len() <= MAX_MODEL_IMAGE_CHARS
+    };
     let (images, refused): (Vec<_>, Vec<_>) = result
         .attachments
         .iter()
         .filter(|attachment| attachment.mime_type.starts_with("image/"))
-        .partition(|attachment| {
-            MODEL_IMAGE_TYPES.contains(&attachment.mime_type.as_str())
-                && attachment.data.len() <= MAX_MODEL_IMAGE_CHARS
-        });
+        .partition(to_model);
     sections.extend(refused.iter().map(|attachment| {
         format!(
             "[{} attachment of {} base64 chars not sent to the model: it takes png, jpeg, gif or webp up to {MAX_MODEL_IMAGE_CHARS}]",
@@ -176,7 +177,11 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
         "durationMs": result.duration_ms,
         "diffs": diffs,
         "attachments": result.attachments.len(),
-        "attachmentMedia": result.attachments,
+        "attachmentMedia": result.attachments.iter().map(|attachment| if to_model(&attachment) {
+            json!({ "mime_type": attachment.mime_type, "path": attachment.path })
+        } else {
+            json!(attachment)
+        }).collect::<Vec<_>>(),
         "sentAgentMessages": result.sent_agent_messages,
         "kernelRestarted": outcome.kernel_restarted,
         "code": detail_text(code),
