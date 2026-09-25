@@ -999,20 +999,45 @@ def put(name: str, obj: Any) -> dict[str, Any]:
     directory.mkdir(parents=True, exist_ok=True)
     serializer = _serializer()
     target = directory / f"{name}.dill"
-    tmp = directory / f"{name}.dill.tmp-{os.getpid()}"
-    with open(tmp, "wb") as handle:
-        serializer.dump(obj, handle)
-    os.replace(tmp, target)
-    sidecar = {
-        "name": name,
-        "owner": _member_name(),
-        "at": time.time(),
-        "bytes": target.stat().st_size,
-        "type": type(obj).__name__,
-        "serializer": serializer.__name__,
-    }
-    (directory / f"{name}.json").write_text(json.dumps(sidecar))
+    # Invariant: both files are staged before either is renamed, so a put that fails while
+    # writing leaves `get`, `ls` and family:// all on the previous pair.
+    staged: list[tuple[Path, Path]] = []
+    try:
+        staged.append((_stage(target, lambda handle: serializer.dump(obj, handle)), target))
+        sidecar = {
+            "name": name,
+            "owner": _member_name(),
+            "at": time.time(),
+            "bytes": staged[0][0].stat().st_size,
+            "type": type(obj).__name__,
+            "serializer": serializer.__name__,
+        }
+        encoded = json.dumps(sidecar).encode()
+        sidecar_path = directory / f"{name}.json"
+        staged.append((_stage(sidecar_path, lambda handle: handle.write(encoded)), sidecar_path))
+        for tmp, path in staged:
+            os.replace(tmp, path)
+    except BaseException:
+        for tmp, _ in staged:
+            tmp.unlink(missing_ok=True)
+        raise
     return sidecar
+
+
+def _stage(path: Path, write: Any) -> Path:
+    """Write a per-process tmp beside ``path`` for the caller to rename over it."""
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    # Incident: a family member could plant a symlink at this predictable name, and open(..., "wb")
+    # wrote through it to a file outside the board; O_EXCL|O_NOFOLLOW refuses any planted entry.
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            write(handle)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return tmp
 
 
 @_public
