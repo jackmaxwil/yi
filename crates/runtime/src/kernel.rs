@@ -32,10 +32,11 @@ impl HostRegistry {
 
     /// The host half of the kernel's `bash()` handle: five `exec.*` requests over
     /// [`yi_tools::jobs`]. A spawned job is handle-owned; only `exec.release` retires it.
-    pub fn register_exec(&mut self, cwd: PathBuf) {
+    pub fn register_exec(&mut self, cwd: PathBuf, sandbox: Option<yi_tools::Sandbox>) {
         let spawned = Arc::clone(&self.handles);
         self.register("exec.spawn", move |payload| {
             let cwd = cwd.clone();
+            let sandbox = sandbox.clone();
             let spawned = Arc::clone(&spawned);
             Box::pin(async move {
                 let command = payload
@@ -46,7 +47,7 @@ impl HostRegistry {
                         "exec.spawn requires a non-empty \"command\" argument".to_owned()
                     })?;
                 let cancelled: CancelFlag = Arc::new(|| false);
-                let id = yi_tools::jobs::spawn_job(command, &cwd, &cancelled, None);
+                let id = yi_tools::jobs::spawn_job(command, &cwd, &cancelled, sandbox.as_ref());
                 lock(&spawned).push(id);
                 let mut reply = Map::new();
                 reply.insert("job_id".to_owned(), Value::from(id.0));
@@ -207,6 +208,22 @@ pub fn snapshot_paths(base: &std::path::Path, key: Option<&str>) -> (PathBuf, Pa
     }
 }
 
+/// The profile a contained kernel runs under, and its `bash()` jobs with it (D241).
+pub(crate) fn kernel_profile(
+    sandbox: &yi_tools::Sandbox,
+    home: &std::path::Path,
+) -> yi_tools::Sandbox {
+    let mut profile = sandbox.clone();
+    // Only what the kernel side writes under ~/.yi; the venv stays read-only.
+    let yi = home.join(".yi");
+    profile.writable.push(yi.join("harness"));
+    profile.writable.push(yi.join("mcp"));
+    profile.loopback = true;
+    profile.writable.sort();
+    profile.writable.dedup();
+    profile
+}
+
 /// Boots on first cell, memoizes the manager, retries a failed start, owns busy recovery.
 pub struct KernelService {
     options: KernelServiceOptions,
@@ -294,14 +311,7 @@ impl KernelService {
 
     fn kernel_wrap(&self, sandbox: Option<&yi_tools::Sandbox>) -> Option<(String, Vec<String>)> {
         let sandbox = sandbox.filter(|_| yi_tools::Sandbox::available())?;
-        let mut profile = sandbox.clone();
-        // Only what the kernel side writes under ~/.yi; the venv stays read-only.
-        let yi = self.options.home.join(".yi");
-        profile.writable.push(yi.join("harness"));
-        profile.writable.push(yi.join("mcp"));
-        profile.writable.sort();
-        profile.writable.dedup();
-        Some(profile.kernel_prefix())
+        Some(kernel_profile(sandbox, &self.options.home).kernel_prefix())
     }
 
     fn kernel_env(&self) -> Vec<(String, String)> {
@@ -880,7 +890,7 @@ mod tests {
 
     fn exec_registry() -> HostRegistry {
         let mut registry = HostRegistry::default();
-        registry.register_exec(std::env::temp_dir());
+        registry.register_exec(std::env::temp_dir(), None);
         registry
     }
 
