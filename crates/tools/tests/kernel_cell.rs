@@ -41,21 +41,33 @@ impl KernelBridge for NoKernel {
 }
 
 /// Incident: `attach_image` promised the model the picture, which reached only `details`.
+/// A type or size the provider refuses would sit in history and fail every later request.
 #[test]
 fn an_attached_image_is_in_the_models_view() -> TestResult {
     let result: yi_types::kernel::ExecuteResult = serde_json::from_value(serde_json::json!({
         "stdout": "attached", "stderr": "", "status": "ok", "durationMs": 1,
         "attachments": [{"mime_type": "image/png", "data": "iVBORw0KGgo="},
-                        {"mime_type": "text/csv", "data": "YSxi"}],
+                        {"mime_type": "text/csv", "data": "YSxi"},
+                        {"mime_type": "image/svg+xml", "data": "PHN2Zy8+"},
+                        {"mime_type": "image/png", "data": "A".repeat(350_004)}],
     }))?;
     let outcome = KernelCellOutcome {
         result,
         kernel_restarted: false,
         notes: Vec::new(),
     };
-    let images: Vec<_> = yi_tools::cell_output("x", outcome)
-        .result
-        .content
+    let content = yi_tools::cell_output("x", outcome).result.content;
+    let text: String = content
+        .iter()
+        .filter_map(|block| match block {
+            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(text.contains("image/svg+xml"), "{text}");
+    assert!(text.contains("350004"), "{text}");
+    assert!(!text.contains("text/csv"), "{text}");
+    let images: Vec<_> = content
         .into_iter()
         .filter_map(|block| match block {
             yi_types::message::Content::Image { data, mime_type } => Some((data, mime_type)),
