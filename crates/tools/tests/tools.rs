@@ -406,7 +406,7 @@ fn checkpoint_restore_reverts_a_turn() -> TestResult {
     fs::remove_file(project.join("removed.txt"))?;
     fs::write(project.join("created.txt"), "new\n")?;
 
-    let mut changed = checkpoints.restore(&turn_start)?;
+    let mut changed = checkpoints.restore(&turn_start, None)?;
     changed.sort_by(|left, right| left.path.cmp(&right.path));
     let names: Vec<String> = changed
         .iter()
@@ -416,6 +416,61 @@ fn checkpoint_restore_reverts_a_turn() -> TestResult {
     assert_eq!(fs::read_to_string(project.join("kept.txt"))?, "before\n");
     assert_eq!(fs::read_to_string(project.join("removed.txt"))?, "gone\n");
     assert!(!project.join("created.txt").exists());
+    Ok(())
+}
+
+#[test]
+fn checkpoint_restore_keeps_what_was_edited_after_the_turn() -> TestResult {
+    let project = temp_dir("checkpoint-kept-project")?;
+    let shadow = temp_dir("checkpoint-kept-shadow")?;
+    fs::write(project.join("a.txt"), "before\n")?;
+    fs::write(project.join("b.txt"), "before\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&shadow, &project)?;
+    let turn_start = checkpoints.capture()?;
+    fs::write(project.join("a.txt"), "turn\n")?;
+    fs::write(project.join("n.txt"), "turn\n")?;
+    let turn_end = checkpoints.capture()?;
+    fs::write(project.join("a.txt"), "hand\n")?;
+    fs::write(project.join("b.txt"), "hand\n")?;
+    fs::write(project.join("c.txt"), "hand\n")?;
+
+    let mut changed = checkpoints.restore(&turn_start, Some(&turn_end))?;
+    changed.sort_by(|left, right| left.path.cmp(&right.path));
+    let listed: Vec<(String, yi_tools::ChangeKind)> = changed
+        .iter()
+        .map(|change| (change.path.display().to_string(), change.kind))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("a.txt".to_owned(), yi_tools::ChangeKind::Kept),
+            ("n.txt".to_owned(), yi_tools::ChangeKind::Deleted),
+        ]
+    );
+    assert_eq!(fs::read_to_string(project.join("a.txt"))?, "hand\n");
+    assert_eq!(fs::read_to_string(project.join("b.txt"))?, "hand\n");
+    assert_eq!(fs::read_to_string(project.join("c.txt"))?, "hand\n");
+    assert!(!project.join("n.txt").exists());
+    Ok(())
+}
+
+#[test]
+fn checkpoint_restore_undoes_a_rename() -> TestResult {
+    let project = temp_dir("checkpoint-rename-project")?;
+    let shadow = temp_dir("checkpoint-rename-shadow")?;
+    fs::write(project.join("a.txt"), "same content either name\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&shadow, &project)?;
+    let turn_start = checkpoints.capture()?;
+    fs::rename(project.join("a.txt"), project.join("b.txt"))?;
+    let turn_end = checkpoints.capture()?;
+
+    let changed = checkpoints.restore(&turn_start, Some(&turn_end))?;
+    assert_eq!(changed.len(), 2, "{changed:?}");
+    assert_eq!(
+        fs::read_to_string(project.join("a.txt"))?,
+        "same content either name\n"
+    );
+    assert!(!project.join("b.txt").exists());
     Ok(())
 }
 

@@ -135,8 +135,13 @@ fn a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree() -> 
 
     std::fs::write(&note, "before\n")?;
     succeeded(&journey.yi(&["ask", "first"])?, "the opening ask")?;
-    std::fs::write(&note, "after\n")?;
-    succeeded(&journey.yi(&["ask", "--continue", "second"])?, "the resume")?;
+    std::fs::write(&note, "between\n")?;
+    let script = write_script(&journey, "note.txt", "after\n")?;
+    succeeded(
+        &journey.yi(&["ask", "--continue", "--faux", &script, "second"])?,
+        "the resume",
+    )?;
+    assert_eq!(std::fs::read_to_string(&note)?, "after\n");
 
     let listed: Value = serde_json::from_str(&succeeded(
         &journey.yi(&["sessions", "--json", "list"])?,
@@ -159,7 +164,6 @@ fn a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree() -> 
         "both turns must read back out of the one file: {shown}"
     );
 
-    std::fs::write(&note, "later\n")?;
     let restored = succeeded(&journey.yi(&["undo"])?, "undo")?;
     assert!(
         restored.contains("note.txt"),
@@ -167,11 +171,29 @@ fn a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree() -> 
     );
     assert_eq!(
         std::fs::read_to_string(&note)?,
-        "after\n",
-        "undo restores the tree the last turn started from"
+        "between\n",
+        "undo restores the tree the last turn started from, hand edits before it included"
     );
     journey.reclaim();
     Ok(())
+}
+
+/// A `--faux` script whose one turn writes `content` to `path`, then says so.
+fn write_script(journey: &Journey, path: &str, content: &str) -> Result<String, Box<dyn Error>> {
+    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_types::message::StopReason;
+    let args = json!({"path": path, "content": content});
+    let call = faux_tool_call("c1", "write", args.as_object().cloned().unwrap_or_default());
+    let lines = [
+        serde_json::to_string(&faux_assistant_message(vec![call], StopReason::ToolUse))?,
+        serde_json::to_string(&faux_assistant_message(
+            vec![faux_text("written")],
+            StopReason::Stop,
+        ))?,
+    ];
+    let script = journey.project().join("script.jsonl");
+    std::fs::write(&script, lines.join("\n"))?;
+    Ok(script.display().to_string())
 }
 
 #[test]

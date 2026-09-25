@@ -322,8 +322,11 @@ Mechanism, copied:
   --exclude-standard -z`, filtered through `check-ignore --no-index --stdin -z` **against the
   real repo**, untracked files > 2 MiB excluded via the shadow `info/exclude`, then
   `add --all --sparse --pathspec-from-file=-` and `write-tree`.
-- Restore is per file: `ls-tree <tree> -- <path>` present ⇒ `checkout <tree> -- <path>`, absent
-  ⇒ delete. Only files the agent touched move; the user's concurrent edits stay.
+- Restore is scoped to the turn (D248): the paths are `diff --no-renames --name-status
+  <turn-start> <turn-end>`; each is checked out from the start tree, or deleted when the start
+  tree lacks it. A scoped path the user changed again after the turn is kept and named. With no
+  turn end to pair with (a turn still running or killed), every path changed since the start
+  moves, and the reply says so.
 - Diff: `diff --numstat` / `diff --unified=3 <a> <b>`; trees are plain OIDs.
 - One lock per shadow gitdir; `gc --prune=7.days` occasionally.
 
@@ -338,8 +341,8 @@ Implementation: `std::process::Command` over the `git` binary, NUL-delimited I/O
 (§13). Estimate ≈ 500 lines in `yi-tools::checkpoint`. If `git` is absent, T14 is a no-op and
 `/undo` says so.
 
-Surface: `/undo` (restore every file changed since the last `TurnStart` checkpoint, then capture
-again so `/undo` is itself undoable), `/diff` (last turn), ACP v2 `diff` content from T13 over
+Surface: `/undo` (restore what the last turn changed, recording the replaced state and the
+state the restore left so a second `/undo` moves exactly that back), `/diff` (last turn), ACP v2 `diff` content from T13 over
 checkpoint trees.
 
 ## 6. Kernel (verbatim runtime)
@@ -827,7 +830,7 @@ memoized on `(mode, rules_hash)` — never recompiled per call.
 | T10 | prepare / commit | `prepare(patch, fs) -> Prepared{per-section postimages, diffs}`; `commit(Prepared) -> Written{done, not_written, unknown}` — `unknown` = write errored after partial output (decides whether T14 restore is safe); **`commit` re-validates path constraints and symlink status at write time** (approval of a diff is not approval of a path; one test mirrors the reference `no_follow_rechecks_paths_after_verification`) | I/O | — |
 | T11 | guards | seen-lines guard; no-op loop guard (3 strikes); mismatch error text verbatim | pure | — |
 | T12 | bash | `run(cmd, cwd, env, &InterruptSignal) -> {stdout, stderr, exit, truncated}`; output cap; optional background handle. Background map eviction is **LRU with the 8 most-recent protected**, never idle-timeout (an idle timer kills a quiet `cargo build`); "check on job N" is the same tool with empty input and a 5 s–300 s clamp, not a separate `jobs` tool (D30 — PTY sessions skipped: ~3.7k-line subsystem + a per-session approval hole where every stdin write bypasses the permission gate; `ipython` covers the REPL case) | I/O | — |
-| T14 | checkpoint | shadow gitdir (§5.3): `capture() -> Option<TreeId>` at turn start and turn end (best-effort, never fails the turn); `changed(a, b) -> Vec<Path>`; `restore(paths: [(Path, TreeId)])` per file (`checkout <tree> -- <path>`, delete if absent); `diff(a, b) -> GitPatch`; `custom{checkpoint{tree, at: TurnStart\|TurnEnd}}` entry | I/O | — |
+| T14 | checkpoint | shadow gitdir (§5.3): `capture() -> Option<TreeId>` at turn start and turn end (best-effort, never fails the turn); `changed(a, b) -> Vec<Path>`; `restore(tree, since?)` scoped to the tree pair's diff, a path changed since kept and named (D248); `diff(a, b) -> GitPatch`; `custom{checkpoint{tree, at: TurnStart\|TurnEnd\|Undo, after?}}` entry | I/O | — |
 | T15 | summarize_read | `fn(text, budget) -> Rendered{lines, elided: Vec<Range>}` — collapses brace-balanced blocks to `N-M:` rows + `[…N ln elided]` footer; hashline tag still covers the full file | pure | — |
 | T16 | read_tool_result | `{id, range?}` re-reads a truncated output stored under `<session>/artifacts/tool-output/<id>` — the spill path for **any** unbounded text entering context (tool output, exec-tool output, oversized injected material): over-budget text is spilled to a file and replaced with head/tail preview + recovery id | I/O | — |
 | T13 | diff | `fn(pre, post) -> GitPatch` (unified, absolute paths) for permission display and ACP v2 `diff.patch` | pure | — |

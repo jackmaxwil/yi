@@ -804,8 +804,8 @@ fn run_undo(args: &Args) -> i32 {
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
     match yi_runtime::undo(&store, &cwd, &home) {
-        yi_runtime::UndoOutcome::Restored(changes) => {
-            report_undo(&changes, args.json);
+        yi_runtime::UndoOutcome::Restored { changes, scoped } => {
+            report_undo(&changes, scoped, args.json);
             0
         }
         yi_runtime::UndoOutcome::NoCheckpoint => {
@@ -857,7 +857,7 @@ fn list_checkpoints(store: &yi_runtime::session_store::SharedSession, json: bool
     0
 }
 
-fn report_undo(changes: &[yi_runtime::Change], json: bool) {
+fn report_undo(changes: &[yi_runtime::Change], scoped: bool, json: bool) {
     let described: Vec<serde_json::Value> = changes
         .iter()
         .map(|change| {
@@ -866,17 +866,20 @@ fn report_undo(changes: &[yi_runtime::Change], json: bool) {
                 "action": match change.kind {
                     yi_runtime::ChangeKind::Restored => "restored",
                     yi_runtime::ChangeKind::Deleted => "deleted",
+                    yi_runtime::ChangeKind::Kept => "kept",
                 },
             })
         })
         .collect();
     if json {
-        if let Ok(line) = serde_json::to_string(&serde_json::json!({ "reverted": described })) {
+        let line = serde_json::json!({ "reverted": described, "scoped": scoped });
+        if let Ok(line) = serde_json::to_string(&line) {
             println!("{line}");
         }
         return;
     }
-    if changes.is_empty() {
+    let notes = yi_runtime::undo_notes(changes, scoped);
+    if changes.is_empty() && notes.is_empty() {
         println!("nothing to revert");
         return;
     }
@@ -884,8 +887,12 @@ fn report_undo(changes: &[yi_runtime::Change], json: bool) {
         let action = match change.kind {
             yi_runtime::ChangeKind::Restored => "restored",
             yi_runtime::ChangeKind::Deleted => "deleted ",
+            yi_runtime::ChangeKind::Kept => continue,
         };
         println!("{action}  {}", change.path.display());
+    }
+    for note in notes {
+        println!("{note}");
     }
 }
 
