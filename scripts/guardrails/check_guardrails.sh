@@ -57,6 +57,9 @@ run "$PY" scripts/pr_body.py --selfcheck
 # The tool-surface lock is equality over hashes, so a comparison that drifted would
 # pass every change or refuse every run; only this flag walks the delta cases.
 run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
+# The hard cap is checked independent of the baseline file, so nothing here reads
+# target/dist/yi; only this flag proves the cap fires on its own reason (D244).
+run "$PY" scripts/guardrails/check_binary_size.py --selfcheck
 # The size-report comment is upserted by marker, and a marker that stops matching
 # posts a duplicate rather than failing; only this flag exercises the routing.
 run "$PY" scripts/forgejo_pr_comment.py --selfcheck

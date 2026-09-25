@@ -1631,8 +1631,8 @@ size builds only as an experiment, never required.
 | dist binary, macOS arm64, default features | ratcheted to the measured size (D69: 4,636,896; the §13.6 v1 ceiling was ≤ 6 MiB, target 4) | `guardrails/binary_size_budget.json` |
 | `yi --version` startup (hyperfine, warm, scored on the run's *minimum* — the mean prices the machine's load, not the binary) | ≤ 5 ms | `guardrails/startup_ms_budget.json` |
 | `yi ask --help` | ≤ 8 ms | same |
-| direct deps (default features) | ≤ 16 | `guardrails/deps_budget.json` |
-| transitive deps (default features) | ≤ 135 (raised from 125 with phase 4: the pure-Rust `zeromq` tree pins rand/regex/dashmap internals, wrapped in deny.toml; they never cross into Yi code) | same |
+| direct deps (default features) | ≤ 18 (raised from 16 by syntect, D74, and grep v2's `regex`; recorded D244) | `guardrails/deps_budget.json` |
+| transitive deps (default features) | ≤ 166 (raised from 135 with phase 4's `zeromq` tree, D41's TUI set and D74 syntect, net of D71's MCP cut; recorded D244) | same |
 | `cargo bloat` top-30 | report only, attached to PR | CI artifact |
 
 Measured, not guessed: phase 0 builds an empty `yi-cli` with each candidate (ureq vs reqwest,
