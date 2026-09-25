@@ -331,3 +331,67 @@ fn a_tool_result_image_rides_inside_the_tool_result_block() -> Result<(), Box<dy
     );
     Ok(())
 }
+
+fn assistant(content: Vec<Content>, stop_reason: StopReason) -> AgentMessage {
+    AgentMessage::Assistant {
+        content,
+        api: "anthropic-messages".to_owned(),
+        provider: "anthropic".to_owned(),
+        model: "claude-opus-4-5".to_owned(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: yi_types::message::Usage::zero(),
+        stop_reason,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 0,
+    }
+}
+
+/// Sessions written before interrupts answered every call hold a turn of three calls with one
+/// result and an empty aborted turn; resuming one must still send a request Anthropic accepts.
+#[test]
+fn a_call_an_old_interrupt_left_unanswered_is_sent_as_an_error_result() -> Result<(), Box<dyn Error>>
+{
+    let mut ctx = context();
+    let calls = ["toolu_0", "toolu_1", "toolu_2"].map(|id| Content::ToolCall {
+        id: id.to_owned(),
+        name: "bash".to_owned(),
+        arguments: serde_json::Map::from_iter([("cmd".to_owned(), json!("make test"))]),
+        thought_signature: None,
+        namespace: None,
+    });
+    ctx.messages.extend([
+        assistant(calls.to_vec(), StopReason::ToolUse),
+        AgentMessage::ToolResult {
+            tool_call_id: "toolu_0".to_owned(),
+            tool_name: "bash".to_owned(),
+            content: vec![Content::Text {
+                text: "Operation aborted".to_owned(),
+                text_signature: None,
+            }],
+            details: None,
+            usage: None,
+            added_tool_names: None,
+            is_error: true,
+            timestamp: 0,
+        },
+        assistant(Vec::new(), StopReason::Aborted),
+        AgentMessage::host_user(UserContent::Text("carry on".to_owned()), 0),
+    ]);
+    let params = build_params(&model(), &ctx, &AnthropicOptions::default());
+    let messages = params["messages"].as_array().ok_or("messages")?;
+    assert_eq!(
+        messages.get(2).ok_or("the turn after the calls")?["content"],
+        json!([
+            {"type": "tool_result", "tool_use_id": "toolu_0", "content": "Operation aborted", "is_error": true},
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "No result provided", "is_error": true},
+            {"type": "tool_result", "tool_use_id": "toolu_2", "content": "No result provided", "is_error": true},
+        ]),
+        "every call is answered in the turn right after it: {messages:?}"
+    );
+    Ok(())
+}

@@ -339,9 +339,6 @@ async fn execute_tool_calls(
             });
             finalized.push(item);
         }
-        if signal.is_fired() {
-            break;
-        }
     }
     let terminate = should_terminate(&finalized);
     (finalized, terminate)
@@ -604,7 +601,11 @@ async fn stream_assistant_response<S: StreamFn>(
     };
 
     signal.clear_cut();
-    let mut receiver = stream.stream(model, &llm_context, effort, signal);
+    let mut receiver = if signal.is_fired() {
+        tokio::sync::mpsc::channel(1).1
+    } else {
+        stream.stream(model, &llm_context, effort, signal)
+    };
     let mut added_partial = false;
     let mut final_message: Option<AgentMessage> = None;
     let mut budget = ReasoningBudget::default();
@@ -760,7 +761,8 @@ pub async fn run_loop<S: StreamFn>(
                 collected.push(message);
             }
 
-            if let Some(compact) = &config.maybe_compact
+            if !signal.is_fired()
+                && let Some(compact) = &config.maybe_compact
                 && let Some(compacted) = compact(&context.messages).await
             {
                 context.messages = compacted;
