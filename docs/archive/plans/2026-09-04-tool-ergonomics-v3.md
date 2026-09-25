@@ -1,5 +1,7 @@
 # Tool ergonomics v3: fewer calls, nothing stale, everything editable
 
+Landed: D117 (0.147.0).
+
 ```
 status:  IMPLEMENTED 0.145.0 (2026-09-04), phases A–G; D117 is the record.
          File:line references describe the tree at 3bd0ce5 and are historical.

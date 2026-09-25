@@ -1,5 +1,7 @@
 # The mailbox delivers: M1-M4
 
+Landed: D230, D232-D236 (0.293.0-0.298.0).
+
 ```
 status:  planned 2026-09-23. Lands as docs/plans/2026-09-23-the-mailbox-delivers.md in
          M1. Stages M1-M3 land as one stacked PR on #483 (branch claude/yi-os-mailbox),

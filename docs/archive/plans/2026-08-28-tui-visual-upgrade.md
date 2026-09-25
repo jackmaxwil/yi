@@ -1,5 +1,7 @@
 # TUI Visual Upgrade — diffs in the transcript, a typed ipython cell, highlight, and the subagent surfaces
 
+Landed: D60-D66 (0.45.0-0.51.0).
+
 ```
 status:  PROPOSED 2026-08-28. Nothing landed. Steps carry their own D-rows and
          version bumps when they land; this document authorizes none of them.
