@@ -329,6 +329,15 @@ fn counted(digest: &str) -> Option<(&str, &str)> {
 }
 
 fn subject_spans(tool: &str, subject: &str, theme: &Theme, style: Style) -> Vec<Span<'static>> {
+    let plain = style.fg == Some(theme.text);
+    let hue = match tool {
+        "grep" | "glob" | "find" if plain => Some(theme.orange),
+        "fetch" | "web_search" if plain => Some(theme.blue5),
+        _ => None,
+    };
+    if let Some(hue) = hue {
+        return vec![Span::styled(subject.to_owned(), style.fg(hue))];
+    }
     if !subject.contains(' ')
         && let Some((dir, base)) = subject.rsplit_once('/')
         && !base.is_empty()
@@ -338,16 +347,7 @@ fn subject_spans(tool: &str, subject: &str, theme: &Theme, style: Style) -> Vec<
             Span::styled(base.to_owned(), style),
         ];
     }
-    let plain = style.fg == Some(theme.text);
-    let hue = match tool {
-        "grep" | "glob" | "find" if plain => Some(theme.orange),
-        "fetch" | "web_search" if plain => Some(theme.blue5),
-        _ => None,
-    };
-    vec![Span::styled(
-        subject.to_owned(),
-        hue.map_or(style, |hue| style.fg(hue)),
-    )]
+    vec![Span::styled(subject.to_owned(), style)]
 }
 
 /// Read-only calls group under one bullet: a run of eight is one act of

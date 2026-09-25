@@ -215,7 +215,11 @@ pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
         }
         (Some(header), Some((title, rows))) => {
             content.push(Line::from(Span::styled(title, theme.muted_style())));
-            content.extend(rows);
+            content.extend(rows.into_iter().map(|row| {
+                let mut spans = vec![Span::raw("  ")];
+                spans.extend(row.spans);
+                Line::from(spans)
+            }));
             Some(header)
         }
     };

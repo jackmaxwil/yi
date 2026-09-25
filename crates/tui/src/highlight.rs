@@ -87,6 +87,11 @@ fn scope_table() -> &'static [(Scope, Token)] {
             // JS and TS scope every plain identifier a variable: a wall of magenta.
             ("variable.other.readwrite.js", Token::Plain),
             ("variable.other.readwrite.ts", Token::Plain),
+            ("variable.other.readwrite.tsx", Token::Plain),
+            ("variable.other.object", Token::Plain),
+            ("variable.other.property", Token::Plain),
+            ("variable.other.constant.ts", Token::Plain),
+            ("variable.other.constant.tsx", Token::Plain),
             ("variable", Token::Variable),
             ("entity.other.inherited-class", Token::Type),
             ("entity.name", Token::Type),
@@ -218,10 +223,10 @@ fn with_inferred(line: &str, runs: Vec<(usize, usize, Token)>) -> Vec<(usize, us
         let bytes = line.as_bytes();
         let mut at = cursor;
         while at < run.0 {
-            let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+            let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || !b.is_ascii();
             let starts = bytes
                 .get(at)
-                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_' || !b.is_ascii())
                 && (at == 0 || !bytes.get(at - 1).copied().is_some_and(word));
             if !starts {
                 at += 1;
