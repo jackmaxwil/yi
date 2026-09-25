@@ -311,12 +311,12 @@ impl Resolver {
                 url: url.to_string(),
                 detail: error.to_string(),
             },
-            error @ (VariableReadError::Cell { .. } | VariableReadError::Unreadable { .. }) => {
-                FetchError::Backend {
-                    url: url.to_string(),
-                    message: format!("{error} ({variable})"),
-                }
-            }
+            error @ (VariableReadError::Cell { .. }
+            | VariableReadError::Busy
+            | VariableReadError::Unreadable { .. }) => FetchError::Backend {
+                url: url.to_string(),
+                message: format!("{error} ({variable})"),
+            },
         }
     }
 

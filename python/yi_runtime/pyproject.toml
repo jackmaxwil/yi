@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Kernel-side runtime shim for Yi recursion"
 requires-python = ">=3.11"
 dependencies = [
-  "ipykernel",
+  "ipykernel>=7,<8",
   "nest-asyncio",
   "tyro",
 ]
