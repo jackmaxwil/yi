@@ -212,7 +212,7 @@ impl<B: Backend> Terminal<B> {
         Ok(())
     }
 
-    /// Commit finished cells above the viewport using DEC scroll regions, ported onto the
+    /// Commit finished cells above the viewport using DEC scroll regions, applied to the
     /// mutable viewport. The no-scroll-region fallback is dropped; the feature is on.
     pub fn insert_before<F: FnOnce(&mut Buffer)>(
         &mut self,

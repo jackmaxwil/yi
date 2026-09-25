@@ -1,4 +1,4 @@
-// thinking-orbs `engine/core.ts`, port verbatim (A.13): shared primitives for the dotted 3D
+// Engine core, exact against the golden vectors: shared primitives for the dotted 3D
 // thought-orbs, rotated, depth-shaded and z-sorted, depth carried by dot size and ink.
 
 #[derive(Debug, Clone, Copy)]

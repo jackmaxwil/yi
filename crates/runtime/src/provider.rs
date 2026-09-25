@@ -173,7 +173,7 @@ impl ProviderStream {
     }
 
     /// The profile's headers plus the account id a ChatGPT login's id_token carried
-    /// (H4) and the originator the Codex backend keys on.
+    /// (H4) and the originator the `openai-codex` backend keys on.
     fn openai_extra(&self, model: &Model) -> Vec<(String, String)> {
         let mut extra = self.headers.clone();
         if model.provider == "openai-codex" {
