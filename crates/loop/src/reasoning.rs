@@ -1,5 +1,5 @@
 //! The reasoning-char budget of one request (D163), calibrated on rows 0018-0023: healthy
-//! blocks p99 23k chars (seven over 48k), spirals min 72k; omp's rules tripped none of 29.
+//! blocks p99 23k chars (seven over 48k), spirals min 72k.
 
 use yi_types::message::{AgentMessage, Content};
 

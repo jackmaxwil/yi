@@ -120,7 +120,7 @@ def check_adapter_imports():
 
 
 def check_usage():
-    """E5: the parse reads Pi camelCase usage off a real recorded transcript."""
+    """E5: the parse reads Pi v4 camelCase usage off a real recorded transcript."""
     usage = yi_usage.parse_events(EVENTS)
     assert usage["nAssistantMessages"] == 1, usage
     assert usage["malformedLines"] == 0, usage

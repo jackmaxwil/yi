@@ -381,7 +381,7 @@ fn map_stop_reason(reason: &str, stop_details: Option<&Value>) -> (StopReason, O
 }
 
 /// Streaming state machine: consumes parsed Anthropic SSE payloads, builds the
-/// assistant message, and yields pi-ai shaped events.
+/// assistant message, and yields `AssistantMessageEvent`s.
 pub struct Mapper {
     output: AgentMessage,
     partial_json: Vec<Option<String>>,

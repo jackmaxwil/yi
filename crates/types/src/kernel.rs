@@ -22,8 +22,8 @@ fn default_kernel_name() -> String {
     "python3".to_owned()
 }
 
-/// Jupyter wire message header (design §9). Field order is the reference
-/// `buildMessage` serialization.
+/// Jupyter wire message header (design §9). Field order follows the Jupyter
+/// messaging spec, and serde writes fields in declaration order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JupyterHeader {
     pub msg_id: String,

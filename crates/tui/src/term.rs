@@ -14,8 +14,7 @@ use ratatui::text::Line;
 
 use crate::terminal::Terminal;
 
-/// `/dev/tty` when stdout is captured, so `$(yi …)` still gets a screen
-/// (atuin `TerminalWriter`, adapted).
+/// `/dev/tty` when stdout is captured, so `$(yi …)` still gets a screen.
 pub fn terminal_writer() -> std::io::Result<Box<dyn Write + Send>> {
     if std::io::stdout().is_terminal() {
         Ok(Box::new(std::io::stdout()))

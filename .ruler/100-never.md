@@ -17,4 +17,3 @@
   across a crate boundary where a newtype exists.
 - Never put MCP sockets, tokens, or an MCP SDK inside the kernel process —
   kernel Python shells out to the one-shot `yi mcp --json` CLI (design §7.6).
-- Never scaffold ahead of the current phase gate.
