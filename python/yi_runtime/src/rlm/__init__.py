@@ -361,8 +361,8 @@ def _install_control_comm_handlers() -> None:
     if comm_manager is None or not isinstance(control_handlers, dict):
         # Without these every host reply is lost and the awaiting cell hangs; say so instead.
         raise RuntimeError(
-            "this ipykernel has no kernel.comm_manager / kernel.control_handlers; "
-            "Yi's host requests need ipykernel 7 (the venv pins >=7,<8)"
+            "this kernel's ipykernel has no kernel.comm_manager / kernel.control_handlers; "
+            "Yi's host requests need ipykernel 7 (a YI_KERNEL_PYTHON interpreter must provide it)"
         )
     control_handlers.setdefault("comm_msg", comm_manager.comm_msg)
     control_handlers.setdefault("comm_close", comm_manager.comm_close)
