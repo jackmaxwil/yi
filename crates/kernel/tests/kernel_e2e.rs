@@ -269,6 +269,42 @@ async fn an_over_cap_variable_is_serialized_once_not_every_checkpoint() -> TestR
     Ok(())
 }
 
+/// Incident: the over-cap memo matched a list shrunk in place (same id, type and size), so
+/// the post-compaction prune deleted a variable that no longer crossed the cap.
+#[tokio::test]
+async fn a_prune_keeps_an_over_cap_variable_that_shrank_in_place() -> TestResult {
+    let dir = Scratch::new("yi-snap-shrunk")?;
+    let kernel = manager_with_snapshot(Some(KernelSnapshotConfig {
+        path: snapshot_path_in(&dir),
+        manifest_path: manifest_path_in(&dir),
+        max_bytes: None,
+        max_variable_bytes: Some(1 << 20),
+        debounce_ms: None,
+    }))?;
+    kernel
+        .execute("rows = [b'x' * (2 << 20)]", ExecuteOptions::default())
+        .await?;
+    let first = kernel.snapshot_state().await.ok_or("snapshot result")?;
+    assert!(
+        first.skipped.iter().any(|skip| skip.name == "rows"),
+        "{first:?}"
+    );
+    kernel
+        .execute("rows[0] = b'small'", ExecuteOptions::default())
+        .await?;
+    let prune = kernel
+        .prune_oversized_variables()
+        .await
+        .ok_or("prune result")?;
+    let alive = kernel
+        .execute("print('rows' in globals())", ExecuteOptions::default())
+        .await?;
+    kernel.dispose().await;
+    assert!(prune.pruned.is_empty(), "{prune:?}");
+    assert_eq!(alive.stdout.trim(), "True", "{}", alive.stderr);
+    Ok(())
+}
+
 #[tokio::test]
 async fn namespace_snapshot_revives_across_kernels() -> TestResult {
     let dir = Scratch::new("yi-snap-e2e")?;

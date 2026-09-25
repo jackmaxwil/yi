@@ -83,13 +83,16 @@ pub fn build_snapshot_code(
     payload = {{}}
     skipped = []
     oversized = []
-    # ponytail: keyed by id, type and getsizeof; an over-cap object that shrinks in place
-    # without resizing stays skipped until its name is rebound.
+    # ponytail: keyed by id, type and getsizeof, which an in-place edit of a list, dict or
+    # instance leaves unchanged, so such a variable stays skipped until rebound; a prune
+    # re-measures rather than trust it.
     over_cap = _b.getattr(ip, "_yi_snapshot_over_cap", None) if ip is not None else None
     if over_cap is None:
         over_cap = {{}}
         if ip is not None:
             ip._yi_snapshot_over_cap = over_cap
+    for name in [name for name in over_cap if name not in ns]:
+        del over_cap[name]
     total = 0
     identify_oversized = {prune}
     for name in _b.list(ns.keys()):
@@ -103,7 +106,7 @@ pub fn build_snapshot_code(
             seen = (_b.id(value), _b.type(value), sys.getsizeof(value))
         except _b.Exception:
             seen = None
-        if seen is not None and over_cap.get(name) == seen:
+        if seen is not None and not identify_oversized and over_cap.get(name) == seen:
             skipped.append({{"name": name, "reason": "exceeds per-variable snapshot size cap"}})
             oversized.append(name)
             continue
@@ -114,6 +117,7 @@ pub fn build_snapshot_code(
         try:
             dill.dump(value, buffer)
             blob = buffer.getvalue()
+            over_cap.pop(name, None)
         except SnapshotSizeLimitExceeded:
             if not identify_oversized and remaining < {max_variable_bytes}:
                 skipped.append({{"name": name, "reason": "exceeds aggregate snapshot size cap"}})
