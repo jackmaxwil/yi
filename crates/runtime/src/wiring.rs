@@ -71,21 +71,21 @@ pub struct RuntimeWiring {
     /// The family board keyed by the root session (D242); `None`, as before the store is
     /// known, falls back to `rlm_dir`'s own `family/`. Children inherit it.
     pub family_dir: Option<PathBuf>,
-    /// §12 roles resolved to models; `None` keeps the session's own model.
+    /// §5 roles resolved to models; `None` keeps the session's own model.
     pub summarizer: Option<Model>,
     /// Naming `models.advisor` in config enables the LLM reviewer (D28).
     pub advisor: Option<Model>,
     /// Model consulted on a Write or Exec permission ask; `None` keeps admission fully
-    /// deterministic, so no permission decision costs a model call (M7, D81).
+    /// deterministic, so no permission decision costs a model call (§8, D81).
     pub auto_review: Option<Model>,
     /// `plan.staleReminderTurns` config; None keeps the default.
     pub plan_stale_turns: Option<u64>,
     /// `plans.dir` config; None reads `.yi/plans` under the cwd. Resolved once
     /// at the root so worktree children share the owner's store.
     pub plans_dir: Option<PathBuf>,
-    /// Set for a child: its B6 route back into the family that spawned it.
+    /// Set for a child: its §12 route back into the family that spawned it.
     pub parent_link: Option<ParentLink>,
-    /// B1 reduction: paths this session may not touch (plan §3.4 wall).
+    /// The wall reduction: paths this session may not touch (plan §3.4 wall).
     pub wall: crate::wall::Wall,
     /// D13 `bash.autoBackgroundMs`; None keeps every command in the turn.
     pub auto_background: Option<std::time::Duration>,
@@ -563,7 +563,7 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
             true
         }) as crate::advisor::HoldSink
     });
-    // V10: ADVISOR.md attention text, project-local, best-effort.
+    // §16: ADVISOR.md attention text, project-local, best-effort.
     let attention = std::fs::read_to_string(wiring.cwd.join("ADVISOR.md")).ok();
     let llm = wiring.advisor.clone().map(|model| {
         Arc::new(crate::advisor::review::LlmReviewer::new(
@@ -585,7 +585,7 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
     session.set_advisor(advisor);
 }
 
-/// A job finishing between turns reports through the R3 follow-up queue, so the
+/// A job finishing between turns reports through the §4.3 follow-up queue, so the
 /// model hears about it without a turn being interrupted.
 fn wire_job_completions(session: &AgentSession) {
     let follow_up = session.follow_up_hook();
@@ -626,7 +626,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     registry.register_exec(wiring.cwd.clone(), wiring.exec_sandbox());
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort
-        // the turn whose cell awaits the reply (design §6).
+        // the turn whose cell awaits the reply (design §9.2).
         registry.register("compact.run", move |payload| {
             let instructions = payload
                 .get("instructions")
@@ -739,7 +739,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         }
     }
     // Attached even with zero rules: the adapters capture this Arc when tools
-    // are installed, so a rule promoted mid-session (V11) arms immediately.
+    // are installed, so a rule promoted mid-session (§16) arms immediately.
     let engine = Arc::new(crate::rules::RuleEngine::new(rule_set.rules));
     engine.set_fetch(fetch_for_rules);
     crate::rules::attach_rules(session, Arc::clone(&engine));

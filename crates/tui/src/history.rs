@@ -6,7 +6,7 @@ use ratatui::text::Line;
 use crate::cell::{Cell, TranscriptMode};
 use crate::colors::{ColorTier, Theme};
 
-/// The source a resize rebuild renders from (U36). The bound is the reflow row cap, not a
+/// The source a resize rebuild renders from (§17.3). The bound is the reflow row cap, not a
 /// cell count, since cells differ in height by two orders of magnitude.
 #[derive(Default)]
 pub struct History {

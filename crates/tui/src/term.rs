@@ -25,7 +25,7 @@ pub fn terminal_writer() -> std::io::Result<Box<dyn Write + Send>> {
     }
 }
 
-/// U1: RAII terminal state. Every step `Drop` restores is applied here and restore failures
+/// RAII terminal state. Every step `Drop` restores is applied here and restore failures
 /// log rather than panic; the panic hook restores first so its message lands on a sane screen.
 pub struct TerminalGuard;
 
@@ -36,13 +36,13 @@ impl TerminalGuard {
     }
 }
 
-/// Raw mode plus the U1 flags without owning the restore: the external editor (U18) hands the
+/// Raw mode plus the §17.3 flags without owning the restore: the external editor hands the
 /// tty to a child and re-enters while the startup guard still owns restore-on-exit.
 pub fn enter_terminal(writer: &mut impl Write) -> std::io::Result<()> {
     enable_raw_mode()?;
     execute!(writer, EnableBracketedPaste)?;
     // DISAMBIGUATE + REPORT_ALTERNATE_KEYS is the minimum for Shift+Enter
-    // (design U1); REPORT_ALL_KEYS breaks paste on some terminals.
+    // (design §17.3); REPORT_ALL_KEYS breaks paste on some terminals.
     let _ = execute!(
         writer,
         PushKeyboardEnhancementFlags(
@@ -74,7 +74,7 @@ impl Drop for TerminalGuard {
 
 pub type Backend = CrosstermBackend<Box<dyn Write + Send>>;
 
-/// U2: inline viewport anchored at the cursor; the height follows the live
+/// Inline viewport anchored at the cursor; the height follows the live
 /// region from here on ([`crate::terminal::Terminal::resize_viewport`]).
 pub fn build_terminal(
     writer: Box<dyn Write + Send>,

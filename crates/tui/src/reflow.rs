@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
-/// U35, trailing: dragging a terminal edge rebuilds scrollback once at the
+/// Dragging a terminal edge rebuilds scrollback once, trailing, at the
 /// settled width instead of at every intermediate one.
 pub const REFLOW_DEBOUNCE: Duration = Duration::from_millis(75);
 
-/// Per-terminal row caps for a rebuild (U36), mirroring documented scrollback
+/// Per-terminal row caps for a rebuild (§17.3), mirroring documented scrollback
 /// defaults: replaying more rows than the terminal retains is invisible work.
 const VSCODE_MAX_ROWS: usize = 1_000;
 const WINDOWS_TERMINAL_MAX_ROWS: usize = 9_001;
@@ -12,7 +12,7 @@ const WEZTERM_MAX_ROWS: usize = 3_500;
 const ALACRITTY_MAX_ROWS: usize = 10_000;
 const FALLBACK_MAX_ROWS: usize = 1_000;
 
-/// A terminal-detection crate is not a §13.3 dependency Yi will take for four
+/// A terminal-detection crate is not a §18.3 dependency Yi will take for four
 /// constants, so the same two environment variables are read directly.
 pub fn reflow_max_rows() -> usize {
     let program = std::env::var("TERM_PROGRAM").unwrap_or_default();

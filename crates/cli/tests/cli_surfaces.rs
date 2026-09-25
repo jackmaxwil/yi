@@ -302,7 +302,7 @@ fn undo_without_a_session_fails_loudly() -> TestResult {
     Ok(())
 }
 
-/// Checkpoints are a no-op without git (design 5.3), and so is this test.
+/// Checkpoints are a no-op without git (design §7.7), and so is this test.
 fn git_missing(output: &Output) -> bool {
     String::from_utf8_lossy(&output.stderr).contains("git is unavailable")
 }

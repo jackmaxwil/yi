@@ -16,7 +16,7 @@ fn the_strict_config_refuses_gates_and_loads_the_migrated_file() -> TestResult {
     Ok(())
 }
 
-/// X7: a config with nothing to migrate is read as strictly as before migrations existed.
+/// A config with nothing to migrate is read as strictly as before migrations existed.
 #[test]
 fn a_config_with_nothing_to_migrate_keeps_the_strict_errors() -> TestResult {
     let twice = parse(r#"{"model":"a","model":"b"}"#)

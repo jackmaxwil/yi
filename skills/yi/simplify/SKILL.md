@@ -36,7 +36,7 @@ claim.
    is not deep enough. One guard where every caller routes through beats a
    guard per caller. Three similar lines beat a premature abstraction.
 4. Dependency. A new crate for what a few lines do is refused
-   (`deny.toml` and the §13.3 table decide). A feature flag exists only
+   (`deny.toml` and the §18.3 table decide). A feature flag exists only
    where the design declares it.
 
 With `rlm.run` available and a diff over five hundred lines, give each

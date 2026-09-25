@@ -1,7 +1,7 @@
 use yi_orb::core::Dot;
 use yi_orb::{OrbFrame, OrbState, evaluate};
 
-/// The mark and the activity indicator are one object (U34). Only the dot positions
+/// The mark and the activity indicator are one object (§17.3). Only the dot positions
 /// interpolate; the orb engine owns every working frame, so the morph adds no renderer.
 pub const LOGO_COLS: u16 = 8;
 pub const LOGO_ROWS: u16 = 4;
