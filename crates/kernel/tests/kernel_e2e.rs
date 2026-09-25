@@ -282,6 +282,18 @@ async fn namespace_snapshot_revives_across_kernels() -> TestResult {
         "IPython-injected names must never be snapshotted"
     );
     assert!(snapshot.bytes > 0 && config.path.is_file());
+    let held = std::fs::File::open(&config.manifest_path)?;
+    let before = std::fs::read(&config.manifest_path)?;
+    first.execute("more = 1", ExecuteOptions::default()).await?;
+    first.snapshot_state().await.ok_or("second snapshot")?;
+    assert_ne!(
+        std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&config.manifest_path)?),
+        std::os::unix::fs::MetadataExt::ino(&held.metadata()?),
+        "a reader holding the manifest must keep the old file, not see it rewritten in place"
+    );
+    let mut kept = Vec::new();
+    std::io::Read::read_to_end(&mut &held, &mut kept)?;
+    assert_eq!(kept, before);
     first.dispose().await;
 
     let second = manager_with_snapshot(Some(config.clone()))?;
