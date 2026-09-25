@@ -217,5 +217,6 @@ when it changes rather than editing them by hand.
 - [D237](adr/d237.md) - tool ergonomics and harness fixes
 - [D238](adr/d238.md) - the last rung of the kernel toolchain is a pinned, verified uv, not a piped...
 - [D241](adr/d241.md) - the kernel's `bash()` runs inside the kernel's own sandbox
+- [D240](adr/d240.md) - a contained kernel may write its family board (amends D87)
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

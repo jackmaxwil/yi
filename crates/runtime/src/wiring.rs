@@ -114,6 +114,39 @@ pub(crate) fn family_dir_of(rlm_dir: &std::path::Path) -> PathBuf {
     dir.join("family")
 }
 
+/// Invariant: every sandboxed family member can plant a link on the board (D240), so host
+/// code reads and writes only regular files there and never follows one.
+pub(crate) fn is_board_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|seen| seen.file_type().is_file())
+}
+
+/// The file opened must be the one `lstat` saw, so a link swapped in between is refused too.
+pub(crate) fn read_board(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let seen = std::fs::symlink_metadata(path)?;
+    let mut file = std::fs::File::open(path)?;
+    let opened = file.metadata()?;
+    if !seen.file_type().is_file() || (seen.dev(), seen.ino()) != (opened.dev(), opened.ino()) {
+        return Err(std::io::Error::other(format!(
+            "{} is a link on the family board, which is never followed",
+            path.display()
+        )));
+    }
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    Ok(text)
+}
+
+/// A fresh file created exclusively, then renamed over `path`: rename replaces a link.
+pub(crate) fn write_board(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let fresh = path.with_extension("tmp");
+    let _a_stale_file_or_link_is_only_unlinked = std::fs::remove_file(&fresh);
+    std::fs::File::create_new(&fresh)?.write_all(bytes)?;
+    std::fs::rename(&fresh, path)
+}
+
 impl RuntimeWiring {
     /// the root session's `family/` directory, shared by every member; a child's (D164)
     /// `rlm_dir` sits under the root's as `sub-*`, so the root is the first non-`sub-` ancestor.
@@ -123,8 +156,9 @@ impl RuntimeWiring {
 
     /// The kernel's own profile, which its `bash()` jobs run under too (D241).
     fn exec_sandbox(&self) -> Option<yi_tools::Sandbox> {
-        crate::workspace_sandbox(&self.cwd, &self.home, &self.kernel_dir())
-            .map(|sandbox| crate::kernel::kernel_profile(&sandbox, &self.home))
+        crate::workspace_sandbox(&self.cwd, &self.home, &self.kernel_dir()).map(|sandbox| {
+            crate::kernel::kernel_profile(&sandbox, &self.home, Some(&self.family_dir()))
+        })
     }
 
     /// The kernel's snapshot, `RLM_SESSION_DIR` and writable root. Incident: the root's was

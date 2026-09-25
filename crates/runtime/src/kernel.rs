@@ -212,12 +212,17 @@ pub fn snapshot_paths(base: &std::path::Path, key: Option<&str>) -> (PathBuf, Pa
 pub(crate) fn kernel_profile(
     sandbox: &yi_tools::Sandbox,
     home: &std::path::Path,
+    family_dir: Option<&std::path::Path>,
 ) -> yi_tools::Sandbox {
     let mut profile = sandbox.clone();
     // Only what the kernel side writes under ~/.yi; the venv stays read-only.
     let yi = home.join(".yi");
     profile.writable.push(yi.join("harness"));
     profile.writable.push(yi.join("mcp"));
+    // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling.
+    profile
+        .writable
+        .extend(family_dir.map(std::path::Path::to_path_buf));
     profile.loopback = true;
     profile.writable.sort();
     profile.writable.dedup();
@@ -311,7 +316,14 @@ impl KernelService {
 
     fn kernel_wrap(&self, sandbox: Option<&yi_tools::Sandbox>) -> Option<(String, Vec<String>)> {
         let sandbox = sandbox.filter(|_| yi_tools::Sandbox::available())?;
-        Some(kernel_profile(sandbox, &self.options.home).kernel_prefix())
+        Some(
+            kernel_profile(
+                sandbox,
+                &self.options.home,
+                self.options.family_dir.as_deref(),
+            )
+            .kernel_prefix(),
+        )
     }
 
     fn kernel_env(&self) -> Vec<(String, String)> {
