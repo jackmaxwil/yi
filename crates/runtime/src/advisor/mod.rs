@@ -14,7 +14,6 @@ use crate::session::AgentSession;
 pub type HoldSink = Arc<dyn Fn(&Advice) -> bool + Send + Sync>;
 
 pub const ADVISOR_GUIDANCE: &str = "weigh, don't blindly obey";
-pub const DEFAULT_CADENCE: u64 = 25;
 pub const OUTCOME_WINDOW: u64 = 5;
 
 /// The LLM reviewer is off until a model role names it. Cadence applies only
