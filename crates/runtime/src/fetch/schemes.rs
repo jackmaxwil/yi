@@ -9,24 +9,60 @@ use yi_types::plan::ids::TodoAddr;
 use yi_types::url::Url;
 
 use super::{
-    CHECKPOINT_MISSING, FetchError, KERNEL_MISSING, MCP_MISSING, Resolver, SESSION_MISSING,
+    CHECKPOINT_MISSING, FetchError, KERNEL_MISSING, MCP_MISSING, Page, Resolver, SESSION_MISSING,
     Transcript, unsupported,
 };
 use crate::kernel::{VariableName, VariableReadError};
-use crate::plan::store::{parse_document, section_of};
+use crate::plan::import::{parse_document, section_of};
+use crate::plan::store::PlanStore;
 
 type Served = (String, String);
+type Paged = Result<(String, String, Option<usize>), FetchError>;
 
 fn render_history(
     url: &Url,
     session: &yi_session::SharedSession,
     entry_id: Option<&str>,
-) -> Result<Served, FetchError> {
+    page: Option<Page>,
+) -> Paged {
+    // `custom/<type>` closes any listing and keeps that custom type alone: an inbox (D214).
+    let (entry_id, custom) = match entry_id.and_then(|selector| selector.rsplit_once("custom/")) {
+        Some((head, custom)) if head.is_empty() || head.ends_with('/') => {
+            let head = head.trim_end_matches('/');
+            ((!head.is_empty()).then_some(head), Some(custom))
+        }
+        _ => (entry_id, None),
+    };
+    // A page counts entries that stay put: `tail/N` is anchored at the end, so an append slides it.
+    if page.is_some() && entry_id.is_some_and(|id| !id.starts_with("since/")) {
+        return Err(FetchError::BadAddress {
+            url: url.to_string(),
+            detail:
+                "offset and limit page the whole listing or since/<seq>, whose entries stay put"
+                    .to_owned(),
+        });
+    }
+    let paged = |lines: Vec<String>, served_by: String| {
+        let (lines, next) = match page {
+            Some(page) => page.window(lines),
+            None => (lines, None),
+        };
+        Ok((lines.join("\n"), served_by, next))
+    };
     let backend = |message: String| FetchError::Backend {
         url: url.to_string(),
         message,
     };
     let store = yi_session::lock_session(session);
+    let all = |custom_type: Option<&str>| {
+        store
+            .find_entries(&EntryQuery {
+                custom_type: custom_type.map(str::to_owned),
+                order: EntryOrder::OldestFirst,
+                ..EntryQuery::default()
+            })
+            .map_err(|error| backend(error.to_string()))
+    };
     // `tail/N` is the last N entries compact, `since/S` everything after sequence S (D165).
     let window = entry_id
         .and_then(|selector| selector.split_once('/'))
@@ -34,12 +70,12 @@ fn render_history(
         .and_then(|(kind, raw)| raw.parse::<u64>().ok().map(|number| (kind, number)));
     match (entry_id, window) {
         (_, Some((kind, number))) => {
-            let entries = store
-                .find_entries(&EntryQuery {
-                    order: EntryOrder::OldestFirst,
-                    ..EntryQuery::default()
-                })
-                .map_err(|error| backend(error.to_string()))?;
+            let entries = all(custom)?;
+            // A filtered listing is read for its data, which the compact line drops.
+            let line = |entry: &yi_types::entry::Entry| match custom {
+                Some(_) => serde_json::to_string(entry).unwrap_or_default(),
+                None => crate::family::compact_entry(entry),
+            };
             let kept: Vec<String> = match kind {
                 "tail" => entries
                     .iter()
@@ -48,16 +84,21 @@ fn render_history(
                     .collect::<Vec<_>>()
                     .into_iter()
                     .rev()
-                    .map(crate::family::compact_entry)
+                    .map(line)
                     .collect(),
                 _ => entries
                     .iter()
                     .filter(|entry| entry.seq() > number)
-                    .map(crate::family::compact_entry)
+                    .map(line)
                     .collect(),
             };
-            Ok((kept.join("\n"), format!("session-{kind}")))
+            paged(kept, format!("session-{kind}"))
         }
+        (Some(_), None) if custom.is_some() => Err(FetchError::BadAddress {
+            url: url.to_string(),
+            detail: "custom/<type> filters a listing: the whole one, tail/<n> or since/<seq>"
+                .to_owned(),
+        }),
         (Some(id), None) => {
             let entry = store.entry(id).ok_or_else(|| FetchError::NotFound {
                 url: url.to_string(),
@@ -65,21 +106,16 @@ fn render_history(
             })?;
             let text =
                 serde_json::to_string_pretty(&entry).map_err(|error| backend(error.to_string()))?;
-            Ok((text, "session-entry".to_owned()))
+            Ok((text, "session-entry".to_owned(), None))
         }
         (None, None) => {
-            let entries = store
-                .find_entries(&EntryQuery {
-                    order: EntryOrder::OldestFirst,
-                    ..EntryQuery::default()
-                })
-                .map_err(|error| backend(error.to_string()))?;
+            let entries = all(custom)?;
             let lines = entries
                 .iter()
                 .map(serde_json::to_string)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|error| backend(error.to_string()))?;
-            Ok((lines.join("\n"), "session-transcript".to_owned()))
+            paged(lines, "session-transcript".to_owned())
         }
     }
 }
@@ -139,17 +175,64 @@ impl Resolver {
             Some((plan_id, slug)) => (plan_id, Some(slug)),
             None => (url.path(), None),
         };
-        let file = self.plans_dir().join(format!("{plan_id}.md"));
-        let text = read_text(url, &file)?;
-        let Some(slug) = slug else {
-            return Ok((text, "plan-file".to_owned()));
-        };
         let backend = |message: String| FetchError::Backend {
             url: url.to_string(),
             message,
         };
-        let document = parse_document(&text).map_err(|error| backend(error.to_string()))?;
-        let plan = document.plan;
+        let legacy = self.plans_dir().join(format!("{plan_id}.md"));
+        let (plan, body) = if legacy.is_file() {
+            let text = read_text(url, &legacy)?;
+            if slug.is_none() {
+                return Ok((text, "plan-file".to_owned()));
+            }
+            let document = parse_document(&text).map_err(|error| backend(error.to_string()))?;
+            (document.plan, Some(document.body))
+        } else {
+            let id = yi_types::plan::doc::PlanId::new(plan_id).map_err(|error| {
+                FetchError::BadAddress {
+                    url: url.to_string(),
+                    detail: error.to_string(),
+                }
+            })?;
+            let store = PlanStore::open(self.plans_dir().to_path_buf())
+                .map_err(|error| backend(error.to_string()))?;
+            // Invariant: the journal decides, for the bare address too; a lagging or lost
+            // checkpoint is regenerated by the read, never served raw.
+            let plan = store.read(&id).map_err(|error| match error {
+                crate::plan::store::StoreError::Missing { .. } => FetchError::NotFound {
+                    url: url.to_string(),
+                    what: format!("plan {plan_id}"),
+                },
+                other => backend(other.to_string()),
+            })?;
+            if slug.is_none() {
+                let text = PlanStore::render(&plan).map_err(|error| backend(error.to_string()))?;
+                return Ok((text, "plan-file".to_owned()));
+            }
+            // A blob by digest (a recorded product or source); no todo slug carries a slash.
+            if let Some(hex) = slug.and_then(|slug| slug.strip_prefix("artifacts/")) {
+                let bytes = format!("{}{hex}", yi_types::plan::canonical::DIGEST_PREFIX)
+                    .try_into()
+                    .map_err(|error: yi_types::plan::canonical::DigestError| error.to_string())
+                    .and_then(|digest| {
+                        let blobs = store.artifacts(&id);
+                        blobs.get(&digest).map_err(|error| error.to_string())
+                    })
+                    .map_err(|what| FetchError::NotFound {
+                        url: url.to_string(),
+                        what,
+                    })?;
+                let text = String::from_utf8(bytes)
+                    .map_err(|_| backend("the artifact is not UTF-8 text".to_owned()))?;
+                return Ok((text, "plan-artifact".to_owned()));
+            }
+            (plan, None)
+        };
+        let Some(slug) = slug else {
+            return Err(backend(
+                "unreachable: a bare plan address returns above".to_owned(),
+            ));
+        };
         let todo = plan
             .todos
             .iter()
@@ -167,7 +250,11 @@ impl Resolver {
             })?;
         let mut rendered =
             serde_json::to_string_pretty(todo).map_err(|error| backend(error.to_string()))?;
-        if let Some(prose) = section_of(&document.body, todo.label.as_str()) {
+        let prose = match &body {
+            Some(body) => section_of(body, todo.label.as_str()),
+            None => todo.note.as_ref().map(|note| note.as_str().to_owned()),
+        };
+        if let Some(prose) = prose {
             rendered.push_str("\n\n");
             rendered.push_str(&prose);
         }
@@ -176,16 +263,16 @@ impl Resolver {
 
     /// Invariant: an agent name carries its own slash, so the whole path is tried as an agent
     /// before an entry id is split off; splitting first read a reap pin as a missing entry.
-    pub(super) fn resolve_history(&self, url: &Url) -> Result<Served, FetchError> {
+    pub(super) fn resolve_history(&self, url: &Url, page: Option<Page>) -> Paged {
         let path = url.path();
         if let Some(session) = self.transcript_of(path) {
-            return render_history(url, &session, None);
+            return render_history(url, &session, None, page);
         }
-        // The agent is the first segment: what follows is an entry id or a D165 window.
-        if let Some((agent, entry)) = path.split_once('/')
-            && let Some(session) = self.transcript_of(agent)
-        {
-            return render_history(url, &session, Some(entry));
+        for (at, _) in path.rmatch_indices('/') {
+            let (agent, entry) = path.split_at(at);
+            if let Some(session) = self.transcript_of(agent) {
+                return render_history(url, &session, entry.get(1..), page);
+            }
         }
         if self.session_store().is_none() && self.transcripts().is_none() {
             return Err(unsupported(url, SESSION_MISSING));
@@ -198,9 +285,9 @@ impl Resolver {
         })
     }
 
-    /// One address space: this session, then a live child, then the corpus.
+    /// One address space: this session (by its name or as `self`), a live child, the corpus.
     pub(super) fn transcript_of(&self, agent: &str) -> Option<yi_session::SharedSession> {
-        if self.session_agent() == Some(agent) {
+        if agent == super::SELF || self.session_agent() == Some(agent) {
             return self.session_store();
         }
         self.transcripts()
@@ -224,12 +311,12 @@ impl Resolver {
                 url: url.to_string(),
                 detail: error.to_string(),
             },
-            error @ (VariableReadError::Cell { .. } | VariableReadError::Unreadable { .. }) => {
-                FetchError::Backend {
-                    url: url.to_string(),
-                    message: format!("{error} ({variable})"),
-                }
-            }
+            error @ (VariableReadError::Cell { .. }
+            | VariableReadError::Busy
+            | VariableReadError::Unreadable { .. }) => FetchError::Backend {
+                url: url.to_string(),
+                message: format!("{error} ({variable})"),
+            },
         }
     }
 
@@ -250,11 +337,17 @@ impl Resolver {
         let Some(dir) = self.family_dir() else {
             return Err(unsupported(url, "this session has no family directory"));
         };
-        std::fs::read_to_string(dir.join(format!("{name}.json")))
+        crate::wiring::read_board(&dir.join(format!("{name}.json")))
             .map(|text| (text, "family-blackboard".to_owned()))
-            .map_err(|_| FetchError::NotFound {
-                url: url.to_string(),
-                what: format!("blackboard entry {name} (rlm.put writes one)"),
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => FetchError::NotFound {
+                    url: url.to_string(),
+                    what: format!("blackboard entry {name} (rlm.put writes one)"),
+                },
+                _ => FetchError::Denied {
+                    url: url.to_string(),
+                    refusal: error.to_string(),
+                },
             })
     }
 
@@ -320,6 +413,10 @@ impl Resolver {
         };
         let path = dir.join(format!("{agent}.{variable}.dill"));
         match kernels.dump(agent, &variable, &path) {
+            Ok(Some(_)) if !crate::wiring::is_board_file(&path) => Err(FetchError::Denied {
+                url: url.to_string(),
+                refusal: format!("{} is not a regular file on the board", path.display()),
+            }),
             Ok(Some(bytes)) => Ok((path, bytes)),
             Ok(None) => Err(FetchError::NotFound {
                 url: url.to_string(),
@@ -329,7 +426,7 @@ impl Resolver {
         }
     }
 
-    pub(super) fn resolve_kernel(&self, url: &Url) -> Result<Served, FetchError> {
+    pub(super) fn resolve_kernel(&self, url: &Url, page: Option<Page>) -> Paged {
         let bad = |detail: String| FetchError::BadAddress {
             url: url.to_string(),
             detail,
@@ -350,8 +447,8 @@ impl Resolver {
         let Some(kernels) = self.kernel_variables() else {
             return Err(unsupported(url, KERNEL_MISSING));
         };
-        match kernels.read(agent, &variable) {
-            Ok(Some(text)) => Ok((text, format!("kernel-namespace {agent}"))),
+        match kernels.read(agent, &variable, page) {
+            Ok(Some((text, next))) => Ok((text, format!("kernel-namespace {agent}"), next)),
             Ok(None) => Err(FetchError::NotFound {
                 url: url.to_string(),
                 what: format!("variable {variable} in the {agent} namespace"),
@@ -368,7 +465,7 @@ impl Resolver {
         if let Some(Transcript::Live(session)) =
             self.transcripts().and_then(|desk| desk.open(url.path()))
         {
-            let (text, _reaped) = render_history(url, &session, None)?;
+            let (text, _reaped, _next) = render_history(url, &session, None, None)?;
             return Ok((text, format!("live-child {}", url.path())));
         }
         let Some(pinned) = self.log().pin_of(url) else {
@@ -377,7 +474,7 @@ impl Resolver {
                 what: "a reap pin for this delegation: the child is still live, or was never reaped through this log".to_owned(),
             });
         };
-        let (text, _served_by) = self.resolve(&pinned)?;
+        let (text, _served_by, _next) = self.resolve(&pinned, None)?;
         Ok((text, format!("reap-pin {pinned}")))
     }
 
@@ -543,10 +640,11 @@ mod tests {
             &self,
             agent: &str,
             variable: &VariableName,
-        ) -> Result<Option<String>, VariableReadError> {
+            _page: Option<Page>,
+        ) -> Result<Option<(String, Option<usize>)>, VariableReadError> {
             match (agent, variable.as_str()) {
                 ("ghost", _) => Err(VariableReadError::NotRunning),
-                (_, "answer") => Ok(Some("42".to_owned())),
+                (_, "answer") => Ok(Some(("42".to_owned(), None))),
                 _ => Ok(None),
             }
         }
@@ -737,6 +835,60 @@ mod tests {
         Ok(())
     }
 
+    /// A format-2 plan is served through the journal on both addresses: with the checkpoint
+    /// lost in the crash window after a commit, the bare address still answers and the read
+    /// regenerates the checkpoint.
+    #[test]
+    fn a_format_two_plan_is_served_from_its_journal_not_its_checkpoint() -> TestResult {
+        use crate::plan::authority::Unhosted;
+        use crate::plan::ops::{Actor, Op, OpRequest, PlanEngine, TodoSpec};
+        use yi_types::plan::doc::{GoalText, TodoLabel};
+        let workspace = Scratch::new("yi-schemes-plan-journal")?;
+        let store = PlanStore::open(workspace.join(".yi/plans"))?;
+        let engine = PlanEngine::new(store.clone(), Arc::new(Unhosted));
+        let out = engine.apply(OpRequest {
+            plan: None,
+            actor: Actor::Owner,
+            op: Op::Init {
+                goal: GoalText::new("Ship OAuth")?,
+                todos: vec![TodoSpec {
+                    label: TodoLabel::new("Freeze the token API seam")?,
+                    after: Vec::new(),
+                    delegation: None,
+                    contract: None,
+                    children: Vec::new(),
+                }],
+            },
+            request_id: None,
+            expected_revision: None,
+        })?;
+        let id = out.plan.id;
+        std::fs::remove_file(store.path(&id))?;
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default());
+        let whole: Url = format!("plan://{id}").parse()?;
+        let fetched = resolver.fetch(&whole)?;
+        assert_eq!(fetched.served_by, "plan-file");
+        assert!(
+            fetched
+                .text
+                .contains("\"label\": \"Freeze the token API seam\""),
+            "{}",
+            fetched.text
+        );
+        assert!(
+            store.path(&id).is_file(),
+            "the read regenerated the checkpoint"
+        );
+        let todo: Url = format!("plan://{id}/freeze-the-token-api-seam").parse()?;
+        assert!(
+            resolver
+                .fetch(&todo)?
+                .text
+                .contains("\"state\": \"pending\"")
+        );
+        Ok(())
+    }
+
     #[test]
     fn a_checkpoint_address_validates_its_tree_id() -> TestResult {
         let workspace = Scratch::new("yi-schemes-tree")?;
@@ -851,6 +1003,20 @@ mod tests {
             resolver.fetch(&other),
             Err(FetchError::NotFound { .. })
         ));
+        Ok(())
+    }
+
+    /// Incident: `history://<plan>/<todo>/tail/1` read `<plan>` as the agent and missed.
+    #[test]
+    fn a_window_follows_an_agent_whose_name_has_a_slash() -> TestResult {
+        let workspace = Scratch::new("yi-schemes-history-slash")?;
+        let mut store = in_memory_session();
+        store.append_custom("main", "note", None)?;
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(store));
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
+            .with_session("plan-a/confmerge", shared);
+        let tail: Url = "history://plan-a/confmerge/tail/1".parse()?;
+        assert_eq!(resolver.fetch(&tail)?.served_by, "session-tail");
         Ok(())
     }
 

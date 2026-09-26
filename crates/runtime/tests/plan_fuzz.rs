@@ -16,14 +16,18 @@ use std::sync::{Arc, Mutex};
 
 use proptest::prelude::{Just, Strategy, any, prop, prop_oneof};
 use proptest::test_runner::{Config, TestCaseError, TestRunner};
+use yi_runtime::plan::journal::{Fs, RealFs};
 use yi_runtime::plan::ops::{
     Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec,
 };
-use yi_runtime::plan::store::{FRONTMATTER_CAP_BYTES, PlanFile, PlanStore};
+use yi_runtime::plan::store::{PLAN_CAP_BYTES, PlanStore};
+use yi_types::plan::canonical::Digest;
+use yi_types::plan::contract::Contract;
 use yi_types::plan::doc::{
     AgentId, BlockedOn, Check, Delegation, GoalText, OutputSchema, PlanId, PlanState, PlanTier,
     SpawnSpec, TodoLabel, TodoState,
 };
+use yi_types::plan::op::Choice;
 use yi_types::url::{Durability, Scheme, Url};
 
 /// Invariant: the fuzz lane rides `just check`, so the case budget stays small
@@ -64,6 +68,9 @@ struct SpecPick {
     delegated: bool,
     declares: bool,
     after: Option<usize>,
+    /// A one-item cmd contract whose checker passes (`true`) or fails (`exit 1`); the manifest
+    /// is staged in the plan's artifacts when the plan id is known at the insert.
+    contract: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -95,6 +102,7 @@ enum Action {
     Drop {
         target: Target,
         slot: usize,
+        discard: bool,
     },
     Block {
         target: Target,
@@ -128,6 +136,7 @@ enum Action {
         target: Target,
         slot: usize,
         produced: LastPick,
+        discard: bool,
     },
     Retry {
         target: Target,
@@ -150,7 +159,35 @@ enum Action {
         slot: usize,
     },
     Rehydrate,
+    /// The confirmed user op: the one writer that lowers the fuse.
+    FuseReset,
+    /// Reconstruction and reconciliation with no resolutions: never an effect.
+    Repair,
+    /// An injected failure at one journal point for the next op, then a rehydration: the
+    /// journal decides what survived, and every invariant still holds.
+    Crash {
+        at_sync: bool,
+        specs: Vec<SpecPick>,
+    },
+    /// The explicit import of a generated format-1 document: a fresh id imports once with its
+    /// bytes kept as the artifact the genesis record names; a root the journal already holds
+    /// is refused, never imported over.
+    Import {
+        serial: u8,
+        slots: Vec<usize>,
+    },
+    /// One contracted todo driven through append (or init), start and done in one action, so
+    /// every run reaches a verified completion and a refused verdict whatever else the
+    /// generator interleaves.
+    Verified {
+        passes: bool,
+    },
 }
+
+/// F0c reachability, counted across the whole run: the `VerifiedDone` invariant is vacuous
+/// in a run that never produces one, so the lane asserts both outcomes happened.
+static VERIFIED_DONE: AtomicU32 = AtomicU32::new(0);
+static DONE_REFUSED: AtomicU32 = AtomicU32::new(0);
 
 fn fail<E: std::fmt::Display>(error: E) -> TestCaseError {
     TestCaseError::fail(error.to_string())
@@ -183,9 +220,11 @@ fn delegation(declares: bool) -> Result<Delegation, TestCaseError> {
             tools: Vec::new(),
             isolation: None,
             budget: None,
+            wall: None,
+            parent_close: None,
             extra: serde_json::Map::new(),
         },
-        accept: Check::Stated("it works".to_owned()),
+        accept: Check::Command("true".to_owned()),
         output,
         context: Vec::new(),
         note: None,
@@ -193,7 +232,38 @@ fn delegation(declares: bool) -> Result<Delegation, TestCaseError> {
     })
 }
 
-fn todo_specs(picks: &[SpecPick]) -> Result<Vec<TodoSpec>, TestCaseError> {
+/// A writer contract over one critical cmd item, its manifest staged under `plan`.
+fn contract_for(case: &Case, plan: &PlanId, passes: bool) -> Result<Contract, TestCaseError> {
+    let manifest = serde_json::json!({
+        "manifest": 1, "command": if passes { "true" } else { "exit 1" },
+        "cwd": "snapshot_root", "cwd_subdir": null, "protected": [], "timeout_ms": 5_000,
+        "env": [], "reads_outside_snapshot": false
+    });
+    let put = case
+        .store
+        .artifacts(plan)
+        .put(
+            &serde_json::to_vec(&manifest).map_err(fail)?,
+            "application/vnd.yi.checker-manifest+json",
+            &case.store.nonce(),
+        )
+        .map_err(fail)?;
+    serde_json::from_value(serde_json::json!({
+        "class": "writer",
+        "items": [{"id": "check", "critical": true, "weight": 100,
+                   "decider": {"cmd": {"checker": put, "timeout_ms": 5_000}}}],
+        "threshold": 1000, "min_coverage": 1000
+    }))
+    .map_err(fail)
+}
+
+/// `plan` is the id the specs land in when the insert knows it (init, append, supersede); a
+/// decompose's child id is allocated inside the op, so its specs carry no contract.
+fn todo_specs(
+    case: &Case,
+    plan: Option<&PlanId>,
+    picks: &[SpecPick],
+) -> Result<Vec<TodoSpec>, TestCaseError> {
     picks
         .iter()
         .map(|pick| {
@@ -208,10 +278,18 @@ fn todo_specs(picks: &[SpecPick]) -> Result<Vec<TodoSpec>, TestCaseError> {
                 } else {
                     None
                 },
+                contract: match (plan, pick.contract) {
+                    (Some(plan), Some(passes)) => Some(contract_for(case, plan, passes)?),
+                    _ => None,
+                },
                 children: Vec::new(),
             })
         })
         .collect()
+}
+
+fn fuzz_goal() -> Result<GoalText, TestCaseError> {
+    GoalText::new("ship the fuzzed widget end to end").map_err(fail)
 }
 
 fn root_of(id: &PlanId) -> Result<PlanId, TestCaseError> {
@@ -221,12 +299,34 @@ fn root_of(id: &PlanId) -> Result<PlanId, TestCaseError> {
     }
 }
 
-fn in_flight(file: &PlanFile) -> usize {
-    file.plan
-        .todos
+fn in_flight(plan: &yi_types::plan::doc::Plan) -> usize {
+    plan.todos
         .iter()
         .filter(|todo| matches!(todo.state, TodoState::Running { .. }) && todo.delegation.is_some())
         .count()
+}
+
+/// The journal's filesystem seam with one failure point the fuzzer flips for a single op.
+#[derive(Default)]
+struct CrashPoint {
+    fail_write: AtomicBool,
+    fail_sync: AtomicBool,
+}
+
+impl Fs for CrashPoint {
+    fn write_all(&self, file: &mut std::fs::File, bytes: &[u8]) -> std::io::Result<()> {
+        if self.fail_write.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("fuzzed: the write failed"));
+        }
+        RealFs.write_all(file, bytes)
+    }
+
+    fn sync_data(&self, file: &std::fs::File) -> std::io::Result<()> {
+        if self.fail_sync.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("fuzzed: the sync failed"));
+        }
+        RealFs.sync_data(file)
+    }
 }
 
 #[derive(Default)]
@@ -263,8 +363,6 @@ impl Delegate for Stub {
             Err(_) => Err("poisoned".to_owned()),
         }
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 /// `expected` mirrors what the engine may legally have changed: touched moves
@@ -273,6 +371,7 @@ impl Delegate for Stub {
 struct Case {
     store: PlanStore,
     stub: Arc<Stub>,
+    crash: Arc<CrashPoint>,
     engine: PlanEngine,
     width: NonZeroUsize,
     expected: HashMap<String, (u64, u64)>,
@@ -291,12 +390,20 @@ enum Bump {
 impl Case {
     fn new(width: NonZeroUsize) -> Result<Self, TestCaseError> {
         let dir = Scratch::new("yi-plan-fuzz").map_err(fail)?;
-        let store = PlanStore::open(dir.to_path_buf()).map_err(fail)?;
+        let crash = Arc::new(CrashPoint::default());
+        let store = PlanStore::open(dir.to_path_buf())
+            .map_err(fail)?
+            .with_fs(Arc::clone(&crash) as Arc<dyn Fs>);
         let stub = Arc::new(Stub::default());
-        let engine = PlanEngine::new(store.clone(), stub.clone()).with_width(width);
+        let ws = dir.join("ws");
+        std::fs::create_dir_all(&ws).map_err(fail)?;
+        let engine = PlanEngine::new(store.clone(), stub.clone())
+            .with_width(width)
+            .with_cwd(ws);
         Ok(Self {
             store,
             stub,
+            crash,
             engine,
             width,
             expected: HashMap::new(),
@@ -307,8 +414,23 @@ impl Case {
     }
 
     fn rehydrate(&mut self) -> Result<(), TestCaseError> {
-        self.store = PlanStore::open(self.dir.to_path_buf()).map_err(fail)?;
-        self.engine = PlanEngine::new(self.store.clone(), self.stub.clone()).with_width(self.width);
+        self.store = PlanStore::open(self.dir.to_path_buf())
+            .map_err(fail)?
+            .with_fs(Arc::clone(&self.crash) as Arc<dyn Fs>);
+        self.engine = PlanEngine::new(self.store.clone(), self.stub.clone())
+            .with_width(self.width)
+            .with_cwd(self.dir.join("ws"));
+        Ok(())
+    }
+
+    /// After a crash the journal is the only truth: whatever it kept is what `touched` and
+    /// `version` are expected at from here on.
+    fn resync_expected(&mut self) -> Result<(), TestCaseError> {
+        for id in self.store.list().map_err(fail)? {
+            let plan = self.store.read(&id).map_err(fail)?;
+            self.expected
+                .insert(id.to_string(), (plan.touched.0, plan.version.0));
+        }
         Ok(())
     }
 
@@ -324,14 +446,17 @@ impl Case {
         }
     }
 
-    fn read_target(&self, plan: &Option<PlanId>) -> Result<Option<PlanFile>, TestCaseError> {
+    fn read_target(
+        &self,
+        plan: &Option<PlanId>,
+    ) -> Result<Option<yi_types::plan::doc::Plan>, TestCaseError> {
         if let Some(id) = plan {
             return Ok(Some(self.store.read(id).map_err(fail)?));
         }
         for id in self.store.roots().map_err(fail)? {
-            let file = self.store.read(&id).map_err(fail)?;
-            if file.plan.state == PlanState::Active {
-                return Ok(Some(file));
+            let plan = self.store.read(&id).map_err(fail)?;
+            if plan.state == PlanState::Active {
+                return Ok(Some(plan));
             }
         }
         Ok(None)
@@ -352,11 +477,28 @@ impl Case {
         Ok(total)
     }
 
+    fn engine_starts(&self) -> Result<HashMap<String, u64>, TestCaseError> {
+        let mut starts = HashMap::new();
+        for root in self.store.roots().map_err(fail)? {
+            for record in self.store.journal(&root).read().map_err(fail)?.records {
+                if record.record.actor == "engine"
+                    && record.record.op == "start"
+                    && !record.record.extra.contains_key("refusal")
+                {
+                    let count = starts.entry(record.record.plan.to_string()).or_insert(0);
+                    *count = u64::saturating_add(*count, 1);
+                }
+            }
+        }
+        Ok(starts)
+    }
+
     fn apply(
         &mut self,
         request: OpRequest,
         bump: Bump,
     ) -> Result<Result<Outcome, PlanOpError>, TestCaseError> {
+        let before = self.engine_starts()?;
         let result = self.engine.apply(request);
         if let Ok(outcome) = &result {
             self.check_outcome(outcome, !matches!(bump, Bump::ReadOnly))?;
@@ -380,6 +522,15 @@ impl Case {
                 self.expected.insert(sub.to_string(), (1, 1));
             }
         }
+        // The engine's own starts after an op are applied ops too, one touch on their plan.
+        for (id, count) in self.engine_starts()? {
+            let started = count.saturating_sub(before.get(&id).copied().unwrap_or(0));
+            if started > 0
+                && let Some(entry) = self.expected.get_mut(&id)
+            {
+                entry.0 = entry.0.saturating_add(started);
+            }
+        }
         Ok(result)
     }
 
@@ -388,13 +539,8 @@ impl Case {
     /// set with no slice, which the campaign golden fixture pins.
     fn check_outcome(&self, outcome: &Outcome, dispatching: bool) -> Result<(), TestCaseError> {
         let file = self.store.read(&outcome.plan.id).map_err(fail)?;
-        proptest::prop_assert_eq!(
-            &outcome.plan,
-            &file.plan,
-            "outcome plan disagrees with disk"
-        );
+        proptest::prop_assert_eq!(&outcome.plan, &file, "outcome plan disagrees with disk");
         let derived: Vec<TodoLabel> = file
-            .plan
             .ready()
             .into_iter()
             .map(|todo| todo.label.clone())
@@ -407,7 +553,6 @@ impl Case {
                 "label {held:?} both dispatched and held"
             );
             let delegated = file
-                .plan
                 .todo(held)
                 .is_some_and(|todo| todo.delegation.is_some());
             proptest::prop_assert!(delegated, "held label {held:?} is not delegated");
@@ -421,13 +566,12 @@ impl Case {
         if !dispatching {
             return Ok(());
         }
-        let root = root_of(&file.plan.id)?;
+        let root = root_of(&file.id)?;
         let flight = self.family_flight(&root)?;
         let offered = derived
             .iter()
             .filter(|ready| {
-                file.plan
-                    .todo(ready)
+                file.todo(ready)
                     .is_some_and(|todo| todo.delegation.is_some())
                     && !outcome.held.contains(ready)
             })
@@ -442,32 +586,28 @@ impl Case {
 
     fn audit_file(&mut self, id: &PlanId) -> Result<(), TestCaseError> {
         let raw = std::fs::read_to_string(self.store.path(id)).map_err(fail)?;
-        let front = raw
-            .strip_prefix("---\n")
-            .and_then(|rest| rest.find("---\n").map(|end| &rest[..end]))
-            .ok_or_else(|| fail(format!("plan {id} has no frontmatter frame")))?;
         proptest::prop_assert!(
-            front.len() <= FRONTMATTER_CAP_BYTES,
-            "plan {id} frontmatter is {} bytes on disk, over the {FRONTMATTER_CAP_BYTES} cap",
-            front.len()
+            raw.len() <= PLAN_CAP_BYTES,
+            "plan {id} checkpoint is {} bytes on disk, over the {PLAN_CAP_BYTES} cap",
+            raw.len()
         );
         proptest::prop_assert!(
-            !front.starts_with("ready:") && !front.contains("\nready:"),
+            !raw.contains("\"ready\":"),
             "plan {id} stores a ready key; ready is derived, never stored"
         );
         let file = self.store.read(id).map_err(fail)?;
-        let issues = file.plan.validate();
+        let issues = file.validate();
         proptest::prop_assert!(issues.is_empty(), "plan {id} fails validate: {issues:?}");
         let dots = id.as_str().matches('.').count();
         proptest::prop_assert!(dots <= 1, "plan {id} is deeper than one sub-plan");
-        match (&file.plan.tier, dots) {
+        match (&file.tier, dots) {
             (PlanTier::Root, 0) | (PlanTier::Sub { .. }, 1) => {}
             (PlanTier::Root | PlanTier::Sub { .. } | PlanTier::Other { .. }, _) => {
                 return Err(fail(format!("plan {id} tier disagrees with its id depth")));
             }
         }
         if dots == 0 {
-            let spawns = file.plan.spawns().get();
+            let spawns = file.spawns().get();
             let floor = self.spawn_floor.entry(id.to_string()).or_insert(0);
             proptest::prop_assert!(
                 spawns >= *floor,
@@ -476,24 +616,26 @@ impl Case {
             *floor = spawns;
         } else {
             proptest::prop_assert!(
-                file.plan.spawns().is_zero(),
+                file.spawns().is_zero(),
                 "sub-plan {id} carries spawns; only the root is charged"
             );
         }
-        match &file.plan.state {
+        match &file.state {
             PlanState::Active => proptest::prop_assert!(
-                !file.plan.finished(),
+                !file.finished(),
                 "plan {id} is Active with every todo terminal"
             ),
             PlanState::Done => proptest::prop_assert!(
-                file.plan.finished(),
+                file.finished(),
                 "plan {id} is Done with a non-terminal todo"
             ),
             PlanState::Superseded { .. } | PlanState::Abandoned | PlanState::Other(_) => {}
         }
-        for todo in &file.plan.todos {
+        for todo in &file.todos {
             match &todo.state {
-                TodoState::Done { output: Some(url) } => proptest::prop_assert!(
+                TodoState::Done {
+                    output: Some(url), ..
+                } => proptest::prop_assert!(
                     !matches!(url.scheme(), Scheme::Agent),
                     "todo {:?} is Done with agent url {url}",
                     todo.label
@@ -510,24 +652,67 @@ impl Case {
                 TodoState::Pending
                 | TodoState::Running { .. }
                 | TodoState::Blocked { .. }
-                | TodoState::Done { output: None }
+                | TodoState::Done { output: None, .. }
                 | TodoState::Failed { last: None, .. }
                 | TodoState::Abandoned
                 | TodoState::Other(_) => {}
             }
         }
+        // F0c: no `Done` on the caller's word where a resolution is owed (a contract, or a
+        // stated acceptance), whatever op moved it.
+        for todo in &file.todos {
+            if let TodoState::Done {
+                resolution: None, ..
+            } = &todo.state
+            {
+                proptest::prop_assert!(
+                    !yi_runtime::plan::state::needs_resolution(todo),
+                    "todo {:?} is Done with no resolution and a contract or stated acceptance",
+                    todo.label
+                );
+            }
+        }
+        // F0c: no `Done { VerifiedDone }` without a committed `pass` verdict on that todo.
+        for todo in &file.todos {
+            if let TodoState::Done {
+                resolution: Some(yi_types::plan::doc::Resolution::VerifiedDone),
+                ..
+            } = &todo.state
+            {
+                let root = root_of(id)?;
+                let journal = yi_runtime::plan::journal::Journal::open(
+                    self.store.journal_path(&root),
+                    Arc::new(RealFs),
+                );
+                let passed = journal.read().map_err(fail)?.records.iter().any(|record| {
+                    record.record.op == "done"
+                        && record.record.todo.as_ref() == Some(&todo.label)
+                        && record
+                            .verdict
+                            .as_ref()
+                            .and_then(|verdict| verdict.get("outcome"))
+                            .and_then(|outcome| outcome.as_str())
+                            == Some("pass")
+                });
+                proptest::prop_assert!(
+                    passed,
+                    "todo {:?} is VerifiedDone with no committed pass verdict",
+                    todo.label
+                );
+            }
+        }
         let (touched, version) = *self
             .expected
             .entry(id.to_string())
-            .or_insert((file.plan.touched.0, file.plan.version.0));
+            .or_insert((file.touched.0, file.version.0));
         proptest::prop_assert_eq!(
-            file.plan.touched.0,
+            file.touched.0,
             touched,
             "plan {} touched moved without an applied op",
             id
         );
         proptest::prop_assert_eq!(
-            file.plan.version.0,
+            file.version.0,
             version,
             "plan {} version moved on an op other than supersede",
             id
@@ -557,6 +742,8 @@ fn owner(plan: Option<PlanId>, op: Op) -> OpRequest {
         plan,
         actor: Actor::Owner,
         op,
+        request_id: None,
+        expected_revision: None,
     }
 }
 
@@ -564,16 +751,26 @@ fn act_start(case: &mut Case, target: Target, slot: usize) -> Result<(), TestCas
     let plan = case.resolve_target(target)?;
     let lbl = label(slot)?;
     if let Some(file) = case.read_target(&plan)?
-        && let Some(todo) = file.plan.todo(&lbl)
+        && let Some(todo) = file.todo(&lbl)
         && todo.delegation.is_some()
         && matches!(todo.state, TodoState::Pending)
-        && case.family_flight(&root_of(&file.plan.id)?)? >= case.width.get()
+        && case.family_flight(&root_of(&file.id)?)? >= case.width.get()
     {
         // The dispatcher protocol: a delegated todo past the width is held,
         // never started, so the fuzzer holds it too.
         return Ok(());
     }
-    let _refused = case.apply(owner(plan, Op::Start { label: lbl }), Bump::Touch)?;
+    // An owner's start on a delegated todo only reads its standing: the engine starts it.
+    let delegated = case.read_target(&plan)?.is_some_and(|file| {
+        file.todo(&lbl)
+            .is_some_and(|todo| todo.delegation.is_some())
+    });
+    let bump = if delegated {
+        Bump::ReadOnly
+    } else {
+        Bump::Touch
+    };
+    let _refused = case.apply(owner(plan, Op::Start { label: lbl }), bump)?;
     Ok(())
 }
 
@@ -612,13 +809,14 @@ fn act_fail(
     target: Target,
     slot: usize,
     pick: LastPick,
+    discard: bool,
 ) -> Result<(), TestCaseError> {
     let plan = case.resolve_target(target)?;
     let lbl = label(slot)?;
     let reaping = case.read_target(&plan)?.and_then(|file| {
-        file.plan.todo(&lbl).and_then(|todo| {
+        file.todo(&lbl).and_then(|todo| {
             (todo.delegation.is_some() && matches!(todo.state, TodoState::Running { .. }))
-                .then(|| file.plan.id.clone())
+                .then(|| file.id.clone())
         })
     });
     let produced = match pick {
@@ -633,6 +831,7 @@ fn act_fail(
             Op::Fail {
                 label: lbl.clone(),
                 cause: "the fuzzer failed it".to_owned(),
+                disposition: discard.then_some(Choice::Discarded),
             },
         ),
         Bump::Touch,
@@ -645,7 +844,6 @@ fn act_fail(
         (Ok(outcome), LastPick::Durable(_) | LastPick::Nothing) => {
             let file = case.store.read(&outcome.plan.id).map_err(fail)?;
             let todo = file
-                .plan
                 .todo(&lbl)
                 .ok_or_else(|| fail("failed todo vanished"))?;
             proptest::prop_assert_eq!(
@@ -667,27 +865,184 @@ fn act_fail(
     Ok(())
 }
 
+/// The first four labels slug apart, so a generated document always validates.
+/// Append (or init) one contracted todo, start it and drive its `done`: a passing checker
+/// lands `Done { VerifiedDone }`, a failing one is refused with a verdict, and either count
+/// proves the F0c invariant below is not vacuous.
+fn act_verified(case: &mut Case, passes: bool) -> Result<(), TestCaseError> {
+    case.pad = case.pad.saturating_add(1);
+    let lbl = TodoLabel::new(format!("checked job {}", case.pad)).map_err(fail)?;
+    let (id, opening) = match case.read_target(&None)? {
+        Some(file) => (file.id, None),
+        None => {
+            let goal = fuzz_goal()?;
+            (case.store.allocate(&goal).map_err(fail)?, Some(goal))
+        }
+    };
+    let spec = TodoSpec {
+        label: lbl.clone(),
+        after: Vec::new(),
+        delegation: None,
+        contract: Some(contract_for(case, &id, passes)?),
+        children: Vec::new(),
+    };
+    let inserted = match opening {
+        Some(goal) => case.apply(
+            owner(
+                None,
+                Op::Init {
+                    goal,
+                    todos: vec![spec],
+                },
+            ),
+            Bump::Fresh,
+        )?,
+        None => case.apply(owner(None, Op::Append { todos: vec![spec] }), Bump::Touch)?,
+    };
+    if inserted.is_err() {
+        return Ok(());
+    }
+    let started = case.apply(owner(None, Op::Start { label: lbl.clone() }), Bump::Touch)?;
+    if started.is_err() {
+        return Ok(());
+    }
+    match case.apply(
+        owner(
+            None,
+            Op::Done {
+                label: lbl.clone(),
+                output: None,
+            },
+        ),
+        Bump::Touch,
+    )? {
+        Ok(outcome) => {
+            let verified = outcome.plan.todo(&lbl).is_some_and(|todo| {
+                matches!(
+                    todo.state,
+                    TodoState::Done {
+                        resolution: Some(yi_types::plan::doc::Resolution::VerifiedDone),
+                        ..
+                    }
+                )
+            });
+            proptest::prop_assert!(verified && passes, "a contracted done landed unverified");
+            VERIFIED_DONE.fetch_add(1, Ordering::SeqCst);
+        }
+        Err(PlanOpError::Refused { verdict, .. }) => {
+            proptest::prop_assert!(
+                !passes,
+                "a passing checker was refused: {}",
+                verdict.lines()
+            );
+            DONE_REFUSED.fetch_add(1, Ordering::SeqCst);
+        }
+        Err(_) => {}
+    }
+    Ok(())
+}
+
+fn act_import(case: &mut Case, serial: u8, slots: &[usize]) -> Result<(), TestCaseError> {
+    let id = PlanId::new(format!("fuzz-import-{}", serial % 3)).map_err(fail)?;
+    let mut labels: Vec<&str> = Vec::new();
+    for slot in slots {
+        let text = LABELS[slot % 4];
+        if !labels.contains(&text) {
+            labels.push(text);
+        }
+    }
+    if labels.is_empty() {
+        labels.push(LABELS[0]);
+    }
+    let todos: Vec<serde_json::Value> = labels
+        .iter()
+        .map(|text| serde_json::json!({"label": text, "state": "pending"}))
+        .collect();
+    let frontmatter = serde_json::json!({
+        "format": 1,
+        "plan": id.as_str(),
+        "goal": "an imported fuzz plan",
+        "version": 1,
+        "tier": "root",
+        "state": "active",
+        "todos": todos,
+    });
+    let document = format!(
+        "---\n{frontmatter}\n---\n## {}\nImported by the fuzzer.\n",
+        labels[0]
+    );
+    std::fs::write(case.dir.join("ws").join(format!("{id}.md")), &document).map_err(fail)?;
+    let source: Url = format!("local://{id}.md").parse().map_err(fail)?;
+    let existed = case.store.list().map_err(fail)?.contains(&id);
+    let open = case.store.roots().map_err(fail)?.into_iter().any(|root| {
+        root != id
+            && case
+                .store
+                .read(&root)
+                .is_ok_and(|plan| plan.state == PlanState::Active)
+    });
+    let result = case.apply(owner(None, Op::Import { source }), Bump::ReadOnly)?;
+    match result {
+        Ok(_) => {
+            proptest::prop_assert!(!existed, "the live root {id} was imported over");
+            proptest::prop_assert!(!open, "{id} was imported active beside an open plan");
+            let digest = Digest::of(document.as_bytes());
+            let named = format!("artifact:{digest}");
+            let genesis = case
+                .store
+                .journal(&id)
+                .read()
+                .map_err(fail)?
+                .records
+                .into_iter()
+                .find(|record| record.record.op == "import")
+                .ok_or_else(|| fail("no import record"))?;
+            proptest::prop_assert_eq!(
+                genesis
+                    .args
+                    .get("artifact")
+                    .and_then(serde_json::Value::as_str),
+                Some(named.as_str()),
+                "the genesis record names the original's digest"
+            );
+            let blob = case.store.artifacts(&id).get(&digest).map_err(fail)?;
+            proptest::prop_assert_eq!(blob, document.into_bytes(), "the artifact is the original");
+        }
+        Err(error) => {
+            let said = error.to_string();
+            proptest::prop_assert!(
+                existed && said.contains("already format 2")
+                    || open && said.contains("already exists and is open"),
+                "import of {id} (existed: {existed}, open: {open}) refused: {error}"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
     match action {
         Action::Init { specs } => {
-            let goal = GoalText::new("ship the fuzzed widget end to end").map_err(fail)?;
+            let goal = fuzz_goal()?;
+            let id = case.store.allocate(&goal).map_err(fail)?;
             let _refused = case.apply(
                 owner(
                     None,
                     Op::Init {
                         goal,
-                        todos: todo_specs(specs)?,
+                        todos: todo_specs(case, Some(&id), specs)?,
                     },
                 ),
                 Bump::Fresh,
             )?;
         }
         Action::Append { specs } => {
+            let id = case.read_target(&None)?.map(|file| file.id);
             let _refused = case.apply(
                 owner(
                     None,
                     Op::Append {
-                        todos: todo_specs(specs)?,
+                        todos: todo_specs(case, id.as_ref(), specs)?,
                     },
                 ),
                 Bump::Touch,
@@ -701,18 +1056,24 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                     label: TodoLabel::new(format!("pad job {}", case.pad)).map_err(fail)?,
                     after: Vec::new(),
                     delegation: None,
+                    contract: None,
                     children: Vec::new(),
                 });
             }
             let _refused = case.apply(owner(None, Op::Append { todos }), Bump::Touch)?;
         }
-        Action::Drop { target, slot } => {
+        Action::Drop {
+            target,
+            slot,
+            discard,
+        } => {
             let plan = case.resolve_target(*target)?;
             let _refused = case.apply(
                 owner(
                     plan,
                     Op::Drop {
                         label: label(*slot)?,
+                        disposition: discard.then_some(Choice::Discarded),
                     },
                 ),
                 Bump::Touch,
@@ -754,6 +1115,8 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                     op: Op::Unblock {
                         label: label(*slot)?,
                     },
+                    request_id: None,
+                    expected_revision: None,
                 },
                 Bump::Touch,
             )?;
@@ -761,12 +1124,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
         Action::Reorder { target, rotate } => {
             let plan = case.resolve_target(*target)?;
             let mut labels: Vec<TodoLabel> = match case.read_target(&plan)? {
-                Some(file) => file
-                    .plan
-                    .todos
-                    .iter()
-                    .map(|todo| todo.label.clone())
-                    .collect(),
+                Some(file) => file.todos.iter().map(|todo| todo.label.clone()).collect(),
                 None => Vec::new(),
             };
             if !labels.is_empty() {
@@ -798,7 +1156,8 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
             target,
             slot,
             produced,
-        } => act_fail(case, *target, *slot, *produced)?,
+            discard,
+        } => act_fail(case, *target, *slot, *produced, *discard)?,
         Action::Retry { target, slot } => {
             let plan = case.resolve_target(*target)?;
             // Incident: retry inside a Done sub-plan shrank to a six-op
@@ -806,7 +1165,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
             // never reactivates a finished plan; held until the engine does.
             if case
                 .read_target(&plan)?
-                .is_some_and(|file| file.plan.state == PlanState::Done)
+                .is_some_and(|file| file.state == PlanState::Done)
             {
                 return Ok(());
             }
@@ -832,7 +1191,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                     plan,
                     Op::Decompose {
                         label: label(*slot)?,
-                        todos: todo_specs(specs)?,
+                        todos: todo_specs(case, None, specs)?,
                     },
                 ),
                 Bump::Touch,
@@ -844,13 +1203,14 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
             reap_fails,
         } => {
             let plan = case.resolve_target(*target)?;
+            let id = case.read_target(&plan)?.map(|file| file.id);
             case.stub.fail_reap.store(*reap_fails, Ordering::SeqCst);
             let _refused = case.apply(
                 owner(
                     plan,
                     Op::Supersede {
                         reason: "the fuzzer changed its mind".to_owned(),
-                        todos: todo_specs(specs)?,
+                        todos: todo_specs(case, id.as_ref(), specs)?,
                     },
                 ),
                 Bump::Supersede,
@@ -868,6 +1228,8 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                 op: Op::Start {
                     label: label(*slot)?,
                 },
+                request_id: None,
+                expected_revision: None,
             });
             proptest::prop_assert!(
                 matches!(result, Err(PlanOpError::NotOwner { .. })),
@@ -875,6 +1237,75 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
             );
         }
         Action::Rehydrate => case.rehydrate()?,
+        Action::FuseReset => {
+            let refused = case.engine.apply(owner(None, Op::FuseReset));
+            proptest::prop_assert!(
+                matches!(refused, Err(PlanOpError::NotOwner { .. })),
+                "the owner reset the fuse: {refused:?}"
+            );
+            let result = case.apply(
+                OpRequest {
+                    plan: None,
+                    actor: Actor::User("user://1".parse::<Url>().map_err(fail)?),
+                    op: Op::FuseReset,
+                    request_id: None,
+                    expected_revision: None,
+                },
+                Bump::Touch,
+            )?;
+            if let Ok(outcome) = result {
+                proptest::prop_assert!(outcome.plan.spawns().is_zero());
+                case.spawn_floor.insert(outcome.plan.id.to_string(), 0);
+            }
+        }
+        Action::Repair => {
+            let spawns_before = case.stub.serial.load(Ordering::SeqCst);
+            let result = case.apply(
+                owner(
+                    None,
+                    Op::Repair {
+                        resolutions: Vec::new(),
+                    },
+                ),
+                Bump::ReadOnly,
+            )?;
+            proptest::prop_assert!(
+                matches!(
+                    result,
+                    Ok(_) | Err(PlanOpError::NoPlan | PlanOpError::NotActive { .. })
+                ),
+                "repair without resolutions refused: {result:?}"
+            );
+            proptest::prop_assert_eq!(
+                case.stub.serial.load(Ordering::SeqCst),
+                spawns_before,
+                "repair spawned"
+            );
+        }
+        Action::Crash { at_sync, specs } => {
+            if *at_sync {
+                case.crash.fail_sync.store(true, Ordering::SeqCst);
+            } else {
+                case.crash.fail_write.store(true, Ordering::SeqCst);
+            }
+            let result = case.engine.apply(owner(
+                None,
+                Op::Append {
+                    todos: todo_specs(case, None, specs)?,
+                },
+            ));
+            case.crash.fail_sync.store(false, Ordering::SeqCst);
+            case.crash.fail_write.store(false, Ordering::SeqCst);
+            proptest::prop_assert!(
+                result.is_err(),
+                "an injected journal failure was acknowledged: {:?}",
+                result.map(|outcome| outcome.plan.touched)
+            );
+            case.rehydrate()?;
+            case.resync_expected()?;
+        }
+        Action::Import { serial, slots } => act_import(case, *serial, slots)?,
+        Action::Verified { passes } => act_verified(case, *passes)?,
     }
     Ok(())
 }
@@ -895,12 +1326,14 @@ fn spec_strategy() -> impl Strategy<Value = SpecPick> {
         any::<bool>(),
         any::<bool>(),
         prop_oneof![Just(None), (0..LABELS.len()).prop_map(Some)],
+        prop_oneof![4 => Just(None), 1 => any::<bool>().prop_map(Some)],
     )
-        .prop_map(|(slot, delegated, declares, after)| SpecPick {
+        .prop_map(|(slot, delegated, declares, after, contract)| SpecPick {
             slot,
             delegated,
             declares,
             after,
+            contract,
         })
 }
 
@@ -938,8 +1371,8 @@ fn action_strategy() -> impl Strategy<Value = Action> {
         3 => specs_strategy().prop_map(|specs| Action::Init { specs }),
         3 => specs_strategy().prop_map(|specs| Action::Append { specs }),
         1 => (300u16..900u16).prop_map(|count| Action::BulkAppend { count }),
-        2 => (target_strategy(), slot_strategy())
-            .prop_map(|(target, slot)| Action::Drop { target, slot }),
+        2 => (target_strategy(), slot_strategy(), any::<bool>())
+            .prop_map(|(target, slot, discard)| Action::Drop { target, slot, discard }),
         2 => (target_strategy(), slot_strategy(), 0u16..1500u16)
             .prop_map(|(target, slot, note_len)| Action::Block { target, slot, note_len }),
         2 => (target_strategy(), slot_strategy(), any::<bool>())
@@ -952,8 +1385,8 @@ fn action_strategy() -> impl Strategy<Value = Action> {
             .prop_map(|(target, slot)| Action::Start { target, slot }),
         5 => (target_strategy(), slot_strategy(), out_strategy())
             .prop_map(|(target, slot, output)| Action::Done { target, slot, output }),
-        4 => (target_strategy(), slot_strategy(), last_strategy())
-            .prop_map(|(target, slot, produced)| Action::Fail { target, slot, produced }),
+        4 => (target_strategy(), slot_strategy(), last_strategy(), any::<bool>())
+            .prop_map(|(target, slot, produced, discard)| Action::Fail { target, slot, produced, discard }),
         3 => (target_strategy(), slot_strategy())
             .prop_map(|(target, slot)| Action::Retry { target, slot }),
         2 => (target_strategy(), slot_strategy(), specs_strategy())
@@ -963,6 +1396,13 @@ fn action_strategy() -> impl Strategy<Value = Action> {
         1 => target_strategy().prop_map(|target| Action::View { target }),
         1 => slot_strategy().prop_map(|slot| Action::ChildProbe { slot }),
         1 => Just(Action::Rehydrate),
+        1 => Just(Action::FuseReset),
+        1 => Just(Action::Repair),
+        1 => (any::<bool>(), specs_strategy())
+            .prop_map(|(at_sync, specs)| Action::Crash { at_sync, specs }),
+        1 => (any::<u8>(), prop::collection::vec(slot_strategy(), 0..4))
+            .prop_map(|(serial, slots)| Action::Import { serial, slots }),
+        1 => any::<bool>().prop_map(|passes| Action::Verified { passes }),
     ]
 }
 
@@ -987,5 +1427,17 @@ fn random_op_sequences_hold_every_invariant() -> Result<(), Box<dyn Error>> {
         .run(&sequence_strategy(), |(width, actions)| {
             run_case(width, &actions)
         })
-        .map_err(|error| format!("{error}").into())
+        .map_err(|error| format!("{error}"))?;
+    // The F0c invariant is only evidence when the lane reached both outcomes.
+    let (verified, refused) = (
+        VERIFIED_DONE.load(Ordering::SeqCst),
+        DONE_REFUSED.load(Ordering::SeqCst),
+    );
+    if verified == 0 || refused == 0 {
+        return Err(format!(
+            "the lane reached {verified} verified completions and {refused} refused verdicts; both must be reached"
+        )
+        .into());
+    }
+    Ok(())
 }

@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-/// `--max-chars` truncation for non-JSON output (mcpc); JSON is never
+/// `--max-chars` truncation for non-JSON output only; JSON is never
 /// truncated — a clipped JSON document is worse than a large one.
 pub fn truncate_chars(text: &str, max_chars: Option<usize>) -> String {
     let Some(max) = max_chars else {
@@ -37,7 +37,7 @@ fn render_human(value: &Value) -> String {
     }
 }
 
-/// mcpc's schema snapshot check: `strict` = byte-identical JSON; `compatible`
+/// Schema snapshot check: `strict` = byte-identical JSON; `compatible`
 /// = every expected field present with the same value (server may add).
 pub fn schema_compatible(expected: &Value, actual: &Value, strict: bool) -> Result<(), String> {
     if strict {

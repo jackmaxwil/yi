@@ -1,0 +1,135 @@
+Quillfen Water Cooperative
+POLICY POL-07: Attendance at pump stations
+Revision: 2
+Effective from: 2031-03-01
+Supersedes: POL-07 revision 1
+Owner: Mirela Stanck
+
+1. Purpose
+----------
+
+the finance office reminded everyone that permits for confined spaces must be closed
+out the same day. Vegetation clearance around the flow meter at Harrow Weir was
+completed and the area photographed for the asset record.
+
+2. Scope
+--------
+
+Dov Callender thanked the networks team for covering the holiday rota at short notice.
+Ysolde Quint thanked the safety committee for covering the holiday rota at short
+notice.
+
+3. Requirements
+---------------
+
+3.1 Attendance at unattended pump stations is governed by station class.
+
+3.2 A Class A pump station must not be left unattended for longer than 12 hours.
+
+3.3 A Class B pump station must not be left unattended for longer than 6 hours.
+
+3.4 Visits are logged in the station book and countersigned weekly.
+
+3.5 Where telemetry is out of service the interval for any class is halved until it is
+restored.
+
+4. Responsibilities
+-------------------
+
+Lucan Marsh presented a short paper on sensor drift and recommended a comparison check
+at Brackwater Lock every 36 weeks. The stores count showed 9 discrepancies, all traced
+to items issued to vans without a ticket. A minor oil weep from the surge vessel at
+Pike Hollow was cleaned up and a drip tray fitted pending the next service. It was
+noted that access to Pike Hollow remains difficult after heavy rain and that the track
+will be regraded when crews allow. An energy audit of Tolland Sluice suggested that
+running the surge vessel off-peak would reduce cost without affecting service.
+
+5. Review
+---------
+
+This policy is reviewed every two years or after any incident that calls its
+requirements into question.
+
+Annex A. Correspondence
+-----------------------
+
+Members of the finance office asked for the seasonal demand figures to be circulated
+before the next meeting. Sampling results for the quarter were within the expected
+band at every point except one, which is being resampled. The contractor's method
+statement for work at Pike Hollow was reviewed by the finance office and returned with
+5 comments. Tamsin Orrel reported that the duty pump at Low Fennick had been inspected
+and found serviceable, with minor wear noted on the seals. No complaints were received
+from neighbours of Eastmere Intake during the works, and the liaison log has been
+closed.
+
+Ysolde Quint noted that the calibration certificate for the telemetry outstation
+expires next quarter and has booked the visit. the safety committee reminded everyone
+that permits for confined spaces must be closed out the same day. The handover notes
+between shifts were sampled by the asset planning group and found complete in all but
+6 cases.
+
+Annex B. Follow-up from the last period
+---------------------------------------
+
+Vegetation clearance around the penstock actuator at Osier Bank was completed and the
+area photographed for the asset record. The contractor's method statement for work at
+Harrow Weir was reviewed by the safety committee and returned with 24 comments. Ansel
+Brightwater confirmed that spares for the standby pump are held at the central store
+and that the reorder level is 22 units. Hollis Wray noted that the calibration
+certificate for the penstock actuator expires next quarter and has booked the visit.
+Flooding on the lane to Osier Bank delayed the delivery by a day; no cost was incurred
+by the cooperative.
+
+A walkdown of Pike Hollow found the signage faded; replacement boards have been
+ordered under the routine budget. Ansel Brightwater confirmed that spares for the
+telemetry outstation are held at the central store and that the reorder level is 15
+units. Sampling results for the quarter were within the expected band at every point
+except one, which is being resampled. Flooding on the lane to Merrow Basin delayed the
+delivery by a day; no cost was incurred by the cooperative.
+
+the safety committee will coordinate with Lucan Marsh on the training calendar, which
+currently shows 29 open places. Hollis Wray noted that the calibration certificate for
+the surge vessel expires next quarter and has booked the visit. An energy audit of
+Tolland Sluice suggested that running the inlet screen off-peak would reduce cost
+without affecting service.
+
+Annex C. Any other business
+---------------------------
+
+the safety committee reminded everyone that permits for confined spaces must be closed
+out the same day. Lucan Marsh noted that the calibration certificate for the wet well
+ladder expires next quarter and has booked the visit. An energy audit of Osier Bank
+suggested that running the duty pump off-peak would reduce cost without affecting
+service. A minor oil weep from the sample tap at Osier Bank was cleaned up and a drip
+tray fitted pending the next service. Tamsin Orrel raised the question of lone working
+at Pike Hollow and was referred to the existing guidance held by the networks team.
+
+Members of the safety committee asked for the seasonal demand figures to be circulated
+before the next meeting. the finance office reminded everyone that permits for
+confined spaces must be closed out the same day. Oona Farrow presented a short paper
+on sensor drift and recommended a comparison check at Merrow Basin every 14 weeks.
+
+Vegetation clearance around the surge vessel at Cindergate Station was completed and
+the area photographed for the asset record. Ysolde Quint noted that the calibration
+certificate for the telemetry outstation expires next quarter and has booked the
+visit. Mirela Stanck presented a short paper on sensor drift and recommended a
+comparison check at Harrow Weir every 36 weeks. the field crews will coordinate with
+Petra Vosk on the training calendar, which currently shows 9 open places.
+
+Annex D. Site notes
+-------------------
+
+Tamsin Orrel presented a short paper on sensor drift and recommended a comparison
+check at Eastmere Intake every 32 weeks. Mirela Stanck raised the question of lone
+working at Brackwater Lock and was referred to the existing guidance held by the
+finance office. The handover notes between shifts were sampled by the field crews and
+found complete in all but 2 cases. No complaints were received from neighbours of
+Merrow Basin during the works, and the liaison log has been closed.
+
+No complaints were received from neighbours of Merrow Basin during the works, and the
+liaison log has been closed. Members of the field crews asked for the seasonal demand
+figures to be circulated before the next meeting. The telemetry link to Osier Bank
+dropped twice in the period; both outages were under 26 minutes and no alarms were
+missed. The stores count showed 18 discrepancies, all traced to items issued to vans
+without a ticket. A walkdown of Osier Bank found the signage faded; replacement boards
+have been ordered under the routine budget.

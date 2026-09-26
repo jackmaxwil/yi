@@ -1,0 +1,181 @@
+{
+  "id": "stale-token",
+  "description": "A done whose verification outlives its attempt. The verification effect commits at attempt 1; while the checker runs, the todo fails and is retried, which makes attempt 2; the token comparison on the way back refuses the verdict as stale. Nothing about the product was decided, so no refusal is charged and the todo stays where the retry left it.",
+  "decisions": [
+    "The lease is released while the checker runs, which is what makes this window exist at all: a ten minute command must not block every other op on the store. The token comparison at the far end is what makes the window safe.",
+    "Stale is not a product failure. The refusals counter reads 0 after the stale verdict, so three stale verdicts in a row cannot walk a todo into Blocked on User.",
+    "The whileVerifying ops run between the committed verification_requested and the token comparison, which is the only place they can run: before the commit there is no effect to outlive and after the comparison there is nothing left to invalidate.",
+    "Reaching attempt 2 costs a fail and a retry because the step table has no Running to Retry row. A todo that a refusal left Running cannot be retried in place today, which is a gap the implementer closes or the plan records."
+  ],
+  "prompt": "Package the tarball, and retry it if the packaging falls over.",
+  "eagerInit": true,
+  "goal": "Package the tarball and keep the attempt honest",
+  "plan": "package-the-tarball-and-keep-the",
+  "artifacts": {
+    "checker": {
+      "digest": "sha256:70e1c99f31b4724c8902d51a54390cdcafd6ffbeac53d2dd2fee2bfad8a04d22",
+      "media_type": "application/vnd.yi.checker-manifest+json",
+      "length": 209,
+      "text": "{\n  \"command\": \"test -f dist/logrotate-lite.tar.gz\",\n  \"cwd\": \"snapshot_root\",\n  \"cwd_subdir\": null,\n  \"env\": [],\n  \"manifest\": 1,\n  \"protected\": [],\n  \"reads_outside_snapshot\": false,\n  \"timeout_ms\": 30000\n}\n"
+    },
+    "tarball": {
+      "digest": "sha256:dab176322ec87da2ffc69d3b788db140f693b1d0a7135d6e3215ceaad36446b7",
+      "media_type": "application/gzip",
+      "length": 54,
+      "text": "logrotate-lite 1.0 (a fixture stand-in for a tarball)\n"
+    }
+  },
+  "steps": [
+    {
+      "op": "init",
+      "actor": "agent://main",
+      "args": {
+        "goal": "Package the tarball and keep the attempt honest",
+        "todos": [
+          {
+            "label": "Package the tarball",
+            "contract": {
+              "class": "writer",
+              "items": [
+                {
+                  "id": "tarball-exists",
+                  "critical": true,
+                  "weight": 100,
+                  "decider": {
+                    "cmd": {
+                      "checker": {
+                        "digest": "sha256:70e1c99f31b4724c8902d51a54390cdcafd6ffbeac53d2dd2fee2bfad8a04d22",
+                        "media_type": "application/vnd.yi.checker-manifest+json",
+                        "length": 209
+                      },
+                      "timeout_ms": 30000
+                    }
+                  }
+                }
+              ],
+              "threshold": 1000,
+              "min_coverage": 1000
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "todos": [
+          {
+            "label": "Package the tarball",
+            "attempt": 1
+          }
+        ]
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": {
+        "label": "Package the tarball"
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "workspace": {
+        "dist/logrotate-lite.tar.gz": "tarball"
+      },
+      "whileVerifying": [
+        {
+          "op": "fail",
+          "actor": "agent://main",
+          "args": {
+            "label": "Package the tarball",
+            "cause": "the build host lost the disk"
+          }
+        },
+        {
+          "op": "retry",
+          "actor": "agent://main",
+          "args": {
+            "label": "Package the tarball"
+          }
+        }
+      ],
+      "args": {
+        "label": "Package the tarball"
+      },
+      "expect": {
+        "ok": false,
+        "error": "stale",
+        "staleToken": {
+          "attempt": 1
+        },
+        "journal": [
+          "verification_requested",
+          "fail",
+          "retry",
+          "verification_stale"
+        ],
+        "todos": [
+          {
+            "label": "Package the tarball",
+            "state": "pending",
+            "attempt": 2,
+            "refusals": 0,
+            "retries": 1
+          }
+        ]
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": {
+        "label": "Package the tarball"
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "workspace": {
+        "dist/logrotate-lite.tar.gz": "tarball"
+      },
+      "args": {
+        "label": "Package the tarball"
+      },
+      "expect": {
+        "ok": true,
+        "verdict": {
+          "outcome": "pass",
+          "score": 1000,
+          "coverage": 1000,
+          "items": [
+            {
+              "id": "tarball-exists",
+              "verdict": "pass"
+            }
+          ],
+          "token": {
+            "attempt": 2
+          }
+        },
+        "todos": [
+          {
+            "label": "Package the tarball",
+            "state": "done",
+            "attempt": 2,
+            "refusals": 0,
+            "resolution": "verified_done"
+          }
+        ]
+      }
+    }
+  ],
+  "final": {
+    "planCount": 1
+  }
+}

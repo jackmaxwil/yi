@@ -1,0 +1,120 @@
+Quillfen Water Cooperative
+INCIDENT REVIEW IR-2031-04
+Stage: FINAL
+Site: Tolland Sluice
+
+Occurred: 2031-04-09. Severity as assessed at this stage: 3.
+
+Summary
+-------
+
+The contractor's method statement for work at Cindergate Station was reviewed by the
+finance office and returned with 33 comments. Vegetation clearance around the duty
+pump at Pike Hollow was completed and the area photographed for the asset record.
+
+Timeline
+--------
+
+  06:30  duty manager informed
+  06:42  standby plant started
+  07:13  duty manager informed
+  07:33  alarm received in the control room
+  07:43  alarm received in the control room
+  07:54  crew on site
+  08:11  supply restored
+
+Findings
+--------
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. Lucan Marsh noted that the calibration certificate for
+the surge vessel expires next quarter and has booked the visit. Bram Ketteridge
+confirmed that spares for the dosing skid are held at the central store and that the
+reorder level is 11 units.
+
+Root cause
+----------
+
+Valve V-114 failed to seat because of a fractured spindle.
+
+Recommendations
+---------------
+
+1. Valve V-114 was replaced on 2031-04-18 and the recommendation is closed.
+
+Annex A. Follow-up from the last period
+---------------------------------------
+
+the finance office reminded everyone that permits for confined spaces must be closed
+out the same day. Flooding on the lane to Pike Hollow delayed the delivery by a day;
+no cost was incurred by the cooperative. Flooding on the lane to Pike Hollow delayed
+the delivery by a day; no cost was incurred by the cooperative. The contractor's
+method statement for work at Harrow Weir was reviewed by the networks team and
+returned with 20 comments.
+
+Ansel Brightwater presented a short paper on sensor drift and recommended a comparison
+check at Harrow Weir every 18 weeks. The draft drawing register for Pike Hollow is 38
+percent complete and will be issued once the as-built survey is checked. The handover
+notes between shifts were sampled by the safety committee and found complete in all
+but 8 cases. Ansel Brightwater noted that the calibration certificate for the control
+panel expires next quarter and has booked the visit. The handover notes between shifts
+were sampled by the networks team and found complete in all but 19 cases.
+
+Flooding on the lane to Cindergate Station delayed the delivery by a day; no cost was
+incurred by the cooperative. Hollis Wray noted that the calibration certificate for
+the surge vessel expires next quarter and has booked the visit. Tamsin Orrel presented
+a short paper on sensor drift and recommended a comparison check at Tolland Sluice
+every 14 weeks. Vegetation clearance around the flow meter at Osier Bank was completed
+and the area photographed for the asset record. Members of the field crews asked for
+the seasonal demand figures to be circulated before the next meeting.
+
+Annex B. Stores and spares
+--------------------------
+
+Vegetation clearance around the flow meter at Cindergate Station was completed and the
+area photographed for the asset record. Ysolde Quint confirmed that spares for the
+duty pump are held at the central store and that the reorder level is 26 units. the
+finance office reminded everyone that permits for confined spaces must be closed out
+the same day. Ysolde Quint presented a short paper on sensor drift and recommended a
+comparison check at Osier Bank every 7 weeks.
+
+the control room reminded everyone that permits for confined spaces must be closed out
+the same day. Vegetation clearance around the level sensor at Osier Bank was completed
+and the area photographed for the asset record. The telemetry link to Low Fennick
+dropped twice in the period; both outages were under 35 minutes and no alarms were
+missed. The telemetry link to Osier Bank dropped twice in the period; both outages
+were under 2 minutes and no alarms were missed.
+
+Annex C. Stores and spares
+--------------------------
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. Members of the safety committee asked for the seasonal
+demand figures to be circulated before the next meeting. Bram Ketteridge raised the
+question of lone working at Harrow Weir and was referred to the existing guidance held
+by the field crews. The handover notes between shifts were sampled by the networks
+team and found complete in all but 5 cases.
+
+No complaints were received from neighbours of Pike Hollow during the works, and the
+liaison log has been closed. Dov Callender thanked the control room for covering the
+holiday rota at short notice. No complaints were received from neighbours of Pike
+Hollow during the works, and the liaison log has been closed. The stores count showed
+4 discrepancies, all traced to items issued to vans without a ticket. the networks
+team will coordinate with Bram Ketteridge on the training calendar, which currently
+shows 32 open places.
+
+Annex D. Stores and spares
+--------------------------
+
+An energy audit of Tolland Sluice suggested that running the control panel off-peak
+would reduce cost without affecting service. A walkdown of Harrow Weir found the
+signage faded; replacement boards have been ordered under the routine budget. A
+walkdown of Tolland Sluice found the signage faded; replacement boards have been
+ordered under the routine budget. the control room will coordinate with Lucan Marsh on
+the training calendar, which currently shows 28 open places.
+
+Oona Farrow raised the question of lone working at Brackwater Lock and was referred to
+the existing guidance held by the asset planning group. Bram Ketteridge confirmed that
+spares for the sample tap are held at the central store and that the reorder level is
+21 units. The handover notes between shifts were sampled by the field crews and found
+complete in all but 22 cases.

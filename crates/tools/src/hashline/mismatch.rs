@@ -70,7 +70,7 @@ impl MismatchError {
                     self.expected_file_hash
                 ),
                 format!(
-                    "The current file hashes to {HL_FILE_HASH_SEP}{}. Re-read the file with `read` to copy a current {HL_FILE_PREFIX}path{HL_FILE_HASH_SEP}tag{HL_FILE_SUFFIX} header — never invent the tag and never reuse one from a prior session.",
+                    "The current file hashes to {HL_FILE_HASH_SEP}{}. Copy a current {HL_FILE_PREFIX}path{HL_FILE_HASH_SEP}tag{HL_FILE_SUFFIX} header from the read, write or edit result for this file; never invent the tag and never reuse one from a prior session.",
                     self.actual_file_hash
                 ),
             ];

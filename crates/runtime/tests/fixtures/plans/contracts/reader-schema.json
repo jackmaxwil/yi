@@ -1,0 +1,186 @@
+{
+  "id": "reader-schema",
+  "description": "The reader floor: at least one critical schema item over the findings shape, and provenance on every grounded claim. Two todos share one frozen schema. The conforming product passes; the product whose single finding dropped its provenance key fails, and the refusal names the JSON path the schema rejected.",
+  "decisions": [
+    "Provenance is a required property of the findings item, not a separate judge item. A deterministic shape check is what the reader floor can actually enforce before F3a; whether the provenance is honest is the judge's question and is out of scope here.",
+    "Both todos name the same schema artifact, so the fixture also pins that two verdicts over one criterion carry the same criteriaDigest.",
+    "The schema uses only the supported subset (type, required, properties, items) plus description, which is on the allowed descriptive list. The unsupported-keyword refusal is schema::unsupported_schema_assertion_is_refused, a different test with a different fixture.",
+    "The failing verdict's detail names $.findings[0].provenance. A refusal that only says the document is invalid sends the model back to guess, which is how a repair loop turns into a retry loop."
+  ],
+  "prompt": "Read the two docs and report what each says about rotation policy, with sources.",
+  "eagerInit": true,
+  "goal": "Report what the docs say about rotation policy, with sources",
+  "plan": "report-what-the-docs-say-about",
+  "artifacts": {
+    "findings-schema": {
+      "digest": "sha256:1e622f0260a9ff5b8d4efa3548822deb9653d170f179035641dc1f02cddbd0d0",
+      "media_type": "application/schema+json",
+      "length": 508,
+      "text": "{\n  \"description\": \"One reader's findings: every claim carries the url it was read from.\",\n  \"properties\": {\n    \"findings\": {\n      \"items\": {\n        \"properties\": {\n          \"claim\": {\n            \"type\": \"string\"\n          },\n          \"provenance\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"claim\",\n          \"provenance\"\n        ],\n        \"type\": \"object\"\n      },\n      \"type\": \"array\"\n    }\n  },\n  \"required\": [\n    \"findings\"\n  ],\n  \"type\": \"object\"\n}\n"
+    },
+    "findings-good": {
+      "digest": "sha256:38250bbf577e11a31f3ba6b39b328f29f5a2ec0b91b415581145ed476a2d4e15",
+      "media_type": "application/json",
+      "length": 137,
+      "text": "{\n  \"findings\": [\n    {\n      \"claim\": \"logrotate-lite rotates on size, not on age\",\n      \"provenance\": \"local://README.md\"\n    }\n  ]\n}\n"
+    },
+    "findings-bare": {
+      "digest": "sha256:89aa0433c929f7a3b7c44619d96a306f73e8df822ad07f36479896090d9a15f2",
+      "media_type": "application/json",
+      "length": 96,
+      "text": "{\n  \"findings\": [\n    {\n      \"claim\": \"logrotate-lite rotates on size, not on age\"\n    }\n  ]\n}\n"
+    }
+  },
+  "steps": [
+    {
+      "op": "init",
+      "actor": "agent://main",
+      "args": {
+        "goal": "Report what the docs say about rotation policy, with sources",
+        "todos": [
+          {
+            "label": "Read the README",
+            "contract": {
+              "class": "reader",
+              "items": [
+                {
+                  "id": "findings-shape",
+                  "critical": true,
+                  "weight": 100,
+                  "decider": {
+                    "schema": {
+                      "schema": {
+                        "digest": "sha256:1e622f0260a9ff5b8d4efa3548822deb9653d170f179035641dc1f02cddbd0d0",
+                        "media_type": "application/schema+json",
+                        "length": 508
+                      }
+                    }
+                  }
+                }
+              ],
+              "threshold": 1000,
+              "min_coverage": 1000
+            }
+          },
+          {
+            "label": "Read the man page",
+            "contract": {
+              "class": "reader",
+              "items": [
+                {
+                  "id": "findings-shape",
+                  "critical": true,
+                  "weight": 100,
+                  "decider": {
+                    "schema": {
+                      "schema": {
+                        "digest": "sha256:1e622f0260a9ff5b8d4efa3548822deb9653d170f179035641dc1f02cddbd0d0",
+                        "media_type": "application/schema+json",
+                        "length": 508
+                      }
+                    }
+                  }
+                }
+              ],
+              "threshold": 1000,
+              "min_coverage": 1000
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": {
+        "label": "Read the README"
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "serve": {
+        "local://findings/readme.json": "findings-good"
+      },
+      "args": {
+        "label": "Read the README",
+        "output": "local://findings/readme.json"
+      },
+      "expect": {
+        "ok": true,
+        "verdict": {
+          "outcome": "pass",
+          "score": 1000,
+          "coverage": 1000,
+          "items": [
+            {
+              "id": "findings-shape",
+              "verdict": "pass"
+            }
+          ]
+        },
+        "todos": [
+          {
+            "label": "Read the README",
+            "state": "done",
+            "resolution": "verified_done"
+          }
+        ]
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": {
+        "label": "Read the man page"
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "serve": {
+        "local://findings/manpage.json": "findings-bare"
+      },
+      "args": {
+        "label": "Read the man page",
+        "output": "local://findings/manpage.json"
+      },
+      "expect": {
+        "ok": false,
+        "error": "refused",
+        "verdict": {
+          "outcome": "fail",
+          "score": 0,
+          "coverage": 1000,
+          "items": [
+            {
+              "id": "findings-shape",
+              "verdict": "fail",
+              "detail": "$.findings[0].provenance"
+            }
+          ]
+        },
+        "todos": [
+          {
+            "label": "Read the man page",
+            "state": "running",
+            "refusals": 1
+          }
+        ]
+      }
+    }
+  ],
+  "final": {
+    "planCount": 1,
+    "criteriaDigestUnchanged": true
+  }
+}

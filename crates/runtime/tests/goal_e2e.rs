@@ -78,6 +78,7 @@ fn service_with_plans() -> std::io::Result<(Scratch, Service)> {
                     queue.push(message);
                 }
             }),
+            root.to_path_buf(),
         )
         .with_plans_dir(root.join("plans")),
     );
@@ -215,7 +216,11 @@ async fn active_goal_continues_past_idle_until_a_failing_turn_blocks_it() -> Tes
     );
     let store = memory_store();
     session.attach_store(store.clone())?;
-    let service = attach_goal(&session, std::env::temp_dir().join(".yi/plans"));
+    let service = attach_goal(
+        &session,
+        std::env::temp_dir().join(".yi/plans"),
+        std::env::temp_dir(),
+    );
     service.create("keep going until proven done", None, None, None)?;
 
     session.prompt("start")?;
@@ -372,7 +377,10 @@ fn seed_plan_of(root: &std::path::Path, label: &str, check: &str) -> TestResult 
         vec![Todo {
             label: TodoLabel::new(label)?,
             after: Vec::new(),
-            state: TodoState::Done { output: None },
+            state: TodoState::Done {
+                output: None,
+                resolution: None,
+            },
             delegation: Some(Delegation {
                 spec: SpawnSpec {
                     role: None,
@@ -381,6 +389,8 @@ fn seed_plan_of(root: &std::path::Path, label: &str, check: &str) -> TestResult 
                     tools: Vec::new(),
                     isolation: None,
                     budget: None,
+                    wall: None,
+                    parent_close: None,
                     extra: serde_json::Map::new(),
                 },
                 accept: Check::Command(check.to_owned()),
@@ -392,13 +402,15 @@ fn seed_plan_of(root: &std::path::Path, label: &str, check: &str) -> TestResult 
             subplan: None,
             retries: RetryCount::default(),
             children: Vec::new(),
+            note: None,
+            attempt: yi_types::plan::doc::AttemptId::FIRST,
+            refusals: 0,
+            contract: None,
+            contract_hash: None,
             extra: serde_json::Map::new(),
         }],
     );
-    store.write(&yi_runtime::plan::store::PlanFile {
-        plan,
-        body: String::new(),
-    })?;
+    store.write(&plan)?;
     Ok(())
 }
 

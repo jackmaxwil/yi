@@ -9,141 +9,11 @@ use yi_kernel::client::{
 use yi_tools::ToolOutput;
 use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome};
 
+pub use crate::kernel_bootstrap::{RLM_BOOTSTRAP_CODE, restore_notice_text, rlm_bootstrap_code};
 use crate::kernel_variables::{dump_variable_code, parse_variable_reply, read_variable_code};
-
-/// Binds `rlm` and `mcp` in the namespace, or a loud placeholder when the
-/// runtime package is missing. [`rlm_bootstrap_code`] appends bundled skills.
-pub const RLM_BOOTSTRAP_CODE: &str = r#"
-import asyncio
-import os as _yi_os
-
-_yi_os.environ["NO_COLOR"] = "1"
-_yi_os.environ["PIP_NO_COLOR"] = "1"
-_yi_os.environ["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
-get_ipython().colors = "nocolor"
-
-try:
-    import nest_asyncio as _yi_nest_asyncio
-    _yi_nest_asyncio.apply()
-except Exception:
-    pass
-
-try:
-    import rlm as _yi_rlm_module
-    rlm = _yi_rlm_module.rlm
-    fetch = _yi_rlm_module.fetch
-    bash = _yi_rlm_module.bash
-    import rlm.mcp as mcp
-except Exception as _yi_rlm_error:
-    _RLM_IMPORT_ERROR = str(_yi_rlm_error)
-
-    class _YiMissingRlm:
-        def _raise_missing(self):
-            raise RuntimeError(
-                "yi-runtime is not installed in this IPython kernel. "
-                "Remove ~/.yi/kernel-venv-* so yi can rebuild it, or set "
-                "YI_KERNEL_PYTHON to a kernel environment with yi-runtime installed. "
-                f"Import error: {_RLM_IMPORT_ERROR}"
-            )
-
-        async def run(self, prompt, **kwargs):
-            self._raise_missing()
-
-        async def find_models(self, query="", limit=8):
-            self._raise_missing()
-
-        async def list_subagents(self):
-            self._raise_missing()
-
-        async def delete_subagent(self, target):
-            self._raise_missing()
-
-        async def __call__(self, prompt, **kwargs):
-            return await self.run(prompt, **kwargs)
-
-    rlm = _YiMissingRlm()
-"#;
-
-const SKILL_WRAPPER_CODE: &str = r#"
-import importlib as _yi_importlib
-import inspect as _yi_inspect
-import sys as _yi_sys
-import types as _yi_types
-
-class _YiCallableSkillModule(_yi_types.ModuleType):
-    async def __call__(self, *args, **kwargs):
-        result = self.run(*args, **kwargs)
-        if _yi_inspect.isawaitable(result):
-            return await result
-        return result
-
-class _YiUnavailableSkill:
-    def __init__(self, name, error):
-        self.__name__ = name
-        self._yi_import_error = error
-        self.__doc__ = f"Python skill {name} is unavailable: {error}"
-
-    async def run(self, *args, **kwargs):
-        raise RuntimeError(
-            f"Python skill {self.__name__} is unavailable in this IPython kernel. "
-            f"Import error: {self._yi_import_error}"
-        )
-
-    async def __call__(self, *args, **kwargs):
-        return await self.run(*args, **kwargs)
-
-    def __repr__(self):
-        return f"<unavailable Python skill {self.__name__!r}: {self._yi_import_error}>"
-
-def _yi_wrap_skill_module(module):
-    run = getattr(module, "run", None)
-    if not callable(run):
-        return module
-    if isinstance(module, _YiCallableSkillModule):
-        return module
-    wrapped = _YiCallableSkillModule(module.__name__)
-    wrapped.__dict__.update(module.__dict__)
-    try:
-        wrapped.__signature__ = _yi_inspect.signature(run)
-    except Exception:
-        pass
-    doc = getattr(run, "__doc__", None)
-    if doc:
-        wrapped.__doc__ = doc
-    _yi_sys.modules[module.__name__] = wrapped
-    return wrapped
-
-_SKILL_IMPORT_ERRORS = {}
-
-for _yi_skill_name in %IMPORTS%:
-    try:
-        globals()[_yi_skill_name] = _yi_wrap_skill_module(
-            _yi_importlib.import_module(_yi_skill_name)
-        )
-    except Exception as _yi_skill_error:
-        _SKILL_IMPORT_ERRORS[_yi_skill_name] = str(_yi_skill_error)
-        globals()[_yi_skill_name] = _YiUnavailableSkill(
-            _yi_skill_name,
-            str(_yi_skill_error),
-        )
-"#;
-
-/// The base cell plus a skill-module wrapper per bundled Python skill.
-pub fn rlm_bootstrap_code(import_names: &[&str]) -> String {
-    if import_names.is_empty() {
-        return RLM_BOOTSTRAP_CODE.trim().to_owned();
-    }
-    let imports = serde_json::to_string(import_names).unwrap_or_else(|_| "[]".to_owned());
-    format!(
-        "{}\n{}",
-        RLM_BOOTSTRAP_CODE.trim(),
-        SKILL_WRAPPER_CODE.replace("%IMPORTS%", &imports).trim()
-    )
-}
 
 pub type HostHandlerFn = dyn Fn(Map<String, Value>) -> HostFuture + Send + Sync;
 
-/// Registered by the runtime, dispatched by yi-kernel.
 #[derive(Default)]
 pub struct HostRegistry {
     handlers: HashMap<String, Arc<HostHandlerFn>>,
@@ -162,10 +32,11 @@ impl HostRegistry {
 
     /// The host half of the kernel's `bash()` handle: five `exec.*` requests over
     /// [`yi_tools::jobs`]. A spawned job is handle-owned; only `exec.release` retires it.
-    pub fn register_exec(&mut self, cwd: PathBuf) {
+    pub fn register_exec(&mut self, cwd: PathBuf, sandbox: Option<yi_tools::Sandbox>) {
         let spawned = Arc::clone(&self.handles);
         self.register("exec.spawn", move |payload| {
             let cwd = cwd.clone();
+            let sandbox = sandbox.clone();
             let spawned = Arc::clone(&spawned);
             Box::pin(async move {
                 let command = payload
@@ -176,7 +47,7 @@ impl HostRegistry {
                         "exec.spawn requires a non-empty \"command\" argument".to_owned()
                     })?;
                 let cancelled: CancelFlag = Arc::new(|| false);
-                let id = yi_tools::jobs::spawn_job(command, &cwd, &cancelled, None);
+                let id = yi_tools::jobs::spawn_job(command, &cwd, &cancelled, sandbox.as_ref());
                 lock(&spawned).push(id);
                 let mut reply = Map::new();
                 reply.insert("job_id".to_owned(), Value::from(id.0));
@@ -337,12 +208,40 @@ pub fn snapshot_paths(base: &std::path::Path, key: Option<&str>) -> (PathBuf, Pa
     }
 }
 
+/// The profile a contained kernel runs under, and its `bash()` jobs with it (D241).
+pub(crate) fn kernel_profile(
+    sandbox: &yi_tools::Sandbox,
+    home: &std::path::Path,
+    family_dir: Option<&std::path::Path>,
+) -> yi_tools::Sandbox {
+    let mut profile = sandbox.clone();
+    // Only what the kernel side writes under ~/.yi; the venv stays read-only.
+    let yi = home.join(".yi");
+    profile.writable.push(yi.join("harness"));
+    profile.writable.push(yi.join("mcp"));
+    // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling.
+    profile
+        .writable
+        .extend(family_dir.map(std::path::Path::to_path_buf));
+    profile.loopback = true;
+    profile.writable.sort();
+    profile.writable.dedup();
+    profile
+}
+
 /// Boots on first cell, memoizes the manager, retries a failed start, owns busy recovery.
 pub struct KernelService {
     options: KernelServiceOptions,
     sandbox: tokio::sync::Mutex<Option<yi_tools::Sandbox>>,
     manager: tokio::sync::Mutex<Option<Arc<KernelManager>>>,
     last_error: Mutex<Option<String>>,
+    on_death: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    died: std::sync::atomic::AtomicBool,
+    names: Mutex<Option<Vec<String>>>,
+    restarted: Mutex<Option<String>>,
+    surface: Mutex<Option<String>>,
+    surface_shown: std::sync::atomic::AtomicBool,
+    snapshot_lock: Mutex<Option<(PathBuf, Option<std::fs::File>)>>,
 }
 
 impl KernelService {
@@ -352,21 +251,59 @@ impl KernelService {
             options,
             manager: tokio::sync::Mutex::new(None),
             last_error: Mutex::new(None),
+            on_death: Mutex::new(None),
+            died: std::sync::atomic::AtomicBool::new(false),
+            names: Mutex::new(None),
+            restarted: Mutex::new(None),
+            surface: Mutex::new(None),
+            surface_shown: std::sync::atomic::AtomicBool::new(false),
+            snapshot_lock: Mutex::new(None),
         }
     }
 
-    /// The environment line's fact: `ready`, `booting`, `idle`, or the last boot error.
+    pub fn on_death(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        if let Ok(mut slot) = self.on_death.lock() {
+            *slot = Some(hook);
+        }
+    }
+
+    pub fn take_death(&self) -> bool {
+        self.died.swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn died_under(&self, manager: &Arc<KernelManager>, cancelled: &CancelFlag) {
+        let ours = self
+            .manager
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|held| Arc::ptr_eq(held, manager));
+        let hook = self.on_death.lock().ok().and_then(|slot| slot.clone());
+        if let (true, false, false, Some(hook)) = (ours, cancelled(), manager.is_running(), hook) {
+            self.died.store(true, std::sync::atomic::Ordering::SeqCst);
+            hook();
+        }
+    }
+
+    /// The environment line's fact: `ready`, `booting`, `idle` or the boot error, then any restart.
     pub fn state(&self) -> String {
-        let Ok(slot) = self.manager.try_lock() else {
-            return "booting".to_owned();
+        let mut state = match self.manager.try_lock() {
+            Err(_) => "booting".to_owned(),
+            Ok(slot) if slot.as_ref().is_some_and(|manager| manager.is_running()) => {
+                "ready".to_owned()
+            }
+            Ok(_) => match self.last_error.lock().ok().and_then(|error| error.clone()) {
+                Some(error) => format!("unavailable: {}", error.lines().next().unwrap_or_default()),
+                None => "idle (boots on the first ipython call)".to_owned(),
+            },
         };
-        if slot.as_ref().is_some_and(|manager| manager.is_running()) {
-            return "ready".to_owned();
+        if let Some(restarted) = self.restarted.lock().ok().and_then(|slot| slot.clone()) {
+            state.push_str(&format!(" · {restarted}"));
         }
-        match self.last_error.lock().ok().and_then(|error| error.clone()) {
-            Some(error) => format!("unavailable: {}", error.lines().next().unwrap_or_default()),
-            None => "idle (boots on the first ipython call)".to_owned(),
+        if !self.surface_shown.load(std::sync::atomic::Ordering::SeqCst) {
+            state.push_str(&format!(" · {}", crate::kernel_bootstrap::surface_line()));
         }
+        state
     }
 
     pub async fn set_sandbox(&self, sandbox: Option<yi_tools::Sandbox>) {
@@ -381,14 +318,14 @@ impl KernelService {
 
     fn kernel_wrap(&self, sandbox: Option<&yi_tools::Sandbox>) -> Option<(String, Vec<String>)> {
         let sandbox = sandbox.filter(|_| yi_tools::Sandbox::available())?;
-        let mut profile = sandbox.clone();
-        // Only what the kernel side writes under ~/.yi; the venv stays read-only.
-        let yi = self.options.home.join(".yi");
-        profile.writable.push(yi.join("harness"));
-        profile.writable.push(yi.join("mcp"));
-        profile.writable.sort();
-        profile.writable.dedup();
-        Some(profile.kernel_prefix())
+        Some(
+            kernel_profile(
+                sandbox,
+                &self.options.home,
+                self.options.family_dir.as_deref(),
+            )
+            .kernel_prefix(),
+        )
     }
 
     fn kernel_env(&self) -> Vec<(String, String)> {
@@ -418,7 +355,7 @@ impl KernelService {
                 .into_owned(),
         ));
         // Set but never read by Python; the host-side depth check is
-        // authoritative (design K11).
+        // authoritative (design §9).
         env.push(("RLM_DEPTH".to_owned(), "0".to_owned()));
         env.push(("RLM_MAX_DEPTH".to_owned(), "1".to_owned()));
         env
@@ -440,7 +377,7 @@ impl KernelService {
 
     async fn ensure_inner(&self) -> Result<Arc<KernelManager>, String> {
         let wrap = self.kernel_wrap(self.sandbox.lock().await.as_ref());
-        // Only an on-disk session is revivable (K10). Incident: `/new`, `switch_session` and
+        // Only an on-disk session is revivable (§9). Incident: `/new`, `switch_session` and
         // `fork` swap the store under a live kernel, which kept writing under the old id.
         let key = self.options.snapshot_key.as_ref().and_then(|key| key());
         let snapshot = self.options.session_dir.as_deref().map(|dir| {
@@ -454,6 +391,15 @@ impl KernelService {
             }
         });
         let mut slot = self.manager.lock().await;
+        let booting = !slot
+            .as_ref()
+            .is_some_and(|manager| manager.is_running() && manager.wrap() == wrap.as_ref());
+        let mut displaced = None;
+        let snapshot = snapshot.filter(|config| {
+            let (owned, lock) = self.own_snapshot(&config.path, booting);
+            displaced = lock;
+            owned
+        });
         if let Some(manager) = slot.as_ref()
             && manager.is_running()
             && manager.wrap() == wrap.as_ref()
@@ -464,6 +410,8 @@ impl KernelService {
         if let Some(old) = slot.take() {
             old.dispose().await;
         }
+        // Invariant: a rekeyed kernel's final flush runs under its old session's lock.
+        drop(displaced);
         let snapshot_existed = snapshot
             .as_ref()
             .is_some_and(|config| config.path.is_file());
@@ -513,11 +461,25 @@ impl KernelService {
         if let (Some(restore), Some(on_restore)) = (pending_restore, &self.options.on_restore) {
             on_restore(&restore);
         }
+        if self.surface.lock().is_ok_and(|table| table.is_none())
+            && let Ok(table) = manager
+                .execute(
+                    crate::kernel_bootstrap::SURFACE_CODE,
+                    ExecuteOptions::default(),
+                )
+                .await
+            && let Ok(mut slot) = self.surface.lock()
+        {
+            *slot = Some(table.stdout.trim_end().to_owned()).filter(|table| !table.is_empty());
+        }
         *slot = Some(Arc::clone(&manager));
         Ok(manager)
     }
 
     pub async fn kill(&self) {
+        if let Ok(mut restarted) = self.restarted.lock() {
+            *restarted = None;
+        }
         let manager = self.manager.lock().await.take();
         if let Some(manager) = manager {
             manager.dispose().await;
@@ -567,6 +529,54 @@ impl KernelService {
 
     pub async fn dispose(&self) {
         self.kill().await;
+        if let Ok(mut held) = self.snapshot_lock.lock() {
+            *held = None;
+        }
+    }
+
+    /// Invariant: one process revives and writes a session's snapshot. The lock is an OS file
+    /// lock, so a crashed owner releases it; a refusal is retried at each boot, said once.
+    fn own_snapshot(
+        &self,
+        snapshot: &std::path::Path,
+        booting: bool,
+    ) -> (bool, Option<std::fs::File>) {
+        let path = snapshot.with_extension("lock");
+        let Ok(mut held) = self.snapshot_lock.lock() else {
+            return (false, None);
+        };
+        let cached = held
+            .as_ref()
+            .filter(|(locked, _)| *locked == path)
+            .map(|(_, file)| file.is_some());
+        match cached {
+            Some(true) => return (true, None),
+            Some(false) if !booting => return (false, None),
+            _ => {}
+        }
+        // A lock file that cannot be created never stops the save; only a held lock does.
+        let opened = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .write(true)
+                    .open(&path)
+            });
+        let Ok(file) = opened else {
+            return (true, None);
+        };
+        let owned = !matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock));
+        if !owned && cached.is_none() {
+            eprintln!(
+                "kernel: another yi process holds this session's kernel state ({}); this kernel starts empty and saves nothing",
+                path.display()
+            );
+        }
+        let displaced = held.replace((path, owned.then_some(file)));
+        (owned, displaced.and_then(|(_, file)| file))
     }
 
     pub async fn execute_user_cell(&self, code: &str, cancelled: &CancelFlag) -> ToolOutput {
@@ -576,18 +586,40 @@ impl KernelService {
         }
     }
 
+    async fn restart_note(&self, manager: &KernelManager) -> String {
+        let before = self.names.lock().ok().and_then(|names| names.clone());
+        let now = manager.list_namespace_names().await.unwrap_or_default();
+        let lost: Option<Vec<String>> = before.map(|names| {
+            names
+                .into_iter()
+                .filter(|name| !now.contains(name))
+                .collect()
+        });
+        if let Ok(mut slot) = self.restarted.lock() {
+            *slot = Some(match &lost {
+                Some(names) => format!("restarted; {} names lost", names.len()),
+                None => "restarted; in-memory state lost".to_owned(),
+            });
+        }
+        crate::kernel_bootstrap::restart_note(lost.as_deref())
+    }
+
     async fn execute_async(
         &self,
         code: &str,
         cancelled: &CancelFlag,
     ) -> Result<KernelCellOutcome, String> {
         let mut kernel_restarted = false;
+        let mut notes = Vec::new();
         let ceiling = self
             .options
             .cell_ceiling
             .unwrap_or(std::time::Duration::from_secs(yi_tools::MAX_TIMEOUT_SECS));
         loop {
             let manager = self.ensure().await?;
+            if kernel_restarted && notes.is_empty() {
+                notes.push(self.restart_note(&manager).await);
+            }
             let abort = AbortFlag::default();
             let watcher = {
                 let abort = abort.clone();
@@ -615,13 +647,29 @@ impl KernelService {
             watcher.abort();
             match outcome {
                 Ok(result) => {
+                    if !kernel_restarted && let Ok(mut restarted) = self.restarted.lock() {
+                        *restarted = None;
+                    }
+                    if result.status != yi_types::kernel::ExecuteStatus::Aborted
+                        && let Some(names) = manager.list_namespace_names().await
+                        && let Ok(mut slot) = self.names.lock()
+                    {
+                        *slot = Some(names);
+                    }
+                    let first = !self
+                        .surface_shown
+                        .swap(true, std::sync::atomic::Ordering::SeqCst);
+                    if let Some(table) = self.surface.lock().ok().and_then(|table| table.clone())
+                        && first
+                    {
+                        notes.push(crate::kernel_bootstrap::surface_note(&table));
+                    }
                     return Ok(KernelCellOutcome {
                         result,
                         kernel_restarted,
+                        notes,
                     });
                 }
-                // Headless busy recovery: kill + fresh kernel + restart notice
-                // into model context; no UI to ask yet.
                 Err(ExecuteError::BusyAfterInterrupt) => {
                     if cancelled() {
                         return Err(ExecuteError::BusyAfterInterrupt.to_string());
@@ -629,7 +677,10 @@ impl KernelService {
                     self.kill().await;
                     kernel_restarted = true;
                 }
-                Err(error) => return Err(error.to_string()),
+                Err(error) => {
+                    self.died_under(&manager, cancelled).await;
+                    return Err(error.to_string());
+                }
             }
         }
     }
@@ -637,33 +688,6 @@ impl KernelService {
 
 pub fn ipython_tool(service: Arc<KernelService>) -> Arc<dyn yi_tools::Tool> {
     Arc::new(yi_tools::IpythonTool { bridge: service })
-}
-
-pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> String {
-    let mut lines = vec!["<ipython_state_restored>".to_owned()];
-    if restore.restored.is_empty() {
-        lines.push(
-            "Your previous IPython kernel state could not be revived; the kernel is starting fresh, so re-create any variables, imports, or loaded data you need.".to_owned(),
-        );
-    } else {
-        lines.push(format!(
-            "Your IPython kernel state was revived from your previous session. These names are available again: {}.",
-            restore.restored.join(", ")
-        ));
-    }
-    if !restore.failed.is_empty() {
-        let names: Vec<&str> = restore
-            .failed
-            .iter()
-            .map(|failure| failure.name.as_str())
-            .collect();
-        lines.push(format!(
-            "These could not be restored and must be recreated if needed: {}.",
-            names.join(", ")
-        ));
-    }
-    lines.push("</ipython_state_restored>".to_owned());
-    lines.join("\n")
 }
 
 impl KernelBridge for KernelService {
@@ -724,6 +748,11 @@ pub enum VariableReadError {
     NotRunning,
     #[error("the kernel could not be read: {detail}")]
     Cell { detail: String },
+    #[error(
+        "the agent is running a cell; nothing was read within {} s",
+        yi_kernel::KERNEL_STATE_LISTING_TIMEOUT_MS / 1000
+    )]
+    Busy,
     #[error("repr({name}) raised {python}")]
     Unreadable { name: VariableName, python: String },
 }
@@ -748,10 +777,16 @@ impl KernelService {
     pub async fn read_variable(
         &self,
         name: &VariableName,
-    ) -> Result<Option<String>, VariableReadError> {
-        self.variable_cell(name, read_variable_code(name))
-            .await
-            .map(|reply| reply.map(|(text, chars)| render_value(text, chars)))
+        page: Option<crate::fetch::Page>,
+    ) -> Result<Option<(String, Option<usize>)>, VariableReadError> {
+        let reply = self.variable_cell(name, read_variable_code(name, page));
+        Ok(reply.await?.map(|(text, chars)| match page {
+            None => (render_value(text, chars), None),
+            Some(page) => {
+                let end = page.offset.saturating_add(text.chars().count());
+                (text, (end < chars).then_some(end))
+            }
+        }))
     }
 
     /// The variable dilled to `path` (D164): `Some(bytes)` when it exists.
@@ -770,10 +805,6 @@ impl KernelService {
         name: &VariableName,
         code: String,
     ) -> Result<Option<(String, usize)>, VariableReadError> {
-        let manager = self
-            .manager_if_running()
-            .await
-            .ok_or(VariableReadError::NotRunning)?;
         let abort = AbortFlag::default();
         let timer = {
             let abort = abort.clone();
@@ -785,20 +816,38 @@ impl KernelService {
                 abort.fire();
             })
         };
-        let outcome = manager
-            .execute(
-                &code,
-                ExecuteOptions {
-                    abort: Some(abort),
-                    internal: true,
-                    ..ExecuteOptions::default()
-                },
-            )
-            .await;
+        let outcome = async {
+            let manager = tokio::select! {
+                manager = self.manager_if_running() => manager.ok_or(VariableReadError::NotRunning)?,
+                () = abort.fired() => return Err(VariableReadError::Busy),
+            };
+            let options = ExecuteOptions {
+                abort: Some(abort.clone()),
+                internal: true,
+                ..ExecuteOptions::default()
+            };
+            manager
+                .execute(&code, options)
+                .await
+                .map_err(|error| VariableReadError::Cell {
+                    detail: error.to_string(),
+                })
+        }
+        .await;
         timer.abort();
-        let result = outcome.map_err(|error| VariableReadError::Cell {
-            detail: error.to_string(),
-        })?;
+        let result = outcome?;
+        // Invariant: only a cell the abort stopped before it was sent reports 0 ms.
+        if result.status == yi_types::kernel::ExecuteStatus::Aborted {
+            return Err(match result.duration_ms {
+                0 => VariableReadError::Busy,
+                _ => VariableReadError::Cell {
+                    detail: format!(
+                        "the read timed out after {} s",
+                        yi_kernel::KERNEL_STATE_LISTING_TIMEOUT_MS / 1000
+                    ),
+                },
+            });
+        }
         if result.status != yi_types::kernel::ExecuteStatus::Ok {
             return Err(VariableReadError::Cell {
                 detail: result
@@ -878,7 +927,7 @@ mod tests {
 
     #[test]
     fn the_read_cell_carries_the_name_as_data_not_as_code() -> TestResult {
-        let code = read_variable_code(&VariableName::parse("answer")?);
+        let code = read_variable_code(&VariableName::parse("answer")?, None);
         assert!(code.contains("name = \"answer\""), "{code}");
         assert!(code.contains("if name not in ns:"), "{code}");
         assert!(
@@ -933,7 +982,7 @@ mod tests {
 
     fn exec_registry() -> HostRegistry {
         let mut registry = HostRegistry::default();
-        registry.register_exec(std::env::temp_dir());
+        registry.register_exec(std::env::temp_dir(), None);
         registry
     }
 
@@ -1096,7 +1145,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_read_without_a_kernel_is_not_an_absence() -> TestResult {
-        let error = service().read_variable(&VariableName::parse("x")?).await;
+        let error = service()
+            .read_variable(&VariableName::parse("x")?, None)
+            .await;
         assert!(matches!(error, Err(VariableReadError::NotRunning)));
         Ok(())
     }
@@ -1111,13 +1162,13 @@ mod tests {
             .await?;
         assert_eq!(
             service
-                .read_variable(&VariableName::parse("answer")?)
+                .read_variable(&VariableName::parse("answer")?, None)
                 .await?,
-            Some("42".to_owned())
+            Some(("42".to_owned(), None))
         );
         assert_eq!(
             service
-                .read_variable(&VariableName::parse("never_bound")?)
+                .read_variable(&VariableName::parse("never_bound")?, None)
                 .await?,
             None
         );

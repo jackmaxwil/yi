@@ -1,0 +1,138 @@
+{
+  "id": "set-cannot-complete",
+  "description": "set may declare and rearrange work and may request legal transitions, and it may not author Done. A row asking for done on a todo with no committed verdict is refused; the same set's other rows, which only block, do not apply either, because a set is one transaction.",
+  "decisions": [
+    "The refusal names the row's label, not the whole set. A caller that mis-typed one row learns which one.",
+    "The set is refused whole. Partially applying a multi-row set would leave the model's mental model of the plan wrong in a way no reply can correct, which is the defect ops.rs:1035 has today when it authors Done directly.",
+    "A second set that asks only for blocked applies, which is the control: this fixture fails open if the driver simply refuses every set.",
+    "There is no committed verdict anywhere in this plan, so no token can be forged into the refusal path by the test itself."
+  ],
+  "prompt": "Package the tarball and mark the packaging row done.",
+  "eagerInit": true,
+  "goal": "Package logrotate-lite and record the packaging as done",
+  "plan": "package-logrotate-lite-and-record-the",
+  "artifacts": {
+    "checker": {
+      "digest": "sha256:9b822902c400e3ba6d1173add1518bd12ee7eff9f34b36196e185edbe82d363b",
+      "media_type": "application/vnd.yi.checker-manifest+json",
+      "length": 209,
+      "text": "{\n  \"command\": \"test -s dist/logrotate-lite.tar.gz\",\n  \"cwd\": \"snapshot_root\",\n  \"cwd_subdir\": null,\n  \"env\": [],\n  \"manifest\": 1,\n  \"protected\": [],\n  \"reads_outside_snapshot\": false,\n  \"timeout_ms\": 30000\n}\n"
+    }
+  },
+  "steps": [
+    {
+      "op": "init",
+      "actor": "agent://main",
+      "args": {
+        "goal": "Package logrotate-lite and record the packaging as done",
+        "todos": [
+          {
+            "label": "Package the tarball",
+            "contract": {
+              "class": "writer",
+              "items": [
+                {
+                  "id": "tarball-exists",
+                  "critical": true,
+                  "weight": 100,
+                  "decider": {
+                    "cmd": {
+                      "checker": {
+                        "digest": "sha256:9b822902c400e3ba6d1173add1518bd12ee7eff9f34b36196e185edbe82d363b",
+                        "media_type": "application/vnd.yi.checker-manifest+json",
+                        "length": 209
+                      },
+                      "timeout_ms": 30000
+                    }
+                  }
+                }
+              ],
+              "threshold": 1000,
+              "min_coverage": 1000
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": {
+        "label": "Package the tarball"
+      },
+      "expect": {
+        "ok": true,
+        "todos": [
+          {
+            "label": "Package the tarball",
+            "state": "running"
+          }
+        ]
+      }
+    },
+    {
+      "op": "set",
+      "actor": "agent://main",
+      "args": {
+        "rows": [
+          {
+            "spec": {
+              "label": "Package the tarball"
+            },
+            "state": "done"
+          },
+          {
+            "spec": {
+              "label": "Announce the release"
+            },
+            "state": "pending"
+          }
+        ]
+      },
+      "expect": {
+        "ok": false,
+        "error": "no verified completion for \"Package the tarball\"",
+        "journal": [
+          "set"
+        ],
+        "todos": [
+          {
+            "label": "Package the tarball",
+            "state": "running",
+            "refusals": 1
+          }
+        ]
+      }
+    },
+    {
+      "op": "set",
+      "actor": "agent://main",
+      "args": {
+        "rows": [
+          {
+            "spec": {
+              "label": "Package the tarball"
+            },
+            "state": "blocked"
+          }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "todos": [
+          {
+            "label": "Package the tarball",
+            "state": "blocked",
+            "blockedOn": "user"
+          }
+        ]
+      }
+    }
+  ],
+  "final": {
+    "planCount": 1
+  }
+}

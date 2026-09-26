@@ -48,9 +48,18 @@ pub enum Attribution {
     User,
 }
 
+/// When D25 landed (2026-09-01): no message written before it carries an attribution.
+pub const ATTRIBUTED_SINCE_MS: u64 = 1_788_256_519_000;
+
 impl Attribution {
     pub fn is_unproven(&self) -> bool {
         matches!(self, Self::Unproven)
+    }
+
+    /// Whether a user-role message stored at `stored_ms` draws as the user's words. Display
+    /// only: `user://` still serves [`Self::User`] alone.
+    pub fn reads_as_typed(self, stored_ms: u64) -> bool {
+        self == Self::User || stored_ms < ATTRIBUTED_SINCE_MS
     }
 }
 
@@ -94,7 +103,7 @@ pub struct Usage {
     pub cache_write1h: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<i64>,
-    // Pi writes negative token deltas in usage adjustment records; unsigned fields
+    // Pi v4 session files carry negative token deltas in usage adjustment records; unsigned fields
     // would fail to load those session files.
     pub total_tokens: i64,
     pub cost: Cost,

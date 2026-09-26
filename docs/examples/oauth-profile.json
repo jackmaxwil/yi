@@ -1,0 +1,44 @@
+{
+  "_comment": [
+    "Login profile (D191). Yi reads ~/.yi/oauth/<provider>.json and ships none of its own:",
+    "no client ids, no endpoints, no wire identity. Whatever this file carries is what",
+    "`yi login <provider>` uses and what every request for that provider sends.",
+    "",
+    "It lives beside the token store, NOT in ~/.yi/catalog/, so the background catalog",
+    "refresh can never rewrite it.",
+    "",
+    "`stream_headers` are merged over the adapter's own headers on every request, with",
+    "D170 semantics: a name replaces the adapter's, matched case-insensitively, and an",
+    "empty value removes it. `refresh_headers` go only on the token-refresh call.",
+    "",
+    "You are responsible for what you put here. A provider's terms may forbid presenting",
+    "a client id or identity that is not yours.",
+    "",
+    "scripts/oauth-profile-gen.py writes this file; fill in its discovery stubs."
+  ],
+
+  "kind": "oauth-code",
+
+  "client_id": "REPLACE_ME",
+  "authorize": "https://REPLACE_ME/oauth/authorize",
+  "token": "https://REPLACE_ME/oauth/token",
+  "scopes": "REPLACE_ME",
+
+  "callback_port": 8765,
+  "callback_path": "/callback",
+  "redirect_host": "localhost",
+  "port_fallback": true,
+  "json_token": true,
+
+  "extra_authorize": {},
+
+  "stream_headers": {
+    "_": "Header name -> value, sent on every request for this provider.",
+    "user-agent": "REPLACE_ME"
+  },
+
+  "refresh_headers": {
+    "_": "Header name -> value, sent only when refreshing the token.",
+    "user-agent": "REPLACE_ME"
+  }
+}

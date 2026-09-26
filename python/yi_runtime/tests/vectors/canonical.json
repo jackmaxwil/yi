@@ -1,0 +1,128 @@
+{
+  "rule": "crates/runtime/tests/fixtures/plans/journal/canonical.md",
+  "note": "sha256 is over the utf-8 bytes of `canonical`, with no trailing newline. Rust and Python read this same file; a difference is a bug in one of them, never a reason to regenerate.",
+  "vectors": [
+    {
+      "name": "empty object",
+      "input": {},
+      "canonical": "{}",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "empty containers nested",
+      "input": {
+        "a": {},
+        "b": [],
+        "c": [
+          [],
+          {}
+        ]
+      },
+      "canonical": "{\"a\":{},\"b\":[],\"c\":[[],{}]}",
+      "sha256": "925c673adf18ca220ee7da7f5e344def6f8c60be721b2ef68c93a67ee7d9c883"
+    },
+    {
+      "name": "key ordering, ascii",
+      "input": {
+        "b": 1,
+        "A": 2,
+        "a": 3,
+        "B": 4,
+        "_": 5,
+        "0": 6
+      },
+      "canonical": "{\"0\":6,\"A\":2,\"B\":4,\"_\":5,\"a\":3,\"b\":1}",
+      "sha256": "0a5e263b51225d31e34bb290ff5812516870d801791272e7f71e0776d998efd2"
+    },
+    {
+      "name": "key ordering, code point above ascii",
+      "input": {
+        "z": 1,
+        "é": 2,
+        "É": 3,
+        "中": 4,
+        "😀": 5
+      },
+      "canonical": "{\"z\":1,\"É\":3,\"é\":2,\"中\":4,\"😀\":5}",
+      "sha256": "e9ee2f3c44048cfe348d84a4359131dc4d26791c35c0050d71186507bf2b3dce"
+    },
+    {
+      "name": "nested objects keep depth, keys sort at every level",
+      "input": {
+        "outer": {
+          "z": {
+            "b": 1,
+            "a": 2
+          },
+          "a": [
+            {
+              "d": 4,
+              "c": 3
+            }
+          ]
+        },
+        "after": [
+          "b",
+          "a"
+        ]
+      },
+      "canonical": "{\"after\":[\"b\",\"a\"],\"outer\":{\"a\":[{\"c\":3,\"d\":4}],\"z\":{\"a\":2,\"b\":1}}}",
+      "sha256": "072205fedf259787a16e359f0a1194941fe2ef8ce6a885f4a0e9240216e65792"
+    },
+    {
+      "name": "array order is data, never sorted",
+      "input": {
+        "after": [
+          "Write the test suite",
+          "Freeze the CLI argument surface",
+          "Aardvark"
+        ]
+      },
+      "canonical": "{\"after\":[\"Write the test suite\",\"Freeze the CLI argument surface\",\"Aardvark\"]}",
+      "sha256": "abc10c451338fe49c11847a9c2a769231e0da88e9dc87b581b3ba81e666ac407"
+    },
+    {
+      "name": "unicode is emitted as utf-8, never escaped",
+      "input": {
+        "goal": "roter léger 中文 😀",
+        "note": "café"
+      },
+      "canonical": "{\"goal\":\"roter léger 中文 😀\",\"note\":\"café\"}",
+      "sha256": "20212eadd36c45acce18e2e5b42ddaba8ff28635a661feb40f8e47321dc326d3"
+    },
+    {
+      "name": "escapes: quote, backslash, control characters",
+      "input": {
+        "detail": "he said \"no\"\n\tpath C:\\tmp\u0007end"
+      },
+      "canonical": "{\"detail\":\"he said \\\"no\\\"\\n\\tpath C:\\\\tmp\\u0007end\"}",
+      "sha256": "4ba8eb82b3828ff6c83bec3911df34216d21a7017e79f16b65ac437810825830"
+    },
+    {
+      "name": "integers keep their spelling, booleans and null are literals",
+      "input": {
+        "at": 1757650000000,
+        "todos": 6,
+        "seq": 0,
+        "negative": -1,
+        "ok": true,
+        "last": null
+      },
+      "canonical": "{\"at\":1757650000000,\"last\":null,\"negative\":-1,\"ok\":true,\"seq\":0,\"todos\":6}",
+      "sha256": "fc03845cb8ed37be911ee434f634cad639f75f7e9d2a298417673e58b5f030c2"
+    },
+    {
+      "name": "a plan op payload, the shape argsHash is taken over",
+      "input": {
+        "label": "Write the test suite",
+        "output": "kernel://main/test_report",
+        "after": [
+          "Freeze the CLI argument surface"
+        ],
+        "attempt": 2
+      },
+      "canonical": "{\"after\":[\"Freeze the CLI argument surface\"],\"attempt\":2,\"label\":\"Write the test suite\",\"output\":\"kernel://main/test_report\"}",
+      "sha256": "9103ea4e756718ae55beab9dde30fccea44399e9faee7c8704f3485018fc0f25"
+    }
+  ]
+}

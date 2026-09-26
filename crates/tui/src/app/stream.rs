@@ -1,4 +1,4 @@
-//! U13's streaming commit path: prose and reasoning both reach scrollback a stable slice at a
+//! §17.3's streaming commit path: prose and reasoning both reach scrollback a stable slice at a
 //! time, so the live region holds only the unstable tail and outgrowing it loses nothing.
 
 use std::cmp::Ordering;
@@ -63,9 +63,16 @@ fn overflow_cut(
     if tail.matches("```").count() % 2 == 1 || rows(tail) <= budget {
         return None;
     }
+    // Incident: a cut through a table's body left every row after it as raw pipes.
+    let table = table_span(tail);
     let breaks: Vec<usize> = tail
         .match_indices(char::is_whitespace)
         .map(|(at, ws)| at + ws.len())
+        .filter(|at| {
+            table
+                .as_ref()
+                .is_none_or(|span| *at <= span.start || *at > span.end)
+        })
         .collect();
     // Monotone in the cut, so the first break that fits is the least the reader
     // loses from the live region. Never `Equal`, so the search never succeeds.
@@ -78,12 +85,40 @@ fn overflow_cut(
             }
         })
         .unwrap_or_else(|index| index);
+    if index == breaks.len()
+        && let Some(span) = table
+    {
+        return (span.start > 0).then_some(span.start);
+    }
     // Cutting on that arbitrary word leaves the head on a half-empty row every screenful.
     // The last word that fits the row the break lands on wraps the seam like any other.
     let rest = breaks.get(index..)?;
     let head = rows(tail.get(..*rest.first()?).unwrap_or_default());
     let fills = rest.partition_point(|&at| rows(tail.get(..at).unwrap_or_default()) <= head);
     rest.get(fills.saturating_sub(1)).copied()
+}
+
+pub(crate) fn table_span(tail: &str) -> Option<std::ops::Range<usize>> {
+    let (mut start, mut offset, mut previous) = (None, 0, 0);
+    for line in tail.split_inclusive('\n') {
+        let row = line.trim();
+        let rule = row.contains('|')
+            && row.contains('-')
+            && row.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '));
+        let ends = row.is_empty()
+            || ["- ", "* ", "+ ", "#", ">", "```", "~~~"]
+                .iter()
+                .any(|mark| row.starts_with(mark));
+        match start {
+            None if rule => start = Some(previous),
+            None if row.starts_with('|') => start = Some(offset),
+            Some(from) if ends => return Some(from..offset),
+            _ => {}
+        }
+        previous = offset;
+        offset += line.len();
+    }
+    start.map(|from| from..tail.len())
 }
 
 impl App {
@@ -127,6 +162,8 @@ impl App {
             .unwrap_or_default()
             .to_owned();
         if !slice.trim().is_empty() {
+            // Invariant: a held run of reads commits above the reasoning that follows it.
+            self.flush_explored();
             let lines = crate::cell::thought_lines(
                 &slice,
                 self.content_width(),
@@ -147,7 +184,7 @@ impl App {
         self.commit_thought_to(self.live_thought.len());
     }
 
-    /// U13: each newly stable slice renders standalone against a byte cursor. Re-rendering
+    /// Each newly stable slice renders standalone against a byte cursor. Re-rendering
     /// the whole prefix let trailing-blank trimming duplicate list items mid-stream.
     pub(super) fn commit_stable_prefix(&mut self) {
         let shown = self.pacing.prose.shown();
@@ -159,15 +196,18 @@ impl App {
         }
         let (width, theme) = (self.content_width(), self.theme);
         let inner = width.saturating_sub(crate::cell::GUTTER.len());
+        let tail = self
+            .live_markdown
+            .get(self.live_cut..shown)
+            .unwrap_or_default();
         if let Some(forced) = overflow_cut(
-            self.live_markdown
-                .get(self.live_cut..shown)
-                .unwrap_or_default(),
+            tail,
             crate::render::live_tail_rows(self.rows),
             width,
             |text| crate::markdown::render(text, inner, &theme).len(),
         ) {
-            self.commit_prose(self.live_cut + forced, false);
+            let spaced = table_span(tail).is_some_and(|span| span.start == forced);
+            self.commit_prose(self.live_cut + forced, spaced);
         }
     }
 
@@ -178,6 +218,7 @@ impl App {
             return;
         }
         self.flush_thought();
+        self.flush_explored();
         let slice = self
             .live_markdown
             .get(self.live_cut..cut)

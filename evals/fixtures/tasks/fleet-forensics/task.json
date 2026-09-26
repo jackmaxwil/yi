@@ -1,0 +1,6 @@
+{
+  "id": "fleet-forensics",
+  "dryReward": 0,
+  "timeoutSec": 3600,
+  "note": "faux never writes an answer file, so all six deliverables fail"
+}

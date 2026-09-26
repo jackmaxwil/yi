@@ -1,0 +1,502 @@
+[
+ {
+  "id": "basic",
+  "args": [
+   "--max-size",
+   "100"
+  ],
+  "stdin": "write app.log 60\nwrite app.log 50\ntick 10\nwrite app.log 100\nwrite app.log 1\ntick 5\nwrite db.log 10\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "app.log 1 10\napp.log.1 100 10\napp.log.2 50 0\napp.log.3 60 0\ndb.log 10 15\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "keep-and-compress",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep",
+   "2",
+   "--compress-from",
+   "2"
+  ],
+  "stdin": "write app.log 60\nwrite app.log 50\ntick 10\nwrite app.log 100\nwrite app.log 1\ntick 5\nwrite db.log 10\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "app.log 1 10\napp.log.1 100 10\napp.log.2.gz 13 0\ndb.log 10 15\ndropped 1 15\n",
+  "files_after": {}
+ },
+ {
+  "id": "oversize-write",
+  "args": [
+   "--max-size",
+   "100"
+  ],
+  "stdin": "write a 250\nwrite a 1\nwrite a 99\nwrite a 1\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 1 0\na.1 100 0\na.2 250 0\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "max-age",
+  "args": [
+   "--max-size",
+   "50",
+   "--max-age",
+   "30"
+  ],
+  "stdin": "write a 40\nwrite a 40\ntick 20\nwrite a 40\ntick 11\nwrite a 5\ntick 20\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 45 31\ndropped 2 80\n",
+  "files_after": {}
+ },
+ {
+  "id": "forced-rotate",
+  "args": [
+   "--max-size",
+   "100"
+  ],
+  "stdin": "rotate a\nwrite a 0\nrotate a\nwrite a 5\nrotate a\nrotate a\nwrite a 7\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 7 0\na.1 5 0\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "keep-bytes",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep",
+   "9",
+   "--keep-bytes",
+   "150"
+  ],
+  "stdin": "write a 90\nwrite a 90\nwrite a 90\nwrite a 90\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 90 0\na.1 90 0\ndropped 2 180\n",
+  "files_after": {}
+ },
+ {
+  "id": "bad-command",
+  "args": [
+   "--max-size",
+   "100"
+  ],
+  "stdin": "write a 5\nappend a 5\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "exact-fit-does-not-rotate",
+  "args": [
+   "--max-size",
+   "100"
+  ],
+  "stdin": "write a 40\nwrite a 60\nwrite a 1\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 1 0\na.1 100 0\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "keep-zero",
+  "args": [
+   "--max-size",
+   "10",
+   "--keep",
+   "0"
+  ],
+  "stdin": "write a 8\nwrite a 8\nwrite a 8\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 8 0\ndropped 2 16\n",
+  "files_after": {}
+ },
+ {
+  "id": "compress-once",
+  "args": [
+   "--max-size",
+   "10",
+   "--keep",
+   "5",
+   "--compress-from",
+   "1"
+  ],
+  "stdin": "write a 10\nwrite a 10\nwrite a 10\nwrite a 10\nwrite a 3\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 3 0\na.1.gz 3 0\na.2.gz 3 0\na.3.gz 3 0\na.4.gz 3 0\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "compress-rounds-up",
+  "args": [
+   "--max-size",
+   "100",
+   "--compress-from",
+   "1"
+  ],
+  "stdin": "write a 1\nrotate a\nwrite a 5\nrotate a\nwrite a 8\nrotate a\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a.1.gz 2 0\na.2.gz 2 0\na.3.gz 1 0\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "compress-before-budget",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep",
+   "9",
+   "--compress-from",
+   "2",
+   "--keep-bytes",
+   "120"
+  ],
+  "stdin": "write a 100\nwrite a 100\nwrite a 100\nwrite a 100\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 100 0\na.1 100 0\ndropped 2 50\n",
+  "files_after": {}
+ },
+ {
+  "id": "budget-drops-the-only-archive",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep-bytes",
+   "50"
+  ],
+  "stdin": "write a 90\nwrite a 90\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 90 0\ndropped 1 90\n",
+  "files_after": {}
+ },
+ {
+  "id": "age-leaves-gaps",
+  "args": [
+   "--max-size",
+   "10",
+   "--keep",
+   "9",
+   "--max-age",
+   "15"
+  ],
+  "stdin": "write a 10\ntick 10\nwrite a 10\ntick 10\nwrite a 10\nwrite a 10\ntick 6\nwrite a 10\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 10 26\na.1 10 20\na.2 10 20\ndropped 2 20\n",
+  "files_after": {}
+ },
+ {
+  "id": "age-exact-boundary",
+  "args": [
+   "--max-size",
+   "10",
+   "--max-age",
+   "10"
+  ],
+  "stdin": "write a 10\nwrite a 10\ntick 10\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 10 0\na.1 10 0\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "age-spares-the-active-file",
+  "args": [
+   "--max-size",
+   "10",
+   "--max-age",
+   "5"
+  ],
+  "stdin": "write a 3\ntick 100\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 3 0\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "mtime-is-last-write",
+  "args": [
+   "--max-size",
+   "100"
+  ],
+  "stdin": "write a 10\ntick 7\nwrite a 10\ntick 7\nrotate a\ntick 7\nwrite a 1\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 1 21\na.1 20 7\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "independent-logs",
+  "args": [
+   "--max-size",
+   "20",
+   "--keep",
+   "1"
+  ],
+  "stdin": "write b 15\nwrite a 15\nwrite b 15\nwrite a.1 3\nwrite a 15\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 15 0\na.1 15 0\na.1 3 0\nb 15 0\nb.1 15 0\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "comments-and-blanks",
+  "args": [
+   "--max-size",
+   "20"
+  ],
+  "stdin": "# start\n\n  write a 5  \n# end\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 5 0\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "nothing",
+  "args": [
+   "--max-size",
+   "20"
+  ],
+  "stdin": "",
+  "files": {},
+  "exit": 0,
+  "stdout": "dropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "missing-max-size",
+  "args": [
+   "--keep",
+   "2"
+  ],
+  "stdin": "write a 1\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "zero-max-size",
+  "args": [
+   "--max-size",
+   "0"
+  ],
+  "stdin": "write a 1\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "compress-from-zero",
+  "args": [
+   "--max-size",
+   "5",
+   "--compress-from",
+   "0"
+  ],
+  "stdin": "write a 1\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "negative-bytes",
+  "args": [
+   "--max-size",
+   "5"
+  ],
+  "stdin": "write a -1\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "bad-arity",
+  "args": [
+   "--max-size",
+   "5"
+  ],
+  "stdin": "write a 1\ntick\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "bad-name",
+  "args": [
+   "--max-size",
+   "5"
+  ],
+  "stdin": "write a/b 1\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "error-prints-nothing",
+  "args": [
+   "--max-size",
+   "5"
+  ],
+  "stdin": "write a 1\nwrite a 9\nbogus\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ },
+ {
+  "id": "random-0",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep",
+   "0"
+  ],
+  "stdin": "write b.log 23\nwrite a 59\nwrite a 3\nrotate a\nwrite a 55\nrotate a\nrotate b.log\nrotate b.log\nwrite a 18\nrotate b.log\nrotate b.log\nwrite b.log 24\nwrite b.log 9\nwrite a 11\nwrite a 4\nwrite a 1\nwrite a 40\ntick 11\ntick 10\nwrite a 62\nwrite a 4\nwrite b.log 56\nwrite a 57\nwrite b.log 17\nwrite a 16\nwrite a 6\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 79 21\nb.log 17 21\ndropped 6 369\n",
+  "files_after": {}
+ },
+ {
+  "id": "random-1",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep",
+   "1",
+   "--max-age",
+   "46",
+   "--compress-from",
+   "2"
+  ],
+  "stdin": "write a 9\nwrite a 5\nwrite a 22\nwrite b.log 11\nwrite a 66\nwrite a 19\nwrite a 5\nwrite a 64\nwrite b.log 40\nwrite a 14\ntick 9\ntick 8\nwrite a 60\nwrite a 50\nwrite a 1\nwrite a 8\nwrite a 5\ntick 19\ntick 5\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 64 17\na.1 60 17\nb.log 51 0\ndropped 3 204\n",
+  "files_after": {}
+ },
+ {
+  "id": "random-2",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep",
+   "4",
+   "--compress-from",
+   "1"
+  ],
+  "stdin": "write a 58\nwrite a 56\nwrite b.log 45\nwrite b.log 29\nrotate a\nwrite a 40\nwrite a 14\nrotate b.log\ntick 7\nrotate b.log\ntick 10\ntick 12\ntick 8\nrotate b.log\nwrite a 25\nwrite a 26\nwrite b.log 2\nwrite b.log 10\nwrite a 66\ntick 4\nwrite a 7\ntick 0\nwrite a 42\nwrite b.log 57\ntick 13\ntick 16\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 42 41\na.1.gz 25 41\na.2.gz 20 37\na.3.gz 14 0\na.4.gz 15 0\nb.log 69 41\nb.log.1.gz 19 0\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "random-3",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep",
+   "0",
+   "--max-age",
+   "39"
+  ],
+  "stdin": "write a 49\nwrite a 45\nwrite b.log 8\nwrite b.log 3\nwrite a 2\ntick 17\ntick 6\nwrite a 2\nwrite a 61\nwrite a 51\nwrite b.log 38\nwrite b.log 42\ntick 3\nwrite a 29\nrotate a\nwrite b.log 25\nwrite a 61\nwrite a 61\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 61 26\nb.log 25 26\ndropped 5 391\n",
+  "files_after": {}
+ },
+ {
+  "id": "random-4",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep",
+   "3",
+   "--compress-from",
+   "3",
+   "--keep-bytes",
+   "134"
+  ],
+  "stdin": "write a 22\ntick 23\nwrite a 40\nwrite a 67\nwrite a 58\ntick 4\nwrite a 37\nwrite b.log 25\ntick 18\nwrite a 62\nwrite a 43\nwrite a 28\nwrite a 23\nwrite b.log 46\nwrite a 15\nwrite a 24\nwrite a 49\nwrite a 32\ntick 9\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 32 45\na.1 88 45\nb.log 71 45\ndropped 5 334\n",
+  "files_after": {}
+ },
+ {
+  "id": "random-5",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep",
+   "2",
+   "--max-age",
+   "49",
+   "--compress-from",
+   "3",
+   "--keep-bytes",
+   "81"
+  ],
+  "stdin": "write a 18\nwrite a 67\nwrite a 49\ntick 12\nwrite b.log 18\ntick 1\ntick 2\ntick 3\ntick 19\nrotate a\ntick 17\ntick 18\ntick 7\nwrite a 32\ntick 4\ntick 23\nwrite b.log 5\nwrite a 4\nwrite a 21\nwrite a 19\nrotate b.log\nwrite a 45\nwrite a 54\nwrite a 19\nwrite a 66\nwrite a 35\nwrite a 41\nwrite a 59\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 59 106\na.1 76 106\nb.log.1 23 106\ndropped 5 394\n",
+  "files_after": {}
+ },
+ {
+  "id": "random-6",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep",
+   "1",
+   "--keep-bytes",
+   "183"
+  ],
+  "stdin": "tick 4\nwrite b.log 45\nwrite a 7\nwrite a 34\nwrite a 28\nwrite a 35\ntick 1\nwrite a 68\ntick 20\nwrite b.log 66\nwrite a 33\nwrite b.log 32\nwrite a 49\nwrite a 33\nrotate b.log\nwrite a 32\nwrite b.log 45\nwrite b.log 49\nwrite a 46\nrotate a\nwrite b.log 61\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a.1 46 25\nb.log 61 25\nb.log.1 94 25\ndropped 7 462\n",
+  "files_after": {}
+ },
+ {
+  "id": "random-7",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep",
+   "1",
+   "--max-age",
+   "46",
+   "--compress-from",
+   "1",
+   "--keep-bytes",
+   "97"
+  ],
+  "stdin": "tick 14\nwrite b.log 57\nwrite a 35\nwrite b.log 3\ntick 7\ntick 12\ntick 9\ntick 22\nwrite a 60\nwrite a 46\nwrite a 48\nwrite a 21\nwrite a 40\ntick 24\nwrite b.log 20\nwrite a 17\nwrite a 68\nrotate b.log\ntick 8\ntick 17\nwrite a 63\ntick 14\nwrite b.log 46\nrotate a\nwrite a 62\nwrite a 50\nwrite a 1\nwrite b.log 16\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 51 127\na.1.gz 16 127\nb.log 62 127\nb.log.1.gz 20 88\ndropped 5 101\n",
+  "files_after": {}
+ }
+]

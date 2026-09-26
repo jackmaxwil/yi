@@ -1,0 +1,101 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0268
+Title: Outstation firmware update to 4.2.1
+Site: Eastmere Intake
+Requested by: Bram Ketteridge
+Implemented: 2031-09-30
+
+Outcome: COMPLETED
+
+Description
+-----------
+
+The stores count showed 2 discrepancies, all traced to items issued to vans without a
+ticket. Hollis Wray confirmed that spares for the control panel are held at the
+central store and that the reorder level is 24 units.
+
+Implements recommendation 1 of the final review of IR-2031-09: update the outstation
+firmware at Eastmere Intake to 4.2.1, which removes the watchdog fault identified as
+the root cause.
+
+Risk and rollback plan
+----------------------
+
+A rollback was prepared but was not needed.
+
+Mirela Stanck thanked the finance office for covering the holiday rota at short
+notice. A walkdown of Eastmere Intake found the signage faded; replacement boards have
+been ordered under the routine budget.
+
+Verification
+------------
+
+A minor oil weep from the level sensor at Harrow Weir was cleaned up and a drip tray
+fitted pending the next service. A walkdown of Tolland Sluice found the signage faded;
+replacement boards have been ordered under the routine budget. The contractor's method
+statement for work at Low Fennick was reviewed by the field crews and returned with 34
+comments. Flooding on the lane to Harrow Weir delayed the delivery by a day; no cost
+was incurred by the cooperative. No complaints were received from neighbours of
+Eastmere Intake during the works, and the liaison log has been closed.
+
+Annex A. Stores and spares
+--------------------------
+
+Ysolde Quint noted that the calibration certificate for the duty pump expires next
+quarter and has booked the visit. Vegetation clearance around the dosing skid at
+Cindergate Station was completed and the area photographed for the asset record. the
+networks team will coordinate with Mirela Stanck on the training calendar, which
+currently shows 14 open places. Petra Vosk raised the question of lone working at
+Brackwater Lock and was referred to the existing guidance held by the safety
+committee.
+
+Ansel Brightwater thanked the networks team for covering the holiday rota at short
+notice. the safety committee will coordinate with Bram Ketteridge on the training
+calendar, which currently shows 38 open places. the networks team will coordinate with
+Bram Ketteridge on the training calendar, which currently shows 24 open places.
+
+Annex B. Stores and spares
+--------------------------
+
+Members of the field crews asked for the seasonal demand figures to be circulated
+before the next meeting. the field crews reminded everyone that permits for confined
+spaces must be closed out the same day. The stores count showed 6 discrepancies, all
+traced to items issued to vans without a ticket. A walkdown of Harrow Weir found the
+signage faded; replacement boards have been ordered under the routine budget. Flooding
+on the lane to Brackwater Lock delayed the delivery by a day; no cost was incurred by
+the cooperative.
+
+Annex C. Correspondence
+-----------------------
+
+It was noted that access to Harrow Weir remains difficult after heavy rain and that
+the track will be regraded when crews allow. A minor oil weep from the flow meter at
+Cindergate Station was cleaned up and a drip tray fitted pending the next service. The
+draft drawing register for Osier Bank is 11 percent complete and will be issued once
+the as-built survey is checked.
+
+Annex D. Training and rota
+--------------------------
+
+Flooding on the lane to Pike Hollow delayed the delivery by a day; no cost was
+incurred by the cooperative. The telemetry link to Harrow Weir dropped twice in the
+period; both outages were under 7 minutes and no alarms were missed. Oona Farrow noted
+that the calibration certificate for the inlet screen expires next quarter and has
+booked the visit. No complaints were received from neighbours of Merrow Basin during
+the works, and the liaison log has been closed.
+
+Dov Callender reported that the inlet screen at Brackwater Lock had been inspected and
+found serviceable, with minor wear noted on the seals. Bram Ketteridge raised the
+question of lone working at Merrow Basin and was referred to the existing guidance
+held by the field crews. A minor oil weep from the level sensor at Tolland Sluice was
+cleaned up and a drip tray fitted pending the next service. The telemetry link to Pike
+Hollow dropped twice in the period; both outages were under 22 minutes and no alarms
+were missed.
+
+The stores count showed 33 discrepancies, all traced to items issued to vans without a
+ticket. Vegetation clearance around the wet well ladder at Eastmere Intake was
+completed and the area photographed for the asset record. The telemetry link to Merrow
+Basin dropped twice in the period; both outages were under 26 minutes and no alarms
+were missed. The contractor's method statement for work at Eastmere Intake was
+reviewed by the field crews and returned with 23 comments. Flooding on the lane to
+Osier Bank delayed the delivery by a day; no cost was incurred by the cooperative.

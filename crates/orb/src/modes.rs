@@ -1,4 +1,4 @@
-// thinking-orbs mode painters, port verbatim (A.13): orbits, globe/rubik/wave, web, braid,
+// Orb mode painters, exact against the golden vectors: orbits, globe/rubik/wave, web, braid,
 // ribbon/ring and morph, for working, searching, connecting, weaving, composing, shaping.
 
 use std::f64::consts::PI;

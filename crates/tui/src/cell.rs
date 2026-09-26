@@ -7,7 +7,7 @@ use crate::colors::{ColorTier, Theme, name_accent};
 use crate::diffview::{self, DiffBudget};
 use crate::markdown;
 use crate::wrap::wrap_line;
-use yi_types::subagent::ChildActivity;
+use yi_types::subagent::{ChildActivity, ChildFlag};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranscriptMode {
@@ -16,7 +16,7 @@ pub enum TranscriptMode {
     Verbose,
 }
 
-/// Reasoning is the default view (U32 revised): `normal` collapses a thought to
+/// Reasoning is the default view (§17.3): `normal` collapses a thought to
 /// a one-line count, which is only what a reader who asked for it should get.
 impl Default for TranscriptMode {
     fn default() -> Self {
@@ -102,7 +102,10 @@ pub struct TaskCell {
     pub spawn: Option<String>,
     pub answer: Option<String>,
     pub activity: ChildActivity,
+    pub flag: Option<ChildFlag>,
 }
+
+pub const REPLY_HINT: &str = "focus it (alt-↓) and type your answer";
 
 #[derive(Debug, Clone)]
 pub enum Cell {
@@ -325,6 +328,28 @@ fn counted(digest: &str) -> Option<(&str, &str)> {
     (numeric && !noun.is_empty() && !noun.contains(' ')).then_some((count, noun))
 }
 
+fn subject_spans(tool: &str, subject: &str, theme: &Theme, style: Style) -> Vec<Span<'static>> {
+    let plain = style.fg == Some(theme.text);
+    let hue = match tool {
+        "grep" | "glob" | "find" if plain => Some(theme.orange),
+        "fetch" | "web_search" if plain => Some(theme.blue5),
+        _ => None,
+    };
+    if let Some(hue) = hue {
+        return vec![Span::styled(subject.to_owned(), style.fg(hue))];
+    }
+    if !subject.contains(' ')
+        && let Some((dir, base)) = subject.rsplit_once('/')
+        && !base.is_empty()
+    {
+        return vec![
+            Span::styled(format!("{dir}/"), theme.dim_style()),
+            Span::styled(base.to_owned(), style),
+        ];
+    }
+    vec![Span::styled(subject.to_owned(), style)]
+}
+
 /// Read-only calls group under one bullet: a run of eight is one act of
 /// looking, and eight rows of it crowds out the answer.
 pub fn explore_verb(tool: &str) -> Option<&'static str> {
@@ -505,13 +530,12 @@ impl ToolCell {
             return match self.summary.split_once(label.as_str()) {
                 Some((glyph, rest)) => {
                     let mut spans = vec![Span::styled(format!("{glyph}{label}"), name)];
-                    // A path is read by its basename; the directories are context, so dim.
-                    match rest.rsplit_once('/') {
-                        Some((dir, base)) if !rest.contains(' ') && !base.is_empty() => {
-                            spans.push(Span::styled(format!("{dir}/"), theme.dim_style()));
-                            spans.push(Span::styled(base.to_owned(), style));
-                        }
-                        _ => spans.push(Span::styled(rest.to_owned(), style)),
+                    // Incident: the label's trailing space hid every path from the split.
+                    if let Some(subject) = rest.strip_prefix(' ') {
+                        spans.push(Span::raw(" "));
+                        spans.extend(subject_spans(&self.name, subject, theme, style));
+                    } else {
+                        spans.push(Span::styled(rest.to_owned(), style));
                     }
                     spans
                 }
@@ -653,6 +677,14 @@ impl ToolCell {
     }
 }
 
+pub(crate) fn activity_label(activity: ChildActivity) -> &'static str {
+    match activity {
+        ChildActivity::Waiting => "waiting",
+        ChildActivity::Writing => "writing",
+        ChildActivity::Executing => "executing",
+    }
+}
+
 impl TaskCell {
     pub fn lines(
         &self,
@@ -661,16 +693,20 @@ impl TaskCell {
         mode: TranscriptMode,
         spinner_phase: usize,
     ) -> Vec<Line<'static>> {
-        let activity = match self.activity {
-            ChildActivity::Waiting => "waiting",
-            ChildActivity::Writing => "writing",
-            ChildActivity::Executing => "executing",
-        };
+        let activity = activity_label(self.activity);
         let pulse = crate::motion::pulse_frame(crate::motion::elapsed_of(spinner_phase));
-        let (glyph, state, tone) = match self.status {
-            TaskStatus::Running => (pulse, activity, theme.purple),
-            TaskStatus::Done => ('↳', "done", theme.purple),
-            TaskStatus::Failed => ('✗', "failed", theme.error),
+        let flagged = match (self.status, &self.flag) {
+            (TaskStatus::Running, Some(ChildFlag::NeedsYou { note })) => {
+                Some(('?', "needs you", note))
+            }
+            (TaskStatus::Running, Some(ChildFlag::Stuck { note })) => Some(('!', "stuck", note)),
+            _ => None,
+        };
+        let (glyph, state, tone) = match (self.status, flagged) {
+            (_, Some((glyph, state, _))) => (glyph, state, theme.warning),
+            (TaskStatus::Running, None) => (pulse, activity, theme.purple),
+            (TaskStatus::Done, None) => ('↳', "done", theme.purple),
+            (TaskStatus::Failed, None) => ('✗', "failed", theme.error),
         };
         let (name, hash) = humanize(&self.description);
         let hash = if hash.is_empty() {
@@ -685,7 +721,16 @@ impl TaskCell {
         let elapsed = elapsed_label(self.elapsed_ms);
         let title = format!("{glyph} {name}{hash} · {state} {elapsed} · {calls}");
         let mut body = Vec::new();
-        if self.status == TaskStatus::Running {
+        if let Some((_, _, note)) = flagged {
+            let note: String = note.chars().filter(|c| !c.is_control()).collect();
+            body.push(Line::from(Span::styled(
+                note.clone(),
+                Style::default().fg(theme.warning),
+            )));
+            if note.starts_with("asks ") {
+                body.push(Line::from(Span::styled(REPLY_HINT, theme.dim_style())));
+            }
+        } else if self.status == TaskStatus::Running {
             let tool = self.last_tool.as_deref().unwrap_or("starting");
             let row = format!(
                 "⚙ {tool} · {} tokens",
@@ -965,13 +1010,16 @@ fn explored_lines(rows: &[ToolCell], width: usize, theme: &Theme) -> Vec<Line<'s
             .map(|(_, rest)| rest.trim())
             .unwrap_or(row.summary.as_str())
             .to_owned();
-        let mut spans = vec![
-            Span::styled(
-                format!("{verb:<VERB_WIDTH$} "),
-                Style::default().fg(theme.accent),
-            ),
-            Span::styled(subject, Style::default().fg(theme.text)),
-        ];
+        let mut spans = vec![Span::styled(
+            format!("{verb:<VERB_WIDTH$} "),
+            Style::default().fg(theme.accent),
+        )];
+        spans.extend(subject_spans(
+            &row.name,
+            &subject,
+            theme,
+            Style::default().fg(theme.text),
+        ));
         if let Some(digest) = &row.digest {
             spans.push(Span::styled(format!("  {digest}"), theme.dim_style()));
         }
