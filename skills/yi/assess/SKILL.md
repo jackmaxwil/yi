@@ -40,7 +40,7 @@ Read, in this order, and do not skip one because it looks long:
 2. The architecture entry point: for this repository `docs/ARCHITECTURE.md`
    header (version, status) and the last ten decision rows; elsewhere the
    README's architecture section or `ARCHITECTURE.md` if present.
-3. The design document's first section (`docs/YI_DESIGN.md` §1 here).
+3. The design document's first section (`docs/YI_DESIGN.md` §1.1 here).
 4. `git log --oneline -40` and the changelog head.
 5. The gate recipe: the `justfile`, `Makefile`, CI workflow or `package.json`
    scripts. Quote the gate command; do not run it.

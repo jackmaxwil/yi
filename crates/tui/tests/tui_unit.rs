@@ -425,6 +425,18 @@ fn a_streaming_table_keeps_its_header_on_a_normal_screen() -> TestResult {
 /// Feed `full` through the streaming path in small deltas, the way a provider
 /// delivers it, and hand back the app that rendered it.
 fn streamed(full: &str) -> yi_tui::app::App {
+    let mut app = streamed_open(full);
+    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd {
+        message: yi_runtime::faux::faux_assistant_message(
+            vec![yi_runtime::faux::faux_text(full)],
+            yi_types::message::StopReason::Stop,
+        ),
+    });
+    app
+}
+
+/// The same stream with the message still open, so only what streaming committed shows.
+fn streamed_open(full: &str) -> yi_tui::app::App {
     use yi_tui::app::{App, TuiOptions};
     use yi_tui::keymap::default_keymap;
     let mut app = App::new(
@@ -465,9 +477,6 @@ fn streamed(full: &str) -> yi_tui::app::App {
         });
         end += 17;
     }
-    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd {
-        message: assistant(full),
-    });
     app
 }
 
@@ -2236,6 +2245,350 @@ fn blocks_meet_across_one_blank_row_on_replay() -> TestResult {
     for row in &rows {
         run = if row.trim().is_empty() { run + 1 } else { 0 };
         assert!(run <= 1, "two blank rows in a row: {rows:?}");
+    }
+    Ok(())
+}
+
+/// Incident: a table taller than the live region was force-cut through its body while it
+/// streamed, and every row below the cut reached scrollback as raw pipes.
+#[test]
+fn a_streaming_table_is_never_cut_through_its_body() -> TestResult {
+    let mut source = "Here it is.\n\n| crate | role |\n| --- | --- |\n".to_owned();
+    for index in 0..30 {
+        source.push_str(&format!("| crate-{index} | role {index} |\n"));
+    }
+    let mut app = streamed(&source);
+    let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+    assert!(
+        committed.iter().any(|line| line.contains("crate-29")),
+        "{committed:?}"
+    );
+    assert!(
+        !committed.iter().any(|line| line.contains("| ")),
+        "no row reached scrollback as raw pipes: {committed:?}"
+    );
+    Ok(())
+}
+
+fn read_result(text: &str) -> yi_types::event::ToolResult {
+    yi_types::event::ToolResult {
+        content: vec![yi_types::message::Content::Text {
+            text: text.to_owned(),
+            text_signature: None,
+        }],
+        details: serde_json::Value::Null,
+        usage: None,
+        added_tool_names: None,
+        terminate: None,
+    }
+}
+
+/// Incident: a run of reads was held back until something else was said, and reasoning
+/// committed without saying it, so the calls landed under the thought that followed them.
+#[test]
+fn a_run_of_reads_commits_above_the_reasoning_that_follows_it() -> TestResult {
+    let mut app = streamed("Looking.\n");
+    for id in ["t1", "t2"] {
+        app.reduce_agent(yi_types::event::AgentEvent::ToolExecutionEnd {
+            tool_call_id: id.to_owned(),
+            tool_name: "read".to_owned(),
+            result: read_result("[a.rs#CF8C]\n1:one"),
+            is_error: false,
+        });
+    }
+    let message = yi_runtime::faux::faux_assistant_message(
+        vec![yi_runtime::faux::faux_thinking(
+            "Pondering the reads.\n\nStill pondering.\n",
+        )],
+        yi_types::message::StopReason::Stop,
+    );
+    app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
+        assistant_message_event: yi_types::event::AssistantMessageEvent::Done {
+            reason: yi_types::message::StopReason::Stop,
+            message: message.clone(),
+        },
+    });
+    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd { message });
+    let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+    let at = |needle: &str| committed.iter().position(|line| line.contains(needle));
+    let explored = at("Explored").ok_or(format!("no run: {committed:?}"))?;
+    let thought = at("Pondering").ok_or(format!("no thought: {committed:?}"))?;
+    assert!(explored < thought, "{committed:?}");
+    Ok(())
+}
+
+/// Incident: every streamed event returned a scrolled pane to the bottom. Held above it,
+/// the rows a reader is on stay put while the turn writes below; at zero the view follows.
+#[test]
+fn a_scrolled_pane_holds_still_while_the_transcript_grows() -> TestResult {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    let mut app = streamed("Start.\n");
+    for index in 0..40 {
+        app.commit_cell(&Cell::Notice {
+            text: format!("note {index}"),
+        });
+    }
+    let area = Rect::new(0, 0, 60, 16);
+    let top = |app: &mut yi_tui::app::App, scroll: &mut usize| {
+        let mut buffer = Buffer::empty(area);
+        let _ = yi_tui::render::paint_pane(app, None, &mut buffer, area, scroll);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut scroll = 0;
+    let _ = top(&mut app, &mut scroll);
+    scroll = 6;
+    let before = top(&mut app, &mut scroll);
+    for index in 40..45 {
+        app.commit_cell(&Cell::Notice {
+            text: format!("note {index}"),
+        });
+    }
+    let after = top(&mut app, &mut scroll);
+    assert_eq!(before.first(), after.first(), "{before:?}\n{after:?}");
+    scroll = 0;
+    let bottom = top(&mut app, &mut scroll);
+    assert!(
+        bottom.iter().any(|row| row.contains("note 44")),
+        "at zero the view follows the turn: {bottom:?}"
+    );
+    Ok(())
+}
+
+/// A bare path or URL in running prose marks itself; `and/or` is still a word.
+#[test]
+fn prose_marks_its_paths_and_urls() -> TestResult {
+    let theme = theme();
+    let lines = yi_tui::markdown::render(
+        "Edited crates/tui/src/app.rs:42 and/or Cargo.toml, see https://x.dev/a.",
+        80,
+        &theme,
+    );
+    let span = |needle: &str| {
+        lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .find(|s| s.content.as_ref() == needle)
+            .cloned()
+            .ok_or_else(|| format!("no span {needle:?} in {lines:?}"))
+    };
+    assert_eq!(span("crates/tui/src/app.rs:42")?.style.fg, Some(theme.cyan));
+    assert_eq!(span("Cargo.toml")?.style.fg, Some(theme.cyan));
+    assert_eq!(span("https://x.dev/a")?.style.fg, Some(theme.blue5));
+    assert!(
+        !lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .any(|s| s.content.as_ref() == "and/or"),
+        "a slash alone is not a path"
+    );
+    Ok(())
+}
+
+/// Incident: the space after a call's name kept its subject from ever reading as a path.
+#[test]
+fn a_call_head_splits_its_path_into_context_and_name() -> TestResult {
+    let theme = theme();
+    let cell = ToolCell {
+        name: "read".to_owned(),
+        call_id: "t1".to_owned(),
+        intent: None,
+        status: ToolStatus::Done,
+        summary: ToolCell::summary_of("read", "crates/tui/src/app.rs"),
+        digest: None,
+        preview: Vec::new(),
+        elapsed_ms: 0,
+        calls: 1,
+        details: serde_json::Value::Null,
+    };
+    let lines = cell.lines(80, &theme, TranscriptMode::Thinking, 0);
+    let spans: Vec<&Span<'_>> = lines.iter().flat_map(|l| &l.spans).collect();
+    let dir = spans
+        .iter()
+        .find(|s| s.content.as_ref() == "crates/tui/src/")
+        .ok_or(format!("{spans:?}"))?;
+    assert_eq!(dir.style, theme.dim_style());
+    assert!(spans.iter().any(|s| s.content.as_ref() == "app.rs"));
+    Ok(())
+}
+
+/// A table whose header has no leading pipe was cut between the header and its rule, so
+/// the header committed as a paragraph and the body could never render as a table.
+#[test]
+fn a_table_without_leading_pipes_keeps_its_header() -> TestResult {
+    let mut source = "Here it is.\n\ncrate | role\n| --- | --- |\n".to_owned();
+    for index in 0..30 {
+        source.push_str(&format!("| crate-{index} | role {index} |\n"));
+    }
+    let mut app = streamed(&source);
+    let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+    assert!(
+        !committed
+            .iter()
+            .any(|line| line.contains("| ") || line.contains("crate | role")),
+        "{committed:?}"
+    );
+    Ok(())
+}
+
+/// A table early in the unstable tail stopped every later forced cut, so the list items
+/// after it never reached scrollback until the list ended.
+#[test]
+fn text_after_a_streaming_table_still_commits() -> TestResult {
+    let mut source = "- crates:\n  | a | b |\n  | --- | --- |\n  | x | y |\n".to_owned();
+    for index in 2..60 {
+        source.push_str(&format!("- item {index} with a few more words\n"));
+    }
+    let mut app = streamed_open(&source);
+    let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+    assert!(
+        committed.iter().any(|line| line.contains("item 30")),
+        "{committed:?}"
+    );
+    Ok(())
+}
+
+/// A forced cut at a table's first row is a block break, so the table keeps its air.
+#[test]
+fn a_table_cut_at_its_head_keeps_the_blank_above_it() -> TestResult {
+    let mut source = "Here it is.\n\n\n| crate | role |\n| --- | --- |\n".to_owned();
+    for index in 0..30 {
+        source.push_str(&format!("| crate-{index} | role {index} |\n"));
+    }
+    let mut app = streamed(&source);
+    let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+    let at = committed
+        .iter()
+        .position(|line| line.contains("Here it is."))
+        .ok_or(format!("{committed:?}"))?;
+    assert_eq!(
+        committed.get(at + 1).map(|line| line.trim()),
+        Some(""),
+        "{committed:?}"
+    );
+    Ok(())
+}
+
+/// pulldown-cmark splits text at `~`, `[` and `_`, so a path marked per event was
+/// coloured from the split onward; `Node.js` is a name, not a file.
+#[test]
+fn prose_marks_a_path_split_across_text_events_whole() -> TestResult {
+    let theme = theme();
+    let lines = yi_tui::markdown::render(
+        "Config lives in ~/.config/yi/keys.toml and app/[id]/page.tsx; install Node.js first.",
+        100,
+        &theme,
+    );
+    let spans: Vec<&Span<'_>> = lines.iter().flat_map(|l| &l.spans).collect();
+    let hue = |needle: &str| {
+        spans
+            .iter()
+            .find(|s| s.content.as_ref() == needle)
+            .map(|s| s.style.fg)
+    };
+    assert_eq!(
+        hue("~/.config/yi/keys.toml"),
+        Some(Some(theme.cyan)),
+        "{spans:?}"
+    );
+    assert_eq!(
+        hue("app/[id]/page.tsx"),
+        Some(Some(theme.cyan)),
+        "{spans:?}"
+    );
+    assert!(
+        !spans
+            .iter()
+            .any(|s| s.content.contains("Node.js") && s.style.fg == Some(theme.cyan)),
+        "{spans:?}"
+    );
+    Ok(())
+}
+
+/// A URL always holds a slash, so the path split shadowed the fetch hue.
+#[test]
+fn a_fetch_head_colours_its_url_whole() -> TestResult {
+    let theme = theme();
+    let cell = ToolCell {
+        name: "fetch".to_owned(),
+        call_id: "t1".to_owned(),
+        intent: None,
+        status: ToolStatus::Done,
+        summary: ToolCell::summary_of("fetch", "https://docs.rs/syntect/latest"),
+        digest: None,
+        preview: Vec::new(),
+        elapsed_ms: 0,
+        calls: 1,
+        details: serde_json::Value::Null,
+    };
+    let lines = cell.lines(80, &theme, TranscriptMode::Thinking, 0);
+    let url = lines
+        .iter()
+        .flat_map(|l| &l.spans)
+        .find(|s| s.content.as_ref() == "https://docs.rs/syntect/latest")
+        .ok_or(format!("{lines:?}"))?;
+    assert_eq!(url.style.fg, Some(theme.blue5));
+    Ok(())
+}
+
+/// A code line flushed without its newline, the live tail of every streaming fence, took
+/// prose colouring; a capitalised `.js` file is still a file.
+#[test]
+fn prose_marking_stays_out_of_code_and_keeps_component_files() -> TestResult {
+    let theme = theme();
+    let code = yi_tui::markdown::render("```sh\ncat src/main.rs", 80, &theme);
+    assert!(
+        !code
+            .iter()
+            .flat_map(|l| &l.spans)
+            .any(|s| s.content.as_ref() == "src/main.rs" && s.style.fg == Some(theme.cyan)),
+        "{code:?}"
+    );
+    let prose = yi_tui::markdown::render("Open src/App.js, then 001.sql.", 80, &theme);
+    for needle in ["src/App.js", "001.sql"] {
+        assert!(
+            prose
+                .iter()
+                .flat_map(|l| &l.spans)
+                .any(|s| s.content.as_ref() == needle && s.style.fg == Some(theme.cyan)),
+            "{needle}: {prose:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A pipe-less line under a table's rows is still a row; a centred rule is still a rule.
+#[test]
+fn a_table_is_found_by_every_rule_spelling_and_ends_where_markdown_ends_it() -> TestResult {
+    let mut centred = "Here.\n\nname | value\n:---: | :---:\n".to_owned();
+    for index in 0..30 {
+        centred.push_str(&format!("| x{index} | y{index} |\n"));
+    }
+    let mut continued = "Here.\n\n| a | b |\n| --- | --- |\n| x | y |\n".to_owned();
+    continued.push_str(&"word ".repeat(200));
+    continued.push('\n');
+    for source in [centred, continued] {
+        let mut app = streamed(&source);
+        let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+        assert!(
+            !committed
+                .iter()
+                .any(|line| line.contains("| ") || line.contains(":---:")),
+            "{committed:?}"
+        );
+        assert!(
+            committed
+                .iter()
+                .filter(|line| line.contains("word"))
+                .all(|line| line.contains('│')),
+            "{committed:?}"
+        );
     }
     Ok(())
 }

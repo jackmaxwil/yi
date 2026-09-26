@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Five axes from any run directory (docs/plans/2026-09-06-tbv4-evals.md, S2; D140).
+"""Five axes from any run directory (docs/archive/plans/2026-09-06-tbv4-evals.md, S2; D140).
 
     python3 evals/axes.py <dir> [--suite S] [--model M] [--json out.jsonl]
 

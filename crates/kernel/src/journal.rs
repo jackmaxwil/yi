@@ -2,7 +2,7 @@ use std::io::Write;
 
 use serde_json::json;
 
-/// Append-only orphan pid journal (design K8): written active on spawn, inactive only on a
+/// Append-only orphan pid journal (design §9): written active on spawn, inactive only on a
 /// confirmed kill, since a wrong inactive write could mask a reused pid. Env-gated.
 pub fn record_orphan_process_state(pid: u32, active: bool, recorded_at: String) {
     let Some(path) = std::env::var_os("YI_ORPHAN_JOURNAL").filter(|value| !value.is_empty()) else {

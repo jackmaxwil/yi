@@ -185,7 +185,7 @@ impl AgentSession {
         })
     }
 
-    /// A job's report (R3), taken after a running turn's answer or the next turn's, never waking.
+    /// A job's report (§4.3), taken after a running turn's answer or the next one's, never waking.
     pub fn follow_up_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move |text: &str| {

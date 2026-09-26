@@ -254,8 +254,8 @@ fn parse_cron_expression(expression: &str) -> Result<CronFields, String> {
     })
 }
 
-// UTC, where the reference evaluates cron in local time: std has no tzdata and
-// chrono is banned (§13.5); the H1 row documents the divergence.
+// Cron and `at` evaluate in UTC on purpose: std has no tzdata and no date crate is
+// an allowed dependency (§18.3), so local time would need a table Yi does not carry.
 struct Civil {
     minute: u64,
     hour: u64,
@@ -356,7 +356,7 @@ pub fn parse_iso_ms(text: &str) -> Option<u64> {
 }
 
 /// Parsed form of the `/heartbeat` slash command; the kernel's `rlm_heartbeat` calls and the
-/// ACP `_yi/heartbeat` method reach the same scheduler through this one grammar (H10).
+/// ACP `_yi/heartbeat` method reach the same scheduler through this one grammar (§15.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeartbeatCommand {
     Status,
@@ -439,7 +439,7 @@ pub fn parse_heartbeat_command(input: &str) -> Result<HeartbeatCommand, String> 
     })
 }
 
-/// What the session is doing when a heartbeat comes due (design H8).
+/// What the session is doing when a heartbeat comes due (design §15.2).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SessionActivity {
     pub is_streaming: bool,
@@ -459,7 +459,7 @@ pub fn is_heartbeat_job(job: &Job) -> bool {
 }
 
 /// Holds a due heartbeat back whenever delivering it would stack redundant work or land
-/// mid-operation; steering tolerates plain streaming, a follow-up does not (H8).
+/// mid-operation; steering tolerates plain streaming, a follow-up does not (§15.2).
 pub fn should_defer(job: &Job, activity: &SessionActivity) -> bool {
     if !is_heartbeat_job(job) {
         return false;
@@ -491,7 +491,7 @@ pub struct ClaimedDispatch {
     pub job: Job,
 }
 
-/// Design H5: advances every due job's schedule and claims a dispatch for each
+/// Design §15.2: advances every due job's schedule and claims a dispatch for each
 /// not already claimed; an already-claimed due job is never double-delivered.
 pub fn claim_due_in_state(
     state: &mut ScheduleState,
@@ -544,7 +544,7 @@ pub enum RunOutcome {
     Skipped,
 }
 
-/// Design H5: resolves the claim and advances the job; a clean skip re-arms
+/// Design §15.2: resolves the claim and advances the job; a clean skip re-arms
 /// without counting a run.
 pub fn record_dispatch_result_in_state(
     state: &mut ScheduleState,
@@ -585,7 +585,7 @@ pub fn record_dispatch_result_in_state(
     updated
 }
 
-/// Design H6: unresolved claims on start mean the process died mid-dispatch,
+/// Design §15.2: unresolved claims on start mean the process died mid-dispatch,
 /// so mark them interrupted.
 pub fn recover_interrupted_in_state(
     state: &mut ScheduleState,
@@ -629,7 +629,7 @@ pub fn recover_interrupted_in_state(
 }
 
 /// The exact text a scheduled job puts in front of the model; the element wrapper is what
-/// tells the model this turn was machine-triggered rather than typed by the user (H9).
+/// tells the model this turn was machine-triggered rather than typed by the user (§15.2).
 pub fn heartbeat_text(job: &Job) -> String {
     format!(
         "<heartbeat job=\"{}\" run=\"{}\">{}</heartbeat>",
@@ -652,7 +652,7 @@ fn lock_state(state: &std::sync::Mutex<ScheduleState>) -> std::sync::MutexGuard<
 }
 
 impl JobStore {
-    /// Design H4: opens (or seeds) `scheduled-jobs.json`. A corrupt file is
+    /// Design §15.2: opens (or seeds) `scheduled-jobs.json`. A corrupt file is
     /// treated as empty rather than blocking every future schedule.
     pub fn open(path: std::path::PathBuf) -> Self {
         let state = std::fs::read_to_string(&path)
@@ -675,7 +675,7 @@ impl JobStore {
     }
 
     /// Every mutation persists (tmp + fsync + rename) before notifying the
-    /// timer — the claim-before-deliver contract (H5) rides on this ordering.
+    /// timer — the claim-before-deliver contract (§15.2) rides on this ordering.
     pub fn mutate<R>(&self, action: impl FnOnce(&mut ScheduleState) -> R) -> R {
         let result = {
             let mut state = lock_state(&self.state);
@@ -743,7 +743,7 @@ pub fn new_job(spec: JobSpec) -> Job {
 
 pub type DeliverFn = dyn Fn(&Job) -> RunOutcome + Send + Sync;
 
-/// Design H9: the persisted heartbeat message — `custom{heartbeat_prompt}`
+/// Design §15.2: the persisted heartbeat message — `custom{heartbeat_prompt}`
 /// with the job's identity in details.
 pub fn heartbeat_message(job: &Job, now_ms: u64) -> yi_types::message::AgentMessage {
     yi_types::message::AgentMessage::Custom {
@@ -761,7 +761,7 @@ pub fn heartbeat_message(job: &Job, now_ms: u64) -> yi_types::message::AgentMess
     }
 }
 
-/// Design H10 surfaces: the `/heartbeat` verbs and the kernel's
+/// Design §15.2 surfaces: the `/heartbeat` verbs and the kernel's
 /// `rlm_heartbeat.*` vocabulary over one store.
 pub struct HeartbeatService {
     pub store: std::sync::Arc<JobStore>,
@@ -1003,7 +1003,7 @@ impl HeartbeatService {
         }
     }
 
-    /// Registers the kernel-side vocabulary (design H10): list, create,
+    /// Registers the kernel-side vocabulary (design §15.2): list, create,
     /// update (pause/resume), delete.
     pub fn register(self: &std::sync::Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
         let list = std::sync::Arc::clone(self);

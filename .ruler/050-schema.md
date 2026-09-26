@@ -1,4 +1,4 @@
-# Schema stability (YI_DESIGN.md §19 — load-bearing)
+# Schema stability (YI_DESIGN.md §20 — load-bearing)
 
 - Every serialized shape (wire and disk) lives in yi-types. No serde derive outside it except
   test fixtures. check_manifests.py enforces it: only yi-types may list serde in [dependencies].
@@ -10,5 +10,5 @@
   (config is the deliberate exception: strict, failing key named).
 - Golden fixtures under yi-types/tests/fixtures/ deserialize forever; a fixture is never
   deleted, only added. A schemas.lock diff is a reviewed artifact.
-- Pi session files are an external anchor: byte-compatible JSONL, conformance fixtures shared
-  with Pi's own tests.
+- Pi's v4 session JSONL is the one external format anchor: the fixtures under
+  crates/types/tests/fixtures round-trip byte for byte (YI_DESIGN.md §4.1).

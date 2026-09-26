@@ -17,6 +17,7 @@ ratatui = { workspace = true }
 tui-textarea = { workspace = true }
 pulldown-cmark = { workspace = true }
 syntect = { workspace = true }
+two-face = { workspace = true }
 unicode-width = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
