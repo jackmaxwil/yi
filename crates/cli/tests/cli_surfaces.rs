@@ -2,7 +2,7 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
@@ -270,11 +270,18 @@ fn schema_validates_the_answer() -> TestResult {
 fn undo_restores_the_files_a_turn_changed() -> TestResult {
     let workspace = Workspace::new("undo")?;
     let kept = workspace.project().join("kept.txt");
+    let created = workspace.project().join("created.txt");
     std::fs::write(&kept, "before\n")?;
-    ask(&workspace, "start a turn", &[])?;
-
-    std::fs::write(&kept, "after\n")?;
-    std::fs::write(workspace.project().join("created.txt"), "new\n")?;
+    let script = tool_script(
+        &workspace,
+        &[
+            ("write", json!({"path": "kept.txt", "content": "after\n"})),
+            ("write", json!({"path": "created.txt", "content": "new\n"})),
+        ],
+        Some("written"),
+    )?;
+    ask(&workspace, "start a turn", &["--faux", &script])?;
+    assert_eq!(std::fs::read_to_string(&kept)?, "after\n");
 
     let undone = workspace.yi(&["undo"])?;
     if git_missing(&undone) {
@@ -282,10 +289,98 @@ fn undo_restores_the_files_a_turn_changed() -> TestResult {
     }
     assert_eq!(undone.status.code(), Some(0), "{}", stdout(&undone));
     assert_eq!(std::fs::read_to_string(&kept)?, "before\n");
-    assert!(!workspace.project().join("created.txt").exists());
+    assert!(!created.exists());
 
     workspace.yi(&["undo"])?;
     assert_eq!(std::fs::read_to_string(&kept)?, "after\n");
+    assert_eq!(std::fs::read_to_string(&created)?, "new\n");
+    Ok(())
+}
+
+/// A hand edit after the turn is out of scope (b, c) or, on a path the turn wrote, kept and
+/// named (d): `yi undo` moves only what the turn changed.
+#[test]
+fn undo_moves_only_what_the_turn_wrote() -> TestResult {
+    let workspace = Workspace::new("undo-scope")?;
+    let project = workspace.project();
+    std::fs::write(project.join("b.txt"), "before\n")?;
+    let script = tool_script(
+        &workspace,
+        &[
+            ("write", json!({"path": "a.txt", "content": "turn\n"})),
+            ("write", json!({"path": "d.txt", "content": "turn\n"})),
+        ],
+        Some("written"),
+    )?;
+    ask(&workspace, "write two files", &["--faux", &script])?;
+    assert_eq!(std::fs::read_to_string(project.join("a.txt"))?, "turn\n");
+
+    std::fs::write(project.join("b.txt"), "hand\n")?;
+    std::fs::write(project.join("c.txt"), "mine\n")?;
+    std::fs::write(project.join("d.txt"), "hand\n")?;
+
+    let undone = workspace.yi(&["undo"])?;
+    if git_missing(&undone) {
+        return Ok(());
+    }
+    let said = stdout(&undone);
+    assert_eq!(undone.status.code(), Some(0), "{said}");
+    assert!(!project.join("a.txt").exists(), "{said}");
+    assert_eq!(std::fs::read_to_string(project.join("b.txt"))?, "hand\n");
+    assert_eq!(std::fs::read_to_string(project.join("c.txt"))?, "mine\n");
+    assert_eq!(std::fs::read_to_string(project.join("d.txt"))?, "hand\n");
+    assert!(
+        said.contains("[kept 1 of 2") && said.contains("d.txt") && !said.contains("b.txt"),
+        "{said}"
+    );
+    Ok(())
+}
+
+/// A process that dies mid-turn leaves a turn start with no turn end: undo says so and
+/// restores every path changed since, the hand edit on b.txt included.
+#[test]
+fn undo_without_a_turn_end_restores_unscoped_and_says_so() -> TestResult {
+    let workspace = Workspace::new("undo-unscoped")?;
+    let project = workspace.project();
+    std::fs::write(project.join("b.txt"), "before\n")?;
+    let script = tool_script(
+        &workspace,
+        &[("write", json!({"path": "a.txt", "content": "turn\n"}))],
+        Some("written"),
+    )?;
+    ask(&workspace, "write a file", &["--faux", &script])?;
+    std::fs::write(project.join("b.txt"), "hand\n")?;
+
+    let sessions = workspace.0.join("home/sessions");
+    let dir = std::fs::read_dir(&sessions)?
+        .filter_map(Result::ok)
+        .find(|entry| entry.path().is_dir())
+        .ok_or("no session directory")?;
+    let file = std::fs::read_dir(dir.path())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .ok_or("no session file")?;
+    let log = std::fs::read_to_string(&file)?;
+    let (kept, last) = log.trim_end().rsplit_once('\n').ok_or("one-line session")?;
+    assert!(last.contains(r#""at":"turnEnd""#), "{last}");
+    std::fs::write(&file, format!("{kept}\n"))?;
+
+    let undone = workspace.yi(&["undo"])?;
+    if git_missing(&undone) {
+        return Ok(());
+    }
+    let said = stdout(&undone);
+    assert_eq!(undone.status.code(), Some(0), "{said}");
+    assert!(
+        said.contains(
+            "[unscoped — no turn-end checkpoint pairs with this one, so every path changed \
+             since it moved]"
+        ),
+        "{said}"
+    );
+    assert!(!project.join("a.txt").exists(), "{said}");
+    assert_eq!(std::fs::read_to_string(project.join("b.txt"))?, "before\n");
     Ok(())
 }
 
@@ -1149,12 +1244,27 @@ fn bash_script(
     command: &str,
     after: Option<&str>,
 ) -> Result<String, Box<dyn Error>> {
+    tool_script(workspace, &[("bash", json!({"command": command}))], after)
+}
+
+/// A `--faux` script: one assistant message carrying every `(tool, args)` call, then `after`.
+fn tool_script(
+    workspace: &Workspace,
+    calls: &[(&str, Value)],
+    after: Option<&str>,
+) -> Result<String, Box<dyn Error>> {
     use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
     use yi_types::message::StopReason;
-    let args = serde_json::json!({"command": command});
-    let call = faux_tool_call("c1", "bash", args.as_object().cloned().unwrap_or_default());
+    let calls = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (tool, args))| {
+            let id = format!("c{index}");
+            faux_tool_call(&id, tool, args.as_object().cloned().unwrap_or_default())
+        })
+        .collect();
     let mut lines = vec![serde_json::to_string(&faux_assistant_message(
-        vec![call],
+        calls,
         StopReason::ToolUse,
     ))?];
     if let Some(text) = after {
