@@ -9,7 +9,7 @@ import json, sys, tomllib, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, BASE, fail
 
-FEATURE_ALLOWLIST = {"yi-cli": {"default", "kernel", "reduce", "tui"}}
+FEATURE_ALLOWLIST = {"yi-cli": {"default", "tui"}}
 PENDING = BASE / "string_slice_pending.json"
 DENY = "#![deny(clippy::string_slice)]"
 
@@ -52,6 +52,8 @@ for m in manifests:
     allowed = FEATURE_ALLOWLIST.get(name, set())
     if feats - allowed:
         errs.append(f"{m}: undeclared features {sorted(feats - allowed)} (13.4 allowlist)")
+    if allowed - feats:
+        errs.append(f"{m}: allowlisted features {sorted(allowed - feats)} declared nowhere (stale = error)")
     for dep, spec in t.get("dependencies", {}).items():
         if not (isinstance(spec, dict) and spec.get("workspace")):
             errs.append(f"{m}: dep {dep} must be {{ workspace = true }} (centralized deps, D31)")
