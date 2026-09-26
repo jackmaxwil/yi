@@ -13,4 +13,6 @@ assistant). Open work lives on the forge (095); do not scaffold ahead of an issu
 
 Mandatory skills: invoke `ponytail`, `har`, and `caveman` at session start, and
 in any case before writing or editing Yi code. Ponytail governs what gets built,
-har how the Rust is shaped, caveman how the reply reads.
+har how the Rust is shaped, caveman how the reply reads. A brainstorm, ideation,
+pressure test or plan write-up also invokes `yi-ideate` first: it governs how a
+design is found, grilled and written up.

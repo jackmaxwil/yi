@@ -55,8 +55,16 @@ for m in manifests:
     for dep, spec in t.get("dependencies", {}).items():
         if not (isinstance(spec, dict) and spec.get("workspace")):
             errs.append(f"{m}: dep {dep} must be {{ workspace = true }} (centralized deps, D31)")
+        if name != "yi-types" and dep in ("serde", "serde_derive"):
+            errs.append(f"{m}: dep {dep}: serde derives live in yi-types only (.ruler/050-schema.md)")
     if folder in unlinted and folder not in pending:
         errs.append(f"{crate_root(folder).relative_to(ROOT)}: missing {DENY} (a crate root carries it unless the crate is in baselines/string_slice_pending.json, D109)")
 for folder in sorted(pending - {m.parent.name for m in manifests}):
     errs.append(f"baselines/string_slice_pending.json: {folder!r} is not a crate")
+
+root = tomllib.loads((ROOT / "Cargo.toml").read_text())
+for dep, spec in root["workspace"]["dependencies"].items():
+    if not (isinstance(spec, dict) and ("path" in spec or spec.get("default-features") is False)):
+        errs.append(f"Cargo.toml: workspace dep {dep} must set default-features = false (D31, .ruler/060-deps.md)")
+
 fail(errs, f"manifests ({len(manifests) - len(pending)} roots deny string_slice, {len(pending)} pending)")

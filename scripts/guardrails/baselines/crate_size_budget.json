@@ -5,7 +5,7 @@
   "console": 7611,
   "context": 1768,
   "kernel": 4307,
-  "loop": 1296,
+  "loop": 1340,
   "mcp-cli": 2302,
   "oauth": 1207,
   "orb": 1398,
@@ -14,5 +14,5 @@
   "session": 1755,
   "tools": 12423,
   "tui": 13047,
-  "types": 7958
+  "types": 7991
 }
