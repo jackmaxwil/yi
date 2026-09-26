@@ -223,5 +223,6 @@ edited by hand.
 - [D244](adr/d244.md) - syntax highlighting reads bat's grammar set through `two-face` (default...
 - [D243](adr/d243.md) - the design states what is built and names no other agent
 - [D247](adr/d247.md) - D220's inventory is corrected at two rows, count 45 -> 44 (amends D220)
+- [D251](adr/d251.md) - the advisor's cadence review path is deleted outright (amends D56)
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
