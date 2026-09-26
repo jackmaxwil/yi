@@ -326,11 +326,13 @@ The kernel shells out: `rlm.mcp.list_tools|call_tool|reload|close` run `$YI_BIN 
 
 ### 7.7 Checkpoints
 A shadow gitdir `~/.yi/checkpoints/<xxh32 of project>/`, the project as work tree, one lock per
-gitdir. `capture` = `add --all` + `write-tree`. `restore` checks out every path changed since the
-tree and deletes paths created since, whoever wrote them. Turn start and end capture into
+gitdir. `capture` = `add --all` + `write-tree`. `restore` moves only the paths in the turn's
+start-to-end tree diff (`--no-renames`); a path changed after the turn is kept and named; a start
+with no paired end restores unscoped and says so. Turn start and end capture into
 `custom{checkpoint}`; `/undo` and `yi undo` restore the last turn start. Without git, a no-op.
 
 - Owner: [`tools`](../crates/tools/src/checkpoint.rs), [`types`](../crates/types/src/checkpoint.rs).
+  Settled by: D248.
 
 ### 7.8 Skills
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
