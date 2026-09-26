@@ -37,11 +37,25 @@ pub enum HoldSource {
     User,
 }
 
+#[derive(Debug, Clone)]
+pub struct HoldPattern(String);
+
+impl HoldPattern {
+    pub fn new(pattern: &str) -> Option<Self> {
+        let pattern = pattern.trim();
+        (!pattern.is_empty()).then(|| Self(pattern.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Soft-block (design §8): a matching call becomes Ask with the hold's
 /// reason attached; an expired hold is inert.
 #[derive(Debug, Clone)]
 pub struct Hold {
-    pub pattern: String,
+    pub pattern: HoldPattern,
     pub reason: String,
     pub source: HoldSource,
     pub expires_at_ms: Option<u64>,
@@ -194,10 +208,9 @@ pub fn decide(
         }
     }
 
-    if let Some(hold) = holds
-        .iter()
-        .find(|hold| hold.pattern == call.tool_name || subject.contains(hold.pattern.as_str()))
-    {
+    if let Some(hold) = holds.iter().find(|hold| {
+        hold.pattern.as_str() == call.tool_name || subject.contains(hold.pattern.as_str())
+    }) {
         return ask(call, &hold.reason);
     }
 
