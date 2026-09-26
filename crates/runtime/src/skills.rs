@@ -136,7 +136,7 @@ fn scan(root: &Path) -> Vec<Skill> {
     skills
 }
 
-/// A root holds skill directories, and the bundled sets (§14.1) group theirs
+/// A root holds skill directories, and the bundled sets (§7.8) group theirs
 /// one level deeper, so both layouts are walked.
 fn collect(dir: &Path, depth: u8, skills: &mut Vec<Skill>) {
     let Ok(entries) = std::fs::read_dir(dir) else {

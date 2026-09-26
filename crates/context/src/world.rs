@@ -29,7 +29,7 @@ impl WorldState {
     }
 
     /// Renders only sections whose snapshot changed since the last render;
-    /// fragments are appended at the overlay tail (P11).
+    /// fragments are appended at the overlay tail (§4.4).
     pub fn render_changed(&mut self) -> Vec<String> {
         let mut fragments = Vec::new();
         for section in &self.sections {

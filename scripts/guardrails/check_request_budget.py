@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Request-prefix budget and tool-surface lock, ratcheted (design 9, D188): the
+"""Request-prefix budget and tool-surface lock, ratcheted (design §21, D188): the
 system block plus the tool table are what every turn pays before the
 conversation starts, and the surface a model reads is locked so a PR that
 changes it owes the sections check_pr_metadata.py names. Measured by

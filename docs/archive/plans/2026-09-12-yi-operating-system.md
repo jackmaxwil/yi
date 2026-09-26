@@ -1,5 +1,7 @@
 # Yi, an operating system for agent work: the kernel, the user space, the store, the ledger
 
+Landed: D192-D195, D210-D220 (0.265.0-0.281.0).
+
 ```
 status:  planned 2026-09-12; revised 2026-09-13 after an external review (§0).
          Lands as docs/plans/2026-09-12-yi-operating-system.md (stage F0-S0).

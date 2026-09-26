@@ -100,7 +100,7 @@ pub struct ChildResult {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-/// Design B7: the one typed status surface for a running child, so a client reads counts and
+/// Design §11: the one typed status surface for a running child, so a client reads counts and
 /// activity instead of re-deriving them from the child's event stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

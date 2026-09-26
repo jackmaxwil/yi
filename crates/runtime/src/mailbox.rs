@@ -93,7 +93,7 @@ pub(crate) fn timeout_of(payload: &Map<String, Value>) -> u64 {
         .unwrap_or(WAIT_MAX_MS)
 }
 
-/// The child half of B6: a name is looked for locally, then in the family.
+/// The child half of §12 routing: a name is looked for locally, then in the family.
 pub fn register_child_messaging(
     link: ParentLink,
     local: &Arc<SubagentHost>,
@@ -243,7 +243,7 @@ impl SubagentHost {
         self.route_mail(from, &target, &draft)
     }
 
-    /// B6 routing, one seam for all three directions: a child reaches its
+    /// §12 routing, one seam for all three directions: a child reaches its
     /// parent or a named sibling, the parent reaches one child or `all`.
     pub(crate) fn route_mail(
         &self,
@@ -468,7 +468,7 @@ impl SubagentHost {
         reply
     }
 
-    /// B13 wait with a per-caller cursor (§7.5): nothing shared is drained, so no waiter steals.
+    /// A wait with a per-caller cursor (§7.5): nothing shared is drained, so no waiter steals.
     pub async fn wait(
         &self,
         timeout_ms: u64,
@@ -639,7 +639,7 @@ impl SubagentHost {
             .ok()
     }
 
-    /// B13 interrupt: ends the run and keeps the record, unlike delete.
+    /// The mailbox interrupt: ends the run and keeps the record, unlike delete.
     pub fn interrupt(&self, target: &str) -> Result<Map<String, Value>, String> {
         let mut children = self
             .children

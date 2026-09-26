@@ -35,8 +35,8 @@ impl Default for Composer {
     }
 }
 
-/// Verbatim paste sanitization: tabs expand to three spaces, as the reference
-/// code does. NFC normalization is dropped — it needs a Unicode tables dep.
+/// Paste sanitization: CRLF and CR become LF, tabs expand to three spaces, other controls
+/// drop. NFC normalization is dropped — it needs a Unicode tables dep.
 pub fn sanitize_paste(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();

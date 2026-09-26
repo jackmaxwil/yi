@@ -21,7 +21,7 @@ pub enum AskOutcome {
 }
 
 /// One approval request. `description` and `patch` are separate so a structured consumer
-/// (ACP C7) sends the patch as content while a text one renders `text()` over both.
+/// (ACP, §17.2) sends the patch as content while a text one renders `text()` over both.
 pub struct PermissionAsk<'a> {
     pub title: &'a str,
     pub description: &'a str,
@@ -391,7 +391,7 @@ impl PermissionBroker {
         }
     }
 
-    /// The M7 gate. Off (no role named) or out of jurisdiction, this is exactly
+    /// The §8 auto-review gate. Off (no role named) or out of jurisdiction, this is exactly
     /// [`PermissionBroker::run_ask`] and nothing else has changed.
     fn gated_ask(
         &self,

@@ -1,7 +1,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct Bytes(pub usize);
 
-/// Per-source byte budgets enforced at assembly (design P16). Zero disables a
+/// Per-source byte budgets enforced at assembly (design §4.4). Zero disables a
 /// source entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceBudgets {
