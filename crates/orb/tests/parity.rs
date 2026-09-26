@@ -19,10 +19,8 @@ fn mode_of(name: &str) -> Mode {
     }
 }
 
-/// The library's own golden vectors (spec/orbs-golden.json, 72 cases,
-/// 6-decimal, tolerance 1e-4): every dot of every state × size × timestamp
-/// must match the reference engine as numbers — the same contract its
-/// SwiftUI and React Native ports are held to.
+/// The golden vectors (spec/orbs-golden.json, 72 cases, 6-decimal, tolerance
+/// 1e-4): every dot of every state × size × timestamp must match as numbers.
 #[test]
 fn engine_matches_reference_golden_vectors() -> TestResult {
     let raw = include_str!("fixtures/orbs-golden.json");
@@ -130,7 +128,7 @@ fn leak(name: &str) -> &'static str {
     Box::leak(name.to_owned().into_boxed_str())
 }
 
-/// U34 `o=z`: the terminal reads a zlib stream, not raw RGBA. A drift in the
+/// §17.3 `o=z`: the terminal reads a zlib stream, not raw RGBA. A drift in the
 /// control keys, the chunk bound, or the compressed payload leaves the orb
 /// undrawn on every kitty-family terminal, and no non-kitty test path can see
 /// it. Ground truth is RFC 1950's own header rule plus the painted bytes —

@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 
 use crate::args::CallArgs;
 
-/// mcpc's httpie-style `key:=value` pairs: values auto-parse as JSON
+/// Httpie-style `key:=value` pairs: values auto-parse as JSON
 /// (numbers, booleans, objects, arrays); anything unparseable is a string.
 fn parse_pair(pair: &str) -> Result<(String, Value), String> {
     let (key, raw) = pair

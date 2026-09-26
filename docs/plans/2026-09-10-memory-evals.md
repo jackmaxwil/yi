@@ -1,5 +1,7 @@
 # Memory evals: episodes of live Yi sessions that need what an earlier session learned
 
+Open: all of it; no memory episode exists in evals/.
+
 ```
 status:  proposed 2026-09-10, second draft. Our own suite in evals/, run by
          yi's own harness; nothing from AMB is run. Nothing here has run yet.
@@ -14,7 +16,7 @@ inspiration: vectorize-io/agent-memory-benchmark's sdebench (a regression whose
          right one; first-try solves and interventions as the metrics) and
          vectorize-io/hindsight (capture everything, retrieve by the question,
          push it in). Ideas only; no code, data or model choice is taken.
-lineage: docs/plans/2026-09-06-tbv4-evals.md (the instrument, the ledger,
+lineage: docs/archive/plans/2026-09-06-tbv4-evals.md (the instrument, the ledger,
          evals/run.py); docs/plans/2026-09-10-memory.md.
 ```
 

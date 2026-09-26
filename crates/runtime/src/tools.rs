@@ -98,7 +98,7 @@ fn facts_of(tool: &str, command: &str, output: &yi_tools::ToolOutput) -> Vec<Str
     holds
 }
 
-/// T19 tee target: the home root, never the user's working tree.
+/// The §7.3 tee target: the home root, never the user's working tree.
 fn default_recovery_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi/tool-output"))
 }

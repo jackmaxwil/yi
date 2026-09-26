@@ -1,11 +1,13 @@
 # The CI is the first user
 
+Open: the `live` job in `.forgejo/workflows/pr.yml` is advisory; it becomes a required status once its inconclusive rate earns it.
+
 Status: in progress. Step 1 (§3.A–B) landed as D131 (0.156.0), step 2 (§3.E) as
 D132 (0.157.0), and the live lane (§3.C–D, §4) as D133 (0.158.0), advisory with
 three scenarios, and its bands, history and verdict (0.159.0), and §3.D's
 `ErrorClass` as D134 (0.160.0), and §3.F's landing verb as D135 (0.161.0); §3.G's weekly job landed at
 0.162.0. What remains is time: `live` becomes required when its inconclusive rate
-has earned it, and the first real run needs the `OPENROUTER_API_KEY` secret. It amends plan law 3 of docs/plans/2026-08-29-governance.md (§4 here)
+has earned it, and the first real run needs the `OPENROUTER_API_KEY` secret. It amends plan law 3 of docs/archive/plans/2026-08-29-governance.md (§4 here)
 and leaves law 2 untouched.
 
 Provenance: the eleven escapes of 2026-09-05, all found by the user opening yi
