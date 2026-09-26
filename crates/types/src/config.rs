@@ -91,6 +91,9 @@ pub fn parse(raw: &str) -> Result<(UserConfig, Vec<ConfigMigration>), serde_json
     Ok((serde_json::from_value(config)?, applied))
 }
 
+/// The nesting depth a family gets with no `rlm.maxDepth` set (D165's floor of the 1..=3 range).
+pub const DEFAULT_MAX_DEPTH: u8 = 1;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RlmConfig {
@@ -100,7 +103,7 @@ pub struct RlmConfig {
 impl RlmConfig {
     /// The nesting depth a family may reach: the configured value clamped to 1..=3.
     pub fn depth(&self) -> u8 {
-        self.max_depth.unwrap_or(1).clamp(1, 3)
+        self.max_depth.unwrap_or(DEFAULT_MAX_DEPTH).clamp(1, 3)
     }
 }
 
