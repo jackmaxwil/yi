@@ -130,8 +130,10 @@ pub const REPLACE_PAIR_COALESCED_WARNING: &str = "Multiple hunks targeted the sa
 pub const REPLACEMENT_INDENT_AUTO_SHIFT_WARNING: &str =
     "Auto-indented a replacement body to match unchanged structural rows in its source range.";
 
-pub const BARE_BODY_AUTO_PIPED_WARNING: &str =
-    "Auto-prefixed bare body row(s) with `+`. Body rows must be `+TEXT` literal lines.";
+pub const BARE_BODY_ROW_REFUSED: &str = "body row has no `+`. Every body row is `+TEXT` (a literal `-`/`+` start is `+- item` / `++ item`); the range removes the old lines, so context rows are never written.";
+
+pub const BLANK_BODY_ROW_REFUSED: &str =
+    "blank row inside a body. A blank line is `+` alone; every body row starts with `+`.";
 
 pub const SNAPSHOT_ROWS_AUTO_PUT_WARNING: &str = "Recovered top-level `N:TEXT` snapshot row(s) as single-line `PUT N.=N:` replacements. Use explicit `PUT` headers for reliable edits.";
 
@@ -166,8 +168,11 @@ pub const BARE_RANGE_AUTO_PUT_WARNING: &str =
 pub const READ_METADATA_IGNORED_WARNING: &str =
     "Ignored copied read-output elision row(s). Re-read elided ranges before editing them.";
 
-pub const EMPTY_PUT_AUTO_CUT_WARNING: &str =
-    "Interpreted an empty `PUT` body as deletion. Use `CUT N.=M` or `CUT N*` for bodyless deletes.";
+pub fn empty_put_message(put_form: &str, cut_form: &str) -> String {
+    format!(
+        "`{put_form}` has no body rows and an empty `PUT` never deletes. To delete, use `{cut_form}`; to replace, add `+TEXT` rows."
+    )
+}
 
 pub const CUT_COLON_IGNORED_WARNING: &str =
     "Ignored a trailing `:` on bodyless `CUT`. Prefer `CUT N.=M` / `CUT N*` without a colon.";
@@ -237,9 +242,9 @@ fn closer_lowered_warning(block_form: &str, plain_form: &str) -> String {
     )
 }
 
-fn unresolved_lowered_warning(block_form: &str, line: u64, plain_form: &str) -> String {
+fn unresolved_after_block_message(block_form: &str, line: u64, plain_form: &str) -> String {
     format!(
-        "`{block_form}` could not resolve a syntactic block on line {line}, so it was applied as plain `{plain_form}`. Verify the landing line; anchor on a line that OPENS a construct."
+        "`{block_form}` could not resolve a syntactic block beginning on line {line} (blank, bare inner line, unsupported language, or parse error). Anchor on the line that OPENS the construct, or use plain `{plain_form}` to land right after line {line}."
     )
 }
 
@@ -247,16 +252,16 @@ pub fn insert_after_block_closer_lowered_warning(line: u64) -> String {
     closer_lowered_warning(&format!("PUT >{line}*:"), &format!("PUT >{line}:"))
 }
 
-pub fn insert_after_block_unresolved_lowered_warning(line: u64) -> String {
-    unresolved_lowered_warning(&format!("PUT >{line}*:"), line, &format!("PUT >{line}:"))
+pub fn insert_after_block_unresolved_message(line: u64) -> String {
+    unresolved_after_block_message(&format!("PUT >{line}*:"), line, &format!("PUT >{line}:"))
 }
 
 pub fn paste_after_block_closer_lowered_warning(line: u64) -> String {
     closer_lowered_warning(&format!("PUT >{line}*"), &format!("PUT >{line}"))
 }
 
-pub fn paste_after_block_unresolved_lowered_warning(line: u64) -> String {
-    unresolved_lowered_warning(&format!("PUT >{line}*"), line, &format!("PUT >{line}"))
+pub fn paste_after_block_unresolved_message(line: u64) -> String {
+    unresolved_after_block_message(&format!("PUT >{line}*"), line, &format!("PUT >{line}"))
 }
 
 pub const UNRESOLVED_BLOCK_INTERNAL: &str =
