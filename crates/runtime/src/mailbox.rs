@@ -86,11 +86,15 @@ fn receipt(target: &str, state: &str) -> Value {
     json!({"target": target, "state": state})
 }
 
-pub(crate) fn timeout_of(payload: &Map<String, Value>) -> u64 {
-    payload
-        .get("timeout_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(WAIT_MAX_MS)
+/// Invariant: a timeout the caller sent is refused or honoured, never replaced; only an absent
+/// one takes the cap, so `clamped` always compares against what was sent.
+pub(crate) fn timeout_of(payload: &Map<String, Value>) -> Result<u64, String> {
+    match payload.get("timeout_ms") {
+        None => Ok(WAIT_MAX_MS),
+        Some(sent) => sent.as_u64().ok_or_else(|| {
+            format!("timeout_ms {sent} is refused: a wait takes a whole number of milliseconds, 0 or more")
+        }),
+    }
 }
 
 /// The child half of §12 routing: a name is looked for locally, then in the family.
@@ -123,6 +127,7 @@ pub fn register_child_messaging(
         let own = Arc::clone(&own);
         Box::pin(async move {
             let (target, draft) = parsed?;
+            let timeout = timeout?;
             // A name this child holds is its own child; any other is the family's to find.
             if target != "parent" && own.holds(&target) {
                 return own
@@ -148,9 +153,10 @@ pub fn register_receive(
     let (take, host) = (session.mail_hook(), Arc::clone(host));
     registry.register("rlm.receive", move |payload| {
         let asked = timeout_of(&payload);
-        let clamped = asked.clamp(WAIT_MIN_MS, WAIT_MAX_MS);
         let (take, host) = (Arc::clone(&take), Arc::clone(&host));
         Box::pin(async move {
+            let asked = asked?;
+            let clamped = asked.clamp(WAIT_MIN_MS, WAIT_MAX_MS);
             let started = std::time::Instant::now();
             let deadline = std::time::Duration::from_millis(clamped);
             loop {
