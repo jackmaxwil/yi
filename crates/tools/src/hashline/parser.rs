@@ -1,16 +1,17 @@
 use std::collections::{HashMap, HashSet};
 
+use super::format::{format_cut_header, format_replace_header};
 use super::messages::{
-    AbsoluteRangeOp, BARE_BODY_AUTO_PIPED_WARNING, BARE_RANGE_AUTO_PUT_WARNING,
+    AbsoluteRangeOp, BARE_BODY_ROW_REFUSED, BARE_RANGE_AUTO_PUT_WARNING, BLANK_BODY_ROW_REFUSED,
     COLON_ON_REGISTER_PUT, COLONLESS_PUT_TAKES_NO_BODY, COLONLESS_SPAN_PUT,
     CUT_COLON_IGNORED_WARNING, CUT_TAKES_NO_BODY, DIFF_OLD_ROWS_IGNORED_WARNING, EMPTY_INSERT,
-    EMPTY_PUT_AUTO_CUT_WARNING, MINUS_BULLET_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED,
-    MOVE_TAKES_NO_BODY, READ_METADATA_IGNORED_WARNING, REGISTER_PUT_TAKES_NO_BODY,
-    REM_TAKES_NO_BODY, REPLACE_PAIR_COALESCED_WARNING, SNAPSHOT_ROWS_AUTO_PUT_WARNING,
+    MINUS_BULLET_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED, MOVE_TAKES_NO_BODY,
+    READ_METADATA_IGNORED_WARNING, REGISTER_PUT_TAKES_NO_BODY, REM_TAKES_NO_BODY,
+    REPLACE_PAIR_COALESCED_WARNING, SNAPSHOT_ROWS_AUTO_PUT_WARNING, empty_put_message,
     invalid_absolute_range_message, literal_op_row_warning, near_miss_header_warning,
     repeated_snapshot_row_message,
 };
-use super::prefixes::{is_read_metadata_line, strip_one_leading_hashline_prefix};
+use super::prefixes::is_read_metadata_line;
 use super::tokenizer::{BlockTarget, Token, TokenKind, is_hunk_header_text, near_miss_hunk_header};
 use super::types::{Anchor, BlockMode, Cursor, Edit, FileOp, ParsedRange, PasteTarget};
 
@@ -64,38 +65,6 @@ fn bodyless_target_message(target: &BlockTarget, had_colon: bool) -> Option<&'st
         _ if !had_colon => Some(COLONLESS_PUT_TAKES_NO_BODY),
         _ => None,
     }
-}
-
-fn is_bare_literal_value(text: &str) -> bool {
-    let trimmed = text.trim();
-    let trimmed = trimmed
-        .strip_suffix(',')
-        .map(str::trim_end)
-        .unwrap_or(trimmed);
-    if trimmed.len() >= 2 {
-        let bytes = trimmed.as_bytes();
-        if (bytes[0] == b'"'
-            && bytes[trimmed.len() - 1] == b'"'
-            && !trimmed[1..trimmed.len() - 1].contains('"'))
-            || (bytes[0] == b'\''
-                && bytes[trimmed.len() - 1] == b'\''
-                && !trimmed[1..trimmed.len() - 1].contains('\''))
-        {
-            return true;
-        }
-    }
-    let unsigned = trimmed.strip_prefix(['-', '+']).unwrap_or(trimmed);
-    if unsigned.is_empty() {
-        return false;
-    }
-    let mut parts = unsigned.splitn(2, '.');
-    let whole = parts.next().unwrap_or("");
-    let fraction = parts.next();
-    !whole.is_empty()
-        && whole.bytes().all(|byte| byte.is_ascii_digit())
-        && fraction.is_none_or(|fraction| {
-            !fraction.is_empty() && fraction.bytes().all(|byte| byte.is_ascii_digit())
-        })
 }
 
 fn parse_top_level_snapshot_row(text: &str) -> Option<(u64, &str)> {
@@ -265,7 +234,6 @@ fn is_unified_diff_hunk_header(trimmed: &str) -> bool {
 struct PayloadRow {
     text: String,
     line_num: u64,
-    bare: bool,
     minus: bool,
 }
 
@@ -575,7 +543,7 @@ A CUT over the same lines as a PUT is one PUT over that range carrying the final
         if let Some(message) = bodyless_target_message(&pending.target, pending.had_colon) {
             return Err(format!("line {line_num}: {message}"));
         }
-        Self::commit_deferred_blanks_into(pending, &mut self.warnings);
+        Self::commit_deferred_blanks(pending)?;
         // An op written with the payload prefix inserts as literal text. Correct for `+TEXT`,
         // but it silently plants a `CUT …` line in the file, so name it when it happens.
         if is_hunk_header_text(text) {
@@ -585,7 +553,6 @@ A CUT over the same lines as a PUT is one PUT over that range carrying the final
             pending.payloads.push(PayloadRow {
                 text: text.to_owned(),
                 line_num,
-                bare: false,
                 minus: false,
             });
         }
@@ -621,18 +588,13 @@ A CUT over the same lines as a PUT is one PUT over that range carrying the final
                 return Err(format!("line {line_num}: {message}"));
             }
             if !minus {
-                self.warn_once(BARE_BODY_AUTO_PIPED_WARNING);
+                return Err(format!("line {line_num}: {BARE_BODY_ROW_REFUSED}"));
             }
             if let Some(pending) = self.pending.as_mut() {
-                Self::commit_deferred_blanks_into(pending, &mut self.warnings);
-            }
-            if let Some(pending) = self.pending.as_mut() {
-                // Defer read-output line-number stripping to flush_pending: a bare "N:text"
-                // row is a paste artifact only when *every* bare row in the hunk has it.
+                Self::commit_deferred_blanks(pending)?;
                 pending.payloads.push(PayloadRow {
                     text: text.to_owned(),
                     line_num,
-                    bare: true,
                     minus,
                 });
             }
@@ -708,22 +670,16 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
         pending.deferred_blanks.push(PayloadRow {
             text: text.to_owned(),
             line_num,
-            bare: true,
             minus: false,
         });
     }
 
-    fn commit_deferred_blanks_into(pending: &mut Pending, warnings: &mut Vec<String>) {
-        if pending.deferred_blanks.is_empty() {
-            return;
+    /// A blank row is a separator when it ends the body and a bare row when more body follows.
+    fn commit_deferred_blanks(pending: &mut Pending) -> Result<(), String> {
+        match pending.deferred_blanks.first() {
+            Some(blank) => Err(format!("line {}: {BLANK_BODY_ROW_REFUSED}", blank.line_num)),
+            None => Ok(()),
         }
-        if !warnings
-            .iter()
-            .any(|warning| warning == BARE_BODY_AUTO_PIPED_WARNING)
-        {
-            warnings.push(BARE_BODY_AUTO_PIPED_WARNING.to_owned());
-        }
-        pending.payloads.append(&mut pending.deferred_blanks);
     }
 
     fn resolve_minus_rows(
@@ -738,7 +694,7 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
             if row.minus {
                 first_minus.get_or_insert(row.line_num);
                 all_bullet_shaped &= is_md_bullet_row(&row.text);
-            } else if !row.bare {
+            } else {
                 has_explicit = true;
                 has_explicit_bullet |= is_md_bullet_row(&row.text);
             }
@@ -766,35 +722,6 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
             return Ok(());
         }
         Err(format!("line {first_minus}: {MINUS_ROW_REJECTED}"))
-    }
-
-    fn strip_bare_prefixes_if_uniform(payloads: &mut [PayloadRow]) {
-        let mut saw_bare = false;
-        let mut all_literal_values = true;
-        for row in payloads.iter() {
-            if !row.bare || row.text.trim().is_empty() {
-                continue;
-            }
-            saw_bare = true;
-            let stripped = strip_one_leading_hashline_prefix(&row.text);
-            if stripped == row.text {
-                return;
-            }
-            all_literal_values &= is_bare_literal_value(&stripped);
-        }
-        if !saw_bare {
-            return;
-        }
-        // Every stripped remainder being a lone literal is a numeric-keyed dict or YAML
-        // mapping (`1: "one",`), not pasted read output; stripping "N:" there mangles it.
-        if all_literal_values {
-            return;
-        }
-        for row in payloads.iter_mut() {
-            if row.bare && !row.text.trim().is_empty() {
-                row.text = strip_one_leading_hashline_prefix(&row.text);
-            }
-        }
     }
 
     fn push_insert(&mut self, cursor: Cursor, text: String, line_num: u64, replacement: bool) {
@@ -890,7 +817,6 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
             return Ok(());
         };
         Self::resolve_minus_rows(&mut pending.payloads, &mut self.warnings)?;
-        Self::strip_bare_prefixes_if_uniform(&mut pending.payloads);
         let Pending {
             target,
             line_num,
@@ -919,9 +845,13 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
                     if !had_colon {
                         return Err(format!("line {line_num}: {COLONLESS_SPAN_PUT}"));
                     }
-                    self.push_delete_range(&range, line_num);
-                    self.warn_once(EMPTY_PUT_AUTO_CUT_WARNING);
-                    return Ok(());
+                    return Err(format!(
+                        "line {line_num}: {}",
+                        empty_put_message(
+                            &format_replace_header(range.start.line, range.end.line),
+                            &format_cut_header(range.start.line, range.end.line),
+                        )
+                    ));
                 }
                 let cursor = Cursor::BeforeAnchor {
                     anchor: range.start,
@@ -939,9 +869,13 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
                     if !had_colon {
                         return Err(format!("line {line_num}: {COLONLESS_SPAN_PUT}"));
                     }
-                    self.push_block(anchor, &[], line_num, BlockMode::Replace, None);
-                    self.warn_once(EMPTY_PUT_AUTO_CUT_WARNING);
-                    return Ok(());
+                    return Err(format!(
+                        "line {line_num}: {}",
+                        empty_put_message(
+                            &format!("PUT {}*:", anchor.line),
+                            &format!("CUT {}*", anchor.line),
+                        )
+                    ));
                 }
                 self.push_block(anchor, &payloads, line_num, BlockMode::Replace, None);
                 Ok(())
