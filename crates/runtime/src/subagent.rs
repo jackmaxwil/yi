@@ -23,7 +23,7 @@ use record::preview;
 pub(crate) use service::Standing;
 
 // A completed child holds its slot until closed: the cap forces the parent to
-// reap with rlm.delete_subagent instead of leaking children (design B2).
+// reap with rlm.delete_subagent instead of leaking children (design §11).
 pub const DEFAULT_MAX_CHILDREN: usize = 8;
 /// live sessions across the whole family, so a deeper fan-out cannot multiply (D165).
 pub const FAMILY_CAP: usize = 16;
@@ -157,7 +157,7 @@ pub struct ChildBuild<'a> {
     pub model: Model,
     pub thinking: Option<Effort>,
     pub session_dir: &'a Path,
-    /// `Some` only for a B11 worktree child; otherwise the parent's own cwd.
+    /// `Some` only for a worktree child (§11); otherwise the parent's own cwd.
     pub cwd: Option<&'a Path>,
     pub link: ParentLink,
     pub wall: crate::wall::Wall,
@@ -180,17 +180,17 @@ pub struct SubagentHostOptions {
     pub factory: Arc<ChildFactory>,
     /// A host status notice, delivered as a user-role message.
     pub notice: Arc<NoticeFn>,
-    /// The parent's bus: a child's B7 updates ride it, never the child's own.
+    /// The parent's bus: a child's status updates ride it, never the child's own.
     pub events: tokio::sync::broadcast::Sender<AgentEvent>,
-    /// The parent's live history, read at spawn for a B5 fork seed.
+    /// The parent's live history, read at spawn for a fork seed (§11).
     pub parent_messages: Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync>,
     /// Repository an isolated child branches its worktree from, and the directory a
-    /// non-isolated child simply runs in — the wall is rooted here either way (B11).
+    /// non-isolated child simply runs in — the wall is rooted here either way (§11).
     pub cwd: PathBuf,
     /// Where the lane pool lives (`~/.yi/lanes`), and how many slots it has.
     pub home: PathBuf,
     pub lane_slots: u8,
-    /// A child's B6 report, injected into the parent's own transcript; `true` wakes it.
+    /// A child's report (§12), injected into the parent's own transcript; `true` wakes it.
     pub report: Arc<dyn Fn(AgentMessage, bool) + Send + Sync>,
     /// Folds a child's billable usage onto the parent's last assistant message.
     pub attribute: Arc<AttributeFn>,
@@ -221,6 +221,8 @@ pub struct SubagentHost {
     pub(crate) waits: std::sync::atomic::AtomicU64,
     pub(crate) told: Mutex<Option<(String, u64)>>,
     pub(crate) stuck: Mutex<std::collections::HashSet<String>>,
+    /// The board a long reply is kept on: the wiring's, set once after construction (D242).
+    pub(crate) family: std::sync::OnceLock<PathBuf>,
 }
 
 impl SubagentHost {
@@ -296,7 +298,7 @@ fn default_session_name(prompt: &str, child_id: &str) -> String {
 }
 
 /// How much parent history seeds a child's transcript. `LastN(n)` counts turn boundaries
-/// rather than messages, so a child never opens on half of an exchange (B1).
+/// rather than messages, so a child never opens on half of an exchange (§11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fork {
     None,
@@ -305,7 +307,7 @@ pub enum Fork {
 }
 
 /// Whether a child edits the parent's checkout or gets a git worktree of its own, so
-/// children writing files in parallel cannot overwrite each other (B11).
+/// children writing files in parallel cannot overwrite each other (§11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Isolation {
     None,
@@ -492,6 +494,7 @@ impl SubagentHost {
             waits: std::sync::atomic::AtomicU64::new(0),
             told: Mutex::new(None),
             stuck: Mutex::default(),
+            family: std::sync::OnceLock::new(),
         }
     }
 

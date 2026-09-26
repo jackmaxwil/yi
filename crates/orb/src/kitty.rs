@@ -11,7 +11,7 @@ pub fn supported() -> bool {
         || std::env::var_os("KITTY_WINDOW_ID").is_some()
 }
 
-/// TokyoNight-leaning light ink on the reference's light-dots-on-dark contract; alpha carries
+/// TokyoNight-leaning light ink on a light-dots-on-dark contract; alpha carries
 /// depth over a transparent background so the terminal's own ground shows through.
 pub const INK_RGB: (u8, u8, u8) = (0xc8, 0xd3, 0xf5);
 const INK: (f64, f64, f64) = (INK_RGB.0 as f64, INK_RGB.1 as f64, INK_RGB.2 as f64);

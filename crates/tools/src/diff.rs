@@ -38,7 +38,7 @@ impl GitPatch {
 }
 
 /// The `patch` / `added` / `removed` keys an edit or write result carries so the transcript
-/// can render a diff body (T13). Counts cover the whole change even when the text is capped.
+/// can render a diff body (§7). Counts cover the whole change even when the text is capped.
 pub fn patch_details(patch: &GitPatch) -> Value {
     let (added, removed) = patch.stats();
     json!({

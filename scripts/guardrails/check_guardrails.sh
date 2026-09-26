@@ -83,7 +83,7 @@ run "$PY" scripts/guardrails/check_orphans.py --selfcheck
 # exclusion and substitution; a model that drifts from it passes a leak (D172).
 run "$PY" scripts/guardrails/check_public_surface.py --selfcheck
 # Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
-# are the reference. Config and the domain-word allowlist live in .codespellrc.
+# set the spelling. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else run sh -c 'echo "FAIL codespell (uv tool install codespell)"; exit 1'; fi
 # binary_size and startup are the only two readers of target/dist/yi, and the
 # fat-LTO build that writes it is minutes, so this is where it is paid for

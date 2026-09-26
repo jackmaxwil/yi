@@ -4,7 +4,7 @@
 #
 # `--remap-path-prefix` is the whole reason this is a script rather than four copies of
 # a cargo line. Every dependency panic string carries the absolute path of the source
-# file it came from, and on the reference host that was 53,710 bytes of
+# file it came from, and on the measured build host that was 53,710 bytes of
 # `~/.cargo/registry/src/index.crates.io-<hash>/` and `~/.rustup/toolchains/<name>/`
 # prefixes -- plus the builder's username in any backtrace an operator pastes into an
 # issue. Mapping each prefix to a single letter keeps `file:line` readable and makes the

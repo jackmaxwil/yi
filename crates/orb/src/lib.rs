@@ -1,5 +1,5 @@
-//! thinking-orbs port (A.13, D41): geometry-exact engine, verified against the library's own
-//! golden vectors, plus the kitty painter. No terminal framework: the host owns placement.
+//! Thought-orb engine (D41): geometry-exact, verified dot for dot against pinned golden
+//! vectors, plus the kitty painter. No terminal framework: the host owns placement.
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 

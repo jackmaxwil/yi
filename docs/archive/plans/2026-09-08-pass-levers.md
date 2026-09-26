@@ -1,5 +1,7 @@
 # The second pass on the v4 failure paths: the kernel, the gates, the family
 
+Landed: D160-D166 (0.190.0-0.199.0).
+
 ```
 status:  planned 2026-09-08; stages S1-S11 land one PR each, in order.
 tree:    0.189.0, last decision row D159. D160 onward below are drafts;
@@ -9,10 +11,10 @@ issues:  one per stage under milestone "Evals on the ledger", opened
 evidence: docs/eval-ledger.md rows 0018-0023 and the 158 session files of
          the runs they name; the exploration notes of 2026-09-08 (this
          session), each fact cited to its file and line at c3aa01d.
-lineage: docs/plans/2026-09-08-failure-paths.md (the first pass),
-         docs/plans/2026-09-06-tbv4-evals.md (the instrument),
-         docs/plans/2026-09-06-prompt-surface.md (the prompt laws),
-         docs/plans/2026-08-28-native-methodology-and-triggered-skills.md
+lineage: docs/archive/plans/2026-09-08-failure-paths.md (the first pass),
+         docs/archive/plans/2026-09-06-tbv4-evals.md (the instrument),
+         docs/archive/plans/2026-09-06-prompt-surface.md (the prompt laws),
+         docs/archive/plans/2026-08-28-native-methodology-and-triggered-skills.md
          (placement §15.5, §15.7), docs/YI_DESIGN.md §15.
 ```
 

@@ -32,8 +32,8 @@ har-supply, har-verify always; the rest by their stated triggers. Enforced highl
   check_guardrails.sh, so a rename that misses the comment fails the build. Qualify the path:
   rustdoc resolves relative to the documented item's own module, so a bare method name usually
   will not resolve. Bare backticks then mean not-an-item, which is the common case and stays
-  bare — a parameter (keep_recent), a wire name (display_data, sessionUpdate), a symbol in a
-  reference codebase (convertToLlm). rustdoc resolves links only in /// and //!, so a comment
+  bare — a parameter (keep_recent), a wire name (display_data, sessionUpdate), a symbol in
+  another codebase (a JavaScript function name). rustdoc resolves links only in /// and //!, so a comment
   inside a function body leaves the item bare; that is the ceiling, not an exemption.
 - A comment claiming the incident or invariant grant says which: the first line opens
   `Incident:` or `Invariant:`. Closed vocabulary — check_comments.py rejects any other

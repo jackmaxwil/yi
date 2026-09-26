@@ -1,5 +1,5 @@
-// Markdown table pipeline, port adapted. Hyperlink remapping and
-// HTML-spillover heuristics dropped.
+// Markdown table pipeline. Hyperlink remapping and HTML-spillover
+// heuristics are deliberately absent.
 
 use pulldown_cmark::Alignment;
 use ratatui::style::{Modifier, Style};
@@ -11,8 +11,8 @@ use crate::wrap::wrap_line;
 
 const TABLE_CELL_PADDING: usize = 1;
 const TABLE_BODY_SEPARATOR_CHAR: char = '─';
-// An outer box with inner rules and real junctions. The ported pipeline drew
-// no edges and ruled every body row: most of the ink for none of the meaning.
+// An outer box with inner rules and real junctions. A borderless table that
+// rules every body row spends most of the ink for none of the meaning.
 const BOX_H: char = '─';
 const BOX_V: &str = "│";
 const BOX_TOP: [char; 3] = ['┌', '┬', '┐'];

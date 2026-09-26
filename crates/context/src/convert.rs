@@ -37,8 +37,8 @@ fn as_user(text: String, timestamp: u64) -> AgentMessage {
     AgentMessage::host_user(UserContent::Text(text), timestamp)
 }
 
-/// Design L4 (Pi `convertToLlm`, ported verbatim in text): harness-internal message kinds
-/// become plain user messages; kinds with no LLM representation drop.
+/// Design §4.2: harness-internal message kinds become plain user messages, their text
+/// unchanged; kinds with no LLM representation drop.
 pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
     messages
         .iter()
