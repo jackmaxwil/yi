@@ -336,6 +336,54 @@ fn undo_moves_only_what_the_turn_wrote() -> TestResult {
     Ok(())
 }
 
+/// A process that dies mid-turn leaves a turn start with no turn end: undo says so and
+/// restores every path changed since, the hand edit on b.txt included.
+#[test]
+fn undo_without_a_turn_end_restores_unscoped_and_says_so() -> TestResult {
+    let workspace = Workspace::new("undo-unscoped")?;
+    let project = workspace.project();
+    std::fs::write(project.join("b.txt"), "before\n")?;
+    let script = tool_script(
+        &workspace,
+        &[("write", json!({"path": "a.txt", "content": "turn\n"}))],
+        Some("written"),
+    )?;
+    ask(&workspace, "write a file", &["--faux", &script])?;
+    std::fs::write(project.join("b.txt"), "hand\n")?;
+
+    let sessions = workspace.0.join("home/sessions");
+    let dir = std::fs::read_dir(&sessions)?
+        .filter_map(Result::ok)
+        .find(|entry| entry.path().is_dir())
+        .ok_or("no session directory")?;
+    let file = std::fs::read_dir(dir.path())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .ok_or("no session file")?;
+    let log = std::fs::read_to_string(&file)?;
+    let (kept, last) = log.trim_end().rsplit_once('\n').ok_or("one-line session")?;
+    assert!(last.contains(r#""at":"turnEnd""#), "{last}");
+    std::fs::write(&file, format!("{kept}\n"))?;
+
+    let undone = workspace.yi(&["undo"])?;
+    if git_missing(&undone) {
+        return Ok(());
+    }
+    let said = stdout(&undone);
+    assert_eq!(undone.status.code(), Some(0), "{said}");
+    assert!(
+        said.contains(
+            "[unscoped — no turn-end checkpoint pairs with this one, so every path changed \
+             since it moved]"
+        ),
+        "{said}"
+    );
+    assert!(!project.join("a.txt").exists(), "{said}");
+    assert_eq!(std::fs::read_to_string(project.join("b.txt"))?, "before\n");
+    Ok(())
+}
+
 #[test]
 fn undo_without_a_session_fails_loudly() -> TestResult {
     let workspace = Workspace::new("undo-empty")?;
