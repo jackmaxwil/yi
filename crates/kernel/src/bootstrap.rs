@@ -363,7 +363,7 @@ fn resolve_writable_venv_dir(options: &BootstrapOptions) -> Result<PathBuf, Stri
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "bootstrap owns its subprocess probes and uv runs (design K1)"
+    reason = "bootstrap owns its subprocess probes and uv runs (design §9.1)"
 )]
 pub(crate) fn command(program: &Path) -> std::process::Command {
     std::process::Command::new(program)

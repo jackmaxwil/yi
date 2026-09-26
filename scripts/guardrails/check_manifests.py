@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manifest law (D31). Incidents observed in the reference survey: workspace lints silently
+"""Manifest law (D31). Incidents it prevents: workspace lints silently
 skipped without a per-crate opt-in; two grandfathered folder/crate name mismatches; 84 crates
 frozen at 0.1.0 against a root 0.79.1.
 Also the crate-root string_slice deny (D109): a root carries the attribute unless the crate is

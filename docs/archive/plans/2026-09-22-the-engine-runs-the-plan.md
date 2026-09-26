@@ -1,5 +1,7 @@
 # The engine runs the plan: G0-G4
 
+Landed: D223-D229 (0.286.0-0.292.0).
+
 ```
 status:  planned 2026-09-22. Lands as docs/plans/2026-09-22-the-engine-runs-the-plan.md
          in G0. Stages G0-G4 land as one stacked PR on #467 (claude/yi-os-f1, 82431aa5),

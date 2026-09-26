@@ -364,7 +364,7 @@ fn a_rust_write_arms_the_language_pack_in_a_foreign_repository() -> TestResult {
 }
 
 /// A fragment example naming an API that no longer exists is worse than no
-/// example (design §15.13).
+/// example (native-methodology plan §15.13).
 #[test]
 fn fragment_examples_name_real_kernel_apis() -> TestResult {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
