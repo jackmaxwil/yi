@@ -1,5 +1,7 @@
 # The prompt surface: one exhaustive prompt, a todo tool that never lets go, and the instrument that finds where either fails
 
+Landed: D137-D139 (0.164.0-0.166.0).
+
 ```
 status:  implemented 2026-09-06 through S6 on branch
          claude/prompt-surface-impl-aa6dee1 (0.164.0 D137 todo tool,

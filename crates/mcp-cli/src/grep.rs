@@ -23,7 +23,7 @@ fn matching_tools(snapshot: &Value, needle: &str) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// Progressive discovery (design §5.2): case-insensitive substring search over cached
+/// Progressive discovery (design §7.6): case-insensitive substring search over cached
 /// connect-time snapshots, contacting no server. Some = matches, None = none.
 pub fn grep_sessions(
     store: &SessionsStore,

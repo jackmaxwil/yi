@@ -108,6 +108,7 @@ async fn an_unknown_command_runs_contained_then_asks() -> TestResult {
         writable: vec![project.clone()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        loopback: false,
     };
     let broker = Arc::new(
         PermissionBroker::new(
@@ -183,6 +184,7 @@ async fn a_refused_program_asks_even_when_the_retry_text_differs() -> TestResult
         writable: vec![project.clone()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        loopback: false,
     };
     let broker = Arc::new(
         PermissionBroker::new(
