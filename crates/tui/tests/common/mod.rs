@@ -6,7 +6,7 @@ use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use ratatui::prelude::CrosstermBackend;
 
-/// Port adapted (U19; ratatui 0.29 keeps
+/// Test backend (§17.3; ratatui 0.29 keeps
 /// `CrosstermBackend::writer` private, so the parser sits behind a shared
 /// handle): wraps a CrosstermBackend over a vt100::Parser to mock a real
 /// terminal without ever touching stdout — size and cursor position come

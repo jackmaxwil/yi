@@ -32,7 +32,7 @@ pub struct CommandCapture {
 /// holds the capture pipes. The group dies before the shell: macOS refuses a zombie group (EPERM).
 fn kill_tree(child: &mut Child) -> Result<(), String> {
     // Walked before any signal, while a re-grouped child (GNU timeout's) still has its parent.
-    // ponytail: one orphaned before the cancel escapes; a subreaper or cgroup needs libc (§13.1).
+    // ponytail: one orphaned before the cancel escapes; a subreaper or cgroup needs libc (§18.3).
     #[cfg(unix)]
     let tree = descendants(child.id());
     #[cfg(unix)]
@@ -127,7 +127,7 @@ fn pid_kill(pids: &[u32]) -> Result<(), String> {
 }
 
 /// Incident: slim images ship no `kill(1)`, and its dropped ENOENT left timed-out `python3`
-/// jobs running. No `libc` (§13.1): the shell's builtin, in the one form dash and bash parse.
+/// jobs running. No `libc` (§18.3): the shell's builtin, in the one form dash and bash parse.
 #[cfg(unix)]
 fn group_kill(pgid: u32) -> Result<(), String> {
     let status = command("/bin/sh")

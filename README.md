@@ -1,8 +1,8 @@
 # Yi
 
-Personal coding agent. Native Rust. One binary, ~5.7 MB, starts in ~2.4 ms,
-20 direct dependencies. Built to stay small enough for one person to
-understand end to end.
+Personal coding agent. Native Rust. One binary, at most 7 MiB, `yi --version`
+in at most 5 ms, at most 20 direct dependencies. Built to stay small enough for
+one person to understand end to end.
 
 ## Run
 
@@ -117,12 +117,12 @@ fails the build until the growth is committed on purpose.
 
 ## Speed
 
-- `yi --version`: ~2.4 ms measured, ≤ 5 ms budgeted. `--version`, `--help`,
-  and `sessions list` return before config parse or runtime construction.
+- `yi --version`: ≤ 5 ms budgeted, measured on the dist binary. It returns
+  before config parse or runtime construction.
 - The async runtime is a current-thread tokio, built per command. No thread
   pool warms up to print a version string.
-- Dist binary ~5.7 MB, budget 6 MiB. Every dependency added logs its measured
-  size and startup delta in `docs/size-ledger.md` before it lands.
+- Dist binary budget 7 MiB. Every dependency added logs its measured size and
+  startup delta in `docs/size-ledger.md` before it lands.
 
 ## Memory
 
@@ -135,8 +135,8 @@ into its rectangle from the retained transcript.
 
 Sessions live on disk as an append-only entry tree, not in RAM: branch,
 rewind to any entry, resume after a crash, read with tools that are not this
-program. Unknown fields survive round-trips, so a newer session still loads
-in an older binary.
+program. Unknown fields survive round-trips wherever the shape allows
+(`docs/YI_DESIGN.md` §20).
 
 ## Planning
 
@@ -154,20 +154,21 @@ to spawn a child agent. State survives between calls, snapshots to disk,
 revives across restarts. Recursion is a language feature.
 
 Child authority only shrinks: a spawn spec can fork none, all, or the last N
-entries of the parent context, and overlays customize or reduce the child's
+turns of the parent context, and overlays customize or reduce the child's
 tools and model — never exceed the parent. Depth is capped. The kernel never
 holds MCP sockets or tokens; kernel Python shells out to the one-shot
 `yi mcp --json` CLI.
 
 ## Architecture
 
-Fifteen crates, all in the default build, strict dependency order:
+Sixteen crates, strict dependency order (`docs/YI_DESIGN.md` §2):
 
 | crate | owns |
 |---|---|
 | `yi-types` | every serialized shape; the schema wall (serde only, no runtime) |
 | `yi-loop` | the turn loop and interrupts |
 | `yi-ai` | providers and the model catalog |
+| `yi-oauth` | provider login: PKCE, loopback callback, token store |
 | `yi-session` | the entry tree, JSONL codec, tree operations |
 | `yi-context` | projection, accounting, compaction, assembly |
 | `yi-permission` | modes, rules, holds, the absolute denylist |
@@ -181,7 +182,7 @@ Fifteen crates, all in the default build, strict dependency order:
 | `yi-mcp-cli` | one-shot MCP client, config-gated |
 | `yi-cli` | the composition root |
 
-The turn loop is under 1,000 lines and its public API returns no `Result` —
+The turn loop's public API returns no `Result` —
 failure is a value in the event stream, not an exception climbing the stack.
 Every surface (CLI, solo, workspace, editor protocol, daemon, RPC) is a client
 of that loop rendering the same event stream; none is privileged. The daemon
@@ -244,7 +245,7 @@ in the same change.
   code, never by piped output.
 - Baseline edits (`--update`) land in their own commit, never with code.
 - Every test defends one externally observable contract; fixtures come from
-  reference implementations, never from Yi's own output. A regression test
+  real producers, never from Yi's own output. A regression test
   is watched failing against the unfixed code before the fix is claimed.
 - No `unwrap`/`expect`/`panic` outside tests. A comment earns its line by
   naming what the code cannot; two lines, hard cap.

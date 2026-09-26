@@ -55,7 +55,7 @@ fn parse_tokens(body: &Value) -> Result<Credential> {
 }
 
 /// ChatGPT's token response carries no `/organization/uuid`; the account id is the
-/// id_token JWT's `https://api.openai.com/auth` claim (where codex-rs and Pi read it).
+/// id_token JWT's `https://api.openai.com/auth` claim, the only place it appears.
 fn id_token_account(body: &Value) -> Option<String> {
     let id_token = body.get("id_token").and_then(Value::as_str)?;
     let payload = id_token.split('.').nth(1)?;

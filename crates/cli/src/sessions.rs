@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use yi_runtime::session_store::{
     BranchBounds, EntryOrder, EntryQuery, JsonlRepo, SessionMetadata, SessionRepo, age_label,
-    lock_session, now_ms,
+    lock_session, now_ms, validate_session_id,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, UserContent};
@@ -46,7 +46,11 @@ pub fn run(subcommand: &str, options: &Options) -> i32 {
             }
             Err(error) => fail(&error.to_string()),
         },
-        ("rm", Some(id)) => match repo.delete(id) {
+        ("rm", Some(id)) => match repo
+            .delete(id)
+            .map_err(|error| error.to_string())
+            .and_then(|()| remove_board(&options.session_dir, id))
+        {
             Ok(()) => {
                 if options.json {
                     print_json(&json!({ "removed": id }));
@@ -55,10 +59,22 @@ pub fn run(subcommand: &str, options: &Options) -> i32 {
                 }
                 0
             }
-            Err(error) => fail(&error.to_string()),
+            Err(error) => fail(&error),
         },
         ("show" | "rm", None) => usage(),
         _ => usage(),
+    }
+}
+
+pub(crate) fn board_dir(session_dir: &Path, id: &str) -> PathBuf {
+    session_dir.join("family").join(id)
+}
+
+fn remove_board(session_dir: &Path, id: &str) -> Result<(), String> {
+    validate_session_id(id).map_err(|error| error.to_string())?;
+    match std::fs::remove_dir_all(board_dir(session_dir, id)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
+        _ => Ok(()),
     }
 }
 
