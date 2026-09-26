@@ -78,9 +78,9 @@ fn the_block_numbers_open_work_and_hides_a_finished_list() -> TestResult {
     assert_eq!(
         rows,
         vec![
-            "  1. ✓ read",
-            "  2. ▶ write",
-            "  3. ! land it (blocked on user: which branch)",
+            "1. ✓ read",
+            "2. ▶ write",
+            "3. ! land it (blocked on user: which branch)",
         ]
     );
     let finished = list(vec![item("read", TodoStateName::Done)?])?;
@@ -113,9 +113,9 @@ fn the_full_view_shows_every_phase_and_child() -> TestResult {
     assert_eq!(
         full,
         vec![
-            "  Ground",
+            "Ground",
             "  1. ▶ read the code",
-            "  Fix",
+            "Fix",
             "  2. ○ write the fix",
             "    3. ○ parser",
         ]
@@ -123,11 +123,7 @@ fn the_full_view_shows_every_phase_and_child() -> TestResult {
     let (_, compact) = rows(&two, false)?;
     assert_eq!(
         compact,
-        vec![
-            "  1. ▶ read the code",
-            "  2. ○ write the fix",
-            "    3. ○ parser"
-        ],
+        vec!["1. ▶ read the code", "2. ○ write the fix", "  3. ○ parser"],
         "the compact view drops the phase headings"
     );
     Ok(())
@@ -139,12 +135,7 @@ fn the_compact_view_is_last_current_and_next_two() -> TestResult {
     let (_, compact) = rows(&ten(5)?, false)?;
     assert_eq!(
         compact,
-        vec![
-            "  5. ✓ item 5",
-            "  6. ▶ item 6",
-            "  7. ○ item 7",
-            "  8. ○ item 8",
-        ]
+        vec!["5. ✓ item 5", "6. ▶ item 6", "7. ○ item 7", "8. ○ item 8",]
     );
     let (_, full) = rows(&ten(5)?, true)?;
     assert_eq!(full.len(), 10, "the full view folds nothing: {full:?}");
@@ -157,12 +148,7 @@ fn a_fresh_list_folds_to_current_and_next_three() -> TestResult {
     let (_, compact) = rows(&ten(0)?, false)?;
     assert_eq!(
         compact,
-        vec![
-            "  1. ▶ item 1",
-            "  2. ○ item 2",
-            "  3. ○ item 3",
-            "  4. ○ item 4",
-        ]
+        vec!["1. ▶ item 1", "2. ○ item 2", "3. ○ item 3", "4. ○ item 4",]
     );
     Ok(())
 }
@@ -171,7 +157,7 @@ fn a_fresh_list_folds_to_current_and_next_three() -> TestResult {
 #[test]
 fn the_compact_view_stops_at_the_end_of_the_list() -> TestResult {
     let (_, compact) = rows(&ten(9)?, false)?;
-    assert_eq!(compact, vec!["  9. ✓ item 9", "  10. ▶ item 10"]);
+    assert_eq!(compact, vec!["9. ✓ item 9", "10. ▶ item 10"]);
     Ok(())
 }
 
@@ -184,7 +170,7 @@ fn the_first_open_item_is_current_when_none_runs() -> TestResult {
         item("ship", TodoStateName::Pending)?,
     ])?;
     let (_, compact) = rows(&open, false)?;
-    assert_eq!(compact, vec!["  1. ✓ read", "  2. ○ write", "  3. ○ ship"]);
+    assert_eq!(compact, vec!["1. ✓ read", "2. ○ write", "3. ○ ship"]);
     Ok(())
 }
 
@@ -219,5 +205,35 @@ fn the_clock_restarts_only_for_a_new_list() -> TestResult {
         clock.full(late + TODO_FULL_FOR),
         "a list that left and came back shows in full again"
     );
+    Ok(())
+}
+
+/// Under a goal the list's title is a content row, so its items indent beneath it the way
+/// steering items sit beneath theirs.
+#[test]
+fn under_a_goal_the_items_sit_beneath_their_title() -> TestResult {
+    let input = yi_tui::hud::HudInput {
+        goal: Some(yi_tui::hud::GoalView {
+            objective: "ship".to_owned(),
+            status: "active".to_owned(),
+            tokens_used: 0,
+            token_budget: None,
+        }),
+        todos: Some(ten(0)?),
+        ..yi_tui::hud::HudInput::default()
+    };
+    let lines: Vec<String> = yi_tui::hud::render(&input, &theme())
+        .iter()
+        .map(text)
+        .collect();
+    let indent = |needle: &str| {
+        lines
+            .iter()
+            .find(|line| line.contains(needle))
+            .map(|line| line.len() - line.trim_start().len())
+    };
+    let title = indent("Todos 0/10").ok_or(format!("{lines:?}"))?;
+    let first = indent("item 1").ok_or(format!("{lines:?}"))?;
+    assert_eq!(first, title + 2, "{lines:#?}");
     Ok(())
 }

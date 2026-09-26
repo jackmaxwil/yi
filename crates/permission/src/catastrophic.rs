@@ -48,7 +48,7 @@ const SYSTEM_PATHS_PROTECTED_RECURSIVELY: [&str; 12] = [
 pub struct CatastrophicContext {
     pub home_dir: Option<PathBuf>,
     pub working_dir: Option<PathBuf>,
-    /// The workspace `.git` directory (design M10 addition): denied in every
+    /// The workspace `.git` directory (design §8 addition): denied in every
     /// mode including yolo — losing it loses the undo story for everything.
     pub workspace_git: Vec<PathBuf>,
 }
@@ -145,7 +145,7 @@ pub fn resolve_target(raw: &str, cwd: &Path) -> PathBuf {
 }
 
 /// Never touches the filesystem: canonicalize() fails on a file being created and a hostile
-/// argument cannot slow a lexical pass. The write-time symlink recheck (T10) compensates.
+/// argument cannot slow a lexical pass. The write-time symlink recheck (§7.2) compensates.
 pub fn lexical_normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -186,7 +186,7 @@ pub(crate) fn resolve(path: &Path, context: &CatastrophicContext) -> PathBuf {
 }
 
 /// Whether destroying this path is categorically unacceptable. Checked before
-/// decide() and denied in every mode including yolo (design M10, D15).
+/// decide() and denied in every mode including yolo (design §8, D15).
 pub fn is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
     let path = lexical_normalize(path);
     if PROTECTED_SYSTEM_PATHS

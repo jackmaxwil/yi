@@ -1,5 +1,7 @@
 # Model and reasoning-effort switching — a per-model effort ladder, a gated top tier, and the reference picker
 
+Landed: D72 (0.65.0).
+
 ```
 status:  LANDED 2026-08-28 at 0.60.0 as D72 · U43, in one pass rather than
          four commits. A ponytail/§18 audit cut seven items and fixed four
