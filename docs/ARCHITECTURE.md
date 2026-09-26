@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.331.0         # bump on any structural change; row goes in CHANGELOG.md
+version: 0.332.0         # bump on any structural change; row goes in CHANGELOG.md
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -160,7 +160,7 @@ named config key or cargo feature turns it on). § points into YI_DESIGN.md.
 | session mining: deterministic signals + the prompt drift gate | 21 | core | H | M | `skills/yi/session-mining/extract.py` emits per-session signal counts from the JSONL and nothing the model said; `prompt_drift` pins the prompt's tool names, grep flags and todo ops against the registry and schemas; journey: `extract.py --selfcheck` (run by `check_guardrails.sh`), `prompt_drift::every_flag_the_prompt_names_for_grep_is_in_its_schema` |
 | fetch: one addressable read path | 10 | core | H | M | one `Resolver` over the §10 schemes, walls as URL-prefix denies, every read logged in `FetchLog`; `offset`/`limit` pages; a `kernel://` read of an agent mid-cell gives up at its 5 s deadline with `Busy`; journey: `fetch_session::a_capped_read_names_the_next_offset_and_the_next_page_continues_it`, `fetch_session::a_store_attached_after_the_resolver_still_serves_history` |
 | behavior baseline gate (micro-eval ratchet) | 21 | core | H | L | shrink-only faux-cassette replays in `check_behavior`; `evals/record.py` distils a case from a session file; journey: `behavior::behavior_cassettes_replay_deterministically` |
-| `get_context` orientation packet | 7.1 | core | M | M | one clamped, layered packet behind a completeness header; journey: `orient::every_layer_is_named_and_the_header_count_matches`, `orient::packet_is_byte_stable_across_two_runs_on_one_tree` |
+| `get_context` orientation packet | 7.1 | core | M | M | one clamped, layered packet behind a completeness header; skeletons ranked by `symbol`, then change heat, then name; journey: `orient::every_layer_is_named_and_the_header_count_matches`, `orient::packet_is_byte_stable_across_two_runs_on_one_tree`, `orient::skeletons_rank_the_file_defining_the_symbol_first` |
 | trigger rules (gate + remind) | 6 | core | H | M | user-authored from `~/.yi/rules` and `.yi/rules`, none built in; gate is deny-with-evidence before permission; journeys: `rules_e2e::result_scope_fires_on_the_output_not_the_args` and `rules_e2e::the_lane_fixture_runs_through_the_engine` (T1) |
 | host-written memory (one file per fact, hook index) | 6 | core | M | M | the `memory` extension, `memory.save/read/forget`, `yi memory`; see [memory.md](memory.md); journey: `ext_e2e::the_memory_block_is_present_at_zero_notes` (T1), `skills_e2e::save_read_forget_through_the_kernel` (T1), `cli_surfaces::memory_imports_lists_checks_and_forgets` (T2) |
 | advisor (LlmReviewer only) | 16 | gated `models.advisor` | H | M | a fresh reviewer session over the work-log digest, forced on plan change and compaction; Hold degrades to Warn headless, and an untargeted (or blank-target) Hold degrades to Warn even with an asker present; `/advisor promote` writes a rule; journey: `advisor_e2e::llm_reviewer_advises_through_the_advise_tool`, `advisor_e2e::headless_hold_degrades_to_warn`, `advisor_e2e::an_untargeted_hold_warns_instead_of_holding_every_call`, `advisor_e2e::promotion_writes_a_rule_the_discovery_parser_accepts` |
