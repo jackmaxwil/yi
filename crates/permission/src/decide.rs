@@ -16,7 +16,7 @@ pub enum PermissionMode {
 }
 
 /// One short prompt fragment per mode, selected into the system prompt
-/// (design M11): a model that is not told the policy retries denied ops.
+/// (design §8): a model that is not told the policy retries denied ops.
 pub fn mode_fragment(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Ask => {
@@ -51,7 +51,7 @@ impl HoldPattern {
     }
 }
 
-/// Soft-block (design M5): a matching call becomes Ask with the hold's
+/// Soft-block (design §8): a matching call becomes Ask with the hold's
 /// reason attached; an expired hold is inert.
 #[derive(Debug, Clone)]
 pub struct Hold {
@@ -83,7 +83,7 @@ pub enum Decision {
     Ask {
         title: String,
         description: String,
-        /// Invariant: jurisdiction of the M7 auto reviewer, set here and never by it — true
+        /// Invariant: jurisdiction of the §8 auto reviewer, set here and never by it — true
         /// only for auto-mode fallback asks, false for holds, rules and catastrophic targets.
         reviewable: bool,
     },

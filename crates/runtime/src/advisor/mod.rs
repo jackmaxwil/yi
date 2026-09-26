@@ -28,7 +28,7 @@ pub struct AdvisorConfig {
     pub tokens_per_hour: Option<u64>,
     pub attention: Option<String>,
     /// Directory `/advisor promote` compiles a rule file into; `None` refuses to promote,
-    /// which leaves the advisor with no cross-session persistence at all (V11).
+    /// which leaves the advisor with no cross-session persistence at all (§16).
     pub rules_dir: Option<std::path::PathBuf>,
 }
 
@@ -198,7 +198,7 @@ struct AdvisorState {
     directives: Vec<String>,
     forced: bool,
     context_note: Option<String>,
-    /// Delivered advice the user can still promote, newest last (V11).
+    /// Delivered advice the user can still promote, newest last (§16).
     delivered: std::collections::VecDeque<(String, Advice)>,
 }
 
@@ -269,7 +269,7 @@ impl AdvisorRuntime {
         }
     }
 
-    /// V5 `CompactionCheck`: the replacement summary enters the advisor's own log, so the
+    /// The §16 `CompactionCheck`: the replacement summary enters the advisor's own log, so the
     /// next digest carries it as an id [`AdvisorRuntime::transcript`] resolves.
     pub fn note_compaction(&self, summary: String, now_ms: u64) {
         {
@@ -296,7 +296,7 @@ impl AdvisorRuntime {
             } = message
             {
                 // A constraint the user states once keeps binding later turns, so extraction is
-                // verbatim and append-only — never re-worded, never dropped on review (V12).
+                // verbatim and append-only — never re-worded, never dropped on review (§16).
                 let new_directives = digest::directives(text, &id);
                 state.directives.extend(new_directives);
             }
@@ -443,7 +443,7 @@ impl AdvisorRuntime {
             .collect()
     }
 
-    /// V11 (D59): the user adopts one advice as a standing D54 rule file —
+    /// Promotion (D59): the user adopts one advice as a standing D54 rule file —
     /// never a rule the runtime writes for itself.
     pub fn promote(&self, advice_id: &str) -> Result<(std::path::PathBuf, String), String> {
         let rules_dir = self

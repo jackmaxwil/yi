@@ -55,7 +55,7 @@ pub struct AcpUpdateParams {
 }
 
 /// ACP v2 `session/update` payload — the subset of update kinds Yi emits
-/// plus an extension carrier for `_yi/*` updates (design C3/C9).
+/// plus an extension carrier for `_yi/*` updates (design §17.2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "sessionUpdate", rename_all = "snake_case")]
 pub enum AcpSessionUpdate {
@@ -120,7 +120,7 @@ pub enum AcpSessionUpdate {
         size: u64,
     },
     /// Extension or future update kinds; `sessionUpdate` values beginning
-    /// with `_` are implementation extensions (`_yi/*`, design C9).
+    /// with `_` are implementation extensions (`_yi/*`, design §17.2).
     #[serde(untagged)]
     Extension(AcpExtensionUpdate),
 }
@@ -147,7 +147,7 @@ pub struct DaemonLedgerEntry {
 }
 
 /// Carrier for `_yi/*` extension updates and unknown future update kinds;
-/// the discriminator plus its fields re-emit verbatim (§19).
+/// the discriminator plus its fields re-emit verbatim (§20).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcpExtensionUpdate {
     #[serde(rename = "sessionUpdate")]
@@ -192,7 +192,7 @@ pub enum AcpContentBlock {
     Other(AcpOtherBlock),
 }
 
-/// Unknown content block preserved verbatim (§19: unknown tags re-emit).
+/// Unknown content block preserved verbatim (§20: unknown tags re-emit).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcpOtherBlock {
     #[serde(rename = "type")]
@@ -202,7 +202,7 @@ pub struct AcpOtherBlock {
 }
 
 /// ACP tool-call content: a content block, or a display-only terminal
-/// reference (design C7; diff content lands with T13).
+/// reference (design §17.2; diff content lands with §7).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AcpToolContent {
@@ -213,8 +213,8 @@ pub enum AcpToolContent {
     Terminal {
         terminal_id: String,
     },
-    /// Design C7: `changes` are the paths the call would touch, `patch` the
-    /// T13 unified diff, absolute-pathed so `git apply` accepts it verbatim.
+    /// Design §17.2: `changes` are the paths the call would touch, `patch` the
+    /// Unified diff, absolute-pathed so `git apply` accepts it verbatim.
     Diff {
         changes: Vec<String>,
         patch: String,
