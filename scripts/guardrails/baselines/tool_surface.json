@@ -16,7 +16,7 @@
  "extra:tyro": "5bfe67f84ecc8af8bdbba2de30aca20af147cf7ba5e6aba767997fdb540c8f69",
  "prompt:identity": "87eccc16ee4cff88f36f7206d980803b1d7522942f5c31a4d7d7f23e9012f7b0",
  "tool:ask_user": "1c9960a6c1e5be2672af56c1127bed93778ee1379e321375e1b6c09e0575fabd",
- "tool:bash": "0112d6aebe9f87d8c10aa1d9e47e6ea79fe3e3519abb3401afcdb6dd18f84372",
+ "tool:bash": "cbca4ba1e72da4a9cc52f939b0a3eb369495be77296912538d10cfded16fc3c5",
  "tool:edit": "b8d8750d31bb42198779146b98950c659b3bde143d89168a1cc90b5f110e3a56",
  "tool:get_context": "58f3374df81e5a026e2b8c4579e2a0544afa80276bd379d9e4b029cfb1fe23a2",
  "tool:grep": "c2665720408f25eaf5d6b63f2215d65fff3a66d4a2ee0db48d9c8f3f729b6718",
