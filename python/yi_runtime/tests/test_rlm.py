@@ -21,6 +21,9 @@ from unittest import mock
 
 import rlm
 
+# FakeHost replaces rlm.host_request for good; a test of the real reply path restores this one.
+REAL_HOST_REQUEST = rlm.host_request
+
 
 def _handle() -> rlm.RLMSpawnHandle:
     return rlm.RLMSpawnHandle(
@@ -448,6 +451,55 @@ class StatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(handle.name, "index")
         wanted = {"name": "index", "prompt": "serve the index", "restart": 1, "kwargs": {"tokens": 500}}
         self.assertEqual(sent, [("rlm.service", wanted)])
+
+
+class NoSuchChildTests(unittest.IsolatedAsyncioTestCase):
+    async def test_an_unknown_child_raises_one_error_both_excepts_catch(self) -> None:
+        """Dies with one miss raised two ways: ``status`` raised KeyError while ``result`` and
+        ``delete_subagent`` raised RuntimeError, so no one ``except`` caught all three."""
+        refusal = 'No RLM child matches "no-such"; the children are: a'
+
+        class HostSaysNoSuchChild:
+            def __init__(self, **_: object) -> None:
+                self.reply = None
+
+            def on_msg(self, callback) -> None:
+                self.reply = callback
+
+            def open(self, data) -> None:
+                self.reply({"content": {"data": {"status": "error", "error": refusal}}})
+
+            def close(self) -> None:
+                pass
+
+        async def no_members(kind, payload):
+            return {"members": []}
+
+        calls = (lambda: rlm.result("no-such"), lambda: rlm.delete_subagent("no-such"))
+        with mock.patch.multiple(rlm, Comm=HostSaysNoSuchChild, host_request=REAL_HOST_REQUEST):
+            for call in calls:
+                with self.assertRaises(KeyError) as missed:
+                    await call()
+                self.assertIsInstance(missed.exception, RuntimeError)
+                self.assertEqual(str(missed.exception), refusal)
+        with mock.patch.object(rlm, "host_request", no_members):
+            with self.assertRaises(RuntimeError) as missed:
+                await rlm.status("no-such")
+        self.assertIs(type(missed.exception), rlm.NoSuchChild)
+
+    async def test_a_negative_or_non_numeric_timeout_is_refused_before_the_host(self) -> None:
+        """Dies with ``rlm.receive(-1)`` sent as ``-1000`` ms, which the host replaced by its
+        five-minute cap: the wait slept the whole cap and said nothing was clamped."""
+
+        async def fake_host_request(kind, payload):
+            self.fail(f"{kind} reached the host with {payload}")
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            for bad in (-1, "soon", float("nan")):
+                for call in (rlm.wait, rlm.receive, lambda t: rlm.request("a", "hi", t)):
+                    with self.assertRaises(ValueError) as refused:
+                        await call(bad)
+                    self.assertIn(repr(bad), str(refused.exception))
 
 
 class PlanOpTests(unittest.IsolatedAsyncioTestCase):

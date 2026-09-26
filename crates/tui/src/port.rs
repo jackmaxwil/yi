@@ -180,6 +180,9 @@ fn sessions_listing(session_dir: &str, cwd: &str) -> String {
 }
 
 fn undo_text(session: &AgentSession, cwd: &str) -> String {
+    if session.status() == yi_runtime::Status::Running {
+        return "/undo: the current turn is still running (Esc Esc to stop it)".to_owned();
+    }
     let Some(store) = session.store() else {
         return "/undo: this session has no store to read checkpoints from".to_owned();
     };
@@ -187,21 +190,8 @@ fn undo_text(session: &AgentSession, cwd: &str) -> String {
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
     match yi_runtime::undo(&store, std::path::Path::new(cwd), &home) {
-        yi_runtime::UndoOutcome::Restored(changes) if changes.is_empty() => {
-            "/undo: nothing to restore — no file changed since the checkpoint".to_owned()
-        }
-        yi_runtime::UndoOutcome::Restored(changes) => {
-            let mut names: Vec<String> = changes
-                .iter()
-                .map(|change| change.path.display().to_string())
-                .collect();
-            names.sort();
-            names.dedup();
-            format!(
-                "/undo: restored {} — {}",
-                crate::cell::count_label(names.len(), "file"),
-                names.join(", ")
-            )
+        yi_runtime::UndoOutcome::Restored { changes, scoped } => {
+            format!("/undo: {}", yi_runtime::describe_undo(&changes, scoped))
         }
         // Scoped to this session on purpose: undoing a turn the reader never saw is not what
         // the word means. An earlier session's turns stay reachable, just not from here.

@@ -48,6 +48,21 @@ _EAGER = frozenset({"send", "followup", "interrupt", "revoke"})
 _REPEATED = ("is asking you", "stop waiting")
 # A helper's own read: the host counts a question it quotes as shown only to the model.
 _QUIET = contextvars.ContextVar("rlm_quiet", default=False)
+# The host's refusal of a target that names no child, raised as NoSuchChild.
+_NO_SUCH_CHILD = "No RLM child matches"
+
+
+class NoSuchChild(RuntimeError, KeyError):
+    """No child answers to that name; ``except KeyError`` and ``except RuntimeError`` both catch it."""
+
+    __str__ = RuntimeError.__str__
+
+
+def _ms(timeout: Any) -> int:
+    """Seconds as the host's milliseconds; a negative or non-numeric timeout is refused, not replaced."""
+    if not isinstance(timeout, (int, float)) or not 0 <= timeout < float("inf"):
+        raise ValueError(f"timeout must be a number of seconds, 0 or more; got {timeout!r}")
+    return int(timeout * 1000)
 
 
 def _call_type() -> type:
@@ -427,7 +442,8 @@ async def host_request(request_type: str, payload: dict[str, Any] | None = None)
             message = reply.get("error") or f"host request {request_type} failed"
             def _resolve_error() -> None:
                 if not future.done():
-                    future.set_exception(RuntimeError(str(message)))
+                    refused = NoSuchChild if str(message).startswith(_NO_SUCH_CHILD) else RuntimeError
+                    future.set_exception(refused(str(message)))
                     comm.close()
 
             loop.call_soon_threadsafe(_resolve_error)
@@ -670,7 +686,7 @@ async def request(target: "str | RLMSubagent", message: str, timeout: float = 30
     ``send(sender, text, reply_to=<id>)`` resolves it. RuntimeError when no reply
     came within ``timeout`` seconds; a late reply still lands in your history.
     """
-    return await host_request("agent_message.request", _mail(target, message, timeout_ms=int(timeout * 1000)))
+    return await host_request("agent_message.request", _mail(target, message, timeout_ms=_ms(timeout)))
 
 
 @_public
@@ -686,7 +702,7 @@ async def receive(timeout: float = 300.0) -> list[dict[str, Any]]:
         for env in await rlm.receive(60):
             print(env["from"], env.body)
     """
-    payload = await host_request("rlm.receive", {"timeout_ms": int(timeout * 1000)})
+    payload = await host_request("rlm.receive", {"timeout_ms": _ms(timeout)})
     envelopes = payload.get("envelopes")
     if not isinstance(envelopes, list):
         raise RuntimeError("rlm.receive returned an invalid envelope list")
@@ -714,7 +730,7 @@ async def status(name: str | None = None) -> "list[Reply] | Reply":
     (``revoke`` took its lease back but the stop, settle or record failed; everything it
     held is kept and the host retries). An entry reads by key or attribute. With
     ``name`` (a plan child's todo label names it too) it returns that one child's entry,
-    and an unknown name raises KeyError naming the children there are::
+    and an unknown name raises NoSuchChild (a KeyError) naming the children there are::
 
         for m in await rlm.status():
             print(m["name"], m.state)
@@ -734,7 +750,7 @@ async def status(name: str | None = None) -> "list[Reply] | Reply":
         return named[0]
     roster = (await host_request("rlm.status", {"quiet": True})).get("members") or []
     known = ", ".join(repr(member.get("name")) for member in roster if isinstance(member, dict))
-    raise KeyError(f"no one child named {name!r}; the children are: {known or 'none'}")
+    raise NoSuchChild(f"no one child named {name!r}; the children are: {known or 'none'}")
 
 
 @_public
@@ -768,7 +784,7 @@ async def wait(timeout: float = 300.0, cursor: int | None = None) -> dict[str, A
         r = await rlm.wait(300)
         print(r["state"], r.changed, r.states)
     """
-    payload: dict[str, Any] = {"timeout_ms": int(timeout * 1000)}
+    payload: dict[str, Any] = {"timeout_ms": _ms(timeout)}
     if cursor is not None:
         payload["cursor"] = cursor
     reply = await host_request("rlm.wait", _quiet(payload))
@@ -1267,6 +1283,7 @@ __all__ = [
     "HarnessState",
     "McpIntegration",
     "McpToolError",
+    "NoSuchChild",
     "NotEnabled",
     "RLMModel",
     "RLMSpawnHandle",

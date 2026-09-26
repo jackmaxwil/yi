@@ -14,15 +14,12 @@ use crate::session::AgentSession;
 pub type HoldSink = Arc<dyn Fn(&Advice) -> bool + Send + Sync>;
 
 pub const ADVISOR_GUIDANCE: &str = "weigh, don't blindly obey";
-pub const DEFAULT_CADENCE: u64 = 25;
 pub const OUTCOME_WINDOW: u64 = 5;
 
-/// The LLM reviewer is off until a model role names it. Cadence applies only
-/// when set: a cadence review on a clean run is pure spend.
+/// The LLM reviewer is off until a model role names it.
 #[derive(Clone)]
 pub struct AdvisorConfig {
     pub reviewer: bool,
-    pub cadence: Option<u64>,
     pub user_budget: usize,
     pub prose_budget: usize,
     pub tokens_per_hour: Option<u64>,
@@ -36,7 +33,6 @@ impl Default for AdvisorConfig {
     fn default() -> Self {
         Self {
             reviewer: false,
-            cadence: None,
             user_budget: digest::DEFAULT_USER_BUDGET,
             prose_budget: digest::DEFAULT_PROSE_BUDGET,
             tokens_per_hour: None,
@@ -78,16 +74,6 @@ impl Budget {
             .sum();
         Some(cap.saturating_sub(used))
     }
-}
-
-/// Cadence when configured, gated by the budget.
-pub fn should_review(
-    calls_since_review: u64,
-    cadence: Option<u64>,
-    budget_remaining: Option<u64>,
-) -> bool {
-    let due = cadence.is_some_and(|cadence| calls_since_review >= cadence);
-    due && budget_remaining.is_none_or(|remaining| remaining > 0)
 }
 
 /// One `<advisory>` element, severity and target as attributes.
@@ -188,7 +174,6 @@ struct PendingOutcome {
 struct AdvisorState {
     guard: guard::EmissionGuard,
     budget: Budget,
-    calls_since_review: u64,
     stats: AdvisorStats,
     pending: Vec<PendingOutcome>,
     counter: u64,
@@ -212,7 +197,7 @@ fn push_log(state: &mut AdvisorState, message: AgentMessage) -> String {
     id
 }
 
-/// work log → cadence trigger → reviewer → guard → delivery → outcome ledger,
+/// work log → review trigger → reviewer → guard → delivery → outcome ledger,
 /// over the session's event stream.
 pub struct AdvisorRuntime {
     state: Mutex<AdvisorState>,
@@ -231,7 +216,6 @@ impl AdvisorRuntime {
             state: Mutex::new(AdvisorState {
                 guard: guard::EmissionGuard::default(),
                 budget: Budget::new(config.tokens_per_hour),
-                calls_since_review: 0,
                 stats: AdvisorStats::default(),
                 pending: Vec::new(),
                 counter: 0,
@@ -301,12 +285,9 @@ impl AdvisorRuntime {
                 state.directives.extend(new_directives);
             }
             self.track_outcomes(&mut state, message);
-            if matches!(message, AgentMessage::ToolResult { .. }) {
-                state.calls_since_review = state.calls_since_review.saturating_add(1);
-            }
             let remaining = state.budget.remaining(now_ms);
             let forced = state.forced && remaining.is_none_or(|remaining| remaining > 0);
-            if !forced && !should_review(state.calls_since_review, self.config.cadence, remaining) {
+            if !forced {
                 let outcomes = Self::drain_outcomes(&mut state);
                 drop(state);
                 for outcome in outcomes {
@@ -315,7 +296,6 @@ impl AdvisorRuntime {
                 return None;
             }
             state.forced = false;
-            state.calls_since_review = 0;
             state.stats.reviews = state.stats.reviews.saturating_add(1);
             state.guard.begin_cycle();
             let chunk = self.digest_chunk(&state);
@@ -509,8 +489,8 @@ impl AdvisorRuntime {
                 state.stats.holds = state.stats.holds.saturating_add(1);
                 return;
             }
-            // D28: an Ask nobody can answer is a hang-to-timeout — headless,
-            // a Hold degrades to Warn.
+            // D28: an Ask nobody can answer is a hang-to-timeout, and a Hold with no
+            // target would match every call; headless or untargeted, it degrades to Warn.
             advice.severity = AdvisorySeverity::Warn;
         }
         match advice.severity {

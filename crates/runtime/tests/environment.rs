@@ -8,7 +8,8 @@ use std::sync::Arc;
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
 use yi_runtime::environment::{
-    FILES_SHOWN, append, deadline_line, files_line, git_summary, render, sanitize, time_per_minute,
+    FILES_SHOWN, append, deadline_line, files_line, git_line, git_summary, render, sanitize,
+    time_per_minute,
 };
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, ENVIRONMENT_TAG, StopReason, UserContent};
@@ -203,7 +204,7 @@ fn environment_sanitizes_branch_and_child_names() -> TestResult {
 }
 
 #[test]
-fn git_summary_reads_branch_and_dirty_count() -> TestResult {
+fn git_summary_counts_modified_and_untracked_apart() -> TestResult {
     let dir = Scratch::new("yi-env")?;
     assert_eq!(git_summary(&dir), None, "a plain directory has no branch");
     let init = yi_tools::command("git")
@@ -212,10 +213,43 @@ fn git_summary_reads_branch_and_dirty_count() -> TestResult {
         .status()?;
     assert!(init.success());
     std::fs::write(dir.join("a.txt"), "x")?;
-    let (branch, dirty) = git_summary(&dir).ok_or("no summary in a repo")?;
+    assert!(
+        yi_tools::command("git")
+            .args(["add", "a.txt"])
+            .current_dir(&dir)
+            .status()?
+            .success()
+    );
+    std::fs::write(dir.join("a.txt"), "y")?; // a tracked edit: counts as modified
+    std::fs::write(dir.join("b.txt"), "z")?; // git has never seen these: untracked
+    std::fs::write(dir.join("c.txt"), "w")?;
+    let (branch, modified, untracked) = git_summary(&dir).ok_or("no summary in a repo")?;
     assert_eq!(branch, "main");
-    assert_eq!(dirty, 1);
+    assert_eq!(modified, 1, "one tracked file edited after staging");
+    assert_eq!(
+        untracked, 2,
+        "two new files git has never seen, not modified"
+    );
     Ok(())
+}
+
+#[test]
+fn the_git_line_names_modified_and_untracked_omitting_zeros() {
+    assert_eq!(
+        git_line("main", 0, 0),
+        " (git: main, 0 modified)",
+        "a clean tree keeps today's zero rather than printing neither count"
+    );
+    assert_eq!(
+        git_line("main", 1, 2),
+        " (git: main, 1 modified, 2 untracked)"
+    );
+    assert_eq!(
+        git_line("main", 0, 2),
+        " (git: main, 2 untracked)",
+        "a zero count is omitted, not printed as 0 untracked"
+    );
+    assert_eq!(git_line("main", 1, 0), " (git: main, 1 modified)");
 }
 
 #[test]
