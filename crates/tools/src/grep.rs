@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
@@ -573,10 +573,11 @@ impl GrepTool {
                 Ok(()) => {
                     written = written.saturating_add(1);
                     if let Some(state) = &self.hashline {
-                        crate::hashline::tool::record_write_snapshot(
+                        crate::hashline::tool::record_view_snapshot(
                             state,
                             Path::new(&file.canonical),
                             &after,
+                            &crate::diff::shown_after_lines(&file.normalized, &after),
                         );
                     }
                 }
@@ -603,6 +604,48 @@ impl GrepTool {
         output.is_error = !failures.is_empty();
         output
     }
+}
+
+fn count_arg(value: &Value) -> Option<usize> {
+    value.as_u64().and_then(|count| usize::try_from(count).ok())
+}
+
+/// (context asked, context ignored as written, offset, root). A missing `path` was a clean
+/// "No matches found" and a negative `offset` paged from 0: both read as a fine request.
+fn page_args(
+    input: &Map<String, Value>,
+    context: &ToolContext,
+) -> Result<(usize, Option<String>, usize, PathBuf), Box<ToolOutput>> {
+    let (context_asked, context_ignored) = match input.get("context") {
+        None => (0, None),
+        Some(value) => match count_arg(value) {
+            Some(lines) => (lines, None),
+            None => (0, Some(value.to_string())),
+        },
+    };
+    let offset = match input.get("offset").map(|value| (value, count_arg(value))) {
+        None => 0,
+        Some((_, Some(skip))) => skip,
+        Some((value, None)) => {
+            return Err(invalid(format!(
+                "offset must be a non-negative integer, got {value}"
+            )));
+        }
+    };
+    let root = match input.get("path").and_then(Value::as_str) {
+        None => context.cwd.clone(),
+        Some(path) => {
+            let root = resolve_path(context, path);
+            if !root.exists() {
+                return Err(invalid(format!(
+                    "path {path} does not exist ({})",
+                    root.display()
+                )));
+            }
+            root
+        }
+    };
+    Ok((context_asked, context_ignored, offset, root))
 }
 
 fn cut_notices(collected: &Collected, context_asked: usize, rows: &mut Vec<String>) {
@@ -714,19 +757,11 @@ impl Tool for GrepTool {
             Ok(built) => built,
             Err(output) => return *output,
         };
-        let context_asked = input
-            .get("context")
-            .and_then(Value::as_u64)
-            .map_or(0, |lines| usize::try_from(lines).unwrap_or(0));
+        let (context_asked, context_ignored, offset, root) = match page_args(&input, context) {
+            Ok(args) => args,
+            Err(output) => return *output,
+        };
         let context_lines = context_asked.min(CONTEXT_CAP);
-        let offset = input
-            .get("offset")
-            .and_then(Value::as_u64)
-            .map_or(0, |skip| usize::try_from(skip).unwrap_or(usize::MAX));
-        let root = input
-            .get("path")
-            .and_then(Value::as_str)
-            .map_or_else(|| context.cwd.clone(), |path| resolve_path(context, path));
 
         let collected = collect(
             &context.cwd,
@@ -833,6 +868,11 @@ impl Tool for GrepTool {
             }
         }
         cut_notices(&collected, context_asked, &mut rows);
+        if let Some(asked) = context_ignored {
+            rows.push(format!(
+                "[context ignored: asked {asked}, not a non-negative integer; 0 used]"
+            ));
+        }
         if collected.total == 0 {
             rows.push("No matches found".to_owned());
         } else if shown == 0 {
