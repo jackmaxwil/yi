@@ -98,7 +98,7 @@ pub fn new_record(name: &str, spec: McpServerSpec) -> McpSessionRecord {
 }
 
 /// Default session name from the server reference: config entry name, else
-/// the last path-ish segment (mcpc: mcp.apify.com -> @apify).
+/// the last path-ish segment (mcp.apify.com -> @apify).
 pub fn default_session_name(server: &str) -> String {
     let base = server
         .rsplit_once(':')

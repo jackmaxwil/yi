@@ -50,7 +50,7 @@ fn pi_v4_fixtures_roundtrip_byte_identical() -> Result<(), Box<dyn Error>> {
 #[test]
 fn goal_without_check_fields_still_deserializes_and_reserializes_clean()
 -> Result<(), Box<dyn std::error::Error>> {
-    // A pre-check-gate goal fact (0.10.0 shape) must parse forever (§19), and
+    // A pre-check-gate goal fact (0.10.0 shape) must parse forever (§20), and
     // absent Options must not appear on re-serialize.
     let stored = r#"{"objective":"ship","status":"active","tokensUsed":5,"timeUsedSeconds":2,"created":1,"updated":2}"#;
     let goal: yi_types::goal::Goal = serde_json::from_str(stored)?;
@@ -78,7 +78,7 @@ fn goal_check_fields_round_trip() -> Result<(), Box<dyn std::error::Error>> {
 fn goal_discovery_ledger_round_trips_with_unknown_fields() -> Result<(), Box<dyn std::error::Error>>
 {
     // The drain gate re-reads this ledger after a resume, so a row an older
-    // writer produced must come back byte-identical (§19).
+    // writer produced must come back byte-identical (§20).
     let stored = r#"{"objective":"ship","status":"active","tokensUsed":0,"timeUsedSeconds":0,"created":1,"updated":1,"discoveries":[{"text":"the wall config is stale","violatesCheckOf":"t2","fingerprint":"abc","source":"finder"}]}"#;
     let goal: yi_types::goal::Goal = serde_json::from_str(stored)?;
     assert_eq!(goal.discoveries.len(), 1);
@@ -102,7 +102,7 @@ fn daemon_ledger_fixture_round_trips_with_unknown_fields() -> Result<(), Box<dyn
 #[test]
 fn task_without_a_check_still_deserializes_and_reserializes_clean()
 -> Result<(), Box<dyn std::error::Error>> {
-    // A pre-check-gate plan fact must parse forever (§19), and an absent check
+    // A pre-check-gate plan fact must parse forever (§20), and an absent check
     // must not appear on re-serialize.
     let stored = r#"{"fact":"plan","plan":{"version":1,"tasks":[{"id":"t1","title":"x","acceptance":"y","state":"done"}],"created":1,"updated":2}}"#;
     let fact: yi_types::wire::Fact = serde_json::from_str(stored)?;
@@ -147,7 +147,7 @@ fn a_persisted_red_streak_lands_in_the_extra_map() -> Result<(), Box<dyn std::er
 #[test]
 fn plan_fact_round_trips_with_unknown_fields_and_states() -> Result<(), Box<dyn std::error::Error>>
 {
-    // Durable §19 rules: unknown fields survive the flatten map; an unknown
+    // Durable §20 rules: unknown fields survive the flatten map; an unknown
     // task state decodes to Other and re-emits verbatim.
     let line = r#"{"fact":"plan","plan":{"version":3,"tasks":[{"id":"t1","title":"x","acceptance":"y","state":"paused_by_future_yi","futureField":7}],"created":1,"updated":2,"planWide":"kept"}}"#;
     let fact: yi_types::wire::Fact = serde_json::from_str(line)?;

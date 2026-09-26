@@ -398,6 +398,7 @@ async fn a_plan_opened_through_the_tool_is_the_sessions_todo_list() -> TestResul
             depth: 0,
             max_depth: 1,
             rlm_dir: root.join("rlm"),
+            family_dir: None,
             summarizer: None,
             advisor: None,
             auto_review: None,

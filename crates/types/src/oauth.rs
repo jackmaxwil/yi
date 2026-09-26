@@ -1,5 +1,5 @@
 //! The on-disk shapes of provider login (D191): the versioned token file and profile,
-//! each with an `extra` map so a field a newer Yi wrote survives a rewrite (§19).
+//! each with an `extra` map so a field a newer Yi wrote survives a rewrite (§20).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};

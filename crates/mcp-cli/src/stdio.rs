@@ -18,7 +18,7 @@ impl StdioTransport {
     pub fn spawn(command: &str, args: &[String], env: &Map<String, Value>) -> Result<Self, String> {
         #[expect(
             clippy::disallowed_methods,
-            reason = "an MCP stdio server is a child process by definition (design §5.2)"
+            reason = "an MCP stdio server is a child process by definition (design §7.6)"
         )]
         let mut builder = Command::new(command);
         builder.args(args);
