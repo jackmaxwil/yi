@@ -423,7 +423,8 @@ fn wire_plan_request(
         .with_output_resolve(resolver)
         .with_op_sink(ops)
         .with_liveness(liveness)
-        .with_cwd(cwd.clone());
+        .with_cwd(cwd.clone())
+        .with_owned(owned_roots(session, host));
     // This session's host seats the juries (plan section 6.4). A verification never outlives
     // the run (D177): the verifier and every lane settle read the session's deadline too.
     let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
@@ -451,6 +452,25 @@ fn wire_plan_request(
     }
     crate::plan::request::register(Arc::clone(&engine), actor.clone(), registry);
     Some((engine, actor, todos))
+}
+
+/// A child works its owner's plan, so its scope is its own ledger's roots and the host's.
+/// ponytail: one level up; a grandchild naming no plan sees its parent's roots, not the root's.
+fn owned_roots(
+    session: &AgentSession,
+    host: &Arc<SubagentHost>,
+) -> Arc<crate::plan::ledger::OwnedFn> {
+    let (own, owner) = (session.store_handle(), Arc::clone(&host.options.store));
+    Arc::new(move || {
+        let mut roots: Vec<_> = [own(), owner()]
+            .into_iter()
+            .flatten()
+            .flat_map(|store| crate::plan::ledger::owned_roots(&store))
+            .collect();
+        roots.sort();
+        roots.dedup();
+        roots
+    })
 }
 
 type PlanWiring = (

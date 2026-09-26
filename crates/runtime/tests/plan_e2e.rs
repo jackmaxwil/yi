@@ -1,6 +1,9 @@
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+#[path = "support/own.rs"]
+mod own;
+use own::own;
 
 use std::error::Error;
 use std::path::Path;
@@ -143,15 +146,33 @@ fn the_doc_pointer_resolves_to_the_canonical_file() -> TestResult {
 }
 
 #[test]
-fn without_a_pointer_the_active_root_is_the_plan() -> TestResult {
+fn without_a_pointer_the_active_root_this_session_opened_is_the_plan() -> TestResult {
     let dir = Scratch::new("yi-plan-view-fallback")?;
     let store = memory_store();
     write_plan(
         &dir,
         doc_plan("only-root", 2, vec![todo("cut", TodoState::Pending)?])?,
     )?;
+    own(&store, "only-root")?;
     let (service, _delivered) = harness(&dir, &store, 12);
     assert_eq!(service.read_plan()?.id.as_str(), "only-root");
+    Ok(())
+}
+
+#[test]
+fn a_fresh_session_never_inherits_another_sessions_active_plan() -> TestResult {
+    let dir = Scratch::new("yi-plan-view-foreign")?;
+    let opener = memory_store();
+    write_plan(
+        &dir,
+        doc_plan("theirs", 2, vec![todo("cut", TodoState::Pending)?])?,
+    )?;
+    own(&opener, "theirs")?;
+    let (fresh, _delivered) = harness(&dir, &memory_store(), 12);
+    match fresh.read_plan() {
+        Err(CanonicalPlanError::NoPlanOpen { dir: named }) => assert_eq!(named, *dir),
+        other => return Err(format!("expected no-plan, got {other:?}").into()),
+    }
     Ok(())
 }
 
@@ -218,6 +239,7 @@ fn stale_plan_reminds_once_then_latches_until_touched_moves() -> TestResult {
         &dir,
         doc_plan("goes-stale", 1, vec![todo("cut", TodoState::Pending)?])?,
     )?;
+    own(&store, "goes-stale")?;
     let (service, delivered) = harness(&dir, &store, 2);
     for _ in 0..6 {
         service.observe(&assistant_turn_end());
@@ -251,6 +273,7 @@ fn a_touched_move_pokes_the_change_hook_with_the_new_document() -> TestResult {
         &dir,
         doc_plan("watched", 1, vec![todo("cut", TodoState::Pending)?])?,
     )?;
+    own(&store, "watched")?;
     let (service, _delivered) = harness(&dir, &store, 12);
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
@@ -299,6 +322,7 @@ fn plan_get_serializes_the_document_with_ready_and_finished() -> TestResult {
             ],
         )?,
     )?;
+    own(&store, "served")?;
     let (service, _delivered) = harness(&dir, &store, 12);
     let value = service.get().map_err(|error| error.to_string())?;
     assert_eq!(value["plan"], serde_json::json!("served"));
@@ -867,5 +891,59 @@ async fn a_shape_cannot_retry_a_done_or_drop_a_running_todo() -> TestResult {
     };
     assert!(matches!(state("finished")?, TodoState::Done { .. }));
     assert!(matches!(state("busy")?, TodoState::Running { .. }));
+    Ok(())
+}
+
+/// Two sessions in one workspace share `.yi/plans`; each engine names only the roots its own
+/// ledger touched, so a fresh session neither views nor is refused over the other's plan.
+#[test]
+fn an_engine_never_resolves_or_conflicts_over_another_sessions_plan() -> TestResult {
+    use yi_runtime::plan::ops::{Op, OpRequest, PlanOpError};
+    let dir = Scratch::new("yi-plan-engine-scoped")?;
+    let session = |store: &yi_session::SharedSession| -> Result<PlanEngine, Box<dyn Error>> {
+        let (sink, scope) = (store.clone(), store.clone());
+        Ok(
+            PlanEngine::new(PlanStore::open(dir.to_path_buf())?, Arc::new(NoChildren))
+                .with_op_sink(Arc::new(yi_runtime::plan::ledger::SessionOpSink(Arc::new(
+                    move || Some(sink.clone()),
+                ))))
+                .with_owned(Arc::new(move || {
+                    yi_runtime::plan::ledger::owned_roots(&scope)
+                })),
+        )
+    };
+    let owner = |op: Op| OpRequest {
+        plan: None,
+        actor: Actor::Owner,
+        op,
+        request_id: None,
+        expected_revision: None,
+    };
+    let init = |goal: &str| -> Result<Op, Box<dyn Error>> {
+        Ok(Op::Init {
+            goal: GoalText::new(goal)?,
+            todos: vec![yi_runtime::plan::ops::TodoSpec {
+                label: TodoLabel::new("cut")?,
+                after: Vec::new(),
+                delegation: None,
+                contract: None,
+                children: Vec::new(),
+            }],
+        })
+    };
+    let (first, second) = (memory_store(), memory_store());
+    let (theirs, mine) = (session(&first)?, session(&second)?);
+    let opened = theirs.apply(owner(init("their plan")?))?.plan.id;
+    match mine.apply(owner(Op::View { full: false })) {
+        Err(PlanOpError::NoPlan) => {}
+        other => return Err(format!("a fresh session viewed {other:?}").into()),
+    }
+    let own = mine.apply(owner(init("my plan")?))?.plan.id;
+    assert_ne!(own, opened, "the fresh session opened its own plan");
+    assert_eq!(
+        theirs.apply(owner(Op::View { full: false }))?.plan.id,
+        opened
+    );
+    assert_eq!(mine.apply(owner(Op::View { full: false }))?.plan.id, own);
     Ok(())
 }

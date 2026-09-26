@@ -888,3 +888,23 @@ fn the_cycle_counter_survives_a_resume() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn a_new_session_starts_with_no_todos_and_a_resume_brings_them_back() -> TestResult {
+    let r = rig("todo-new-session")?;
+    r.session.set_todos(Arc::clone(&r.todos));
+    open_list(&r.todos)?;
+    r.session.reset();
+    r.session
+        .attach_store(memory_store("todo-new-session-fresh"))?;
+    assert_eq!(r.todos.list().progress().total, 0, "the old list leaked");
+    assert_eq!(r.todos.touched(), 0);
+    r.session.reset();
+    r.session.attach_store(r.store.clone())?;
+    assert_eq!(
+        r.todos.list().progress().total,
+        2,
+        "the resume lost the list"
+    );
+    Ok(())
+}

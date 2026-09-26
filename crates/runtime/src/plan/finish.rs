@@ -77,7 +77,7 @@ impl PlanEngine {
     fn locate(&self, agent: &str) -> Option<Held> {
         let roots = match agent.split_once('/') {
             Some((plan, _)) => vec![root_of(&PlanId::new(plan).ok()?).ok()?],
-            None => self.store.roots().ok()?,
+            None => self.roots().ok()?,
         };
         for root in roots {
             let Ok(reading) = self.store.journal(&root).read() else {

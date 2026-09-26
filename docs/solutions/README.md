@@ -222,5 +222,6 @@ edited by hand.
 - [D239](adr/d239.md) - one process owns a session's kernel snapshot (amends K10)
 - [D244](adr/d244.md) - syntax highlighting reads bat's grammar set through `two-face` (default...
 - [D243](adr/d243.md) - the design states what is built and names no other agent
+- [D252](adr/d252.md) - a session's plan and todos are its own
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
