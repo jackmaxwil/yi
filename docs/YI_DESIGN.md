@@ -781,7 +781,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 ### 18.3 Allowed dependencies
 | Crate | Features | Used by | Reason | Alternative considered |
 |---|---|---|---|---|
-| `serde` | `derive`, `std` | types, session | every wire and disk shape (§20) | hand-rolled JSON: compat correctness matters more |
+| `serde` | `derive`, `std` | types | every wire and disk shape (§20) | hand-rolled JSON: compat correctness matters more |
 | `serde_json` | `std`, `preserve_order` | all but orb, permission | JSON with key order kept, so a session file round-trips byte for byte | same |
 | `tokio` | `rt`, `sync`, `time`, `macros`, `process`, `io-util`, `net`; no `rt-multi-thread` | ai, kernel, loop, runtime, acp, tui, cli | provider streams, kernel sockets, scheduler timers | `smol`: `zeromq` is tokio-shaped |
 | `ureq` | `tls`, `native-certs` | ai, oauth, mcp-cli, kernel | blocking HTTP and SSE to providers, OAuth, MCP HTTP, the uv download | `reqwest` (hyper stack), `native-tls` (openssl on Linux) |
@@ -818,7 +818,7 @@ Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep
 |---|---|---|---|
 | direct deps | 19 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
 | transitive deps | 167 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
-| dist binary | 7,540,816 bytes, a measured ratchet under a hard cap of 8,388,608 (8 MiB, D249) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
+| dist binary | 7,540,832 bytes, a measured ratchet under a hard cap of 8,388,608 (8 MiB, D249) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
 | `yi --version` | 5.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
 
 The binary and startup gates run only after a local dist build; a failed build fails both. Under
@@ -844,8 +844,8 @@ The enforced rules for Rust in `crates/`; production lines precede a file's firs
 | a dist build aborts on panic | the §18.2 `dist` profile |
 
 ## 20. Schema stability
-- Every `Deserialize` derive lives in `yi-types`; outside it only
-  [`query.rs`](../crates/session/src/query.rs) in yi-session derives `Serialize`, for query output.
+- Every `Serialize`/`Deserialize` derive lives in `yi-types`; no other crate's `[dependencies]`
+  names `serde` (`check_manifests.py`, §21).
 - A shape changes only through a reviewed diff of `baselines/schemas.lock`, which maps
   `<file stem>::<Name>` for every `pub struct` and `pub enum` in `crates/types/src` to its source,
   comments stripped and whitespace collapsed. `check_schemas_lock.py` fails on a removed, added or
@@ -872,7 +872,7 @@ and `deny`. Baselines live in `scripts/guardrails/baselines/`; a gate's `--updat
 
 | Gate | Enforces | Baseline |
 |---|---|---|
-| `check_manifests` | folder `x` is crate `yi-x`; workspace version, edition, license, rust-version, lints; deps `{ workspace = true }`; feature allowlist; string_slice roots (§19) | `string_slice_pending.json` |
+| `check_manifests` | folder `x` is crate `yi-x`; workspace version, edition, license, rust-version, lints; deps `{ workspace = true }`; feature allowlist; string_slice roots (§19); `serde`/`serde_derive` only in `yi-types` (§20) | `string_slice_pending.json` |
 | `check_boundaries` | each crate's `yi-*` deps are in its allowlist; unknown crate or stale entry fails | `boundaries.toml` |
 | `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field, no baseline without a reader (D109) | — |
 | `check_commit_style` | subjects on `HEAD --not origin/main`: one imperative line, ≤ 72 chars, no assistant trailers; a baseline edit never shares a commit with code (merge commits exempt) | — |
