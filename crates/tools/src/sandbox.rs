@@ -14,6 +14,9 @@ pub struct Sandbox {
     pub deny_read: Vec<PathBuf>,
     /// Paths inside a writable root that host code runs or reads back (D205).
     pub deny_write: Vec<PathBuf>,
+    /// Loopback bind and inbound: the kernel's Jupyter ZMQ needs them, and its `bash()` jobs
+    /// run under the kernel's profile (D241). Never outbound, not even to localhost.
+    pub loopback: bool,
 }
 
 /// Credential stores, matching the paths the permission layer already refuses
@@ -44,6 +47,7 @@ impl Sandbox {
             writable,
             deny_read: CREDENTIAL_DIRS.iter().map(|dir| home.join(dir)).collect(),
             deny_write,
+            loopback: false,
         }
     }
 
@@ -71,17 +75,24 @@ impl Sandbox {
     pub fn policy(&self) -> String {
         let mut sections = vec![BASE_POLICY.to_owned(), self.read_policy()];
         sections.push(self.write_policy());
+        if self.loopback {
+            sections.push(
+                "; Jupyter ZMQ: the kernel binds loopback and the host connects to it.\n\
+                 ; No outbound rule, so a cell reaches no local service either.\n\
+                 (allow network-inbound (local ip \"localhost:*\"))\n\
+                 (allow network-bind (local ip \"localhost:*\"))\n"
+                    .to_owned(),
+            );
+        }
         sections.join("\n")
     }
 
     pub fn kernel_policy(&self) -> String {
-        format!(
-            "{}\n; Jupyter ZMQ: the kernel binds loopback and the host connects to it.\n\
-             ; No outbound rule, so a cell reaches no local service either.\n\
-             (allow network-inbound (local ip \"localhost:*\"))\n\
-             (allow network-bind (local ip \"localhost:*\"))\n",
-            self.policy()
-        )
+        Self {
+            loopback: true,
+            ..self.clone()
+        }
+        .policy()
     }
 
     pub fn kernel_prefix(&self) -> (String, Vec<String>) {

@@ -103,7 +103,7 @@ pub struct Usage {
     pub cache_write1h: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<i64>,
-    // Pi writes negative token deltas in usage adjustment records; unsigned fields
+    // Pi v4 session files carry negative token deltas in usage adjustment records; unsigned fields
     // would fail to load those session files.
     pub total_tokens: i64,
     pub cost: Cost,

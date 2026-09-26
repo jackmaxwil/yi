@@ -30,7 +30,7 @@ pub fn run(session: &AgentSession, command: &str, args: &str) -> Option<String> 
     })
 }
 
-/// Invariant: V11 promotion has no host request behind it, so this command is
+/// Invariant: advice promotion has no host request behind it, so this command is
 /// the only writer.
 fn advisor(session: &AgentSession, args: &str) -> String {
     let Some(advisor) = session.advisor() else {
@@ -82,7 +82,7 @@ fn plan(session: &AgentSession) -> String {
     }
 }
 
-/// Invariant: a goal is explicit-only (G2), so a keystroke may read one and
+/// Invariant: a goal is explicit-only (§15.1), so a keystroke may read one and
 /// never create one.
 fn goal(session: &AgentSession) -> String {
     let Some(service) = session.goal_service() else {
