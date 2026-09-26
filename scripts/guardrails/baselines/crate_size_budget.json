@@ -9,10 +9,10 @@
   "mcp-cli": 2302,
   "oauth": 1207,
   "orb": 1398,
-  "permission": 1753,
-  "runtime": 45945,
+  "permission": 1766,
+  "runtime": 45991,
   "session": 1755,
   "tools": 12423,
   "tui": 14005,
-  "types": 7958
+  "types": 7991
 }
