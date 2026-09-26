@@ -533,11 +533,15 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
     let hold_sink: Option<crate::advisor::HoldSink> = wiring.broker.as_ref().map(|broker| {
         let broker = Arc::clone(broker);
         Arc::new(move |advice: &yi_types::advisor::Advice| {
-            if !broker.can_ask() {
+            let pattern = advice
+                .target
+                .as_deref()
+                .and_then(yi_permission::HoldPattern::new);
+            let Some(pattern) = pattern.filter(|_| broker.can_ask()) else {
                 return false;
-            }
+            };
             broker.insert_hold(yi_permission::Hold {
-                pattern: advice.target.clone().unwrap_or_default(),
+                pattern,
                 reason: advice.text.clone(),
                 source: yi_permission::HoldSource::Advisor,
                 expires_at_ms: Some(yi_session::now_ms().saturating_add(3_600_000)),

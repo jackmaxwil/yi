@@ -993,6 +993,11 @@ impl HeartbeatService {
         }
     }
 
+    /// Parses and applies one `/heartbeat` line, the entry point RPC, ACP and slash share (§15.2).
+    pub fn run(&self, line: &str) -> Result<String, String> {
+        parse_heartbeat_command(line).and_then(|command| self.apply(&command, yi_session::now_ms()))
+    }
+
     /// Registers the kernel-side vocabulary (design §15.2): list, create,
     /// update (pause/resume), delete.
     pub fn register(self: &std::sync::Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
