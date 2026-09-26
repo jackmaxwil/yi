@@ -168,8 +168,7 @@ impl SessionStore {
         Ok(id)
     }
 
-    /// `from_id` is the leaf the lane left, so a reader can tell which attempt
-    /// the summary stands in for.
+    /// `from_id` is the leaf the lane left, so a reader can tell which attempt the summary stands in for.
     pub fn append_branch_summary(
         &mut self,
         lane: &str,

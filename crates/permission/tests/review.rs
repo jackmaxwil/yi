@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use yi_permission::{
     ActionId, ActionLedger, ActionState, CatastrophicContext, ConfigRule, ConfigRuleAction,
-    Decision, Hold, HoldSource, LEDGER_CAP, PermissionMode, ReviewedAsk, SessionRules, ToolCall,
-    UserVerdict, canonical_command_identity, canonical_tool_identity, decide,
+    Decision, Hold, HoldPattern, HoldSource, LEDGER_CAP, PermissionMode, ReviewedAsk, SessionRules,
+    ToolCall, UserVerdict, canonical_command_identity, canonical_tool_identity, decide,
 };
 use yi_types::permission::RuleKind;
 
@@ -176,7 +176,7 @@ fn only_the_auto_mode_fallback_asks_are_reviewable() -> TestResult {
     let held = "cargo publish";
     let canonical = canonical_command_identity(held, "/home/user/project");
     let hold = Hold {
-        pattern: "cargo publish".to_owned(),
+        pattern: HoldPattern::new("cargo publish").ok_or("pattern")?,
         reason: "the advisor asked you to stop".to_owned(),
         source: HoldSource::Advisor,
         expires_at_ms: None,
