@@ -286,17 +286,19 @@ impl TodoStore {
         self.list().progress()
     }
 
-    fn rehydrate(&self) {
-        let Some(session) = (self.store)() else {
-            return;
-        };
-        let Some(record) = latest_record(&session) else {
-            return;
-        };
+    /// Invariant: the list is the attached file's latest record or nothing; a `/new` swaps
+    /// the file under a live store, and the old session's list must not survive it.
+    pub fn rehydrate(&self) {
+        let record = (self.store)().and_then(|session| latest_record(&session));
         if let Ok(mut state) = self.state.lock() {
-            state.list = record.list;
-            mint(&mut state.list);
-            state.touched = record.touched;
+            *state = record.map_or_else(State::default, |record| {
+                let mut list = record.list;
+                mint(&mut list);
+                State {
+                    list,
+                    touched: record.touched,
+                }
+            });
         }
     }
 

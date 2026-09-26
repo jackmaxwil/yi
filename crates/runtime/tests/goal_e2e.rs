@@ -1,5 +1,8 @@
+#[path = "support/own.rs"]
+mod own;
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+use own::own;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -423,6 +426,7 @@ fn rows_naming_one_task_adjudicate_on_a_single_check_run() -> TestResult {
     let (plans, (service, store, _delivered)) = service_with_plans()?;
     service.create("ship the fix", None, None, None)?;
     seed_plan(&plans, &format!("echo run >> {}", tally.display()))?;
+    own(&store, "hold-the-invariant")?;
     let handle = store_handle(&store);
     for fingerprint in ["aaa", "bbb", "ccc"] {
         let mut row = high_row();
@@ -460,6 +464,7 @@ fn an_undrained_discovery_refuses_completion_until_its_check_goes_green() -> Tes
     let (plans, (service, store, delivered)) = service_with_plans()?;
     service.create("ship the fix", None, None, None)?;
     seed_plan(&plans, "echo t1 still broken; exit 4")?;
+    own(&store, "hold-the-invariant")?;
     let handle = store_handle(&store);
     record_discovery(&handle, &high_row())?;
     record_discovery(&handle, &high_row())?;
@@ -524,6 +529,7 @@ fn a_row_whose_check_left_the_plan_drains_instead_of_wedging_the_goal() -> TestR
     let (plans, (service, store, delivered)) = service_with_plans()?;
     service.create("ship the fix", None, None, None)?;
     seed_plan(&plans, "exit 4")?;
+    own(&store, "hold-the-invariant")?;
     record_discovery(&store_handle(&store), &high_row())?;
     // The plan the row named is replaced by one that no longer carries t1.
     seed_plan_of(&plans, "t9", "true")?;

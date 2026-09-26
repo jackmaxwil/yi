@@ -23,10 +23,36 @@ impl super::ops::OpSink for SessionOpSink {
     }
 }
 
+/// The roots this engine's session may name; see `PlanEngine::roots` below.
+pub type OwnedFn = dyn Fn() -> Vec<PlanId> + Send + Sync;
+
+impl super::ops::PlanEngine {
+    pub fn with_owned(self, owned: std::sync::Arc<OwnedFn>) -> Self {
+        Self {
+            owned: Some(owned),
+            ..self
+        }
+    }
+
+    /// Invariant: the plans directory is shared by every session in the workspace, so an
+    /// unnamed op resolves, lists and conflicts only over the roots this session's ledger
+    /// touched; another session's Active root is neither inherited nor in the way. Without an
+    /// owner (the CLI, a bare engine) every root is in scope.
+    pub(super) fn roots(&self) -> Result<Vec<PlanId>, super::store::StoreError> {
+        let roots = self.store.roots()?;
+        let Some(owned) = &self.owned else {
+            return Ok(roots);
+        };
+        let owned = owned();
+        Ok(roots.into_iter().filter(|id| owned.contains(id)).collect())
+    }
+}
+
 /// Every `custom{plan_op}` entry this session recorded, oldest first.
 pub fn records(session: &yi_session::SharedSession) -> Vec<PlanOpRecord> {
     let entries = yi_session::lock_session(session)
         .find_entries(&yi_session::EntryQuery {
+            custom_type: Some(PLAN_OP_ENTRY_TYPE.to_owned()),
             order: yi_session::EntryOrder::OldestFirst,
             ..yi_session::EntryQuery::default()
         })

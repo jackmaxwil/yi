@@ -450,6 +450,7 @@ pub struct PlanEngine {
     pub(super) capacity: Arc<super::capacity::Capacity>,
     pub(super) refused: super::schedule::Refused,
     pub(super) previewed: super::covers::Previewed,
+    pub(super) owned: Option<Arc<super::ledger::OwnedFn>>,
 }
 
 impl PlanEngine {
@@ -472,6 +473,7 @@ impl PlanEngine {
             capacity: super::capacity::Capacity::for_slots(crate::lane::DEFAULT_SLOTS),
             refused: super::schedule::Refused::default(),
             previewed: super::covers::Previewed::default(),
+            owned: None,
         }
     }
 
@@ -657,7 +659,7 @@ impl PlanEngine {
         request: RequestId,
     ) -> Result<Outcome, PlanOpError> {
         let op = Op::Init { goal, todos: specs };
-        for id in self.store.roots()? {
+        for id in self.roots()? {
             if has_record(&self.store.journal_path(&id)) {
                 let txn = self.begin(&id, actor, request.clone(), None, false)?;
                 if let Some(replayed) = self.replay(&txn, &op)? {
@@ -1092,7 +1094,7 @@ impl PlanEngine {
             return Ok(id);
         }
         let mut failed: Option<(PlanId, std::time::SystemTime)> = None;
-        for id in self.store.roots()? {
+        for id in self.roots()? {
             let plan = match self.store.read(&id) {
                 Ok(plan) => plan,
                 Err(StoreError::JournalMissing { .. } | StoreError::NeedsImport { .. }) => continue,

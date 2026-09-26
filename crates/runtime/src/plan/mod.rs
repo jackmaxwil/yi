@@ -83,7 +83,8 @@ pub enum CanonicalPlanError {
 }
 
 /// The one plan the session is working: the fact's doc pointer when the host wrote one, else
-/// the Active root in the plans directory. The fact carries no task bodies; the file is truth.
+/// the Active root among those this session's ledger touched. The directory is shared by every
+/// session in the workspace, so a root another session opened is never this one's plan.
 pub fn canonical_plan(store: &StoreHandle, plans_dir: &Path) -> Result<Plan, CanonicalPlanError> {
     let no_plan = || CanonicalPlanError::NoPlanOpen {
         dir: plans_dir.to_path_buf(),
@@ -91,18 +92,20 @@ pub fn canonical_plan(store: &StoreHandle, plans_dir: &Path) -> Result<Plan, Can
     if !plans_dir.is_dir() {
         return Err(no_plan());
     }
-    let pointer = store().and_then(|handle| {
-        yi_session::lock_session(&handle)
-            .plan()
-            .and_then(|fact| fact.doc)
-    });
+    let Some(handle) = store() else {
+        return Err(no_plan());
+    };
+    let pointer = yi_session::lock_session(&handle)
+        .plan()
+        .and_then(|fact| fact.doc);
     let plans = PlanStore::open(plans_dir.to_path_buf())?;
     if let Some(raw) = pointer {
         let id = PlanId::new(raw.as_str())
             .map_err(|cause| CanonicalPlanError::Pointer { id: raw, cause })?;
         return Ok(plans.read(&id)?);
     }
-    for id in plans.roots()? {
+    let owned = ledger::owned_roots(&handle);
+    for id in plans.roots()?.into_iter().filter(|id| owned.contains(id)) {
         let plan = plans.read(&id)?;
         if plan.state == PlanState::Active {
             return Ok(plan);
