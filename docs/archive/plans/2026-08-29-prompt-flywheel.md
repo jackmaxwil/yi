@@ -1,5 +1,7 @@
 # Yi self-optimization — plan v5 (prompt-flywheel lineage)
 
+Landed: D75-D77 (0.70.0).
+
 ```
 status:  LANDED 2026-08-29 at ARCHITECTURE 0.70.0 — D75 task checks · D76
          behavior gate · D77 decomposition protocol. v1 naive optimizer →

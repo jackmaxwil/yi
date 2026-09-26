@@ -40,7 +40,7 @@ pub struct LoopConfig {
     pub prepare_next_turn: Option<Box<PrepareFn>>,
     pub get_steering_messages: Option<Box<QueueFn>>,
     pub get_follow_up_messages: Option<Box<QueueFn>>,
-    /// Design P13: runs at every message boundary inside the tool loop, since a tool-heavy
+    /// Design §4.4: runs at every message boundary inside the tool loop, since a tool-heavy
     /// turn can blow the window mid-turn. Some(new) replaces the in-flight history.
     pub maybe_compact: Option<Box<CompactFn>>,
     pub first_turn_tool_choice: Option<ToolChoice>,

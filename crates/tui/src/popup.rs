@@ -11,7 +11,7 @@ pub enum PopupResult {
     Insert(String),
 }
 
-/// U11: a bottom view renders in place of the composer and owns keys while open.
+/// A bottom view renders in place of the composer and owns keys while open.
 pub trait BottomView {
     fn lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>>;
     fn handle_key(&mut self, key: &SingleKey) -> PopupResult;

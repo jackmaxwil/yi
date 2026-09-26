@@ -219,8 +219,8 @@ fn convert_input(model: &Model, context: &LlmContext) -> Vec<Value> {
         Some(normalize_responses_tool_call_id),
     );
     let mut input = Vec::new();
-    // ChatGPT's Codex backend takes the system text as top-level `instructions`
-    // (codex-rs, Pi): sending it as an input message too would bill it twice.
+    // The `openai-codex` backend takes the system text as top-level `instructions`;
+    // sending it as an input message too would bill it twice.
     let codex = model.provider == "openai-codex";
     if !context.system_prompt.is_empty() && !codex {
         let role = if model.reasoning && compat_bool(model, "supportsDeveloperRole", true) {

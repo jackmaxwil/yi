@@ -279,6 +279,7 @@ async fn an_untargeted_hold_warns_instead_of_holding_every_call() -> TestResult 
             mcp_read: None,
             sessions_dir: None,
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
+            family_dir: None,
         },
     );
     let advisor = session.advisor().ok_or("attach_runtime wires an advisor")?;

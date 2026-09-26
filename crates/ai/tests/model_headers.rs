@@ -108,7 +108,7 @@ fn an_overlay_name_replaces_the_adapter_header_once() -> Res {
 }
 
 /// The OpenAI-style adapters build their bearer in a different function; wiring only the
-/// Anthropic path would leave every OpenRouter and Codex gateway header silently dropped.
+/// Anthropic path would leave every OpenRouter and `openai-codex` gateway header silently dropped.
 #[test]
 fn the_openai_paths_carry_the_overlay_too() -> Res {
     for (api, path) in [
