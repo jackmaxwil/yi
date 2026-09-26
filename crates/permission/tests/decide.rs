@@ -2,10 +2,10 @@ use std::error::Error;
 use std::path::PathBuf;
 
 use yi_permission::{
-    CatastrophicContext, ConfigRule, ConfigRuleAction, Decision, Hold, HoldSource, ParseOutcome,
-    PermissionMode, SessionRules, ToolCall, canonical_command_identity, canonical_tool_identity,
-    command_reads_credentials, decide, git_dirs, grants, is_catastrophic, lexical_normalize,
-    parse_command,
+    CatastrophicContext, ConfigRule, ConfigRuleAction, Decision, Hold, HoldPattern, HoldSource,
+    ParseOutcome, PermissionMode, SessionRules, ToolCall, canonical_command_identity,
+    canonical_tool_identity, command_reads_credentials, decide, git_dirs, grants, is_catastrophic,
+    lexical_normalize, parse_command,
 };
 use yi_types::permission::{RuleDecision, RuleKind, SessionPermissionState};
 
@@ -179,8 +179,9 @@ fn session_allow_rule_admits_the_exact_call() -> TestResult {
 fn holds_turn_matching_calls_into_ask_with_reason() -> TestResult {
     let context = context();
     let session = SessionRules::new();
+    assert!(HoldPattern::new("").is_none() && HoldPattern::new("  ").is_none());
     let holds = vec![Hold {
-        pattern: "migrations".to_owned(),
+        pattern: HoldPattern::new("migrations").ok_or("pattern")?,
         reason: "schema migrations need review this session".to_owned(),
         source: HoldSource::User,
         expires_at_ms: None,
