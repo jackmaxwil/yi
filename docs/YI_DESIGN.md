@@ -762,8 +762,7 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
 ### 18.1 Rules
 - Every dependency, path crates included, is declared once in the root `[workspace.dependencies]`;
   a crate's `[dependencies]` entry is `{ workspace = true }` (`check_manifests.py`).
-- Every external entry sets `default-features = false` and names its features, except
-  `thiserror`, `lexopt` and `vt100`.
+- Every external entry sets `default-features = false` and names its features.
 - A crate on the §18.5 list enters the graph only through a `wrappers` exception in `deny.toml`
   scoped to that crate.
 - `cargo deny check` enforces the license allowlist, the §18.5 bans, `multiple-versions = "deny"`
@@ -793,7 +792,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `globset` | — | permission, tools, runtime | permission patterns, file tools | `glob`: no brace sets |
 | `regex` | `std`, `perf`, `unicode-case` | tools | the `grep` tool; full Unicode tables stay out | — |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
-| `thiserror` | — | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
+| `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
 | `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, and the uv archive | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
 | `ratatui` | `crossterm`, `scrolling-regions` | tui, console | terminal rendering | — |
 | `tui-textarea` | `crossterm` | tui, console | the composer | — |
@@ -817,9 +816,9 @@ Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep
 ### 18.6 Budgets
 | Budget | Limit | Measured as | Gate and baseline |
 |---|---|---|---|
-| direct deps | 20 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
+| direct deps | 19 | distinct non-`yi-` names across every crate's `[dependencies]`, optional ones included | `check_deps_budget.py`, `baselines/deps_budget.json` |
 | transitive deps | 167 | distinct non-`yi-` names in `cargo tree -e normal --workspace` | same |
-| dist binary | 7,340,032 bytes | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
+| dist binary | 7,540,832 bytes, a measured ratchet under a hard cap of 8,388,608 (8 MiB, D249) | size of `$CARGO_TARGET_DIR/dist/yi` (default `target/`) | `check_binary_size.py`, `baselines/binary_size_budget.json` |
 | `yi --version` | 5.0 ms | minimum of 50 `hyperfine -N` runs after 10 warmups on the dist binary | `check_startup.py`, `baselines/startup_ms_budget.json` |
 
 The binary and startup gates run only after a local dist build; a failed build fails both. Under
