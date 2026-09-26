@@ -45,7 +45,6 @@ impl Pacing {
     }
 }
 
-/// What a slice from the live cut renders under after a forced cut.
 #[derive(Default, Clone)]
 pub(crate) struct Seam {
     pub(crate) stub: Option<String>,
@@ -61,8 +60,8 @@ impl Seam {
     }
 }
 
-/// A forced cut; `stub` is the one line a slice from it renders under: the item before it, or
-/// the item or quote it falls inside, whose whole head cost 1.3 ms a frame at 20 KB.
+/// Incident: rendering a cut block's whole head cost 1.3 ms a frame at 20 KB, so a slice renders
+/// under one line, [`Cut::stub`]: the item before the cut, or the item or quote it falls in.
 #[derive(Clone)]
 struct Cut {
     at: usize,
@@ -89,7 +88,7 @@ fn overflow_cut(
     }
     // An open fence has no word boundary worth cutting on — broken open it
     // renders as an unterminated code block and its tail as prose.
-    if tail.matches("```").count() % 2 == 1 {
+    if crate::markdown::open_fence(tail) {
         return None;
     }
     let source = format!("{context}{tail}");
@@ -146,15 +145,15 @@ fn overflow_cut(
     })
 }
 
-/// Where a forced cut may land: between words of a top-level paragraph, item or quote, or at a
-/// block or item start. Incident: cuts inside `**…**`, after a bullet or in a table lost markup.
+/// Incident: cuts inside `**…**`, after a bullet or in a table lost the markup. A forced cut
+/// lands between words of a top-level paragraph, item or quote, or at a block or item start.
 fn breaks(source: &str) -> Vec<Cut> {
     use pulldown_cmark::{Event, Options, Parser, Tag};
     let mut cuts: Vec<Cut> = Vec::new();
     let mut prose: Vec<(std::ops::Range<usize>, Option<usize>, Option<String>)> = Vec::new();
     let mut atomic: Vec<std::ops::Range<usize>> = Vec::new();
-    // The open top-level list: (start number, items seen, loose).
-    let mut list: (Option<u64>, u64, bool) = (None, 0, false);
+    // The open top-level list: (start number, items seen).
+    let mut list: (Option<u64>, u64) = (None, 0);
     let mut depth = 0usize;
     // A block's range can start past its indent, and a cut there reads `\t```` as a fence.
     let start = |at: usize, spaced: bool, stub: Option<String>| Cut {
@@ -186,7 +185,7 @@ fn breaks(source: &str) -> Vec<Cut> {
                     }
                     Tag::List(first) if depth == 0 => {
                         cuts.push(start(range.start, true, None));
-                        list = (first, 0, false);
+                        list = (first, 0);
                     }
                     _ if depth == 0 => cuts.push(start(range.start, true, None)),
                     Tag::Item if depth == 1 => {
@@ -200,8 +199,6 @@ fn breaks(source: &str) -> Vec<Cut> {
                         let own = crate::markdown::item_line(source, range.start, number, "  \n");
                         prose.push((range.clone(), Some(range.start), Some(own)));
                     }
-                    // A loose list's items hold paragraphs; a tight one's hold bare text.
-                    Tag::Paragraph if depth == 2 => list.2 = true,
                     Tag::Paragraph => {}
                     _ => atomic.push(range),
                 }
@@ -260,14 +257,8 @@ fn breaks(source: &str) -> Vec<Cut> {
 }
 
 /// The item before the one at `at`, as one line numbered as the list shows it.
-fn item_stub(source: &str, at: usize, (first, seen, loose): (Option<u64>, u64, bool)) -> String {
-    let line = crate::markdown::line_start(source, at);
-    let indent: String = source
-        .get(line..at)
-        .unwrap_or_default()
-        .chars()
-        .map(|ch| if ch == '\t' { '\t' } else { ' ' })
-        .collect();
+fn item_stub(source: &str, at: usize, (first, seen): (Option<u64>, u64)) -> String {
+    let indent = crate::markdown::stub_prefix(source, at);
     let marker = crate::markdown::item_marker(source.get(at..).unwrap_or_default()).unwrap_or("-");
     let marker = match first {
         Some(first) => format!(
@@ -277,8 +268,12 @@ fn item_stub(source: &str, at: usize, (first, seen, loose): (Option<u64>, u64, b
         ),
         None => marker.to_owned(),
     };
-    let gap = loose && crate::markdown::blank_before(source, at);
-    format!("{indent}{marker} x\n{}", if gap { "\n" } else { "" })
+    let gap = if crate::markdown::blank_before(source, at) {
+        "\n"
+    } else {
+        ""
+    };
+    format!("{indent}{marker} x\n{gap}")
 }
 
 /// The tail's context (a stand-in prefix, then the head of the block a cut fell inside) and the
@@ -525,8 +520,8 @@ impl App {
         self.step_reveal(now);
     }
 
-    /// A thought after prose is the message's next beat: what came before commits whole above it.
-    /// Incident: the later thought drew above prose the reader had already seen.
+    /// Incident: a thought after prose drew above prose the reader had already seen; what came
+    /// before the thought commits whole above it.
     pub(crate) fn close_segments(&mut self, content: &[Content]) {
         loop {
             let open = content.get(self.segment..).unwrap_or_default();
@@ -569,7 +564,6 @@ impl App {
             || self.pacing.thought.behind(self.live_thought.len())
     }
 
-    /// The next wake while text is unrevealed and not held at the arrival edge, else `MAX`.
     pub(crate) fn reveal_wake(&self) -> Duration {
         let moving = |reveal: &Reveal, len: usize| reveal.behind(len) && !reveal.waiting();
         if moving(&self.pacing.prose, self.live_markdown.len())

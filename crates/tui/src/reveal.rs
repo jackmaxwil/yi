@@ -84,8 +84,8 @@ fn is_table_row(line: &str) -> bool {
     line.trim_start_matches([' ', '\t']).starts_with('|')
 }
 
-/// Where the cursor may next stop from a line start, or `None` to hold. Incident: `1. one\n2`
-/// drew `2` on the row above until `. t` arrived; a marker shows with its first character.
+/// Incident: `1. one\n2` drew `2` on the row above until `. t` arrived. From a line start the
+/// cursor holds (`None`) until a marker's first governed character is there.
 fn line_unit(text: &str, at: usize, draining: bool) -> Option<usize> {
     let rest = text.get(at..).unwrap_or_default();
     let complete = |lines: usize| {

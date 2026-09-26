@@ -740,7 +740,8 @@ impl App {
                 self.turn_cost += usage.cost.total.as_f64().unwrap_or(0.0);
                 self.close_segments(content);
                 let open = content.get(self.segment..).unwrap_or_default();
-                // The end replaces what streamed only when it extends it: an error end carries none.
+                // Incident: an error end carries no content and erased text the reader saw, so the end
+                // replaces what streamed only when it extends it.
                 let thought = thinking_of(open);
                 if thought.starts_with(self.live_thought.as_str()) {
                     self.live_thought = thought;

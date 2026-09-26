@@ -139,7 +139,6 @@ pub fn wrap_line(line: &Line<'_>, width: usize, subsequent_indent: &str) -> Vec<
         .collect()
 }
 
-/// Code splits at the column limit, not at a space, each continuation under `indent`.
 pub fn hard_wrap(line: &Line<'_>, width: usize, indent: &Span<'static>) -> Vec<Line<'static>> {
     let width = width.max(1);
     let cont_width = width.saturating_sub(indent.width()).max(1);
