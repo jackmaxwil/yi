@@ -3,8 +3,8 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
 use yi_types::plan::doc::{
-    BlockedOn, Delegation, GoalText, Plan, PlanId, PlanTier, Todo, TodoLabel, TodoState,
-    TodoStateName,
+    BlockedOn, Delegation, GoalText, Plan, PlanId, PlanTier, TODO_LABEL_MAX, Todo, TodoLabel,
+    TodoState, TodoStateName,
 };
 use yi_types::url::Url;
 
@@ -88,9 +88,9 @@ pub enum ArgError {
         "only the plan owner may {op}; your plan tool only views: end your turn with your answer and the engine takes it as your work"
     )]
     ChildViews { op: String },
-    #[error("set line {line}: label is {chars} chars, the cap is {max}")]
+    #[error("{at}: label is {chars} chars, the cap is {max}")]
     LabelTooLong {
-        line: usize,
+        at: String,
         chars: usize,
         max: usize,
     },
@@ -189,7 +189,7 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
         // because the headline said the row was not a checklist row (#472).
         let label = TodoLabel::new(label).map_err(|cause| match cause {
             yi_types::plan::doc::DocError::LabelTooLong { label, max } => ArgError::LabelTooLong {
-                line,
+                at: format!("set line {line}"),
                 chars: label.chars().count(),
                 max,
             },
@@ -368,7 +368,16 @@ fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, Ar
         };
         refuse_unknown(spec, op, &TODO_SPEC_KEYS)?;
         specs.push(TodoSpec::try_from(TodoSpecRepr {
-            label: need(spec, op, "label")?,
+            label: need(spec, op, "label").map_err(|error| {
+                let label = spec.get("label").and_then(Value::as_str);
+                let (chars, max) = (label.unwrap_or_default().chars().count(), TODO_LABEL_MAX);
+                let at = format!("{} todos[{index}]", op_name(op));
+                if chars > max {
+                    ArgError::LabelTooLong { at, chars, max }
+                } else {
+                    error
+                }
+            })?,
             after: opt(spec, op, "after")?.unwrap_or_default(),
             delegation: opt(spec, op, "delegation")?,
             contract: opt(spec, op, "contract")?,
@@ -612,25 +621,28 @@ fn header(plan: &Plan, out: &mut Vec<String>) {
     out.push(line);
 }
 
-fn body(outcome: &Outcome, full: bool, out: &mut Vec<String>) {
+fn body(outcome: &Outcome, full: bool, stepped: Option<&Todo>, out: &mut Vec<String>) {
     let plan = &outcome.plan;
+    let rest = plan
+        .todos
+        .iter()
+        .filter(|todo| stepped.is_none_or(|led| led.label != todo.label));
     let shown: Vec<&Todo> = if full {
-        plan.todos.iter().collect()
+        rest.collect()
     } else {
-        plan.todos
-            .iter()
-            .filter(|todo| {
-                outcome.ready.contains(&todo.label)
-                    || matches!(
-                        TodoStateName::of(&todo.state),
-                        TodoStateName::Running | TodoStateName::Blocked
-                    )
-            })
-            .take(WINDOW)
-            .collect()
+        rest.filter(|todo| {
+            outcome.ready.contains(&todo.label)
+                || matches!(
+                    TodoStateName::of(&todo.state),
+                    TodoStateName::Running | TodoStateName::Blocked
+                )
+        })
+        .take(WINDOW)
+        .collect()
     };
     out.extend(shown.iter().map(|todo| todo_line(todo)));
-    let hidden = plan.todos.len().saturating_sub(shown.len());
+    let printed = shown.len().saturating_add(usize::from(stepped.is_some()));
+    let hidden = plan.todos.len().saturating_sub(printed);
     if hidden > 0 {
         out.push(format!(
             "{hidden} more todos not shown; op view full for all"
@@ -641,11 +653,9 @@ fn body(outcome: &Outcome, full: bool, out: &mut Vec<String>) {
 fn render(outcome: &Outcome, full: bool, stepped: Option<&TodoLabel>) -> String {
     let mut out = Vec::new();
     header(&outcome.plan, &mut out);
-    if let Some(todo) =
-        stepped.and_then(|label| outcome.plan.todos.iter().find(|todo| todo.label == *label))
-    {
-        out.push(todo_line(todo));
-    }
+    let stepped =
+        stepped.and_then(|label| outcome.plan.todos.iter().find(|todo| todo.label == *label));
+    out.extend(stepped.map(todo_line));
     if full {
         out.push(format!("goal: {}", outcome.plan.goal));
         out.push(format!(
@@ -654,7 +664,7 @@ fn render(outcome: &Outcome, full: bool, stepped: Option<&TodoLabel>) -> String 
             yi_types::plan::doc::SPAWN_CAP.get()
         ));
     }
-    body(outcome, full, &mut out);
+    body(outcome, full, stepped, &mut out);
     if !outcome.ready.is_empty() {
         out.push(format!("ready: {}", labels(&outcome.ready)));
     }
@@ -775,7 +785,7 @@ pub fn schema() -> Value {
                 "todos": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "init/append/decompose/supersede: [{label, after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, covers?: [glob], items: [{id, critical: bool, weight: 1..100, decider: {cmd: \"shell command\"} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract; done runs the contract (an artifact is {digest, media_type, length})",
+                    "description": "init/append/decompose/supersede: [{label (at most 80 chars), after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, covers?: [glob], items: [{id, critical: bool, weight: 1..100, decider: {cmd: \"shell command\"} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract; done runs the contract (an artifact is {digest, media_type, length})",
                     "minItems": 1
                 },
                 "label": {"type": "string", "description": "drop/block/unblock/start/done/fail/retry/decompose: the todo"},

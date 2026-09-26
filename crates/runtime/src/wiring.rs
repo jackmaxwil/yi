@@ -186,25 +186,7 @@ fn wire_schedule(
 ) {
     let shared = crate::schedule::shared::intern(wiring.rlm_dir.join("scheduled-jobs.json"));
     let heartbeats_cwd = wiring.cwd.to_string_lossy().into_owned();
-    let hook = session.heartbeat_hook();
-    let busy = session.activity_handle();
-    let deliver: Arc<crate::schedule::DeliverFn> = Arc::new(move |job| {
-        let activity = crate::schedule::SessionActivity {
-            is_streaming: busy(),
-            ..Default::default()
-        };
-        if crate::schedule::should_defer(job, &activity) {
-            return crate::schedule::RunOutcome::Skipped;
-        }
-        let mode = job
-            .delivery_mode
-            .unwrap_or(crate::schedule::DEFAULT_HEARTBEAT_DELIVERY_MODE);
-        hook(
-            crate::schedule::heartbeat_message(job, yi_session::now_ms()),
-            mode,
-        );
-        crate::schedule::RunOutcome::Ran
-    });
+    let deliver = session.heartbeat_deliverer();
     let heartbeats = Arc::new(
         crate::schedule::HeartbeatService::new(Arc::clone(&shared.store), heartbeats_cwd)
             .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver)),
@@ -551,11 +533,15 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
     let hold_sink: Option<crate::advisor::HoldSink> = wiring.broker.as_ref().map(|broker| {
         let broker = Arc::clone(broker);
         Arc::new(move |advice: &yi_types::advisor::Advice| {
-            if !broker.can_ask() {
+            let pattern = advice
+                .target
+                .as_deref()
+                .and_then(yi_permission::HoldPattern::new);
+            let Some(pattern) = pattern.filter(|_| broker.can_ask()) else {
                 return false;
-            }
+            };
             broker.insert_hold(yi_permission::Hold {
-                pattern: advice.target.clone().unwrap_or_default(),
+                pattern,
                 reason: advice.text.clone(),
                 source: yi_permission::HoldSource::Advisor,
                 expires_at_ms: Some(yi_session::now_ms().saturating_add(3_600_000)),
