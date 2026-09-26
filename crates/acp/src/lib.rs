@@ -215,17 +215,8 @@ fn undo_text(session: &AgentSession, cwd: &std::path::Path) -> String {
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
     match yi_runtime::undo(&store, cwd, &home) {
-        yi_runtime::UndoOutcome::Restored(changes) if changes.is_empty() => {
-            "/undo: nothing to restore — no file changed since the checkpoint".to_owned()
-        }
-        yi_runtime::UndoOutcome::Restored(changes) => {
-            let mut names: Vec<String> = changes
-                .iter()
-                .map(|change| change.path.display().to_string())
-                .collect();
-            names.sort();
-            names.dedup();
-            format!("/undo: restored {} — {}", names.len(), names.join(", "))
+        yi_runtime::UndoOutcome::Restored { changes, scoped } => {
+            format!("/undo: {}", yi_runtime::describe_undo(&changes, scoped))
         }
         yi_runtime::UndoOutcome::NoCheckpoint => "/undo: no checkpoint to restore".to_owned(),
         yi_runtime::UndoOutcome::Failed(error) => format!("/undo: {error}"),
@@ -761,6 +752,13 @@ impl AcpState {
                 let reply = match command {
                     "sessions" => self.sessions_text()?,
                     "undo" => undo_text(&handle.session, &self.cwd),
+                    // Routed through `_yi/heartbeat`, not `slash::run`, so the client keeps `_yi/heartbeat_changed` (C9).
+                    "heartbeat" => {
+                        return self.handle_extension(
+                            "_yi/heartbeat",
+                            &json!({"sessionId": session_id, "command": args}),
+                        );
+                    }
                     other => yi_runtime::slash::run(&handle.session, other, args)
                         .ok_or((INVALID_PARAMS, format!("unknown command: /{other}")))?,
                 };
@@ -778,9 +776,7 @@ impl AcpState {
                     .session
                     .heartbeat_service()
                     .ok_or((INTERNAL_ERROR, "no scheduler is attached".to_owned()))?;
-                let outcome = yi_runtime::schedule::parse_heartbeat_command(text("command"))
-                    .and_then(|parsed| service.apply(&parsed, yi_runtime::session_store::now_ms()));
-                match outcome {
+                match service.run(text("command")) {
                     Ok(reply) => {
                         self.emit_heartbeat_changed(&session_id, &reply);
                         Ok(json!({"text": reply}))

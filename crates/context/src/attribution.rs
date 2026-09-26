@@ -1,5 +1,4 @@
 use yi_types::message::Usage;
-use yi_types::record::LaneRecord;
 
 /// Usage-record cause naming a child-usage attribution (design §4.4).
 pub const CHILD_USAGE_CAUSE: &str = "child_usage_attributed";
@@ -36,21 +35,4 @@ pub fn attribute_child_usage(parent: &mut Usage, child: &Usage) {
     add_cost(&mut parent.cost.cache_write, &child.cost.cache_write);
     add_cost(&mut parent.cost.total, &child.cost.total);
     parent.total_tokens = parent_context_tokens;
-}
-
-/// Sums a lane's usage records into (own, attributed) totals: `own` excludes
-/// child attributions, `total` includes them.
-pub fn own_and_total_usage(records: &[LaneRecord]) -> (Usage, Usage) {
-    let mut own = Usage::zero();
-    let mut total = Usage::zero();
-    for record in records {
-        let LaneRecord::Usage { usage, cause, .. } = record else {
-            continue;
-        };
-        attribute_child_usage(&mut total, usage);
-        if cause != CHILD_USAGE_CAUSE {
-            attribute_child_usage(&mut own, usage);
-        }
-    }
-    (own, total)
 }
