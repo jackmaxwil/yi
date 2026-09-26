@@ -158,7 +158,7 @@ impl History {
             && let Some(Cell::Thought { markdown: head }) = self.cells.back_mut()
         {
             head.push_str(markdown);
-            return self.forget_last(None);
+            return self.forget_last(rows);
         }
         if let Cell::Assistant { markdown } | Cell::Thought { markdown } = &cell
             && markdown.trim().is_empty()

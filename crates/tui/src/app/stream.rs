@@ -48,44 +48,29 @@ impl Pacing {
 /// What a slice from the live cut renders under after a forced cut.
 #[derive(Default, Clone)]
 pub(crate) struct Seam {
-    pub(crate) block: Option<usize>,
     pub(crate) stub: Option<String>,
     pub(crate) mid: bool,
 }
 
 impl Seam {
-    fn after(cut: &Cut, head: usize, prefix: usize) -> Self {
+    fn after(cut: &Cut) -> Self {
         Self {
-            block: cut
-                .block
-                .map(|block| head.saturating_add(block.saturating_sub(prefix))),
             stub: cut.stub.clone(),
-            mid: cut.word && cut.block.is_none(),
+            mid: cut.word && !cut.line,
         }
-    }
-
-    pub(crate) fn context(&self, source: &str, cut: usize) -> Option<String> {
-        let head = self.block.and_then(|from| source.get(from..cut));
-        if head.is_none() && self.stub.is_none() {
-            return None;
-        }
-        Some(format!(
-            "{}{}",
-            self.stub.as_deref().unwrap_or_default(),
-            head.unwrap_or_default()
-        ))
     }
 }
 
-/// A forced cut; `stub` stands in for the list items before it, so what follows numbers and
-/// spaces as the whole list does.
+/// A forced cut; `stub` is the one line a slice from it renders under: the item before it, or
+/// the item or quote it falls inside, whose whole head cost 1.3 ms a frame at 20 KB.
 #[derive(Clone)]
 struct Cut {
     at: usize,
     spaced: bool,
-    block: Option<usize>,
     stub: Option<String>,
     word: bool,
+    /// At the start of a line, where the text left keeps its own structure.
+    line: bool,
 }
 
 /// Where to cut `tail` (rendered under `context`) so the rest fits `budget` rows; `None` when it
@@ -132,10 +117,10 @@ fn overflow_cut(
             }
         })
         .unwrap_or_else(|index| index);
-    // Incident: `- top 0` cut after `top` dropped the `0`: the word after a context's cut must
-    // open a row, or the context's rows hide it.
+    // Incident: `- top 0` cut after `top` dropped the `0`: the word after a cut must open a
+    // row, or the rows before it differ from the whole's (an inline span wraps inside itself).
     let seam = |cut: &Cut| {
-        cut.block.is_none() || {
+        !cut.word || {
             let rest = source.get(cut.at..).unwrap_or_default();
             let word = rest.trim_start().find(char::is_whitespace);
             let next = word.map_or(source.len(), |end| {
@@ -175,9 +160,9 @@ fn breaks(source: &str) -> Vec<Cut> {
     let start = |at: usize, spaced: bool, stub: Option<String>| Cut {
         at: crate::markdown::line_start(source, at),
         spaced,
-        block: None,
         stub,
         word: false,
+        line: true,
     };
     let parser = Parser::new_ext(
         source,
@@ -193,7 +178,11 @@ fn breaks(source: &str) -> Vec<Cut> {
                     }
                     Tag::BlockQuote(_) if depth == 0 => {
                         cuts.push(start(range.start, true, None));
-                        prose.push((range.clone(), Some(range.start), None));
+                        let stub = format!(
+                            "{}> x  \n",
+                            crate::markdown::stub_prefix(source, range.start)
+                        );
+                        prose.push((range.clone(), Some(range.start), Some(stub)));
                     }
                     Tag::List(first) if depth == 0 => {
                         cuts.push(start(range.start, true, None));
@@ -201,12 +190,15 @@ fn breaks(source: &str) -> Vec<Cut> {
                     }
                     _ if depth == 0 => cuts.push(start(range.start, true, None)),
                     Tag::Item if depth == 1 => {
-                        let stub = (list.1 > 0).then(|| item_stub(source, range.start, list));
+                        let number = list.0.map(|first| first.saturating_add(list.1));
+                        let before = (list.1 > 0).then(|| item_stub(source, range.start, list));
                         list.1 += 1;
-                        if stub.is_some() {
-                            cuts.push(start(range.start, false, stub.clone()));
+                        if before.is_some() {
+                            cuts.push(start(range.start, false, before));
                         }
-                        prose.push((range.clone(), Some(range.start), stub));
+                        // A word cut inside it renders under its marker line ending in a hard break.
+                        let own = crate::markdown::item_line(source, range.start, number, "  \n");
+                        prose.push((range.clone(), Some(range.start), Some(own)));
                     }
                     // A loose list's items hold paragraphs; a tight one's hold bare text.
                     Tag::Paragraph if depth == 2 => list.2 = true,
@@ -232,13 +224,26 @@ fn breaks(source: &str) -> Vec<Cut> {
                 .get(from..at)
                 .is_some_and(|head| head.split_whitespace().nth(1).is_some())
         });
-        if worded && !atomic.iter().any(|range| inside(at, range)) {
+        // After a line's indent the text left would lose the indent a nested block needs.
+        let indented = source
+            .get(crate::markdown::line_start(source, at)..at)
+            .is_some_and(|lead| !lead.is_empty() && lead.trim().is_empty());
+        if worded && !indented && !atomic.iter().any(|range| inside(at, range)) {
+            let line = source.get(..at).is_some_and(|head| head.ends_with('\n'));
+            // After a blank line the text left opens a paragraph, not a hard-broken line.
+            let stub =
+                stub.clone().map(
+                    |stub| match line && crate::markdown::blank_before(source, at) {
+                        true => format!("{}\n\n", stub.trim_end()),
+                        false => stub,
+                    },
+                );
             cuts.push(Cut {
                 at,
                 spaced: false,
-                block: *block,
-                stub: stub.clone(),
+                stub,
                 word: true,
+                line,
             });
         }
     }
@@ -272,35 +277,19 @@ fn item_stub(source: &str, at: usize, (first, seen, loose): (Option<u64>, u64, b
         ),
         None => marker.to_owned(),
     };
-    let gap = loose
-        && source
-            .get(..line.saturating_sub(1))
-            .map(|head| head.rsplit('\n').next().unwrap_or(head))
-            .is_some_and(|previous| previous.trim().is_empty());
+    let gap = loose && crate::markdown::blank_before(source, at);
     format!("{indent}{marker} x\n{}", if gap { "\n" } else { "" })
 }
 
 /// The tail's context (a stand-in prefix, then the head of the block a cut fell inside) and the
-/// byte that head starts at: a block at context byte `b` starts at `head + b - prefix`.
-fn context(
-    source: &str,
-    block: Option<usize>,
-    stub: Option<&str>,
-    cut: usize,
-    mid: bool,
-    tail: &str,
-) -> (String, usize, usize) {
-    let head = block.unwrap_or(cut);
-    let prefix = match stub {
-        Some(stub) => stub.to_owned(),
-        None if block.is_none() && mid && crate::transcript::escaped(tail, true) != tail => {
-            "\\".to_owned()
-        }
-        None => String::new(),
-    };
-    let length = prefix.len();
-    let context = prefix + source.get(head..cut).unwrap_or_default();
-    (context, head, length)
+/// The tail's context: the seam's stub, then the escape a mid-paragraph `- ` wears.
+fn context(seam: &Seam, tail: &str) -> String {
+    let escape = seam.mid && crate::transcript::escaped(tail, true) != tail;
+    format!(
+        "{}{}",
+        seam.stub.as_deref().unwrap_or_default(),
+        if escape { "\\" } else { "" }
+    )
 }
 
 pub(crate) fn table_span(tail: &str) -> Option<std::ops::Range<usize>> {
@@ -337,27 +326,20 @@ impl App {
         }
         // A cut inside a fence is prose's business: thought has no reopen to
         // carry, so a fenced block commits whole or not at all.
-        let shown = self.pacing.thought.shown();
+        let (shown, base) = (self.pacing.thought.shown(), self.live_thought_base);
         let stream =
-            crate::markdown::stable_stream(self.live_thought.get(..shown).unwrap_or_default());
-        if stream.reopen.is_none() && stream.cut > self.live_thought_cut {
-            self.commit_thought_to(stream.cut, true);
+            crate::markdown::stable_stream(self.live_thought.get(base..shown).unwrap_or_default());
+        if stream.reopen.is_none() && base + stream.cut > self.live_thought_cut {
+            self.commit_thought_to(base + stream.cut, true);
             self.live_thought_seam = Seam::default();
+            self.live_thought_base = base + stream.block;
         }
         let (width, theme) = (self.content_width(), self.theme);
         let tail = self
             .live_thought
             .get(self.live_thought_cut..shown)
             .unwrap_or_default();
-        let seam = &self.live_thought_seam;
-        let (context, head, prefix) = context(
-            &self.live_thought,
-            seam.block,
-            seam.stub.as_deref(),
-            self.live_thought_cut,
-            seam.mid,
-            tail,
-        );
+        let context = context(&self.live_thought_seam, tail);
         let cut = overflow_cut(
             &context,
             tail,
@@ -370,7 +352,7 @@ impl App {
         );
         if let Some(cut) = cut {
             self.commit_thought_to(self.live_thought_cut + cut.at, cut.spaced);
-            self.live_thought_seam = Seam::after(&cut, head, prefix);
+            self.live_thought_seam = Seam::after(&cut);
         }
     }
 
@@ -389,10 +371,16 @@ impl App {
             self.flush_explored();
             let lines = self.thought_block(&slice);
             self.note_commit(&lines, self.live_thought_cut > 0);
+            let rows = (self.live_thought_cut > 0).then(|| (self.content_width(), lines.clone()));
+            self.history.retain_slice(
+                Cell::Thought { markdown: slice },
+                rows.as_ref().map(|(width, rows)| (*width, rows.as_slice())),
+            );
             self.pending_commit.extend(lines);
             self.scheduler.request();
+        } else {
+            self.history.retain(Cell::Thought { markdown: slice });
         }
-        self.history.retain(Cell::Thought { markdown: slice });
         self.live_thought_cut = cut;
         self.live_thought_spaced = spaced;
     }
@@ -400,15 +388,16 @@ impl App {
     pub(crate) fn thought_block(&self, slice: &str) -> Vec<Line<'static>> {
         let (width, theme, mode) = (self.content_width(), &self.theme, self.mode);
         let seam = &self.live_thought_seam;
-        let context = seam.context(&self.live_thought, self.live_thought_cut);
+        let slice = crate::transcript::escaped(slice, seam.mid);
         let render = |text: &str| crate::cell::thought_lines(text, width, theme, mode, false);
-        if let Some(rows) =
-            context.and_then(|context| crate::transcript::under(&context, slice, render))
+        if let Some(rows) = seam
+            .stub
+            .as_deref()
+            .and_then(|stub| crate::transcript::under(stub, &slice, render))
         {
             return rows;
         }
         let header = self.live_thought_cut == 0 || self.live_thought_spaced;
-        let slice = crate::transcript::escaped(slice, seam.mid);
         crate::cell::thought_lines(&slice, width, theme, mode, header)
     }
 
@@ -433,13 +422,14 @@ impl App {
     /// Each newly stable slice renders standalone against a byte cursor. Re-rendering
     /// the whole prefix let trailing-blank trimming duplicate list items mid-stream.
     pub(super) fn commit_stable_prefix(&mut self) {
-        let shown = self.pacing.prose.shown();
+        let (shown, base) = (self.pacing.prose.shown(), self.live_base);
         let stream =
-            crate::markdown::stable_stream(self.live_markdown.get(..shown).unwrap_or_default());
-        if stream.cut > self.live_cut {
-            self.commit_prose(stream.cut, true);
+            crate::markdown::stable_stream(self.live_markdown.get(base..shown).unwrap_or_default());
+        if base + stream.cut > self.live_cut {
+            self.commit_prose(base + stream.cut, true);
             self.live_reopen = stream.reopen;
             self.live_seam = Seam::default();
+            self.live_base = base + stream.block;
         }
         if self.live_reopen.is_some() {
             return;
@@ -450,15 +440,7 @@ impl App {
             .live_markdown
             .get(self.live_cut..shown)
             .unwrap_or_default();
-        let seam = &self.live_seam;
-        let (context, head, prefix) = context(
-            &self.live_markdown,
-            seam.block,
-            seam.stub.as_deref(),
-            self.live_cut,
-            seam.mid,
-            tail,
-        );
+        let context = context(&self.live_seam, tail);
         let cut = overflow_cut(
             &context,
             tail,
@@ -468,7 +450,7 @@ impl App {
         );
         if let Some(cut) = cut {
             self.commit_prose(self.live_cut + cut.at, cut.spaced);
-            self.live_seam = Seam::after(&cut, head, prefix);
+            self.live_seam = Seam::after(&cut);
         }
     }
 

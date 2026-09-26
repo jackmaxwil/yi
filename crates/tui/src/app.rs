@@ -151,6 +151,9 @@ pub struct App {
     /// keeps one colour instead of being re-lexed from the reopened fence.
     pub(crate) live_lang: Option<crate::highlight::Lang>,
     pub(crate) live_seam: stream::Seam,
+    /// Where the top-level block holding `live_cut` starts; the gate parses from there.
+    pub(crate) live_base: usize,
+    pub(crate) live_thought_base: usize,
     pub(crate) live_drawn: bool,
     pub(crate) live_thought: String,
     pub(crate) live_cut: usize,
@@ -266,6 +269,8 @@ impl App {
             live_reopen: None,
             live_lang: None,
             live_seam: stream::Seam::default(),
+            live_base: 0,
+            live_thought_base: 0,
             live_drawn: false,
             live_spaced: true,
             live_thought: String::new(),
@@ -410,6 +415,8 @@ impl App {
         self.live_reopen = None;
         self.live_lang = None;
         self.live_seam = stream::Seam::default();
+        self.live_base = 0;
+        self.live_thought_base = 0;
         self.live_drawn = false;
         self.live_thought_seam = stream::Seam::default();
         self.live_spaced = true;
@@ -547,8 +554,10 @@ impl App {
         self.last_commit_blank = lines.last().is_some_and(blank);
         self.pending_commit.extend(lines);
         self.retain(cell.clone());
-        // Only a streamed message's own slices merge; scrollback wrote this cell whole.
+        // Only a streamed message's own slices merge; the next one opens its cell afresh.
         self.history.seal();
+        self.live_drawn = false;
+        self.live_thought_spaced = true;
         self.scheduler.request();
     }
 
@@ -624,6 +633,7 @@ impl App {
             }
             AgentEvent::MessageStart { message } => {
                 if let AgentMessage::Assistant { .. } = &message {
+                    self.segment = 0;
                     return self.streaming = Some(message);
                 }
                 let attribution = message.attribution();
