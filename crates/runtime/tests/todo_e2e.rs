@@ -178,6 +178,77 @@ fn a_parent_with_open_children_refuses_done_and_names_them() -> TestResult {
     Ok(())
 }
 
+/// Dies with done re-closing a closed item: the second call overwrote the evidence that closed
+/// it, where the plan tool refuses the same move, and a done over all reopened a dropped one.
+#[test]
+fn done_refuses_a_done_item_and_done_all_leaves_closed_ones_alone() -> TestResult {
+    let (_root, session) = session("redone")?;
+    let store = store_for(&session);
+    store.apply(
+        Op::Set {
+            list: "- [ ] read\n- [ ] fix\n- [ ] port\n".to_owned(),
+        },
+        None,
+    )?;
+    let proof = "`cargo test` 12 passed".to_owned();
+    let done = |needle: &str, evidence: &str| -> Result<Op, Box<dyn Error>> {
+        Ok(Op::Done {
+            target: Target::Label(label(needle)?),
+            evidence: Some(evidence.to_owned()),
+        })
+    };
+    store.apply(done("read", &proof)?, None)?;
+    let reason = "out of scope".to_owned();
+    let port = Target::Label(label("port")?);
+    store.apply(
+        Op::Drop {
+            target: port,
+            reason,
+        },
+        None,
+    )?;
+    let error = store
+        .apply(done("read", "`true` exit 0")?, None)
+        .err()
+        .ok_or("done on a done item must be refused")?;
+    assert!(
+        error.to_string().contains("\"read\" in state done"),
+        "{error}"
+    );
+    let evidence = Some("`ls` fixed".to_owned());
+    store.apply(
+        Op::Done {
+            target: Target::All,
+            evidence,
+        },
+        None,
+    )?;
+    let list = store.list();
+    let rows: Vec<(String, TodoStateName, Option<String>)> = list
+        .items()
+        .map(|item| {
+            (
+                item.label.to_string(),
+                item.state.clone(),
+                item.evidence.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("read".to_owned(), TodoStateName::Done, Some(proof)),
+            (
+                "fix".to_owned(),
+                TodoStateName::Done,
+                Some("`ls` fixed".to_owned())
+            ),
+            ("port".to_owned(), TodoStateName::Abandoned, None),
+        ]
+    );
+    Ok(())
+}
+
 #[test]
 fn set_keeps_a_blocker_the_rewrite_did_not_mention() -> TestResult {
     let (_root, session) = session("carry")?;
@@ -723,14 +794,17 @@ fn an_old_session_without_ids_rehydrates_with_ids() -> TestResult {
 fn every_argument_error_ends_with_an_id_call_that_lands() -> TestResult {
     let (_root, session) = session("example")?;
     let tool = TodoTool::new(store_for(&session));
-    // In the order their examples can run on one list; each refusal is an argument error.
+    // In the order their examples can run on one list (a done item restarts before its next
+    // done); each refusal is an argument error.
     let refusals = [
         json!({"op": "init"}),
         json!({"op": "start"}),
         json!({"op": "block"}),
         json!({"op": "unblock"}),
         json!({"label": "first task"}),
+        json!({"op": "start"}),
         json!({"op": "finish"}),
+        json!({"op": "start"}),
         json!({"op": "done", "label": "first\ntask"}),
         json!({"op": "set"}),
         json!({"op": "append"}),
