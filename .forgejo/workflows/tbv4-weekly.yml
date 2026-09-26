@@ -1,4 +1,4 @@
-# The pass axis's weekly cadence (docs/plans/2026-09-06-tbv4-evals.md, S5;
+# The pass axis's weekly cadence (docs/archive/plans/2026-09-06-tbv4-evals.md, S5;
 # D140): the six-task Terminal-Bench v4 subset at k=3 on flash, one hour per
 # trial, under the same caps the operator's runs use. It lands on the `bench`
 # runner, the one whose job may drive a Docker daemon (its own dind), because

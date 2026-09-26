@@ -1,5 +1,7 @@
 # Closing the Loop — completion, plan, and reminder architecture
 
+Landed: D52-D54, D56 (0.33.0-0.36.0).
+
 ```
 status:  APPROVED 2026-08-27; steps 1–4 LANDED at 0.33.0 (D52/D53), step 6 trigger
          rules LANDED at 0.34.0 (D54 — gate + remind, literal-only, zero builtins;

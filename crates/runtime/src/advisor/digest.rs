@@ -2,10 +2,10 @@ use yi_types::message::{AgentMessage, Content, UserContent};
 
 pub const DEFAULT_USER_BUDGET: usize = 2_000;
 pub const DEFAULT_PROSE_BUDGET: usize = 1_200;
-/// The head a compaction line shows; the rest is pulled, never pushed (§7.6).
+/// The head a compaction line shows; the rest is pulled, never pushed (§16).
 pub const COMPACTION_HEAD: usize = 200;
 
-/// §7.4 verb tables: the sentences a reviewer needs to see survive the prose
+/// §16 verb tables: the sentences a reviewer needs to see survive the prose
 /// budget, the rest are dropped.
 pub const CLAIM_VERBS: [&str; 10] = [
     "ran",
@@ -40,7 +40,7 @@ pub fn split_sentences(text: &str) -> Vec<&str> {
         .collect()
 }
 
-// §7.6 constraint markers: sentences carrying these survive truncation first.
+// §16 constraint markers: sentences carrying these survive truncation first.
 const CONSTRAINT_MARKERS: [&str; 10] = [
     "never", "don't", "do not", "no ", "not ", "only", "must", "instead", "stop", "wait",
 ];

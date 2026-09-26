@@ -19,7 +19,7 @@ pub fn detect_tier(colorterm: Option<&str>, term: Option<&str>) -> ColorTier {
 }
 
 /// `COLORFGBG` is `"<fg>;<bg>"`; bg 0-6 or 8 means a dark background.
-/// Absent or unparseable defaults to dark (design U17).
+/// Absent or unparseable defaults to dark (design §17.3).
 pub fn detect_dark(colorfgbg: Option<&str>) -> bool {
     let Some(value) = colorfgbg else { return true };
     let Some(bg) = value.rsplit(';').next() else {
@@ -164,7 +164,7 @@ pub enum DiffRowKind {
 }
 
 impl Theme {
-    /// Values ported verbatim: light needs a more saturated gutter to hold a
+    /// Fixed values: light needs a more saturated gutter to hold a
     /// number on the pastel, and at 16 colours the terminal owns the ground.
     pub fn diff_row(&self, kind: DiffRowKind) -> DiffRowStyle {
         let added = kind == DiffRowKind::Added;

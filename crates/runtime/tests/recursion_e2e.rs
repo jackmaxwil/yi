@@ -87,7 +87,7 @@ struct HarnessOptions {
     max_depth: u8,
     child_answer: &'static str,
     /// Some(command) makes the child call `bash` before answering, which is
-    /// what moves the B7 tool counter and activity.
+    /// what moves the status tool counter and activity.
     tool_command: Option<&'static str>,
     /// The repository worktree children branch from.
     cwd: Option<PathBuf>,
@@ -232,7 +232,7 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
             if fault == Some(2) {
                 script.push(error);
             }
-            // A second scripted reply so a B13 followup has a turn to run.
+            // A second scripted reply so a mailbox followup has a turn to run.
             script.push(child_reply(child_answer));
             provider.queue_faux(script);
             let mut child = AgentSession::new(

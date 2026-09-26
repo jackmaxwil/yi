@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Session states (design §5.2): sessions are never auto-removed.
+/// Session states (design §7.6): sessions are never auto-removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum McpSessionState {

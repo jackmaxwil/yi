@@ -85,7 +85,7 @@ fn split_off_top(area: Rect, height: u16) -> (Rect, Rect) {
 
 pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     let sidebar_width = if area.width >= 50 {
-        app.state.sidebar.width()
+        crate::sidebar::width(app)
     } else {
         0
     };
