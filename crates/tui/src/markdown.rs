@@ -14,8 +14,8 @@ pub struct StableStream {
     /// Byte offset: everything before re-renders identically as the source
     /// grows.
     pub cut: usize,
-    /// Set when `cut` sits inside a fence: the opener (after a stub of each item around it) that a
-    /// slice from `cut` renders under, less the rows that context draws alone.
+    /// Set when [`StableStream::cut`] sits inside a fence: the opener (after a stub of each item
+    /// around it) a slice from the cut renders under, less the rows that context draws alone.
     pub reopen: Option<String>,
     /// Where the last top-level block starts: nothing before it can change, so the next
     /// parse starts there.
@@ -113,6 +113,11 @@ pub fn stable_stream(source: &str) -> StableStream {
     }
 }
 
+/// Whether `text` ends inside a fence, by its unpaired fence markers.
+pub(crate) fn open_fence(text: &str) -> bool {
+    text.matches("```").count() % 2 == 1 || text.matches("~~~").count() % 2 == 1
+}
+
 pub(crate) fn line_start(source: &str, at: usize) -> usize {
     source
         .get(..at)
@@ -120,7 +125,6 @@ pub(crate) fn line_start(source: &str, at: usize) -> usize {
         .map_or(0, |nl| nl + 1)
 }
 
-/// Where the last top-level block starts, and the fence in it.
 fn last_block(source: &str) -> (usize, Option<OpenFence>) {
     let mut last_top = 0;
     let mut depth = 0usize;
@@ -211,10 +215,13 @@ fn fence_lines(
     let columns = |line: &str| {
         line.chars()
             .take_while(|ch| matches!(ch, ' ' | '\t' | '>'))
-            .fold(
-                0,
-                |at, ch| if ch == '\t' { at + 4 - at % 4 } else { at + 1 },
-            )
+            .fold(0, |at, ch| {
+                if ch == '\t' {
+                    at + TAB_STOP - at % TAB_STOP
+                } else {
+                    at + 1
+                }
+            })
     };
     let marker = opener
         .trim_start_matches([' ', '\t', '>'])
@@ -305,8 +312,8 @@ struct Builder<'t> {
     list_stack: Vec<ListLevel>,
     pending_marker: Option<Span<'static>>,
     in_code_block: bool,
-    /// Code paints a whole line at a time: pulldown-cmark splits CRLF code into `a`, `\nb`,
-    /// `\n`, and a rail pushed per text event doubled it.
+    /// Incident: pulldown-cmark splits CRLF code into `a`, `\nb`, `\n`, and a rail pushed per text
+    /// event doubled it; code paints a whole line at a time.
     code_line: String,
     plain: bool,
     continued: bool,
@@ -488,7 +495,6 @@ impl Builder<'_> {
         }
     }
 
-    /// One code line, highlighted once and hard-wrapped under its rail.
     fn code_row(&mut self, line: &str) {
         let body = expand_tabs(line);
         let base = self.theme.syntax_style(crate::highlight::Token::Plain);
@@ -529,7 +535,7 @@ impl Builder<'_> {
 
 const TAB_STOP: usize = 4;
 
-/// Ratatui drops control characters, so a tab vanished with the indentation it carried.
+/// Incident: ratatui drops control characters, so a tab vanished with the indent it carried.
 fn expand_tabs(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut column = 0;
@@ -852,8 +858,8 @@ fn paint(
         Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES,
     );
     for (event, range) in parser.into_offset_iter() {
-        // An item opens on a blank row when a blank line stands before it, not when its list is loose:
-        // text yet to arrive decides that, and it re-spaced items a stream had committed.
+        // Incident: list looseness, decided by text yet to arrive, re-spaced committed items; an item
+        // opens on a blank row only when a blank line stands before it.
         let gap = match &event {
             Event::Start(Tag::Item) => Some(blank_before(source, range.start)),
             _ => None,

@@ -118,23 +118,17 @@ fn stream(app: &mut App, source: &str) -> Vec<String> {
     stream_blocks(app, &[text(source)], vec![text(source)])
 }
 
-fn squeeze(rows: Vec<String>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for row in rows {
-        if row.is_empty() && out.last().is_none_or(String::is_empty) {
-            continue;
-        }
-        out.push(row);
+/// Rows as the reader sees them: trailing blank rows are the next cell's to own.
+fn trimmed(mut rows: Vec<String>) -> Vec<String> {
+    while rows.last().is_some_and(String::is_empty) {
+        rows.pop();
     }
-    while out.last().is_some_and(String::is_empty) {
-        out.pop();
-    }
-    out
+    rows
 }
 
 /// Scrollback as committed, and the history's rebuild of it.
 fn both(app: &App, scroll: Vec<String>) -> (Vec<String>, Vec<String>) {
-    (squeeze(scroll), squeeze(flat(&app.reflowed(2_000))))
+    (trimmed(scroll), trimmed(flat(&app.reflowed(2_000))))
 }
 
 #[track_caller]
@@ -262,7 +256,13 @@ fn thought_paragraphs_keep_their_blank_rows() {
         vec![thinking(thought), text("Done.")],
     );
     let rows = agree(&app, scroll);
-    assert!(rows.iter().any(String::is_empty), "{rows:?}");
+    let first = rows.iter().position(|row| row.contains("First I read"));
+    let then = rows.iter().position(|row| row.contains("Then I check"));
+    assert_eq!(first.map(|at| at + 2), then, "{rows:?}");
+    assert_eq!(
+        first.and_then(|at| rows.get(at + 1)).map(String::as_str),
+        Some("")
+    );
 }
 
 #[test]
@@ -684,13 +684,14 @@ fn next(state: &mut u64) -> u64 {
     *state >> 33
 }
 
-/// Three hundred generated streams, each at a random height and width: scrollback equals its
-/// rebuild in every one. Text still to arrive can re-read earlier text (a span closed later,
-/// a tab-indented fence in an item), which no cut can know; those seeds are past this range.
+/// Two thousand generated streams at random heights and widths: scrollback equals its rebuild
+/// in all but the known seeds, where text still to arrive re-reads text already cut (a span
+/// closed later, a tab-indented fence in an item). A new mismatch or a fixed one both fail.
 #[test]
 fn generated_streams_rebuild_as_they_scrolled() {
     let pick = |state: &mut u64, len: usize| usize::try_from(next(state)).unwrap_or(0) % len;
-    for seed in 0..300u64 {
+    let mut known = Vec::new();
+    for seed in 0..2000u64 {
         let mut state = seed + 1;
         let count = 3 + pick(&mut state, 14);
         let source: String = (0..count)
@@ -702,11 +703,11 @@ fn generated_streams_rebuild_as_they_scrolled() {
         app.set_width(width);
         let scroll = stream(&mut app, &source);
         let (scroll, reflow) = both(&app, scroll);
-        assert_eq!(
-            scroll, reflow,
-            "seed {seed}, {rows} rows, {width} wide: {source:?}"
-        );
+        if scroll != reflow {
+            known.push(seed);
+        }
     }
+    assert_eq!(known, [557, 855]);
 }
 
 /// Incident: a cut before `` `cargo test` `` escaped the backtick, and the stray one left

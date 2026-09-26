@@ -224,7 +224,7 @@ pub(crate) fn under(
 /// The live tail with open strong, strike and code spans closed, so `**bold wor` renders bold
 /// now instead of shifting when its closer arrives. Only a run after a space, before a word.
 pub(crate) fn close_spans(tail: &str) -> std::borrow::Cow<'_, str> {
-    if tail.matches("```").count() % 2 == 1 || tail.matches("~~~").count() % 2 == 1 {
+    if crate::markdown::open_fence(tail) {
         return std::borrow::Cow::Borrowed(tail);
     }
     let from = tail.rfind("\n\n").map_or(0, |at| at + 2);
@@ -281,7 +281,7 @@ pub(crate) fn fence_tail(tail: &str, rows: usize) -> std::borrow::Cow<'_, str> {
         .iter()
         .rposition(|line| line.trim_start().starts_with("```"));
     match opener {
-        Some(at) if tail.matches("```").count() % 2 == 1 && lines.len() - at > rows + 1 => {
+        Some(at) if crate::markdown::open_fence(tail) && lines.len() - at > rows + 1 => {
             let kept = lines.get(lines.len() - rows..).unwrap_or_default().concat();
             std::borrow::Cow::Owned(format!(
                 "{}{kept}",

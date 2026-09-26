@@ -127,7 +127,7 @@ pub const CALLOUT_RAIL: &str = "▌";
 const GUTTER_CONTINUATION: &str = "  ";
 const THOUGHT_INDENT: &str = "  ";
 
-/// The gutter's width in columns: `GUTTER.len()` counts its bytes.
+/// The gutter's width in columns: [`GUTTER`]`.len()` counts its bytes.
 pub fn gutter_cols() -> usize {
     UnicodeWidthStr::width(GUTTER)
 }
