@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.325.0         # bump on any structural change; row goes in CHANGELOG.md
+version: 0.326.0         # bump on any structural change; row goes in CHANGELOG.md
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -140,7 +140,7 @@ named config key or cargo feature turns it on). § points into YI_DESIGN.md.
 | pure loop + event enum | 4.2 | core | H | L | `run_loop` is infallible; failures are events; the four loop guards; journey: `loop_events::tool_turn_executes_and_continues`, `loop_events::a_bare_length_stop_is_re_driven_twice_then_ends_on_the_third` |
 | entry tree sessions (Pi byte-compat) | 4.1 | core | H | M | schema anchor; journey: `journeys::a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree` (T2) |
 | Pi RPC mode | 17.1 | core | M | L | `yi rpc`, a JSON-lines loop over the event stream; journey: `rpc_protocol::responds_per_command_streams_events_and_persists_v4` |
-| context P1–P19; prefix-aligned P7 | 4.4 | core | H | M | projection at attach, compaction by server-observed prefix, the `<yi_compact_view>` summary, `history.grep` recall; journey: `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2) |
+| context P1–P19; prefix-aligned P7 | 4.4 | core | H | M | projection at attach, compaction by server-observed prefix, the `<yi_compact_view>` summary, `history.grep` recall; a compaction whose entry fails to write is not applied, and a `[compaction not saved: …]` notice pauses auto-compaction until `/compact`, since 0.326.0 (`compaction_faux::a_compaction_that_fails_to_write_is_not_applied`); journey: `compaction_faux::compact_view_cites_a_tool_entry_that_history_can_fetch` (T2) |
 | hashline edit (+ registers, instrumented) | 7.2 | core | H | M | tagged views, stale-number remap, named-register pastes, `prepare`-backed approval diff; journey: `hashline_patcher::read_edit_round_trip_replaces_lines_and_mints_a_new_tag`, `hashline_patcher::named_register_moves_content_across_files` |
 | permission modes/rules/holds, deterministic auto | 8 | core | H | M | `Auto` is the default; commands are classified per segment; destructive asks, unknown is contained under Seatbelt on macOS and asked elsewhere; journey: `safety::an_unknown_command_is_contained_not_allowed`, `decide::auto_reads_a_command_segment_by_segment` |
 | model auto-review M7/M8 | 8 | gated `models.autoReview` | L | H | the reviewer sees only a reviewable `Ask`; every non-allow denies with a request id `ask_user` replays; an approval is single-use through `ActionLedger`; journey: `auto_review::a_reviewer_denial_carries_its_evidence_and_a_request_number`, `auto_review::an_approved_request_lets_the_identical_call_through_once` |
