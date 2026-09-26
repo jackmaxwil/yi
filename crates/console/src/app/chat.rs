@@ -123,8 +123,8 @@ impl App {
             } = &mut pane.content
                 && bound == session
             {
+                // Incident: resetting the scroll here pinned every reader to the bottom mid-turn.
                 let _ = chat.events.0.send(make());
-                pane.scroll_from_bottom = 0;
             }
         }
         self.dirty = true;
@@ -553,7 +553,15 @@ impl App {
     pub(super) fn chat_event(&mut self, event: CtEvent) {
         self.dirty = true;
         if let Some(chat) = self.focused_chat() {
+            let enter = matches!(event, CtEvent::Key(key) if key.code == KeyCode::Enter);
+            let drafted = enter && !chat.app.composer_text().is_empty();
             handle_terminal_event(&mut chat.app, &chat.commands.0, event);
+            let sent = drafted && chat.app.composer_text().is_empty();
+            if let Some(pane) = self.state.focused_pane_mut()
+                && sent
+            {
+                pane.scroll_from_bottom = 0;
+            }
             return;
         }
         if let CtEvent::Key(KeyEvent {

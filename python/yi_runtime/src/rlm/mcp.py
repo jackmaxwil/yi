@@ -1,6 +1,6 @@
 """MCP access for kernel code: a subprocess wrapper over `yi mcp --json`.
 
-Yi's design (YI_DESIGN.md §5.2) keeps MCP client state out of the kernel:
+Yi's design (YI_DESIGN.md §7.6) keeps MCP client state out of the kernel:
 every call shells out to the one-shot `yi mcp` CLI, which owns config,
 sessions, and auth. No sockets or SDK live in this process.
 """

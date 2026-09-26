@@ -20,6 +20,7 @@ pub enum Token {
     Type,
     Function,
     Variable,
+    Deleted,
 }
 
 #[derive(Clone)]
@@ -29,12 +30,31 @@ pub struct Lang {
     /// A parse error leaves the incremental state no longer describing the text, so colour
     /// stops for the rest of the block rather than painting the wrong words as keywords.
     poisoned: bool,
+    infer: bool,
 }
 
-/// Decompressed on first use, never on the startup path §13.6 holds to 5 ms.
+const INFERRED: [&str; 15] = [
+    "Rust",
+    "Go",
+    "Java",
+    "Kotlin",
+    "Swift",
+    "JavaScript",
+    "TypeScript",
+    "TypeScriptReact",
+    "C",
+    "C++",
+    "C#",
+    "Python",
+    "Scala",
+    "Groovy",
+    "Objective-C",
+];
+
+/// bat's set, since syntect's has no TOML or TypeScript; decompressed on first use, off startup.
 fn syntaxes() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(SyntaxSet::load_defaults_newlines)
+    SET.get_or_init(two_face::syntax::extra_newlines)
 }
 
 /// Scope prefixes, most specific first. `storage.type.numeric` is a literal's suffix and
@@ -44,6 +64,12 @@ fn scope_table() -> &'static [(Scope, Token)] {
     TABLE.get_or_init(|| {
         [
             ("comment", Token::Comment),
+            ("markup.inserted", Token::Str),
+            ("markup.deleted", Token::Deleted),
+            ("meta.diff.range", Token::Function),
+            ("meta.diff.header", Token::Keyword),
+            ("markup.heading", Token::Type),
+            ("markup.raw", Token::Str),
             ("string", Token::Str),
             ("constant.character.escape", Token::Str),
             ("constant.numeric", Token::Number),
@@ -53,8 +79,21 @@ fn scope_table() -> &'static [(Scope, Token)] {
             ("storage", Token::Keyword),
             ("entity.name.function", Token::Function),
             ("support.function", Token::Function),
+            ("support.macro", Token::Function),
             ("variable.function", Token::Function),
+            ("variable.annotation", Token::Function),
+            ("meta.annotation", Token::Function),
+            ("entity.other.attribute-name", Token::Function),
+            // JS and TS scope every plain identifier a variable: a wall of magenta.
+            ("variable.other.readwrite.js", Token::Plain),
+            ("variable.other.readwrite.ts", Token::Plain),
+            ("variable.other.readwrite.tsx", Token::Plain),
+            ("variable.other.object", Token::Plain),
+            ("variable.other.property", Token::Plain),
+            ("variable.other.constant.ts", Token::Plain),
+            ("variable.other.constant.tsx", Token::Plain),
             ("variable", Token::Variable),
+            ("entity.other.inherited-class", Token::Type),
             ("entity.name", Token::Type),
             ("support.type", Token::Type),
             ("support.class", Token::Type),
@@ -77,14 +116,18 @@ fn token_for(stack: &ScopeStack) -> Token {
     Token::Plain
 }
 
-/// Fence names models write that no bundled grammar answers to. The default set has no
-/// TypeScript at all; JavaScript is the closest that colours it instead of leaving it plain.
+/// Fence names models write that no grammar answers to by name or extension.
 fn alias(name: &str) -> &str {
     match name {
         "shell" => "sh",
         "python3" | "ipython" => "py",
-        "ts" | "tsx" | "jsx" | "typescript" => "js",
-        "jsonc" => "json",
+        "jsx" | "mjs" | "cjs" => "js",
+        "mts" | "cts" => "ts",
+        "jsonc" | "jsonl" | "json5" => "json",
+        "conf" | "editorconfig" => "ini",
+        "golang" => "go",
+        "csharp" => "cs",
+        "containerfile" => "dockerfile",
         other => other,
     }
 }
@@ -104,6 +147,7 @@ pub fn lang_for(name: &str) -> Option<Lang> {
         state: ParseState::new(syntax),
         stack: ScopeStack::new(),
         poisoned: false,
+        infer: INFERRED.contains(&syntax.name.as_str()),
     })
 }
 
@@ -122,6 +166,7 @@ impl Theme {
             Token::Type => Style::default().fg(self.teal).add_modifier(Modifier::BOLD),
             Token::Function => Style::default().fg(self.accent),
             Token::Variable => Style::default().fg(self.magenta),
+            Token::Deleted => Style::default().fg(self.error),
         }
     }
 }
@@ -162,7 +207,55 @@ pub fn tokens(line: &str, lang: &mut Lang) -> Vec<(usize, usize, Token)> {
     if line.len() > LINE_CAP {
         return Vec::new();
     }
+    if lang.infer {
+        out = with_inferred(line, out);
+    }
     merge(out)
+}
+
+fn with_inferred(line: &str, runs: Vec<(usize, usize, Token)>) -> Vec<(usize, usize, Token)> {
+    let mut out = Vec::with_capacity(runs.len());
+    let mut cursor = 0_usize;
+    for run in runs
+        .into_iter()
+        .chain(std::iter::once((line.len(), line.len(), Token::Plain)))
+    {
+        let bytes = line.as_bytes();
+        let mut at = cursor;
+        while at < run.0 {
+            let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || !b.is_ascii();
+            let starts = bytes
+                .get(at)
+                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_' || !b.is_ascii())
+                && (at == 0 || !bytes.get(at - 1).copied().is_some_and(word));
+            if !starts {
+                at += 1;
+                continue;
+            }
+            let end = (at..run.0)
+                .find(|index| !bytes.get(*index).copied().is_some_and(word))
+                .unwrap_or(run.0);
+            let text = line.get(at..end).unwrap_or_default();
+            let token = if bytes.get(end) == Some(&b'(') {
+                Token::Function
+            } else if text.starts_with(|c: char| c.is_ascii_uppercase())
+                && text.contains(|c: char| c.is_ascii_lowercase())
+            {
+                Token::Type
+            } else {
+                Token::Plain
+            };
+            if token != Token::Plain {
+                out.push((at, end, token));
+            }
+            at = end;
+        }
+        if run.0 < run.1 {
+            out.push(run);
+        }
+        cursor = cursor.max(run.1);
+    }
+    out
 }
 
 /// Adjacent runs of one kind are one span: the grammar splits an identifier

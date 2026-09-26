@@ -1,5 +1,7 @@
 # ARC harness v2 — state in the kernel, zero Rust
 
+Open: all of it. `evals/arc/arc.py` does not exist and `evals/arc/yi_arc.py` keeps no frame log.
+
 ```
 status:  PLAN 2026-08-29, grounded against origin/flywheel-4 (72c8757) by
          execution-verified mechanics; supersedes the prose expansion in the

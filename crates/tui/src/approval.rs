@@ -17,7 +17,7 @@ pub enum AskChoice {
 /// (`cut_preview`); this second cut sizes the view to a 24-row screen beside the transcript.
 const BODY_LINES: usize = 10;
 
-/// U12: fixed-height approval view — height is set at spawn so the live
+/// Fixed-height approval view — height is set at spawn so the live
 /// region never jitters while the user decides.
 pub struct ApprovalView {
     pub title: String,

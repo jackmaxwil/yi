@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Schema lock (design 19): every serialized shape lives in yi-types; this locks their
+"""Schema lock (design §20): every serialized shape lives in yi-types; this locks their
 normalized definitions so a schema edit is a reviewed schemas.lock diff, never a silent
 drift. Regenerate deliberately with --update."""
 import json, pathlib, re, sys

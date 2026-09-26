@@ -67,8 +67,8 @@ pub fn project_attributed(branch: &[Entry]) -> Vec<Attributed> {
     branch[start..].iter().flat_map(entry_attributed).collect()
 }
 
-/// Design P2: drops non-message entries and applies the latest compaction — everything before
-/// it becomes that summary plus its retained tail (Pi v4 `context.ts` semantics).
+/// Design §4.4: drops non-message entries and applies the latest compaction — everything before
+/// it becomes that summary plus its retained tail (Pi v4 session format semantics).
 pub fn project(branch: &[Entry]) -> Vec<AgentMessage> {
     project_attributed(branch)
         .into_iter()

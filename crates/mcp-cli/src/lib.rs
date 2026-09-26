@@ -58,7 +58,7 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
-/// Invariant: `run` fills this before dispatch. yi-cli owns the one strict config read (X7),
+/// Invariant: `run` fills this before dispatch. yi-cli owns the one strict config read (§17.1),
 /// so this crate never opens the file; a second reader could disagree with the first.
 static TOKEN_STORE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 

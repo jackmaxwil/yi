@@ -39,7 +39,7 @@ pub enum Fact {
         #[serde(skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
-    /// Design G1: the session goal lives beside the header as a fact line,
+    /// Design §15.1: the session goal lives beside the header as a fact line,
     /// outside the entry tree, so compaction cannot lose it.
     Goal { goal: crate::goal::Goal },
     /// The task DAG shares the goal's compaction-immunity by construction.
