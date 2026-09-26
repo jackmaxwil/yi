@@ -228,6 +228,35 @@ fn sessions_rm_removes_the_session() -> TestResult {
     Ok(())
 }
 
+/// `list` scans the raw file for a name fact; `show` replays it through `SessionStore`,
+/// which must carry the same name through (a session named after creation still shows it).
+#[test]
+fn show_json_carries_the_name_a_session_file_sets() -> TestResult {
+    let workspace = Workspace::new("show-name")?;
+    let cwd = workspace.project().display().to_string();
+    let session_dir = workspace
+        .0
+        .join("home/sessions")
+        .join(yi_runtime::session_store::session_directory_name(&cwd));
+    std::fs::create_dir_all(&session_dir)?;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../types/tests/fixtures/v4-golden.jsonl");
+    std::fs::copy(fixture, session_dir.join("1_fixture-a.jsonl"))?;
+
+    let shown: Value = serde_json::from_str(&stdout(&workspace.yi(&[
+        "sessions",
+        "--json",
+        "show",
+        "fixture-a",
+    ])?))?;
+    assert_eq!(
+        shown["session"]["name"].as_str(),
+        Some("Golden Fixture v4"),
+        "{shown}"
+    );
+    Ok(())
+}
+
 #[test]
 fn schema_validates_the_answer() -> TestResult {
     let workspace = Workspace::new("schema")?;
