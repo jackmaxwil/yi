@@ -125,11 +125,14 @@ fn draw<B: Backend>(
     terminal.draw(|frame| {
         let mut view = render::compute_view(app, frame.area(), theme);
         render::render(app, frame, &mut view, theme);
-        let area = frame.area();
         app.selected = match app.selection {
-            Some(selection) => {
-                crate::select::paint(frame.buffer_mut(), area, selection, theme.selection_bg())
-            }
+            Some(selection) => crate::select::selected(
+                app,
+                &view,
+                frame.buffer_mut(),
+                selection,
+                theme.selection_bg(),
+            ),
             None => String::new(),
         };
         if let Some(cursor) = view.editor_cursor {
