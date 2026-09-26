@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
-/// 60 fps ceiling (design §17.3): the inline viewport repaints a handful of rows,
-/// so 60 is imperceptible from 120 here.
-pub const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// 120 fps ceiling (design §17.3): matches ProMotion and 120 Hz panels so scrolling
+/// and the streamed tail stay smooth; the adaptive floor still backs off a slow draw.
+pub const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(8_333);
 /// Adaptive floor cap: a draw costing c schedules the next no earlier than
 /// start + 2c, capped so a pathological draw cannot freeze the UI.
 pub const MAX_FRAME_INTERVAL: Duration = Duration::from_millis(200);
@@ -20,7 +20,7 @@ impl FrameScheduler {
         self.dirty = true;
     }
 
-    /// Dirty, past the 60 fps ceiling, and past the adaptive floor
+    /// Dirty, past the 120 fps ceiling, and past the adaptive floor
     /// `last_start + min(2 × last_cost, 200 ms)`.
     pub fn should_draw(&self, now: Instant) -> bool {
         if !self.dirty {

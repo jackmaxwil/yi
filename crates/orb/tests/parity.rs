@@ -138,11 +138,11 @@ fn leak(name: &str) -> &'static str {
 #[test]
 fn kitty_emit_transmits_an_inflatable_zlib_stream() -> TestResult {
     const PX: usize = 192;
-    let frame = orb::evaluate(orb::OrbState::Composing, 64, 1.234).ok_or("no frame")?;
-    let rgba = orb::kitty::paint_rgba(&frame, 64.0, PX);
+    let frame = orb::render(&orb::pose(Some(orb::OrbState::Composing), 1.234));
+    let rgba = orb::kitty::paint_rgba(&frame, 64.0, PX, PX);
 
     let mut wire = Vec::new();
-    orb::kitty::transmit(&mut wire, orb::kitty::IMAGE_IDS[0], &rgba, PX)?;
+    orb::kitty::transmit(&mut wire, orb::kitty::IMAGE_IDS[0], &rgba, (PX, PX))?;
     orb::kitty::place(&mut wire, orb::kitty::IMAGE_IDS[0], 3, 7, 6, 3)?;
     let wire = String::from_utf8(wire)?;
 
@@ -238,10 +238,10 @@ fn decode_base64(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
 
 #[test]
 fn orb_engine_feeds_the_kitty_painter() -> TestResult {
-    use yi_orb::{OrbState, evaluate, kitty};
-    let frame = evaluate(OrbState::Working, 64, 1.3).ok_or("preset missing")?;
+    use yi_orb::{OrbState, kitty, pose, render};
+    let frame = render(&pose(Some(OrbState::Working), 1.3));
     assert!(!frame.dots.is_empty());
-    let rgba = kitty::paint_rgba(&frame, 64.0, 96);
+    let rgba = kitty::paint_rgba(&frame, 64.0, 96, 96);
     assert_eq!(rgba.len(), 96 * 96 * 4);
     let lit = rgba.chunks(4).filter(|px| px[3] > 0).count();
     assert!(
@@ -253,5 +253,46 @@ fn orb_engine_feeds_the_kitty_painter() -> TestResult {
         background > 1000,
         "the background stays transparent for the terminal ground: {background}"
     );
+    Ok(())
+}
+
+/// Incident: the painter scaled 0-255 ink by 255 again, so every lit pixel saturated to
+/// white and depth shading never reached the screen. Straight alpha keeps a dot's soft
+/// edge the dot's own colour instead of darkening toward black.
+#[test]
+fn a_dot_paints_its_ink_to_the_edge() -> TestResult {
+    use yi_orb::core::Dot;
+    let frame = orb::OrbFrame {
+        dots: vec![Dot {
+            x: 32.0,
+            y: 32.0,
+            z: 0.0,
+            r: 8.0,
+            white: 0.5,
+            a: 1.0,
+        }],
+        lines: Vec::new(),
+    };
+    let rgba = orb::kitty::paint_rgba(&frame, 64.0, 64, 64);
+    let (r, g, b) = orb::kitty::INK_RGB;
+    let ink = [r, g, b].map(|channel| (f64::from(channel) * 0.5).round() as i16);
+    let centre = rgba
+        .get((32 * 64 + 32) * 4..(32 * 64 + 32) * 4 + 4)
+        .ok_or("centre pixel")?;
+    assert_eq!(
+        centre.get(3),
+        Some(&255),
+        "the centre is opaque: {centre:?}"
+    );
+    let edges = rgba.chunks(4).filter(|px| px[3] > 0 && px[3] < 255).count();
+    assert!(edges > 0, "the edge is antialiased");
+    for px in rgba.chunks(4).filter(|px| px[3] > 0) {
+        for (channel, want) in px.iter().zip(ink) {
+            assert!(
+                (i16::from(*channel) - want).abs() <= 1,
+                "every lit pixel keeps the dot's ink, want {ink:?}: {px:?}"
+            );
+        }
+    }
     Ok(())
 }
