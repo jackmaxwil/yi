@@ -4,13 +4,13 @@
 status:  PROPOSAL, 2026-09-26, revised after two review passes: three refuters (security,
          usability, minimalism), then five lenses with a refute of their merged list
          (grounding, security, usability, minimalism, precedent). Design only; lands by the
-         owner's call. Decided in five AskUserQuestion rounds (§8, verbatim). Method: the
-         yi-ideate skill.
+         owner's call. Decided in five AskUserQuestion rounds and one follow-up (§8,
+         verbatim). Method: the yi-ideate skill.
 tree:    origin/main ab8f7817 (0.329.0, last decision row D249). Open PRs claim versions up to
          0.339.0 and rows up to D252. Draft rows start at D253; renumber at landing after
          re-reading the header and every open PR.
-issues:  stage 0: #580, #583, #584 (filed 2026-09-26 at the owner's call). One issue per
-         remaining PR, milestone "Runtime, kernel and prompts", opened after approval.
+issues:  milestone "Runtime, kernel and prompts". Stage 0: #580, #583, #584, #598.
+         Stage 1: #599. Stage 2: #600. Stage 3: #601. Stage 4: #602.
 marks:   ✓ exists on main · ✚ new in this plan
 amends:  D87, D205, D206, D207, D216, D241.
 ```
@@ -239,7 +239,7 @@ What is new:
 | headless run | no asker → deny | ✓ |
 | audit | `permission_rule` entries, first egress decision per (holder, domain), tool results | ✚ |
 | Linux parity | the same `access(holder)` compiled to Landlock | ✚ |
-| a contained git cannot plant host-run config | Seatbelt deny on macOS ✓; host verification before its own git ✚ | ✓ / ✚ |
+| a contained git cannot plant host-run config | Seatbelt deny on macOS ✓; host verification before its own git on Linux ✚ | ✓ / ✚ |
 | a child run in a container (#447) | the same `access(holder)` compiled to mounts and the same proxy | DEFER |
 
 Unchanged by design: mode-level asks (git fetch, pull, push, clone; pip and npm install;
@@ -394,7 +394,8 @@ non-yolo run needs one.
   with `-c core.fsmonitor=false -c core.hooksPath=<an empty host-owned dir>`, which closes the
   two common vectors for a contained writer that races the gap between verify and exec. The
   remaining residuals are that gap for other config keys, and the user's own terminal git.
-  Which platforms run it is open question 1.
+  It runs on Linux only (owner, 2026-09-26); macOS keeps Seatbelt's deny of the same paths
+  (`HOST_RUN_BY_GIT`, `sandbox.rs:28`), which stops the write before it happens.
 - Availability: the `unshare_works` probe pattern (`crates/tools/src/document.rs:663-675`)
   tests the Landlock ABI once; where it fails, contained means ask (today's behavior,
   `gate.rs:138`), and `yi doctor` says the sandbox is absent.
@@ -494,15 +495,16 @@ Each round was an AskUserQuestion; the owner's selections are quoted as chosen.
 | 5 | loopback deny-list unbuildable | "Accept, document, show listeners (Recommended)" |
 | 5 | what "always" keeps on protected targets | "Session escalation, except git and corpus (Recommended)" |
 | 5 | harness and MCP holes | "File both now, into stage 0 (Recommended)" → #583, #584 |
+| 6 | where git-dir verification runs (after the second review) | "Linux only, then open the stage issues" → #598-#602 |
 
 Changed by the refute pass without a new fork: the grant is the existing
 `SessionPermissionRule` with new identities, not a new type; ledger entries are
 `Entry::Custom`, not `AgentEvent`s (the session crate never writes those); config is JSON keys
 in `~/.yi/config.json`; SOCKS5, `SandboxRefused`, `GrantRevoked`, `/grant`, `/grants`,
 `--grant` and per-connection ledger lines are cut or deferred; Landlock's degradation is a
-`yi doctor` line; `set_sandbox` is deleted. The macOS half of git-dir verification is kept
-because round 4 chose it; the minimalism pass found it redundant there (Seatbelt already denies
-those writes, `sandbox.rs:28`, `:35-38`), which is open question 1.
+`yi doctor` line; `set_sandbox` is deleted. The minimalism pass found the macOS half of
+git-dir verification redundant (Seatbelt already denies those writes, `sandbox.rs:28`,
+`:35-38`); round 6 made it Linux only.
 
 Changed by the second review, also without a new fork: #584 targets the MCP session store, not
 the workspace `.mcp.json` files; the proxy refuses private, link-local and loopback
@@ -544,7 +546,7 @@ where every write is allowed and a sandbox test passes vacuously. LOC estimates 
 minimalism pass's; every crate sits at its shrink-only ceiling, so each PR carries its growth
 memo.
 
-### Stage 0: close what is open today (four PRs, any order)
+### Stage 0: close what is open today (four PRs, any order: #580, #583, #584, #598)
 
 - **#580**: per-session state directory; the corpus is no longer a writable root, and the bash
   tool gets no session dir at all (`main.rs:502` stops passing `&session_dir`). Red: a contained bash run and
@@ -557,7 +559,7 @@ memo.
   `~/.yi/mcp/sessions.json` whose command creates a marker outside the tree, then
   `fetch("mcp://<entry>/x")`; the marker must not appear (it appears today, and the fetch does
   not ask).
-- **Secrets, wall and prompts**: the secret list; the wall's `deny_*` in every profile; the two
+- **#598, secrets, wall and prompts**: the secret list; the wall's `deny_*` in every profile; the two
   `%pip` texts stop claiming that install works (`ipython.rs:47`, `:126`); stage 3 is when it
   does. Red: a cell reads `~/.yi/config.json`
   (succeeds today); a walled juror's cell writes the tree (succeeds today).
@@ -565,7 +567,7 @@ memo.
 About +40 lines each; none may grow `kernel.rs` (1178 of its 1200-line cap) before stage 1
 shrinks it. Gate: stage 1 waits for all four.
 
-### Stage 1: loopback for every contained spawn
+### Stage 1: loopback for every contained spawn (#599)
 
 The loopback section for every profile; `Sandbox::loopback` and `set_sandbox` deleted;
 connection files hidden with the own-file re-allow; `denial_hint` on cells and kernel jobs,
@@ -580,7 +582,7 @@ another kernel's `connection.json`. About +60 lines; it shrinks `kernel.rs` (117
 
 Demo: a cell queries a local Postgres or dev server.
 
-### Stage 2: grants widen
+### Stage 2: grants widen (#600)
 
 `CallOutcome.sandbox` in place of `contained`; bash write targets from the refusal text;
 `write_identity` rules compiled into the next spawn; protected targets filtered from the offers,
@@ -600,7 +602,7 @@ Red:
 About +170 lines. Demo: the Yi agent's `git worktree add` into a sibling directory, asked once
 and then contained; its `.git/config` write escalates once.
 
-### Stage 3: egress proxy
+### Stage 3: egress proxy (#601)
 
 The CONNECT proxy, per-spawn tokens, the full proxy variable set, fail-closed spawns, the
 upstream-proxy dial, `sandbox.egress` seeds, one pending ask per (holder, domain) with the 10 s
@@ -617,7 +619,7 @@ without the variables).
 About +280 lines, in the runtime crate, which is at its ceiling; the growth memo prices it.
 Demo: `%pip install` in a cell, and a new domain asked once in a running kernel, no restart.
 
-### Stage 4: Linux
+### Stage 4: Linux (#602)
 
 The Landlock wrapper, enumerated reads from the named roots, the ABI probe with its
 `yi doctor` line, and git-dir verification before host-run git, under the common-dir lock and
@@ -639,22 +641,17 @@ Demo: the forge gate runs one contained suite under Landlock.
 | D253 | #580 | a sandboxed process writes only its own session's state; the bash tool gets no session dir | D87, D241 |
 | D254 | #583 | global harness writes go through the host; the kernel's harness root is the session's | D87 |
 | D255 | #584 | the MCP session store is outside every sandbox's writable roots; a sandboxed `connect` goes through the host; the host spawns only from sessions it created from `~/.yi/mcp.json` or a trusted, hash-pinned workspace file | (new) |
-| D256 | stage 0 | the wall and a secret list are compiled into every OS profile | D87, D216 |
-| D257 | stage 1 | every contained spawn gets loopback bind, inbound and outbound; kernel connection files are hidden from other sandboxes; `Sandbox::loopback` and `set_sandbox` are deleted | D87, D241 |
-| D258 | stage 2 | an approved refusal widens the holder's next spawn by the refused path; protected targets escalate, kept only for secrets and ssh; kept rules are ledger entries copied downward only | D206, D207 |
-| D259 | stage 3 | proxy-aware non-loopback traffic leaves through the host's egress proxy, authenticated per spawn, decided per domain, refusing private and link-local resolutions, and failing closed when absent | D87 |
-| D260 | stage 4 | Linux contains with Landlock filesystem rules and reads from named roots; the host verifies git dirs under a common-dir lock before its own git | D205 |
+| D256 | #598 | the wall and a secret list are compiled into every OS profile | D87, D216 |
+| D257 | #599 | every contained spawn gets loopback bind, inbound and outbound; kernel connection files are hidden from other sandboxes; `Sandbox::loopback` and `set_sandbox` are deleted | D87, D241 |
+| D258 | #600 | an approved refusal widens the holder's next spawn by the refused path; protected targets escalate, kept only for secrets and ssh; kept rules are ledger entries copied downward only | D206, D207 |
+| D259 | #601 | proxy-aware non-loopback traffic leaves through the host's egress proxy, authenticated per spawn, decided per domain, refusing private and link-local resolutions, and failing closed when absent | D87 |
+| D260 | #602 | Linux contains with Landlock filesystem rules and reads from named roots; on Linux the host verifies git dirs under a common-dir lock before its own git | D205 |
 
 ## 11. Open questions
 
-1. Where git-dir verification runs. Recommended: Linux only, with the common-dir lock; macOS
-   keeps Seatbelt's deny of `HOST_RUN_BY_GIT` (`sandbox.rs:28`), which already stops the
-   write. Alternatives: both platforms with the same lock (round 4's wording; pays for a check
-   Seatbelt already makes), or no host verification (reopens round 4 and leaves a Linux
-   contained git able to plant `core.fsmonitor`).
-2. The ask-fatigue rate after stage 2, measured from `permission_rule` entries.
-3. The Linux spawn-time race between compiling a Landlock ruleset and exec (T10).
-4. Whether a trusted workspace `.mcp.json` reuses `yi trust`'s grant as is, or pins per entry
+1. The ask-fatigue rate after stage 2, measured from `permission_rule` entries.
+2. The Linux spawn-time race between compiling a Landlock ruleset and exec (T10).
+3. Whether a trusted workspace `.mcp.json` reuses `yi trust`'s grant as is, or pins per entry
    (#584).
 
 ## 12. Not building
