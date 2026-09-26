@@ -648,7 +648,7 @@ A reviewer that reads a digest of the session's work log and may emit one advice
   `advise` and `transcript{entry_id}`, and the digest since the last review; never thinking.
 - A guard drops blocklisted phrases, dedupes over a 4,096 FIFO, and accepts one advice a review.
 - Note and Warn arrive as `custom{advisory}` (steer while running, follow-up while idle). A Hold is
-  a 1 h permission hold on the target, or a Warn with no asker.
+  a 1 h permission hold on the target, or a Warn with no asker or no target.
 - `/advisor promote <id>` writes `.yi/rules/<slug>-adv-N.md`, armed live; nothing else persists.
 
 Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
