@@ -106,7 +106,8 @@ if __name__ == "__main__":
         if name not in reads
     ]
     corpus = [(str(p.relative_to(ROOT)), p.read_text(errors="ignore")) for p in
-              sorted(q for d in CORPUS for q in (ROOT / d).rglob("*") if q.is_file())]
+              sorted(q for d in CORPUS for q in (ROOT / d).rglob("*")
+                     if q.is_file() and "__pycache__" not in q.parts)]
     corpus.append(("justfile", (ROOT / "justfile").read_text()))
     names = sorted(p.name for p in BASE.iterdir() if p.is_file())
     errs = [f"{f}:{line}: pub {name} is written and never read" for f, name, line in fields]
