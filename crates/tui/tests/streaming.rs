@@ -708,3 +708,142 @@ fn generated_streams_rebuild_as_they_scrolled() {
         );
     }
 }
+
+/// Incident: a cut before `` `cargo test` `` escaped the backtick, and the stray one left
+/// swallowed spaces into a code span (`cargo testand *emph* wordcargo`).
+#[test]
+fn a_cut_before_inline_code_or_emphasis_keeps_the_span() {
+    for (width, rows) in [(30, 6), (40, 6), (50, 6), (60, 12)] {
+        let mut app = app(rows);
+        app.set_width(width);
+        let source = format!("{}\n", "`cargo test` and *emph* word `a|b` ".repeat(40));
+        let scroll = stream(&mut app, &source);
+        let rows = agree(&app, scroll);
+        assert!(
+            !rows.iter().any(|row| row.contains(['`', '\\', '*'])),
+            "{width}: {rows:?}"
+        );
+    }
+}
+
+/// A footer committed between two slices of one message splits it the same way in scrollback
+/// and in the rebuild.
+#[test]
+fn a_cell_committed_mid_message_splits_it_alike() {
+    let mut app = app(40);
+    app.reduce_agent(AgentEvent::MessageStart {
+        message: assistant(Vec::new(), StopReason::Stop),
+    });
+    let first = "First paragraph here.\n\nSecond";
+    let mut scroll = Vec::new();
+    for end in 1..=first.len() {
+        app.reduce_agent(AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::Start {
+                partial: assistant(vec![text(&first[..end])], StopReason::Stop),
+            },
+        });
+        scroll.extend(flat(&app.take_commits()));
+    }
+    app.notice("a footer between the slices");
+    scroll.extend(flat(&app.take_commits()));
+    let whole = "First paragraph here.\n\nSecond paragraph.\n\nThird one.";
+    for end in first.len() + 1..=whole.len() {
+        app.reduce_agent(AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::Start {
+                partial: assistant(vec![text(&whole[..end])], StopReason::Stop),
+            },
+        });
+        scroll.extend(flat(&app.take_commits()));
+    }
+    app.reduce_agent(AgentEvent::MessageEnd {
+        message: assistant(vec![text(whole)], StopReason::Stop),
+    });
+    scroll.extend(flat(&app.take_commits()));
+    agree(&app, scroll);
+}
+
+/// A stream that never ended leaves nothing that hides the next message's blocks.
+#[test]
+fn an_unended_stream_does_not_hide_the_next_message() {
+    let mut app = app(40);
+    let blocks = [text("Said first."), thinking("then"), text("Said second.")];
+    app.reduce_agent(AgentEvent::MessageStart {
+        message: assistant(Vec::new(), StopReason::Stop),
+    });
+    app.reduce_agent(AgentEvent::MessageUpdate {
+        assistant_message_event: AssistantMessageEvent::Start {
+            partial: assistant(blocks.to_vec(), StopReason::Stop),
+        },
+    });
+    let scroll = stream(&mut app, "The next answer.");
+    assert!(
+        scroll.iter().any(|row| row.contains("The next answer.")),
+        "{scroll:?}"
+    );
+}
+
+#[test]
+fn a_nested_fence_closed_deeper_than_it_opened_ends_there() {
+    let mut app = app(40);
+    let source =
+        "1. Run:\n\n   ```sh\n   cargo test\n     ```\n\n   After the fence.\n\n2. Next.\n";
+    let scroll = stream(&mut app, source);
+    let rows = agree(&app, scroll);
+    assert!(
+        rows.iter().any(|row| row.trim() == "After the fence."),
+        "{rows:?}"
+    );
+}
+
+/// A thought's committed rows extend its cached rows as prose's do, and match a fresh render.
+#[test]
+fn a_pane_reading_a_thought_every_frame_sees_the_fresh_render() {
+    let thought = "First I read the file.\n\n- one\n- two\n\nThen I check the tests.\n\nDone.";
+    let mut app = app(40);
+    app.cycle_mode();
+    app.reduce_agent(AgentEvent::MessageStart {
+        message: assistant(Vec::new(), StopReason::Stop),
+    });
+    for end in 1..=thought.len() {
+        app.reduce_agent(AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::Start {
+                partial: assistant(vec![thinking(&thought[..end])], StopReason::Stop),
+            },
+        });
+        let _ = app.reflowed(2_000);
+    }
+    app.reduce_agent(AgentEvent::MessageEnd {
+        message: assistant(vec![thinking(thought)], StopReason::Stop),
+    });
+    let cached = flat(&app.reflowed(2_000));
+    let mut fresh = self::app(40);
+    fresh.cycle_mode();
+    let _ = stream_blocks(&mut fresh, &[thinking(thought)], vec![thinking(thought)]);
+    assert_eq!(cached, flat(&fresh.reflowed(2_000)));
+}
+
+/// A thought streaming a long fence shows the fence's last lines, drawn from its tail alone.
+#[test]
+fn a_thought_in_an_open_fence_shows_its_last_lines() {
+    let code: String = (0..300).map(|i| format!("let x{i} = {i};\n")).collect();
+    let thought = format!("Plan:\n\n```rust\n{code}");
+    let mut app = app(40);
+    app.cycle_mode();
+    app.reduce_agent(AgentEvent::MessageStart {
+        message: assistant(Vec::new(), StopReason::Stop),
+    });
+    app.reduce_agent(AgentEvent::MessageUpdate {
+        assistant_message_event: AssistantMessageEvent::Start {
+            partial: assistant(vec![thinking(&thought)], StopReason::Stop),
+        },
+    });
+    let rows = live_rows(&mut app);
+    assert!(
+        rows.iter().any(|row| row.contains("let x299 = 299;")),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.contains("let x285 = 285;")),
+        "{rows:?}"
+    );
+}

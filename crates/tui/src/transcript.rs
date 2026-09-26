@@ -160,39 +160,50 @@ pub(crate) fn paint_slice(
         let mut rows = render(&format!("{context}{slice}"), true, &mut lang);
         return (rows.split_off(drawn.min(rows.len())), lang);
     }
-    let context = app.live_seam.context(&app.live_markdown, app.live_cut);
+    let slice = escaped(slice, app.live_seam.mid);
     let draw = |text: &str| render(text, false, &mut None);
-    if let Some(rows) = context.and_then(|context| under(&context, slice, draw)) {
+    if let Some(rows) = app
+        .live_seam
+        .stub
+        .as_deref()
+        .and_then(|stub| under(stub, &slice, draw))
+    {
         return (rows, lang);
     }
-    let slice = escaped(slice, app.live_seam.mid);
     let rows = render(&slice, false, &mut lang);
     (rows, lang)
 }
 
-fn opens_block(rest: &str) -> bool {
-    let rest = rest.trim_start_matches([' ', '\t']);
-    crate::markdown::opens_item(rest)
-        || rest.starts_with(['#', '>', '|', '=', '`', '~', '-', '*', '_', '+'])
-}
-
-/// A slice cut mid-paragraph is prose: escaping its first mark and first-line pipes says so.
+/// A slice cut mid-paragraph is prose; when the parser would read it as another block, the
+/// escape says so: pipes outside code in a table's first row, else its first mark.
 pub(crate) fn escaped(slice: &str, mid: bool) -> std::borrow::Cow<'_, str> {
-    if !mid {
-        return std::borrow::Cow::Borrowed(slice);
-    }
+    use pulldown_cmark::{Event, Options, Parser, Tag};
+    let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
+    let block = match Parser::new_ext(slice, options).next() {
+        Some(Event::Start(tag)) if mid && !matches!(tag, Tag::Paragraph) => tag,
+        _ => return std::borrow::Cow::Borrowed(slice),
+    };
     let lead = slice.len() - slice.trim_start_matches([' ', '\t']).len();
     let (indent, rest) = slice.split_at(lead);
-    let line = rest.find('\n').map_or(rest.len(), |nl| nl);
-    let (first, after) = rest.split_at(line);
-    let first = first.replace('|', "\\|");
-    let mark = if opens_block(&first) { "\\" } else { "" };
-    let out = format!("{indent}{mark}{first}{after}");
-    if out == slice {
-        std::borrow::Cow::Borrowed(slice)
-    } else {
-        std::borrow::Cow::Owned(out)
+    // A backslash escapes only punctuation; before a letter it prints.
+    if !matches!(block, Tag::Table(_)) {
+        return match rest.starts_with(|ch: char| ch.is_ascii_punctuation()) {
+            true => std::borrow::Cow::Owned(format!("{indent}\\{rest}")),
+            false => std::borrow::Cow::Borrowed(slice),
+        };
     }
+    let (first, after) = rest.split_at(rest.find('\n').unwrap_or(rest.len()));
+    let mut code = false;
+    let mut out = String::from(indent);
+    for ch in first.chars() {
+        code ^= ch == '`';
+        if ch == '|' && !code {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push_str(after);
+    std::borrow::Cow::Owned(out)
 }
 
 /// A slice's own rows under `context`, or `None` when the context's rows do not lead the whole
@@ -260,4 +271,23 @@ pub(crate) fn close_spans(tail: &str) -> std::borrow::Cow<'_, str> {
         closed.extend(std::iter::repeat_n(*ch, *run));
     }
     std::borrow::Cow::Owned(closed)
+}
+
+/// A tail ending inside a fence renders its opener and last `rows` lines, the rows it shows.
+/// Incident: a thought's open fence never commits, and all of it cost 2.4 ms a frame at 60 KB.
+pub(crate) fn fence_tail(tail: &str, rows: usize) -> std::borrow::Cow<'_, str> {
+    let lines: Vec<&str> = tail.split_inclusive('\n').collect();
+    let opener = lines
+        .iter()
+        .rposition(|line| line.trim_start().starts_with("```"));
+    match opener {
+        Some(at) if tail.matches("```").count() % 2 == 1 && lines.len() - at > rows + 1 => {
+            let kept = lines.get(lines.len() - rows..).unwrap_or_default().concat();
+            std::borrow::Cow::Owned(format!(
+                "{}{kept}",
+                lines.get(at).copied().unwrap_or_default()
+            ))
+        }
+        _ => std::borrow::Cow::Borrowed(tail),
+    }
 }

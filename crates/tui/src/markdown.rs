@@ -17,6 +17,9 @@ pub struct StableStream {
     /// Set when `cut` sits inside a fence: the opener (after a stub of each item around it) that a
     /// slice from `cut` renders under, less the rows that context draws alone.
     pub reopen: Option<String>,
+    /// Where the last top-level block starts: nothing before it can change, so the next
+    /// parse starts there.
+    pub block: usize,
 }
 
 /// A character that may open a line's block marker.
@@ -48,10 +51,6 @@ pub(crate) fn undecided(source: &str, at: usize) -> bool {
         .is_some_and(|rest| !rest.contains('\n') && rest.chars().all(lead))
 }
 
-pub(crate) fn opens_item(line: &str) -> bool {
-    item_marker(line).is_some()
-}
-
 pub(crate) fn item_marker(line: &str) -> Option<&str> {
     let digits = line.bytes().take_while(u8::is_ascii_digit).count();
     let end = if (1..=9).contains(&digits) {
@@ -81,6 +80,7 @@ pub fn stable_stream(source: &str) -> StableStream {
     let block = StableStream {
         cut: if undecided(source, top) { 0 } else { top },
         reopen: None,
+        block: top,
     };
     let Some(fence) = fence else {
         return block;
@@ -95,18 +95,21 @@ pub fn stable_stream(source: &str) -> StableStream {
     let opener = source
         .get(line_start(source, fence.range.start)..opener_end)
         .unwrap_or_default();
-    let (last_line, closed) = fence_lines(source, opener, opener_end, fence.range.end);
+    let (last_line, closed) =
+        fence_lines(source, opener, opener_end, fence.range.end, fence.contained);
     if let Some(end) = closed
         && !fence.contained
     {
         return StableStream {
             cut: end,
             reopen: None,
+            block: top,
         };
     }
     StableStream {
         cut: last_line.max(opener_end),
         reopen: Some(fence_context(source, &fence.around, opener)),
+        block: top,
     }
 }
 
@@ -195,6 +198,7 @@ fn fence_lines(
     opener: &str,
     opener_end: usize,
     end: usize,
+    contained: bool,
 ) -> (usize, Option<usize>) {
     fn run(line: &str, marker: char) -> (usize, &str) {
         let body = line.trim_start_matches([' ', '\t', '>']);
@@ -203,7 +207,7 @@ fn fence_lines(
             body.trim(),
         )
     }
-    // A closing line sits within three columns of the opener: `\t```` in a top-level fence is code.
+    // A closing line sits within three columns of its container: `\t```` at top level is code.
     let columns = |line: &str| {
         line.chars()
             .take_while(|ch| matches!(ch, ' ' | '\t' | '>'))
@@ -231,7 +235,7 @@ fn fence_lines(
         let (length, trimmed) = run(line, marker);
         if length >= open_len
             && trimmed.chars().all(|ch| ch == marker)
-            && columns(line) <= indent.max(3)
+            && columns(line) <= if contained { indent + 3 } else { 3 }
         {
             return (last_line, Some(last_line + line.len()));
         }
@@ -248,32 +252,45 @@ fn fence_lines(
 fn fence_context(source: &str, around: &[(usize, Option<u64>, bool)], opener: &str) -> String {
     let mut context = String::new();
     for &(start, number, loose) in around {
-        let prefix: String = source
-            .get(line_start(source, start)..start)
-            .unwrap_or_default()
-            .chars()
-            .map(|ch| {
-                if ch == '>' || ch.is_whitespace() {
-                    ch
-                } else {
-                    ' '
-                }
-            })
-            .collect();
-        // The item's own marker keeps its text column; a stub before it sets the number it shows.
-        let marker = item_marker(source.get(start..).unwrap_or_default()).unwrap_or("-");
-        let gap = if loose { "\n" } else { "" };
-        let written: Option<u64> = marker
-            .get(..marker.len().saturating_sub(1))
-            .and_then(|n| n.parse().ok());
-        if let Some(number) = number.filter(|number| Some(*number) != written && *number > 0) {
-            let delimiter = marker.chars().last().unwrap_or('.');
-            context.push_str(&format!("{prefix}{}{delimiter} x\n{gap}", number - 1));
-        }
-        context.push_str(&format!("{prefix}{marker} x\n{gap}"));
+        let end = if loose { "\n\n" } else { "\n" };
+        context.push_str(&item_line(source, start, number, end));
     }
     context.push_str(opener.trim_end_matches(['\n', '\r']));
     context
+}
+
+/// The item at `start` as one stub line ending in `end`, at its own text column and shown by
+/// the number the whole list gives it.
+pub(crate) fn item_line(source: &str, start: usize, number: Option<u64>, end: &str) -> String {
+    let prefix = stub_prefix(source, start);
+    // The item's own marker keeps its text column; a stub before it sets the number it shows.
+    let marker = item_marker(source.get(start..).unwrap_or_default()).unwrap_or("-");
+    let written: Option<u64> = marker
+        .get(..marker.len().saturating_sub(1))
+        .and_then(|n| n.parse().ok());
+    let mut line = String::new();
+    if let Some(number) = number.filter(|number| Some(*number) != written && *number > 0) {
+        let delimiter = marker.chars().last().unwrap_or('.');
+        line.push_str(&format!("{prefix}{}{delimiter} x\n", number - 1));
+    }
+    line.push_str(&format!("{prefix}{marker} x{end}"));
+    line
+}
+
+/// What stands before `start` on its line, quote marks kept and everything else blanked.
+pub(crate) fn stub_prefix(source: &str, start: usize) -> String {
+    source
+        .get(line_start(source, start)..start)
+        .unwrap_or_default()
+        .chars()
+        .map(|ch| {
+            if ch == '>' || ch.is_whitespace() {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect()
 }
 
 struct Builder<'t> {
@@ -529,7 +546,7 @@ fn expand_tabs(text: &str) -> String {
     out
 }
 
-fn blank_before(source: &str, at: usize) -> bool {
+pub(crate) fn blank_before(source: &str, at: usize) -> bool {
     let line = source
         .get(..at)
         .and_then(|head| head.rfind('\n'))

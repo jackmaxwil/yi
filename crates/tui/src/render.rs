@@ -118,7 +118,8 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
             .live_thought
             .get(app.live_thought_cut..app.pacing.thought.shown())
             .unwrap_or_default();
-        let tail = crate::transcript::close_spans(tail);
+        let tail = crate::transcript::fence_tail(tail, live_tail_rows(app.rows));
+        let tail = crate::transcript::close_spans(&tail);
         live_lines.extend(live_tail(app.thought_block(&tail), app.rows));
     }
     if !app.live_markdown.is_empty() {
