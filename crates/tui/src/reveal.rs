@@ -24,6 +24,7 @@ pub struct Reveal {
     budget_ms: f64,
     last_tick: Option<Instant>,
     draining: bool,
+    waiting: bool,
 }
 
 impl Default for Reveal {
@@ -36,6 +37,7 @@ impl Default for Reveal {
             budget_ms: 0.0,
             last_tick: None,
             draining: false,
+            waiting: false,
         }
     }
 }
@@ -53,11 +55,62 @@ fn weight(ch: char, next: Option<char>) -> f64 {
     }
 }
 
-/// A character the cursor never stops before: it composes with the one behind it, or it is a
-/// markdown delimiter whose run styles as a unit.
+/// A character the cursor never stops before: it composes with the one behind it.
 fn glued(ch: char) -> bool {
     matches!(ch, '\u{0300}'..='\u{036F}' | '\u{200D}' | '\u{FE00}'..='\u{FE0F}' | '\u{1F3FB}'..='\u{1F3FF}')
-        || matches!(ch, '*' | '_' | '`' | '~')
+}
+
+/// Where the cursor may next stop inside a line: a delimiter run is one unit and an opener
+/// takes its first letter; at the arrival edge a run waits.
+fn mid_unit(text: &str, at: usize, draining: bool) -> Option<usize> {
+    let rest = text.get(at..)?;
+    let ch = rest.chars().next()?;
+    if !matches!(ch, '*' | '_' | '`' | '~') {
+        return Some(at + ch.len_utf8());
+    }
+    let end = at + rest.len() - rest.trim_start_matches(ch).len();
+    let Some(next) = text.get(end..).and_then(|after| after.chars().next()) else {
+        return draining.then_some(text.len());
+    };
+    let opens = text
+        .get(..at)
+        .and_then(|before| before.chars().next_back())
+        .is_none_or(char::is_whitespace)
+        && !next.is_whitespace();
+    Some(if opens { end + next.len_utf8() } else { end })
+}
+
+fn is_table_row(line: &str) -> bool {
+    line.trim_start_matches([' ', '\t']).starts_with('|')
+}
+
+/// Where the cursor may next stop from a line start, or `None` to hold. Incident: `1. one\n2`
+/// drew `2` on the row above until `. t` arrived; a marker shows with its first character.
+fn line_unit(text: &str, at: usize, draining: bool) -> Option<usize> {
+    let rest = text.get(at..).unwrap_or_default();
+    let complete = |lines: usize| {
+        rest.match_indices('\n')
+            .nth(lines - 1)
+            .map(|(end, _)| at + end + 1)
+            .or_else(|| draining.then_some(text.len()))
+    };
+    // A table's first row reads as a paragraph until its rule row lands under it.
+    if is_table_row(rest) {
+        let head = at == 0
+            || !is_table_row(
+                text.get(..at - 1)
+                    .and_then(|before| before.rsplit('\n').next())
+                    .unwrap_or_default(),
+            );
+        return complete(if head { 2 } else { 1 });
+    }
+    let marker = rest
+        .find(|ch| !crate::markdown::lead(ch))
+        .unwrap_or(rest.len());
+    match rest.get(marker..).and_then(|body| body.chars().next()) {
+        Some(first) => Some(at + marker + first.len_utf8()),
+        None => draining.then_some(text.len()),
+    }
 }
 
 impl Reveal {
@@ -67,6 +120,10 @@ impl Reveal {
 
     pub fn behind(&self, len: usize) -> bool {
         self.shown < len
+    }
+
+    pub fn waiting(&self) -> bool {
+        self.waiting
     }
 
     /// Everything up to `len` is shown at once: the thought's answer has started under it.
@@ -132,27 +189,57 @@ impl Reveal {
             return true;
         }
         self.budget_ms += elapsed.min(MAX_STEP_MS);
+        self.waiting = false;
         let tail = text.get(self.shown..).unwrap_or_default();
         let per_char_ms = 1_000.0 / self.rate_cps(tail.chars().count() as f64, pace);
         let start = self.shown;
-        let mut chars = tail.chars().peekable();
-        while let Some(ch) = chars.next() {
-            let cost = per_char_ms * weight(ch, chars.peek().copied());
+        while self.shown < len {
+            let at = self.shown;
+            let end = if at == 0 || text.as_bytes().get(at - 1) == Some(&b'\n') {
+                match line_unit(text, at, self.draining) {
+                    Some(end) => end,
+                    None => {
+                        self.waiting = true;
+                        break;
+                    }
+                }
+            } else {
+                match mid_unit(text, at, self.draining) {
+                    Some(end) => end,
+                    None => {
+                        self.waiting = true;
+                        break;
+                    }
+                }
+            };
+            let unit = text.get(at..end).unwrap_or_default();
+            let mut chars = unit.chars().peekable();
+            let mut cost = 0.0;
+            while let Some(ch) = chars.next() {
+                let next = chars
+                    .peek()
+                    .copied()
+                    .or_else(|| text.get(end..)?.chars().next());
+                cost += per_char_ms * weight(ch, next);
+            }
             if self.budget_ms < cost {
                 break;
             }
             self.budget_ms -= cost;
-            self.shown += ch.len_utf8();
+            self.shown = end;
         }
-        if self.shown > start {
+        if self.shown > start && text.as_bytes().get(self.shown - 1) != Some(&b'\n') {
             while let Some(ch) = text.get(self.shown..).and_then(|rest| rest.chars().next())
                 && glued(ch)
             {
                 self.shown += ch.len_utf8();
             }
         }
-        if self.shown >= len {
-            self.budget_ms = 0.0;
+        // A wait banks no time: the text after it would otherwise land in one frame.
+        if self.shown >= len || self.waiting {
+            self.budget_ms = self
+                .budget_ms
+                .min(if self.waiting { MAX_STEP_MS } else { 0.0 });
         }
         self.shown > start
     }

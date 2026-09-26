@@ -2167,6 +2167,53 @@ fn two_panes_one_session_both_render_events() -> TestResult {
     Ok(())
 }
 
+fn config_frame(model: &str, effort: &str) -> Value {
+    update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/config", "configOptions": [
+            {"configId": "model", "name": "Model",
+             "kind": {"type": "select", "value": model, "options": []}},
+            {"configId": "thought_level", "name": "Thinking level",
+             "kind": {"type": "select", "value": effort, "options": []}},
+        ]}),
+    )
+}
+
+/// A pick is two set_config_option requests, model then thought_level, each echoed by a
+/// `_yi/config` frame before its answer; only the last frame is the pick.
+#[test]
+fn a_pick_is_announced_once() -> TestResult {
+    let mut fixture = session_fixture();
+    const OPUS: &str = "anthropic/claude-opus-5";
+    const SONNET: &str = "anthropic/claude-sonnet-5";
+    fixture.push(Step::Push(|| vec![config_frame(OPUS, "medium")]));
+    // The daemon answers what it holds, not what was asked: the model frame names the
+    // new model at the old effort, and would draw a line of its own.
+    fixture.push(Step::Expect("session/set_config_option", |frame| {
+        vec![config_frame(SONNET, "medium"), ok(frame, json!({}))]
+    }));
+    fixture.push(Step::Expect("session/set_config_option", |frame| {
+        vec![config_frame(SONNET, "low"), ok(frame, json!({}))]
+    }));
+    let frame = run_frames(
+        "config-pick",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 reasoning medium\n\
+         key shift-tab\n\
+         wait-frame 5000 reasoning low\n\
+         wait 300\n\
+         quit\n",
+    )?;
+    assert_eq!(
+        frame.matches("model anthropic/claude-sonnet-5").count(),
+        1,
+        "one pick, one line: {frame}"
+    );
+    Ok(())
+}
+
 fn malformed_event() -> Vec<Value> {
     vec![update(
         "s-alpha",

@@ -47,13 +47,8 @@ fn rebuild(cells: &[Cell], indent: Option<&str>) -> Line<'static> {
     Line::from(spans)
 }
 
-fn token_is_unbreakable(cells: &[Cell]) -> bool {
-    let text: String = cells.iter().map(|c| c.ch).collect();
-    text.contains("://")
-}
-
-/// Breaks at spaces; an overlong plain token splits at a character boundary, but one holding
-/// `://` never does — the line overflows so link detection still sees one intact token.
+/// Breaks at spaces; a token wider than the row splits at a character boundary, a URL too:
+/// ratatui clips every row at the buffer width, so an overflowing URL was cut short anyway.
 pub fn wrap_line(line: &Line<'_>, width: usize, subsequent_indent: &str) -> Vec<Line<'static>> {
     let width = width.max(1);
     let indent_width: usize = subsequent_indent
@@ -83,7 +78,7 @@ pub fn wrap_line(line: &Line<'_>, width: usize, subsequent_indent: &str) -> Vec<
             *current_width = 0;
         }
         let max = limit(out);
-        if *word_width > max && !token_is_unbreakable(word) {
+        if *word_width > max {
             for cell in word.drain(..) {
                 if *current_width + cell.width > limit(out) && !current.is_empty() {
                     out.push(std::mem::take(current));
@@ -140,6 +135,35 @@ pub fn wrap_line(line: &Line<'_>, width: usize, subsequent_indent: &str) -> Vec<
                 cells = cells.get(1..).unwrap_or(&[]);
             }
             rebuild(cells, (i > 0).then_some(subsequent_indent))
+        })
+        .collect()
+}
+
+/// Code splits at the column limit, not at a space, each continuation under `indent`.
+pub fn hard_wrap(line: &Line<'_>, width: usize, indent: &Span<'static>) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let cont_width = width.saturating_sub(indent.width()).max(1);
+    let mut out: Vec<Vec<Cell>> = Vec::new();
+    let mut current: Vec<Cell> = Vec::new();
+    let mut current_width = 0_usize;
+    for cell in flatten(line) {
+        let limit = if out.is_empty() { width } else { cont_width };
+        if current_width + cell.width > limit && !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+            current_width = 0;
+        }
+        current_width += cell.width;
+        current.push(cell);
+    }
+    out.push(current);
+    out.iter()
+        .enumerate()
+        .map(|(i, cells)| {
+            let mut row = rebuild(cells, None);
+            if i > 0 {
+                row.spans.insert(0, indent.clone());
+            }
+            row
         })
         .collect()
 }
