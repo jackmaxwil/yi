@@ -104,6 +104,22 @@ pub fn changed_after_lines(pre: &str, post: &str) -> Vec<u64> {
     changed
 }
 
+/// The `post` lines a rendered patch shows: every changed line and its context rows.
+pub fn shown_after_lines(pre: &str, post: &str) -> Vec<u64> {
+    let total = u64::try_from(split_lines(post).len()).unwrap_or(u64::MAX);
+    let context = u64::try_from(CONTEXT).unwrap_or(u64::MAX);
+    let mut shown: Vec<u64> = Vec::new();
+    for changed in changed_after_lines(pre, post) {
+        let lo = changed.saturating_sub(context).max(1);
+        let hi = changed.saturating_add(context).min(total);
+        let start = shown
+            .last()
+            .map_or(lo, |last| lo.max(last.saturating_add(1)));
+        shown.extend(start..=hi);
+    }
+    shown
+}
+
 /// Where each line of `pre` sits in `post`: `Some(n)` for a line whose text is unchanged,
 /// `None` for one that was removed or rewritten. Index is the `pre` line minus one.
 pub fn line_map(pre: &str, post: &str) -> Vec<Option<u64>> {
