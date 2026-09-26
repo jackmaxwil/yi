@@ -220,6 +220,7 @@ edited by hand.
 - [D241](adr/d241.md) - the kernel's `bash()` runs inside the kernel's own sandbox
 - [D240](adr/d240.md) - a contained kernel may write its family board (amends D87)
 - [D239](adr/d239.md) - one process owns a session's kernel snapshot (amends K10)
+- [D246](adr/d246.md) - yi defers a heartbeat on streaming, compacting or queued work (amends H8)
 - [D244](adr/d244.md) - syntax highlighting reads bat's grammar set through `two-face` (default...
 - [D243](adr/d243.md) - the design states what is built and names no other agent
 - [D245](adr/d245.md) - a fired interrupt answers every unrun call as `Aborted` and sends no further...

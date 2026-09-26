@@ -633,7 +633,9 @@ A `JobStore` holds jobs and claims; an in-process `Scheduler` delivers due jobs 
 - A claim is persisted before delivery and re-arms `next_run_at` from claim time, collapsing
   missed ticks. Recovery marks open claims `INTERRUPTED_ERROR`.
 - Claimed jobs group by `Job.session_id`, serial within and concurrent across groups. The
-  deliverer feeds `should_defer` only `is_streaming`, so only a follow-up heartbeat defers.
+  deliverer feeds `should_defer` whether the session is streaming, compacting, or has queued
+  steer/follow-up work behind a running turn, so a heartbeat due mid-turn or mid-compaction
+  defers to the next boundary instead of interleaving with it.
 - Surfaces: RPC `heartbeat`, ACP `_yi/heartbeat` and slash `/heartbeat` (default `every 5m`, one
   per session, reaching the solo TUI, the console and ACP `_yi/slash`); kernel
   `rlm_heartbeat.{list, create, update, delete}`.
@@ -641,7 +643,7 @@ A `JobStore` holds jobs and claims; an in-process `Scheduler` delivers due jobs 
 Owner: [`schedule/mod.rs`](../crates/runtime/src/schedule/mod.rs). Shapes:
 [`schedule.rs`](../crates/types/src/schedule.rs): `CronSchedule{kind: { Once, Cron, Interval }}`,
 `Job`, `JobStatus { Active, Paused, Completed, Cancelled }`, `JobSource { Cron, Heartbeat,
-RlmHeartbeat }`, `DeliveryMode { Steer, FollowUp }`. Settled by: D86.
+RlmHeartbeat }`, `DeliveryMode { Steer, FollowUp }`. Settled by: D86, D246.
 
 ## 16. Advisor
 A reviewer that reads a digest of the session's work log and may emit one advice per review.

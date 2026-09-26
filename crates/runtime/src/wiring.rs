@@ -186,25 +186,7 @@ fn wire_schedule(
 ) {
     let shared = crate::schedule::shared::intern(wiring.rlm_dir.join("scheduled-jobs.json"));
     let heartbeats_cwd = wiring.cwd.to_string_lossy().into_owned();
-    let hook = session.heartbeat_hook();
-    let busy = session.activity_handle();
-    let deliver: Arc<crate::schedule::DeliverFn> = Arc::new(move |job| {
-        let activity = crate::schedule::SessionActivity {
-            is_streaming: busy(),
-            ..Default::default()
-        };
-        if crate::schedule::should_defer(job, &activity) {
-            return crate::schedule::RunOutcome::Skipped;
-        }
-        let mode = job
-            .delivery_mode
-            .unwrap_or(crate::schedule::DEFAULT_HEARTBEAT_DELIVERY_MODE);
-        hook(
-            crate::schedule::heartbeat_message(job, yi_session::now_ms()),
-            mode,
-        );
-        crate::schedule::RunOutcome::Ran
-    });
+    let deliver = session.heartbeat_deliverer();
     let heartbeats = Arc::new(
         crate::schedule::HeartbeatService::new(Arc::clone(&shared.store), heartbeats_cwd)
             .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver)),
