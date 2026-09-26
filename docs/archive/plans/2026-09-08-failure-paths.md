@@ -1,5 +1,7 @@
 # Close the failure paths: what the mined sessions say and the levers that answer them
 
+Landed: D153-D158 (0.187.0).
+
 ```
 status:  implemented 2026-09-08 as 0.187.0, D153-D158, one PR (stages S1-S7;
          the evals selftest for the kernel root under a trial HOME waits for

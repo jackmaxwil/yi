@@ -12,7 +12,7 @@ multiple-versions = "deny"
 # once_cell: banned for direct use (std OnceLock); rustls/ureq pull it transitively.
 # syn 2+3 duplicate: proc-macro build deps only, zero runtime bytes.
 # zeromq wrappers: the pure-Rust zmq stack pins rand/dashmap internals
-# (design 13.3 — libzmq FFI rejected by rule 4; these stay wire-internal to
+# (design §18.3 — libzmq FFI rejected by rule 4; these stay wire-internal to
 # the kernel channels and never cross into Yi code).
 # regex: unbanned 2026-08-29 for grep v2 (std+perf, no Unicode tables); its
 # engine crates were already in the lock via globset.
@@ -32,7 +32,7 @@ deny = [
 # collapse when zeromq updates its error/rand stack.
 # hashbrown 0.14/0.15 and unicode-width 0.1/0.2 duplicates ride the ratatui
 # 0.29 tree (lru pins hashbrown 0.15, unicode-truncate pins unicode-width 0.1);
-# both collapse when ratatui's pins catch up (D41, §13.4 tui).
+# both collapse when ratatui's pins catch up (D41, §18.4 tui).
 skip = [
   { crate = "syn" },
   { crate = "windows-sys" },
@@ -47,7 +47,7 @@ skip = [
 yanked = "deny"
 ignore = [
   { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile archived; pulled only by ureq 2 native-certs. Remove on the planned ureq 3 + rustls-platform-verifier migration (size-ledger item)." },
-  { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; proc-macro build dep of ratatui 0.29, zero runtime bytes. Drops when ratatui replaces it (D41, §13.4 tui)." },
+  { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; proc-macro build dep of ratatui 0.29, zero runtime bytes. Drops when ratatui replaces it (D41, §18.4 tui)." },
   { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 unmaintained by upstream decision, no successor. Pulled only by syntect's dump loader (D74); the only bytes it decodes are the grammar dump compiled into Yi's own binary, never attacker-supplied. Revisit if syntect 6 changes serializers." },
 ]
 

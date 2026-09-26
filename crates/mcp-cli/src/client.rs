@@ -53,7 +53,7 @@ impl Op {
     }
 }
 
-/// The two wire transports design §5.2 allows, behind one request/notify pair.
+/// The two wire transports design §7.6 allows, behind one request/notify pair.
 /// Both are blocking: a one-shot has no second thing to wait on.
 enum Transport {
     Stdio(StdioTransport),
@@ -122,7 +122,7 @@ fn initialize_params() -> Value {
     })
 }
 
-/// One-shot execution (design §5.2): connect, negotiate, run the op, exit.
+/// One-shot execution (design §7.6): connect, negotiate, run the op, exit.
 /// No resident process, no sockets held after return.
 pub fn one_shot(spec: &McpServerSpec, op: Op) -> Result<Value, String> {
     one_shot_with_auth(spec, op, None)

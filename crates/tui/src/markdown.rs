@@ -20,7 +20,7 @@ pub struct StableStream {
     pub reopen: Option<String>,
 }
 
-/// U13 commit gate. Outside a fence only a blank line is stable (paragraphs re-wrap, lists
+/// The §17.3 commit gate. Outside a fence only a blank line is stable (paragraphs re-wrap, lists
 /// renumber); inside a top-level fence every completed line is. Indented fences stay opaque.
 pub fn stable_stream(source: &str) -> StableStream {
     let mut cut = 0;
@@ -123,7 +123,12 @@ impl Builder<'_> {
         if self.spans.is_empty() {
             return;
         }
-        let line = Line::from(std::mem::take(&mut self.spans));
+        let spans = std::mem::take(&mut self.spans);
+        let line = if self.in_code_block {
+            Line::from(spans)
+        } else {
+            Line::from(mark_line(spans, self.theme))
+        };
         // The hang is the width the markers actually occupy: a fixed two spaces
         // left `10. ` and every nested glyph wrapping two columns short.
         let hang: usize = self.list_stack.iter().map(|level| level.hang).sum();
@@ -171,7 +176,6 @@ impl Builder<'_> {
                 *index = index.saturating_add(1);
                 marker
             }
-            // Depth glyphs, so nesting reads.
             // The assistant's own gutter is `•`, so a list never borrows it.
             _ => match depth {
                 0 => "‣ ".to_owned(),
@@ -220,6 +224,31 @@ impl Builder<'_> {
         self.line_prologue();
         self.spans.push(Span::styled(text.to_owned(), self.style()));
     }
+}
+
+/// Incident: pulldown-cmark splits text at `~` and `[`, so a path marked per event half-coloured.
+fn mark_line(spans: Vec<Span<'static>>, theme: &Theme) -> Vec<Span<'static>> {
+    let mut out = Vec::with_capacity(spans.len());
+    let mut run: Option<(Style, String)> = None;
+    for span in spans {
+        match &mut run {
+            Some((style, text)) if *style == span.style => text.push_str(&span.content),
+            _ => {
+                if let Some((style, text)) = run.take() {
+                    out.extend(marked_words(&text, style, theme));
+                }
+                if span.style.fg == Some(theme.text) {
+                    run = Some((span.style, span.content.into_owned()));
+                } else {
+                    out.push(span);
+                }
+            }
+        }
+    }
+    if let Some((style, text)) = run {
+        out.extend(marked_words(&text, style, theme));
+    }
+    out
 }
 
 fn reduce_inline<'e>(b: &mut Builder, event: Event<'e>) -> Option<Event<'e>> {
@@ -308,6 +337,11 @@ fn reduce_table(b: &mut Builder, event: &Event) -> bool {
         Event::End(TagEnd::TableCell) => {
             if let Some(table) = &mut b.table {
                 table.in_cell = false;
+                if let Some(cell) = table.current.last_mut() {
+                    for line in &mut cell.lines {
+                        line.spans = mark_line(std::mem::take(&mut line.spans), b.theme);
+                    }
+                }
             }
         }
         Event::End(TagEnd::Table) => {
@@ -332,15 +366,8 @@ fn reduce_table(b: &mut Builder, event: &Event) -> bool {
     true
 }
 
-/// A path takes the read tool's hue; every other code span keeps the code colour.
 fn code_hue(theme: &Theme, code: &str) -> Color {
-    let extension = code.rsplit_once('.').is_some_and(|(stem, ext)| {
-        !stem.is_empty() && !stem.contains(' ') && KNOWN_EXTENSIONS.contains(&ext)
-    });
-    let path_like = (code.contains('/') && !code.contains(' '))
-        || code.starts_with("~/")
-        || code.starts_with("./")
-        || extension;
+    let path_like = (code.contains('/') && !code.contains(' ')) || is_path(code);
     if path_like {
         crate::card::tool_hue(theme, "read")
     } else {
@@ -348,9 +375,86 @@ fn code_hue(theme: &Theme, code: &str) -> Color {
     }
 }
 
-const KNOWN_EXTENSIONS: [&str; 12] = [
-    "json", "lock", "md", "py", "rs", "sh", "toml", "ts", "tsx", "txt", "yaml", "yml",
+pub(crate) fn is_path(word: &str) -> bool {
+    if word.contains(char::is_whitespace) {
+        return false;
+    }
+    let rooted = ["./", "../", "~/"]
+        .iter()
+        .any(|root| word.starts_with(root))
+        || (word.starts_with('/') && word.get(1..).is_some_and(|rest| rest.contains('/')));
+    let mut bare = word;
+    for _ in 0..2 {
+        if let Some((head, number)) = bare.rsplit_once(':')
+            && !number.is_empty()
+            && number.bytes().all(|b| b.is_ascii_digit())
+        {
+            bare = head;
+        }
+    }
+    let name = bare.rsplit('/').next().unwrap_or(bare);
+    let extension = name.rsplit_once('.').is_some_and(|(stem, ext)| {
+        let product = ext == "js" && RUNTIMES.contains(&stem);
+        (stem.contains(char::is_alphabetic) || ext.len() > 1)
+            && !product
+            && stem
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            && KNOWN_EXTENSIONS.contains(&ext)
+    });
+    rooted || extension
+}
+
+const RUNTIMES: [&str; 6] = ["Node", "Next", "Nuxt", "React", "Vue", "Three"];
+
+const KNOWN_EXTENSIONS: [&str; 44] = [
+    "c", "cc", "cfg", "cpp", "css", "csv", "go", "h", "hpp", "html", "ini", "java", "jpg", "js",
+    "json", "jsonl", "jsx", "kt", "lock", "log", "lua", "md", "mjs", "patch", "pdf", "php", "png",
+    "py", "pyi", "rb", "rs", "scss", "sh", "sql", "svg", "swift", "toml", "ts", "tsx", "txt",
+    "xml", "yaml", "yml", "zsh",
 ];
+
+fn marked_words(text: &str, style: Style, theme: &Theme) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut plain = String::new();
+    for piece in text.split_inclusive(char::is_whitespace) {
+        let word = piece.trim_end();
+        let mut core = word
+            .trim_start_matches(['(', '[', '"', '\''])
+            .trim_end_matches(['.', ',', ';', ':', ']', '!', '?', '"', '\'']);
+        while core.ends_with(')') && core.matches(')').count() > core.matches('(').count() {
+            core = core
+                .strip_suffix(')')
+                .unwrap_or(core)
+                .trim_end_matches(['.', ',', ';', ':']);
+        }
+        let hue = if core.starts_with("https://") || core.starts_with("http://") {
+            Some(theme.blue5)
+        } else if is_path(core) {
+            Some(crate::card::tool_hue(theme, "read"))
+        } else {
+            None
+        };
+        let (Some(hue), Some(at)) = (hue, word.find(core).filter(|_| !core.is_empty())) else {
+            plain.push_str(piece);
+            continue;
+        };
+        plain.push_str(word.get(..at).unwrap_or_default());
+        if !plain.is_empty() {
+            out.push(Span::styled(std::mem::take(&mut plain), style));
+        }
+        out.push(Span::styled(core.to_owned(), style.fg(hue)));
+        plain.push_str(
+            piece
+                .get(at.saturating_add(core.len())..)
+                .unwrap_or_default(),
+        );
+    }
+    if !plain.is_empty() || out.is_empty() {
+        out.push(Span::styled(plain, style));
+    }
+    out
+}
 
 pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     render_stream(source, width, theme, false, &mut None)

@@ -424,7 +424,7 @@ async fn an_unknown_request_number_is_named_rather_than_guessed() -> TestResult 
 }
 
 /// The off switch. With no role named the reviewer is never constructed and
-/// the outcome is the deterministic one this file had before M7 existed.
+/// the outcome is the deterministic one this file had before auto review existed.
 #[tokio::test]
 async fn with_no_reviewer_named_the_decision_is_byte_identical_to_today() -> TestResult {
     let harness = setup(Some(AskOutcome::Reject), false)?;

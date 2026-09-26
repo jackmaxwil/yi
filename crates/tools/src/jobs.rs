@@ -127,7 +127,7 @@ impl LiveOutput {
     }
 }
 
-// T12: eviction is LRU with the eight most recent protected — an idle timer
+// Job eviction is LRU with the eight most recent protected — an idle timer
 // would kill a quiet `cargo build` that is still the point of the turn.
 const PROTECTED: usize = 8;
 const MAX_JOBS: usize = 32;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Startup budget via hyperfine (13.6). Fails loudly if hyperfine is missing (design 9:
+"""Startup budget via hyperfine (design §18.6). Fails loudly if hyperfine is missing (design §21:
 a guardrail whose tooling is absent must not silently pass).
 
 Scored on the *minimum* of the run, not the mean: startup is bounded below by real

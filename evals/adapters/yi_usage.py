@@ -2,7 +2,7 @@
 
 Pure functions only: no harness imports, so evals/selftest.py exercises the
 command contract and the usage parse without harbor, pier, docker, or keys.
-Contracts: YI_DESIGN 15.2 (gates E1-E9), 15.4 (emission map), 15.5 (adapters).
+Contracts: evals/README.md (gates E1-E9, emission map, adapters).
 """
 
 import hashlib
@@ -21,7 +21,7 @@ REMOTE_EVENTS_PATH = "/logs/agent/yi.jsonl"
 EVENTS_FILENAME = "yi.jsonl"
 SESSIONS_SUBDIR = "yi/sessions"
 
-# E5: Pi's wire spells usage in camelCase. One definition, both parsers -- a
+# E5: the Pi v4 session format spells usage in camelCase. One definition, both parsers -- a
 # snake_case slip here reads every column as zero instead of failing loudly.
 TOKEN_KEYS = ("input", "output", "cacheRead", "cacheWrite")
 
@@ -241,7 +241,7 @@ def session_extras(sessions_dir):
 
     peak = the largest single assistant input context (input + cache reads and
     writes); summarizations = compaction entries; steps = assistant messages
-    (YI_DESIGN 15.4 maps turns to those). All-or-none per E9.
+    (evals/README.md maps turns to those). All-or-none per E9.
     """
     peak = 0
     compactions = 0

@@ -16,7 +16,7 @@ No GPU task, no multi-container task. Every v4 task gives the agent
 28,800 s; `TBV4_TIMEOUT_MULT` (default and ceiling `0.125`, one hour) bounds a
 trial, and the driver refuses a larger value before it checks anything else.
 The model is `openrouter/z-ai/glm-5.3-flash` and nothing else
-(docs/plans/2026-09-06-tbv4-evals.md §8).
+(docs/archive/plans/2026-09-06-tbv4-evals.md §8).
 
 Preconditions, all preflighted by name:
 

@@ -5,7 +5,7 @@ use yi_types::model::LlmContext;
 use crate::session::{AgentSession, Status};
 
 /// E1: the summarizer reads an abandoned attempt as material, never as work to
-/// continue — the P6 framing compaction uses.
+/// continue — the §4.4 framing compaction uses.
 const BRANCH_SUMMARY_PROMPT: &str = "The transcript below is an abandoned attempt: the user rewound past it. In at most five sentences, terse and factual, record what was tried, what was learned (findings, errors, dead ends), and any decision that still stands. Do not continue the work and do not give advice.";
 
 /// The entries a rewind orphaned, kept so the branch can be summarized after
