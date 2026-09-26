@@ -81,10 +81,26 @@ pub struct Compactor {
     scope: Scope,
     window: Mutex<Window>,
     pending: AtomicBool,
+    running: AtomicBool,
     /// Invariant: set while the last entry failed to write; only `/compact` spends the summarizer.
     unsaved: AtomicBool,
     instructions: Mutex<Option<String>>,
     standing: Mutex<Option<Standing>>,
+}
+
+struct Raised<'a>(&'a AtomicBool);
+
+impl<'a> Raised<'a> {
+    fn new(flag: &'a AtomicBool) -> Self {
+        flag.store(true, Ordering::Relaxed);
+        Self(flag)
+    }
+}
+
+impl Drop for Raised<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
 }
 
 /// Read at every compaction rather than stored, so a directive derived from
@@ -188,6 +204,7 @@ impl Compactor {
             scope: Scope::BodyAfterPrefix,
             window: Mutex::new(Window::new_initial(initial_window_id)),
             pending: AtomicBool::new(false),
+            running: AtomicBool::new(false),
             unsaved: AtomicBool::new(false),
             instructions: Mutex::new(None),
             standing: Mutex::new(None),
@@ -233,6 +250,10 @@ impl Compactor {
 
     pub fn scheduled(&self) -> bool {
         self.pending.load(Ordering::Relaxed)
+    }
+
+    pub fn compacting(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
     }
 
     /// Input-side tokens only: the reply is body, not prefix.
@@ -297,6 +318,7 @@ impl Compactor {
             return Ok(None);
         }
         self.pending.store(false, Ordering::Relaxed);
+        let _running = Raised::new(&self.running);
         let once = self
             .instructions
             .lock()

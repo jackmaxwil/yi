@@ -444,10 +444,7 @@ pub fn parse_heartbeat_command(input: &str) -> Result<HeartbeatCommand, String> 
 pub struct SessionActivity {
     pub is_streaming: bool,
     pub is_compacting: bool,
-    pub is_retrying: bool,
-    pub is_bash_running: bool,
     pub has_pending_session_work: bool,
-    pub unfinished_action_count: u64,
 }
 
 pub fn is_heartbeat_job(job: &Job) -> bool {
@@ -464,14 +461,7 @@ pub fn should_defer(job: &Job, activity: &SessionActivity) -> bool {
     if !is_heartbeat_job(job) {
         return false;
     }
-    // States where delivering a heartbeat is unsafe or would stack redundant
-    // work, regardless of delivery mode.
-    let busy_besides_streaming = activity.is_compacting
-        || activity.is_retrying
-        || activity.is_bash_running
-        || activity.has_pending_session_work
-        || (!activity.is_streaming && activity.unfinished_action_count > 0);
-    if busy_besides_streaming {
+    if activity.is_compacting || activity.has_pending_session_work {
         return true;
     }
     // "steer" heartbeats interrupt the current turn, so a plain streaming turn
@@ -1001,6 +991,11 @@ impl HeartbeatService {
                 Ok(format!("Heartbeat set: {line}"))
             }
         }
+    }
+
+    /// Parses and applies one `/heartbeat` line, the entry point RPC, ACP and slash share (§15.2).
+    pub fn run(&self, line: &str) -> Result<String, String> {
+        parse_heartbeat_command(line).and_then(|command| self.apply(&command, yi_session::now_ms()))
     }
 
     /// Registers the kernel-side vocabulary (design §15.2): list, create,
