@@ -1998,6 +1998,65 @@ mod refusals {
         assert!(!appended.is_error, "{appended:?}");
         Ok(())
     }
+
+    fn admitted(tool: &PlanTool, args: serde_json::Value) -> Result<String, Box<dyn Error>> {
+        let input = args.as_object().cloned().unwrap_or_default();
+        let output = tool.execute(input, &ToolContext::new(std::env::temp_dir()));
+        let text: String = output
+            .result
+            .content
+            .iter()
+            .map(|content| match content {
+                yi_types::message::Content::Text { text, .. } => text.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        if output.is_error {
+            return Err(text.into());
+        }
+        Ok(text)
+    }
+
+    /// Dies with `body` listing the running todo `render` had already led with: a probe
+    /// session's `plan start` printed `- running tablefmt by main` twice.
+    #[test]
+    fn a_started_todo_prints_its_running_row_once() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let init = serde_json::json!({"op": "init", "goal": "ship it", "todos": [{"label": "tablefmt"}, {"label": "docs"}]});
+        admitted(&tool, init)?;
+        let text = admitted(
+            &tool,
+            serde_json::json!({"op": "start", "label": "tablefmt"}),
+        )?;
+        let rows = text
+            .lines()
+            .filter(|line| line.starts_with("- running tablefmt"))
+            .count();
+        assert_eq!(rows, 1, "{text}");
+        Ok(())
+    }
+
+    /// Dies with the label refused through `Malformed`: one long label refused a whole init
+    /// naming neither its todo nor the cap, and the schema never stated the cap.
+    #[test]
+    fn an_over_long_init_label_names_its_todo_and_the_cap() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let todos = |label: String| serde_json::json!([{"label": "cut"}, {"label": label}]);
+        let text = refusal(
+            &tool,
+            serde_json::json!({"op": "init", "goal": "ship it", "todos": todos("é".repeat(81))}),
+        );
+        assert!(
+            text.contains("init todos[1]: label is 81 chars, the cap is 80"),
+            "{text}"
+        );
+        let schema = tool.schema()["properties"]["todos"]["description"].to_string();
+        assert!(schema.contains("label (at most 80 chars)"), "{schema}");
+        let at_cap =
+            serde_json::json!({"op": "init", "goal": "ship it", "todos": todos("é".repeat(80))});
+        admitted(&tool, at_cap)?;
+        Ok(())
+    }
 }
 
 mod contracts {
