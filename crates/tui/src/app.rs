@@ -136,8 +136,7 @@ pub struct App {
     pub selection: crate::model::Selection,
     pending_repaint: bool,
     pub(crate) pending_prompt_mark: bool,
-    /// §17.3: the `Yi` wordmark at rest and one looping pose per agent state; the dots travel
-    /// between them, so there is one orb, never a static one beside a moving one.
+    /// §17.3: the `Yi` mark at rest and one looping pose per agent state; one orb, never two.
     pub(crate) orb: yi_orb::Orb,
     pub(crate) history: crate::history::History,
     pub(crate) reflow: crate::reflow::ReflowState,
@@ -203,6 +202,7 @@ pub struct App {
     pub(crate) cost_unknown: bool,
     turn_started: Instant,
     turn_tools: u64,
+    pub(crate) last_tool: Option<String>,
     turn_tokens: crate::status::TurnTokens,
     turn_cost: f64,
     pub(crate) width: usize,
@@ -302,6 +302,7 @@ impl App {
             cost_unknown: false,
             turn_started: Instant::now(),
             turn_tools: 0,
+            last_tool: None,
             turn_tokens: crate::status::TurnTokens::default(),
             turn_cost: 0.0,
             width,
@@ -557,23 +558,7 @@ impl App {
             .rev()
             .find(|t| t.status == ToolStatus::Running)
         {
-            return Some(match tool.name.as_str() {
-                "read" | "ls" | "document" | "get_context" => OrbState::Reading,
-                "grep" | "glob" | "find" => OrbState::Searching,
-                "web_search" | "fetch" => OrbState::Browsing,
-                "edit" | "write" => OrbState::Editing,
-                "bash" => OrbState::Executing,
-                "ipython" => OrbState::Computing,
-                "todo" | "plan" => {
-                    let progress = self.todos.as_ref().map(|todos| todos.progress());
-                    let count = |n: usize| u8::try_from(n).unwrap_or(u8::MAX);
-                    OrbState::Planning {
-                        done: progress.map_or(0, |p| count(p.done)),
-                        total: progress.map_or(0, |p| count(p.total)),
-                    }
-                }
-                _ => OrbState::Working,
-            });
+            return Some(self.tool_state(&tool.name));
         }
         let children = self
             .tasks
@@ -591,10 +576,44 @@ impl App {
         if !self.live_thought.is_empty() {
             return Some(OrbState::Thinking);
         }
-        Some(OrbState::Awaiting)
+        // Incident: a read or a todo update ends in milliseconds, far inside one exit's lead, so
+        // its state never showed; the last tool holds the orb until the model streams again.
+        Some(
+            self.last_tool
+                .as_deref()
+                .map_or(OrbState::Awaiting, |name| self.tool_state(name)),
+        )
     }
 
-    pub(crate) fn spinner_phase(&self) -> usize {
+    fn tool_state(&self, name: &str) -> OrbState {
+        match name {
+            "read" | "ls" | "document" | "get_context" => OrbState::Reading,
+            "grep" | "glob" | "find" => OrbState::Searching,
+            "web_search" | "fetch" => OrbState::Browsing,
+            "edit" | "write" => OrbState::Editing,
+            "bash" => OrbState::Executing,
+            "ipython" => OrbState::Computing,
+            "todo" | "plan" => {
+                let progress = self.todos.as_ref().map(|todos| todos.progress());
+                let count = |n: usize| u8::try_from(n).unwrap_or(u8::MAX);
+                OrbState::Planning {
+                    done: progress.map_or(0, |p| count(p.done)),
+                    total: progress.map_or(0, |p| count(p.total)),
+                }
+            }
+            _ => OrbState::Working,
+        }
+    }
+
+    /// Changed, or its spinner stepped, since the last call: a host loop repaints on this.
+    pub fn take_redraw(&mut self, last_phase: &mut usize) -> bool {
+        let phase = self.spinner_phase();
+        let stepped = self.running && phase != *last_phase;
+        *last_phase = phase;
+        self.scheduler.take_request() || stepped
+    }
+
+    pub fn spinner_phase(&self) -> usize {
         usize::try_from(self.started_at.elapsed().as_millis() / SPINNER_PERIOD_MS).unwrap_or(0)
     }
 
@@ -820,6 +839,7 @@ impl App {
         self.esc_armed_at = None;
         self.turn_started = Instant::now();
         self.turn_tools = 0;
+        self.last_tool = None;
         self.turn_tokens = crate::status::TurnTokens::default();
         self.turn_cost = 0.0;
     }

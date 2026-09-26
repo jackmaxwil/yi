@@ -19,7 +19,12 @@ Read `yi-design` first: it says what a state should look like. This says how to 
 - **Exits** are the phases a state may be left from. `Orb::frame` holds a requested change
   until the next exit at least 0.1 s ahead (`LEAD`), then morphs 0.5 s (`MORPH`) from that
   exact pose to the new state's entry pose `pose(new, 0)`. Both shapes hold still while the
-  points travel. The pairing runs on its own thread during the lead.
+  points travel. The pairing (least squares, Hungarian) runs on its own thread from the
+  request; the exit pose holds until it lands, so the loop never waits, and each
+  (state, exit, target) pairing is remembered. No two points of it meet mid-flight.
+- A request that flips back before its exit is dropped, so an event shorter than the lead
+  would never show: `App::orb_state` holds the last finished tool's state until the model
+  streams again. Data that should show must outlast one exit, or be latched like that.
 - The orb's clock advances at most 0.1 s a frame (`MAX_STEP`): a surface that stopped
   repainting hands its next frame minutes, and an unclamped step used to consume a whole
   animation.
@@ -89,8 +94,9 @@ figure from above, rotate its top toward +z (+z is nearer).
 - `every_state_loops_without_a_seam`: the step from the last frame to the first, measured
   as a viewer sees it (each visible point's nearest visible point, position and opacity),
   must be no larger than the loop's own largest step.
-- `a_change_waits_for_the_next_exit_then_lands_on_the_entry_pose`, the long-gap clamp test,
-  the mark test and the pairing test pin the engine. A new mechanism gets its own contract
+- `a_change_waits_for_the_next_exit_then_lands_on_the_entry_pose` (it tolerates the hold while
+  the pairing thread runs), the long-gap clamp test, the mark test and the pairing test pin
+  the engine. `Orb::showing(state)` starts an orb inside a loop for such tests. A new mechanism gets its own contract
   test, seen red first (080).
 - The faux provider answers instantly, so no end-to-end run animates a state; prove the
   kitty path ran with `scripts/tui_pty.py --term xterm-kitty --raw` and count the `a=t`
@@ -114,6 +120,9 @@ Prototype outside the tree (the session scratchpad), never in `crates/`:
 - A pose that looked right in one still was upside down: check the camera sign.
 - A beam or comet whose brightness is a hard step jumps dot to dot and reads as lag: give
   the head a gaussian a few points wide.
-- Greedy nearest pairing crosses paths late in the pairing; the Hungarian pairing does not.
+- Greedy nearest pairing sends its last points on long diagonal trips; the least-squares
+  pairing never lets two points meet.
+- At the dist profile's opt-level z the pairing took 59-326 ms; `yi-orb` builds at 3 there.
+  Time any new per-frame or per-transition work in the dist profile, not only in release.
 - Too many motions at once reads as misshapen; one primary motion per state.
 - Stored `$VAR` commands do not word-split in zsh; call the binary directly.

@@ -138,6 +138,7 @@ pub struct Chat {
     pub app: yi_tui::app::App,
     pub port: RemotePort,
     pub orb: yi_tui::orb::Tick,
+    pub phase: usize,
     pub logos: yi_tui::logos::Tick,
     pub ask: Option<PendingAsk>,
     pub events: (Sender<UiEvent>, Receiver<UiEvent>),

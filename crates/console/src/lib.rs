@@ -220,7 +220,11 @@ fn run_interactive(
         if app.dirty {
             scheduler.request();
         }
-        match ct_event::poll(scheduler.poll_timeout(Instant::now()).min(IDLE_POLL)) {
+        let wake = scheduler
+            .poll_timeout(Instant::now())
+            .min(IDLE_POLL)
+            .min(orb_wake(app));
+        match ct_event::poll(wake) {
             Ok(true) => {
                 let Ok(event) = ct_event::read() else {
                     return 1;
@@ -259,12 +263,17 @@ fn run_interactive(
             }
             if kitty_ok {
                 use std::io::Write;
-                place_chat_orbs(app, &mut out);
                 place_avatars(app, &mut out);
                 place_notebook_image(app, &mut out, &mut placed);
                 let _ = out.flush();
             }
             scheduler.mark_drawn(start, Instant::now());
+        }
+        if kitty_ok {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            place_chat_orbs(app, &mut out);
+            let _ = out.flush();
         }
     }
     0
@@ -290,6 +299,21 @@ fn place_avatars(app: &mut App, out: &mut std::io::Stdout) {
         .map(|hits| hits.avatars.clone())
         .unwrap_or_default();
     app.avatars.sync(out, &rows);
+}
+
+fn orb_wake(app: &App) -> Duration {
+    use crate::model::PaneContent;
+    app.state
+        .panes
+        .values()
+        .filter_map(|pane| match &pane.content {
+            PaneContent::Session {
+                chat: Some(chat), ..
+            } if chat.app.orb_animating() => Some(chat.orb.wake()),
+            _ => None,
+        })
+        .min()
+        .unwrap_or(IDLE_POLL)
 }
 
 /// One orb per chat pane, each on its own image ids; only the focused pane animates.

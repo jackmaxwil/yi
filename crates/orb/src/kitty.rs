@@ -25,6 +25,9 @@ const SUPERSAMPLE: usize = 4;
 /// Straight-alpha RGBA, the square canvas scaled uniformly and centred, so a cell rect sized
 /// to the terminal's own pixels shows the orb unstretched and unresampled.
 pub fn paint_rgba(frame: &OrbFrame, canvas: f64, width: usize, height: usize) -> Vec<u8> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
     let (sw, sh) = (width * SUPERSAMPLE, height * SUPERSAMPLE);
     let scale = sw.min(sh) as f64 / canvas;
     let origin_x = (sw as f64 - canvas * scale) / 2.0;
@@ -153,8 +156,7 @@ fn base64(data: &[u8]) -> String {
 /// so two ids ping-pong and a placement exists at every instant.
 pub const IMAGE_IDS: [u32; 2] = [7601, 7602];
 
-/// Deflate level for `o=z`. The frame is mostly transparent, so the stream compresses
-/// 5-20x already; level 9 buys a further 3% for four times the CPU.
+/// Deflate level for `o=z`: level 9 buys a further 3% for four times the CPU.
 const ZLIB_LEVEL: u8 = 6;
 
 /// Transmit frame data only (`a=t`, no display). Chunked at 4096 as the

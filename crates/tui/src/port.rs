@@ -588,7 +588,7 @@ impl App {
     }
 
     pub fn orb_animating(&self) -> bool {
-        !self.orb.at_rest(self.orb_state())
+        self.kitty && self.orb_placement.is_some() && !self.orb.at_rest(self.orb_state())
     }
 }
 
