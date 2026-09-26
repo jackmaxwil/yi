@@ -762,8 +762,7 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
 ### 18.1 Rules
 - Every dependency, path crates included, is declared once in the root `[workspace.dependencies]`;
   a crate's `[dependencies]` entry is `{ workspace = true }` (`check_manifests.py`).
-- Every external entry sets `default-features = false` and names its features, except
-  `thiserror`, `lexopt` and `vt100`.
+- Every external entry sets `default-features = false` and names its features.
 - A crate on the §18.5 list enters the graph only through a `wrappers` exception in `deny.toml`
   scoped to that crate.
 - `cargo deny check` enforces the license allowlist, the §18.5 bans, `multiple-versions = "deny"`
@@ -793,7 +792,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `globset` | — | permission, tools, runtime | permission patterns, file tools | `glob`: no brace sets |
 | `regex` | `std`, `perf`, `unicode-case` | tools | the `grep` tool; full Unicode tables stay out | — |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
-| `thiserror` | — | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
+| `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
 | `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, and the uv archive | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
 | `ratatui` | `crossterm`, `scrolling-regions` | tui, console | terminal rendering | — |
 | `tui-textarea` | `crossterm` | tui, console | the composer | — |
