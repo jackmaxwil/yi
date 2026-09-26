@@ -386,3 +386,61 @@ async fn a_finishing_child_keeps_the_host_busy_from_its_exit() -> TestResult {
     assert_eq!(*seen.lock().map_err(|_| "poisoned")?, [true]);
     Ok(())
 }
+
+/// Dies with a refused timeout replaced by the five-minute cap: `rlm.wait(-5)` answered
+/// `timeout_ms: 300000, clamped: false`, and `rlm.receive(-1)` slept the whole cap unasked.
+#[tokio::test]
+async fn a_negative_or_non_numeric_timeout_is_refused_naming_it() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    let (_root, family) = family("yi-wait-negative")?;
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let config = yi_runtime::SessionConfig {
+        system_prompt: "sys".to_owned(),
+        model: support::faux_model(),
+        thinking_level: None,
+        tool_execution: yi_loop::ExecutionMode::Sequential,
+    };
+    let provider = std::sync::Arc::new(yi_runtime::ProviderStream::new(None, None));
+    let session = yi_runtime::AgentSession::new(config, provider);
+    yi_runtime::mailbox::register_receive(&session, &family.host, &mut registry);
+    for asked in [json!(-5_000), json!("soon")] {
+        let payload = kwargs(&[
+            ("timeout_ms", asked.clone()),
+            ("target", json!("a")),
+            ("message", json!("hi")),
+        ]);
+        for verb in ["rlm.wait", "rlm.receive", "agent_message.request"] {
+            let call = registry.dispatch(verb, payload.clone()).ok_or(verb)?;
+            match tokio::time::timeout(Duration::from_secs(5), call).await {
+                Ok(Err(refusal)) => {
+                    assert!(refusal.contains(&asked.to_string()), "{verb}: {refusal}")
+                }
+                Ok(Ok(reply)) => return Err(format!("{verb}({asked}) answered {reply:?}").into()),
+                Err(_) => return Err(format!("{verb}({asked}) waited past 5 s").into()),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Dies with a miss naming nothing: `rlm.result("no-such")` said only that nothing matched,
+/// where `rlm.status` names the children there are.
+#[tokio::test]
+async fn an_unknown_child_is_refused_naming_the_children_there_are() -> TestResult {
+    let (_root, family) = family("yi-no-such-child")?;
+    for name in ["b", "a"] {
+        let named = kwargs(&[("name", json!(name))]);
+        family.host.spawn("work".to_owned(), named)?;
+    }
+    let refusal = family
+        .host
+        .result("no-such", None)
+        .err()
+        .ok_or("no-such matched")?;
+    assert_eq!(
+        refusal,
+        "No RLM child matches \"no-such\"; the children are: a, b"
+    );
+    Ok(())
+}
