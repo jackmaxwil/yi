@@ -44,8 +44,8 @@ yi-console = { path = "crates/console" }
 yi-cli = { path = "crates/cli" }
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1", default-features = false, features = ["std", "preserve_order"] }
-thiserror = "2"
-lexopt = "0.3"
+thiserror = { version = "2", default-features = false, features = ["std"] }
+lexopt = { version = "0.3", default-features = false }
 globset = { version = "0.4", default-features = false }
 # Unbanned 2026-08-29 with its first consumer (grep v2). `std` + `perf` plus
 # only the case-folding table (`unicode-case`, which `case_insensitive`
@@ -65,7 +65,7 @@ syntect = { version = "5.3", default-features = false, features = ["parsing", "r
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
 unicode-width = { version = "0.2", default-features = false }
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
-vt100 = "0.15"
+vt100 = { version = "0.15", default-features = false }
 insta = { version = "1", default-features = false }
 proptest = { version = "1", default-features = false, features = ["std"] }
 rmcp = { version = "3", default-features = false, features = ["server", "transport-io", "macros"] }
