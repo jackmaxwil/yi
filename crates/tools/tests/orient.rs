@@ -160,7 +160,7 @@ fn oversized_skeleton_layer_names_its_truncation() -> TestResult {
     }
     let packet = run(&dir, Map::new());
     assert!(
-        packet.contains("[skeletons truncated: 40 of 62 files]"),
+        packet.contains("[skeletons truncated: 40 of 62 files at the 40-file cap;"),
         "a clamped layer must name what it cut: {packet}"
     );
     Ok(())
@@ -175,6 +175,69 @@ fn symbol_argument_reaches_the_neighborhood_layer() -> TestResult {
     assert!(
         !packet.contains("absent: no symbol argument was given"),
         "a named symbol must not report itself missing: {packet}"
+    );
+    Ok(())
+}
+
+fn skeleton_layer(packet: &str) -> &str {
+    packet
+        .split("\n## ")
+        .find_map(|section| section.strip_prefix("file skeletons\n"))
+        .unwrap_or_default()
+}
+
+/// Forty-five files that sort ahead of the one that matters, so a name-ordered
+/// walk spends the whole layer before reaching it.
+fn crowded(tag: &str) -> Result<Scratch, Box<dyn Error>> {
+    let dir = fixture(tag)?;
+    for index in 0..45 {
+        fs::write(
+            dir.join(format!("gen{index:03}.rs")),
+            "pub fn generated() {}\n",
+        )?;
+    }
+    Ok(dir)
+}
+
+#[test]
+fn skeletons_rank_the_file_defining_the_symbol_first() -> TestResult {
+    let dir = crowded("symbol-rank")?;
+    fs::write(
+        dir.join("zz_needle.rs"),
+        "pub fn needle_target() -> u8 {\n    7\n}\n",
+    )?;
+    let mut input = Map::new();
+    input.insert("symbol".to_owned(), json!("needle_target"));
+    let packet = run(&dir, input);
+    let layer = skeleton_layer(&packet);
+    assert!(
+        layer.contains("zz_needle.rs\n  pub fn needle_target() -> u8"),
+        "the only file defining the symbol must keep its skeleton: {layer}"
+    );
+    assert!(
+        layer.contains(
+            "[order: 1 defining `needle_target`, 0 mentioning it, 2 with change heat, then name]"
+        ),
+        "the layer must say how it ordered the files: {layer}"
+    );
+    assert!(
+        layer.contains("[skeletons truncated: 40 of 48 files at the 40-file cap;"),
+        "the cut must name kept/total and the cap: {layer}"
+    );
+    Ok(())
+}
+
+#[test]
+fn skeletons_rank_hot_files_ahead_of_the_alphabet() -> TestResult {
+    let dir = crowded("heat-rank")?;
+    fs::write(dir.join("zz_hot.rs"), "pub fn hot() {}\n")?;
+    git(&dir, &["add", "zz_hot.rs"])?;
+    git(&dir, &["commit", "-m", "three"])?;
+    let packet = run(&dir, Map::new());
+    let layer = skeleton_layer(&packet);
+    assert!(
+        layer.contains("zz_hot.rs\n  pub fn hot()"),
+        "a file git changed must outrank one it never touched: {layer}"
     );
     Ok(())
 }
