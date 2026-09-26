@@ -421,3 +421,33 @@ fn injected_text_takes_one_callout_shape_and_a_run_is_one_block() -> TestResult 
     );
     Ok(())
 }
+
+/// The loop retries a stream that died before saying anything, so a 402 ends two turns
+/// with the same words; the transcript says them once.
+#[test]
+fn a_retried_stream_error_draws_one_notice() {
+    let failed = || AgentEvent::MessageEnd {
+        message: AgentMessage::Assistant {
+            content: Vec::new(),
+            api: "faux".to_owned(),
+            provider: "faux".to_owned(),
+            model: "faux-1".to_owned(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::zero(),
+            stop_reason: StopReason::Error,
+            deferred: None,
+            error_message: Some("HTTP 402: in-flight budget exhausted".to_owned()),
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 0,
+        },
+    };
+    let mut app = app();
+    app.reduce_agent(failed());
+    app.reduce_agent(failed());
+    let rows = flat(&app.reflowed(80));
+    let said = rows.iter().filter(|r| r.contains("HTTP 402")).count();
+    assert_eq!(said, 1, "{rows:?}");
+}

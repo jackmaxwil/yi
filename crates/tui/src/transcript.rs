@@ -12,11 +12,23 @@ pub(crate) fn text_of(content: &[Content]) -> String {
         .join("\n")
 }
 
+/// An assistant message's text blocks, one paragraph each.
+pub(crate) fn prose_of(content: &[Content]) -> String {
+    content
+        .iter()
+        .filter_map(|c| match c {
+            Content::Text { text, .. } if !text.is_empty() => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 /// The head says what ran and the tail how it ended, and a command's error is
 /// in the tail — keeping ten head lines dropped the half worth reading.
 pub(crate) fn preview_lines(text: &str, head: usize, tail: usize) -> Vec<String> {
     let compact = text.len() <= 256 * 1024 && !text.contains('\n');
-    let pretty = (compact && text.starts_with(['{', '[']))
+    let pretty = (compact && text.starts_with(|c| "{[".contains(c)))
         .then(|| serde_json::from_str::<Value>(text).ok())
         .flatten()
         .and_then(|value| serde_json::to_string_pretty(&value).ok());
@@ -121,8 +133,8 @@ pub(crate) fn intent_of(args: &Value) -> Option<String> {
     args.get("i").and_then(Value::as_str).map(str::to_owned)
 }
 
-/// A slice starting inside a fence renders under it reopened; the rail header
-/// stays with the slice that opened the block, one block not one per line.
+/// A slice renders under the context it continues and keeps only its own rows; the rail header
+/// stays with the slice that opened the block.
 pub(crate) fn paint_slice(
     app: &crate::app::App,
     slice: &str,
@@ -132,14 +144,120 @@ pub(crate) fn paint_slice(
 ) {
     let width = app
         .content_width()
-        .saturating_sub(crate::cell::GUTTER.len());
-    let reopen = app.live_reopen.as_ref().filter(|_| !slice.is_empty());
-    let source = match reopen {
-        Some(open) => format!("{open}\n{slice}"),
-        None => slice.to_owned(),
-    };
+        .saturating_sub(crate::cell::gutter_cols());
     let mut lang = app.live_lang.clone();
-    let lines =
-        crate::markdown::render_stream(&source, width, &app.theme, reopen.is_some(), &mut lang);
-    (lines, lang)
+    let theme = &app.theme;
+    if slice.is_empty() {
+        return (Vec::new(), lang);
+    }
+    let render = |source: &str, continued: bool, lang: &mut Option<crate::highlight::Lang>| {
+        crate::markdown::render_stream(source, width, theme, continued, lang)
+    };
+    if let Some(open) = &app.live_reopen {
+        // An empty code row ends the context, so the slice's rows follow code as in the whole.
+        let context = format!("{open}\n\n");
+        let drawn = render(&context, true, &mut lang.clone()).len();
+        let mut rows = render(&format!("{context}{slice}"), true, &mut lang);
+        return (rows.split_off(drawn.min(rows.len())), lang);
+    }
+    let context = app.live_seam.context(&app.live_markdown, app.live_cut);
+    let draw = |text: &str| render(text, false, &mut None);
+    if let Some(rows) = context.and_then(|context| under(&context, slice, draw)) {
+        return (rows, lang);
+    }
+    let slice = escaped(slice, app.live_seam.mid);
+    let rows = render(&slice, false, &mut lang);
+    (rows, lang)
+}
+
+fn opens_block(rest: &str) -> bool {
+    let rest = rest.trim_start_matches([' ', '\t']);
+    crate::markdown::opens_item(rest)
+        || rest.starts_with(['#', '>', '|', '=', '`', '~', '-', '*', '_', '+'])
+}
+
+/// A slice cut mid-paragraph is prose: escaping its first mark and first-line pipes says so.
+pub(crate) fn escaped(slice: &str, mid: bool) -> std::borrow::Cow<'_, str> {
+    if !mid {
+        return std::borrow::Cow::Borrowed(slice);
+    }
+    let lead = slice.len() - slice.trim_start_matches([' ', '\t']).len();
+    let (indent, rest) = slice.split_at(lead);
+    let line = rest.find('\n').map_or(rest.len(), |nl| nl);
+    let (first, after) = rest.split_at(line);
+    let first = first.replace('|', "\\|");
+    let mark = if opens_block(&first) { "\\" } else { "" };
+    let out = format!("{indent}{mark}{first}{after}");
+    if out == slice {
+        std::borrow::Cow::Borrowed(slice)
+    } else {
+        std::borrow::Cow::Owned(out)
+    }
+}
+
+/// A slice's own rows under `context`, or `None` when the context's rows do not lead the whole
+/// (the slice alone then loses its hang but no word).
+pub(crate) fn under(
+    context: &str,
+    slice: &str,
+    render: impl Fn(&str) -> Vec<ratatui::text::Line<'static>>,
+) -> Option<Vec<ratatui::text::Line<'static>>> {
+    let drawn = render(context);
+    let mut rows = render(&format!("{context}{slice}"));
+    let text = |row: &ratatui::text::Line<'_>| row.to_string().trim_end().to_owned();
+    let leads =
+        rows.len() >= drawn.len() && rows.iter().zip(&drawn).all(|(a, b)| text(a) == text(b));
+    leads.then(|| rows.split_off(drawn.len()))
+}
+
+/// The live tail with open strong, strike and code spans closed, so `**bold wor` renders bold
+/// now instead of shifting when its closer arrives. Only a run after a space, before a word.
+pub(crate) fn close_spans(tail: &str) -> std::borrow::Cow<'_, str> {
+    if tail.matches("```").count() % 2 == 1 || tail.matches("~~~").count() % 2 == 1 {
+        return std::borrow::Cow::Borrowed(tail);
+    }
+    let from = tail.rfind("\n\n").map_or(0, |at| at + 2);
+    let chars: Vec<char> = tail.get(from..).unwrap_or_default().chars().collect();
+    let mut open: Vec<(char, usize)> = Vec::new();
+    let mut code: Option<usize> = None;
+    let mut at = 0;
+    while let Some(&ch) = chars.get(at) {
+        let run = chars
+            .get(at..)
+            .unwrap_or_default()
+            .iter()
+            .take_while(|next| **next == ch)
+            .count();
+        let before = at.checked_sub(1).and_then(|back| chars.get(back)).copied();
+        let after = chars.get(at + run).copied();
+        let opens = before.is_none_or(char::is_whitespace);
+        match (ch, code) {
+            ('`', Some(length)) if run == length => code = None,
+            ('`', None) if opens && after.is_some_and(|next| !next.is_whitespace()) => {
+                code = Some(run);
+            }
+            ('*' | '_' | '~', None) if run == 2 => {
+                if open.last() == Some(&(ch, run))
+                    && before.is_some_and(|back| !back.is_whitespace())
+                {
+                    open.pop();
+                } else if opens && after.is_some_and(char::is_alphanumeric) {
+                    open.push((ch, run));
+                }
+            }
+            _ => {}
+        }
+        at += run;
+    }
+    if open.is_empty() && code.is_none() {
+        return std::borrow::Cow::Borrowed(tail);
+    }
+    let mut closed = tail.to_owned();
+    if let Some(length) = code {
+        closed.push_str(&"`".repeat(length));
+    }
+    for (ch, run) in open.iter().rev() {
+        closed.extend(std::iter::repeat_n(*ch, *run));
+    }
+    std::borrow::Cow::Owned(closed)
 }

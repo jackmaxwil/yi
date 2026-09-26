@@ -11,6 +11,8 @@ use crate::colors::{ColorTier, Theme};
 #[derive(Default)]
 pub struct History {
     cells: VecDeque<Cell>,
+    /// Cells before this index are closed: a new message never merges into the last one's.
+    sealed: usize,
     rendered: Mutex<Rendered>,
 }
 
@@ -22,8 +24,29 @@ struct Rendered {
     rows: VecDeque<Vec<Line<'static>>>,
 }
 
-fn is_blank(line: &Line<'_>) -> bool {
+pub(crate) fn is_blank(line: &Line<'_>) -> bool {
     line.spans.iter().all(|span| span.content.trim().is_empty())
+}
+
+/// A blank row separates two blocks of more than one row; one rule for scrollback and rebuild.
+pub(crate) fn separated(rows_above: usize, blank_above: bool, next: &[Line<'_>]) -> bool {
+    rows_above > 1 && next.len() > 1 && !blank_above && !next.first().is_some_and(is_blank)
+}
+
+/// Incident: a rebuild dropped every separator row scrollback had, so a resize moved rows.
+fn join(cells: &[Vec<Line<'static>>]) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut above: Option<&Vec<Line<'static>>> = None;
+    for rows in cells.iter().filter(|rows| !rows.is_empty()) {
+        if let Some(above) = above
+            && separated(above.len(), above.last().is_some_and(is_blank), rows)
+        {
+            out.push(Line::default());
+        }
+        out.extend(rows.iter().cloned());
+        above = Some(rows);
+    }
+    squeeze_blanks(out)
 }
 
 /// Every cell pads its own seam, so two blocks met across two or three empty rows; one
@@ -42,20 +65,32 @@ pub fn squeeze_blanks(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 impl History {
     pub fn clear(&mut self) {
         self.cells.clear();
+        self.sealed = 0;
         *self
             .rendered
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner) = Rendered::default();
     }
 
-    fn forget_last(&mut self) {
+    fn forget_last(&mut self, rows: Option<(usize, &[Line<'static>])>) {
         let rendered = self
             .rendered
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner);
-        if rendered.start.saturating_add(rendered.rows.len()) == self.cells.len() {
-            rendered.rows.pop_back();
+        if rendered.start.saturating_add(rendered.rows.len()) != self.cells.len() {
+            return;
         }
+        let width = rendered.key.map(|key| key.0);
+        match (rows, rendered.rows.back_mut()) {
+            (Some((at, rows)), Some(last)) if Some(at) == width => last.extend_from_slice(rows),
+            _ => {
+                rendered.rows.pop_back();
+            }
+        }
+    }
+
+    pub fn seal(&mut self) {
+        self.sealed = self.cells.len();
     }
 
     fn rendered<R>(
@@ -97,22 +132,38 @@ impl History {
         self.cells.is_empty()
     }
 
-    /// Consecutive slices merge back into their message: each re-rendered alone takes a fresh
-    /// bullet gutter, so a reflow grew one bullet per paragraph instead of per message.
+    pub fn last(&self) -> Option<&Cell> {
+        self.cells.back()
+    }
+
     pub fn retain(&mut self, cell: Cell) {
+        self.retain_slice(cell, None);
+    }
+
+    /// Consecutive slices merge back into their message: alone, each took a fresh bullet gutter.
+    /// `rows` extend the cached rows, so a pane does not re-render the message per slice.
+    pub fn retain_slice(&mut self, cell: Cell, rows: Option<(usize, &[Line<'static>])>) {
+        let open = self.cells.len() > self.sealed;
         if let Cell::Assistant { markdown } = &cell
+            && open
             && let Some(Cell::Assistant { markdown: head }) = self.cells.back_mut()
         {
             head.push_str(markdown);
-            return self.forget_last();
+            return self.forget_last(rows);
         }
         // Thought merges for the same reason plus one of its own: `normal` renders it as a
         // line count, and a per-slice count would name the last paragraph, not the thought.
         if let Cell::Thought { markdown } = &cell
+            && open
             && let Some(Cell::Thought { markdown: head }) = self.cells.back_mut()
         {
             head.push_str(markdown);
-            return self.forget_last();
+            return self.forget_last(None);
+        }
+        if let Cell::Assistant { markdown } | Cell::Thought { markdown } = &cell
+            && markdown.trim().is_empty()
+        {
+            return;
         }
         if let Cell::Advisory { source, text } = &cell
             && let Some(Cell::Advisory {
@@ -123,7 +174,7 @@ impl History {
         {
             head.push('\n');
             head.push_str(text);
-            return self.forget_last();
+            return self.forget_last(None);
         }
         self.cells.push_back(cell);
     }
@@ -148,7 +199,7 @@ impl History {
                 }
             }
             let tail = cells.get(from..).unwrap_or_default();
-            squeeze_blanks(tail.iter().flatten().cloned().collect())
+            join(tail)
         })
     }
 
@@ -175,10 +226,7 @@ impl History {
                 }
             }
             let tail = cells.get(from.saturating_sub(start)..).unwrap_or_default();
-            (
-                from,
-                squeeze_blanks(tail.iter().flatten().cloned().collect()),
-            )
+            (from, join(tail))
         })
     }
 
