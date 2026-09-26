@@ -1864,3 +1864,55 @@ fn a_wrong_typed_argument_is_not_reported_as_missing() -> TestResult {
     assert!(text.contains("json.dumps"), "{text}");
     Ok(())
 }
+
+/// A path that does not exist answered "No matches found", a clean miss over a typo.
+#[test]
+fn grep_refuses_a_missing_path_naming_it() -> TestResult {
+    let dir = temp_dir("grep-missing-path")?;
+    fs::write(dir.join("one.txt"), "needle\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let missing = GrepTool::default().execute(
+        args(&[("pattern", json!("needle")), ("path", json!("nope/"))]),
+        &context,
+    );
+    let text = output_text(&missing);
+    assert!(missing.is_error, "{text}");
+    assert!(text.contains("nope/"), "{text}");
+    assert!(!text.contains("No matches found"), "{text}");
+    Ok(())
+}
+
+/// A negative offset became 0 and paged from the top as if the request were fine.
+#[test]
+fn grep_refuses_a_negative_offset() -> TestResult {
+    let dir = temp_dir("grep-negative-offset")?;
+    fs::write(dir.join("one.txt"), "needle\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let refused = GrepTool::default().execute(
+        args(&[("pattern", json!("needle")), ("offset", json!(-1))]),
+        &context,
+    );
+    let text = output_text(&refused);
+    assert!(refused.is_error, "{text}");
+    assert!(text.contains("offset") && text.contains("-1"), "{text}");
+    Ok(())
+}
+
+/// A negative context ran with 0 and said nothing, unlike the clamp of a large one.
+#[test]
+fn grep_reports_a_context_it_could_not_honour() -> TestResult {
+    let dir = temp_dir("grep-negative-context")?;
+    fs::write(dir.join("one.txt"), "needle\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let ran = GrepTool::default().execute(
+        args(&[("pattern", json!("needle")), ("context", json!(-2))]),
+        &context,
+    );
+    let text = output_text(&ran);
+    assert!(text.contains("one.txt:1:needle"), "{text}");
+    assert!(
+        text.contains("[context ignored: asked -2, not a non-negative integer; 0 used]"),
+        "{text}"
+    );
+    Ok(())
+}
