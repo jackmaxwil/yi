@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dist binary size budget (13.6, D31: ratchets measure dist, never release).
 D249 hard cap: PR #436 hand-typed the baseline straight to 7 MiB in an empty-body
-commit, and the ratchet then hid 865,648 bytes of growth across 20 PRs because
+commit, and the ratchet then hid 865,664 bytes of growth across 20 PRs because
 nothing checked the baseline itself. The 8 MiB cap below is checked independently of
 baselines/binary_size_budget.json so the baseline can never be edited past it."""
 import json, sys, pathlib
