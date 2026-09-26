@@ -39,7 +39,7 @@ pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut File
     }
 }
 
-/// Design P8: file lists are cumulative across compactions — the previous
+/// Design §4.4: file lists are cumulative across compactions — the previous
 /// entry's details seed the next extraction.
 pub fn extract_file_ops(
     messages: &[AgentMessage],

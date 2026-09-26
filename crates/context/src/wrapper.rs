@@ -44,7 +44,7 @@ pub fn internal_source(message: &AgentMessage) -> Option<&str> {
         .then_some(&rest[..end])
 }
 
-/// Custom entry kinds that ride the L4 wrapper: rendered `<yi_internal_context source="…">`
+/// Custom entry kinds that ride the §4.2 wrapper: rendered `<yi_internal_context source="…">`
 /// and dropped at compaction, so injected prompts never accumulate across windows.
 pub fn internal_source_of_custom(custom_type: &str) -> Option<&'static str> {
     match custom_type {

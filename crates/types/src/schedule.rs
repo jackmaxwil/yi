@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Job lifecycle (design H2). Wire strings match the reference cron statuses.
+/// Job lifecycle (design §15.2); each status serializes as its lowercase wire string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
@@ -19,7 +19,7 @@ pub enum JobSource {
     RlmHeartbeat,
 }
 
-/// How a due prompt reaches a busy session (design H8/H9): `Steer` interrupts
+/// How a due prompt reaches a busy session (design §15.2): `Steer` interrupts
 /// the current turn at the next boundary, `FollowUp` waits for idle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,7 +28,7 @@ pub enum DeliveryMode {
     FollowUp,
 }
 
-/// Schedule shape (design H1). `expression` keeps the user's original text;
+/// Schedule shape (design §15.2). `expression` keeps the user's original text;
 /// `interval_ms` is set only for `Interval`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -47,7 +47,7 @@ pub struct CronSchedule {
     pub interval_ms: Option<u64>,
 }
 
-/// One scheduled job (design H2); timestamps are epoch milliseconds and Yi
+/// One scheduled job (design §15.2); timestamps are epoch milliseconds and Yi
 /// owns this file format (D39).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,7 +79,7 @@ pub struct Job {
     pub extra: Map<String, Value>,
 }
 
-/// A claimed-but-unresolved delivery (design H5): persisted before the prompt
+/// A claimed-but-unresolved delivery (design §15.2): persisted before the prompt
 /// is delivered so a crash between claim and delivery is recoverable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

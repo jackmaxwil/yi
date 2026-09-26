@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dry-run gate for the Yi eval adapters: no docker, no API key, no harness.
 
-Each check defends one gate from YI_DESIGN 15.2 against a recorded artifact,
+Each check defends one gate from evals/README.md against a recorded artifact,
 so a broken adapter fails here instead of scoring a real rollout 0.
 
     python3 evals/selftest.py
@@ -120,7 +120,7 @@ def check_adapter_imports():
 
 
 def check_usage():
-    """E5: the parse reads Pi camelCase usage off a real recorded transcript."""
+    """E5: the parse reads Pi v4 camelCase usage off a real recorded transcript."""
     usage = yi_usage.parse_events(EVENTS)
     assert usage["nAssistantMessages"] == 1, usage
     assert usage["malformedLines"] == 0, usage

@@ -53,7 +53,7 @@ pub enum ConfigRuleAction {
     Ask,
 }
 
-/// Configured pattern rule (design M2). Precedence over session rules is
+/// Configured pattern rule (design §8). Precedence over session rules is
 /// enforced in decide(): configured deny > session rule > session grant.
 #[derive(Debug, Clone)]
 pub struct ConfigRule {

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Terminal-Bench v4 six-task subset (docs/plans/2026-09-06-tbv4-evals.md, S1).
+# Terminal-Bench v4 six-task subset (docs/archive/plans/2026-09-06-tbv4-evals.md, S1).
 # Preflights every precondition by NAME and refuses with the missing one; it
 # never echoes a key value. Run from the worktree root.
 set -u

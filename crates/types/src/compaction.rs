@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Window ids chaining compactions (design P9): `first` is the session's initial window,
+/// Window ids chaining compactions (design §4.4): `first` is the session's initial window,
 /// `previous` links them into a chain, `id` names the window this compaction opened.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,7 +13,7 @@ pub struct CompactionWindow {
     pub number: u64,
 }
 
-/// Typed payload of a compaction entry's `details` value (design P8/P9).
+/// Typed payload of a compaction entry's `details` value (design §4.4).
 /// File lists are cumulative across compactions.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

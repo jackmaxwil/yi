@@ -1,5 +1,7 @@
 # Tool ergonomics, telemetry, and TUI streaming stability
 
+Landed: 0.67.0.
+
 ```
 status:  LANDED 0.67.0 (2026-08-29), all eleven phases — see ARCHITECTURE.md's
          0.67.0 row for what shipped and the one recorded deviation
