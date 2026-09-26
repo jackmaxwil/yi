@@ -462,6 +462,7 @@ fn deadline_session(root: &std::path::Path, command: &str, total: Duration) -> A
             depth: 0,
             max_depth: 1,
             rlm_dir: root.join("rlm"),
+            family_dir: None,
             summarizer: None,
             advisor: None,
             auto_review: None,

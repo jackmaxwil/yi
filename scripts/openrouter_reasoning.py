@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Refresh reasoning-effort metadata in crates/ai/data/openrouter.json.
 
-Pi's catalog generator drops OpenRouter's per-model reasoning contract, so a
+The generated model catalog drops OpenRouter's per-model reasoning contract, so a
 plain catalog refresh reintroduces HTTP 400 "Reasoning is mandatory for this
 endpoint and cannot be disabled". Run this after every refresh.
 """

@@ -1,4 +1,4 @@
-//! E2 (V5 `CompactionCheck`): a compaction replaces the primary's view, and the
+//! E2 (§16 `CompactionCheck`): a compaction replaces the primary's view, and the
 //! advisor is the only thing that can say what the replacement dropped.
 
 #[path = "../../types/tests/support/scratch.rs"]
@@ -181,7 +181,7 @@ async fn a_compaction_hands_the_judge_the_summary_beside_the_directives() -> Tes
     let (_root, store) = compacted_store("advisor-compact-one").await?;
     let advisor = runtime(AdvisorConfig::default());
     // The directive was stated before the compaction: it is the ground truth
-    // the judge audits the replacement summary against (§7.6).
+    // the judge audits the replacement summary against (§16).
     assert!(advisor.observe(&user(CONSTRAINT), 0).is_none());
 
     note_last_compaction(Some(&advisor), Some(&store));

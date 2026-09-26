@@ -1,6 +1,6 @@
 use yi_types::message::Usage;
 
-/// Usage-record cause naming a child-usage attribution (design P14).
+/// Usage-record cause naming a child-usage attribution (design §4.4).
 pub const CHILD_USAGE_CAUSE: &str = "child_usage_attributed";
 
 fn add_component(target: &mut i64, delta: i64) {

@@ -2,7 +2,7 @@ use yi_types::compaction::CompactionWindow;
 
 use crate::account::Tokens;
 
-/// Absolute input-token baseline for the current compaction window (design P3
+/// Absolute input-token baseline for the current compaction window (design §4.4
 /// BodyAfterPrefix). Server-observed usage replaces an estimate but never the reverse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Prefill {
@@ -10,7 +10,7 @@ pub enum Prefill {
     Estimated(Tokens),
 }
 
-/// Design P9 window chain: ids chain compactions (surfaced to the model) and
+/// Design §4.4 window chain: ids chain compactions (surfaced to the model) and
 /// per-window one-shot latches kill repeat advisories.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Window {

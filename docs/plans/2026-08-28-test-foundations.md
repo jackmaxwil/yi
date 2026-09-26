@@ -1,5 +1,7 @@
 # Test Foundations — five classes, two mechanisms, one fired trigger
 
+Open: steps 1-6. `openrouter_reasoning.py` still rewrites the catalog in place, no fuzz target exists, and the SSE decoder has no event-size cap.
+
 ```
 status:  REVISED 2026-08-28 after a five-scout codebase review; supersedes the
          same-day PROPOSED draft. Nothing landed. Steps carry their own D-rows
