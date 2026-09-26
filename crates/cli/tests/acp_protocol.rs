@@ -447,6 +447,20 @@ fn slash_verbs_run_on_the_worker_and_unknown_ones_are_refused() -> TestResult {
             .is_some_and(|frame| frame["error"].is_object()),
         "an unknown verb is an error, not a prompt: {unknown:?}"
     );
+    let heartbeat = client.request(
+        "6",
+        "_yi/slash",
+        json!({"sessionId": session_id, "line": "heartbeat every 10m watch the build"}),
+    )?;
+    assert!(
+        text_of(&heartbeat).is_some(),
+        "/heartbeat routes through the worker: {heartbeat:?}"
+    );
+    let changed = updates_of(&heartbeat, "_yi/heartbeat_changed");
+    assert!(
+        !changed.is_empty(),
+        "/heartbeat over _yi/slash must still notify the client (C9): {heartbeat:?}"
+    );
     client.finish()
 }
 

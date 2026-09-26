@@ -1,8 +1,10 @@
 version: 2
 # The redaction gate proves itself on deliberately key-shaped FAKE plants
 # (O8: fixtures never carry a real key). Scanners skip the plants, and the
-# vendored upstream sample output whose private address is rtk's, not ours
-# (check_public_surface.py reads this list too, D172).
+# vendored upstream sample output whose private address is rtk's, not ours —
+# the path is history-only (vendor/rtk was deleted, #534), but sync.sh scans
+# every past commit, so the skip stays (check_public_surface.py reads this
+# list too, D172).
 paths-ignore:
   - "**/fixtures/planted*"
   - "skills/yi/session-mining/fixtures/**"

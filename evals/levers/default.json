@@ -41,7 +41,6 @@
  "loop.repeat_stop_at": 6,
  "loop.reasoning_cap": 48000,
  "tools.reduce_floor": 8192,
- "advisor.cadence": 25,
  "review.timeout_s": 30,
  "graph.next_lines": 3
 }
