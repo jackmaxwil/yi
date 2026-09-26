@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.323.0         # bump on any structural change; row goes in CHANGELOG.md
+version: 0.324.0         # bump on any structural change; row goes in CHANGELOG.md
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -25,7 +25,7 @@ shrink-only by `check_crate_size` (§21).
 | `yi-oauth` | PKCE, loopback callback, token store, `login`/`logout` (§5) | yi-types | 1,207 |
 | `yi-orb` | orb geometry and kitty-graphics painter (§17.3) | — | 1,398 |
 | `yi-session` | session store: JSONL and in-memory repos, ids, queries (§4.1) | yi-types | 1,755 |
-| `yi-context` | token accounting, compaction cut point, context assembly (§4.4) | yi-types | 1,767 |
+| `yi-context` | token accounting, compaction cut point, context assembly (§4.4) | yi-types | 1,520 |
 | `yi-permission` | modes, rules, command classifier, catastrophic denylist, review ledger (§8) | yi-types | 1,753 |
 | `yi-tools` | `Tool` trait, builtin tools, hashline edits, bash jobs, sandbox, checkpoints (§7) | yi-types, yi-permission | 12,379 |
 | `yi-mcp-cli` | the `yi mcp` one-shot JSON-RPC client, refused unless `mcp.enabled` (§7.6) | yi-oauth, yi-types | 2,302 |

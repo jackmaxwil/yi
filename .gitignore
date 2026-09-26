@@ -7,7 +7,6 @@ __pycache__/
 .venv/
 
 .grid/
-/vendor/rtk/
 
 # START Ruler Generated Files
 /.claude/skills
