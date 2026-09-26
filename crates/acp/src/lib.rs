@@ -215,17 +215,8 @@ fn undo_text(session: &AgentSession, cwd: &std::path::Path) -> String {
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
     match yi_runtime::undo(&store, cwd, &home) {
-        yi_runtime::UndoOutcome::Restored(changes) if changes.is_empty() => {
-            "/undo: nothing to restore — no file changed since the checkpoint".to_owned()
-        }
-        yi_runtime::UndoOutcome::Restored(changes) => {
-            let mut names: Vec<String> = changes
-                .iter()
-                .map(|change| change.path.display().to_string())
-                .collect();
-            names.sort();
-            names.dedup();
-            format!("/undo: restored {} — {}", names.len(), names.join(", "))
+        yi_runtime::UndoOutcome::Restored { changes, scoped } => {
+            format!("/undo: {}", yi_runtime::describe_undo(&changes, scoped))
         }
         yi_runtime::UndoOutcome::NoCheckpoint => "/undo: no checkpoint to restore".to_owned(),
         yi_runtime::UndoOutcome::Failed(error) => format!("/undo: {error}"),

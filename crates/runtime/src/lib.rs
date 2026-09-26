@@ -42,7 +42,10 @@ pub mod tools;
 pub mod wall;
 pub mod wiring;
 
-pub use checkpoint::{RecordedCheckpoint, UndoOutcome, recorded, undo, wire_turn_checkpoints};
+pub use checkpoint::{
+    RecordedCheckpoint, UndoOutcome, describe_undo, recorded, undo, undo_notes,
+    wire_turn_checkpoints,
+};
 pub use compaction::{CompactStatus, Compactor};
 pub use ext::{ExtOptions, Host as ExtensionHost, Trust, TrustGate};
 pub use kernel::{
