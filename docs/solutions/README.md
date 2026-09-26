@@ -225,5 +225,6 @@ edited by hand.
 - [D243](adr/d243.md) - the design states what is built and names no other agent
 - [D245](adr/d245.md) - a fired interrupt answers every unrun call as `Aborted` and sends no further...
 - [D249](adr/d249.md) - the dist binary budget is a measured ratchet under a hard cap of 8 MiB, not...
+- [D255](adr/d255.md) - todo evidence stays the agent's claim, not a checked fact
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
