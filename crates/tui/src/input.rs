@@ -174,8 +174,7 @@ pub(crate) fn handle_action(
                 return;
             }
             if let Some(text) = app.composer.take_submission() {
-                // A typed line is a command only when its first word is one:
-                // a prompt that opens with a path (`/usr/...`) still prompts.
+                // A typed line is a command only when its first word is one (a `/usr/...` path still prompts).
                 if let Some(command) = slash_line(&text) {
                     handle_slash(app, &command);
                     return;

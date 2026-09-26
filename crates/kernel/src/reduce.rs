@@ -100,7 +100,7 @@ pub fn parent_msg_id(message: &JupyterMessage) -> Option<&str> {
     message.parent_header.get("msg_id").and_then(Value::as_str)
 }
 
-/// Fold one iopub message into the active cell (design K6). `on_stream` sees uncapped chunks:
+/// Fold one iopub message into the active cell (design §9). `on_stream` sees uncapped chunks:
 /// the UI gets everything, only the model-facing capture is capped.
 pub fn reduce(
     cell: &mut CellState,

@@ -67,7 +67,7 @@ pub fn stdout_sink() -> LineSink {
     })
 }
 
-/// Design C1: v2 or later is served as v2; v1 gets the exact mismatch error.
+/// Design §17.2: v2 or later is served as v2; v1 gets the exact mismatch error.
 pub fn negotiate(protocol_version: u64) -> Result<u16, String> {
     if protocol_version >= u64::from(PROTOCOL_VERSION) {
         Ok(PROTOCOL_VERSION)
@@ -713,7 +713,7 @@ impl AcpState {
         }
     }
 
-    /// `_yi/*` extension methods (C9): the heartbeat and goal surfaces.
+    /// `_yi/*` extension methods (§17.2): the heartbeat and goal surfaces.
     fn handle_extension(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
         let (handle, session_id) = self.session(params)?;
         let text = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
@@ -761,8 +761,7 @@ impl AcpState {
                 let reply = match command {
                     "sessions" => self.sessions_text()?,
                     "undo" => undo_text(&handle.session, &self.cwd),
-                    // Routed through `_yi/heartbeat` rather than `slash::run` so the
-                    // client still gets the `_yi/heartbeat_changed` notification (C9).
+                    // Routed through `_yi/heartbeat`, not `slash::run`, so the client keeps `_yi/heartbeat_changed` (C9).
                     "heartbeat" => {
                         return self.handle_extension(
                             "_yi/heartbeat",
@@ -811,7 +810,7 @@ impl AcpState {
                         params.get("checkTimeoutMs").and_then(Value::as_u64),
                     ),
                     // Blocks dispatch up to the check timeout — same class as
-                    // the C5 permission bridge's synchronous wait.
+                    // the ACP permission bridge's synchronous wait.
                     "update" => service.update(text("status")),
                     "objective" => service.set_objective(
                         text("objective"),
@@ -858,7 +857,7 @@ impl AcpState {
             .join("\n"))
     }
 
-    /// C9: a schedule mutation is a fact the client cannot infer from the
+    /// A schedule mutation is a fact the client cannot infer from the
     /// method reply alone, since a heartbeat also fires without one.
     fn emit_heartbeat_changed(&self, session_id: &str, reply: &str) {
         let mut fields = std::collections::BTreeMap::new();
@@ -946,7 +945,7 @@ impl AcpState {
         Ok(())
     }
 
-    /// Design C6: the stored branch replayed as `session/update`s. `from` skips entries the
+    /// Design §17.2: the stored branch replayed as `session/update`s. `from` skips entries the
     /// client holds (valid only if it saw nothing since); returns the next `replayedTo`.
     fn replay(&mut self, session_id: &str, from: u64) -> Result<u64, (i64, String)> {
         let Some(handle) = self.sessions.get(session_id) else {

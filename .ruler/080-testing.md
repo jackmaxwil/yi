@@ -5,8 +5,8 @@ failure mode a consumer would see if it regressed; if you cannot name one, do
 not add the test.
 
 - External ground truth over self-confirmation: a round-trip proves
-  reversibility, not correctness. Fixtures come from the reference
-  implementations themselves (Pi-generated session files, canned provider SSE
+  reversibility, not correctness. Fixtures come from real producers
+  (session files written by the format's own storage code, canned provider SSE
   transcripts), never from Yi's own output.
 - Assert exact bytes and ordering only where a consumer parses the exact bytes
   (wire fixtures, JSONL); otherwise assert semantic content.

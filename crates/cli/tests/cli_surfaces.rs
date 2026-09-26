@@ -209,10 +209,22 @@ fn sessions_rm_removes_the_session() -> TestResult {
         .and_then(Value::as_str)
         .ok_or("no session id")?
         .to_owned();
+    let family = workspace.0.join("home/sessions/family");
+    std::fs::create_dir_all(family.join(&id))?;
+    std::fs::write(family.join(&id).join("note.json"), "{}")?;
+    std::fs::create_dir_all(family.join("other"))?;
     workspace.yi(&["sessions", "rm", &id])?;
     let after: Value =
         serde_json::from_str(&stdout(&workspace.yi(&["sessions", "--json", "list"])?))?;
     assert_eq!(after.as_array().map(Vec::len), Some(0));
+    assert!(
+        !family.join(&id).exists(),
+        "the D242 board outlives its session"
+    );
+    assert!(
+        family.join("other").exists(),
+        "rm reached another session's board"
+    );
     Ok(())
 }
 
@@ -290,7 +302,7 @@ fn undo_without_a_session_fails_loudly() -> TestResult {
     Ok(())
 }
 
-/// Checkpoints are a no-op without git (design 5.3), and so is this test.
+/// Checkpoints are a no-op without git (design §7.7), and so is this test.
 fn git_missing(output: &Output) -> bool {
     String::from_utf8_lossy(&output.stderr).contains("git is unavailable")
 }

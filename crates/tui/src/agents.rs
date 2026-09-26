@@ -91,7 +91,7 @@ impl AgentsPopup {
         let share = tokens.saturating_mul(BAR_CELLS) / self.context_window.max(1);
         let filled = usize::try_from(share.min(BAR_CELLS)).unwrap_or(0);
         let percent = tokens.saturating_mul(100) / self.context_window.max(1);
-        // U16's rule for the context gauge: over the window is an error, not a
+        // §17.3's rule for the context gauge: over the window is an error, not a
         // warning, and the bar clamps while the number keeps telling the truth.
         let style = match percent {
             0..=79 => Style::default().fg(theme.accent),

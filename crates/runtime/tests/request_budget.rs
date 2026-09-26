@@ -149,6 +149,7 @@ fn session_tool_defs() -> Result<Vec<ToolDef>, Box<dyn Error>> {
             depth: 0,
             max_depth: 1,
             rlm_dir: root.join("rlm"),
+            family_dir: None,
             summarizer: None,
             advisor: None,
             auto_review: None,
