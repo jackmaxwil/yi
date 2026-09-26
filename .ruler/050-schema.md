@@ -1,7 +1,7 @@
 # Schema stability (YI_DESIGN.md §20 — load-bearing)
 
 - Every serialized shape (wire and disk) lives in yi-types. No serde derive outside it except
-  test fixtures.
+  test fixtures. check_manifests.py enforces it: only yi-types may list serde in [dependencies].
 - Additive evolution only: new fields Option or defaulted; never rename (serde alias instead)
   and never repurpose. Breaking change = version bump + idempotent migration fn + committed
   before/after fixtures.
