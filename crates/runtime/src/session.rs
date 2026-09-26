@@ -808,7 +808,7 @@ impl AgentSession {
         }
     }
 
-    /// Returns at admission; the run streams in a spawned task (R6).
+    /// Returns at admission; the run streams in a spawned task (§4.3).
     pub fn prompt(&self, text: &str) -> Result<(), SessionError> {
         self.prompt_message(user_message(text))
     }
@@ -842,7 +842,7 @@ impl AgentSession {
         }
     }
 
-    /// Invariant: pre-first-turn only (B5) — mid-run it races the appending turn.
+    /// Invariant: pre-first-turn only (§11) — mid-run it races the appending turn.
     pub fn seed_messages(&self, seed: Vec<AgentMessage>) {
         if let Ok(mut messages) = self.shared.messages.lock() {
             *messages = seed;

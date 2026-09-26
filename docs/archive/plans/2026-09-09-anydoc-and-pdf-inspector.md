@@ -1,5 +1,7 @@
 # anydoc and pdf-inspector: `read` on every format, without the crate
 
+Landed: D171 (0.207.0).
+
 ```
 status:  IMPLEMENTED in 0.207.0 (D171, #368), all three phases. The §9
          trigger for phases 2-3 was not met and was waived by the owner on
