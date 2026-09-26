@@ -255,11 +255,17 @@ def binary_ratchet(topic):
         (sys.executable, str(ROOT / "scripts/guardrails/check_binary_size.py")),
         capture_output=True, text=True, check=False,
     )
-    grown = re.search(r"dist binary (\d+) > (\d+)", out.stdout + out.stderr)
-    verdict = next((line for line in (out.stdout + out.stderr).splitlines() if "binary_size" in line), "")
+    text = out.stdout + out.stderr
+    verdict = next((line for line in text.splitlines() if "binary_size" in line), "")
     print(f"binary: {verdict.strip() or 'no measurement'}")
-    if not grown:
+    if out.returncode == 0:
         return 0
+    # Only a lone budget overrun ratchets; the hard cap, a missing binary or a crash stops the lane.
+    failures = [line.strip() for line in text.splitlines() if line.startswith("  ")]
+    grown = re.fullmatch(r"dist binary (\d+) > (\d+) bytes", failures[0]) if len(failures) == 1 else None
+    if not grown:
+        print(text.strip())
+        return 1
     path = BASELINES / "binary_size_budget.json"
     path.write_text(f'{{"max_bytes": {grown.group(1)}}}\n')
     subject = ratchet_subject([f"dist binary {grown.group(2)} -> {grown.group(1)}"], topic)
@@ -636,6 +642,18 @@ def selfcheck():
     finally:
         gate.measure, globals()["repo"] = real
     assert len(errs) == 1 and "## Claims ledger" in errs[0] and "tool:bash" in errs[0], errs
+    # Incident: the D249 hard-cap line missed the ratchet regex, so `just push` went on.
+    import contextlib, io
+
+    capped = "FAIL binary_size\n  dist binary 9000000 > hard cap 8388608 bytes (8 MiB, D249)\n"
+    real_run = subprocess.run
+    subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, int("check_binary" in cmd[-1]), capped, "")
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            stopped = binary_ratchet("")
+    finally:
+        subprocess.run = real_run
+    assert stopped == 1, "a hard-cap breach stops the push lane"
     print("ok   forge_pr selfcheck")
 
 

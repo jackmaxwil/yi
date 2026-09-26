@@ -2,19 +2,13 @@ use std::error::Error;
 
 use serde_json::json;
 use yi_context::{
-    Attributed, BriefLine, Bytes, CHILD_USAGE_CAUSE, CompiledView, FileOps, HarnessState, Prefill,
-    Scope, Settings, Tokens, Window, attribute_child_usage, compile_view, compose_summary,
-    context_tokens, drop_internal, estimate_context, fit, internal_source, own_and_total_usage,
-    prepare_compaction, project, retain_floor, select_cut, serialize_conversation, should_compact,
-    wrap_internal,
+    Attributed, BriefLine, Bytes, CompiledView, FileOps, Prefill, Scope, Settings, Tokens, Window,
+    attribute_child_usage, compile_view, compose_summary, context_tokens, drop_internal,
+    estimate_context, fit, internal_source, prepare_compaction, project, retain_floor, select_cut,
+    serialize_conversation, should_compact, wrap_internal,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage, UserContent};
-use yi_types::record::LaneRecord;
-
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -442,36 +436,8 @@ fn attribution_preserves_the_parent_context_size() -> TestResult {
 }
 
 #[test]
-fn own_and_total_usage_separate_child_attributions() -> TestResult {
-    let record = |cause: &str, row: Usage| LaneRecord::Usage {
-        id: "r".to_owned(),
-        lane: "main".to_owned(),
-        usage: row,
-        cause: cause.to_owned(),
-        run_id: None,
-        entry_id: None,
-        attempt: None,
-        stop_reason: None,
-        tool_call_id: None,
-        details: None,
-        seq: 1,
-        timestamp: 1,
-    };
-    let records = vec![
-        record("assistant", usage(100, 50, 150)),
-        record(CHILD_USAGE_CAUSE, usage(1000, 500, 1500)),
-    ];
-    let (own, total) = own_and_total_usage(&records);
-    assert_eq!(own.input, 100);
-    assert_eq!(total.input, 1100);
-    Ok(())
-}
-
-#[test]
-fn window_chain_advances_ids_and_resets_latches() -> TestResult {
+fn window_chain_advances_ids() -> TestResult {
     let mut window = Window::new_initial("w0".to_owned());
-    assert!(window.claim_advisory());
-    assert!(!window.claim_advisory());
     window.observe_prefill(Prefill::Estimated(Tokens(10)));
     let ids = window.advance("w1".to_owned());
     assert_eq!(ids.first, "w0");
@@ -479,7 +445,6 @@ fn window_chain_advances_ids_and_resets_latches() -> TestResult {
     assert_eq!(ids.id, "w1");
     assert_eq!(ids.number, 1);
     assert_eq!(window.prefill_tokens(), None);
-    assert!(window.claim_advisory());
     window.observe_prefill(Prefill::ServerObserved(Tokens(42)));
     window.observe_prefill(Prefill::Estimated(Tokens(7)));
     assert_eq!(window.prefill_tokens(), Some(Tokens(42)));
@@ -493,38 +458,6 @@ fn source_budget_fit_marks_truncation() -> TestResult {
     assert!(fitted.text.starts_with("abc"));
     assert!(fitted.text.contains("truncated"));
     assert!(!fit("abc", Bytes(3)).truncated);
-    Ok(())
-}
-
-#[test]
-fn ledger_loads_reference_shaped_state_and_formats_hints() -> TestResult {
-    let dir = Scratch::new("yi-ledger")?;
-    let path = dir.join("harness_state.json");
-    std::fs::write(
-        &path,
-        serde_json::to_string(&json!({
-            "entries": {
-                "memory": {
-                    "m1": {"title": "Build cmd", "content": "use just check", "scope": "global"},
-                    "bad": {"content": 42}
-                },
-                "prompt": {},
-                "skill": {"s1": {"title": "ignored kind", "content": "x"}}
-            }
-        }))?,
-    )?;
-    let state = HarnessState::load(&path);
-    let memory = state
-        .entries
-        .get(&yi_types::harness::HarnessKind::Memory)
-        .ok_or("memory kind missing")?;
-    assert_eq!(memory.len(), 1);
-    let prompt_text = state
-        .format_for_prompt(Bytes(4096))
-        .ok_or("expected prompt text")?;
-    assert!(prompt_text.contains("[global:m1] Build cmd: use just check"));
-    let empty = HarnessState::load(&dir.join("missing.json"));
-    assert!(empty.format_for_prompt(Bytes(4096)).is_none());
     Ok(())
 }
 

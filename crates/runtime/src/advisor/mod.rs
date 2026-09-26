@@ -508,8 +508,8 @@ impl AdvisorRuntime {
                 state.stats.holds = state.stats.holds.saturating_add(1);
                 return;
             }
-            // D28: an Ask nobody can answer is a hang-to-timeout — headless,
-            // a Hold degrades to Warn.
+            // D28: an Ask nobody can answer is a hang-to-timeout, and a Hold with no
+            // target would match every call; headless or untargeted, it degrades to Warn.
             advice.severity = AdvisorySeverity::Warn;
         }
         match advice.severity {
