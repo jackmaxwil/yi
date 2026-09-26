@@ -634,8 +634,9 @@ A `JobStore` holds jobs and claims; an in-process `Scheduler` delivers due jobs 
   missed ticks. Recovery marks open claims `INTERRUPTED_ERROR`.
 - Claimed jobs group by `Job.session_id`, serial within and concurrent across groups. The
   deliverer feeds `should_defer` only `is_streaming`, so only a follow-up heartbeat defers.
-- Surfaces: RPC `heartbeat` and ACP `_yi/heartbeat` (the `/heartbeat` grammar, default
-  `every 5m`, one per session); kernel `rlm_heartbeat.{list, create, update, delete}`.
+- Surfaces: RPC `heartbeat`, ACP `_yi/heartbeat` and slash `/heartbeat` (default `every 5m`, one
+  per session, reaching the solo TUI, the console and ACP `_yi/slash`); kernel
+  `rlm_heartbeat.{list, create, update, delete}`.
 
 Owner: [`schedule/mod.rs`](../crates/runtime/src/schedule/mod.rs). Shapes:
 [`schedule.rs`](../crates/types/src/schedule.rs): `CronSchedule{kind: { Once, Cron, Interval }}`,
