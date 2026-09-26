@@ -1,5 +1,7 @@
 # Yi — governance (campaign 4): growth, tiers, forge, commits, comments
 
+Landed: D83-D85 (0.83.0).
+
 ```
 status:  SPEC 2026-08-29 — the user-approved five-directive governance package,
          drafted against ARCHITECTURE 0.79.0 / D82 (both re-read from the live

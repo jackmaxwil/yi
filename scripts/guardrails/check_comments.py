@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Comment length cap (2 lines, §18) plus a shrink-only volume ratchet outside yi-types.
+"""Comment length cap (2 lines, §19) plus a shrink-only volume ratchet outside yi-types.
 Incident: the rule tested the sigil and nothing enforced it, so 82 blocks reached 4+ lines and
 1,017 doc-comment lines accumulated in crates the grant never covered (D49).
 
@@ -70,7 +70,7 @@ for f in src_files():
             over.append(f"{rel}:{start}: comment run of {n} lines > {CAP}")
         m = TAG.match(body[0])
         if m and m.group(1) not in GRANTS:
-            tags.append(f"{rel}:{start}: '{m.group(1)}:' is not a §18 grant ({'|'.join(sorted(GRANTS))})")
+            tags.append(f"{rel}:{start}: '{m.group(1)}:' is not a §19 grant ({'|'.join(sorted(GRANTS))})")
 
 path = BASE / "comment_budget.json"
 base = json.loads(path.read_text())

@@ -1,4 +1,4 @@
-"""Yi as a harbor installed agent (YI_DESIGN 15.5; contracts in A.12).
+"""Yi as a harbor installed agent (evals/README.md).
 
 Register out of tree:
     PYTHONPATH=evals/adapters harbor run --agent yi_harbor.agent:Yi -d <suite>
@@ -37,7 +37,7 @@ TRAJECTORY_FILENAME = "trajectory.json"
 
 REMOTE_BINARY = "/usr/local/bin/yi"
 # Incident: `oven/bun` ships no CA roots, and the platform verifier (YI_DESIGN
-# 13.3: no bundled store) refused OpenRouter's certificate ("UnknownIssuer") on
+# §18.3: no bundled store) refused OpenRouter's certificate ("UnknownIssuer") on
 # the first request; harbor's own certifi bundle rides along and SSL_CERT_FILE
 # names it, which rustls-native-certs honours on Linux.
 REMOTE_CA_BUNDLE = "/logs/agent/yi/ca.pem"

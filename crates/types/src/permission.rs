@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Persisted session permission rules (design M4, section 19 versioning).
+/// Persisted session permission rules (design §8, §20 versioning).
 /// `digest` is recomputed from `canonical` on load, never trusted from the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

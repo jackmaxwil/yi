@@ -104,7 +104,7 @@ impl HarnessState {
     }
 
     /// Compact routing-hint rendering for the system prompt, held to the
-    /// ledger byte budget (P16).
+    /// ledger byte budget (§4.4).
     pub fn format_for_prompt(&self, budget: Bytes) -> Option<String> {
         if self.is_empty() {
             return None;

@@ -28,7 +28,7 @@ pub fn empty_assistant(model: &Model) -> AgentMessage {
 }
 
 /// Invariant: a configured proxy is applied or startup fails — degrading to a
-/// direct connection in an air-gapped runner is an unattributable hang (A4/E2).
+/// direct connection in an air-gapped runner is an unattributable hang (E2).
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
     proxy: ureq::Proxy,

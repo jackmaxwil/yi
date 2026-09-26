@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Design §12 model roles. Each role names a `provider/id`; an unset role falls back to the
+/// Design §5 model roles. Each role names a `provider/id`; an unset role falls back to the
 /// primary, so a config that names nothing behaves as one model for everything.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -13,14 +13,14 @@ pub struct ModelRoles {
     /// advisor observes and says nothing until a model role names it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub advisor: Option<String>,
-    /// Naming this role turns the M7 auto reviewer on. Unset, auto mode is the
+    /// Naming this role turns the §8 auto reviewer on. Unset, auto mode is the
     /// deterministic ladder and nothing extra is ever constructed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_review: Option<String>,
 }
 
-/// X7: `~/.yi/config.json`, the whole user surface. Config is not durable state, so §19 rule
-/// 4 does not apply: an unknown key is a typo to name, not a field to preserve.
+/// `~/.yi/config.json` is the whole user surface. Config is not durable state, so §20's
+/// unknown-data rule does not apply: an unknown key is a typo to name, not a field to preserve.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UserConfig {
@@ -164,7 +164,7 @@ pub struct PlanConfig {
     pub stale_reminder_turns: Option<u64>,
 }
 
-/// `plans.dir`, default `.yi/plans` relative to the workspace root. X7's project layer is
+/// `plans.dir`, default `.yi/plans` relative to the workspace root. §17.1's project layer is
 /// unbuilt, so it reads from the user's own config and is global to every workspace.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
