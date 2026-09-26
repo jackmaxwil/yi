@@ -10,11 +10,35 @@ use crate::wiring::RuntimeWiring;
 
 const PROBE: Duration = Duration::from_secs(5);
 
-/// The branch from the one HEAD reader, and the changed-path count from `git status`.
-pub fn git_summary(cwd: &Path) -> Option<(String, usize)> {
+/// The branch from the one HEAD reader, and the (modified, untracked) counts from `git status`.
+pub fn git_summary(cwd: &Path) -> Option<(String, usize, usize)> {
     let head = crate::lane::head(cwd).ok()?;
     let out = crate::lane::capture(cwd, "git", &["status", "--porcelain"], PROBE).ok()?;
-    Some((sanitize(&head.label()), out.lines().count()))
+    let (mut modified, mut untracked) = (0usize, 0usize);
+    for line in out.lines() {
+        if line.starts_with("??") {
+            untracked += 1;
+        } else {
+            modified += 1;
+        }
+    }
+    Some((sanitize(&head.label()), modified, untracked))
+}
+
+/// The cwd line's trailing git clause: zero counts are omitted, but a clean tree keeps the
+/// pre-existing "0 modified" rather than printing neither.
+pub fn git_line(branch: &str, modified: usize, untracked: usize) -> String {
+    let mut parts = Vec::new();
+    if modified > 0 {
+        parts.push(format!("{modified} modified"));
+    }
+    if untracked > 0 {
+        parts.push(format!("{untracked} untracked"));
+    }
+    if parts.is_empty() {
+        parts.push("0 modified".to_owned());
+    }
+    format!(" (git: {branch}, {})", parts.join(", "))
 }
 
 pub fn sanitize(text: &str) -> String {
@@ -174,7 +198,7 @@ pub fn hook(
     Arc::new(move || {
         let mut lines = Vec::new();
         let git = git_summary(&cwd)
-            .map(|(branch, dirty)| format!(" (git: {branch}, {dirty} modified)"))
+            .map(|(branch, modified, untracked)| git_line(&branch, modified, untracked))
             .unwrap_or_default();
         lines.push(format!("cwd: {}{git}", cwd.display()));
         if let Some(files) = files_line(&cwd) {

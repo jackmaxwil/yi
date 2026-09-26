@@ -6,7 +6,7 @@ use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_outpu
 use yi_types::plan::doc::TodoLabel;
 use yi_types::todo::{BlockedOn, PhaseName, TodoItem};
 
-use super::{Op, Target, TodoError, TodoStore, text};
+use super::{Op, Target, TodoError, TodoStore, mirror, text};
 
 pub const NAME: &str = "todo";
 
@@ -367,7 +367,27 @@ impl TodoTool {
         } else {
             text::render(&applied.list)
         };
-        Ok(format!("{inferred}{body}\ntouched: {}", applied.touched))
+        let gone: Vec<&TodoItem> = applied
+            .before
+            .items()
+            .filter(|item| !applied.list.items().any(|kept| kept.label == item.label))
+            .filter(|item| item.extra.contains_key(mirror::PLAN_KEY))
+            .collect();
+        let replaced = match gone
+            .first()
+            .and_then(|item| item.extra.get(mirror::PLAN_KEY))
+        {
+            Some(plan) => format!(
+                "(replaced plan {}'s {} rows; that plan is no longer open)\n",
+                plan.as_str().unwrap_or_default(),
+                gone.len()
+            ),
+            None => String::new(),
+        };
+        Ok(format!(
+            "{inferred}{replaced}{body}\ntouched: {}",
+            applied.touched
+        ))
     }
 }
 

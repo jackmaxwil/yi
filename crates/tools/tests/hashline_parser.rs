@@ -4,9 +4,8 @@ use yi_tools::hashline::format::{
     compute_file_hash, format_hashline_header, format_numbered_lines, split_addressable_file_lines,
 };
 use yi_tools::hashline::messages::{
-    BARE_BODY_AUTO_PIPED_WARNING, BARE_RANGE_AUTO_PUT_WARNING, DIFF_OLD_ROWS_IGNORED_WARNING,
-    EMPTY_PUT_AUTO_CUT_WARNING, MINUS_BULLET_AUTO_PIPED_WARNING, REPLACE_PAIR_COALESCED_WARNING,
-    SNAPSHOT_ROWS_AUTO_PUT_WARNING,
+    BARE_RANGE_AUTO_PUT_WARNING, DIFF_OLD_ROWS_IGNORED_WARNING, MINUS_BULLET_AUTO_PIPED_WARNING,
+    REPLACE_PAIR_COALESCED_WARNING, SNAPSHOT_ROWS_AUTO_PUT_WARNING,
 };
 use yi_tools::hashline::parser::{Executor, ParsedSection};
 use yi_tools::hashline::tokenizer::{tokenize_all, try_parse_header};
@@ -187,19 +186,19 @@ fn oversized_range_is_bounded() -> TestResult {
     Ok(())
 }
 
+/// The patch docs forbid bare body rows; a guessed `+` wrote a row that then failed syntax.
 #[test]
-fn bare_body_rows_auto_pipe_with_warning() -> TestResult {
-    let section = parse("PUT 5.=5:\nbare content\n").map_err(|e| e.to_string())?;
-    assert!(
-        section
-            .warnings
-            .iter()
-            .any(|w| w == BARE_BODY_AUTO_PIPED_WARNING)
-    );
-    let Edit::Insert { text, .. } = &section.edits[0] else {
-        return Err("expected insert".into());
-    };
-    assert_eq!(text, "bare content");
+fn a_bare_body_row_is_refused_naming_the_plus_form() -> TestResult {
+    let error = parse("PUT 5.=5:\nbare content\n")
+        .err()
+        .ok_or("expected error")?;
+    assert!(error.starts_with("line 2:"), "{error}");
+    assert!(error.contains("`+TEXT`"), "{error}");
+    let blank = parse("PUT 5.=5:\n+one\n\n+two\n")
+        .err()
+        .ok_or("expected error")?;
+    assert!(blank.starts_with("line 3:"), "{blank}");
+    assert!(blank.contains("`+`"), "{blank}");
     Ok(())
 }
 
@@ -234,16 +233,14 @@ fn snapshot_rows_recover_as_single_line_replacements() -> TestResult {
     Ok(())
 }
 
+/// The patch docs call an empty `PUT` WRONG; it deleted the range anyway.
 #[test]
-fn empty_put_body_becomes_delete_with_warning() -> TestResult {
-    let section = parse("PUT 4.=6:\n").map_err(|e| e.to_string())?;
-    assert!(
-        section
-            .warnings
-            .iter()
-            .any(|w| w == EMPTY_PUT_AUTO_CUT_WARNING)
-    );
-    assert_eq!(edit_kinds(&section), vec!["delete", "delete", "delete"]);
+fn an_empty_put_body_is_refused_naming_cut() -> TestResult {
+    let span = parse("PUT 4.=6:\n").err().ok_or("expected error")?;
+    assert!(span.starts_with("line 1:"), "{span}");
+    assert!(span.contains("`CUT 4.=6`"), "{span}");
+    let block = parse("PUT 4*:\n").err().ok_or("expected error")?;
+    assert!(block.contains("`CUT 4*`"), "{block}");
     Ok(())
 }
 
