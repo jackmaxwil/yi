@@ -2119,3 +2119,106 @@ async fn a_batch_the_host_saw_no_wait_in_is_a_repeat_whatever_it_says() {
         "a repeat that is not a wait is steered as before"
     );
 }
+
+/// A mutating tool whose run is interrupted: it fires the signal, as Esc does mid-call.
+struct Stopper;
+
+impl AgentTool for Stopper {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "stopper".to_owned(),
+            description: "is interrupted while it runs".to_owned(),
+            parameters: json!({"type": "object"}),
+            freeform: None,
+        }
+    }
+
+    fn execution_mode(&self, _args: &Map<String, Value>) -> ExecutionMode {
+        ExecutionMode::Sequential
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _tool_call_id: &'a str,
+        _args: Map<String, Value>,
+        signal: &'a InterruptSignal,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move {
+            signal.fire();
+            ToolOutcome {
+                result: error_tool_result("stopper: interrupted"),
+                is_error: true,
+            }
+        })
+    }
+}
+
+/// Incident: an interrupt during the first of three sequential calls left two calls with no
+/// result on disk, and the loop then sent one more billed request before settling as aborted.
+#[tokio::test]
+async fn an_interrupt_answers_every_call_and_sends_no_request()
+-> Result<(), Box<dyn std::error::Error>> {
+    let calls = (0..3)
+        .map(|index| faux_tool_call(&format!("call-{index}"), "stopper", Map::new()))
+        .collect();
+    let stream = Scripted::new(vec![
+        faux_assistant_message(calls, StopReason::ToolUse),
+        faux_assistant_message(vec![faux_text("never requested")], StopReason::Stop),
+    ]);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(Stopper)],
+    };
+    let compactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&compactions);
+    let mut config = LoopConfig::new(faux_model());
+    config.maybe_compact = Some(Box::new(move |_: &[AgentMessage]| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { None })
+    }));
+    let signal = InterruptSignal::default();
+    let (events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let answered: Vec<&str> = collected
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::ToolResult { tool_call_id, .. } => Some(tool_call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        answered,
+        ["call-0", "call-1", "call-2"],
+        "every call has a result"
+    );
+    let ends = events
+        .lock()
+        .map_err(|error| error.to_string())?
+        .iter()
+        .filter(|event| matches!(event, AgentEvent::ToolExecutionEnd { .. }))
+        .count();
+    assert_eq!(ends, 3, "the host sees every call end");
+    assert_eq!(stream.choices().len(), 1, "no request after the interrupt");
+    assert_eq!(
+        compactions.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "no summarizer request after the interrupt"
+    );
+    assert!(matches!(
+        collected.last(),
+        Some(AgentMessage::Assistant {
+            stop_reason: StopReason::Aborted,
+            ..
+        })
+    ));
+    Ok(())
+}

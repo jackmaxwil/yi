@@ -39,7 +39,7 @@ fails on an undeclared edge, an unlisted crate or a stale entry. Size ceilings a
 | Crate | Owns | Internal deps |
 |---|---|---|
 | `yi-types` | Serialized shapes: messages, events, entries, wire, config, plan, mail, lane, url | none |
-| `yi-loop` | `run_loop`, `LoopConfig`, `AgentTool`, interrupt signal and soft-interrupt queue, tool-name repair | yi-types |
+| `yi-loop` | `run_loop`, `LoopConfig`, `AgentTool`, interrupt signal, tool-name repair | yi-types |
 | `yi-ai` | Provider streams, model catalog, retry, SSE | yi-types, yi-oauth |
 | `yi-oauth` | PKCE, loopback callback, token store, `login`/`logout` | yi-types |
 | `yi-orb` | Orb geometry and kitty-graphics painter | none |
@@ -133,7 +133,8 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 - `async fn run_loop(&mut LoopContext, Vec<AgentMessage>, &LoopConfig, &InterruptSignal, emit,
   &impl StreamFn) -> Vec<AgentMessage>`. Failures are values: `StopReason::Error` or `Aborted`
   ends the run; `AgentTool::validate` is the one `Result`. Every exit emits `AgentEnd`.
-- Per request: `maybe_compact` → `transform_context` → `convert_to_llm` → `StreamFn::stream`.
+- Per request: `maybe_compact` → `transform_context` → `convert_to_llm` → `StreamFn::stream`;
+  once the interrupt has fired neither `maybe_compact` nor `StreamFn::stream` runs (§4.5).
   Steering is taken after each turn; follow-ups only when the loop would end.
 - A maximal run of `Parallel` calls executes concurrently; the first `Sequential` call closes it.
   `StopReason::Length` fails every tool call in the message unrun.
@@ -147,7 +148,7 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 | reasoning cut | 48,000 reasoning chars set the cut flag (§4.5); kept as a bare `Length` stop and re-driven; 6 cuts per prompt end the run |
 | `stream_retry` | once per error streak, when the error turn showed no text and no call |
 
-- Owner: [`crates/loop/src/`](../crates/loop/src/); Settled by: D145, D163, D175, D178, D179, D197
+- Owner: [`crates/loop/src/`](../crates/loop/src/); Settled by: D145, D163, D175, D178, D179, D197, D245
 - State: [`LoopConfig`](../crates/loop/src/config.rs) (the hooks above);
   `ExecutionMode { Sequential, Parallel }` (default `Parallel`); `NextTurn { model, thinking }`.
 - Shapes: `AgentEvent { AgentStart, AgentEnd, TurnStart, TurnEnd, MessageStart, MessageUpdate,
@@ -189,10 +190,11 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 ### 4.5 Interrupt
 - `abort` fires `InterruptSignal` (sets `fired`, bumps `epoch`, wakes waiters); a run clears
   `fired` only if the epoch is the one read at admission. A streaming request ends with its
-  partial as `Aborted`; an unstarted call returns `ToolErrorKind::Aborted`; running tools see
-  their cancel flag; no later batch starts.
+  partial as `Aborted`; every call not yet run is answered `ToolErrorKind::Aborted` with its
+  start and end events; running tools see their cancel flag. A fired interrupt sends no further
+  request, a compaction summarizer's included: the run settles as an empty `Aborted` turn.
 - `cut` is a separate flag, set by the loop and read by provider pumps between SSE events.
-- Owner: [`crates/loop/src/interrupt.rs`](../crates/loop/src/interrupt.rs); Settled by: D163
+- Owner: [`crates/loop/src/interrupt.rs`](../crates/loop/src/interrupt.rs); Settled by: D163, D245
 
 ## 5. Provider
 yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a 256-slot channel.
