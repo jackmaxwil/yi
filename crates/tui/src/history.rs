@@ -163,7 +163,7 @@ impl History {
         mode: TranscriptMode,
         rows: usize,
         at_most: usize,
-    ) -> (usize, Vec<Line<'static>>) {
+    ) -> (usize, Vec<Line<'static>>, Vec<usize>) {
         self.rendered(width, theme, mode, (rows, at_most), |start, cells| {
             let mut held = 0usize;
             let mut from = start.saturating_add(cells.len());
@@ -175,11 +175,28 @@ impl History {
                 }
             }
             let tail = cells.get(from.saturating_sub(start)..).unwrap_or_default();
-            (
-                from,
-                squeeze_blanks(tail.iter().flatten().cloned().collect()),
-            )
+            let mut lines: Vec<Line<'static>> = Vec::new();
+            let mut owners = Vec::new();
+            for (index, line) in (from..)
+                .zip(tail)
+                .flat_map(|(i, rows)| rows.iter().map(move |l| (i, l)))
+            {
+                if is_blank(line) && lines.last().is_some_and(is_blank) {
+                    continue;
+                }
+                lines.push(line.clone());
+                owners.push(index);
+            }
+            (from, lines, owners)
         })
+    }
+
+    pub fn source(&self, index: usize) -> Option<&str> {
+        match self.cells.get(index)? {
+            Cell::User { text } => Some(text),
+            Cell::Assistant { markdown } | Cell::Thought { markdown } => Some(markdown),
+            _ => None,
+        }
     }
 
     pub fn lines(
