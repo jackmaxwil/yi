@@ -221,6 +221,40 @@ fn an_engine_init_on_a_fresh_directory_publishes_the_gitignore() -> TestResult {
     Ok(())
 }
 
+/// D254: the schema is a build output of `PLAN_SCHEMA`, republished on every open, never a
+/// tracked document unlike `plan.json`; git's own ignore rules are the ground truth here, not
+/// a string match on our own write.
+#[test]
+fn the_schema_dir_is_git_ignored_after_a_publish() -> TestResult {
+    let scratch = Scratch::new("yi-plan-ops-schema-ignore")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test asserts against git's own ignore rules, not our own string"
+    )]
+    let init = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .arg(&scratch)
+        .status()?;
+    assert!(init.success(), "git init failed");
+    let plans = scratch.join(".yi/plans");
+    std::fs::create_dir_all(&plans)?;
+    PlanStore::open(plans)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test asserts against git's own ignore rules, not our own string"
+    )]
+    let ignored = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&scratch)
+        .args(["check-ignore", "-q", ".yi/schemas/plan.schema.json"])
+        .status()?;
+    assert!(
+        ignored.success(),
+        "the generated schema is not ignored by git"
+    );
+    Ok(())
+}
+
 #[test]
 fn width_is_the_family_cap_not_the_host() -> TestResult {
     // This replaces width_clamps_low_and_high, which pinned width(1) = 1 and width(2) = 1.
