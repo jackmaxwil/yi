@@ -752,6 +752,13 @@ impl AcpState {
                 let reply = match command {
                     "sessions" => self.sessions_text()?,
                     "undo" => undo_text(&handle.session, &self.cwd),
+                    // Routed through `_yi/heartbeat`, not `slash::run`, so the client keeps `_yi/heartbeat_changed` (C9).
+                    "heartbeat" => {
+                        return self.handle_extension(
+                            "_yi/heartbeat",
+                            &json!({"sessionId": session_id, "command": args}),
+                        );
+                    }
                     other => yi_runtime::slash::run(&handle.session, other, args)
                         .ok_or((INVALID_PARAMS, format!("unknown command: /{other}")))?,
                 };
@@ -769,9 +776,7 @@ impl AcpState {
                     .session
                     .heartbeat_service()
                     .ok_or((INTERNAL_ERROR, "no scheduler is attached".to_owned()))?;
-                let outcome = yi_runtime::schedule::parse_heartbeat_command(text("command"))
-                    .and_then(|parsed| service.apply(&parsed, yi_runtime::session_store::now_ms()));
-                match outcome {
+                match service.run(text("command")) {
                     Ok(reply) => {
                         self.emit_heartbeat_changed(&session_id, &reply);
                         Ok(json!({"text": reply}))

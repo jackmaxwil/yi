@@ -203,6 +203,88 @@ async fn compact_now_applies_immediately_when_idle() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// The summarizer ran but the entry never reached disk: the live history must stay what a
+/// resume loads, the model must read why at the next request, and a disk that stays broken
+/// must not buy another summarizer call at every boundary.
+#[tokio::test]
+async fn a_compaction_that_fails_to_write_is_not_applied() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-unsaved")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-test");
+    let store = repo.create(CreateOptions {
+        id: Some("unsaved".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("long body {}", "y".repeat(400)), 100, 5_000),
+        faux_assistant_message(
+            vec![faux_text("## Goal\nUnsaved summary")],
+            StopReason::Stop,
+        ),
+        reply_with_usage("after the notice", 50, 300),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("please do the thing with sufficient text here")?;
+    session.wait_idle().await;
+
+    // A path swap, not a chmod: CI runs as root, and a directory refuses the append (EISDIR).
+    let path = yi_session::lock_session(&store)
+        .file_path()
+        .cloned()
+        .ok_or("file-backed store")?;
+    let aside = path.with_extension("aside");
+    std::fs::rename(&path, &aside)?;
+    std::fs::create_dir(&path)?;
+    let applied = session.compact_now().await;
+    let live = session.messages();
+    let error = session.store_error().unwrap_or_default();
+    session.prompt("next ask")?;
+    session.wait_idle().await;
+    std::fs::remove_dir(&path)?;
+    std::fs::rename(&aside, &path)?;
+
+    let resumed = session_for_compaction(Arc::new(ProviderStream::new(None, None)));
+    resumed.attach_store(repo.open("unsaved")?)?;
+    assert_eq!(
+        live,
+        resumed.messages(),
+        "live history must be what a resume loads"
+    );
+    assert!(!applied, "an unsaved compaction must not report applied");
+    assert!(
+        error.contains("Failed to append session"),
+        "store_error: {error:?}"
+    );
+
+    let messages = session.messages();
+    let text_of = |message: &AgentMessage| match message {
+        AgentMessage::User {
+            content: UserContent::Text(text),
+            ..
+        } => text.clone(),
+        AgentMessage::Assistant { content, .. } => {
+            serde_json::to_string(content).unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+    let texts: Vec<String> = messages.iter().map(text_of).collect();
+    let (answer, asked) = texts.split_last().ok_or("no reply")?;
+    assert!(
+        answer.contains("after the notice"),
+        "the queued reply must answer the turn, not feed a second summarizer call: {texts:#?}"
+    );
+    assert!(
+        asked
+            .iter()
+            .any(|text| text.starts_with("[compaction not saved: ")
+                && text.contains("Failed to append session")
+                && text.ends_with("history left uncompacted, /compact retries]")),
+        "the next request must carry the notice: {texts:#?}"
+    );
+    Ok(())
+}
+
 /// Both recall tests need the same shape: a probe turn whose long tool body hides `needle`,
 /// then two live asks that trip the boundary and compact that turn away.
 struct Recalled {
@@ -404,7 +486,7 @@ async fn an_unknown_usage_never_pins_the_window_prefill() -> Result<(), Box<dyn 
                 &signal,
             )
             .await
-            .is_some()
+            .is_ok_and(|replaced| replaced.is_some())
     }
 
     assert!(
