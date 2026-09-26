@@ -23,7 +23,7 @@
   {"name": "todo.ladder_top", "home": "crates/runtime/src/todo/coupling.rs", "symbol": "gate::LADDER_TOP", "kind": "loop", "default": 3, "min": 1, "max": 3, "tunable": false, "why": "the ladder has three rung texts; a fourth rung has nothing to say"},
   {"name": "family.max_children", "home": "crates/runtime/src/subagent.rs", "symbol": "DEFAULT_MAX_CHILDREN", "kind": "admission", "default": 8, "min": 2, "max": 16, "tunable": true},
   {"name": "family.cap", "home": "crates/runtime/src/subagent.rs", "symbol": "FAMILY_CAP", "kind": "admission", "default": 16, "min": 4, "max": 32, "tunable": true},
-  {"name": "family.depth", "home": "crates/runtime/src/subagent.rs", "symbol": "DEFAULT_MAX_DEPTH", "kind": "admission", "default": 1, "min": 1, "max": 3, "tunable": false, "why": "already the config key rlm.maxDepth; a trial sets it there"},
+  {"name": "family.depth", "home": "crates/types/src/config.rs", "symbol": "DEFAULT_MAX_DEPTH", "kind": "admission", "default": 1, "min": 1, "max": 3, "tunable": false, "why": "already the config key rlm.maxDepth; a trial sets it there"},
   {"name": "family.stuck_idle_s", "home": "crates/runtime/src/family.rs", "symbol": "STUCK_IDLE_MS", "kind": "timer", "default": 300, "min": 60, "max": 1800, "tunable": true},
   {"name": "mail.wait_min_ms", "home": "crates/runtime/src/mailbox.rs", "symbol": "WAIT_MIN_MS", "kind": "caps", "default": 1000, "min": 100, "max": 10000, "tunable": false, "why": "a size cap on what one message may carry, not a policy"},
   {"name": "mail.wait_max_ms", "home": "crates/runtime/src/mailbox.rs", "symbol": "WAIT_MAX_MS", "kind": "caps", "default": 300000, "min": 10000, "max": 3600000, "tunable": false, "why": "a size cap on what one message may carry, not a policy"},
@@ -42,7 +42,6 @@
   {"name": "loop.repeat_stop_at", "home": "crates/loop/src/run.rs", "symbol": "REPEAT_STOP_AT", "kind": "loop", "default": 6, "min": 2, "max": 12, "tunable": false, "why": "owned by yi-loop, below the runtime; no Levers read reaches it"},
   {"name": "loop.reasoning_cap", "home": "crates/loop/src/reasoning.rs", "symbol": "REASONING_CHAR_CAP", "kind": "loop", "default": 48000, "min": 8000, "max": 200000, "tunable": false, "why": "owned by yi-loop, below the runtime; no Levers read reaches it"},
   {"name": "tools.reduce_floor", "home": "crates/tools/src/reduce.rs", "symbol": "REDUCE_FLOOR", "kind": "reducer", "default": 8192, "min": 2048, "max": 32768, "tunable": false, "why": "the bash description names the number, so moving it moves the tool bytes"},
-  {"name": "advisor.cadence", "home": "crates/runtime/src/advisor/mod.rs", "symbol": "DEFAULT_CADENCE", "kind": "cadence", "default": 25, "min": 5, "max": 100, "tunable": false, "why": "the cadence review is off unless the config names one"},
   {"name": "review.timeout_s", "home": "crates/runtime/src/auto_review.rs", "symbol": "REVIEW_TIMEOUT", "kind": "envelope", "default": 30, "min": 10, "max": 120, "tunable": true},
   {"name": "graph.next_lines", "home": "crates/runtime/src/todo/text.rs", "symbol": "NEXT_LINES", "kind": "render", "default": 3, "min": 1, "max": 5, "tunable": true}
  ]
