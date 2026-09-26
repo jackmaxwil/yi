@@ -58,7 +58,7 @@ run "$PY" scripts/pr_body.py --selfcheck
 # pass every change or refuse every run; only this flag walks the delta cases.
 run "$PY" scripts/guardrails/check_request_budget.py --selfcheck
 # The hard cap is checked independent of the baseline file, so nothing here reads
-# target/dist/yi; only this flag proves the cap fires on its own reason (D244).
+# target/dist/yi; only this flag proves the cap fires on its own reason (D249).
 run "$PY" scripts/guardrails/check_binary_size.py --selfcheck
 # The size-report comment is upserted by marker, and a marker that stops matching
 # posts a duplicate rather than failing; only this flag exercises the routing.
@@ -86,7 +86,7 @@ run "$PY" scripts/guardrails/check_orphans.py --selfcheck
 # exclusion and substitution; a model that drifts from it passes a leak (D172).
 run "$PY" scripts/guardrails/check_public_surface.py --selfcheck
 # Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
-# are the reference. Config and the domain-word allowlist live in .codespellrc.
+# set the spelling. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else run sh -c 'echo "FAIL codespell (uv tool install codespell)"; exit 1'; fi
 # binary_size and startup are the only two readers of target/dist/yi, and the
 # fat-LTO build that writes it is minutes, so this is where it is paid for

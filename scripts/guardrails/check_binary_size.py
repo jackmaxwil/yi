@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Dist binary size budget (13.6, D31: ratchets measure dist, never release).
-D244 hard cap: PR #436 hand-typed the baseline straight to 7 MiB in an empty-body
+D249 hard cap: PR #436 hand-typed the baseline straight to 7 MiB in an empty-body
 commit, and the ratchet then hid 865,648 bytes of growth across 20 PRs because
 nothing checked the baseline itself. The cap below is checked independently of
 baselines/binary_size_budget.json so the baseline can never be edited past it."""
@@ -8,15 +8,15 @@ import json, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import BASE, DIST_BIN, fail
 
-HARD_CAP_BYTES = 7_340_032  # 7 MiB, D244
+HARD_CAP_BYTES = 7_340_032  # 7 MiB, D249
 
 
 def problems(size, budget, hard_cap=HARD_CAP_BYTES):
     errs = []
     if budget > hard_cap:
-        errs.append(f"binary_size_budget.json max_bytes {budget} > hard cap {hard_cap} bytes (7 MiB, D244)")
+        errs.append(f"binary_size_budget.json max_bytes {budget} > hard cap {hard_cap} bytes (7 MiB, D249)")
     if size > hard_cap:
-        errs.append(f"dist binary {size} > hard cap {hard_cap} bytes (7 MiB, D244)")
+        errs.append(f"dist binary {size} > hard cap {hard_cap} bytes (7 MiB, D249)")
     elif size > budget:
         errs.append(f"dist binary {size} > {budget} bytes")
     return errs
@@ -27,10 +27,10 @@ def selfcheck():
     cap = 1_000_000
     # a baseline hand-edited above the cap fails even though no binary was measured over it
     errs = problems(500_000, 2_000_000, hard_cap=cap)
-    assert errs == [f"binary_size_budget.json max_bytes 2000000 > hard cap {cap} bytes (7 MiB, D244)"], errs
+    assert errs == [f"binary_size_budget.json max_bytes 2000000 > hard cap {cap} bytes (7 MiB, D249)"], errs
     # the cap catches an over-cap size even with a compliant baseline at the cap itself
     errs = problems(1_500_000, cap, hard_cap=cap)
-    assert errs == [f"dist binary 1500000 > hard cap {cap} bytes (7 MiB, D244)"], errs
+    assert errs == [f"dist binary 1500000 > hard cap {cap} bytes (7 MiB, D249)"], errs
     # under the cap, the ordinary per-PR ratchet still fires on its own
     errs = problems(900_000, 800_000, hard_cap=cap)
     assert errs == ["dist binary 900000 > 800000 bytes"], errs

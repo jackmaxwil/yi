@@ -1,5 +1,7 @@
 # Native methodology + the Yi extension system
 
+Landed: 0.62.0.
+
 Status: **implemented** at ARCHITECTURE 0.62.0; §19 records what shipped and
 where the build deviates from this text. v4. Supersedes YI_DESIGN.md §14.1 (bundled skills) and
 §14.2 (native modes) in their entirety. v2 introduced the extension system

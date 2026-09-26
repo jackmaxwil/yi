@@ -735,7 +735,7 @@ impl SubagentHost {
         }
     }
 
-    /// B11 hand-back through the acceptance mechanics: settled, staged, published under the
+    /// Worktree hand-back through the acceptance mechanics: settled, staged, published under the
     /// generation check (one retry on a moved parent); a conflict answers `merged: false`.
     pub fn merge_worktree(&self, target: &str) -> Result<Map<String, Value>, String> {
         let (lane, name) = self.take_settled_worktree(target)?;

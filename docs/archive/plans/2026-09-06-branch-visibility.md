@@ -1,5 +1,7 @@
 # Where the work is: worktree and branch visibility in yi
 
+Landed: D143, D144 (0.175.0).
+
 Status: built as D143 and D144 (0.175.0), in the order §5 names: the branch
 reader, then the lane line, then the two verbs, with §6's amendments. Departures
 from §4, and why: `yi doctor` still fails on every left slot and still names

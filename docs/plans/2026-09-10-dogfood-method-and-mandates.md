@@ -1,9 +1,11 @@
 # Dogfooding Yi's tools: the method, and the checks it mandates
 
+Open: the `just dogfood` harnesses (§4) and the tier-2 document journeys (§7). The yi-dogfood skill, the tool-surface lock (D188) and the PR gate's dogfood table landed.
+
 ```
 status:  PROPOSED (#376)
 date:    2026-09-10
-inputs:  docs/plans/2026-09-09-anydoc-and-pdf-inspector.md §12 (as built, round
+inputs:  docs/archive/plans/2026-09-09-anydoc-and-pdf-inspector.md §12 (as built, round
          two, round three) · PR #369, PR #371, issue #368 · this tree at 2d1d7aa:
          crates/tools/src/{document.rs,ipython.rs,hashline/tool.rs,grep.rs,lib.rs},
          crates/kernel/src/bootstrap.rs, crates/runtime/src/{wiring.rs,kernel.rs,

@@ -14,7 +14,7 @@ pub const AUTO_REVIEW_PROMPT: &str = include_str!("prompts/auto_review.md");
 /// stalled provider would stall the agent. Past the cap the answer is a denial, not a wait.
 pub const REVIEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// One appended sentence when the role is named (M11): a model that is not
+/// One appended sentence when the role is named (§8): a model that is not
 /// told a denial is answerable just retries the denied call.
 pub fn review_fragment() -> &'static str {
     "An auto reviewer screens calls this mode cannot prove safe. A refusal names a request number; call ask_user with that number to put the call to the user, and never re-issue the same call hoping for a different answer."
