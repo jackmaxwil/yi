@@ -406,7 +406,7 @@ fn checkpoint_restore_reverts_a_turn() -> TestResult {
     fs::remove_file(project.join("removed.txt"))?;
     fs::write(project.join("created.txt"), "new\n")?;
 
-    let mut changed = checkpoints.restore(&turn_start)?;
+    let mut changed = checkpoints.restore(&turn_start, None)?;
     changed.sort_by(|left, right| left.path.cmp(&right.path));
     let names: Vec<String> = changed
         .iter()
@@ -416,6 +416,61 @@ fn checkpoint_restore_reverts_a_turn() -> TestResult {
     assert_eq!(fs::read_to_string(project.join("kept.txt"))?, "before\n");
     assert_eq!(fs::read_to_string(project.join("removed.txt"))?, "gone\n");
     assert!(!project.join("created.txt").exists());
+    Ok(())
+}
+
+#[test]
+fn checkpoint_restore_keeps_what_was_edited_after_the_turn() -> TestResult {
+    let project = temp_dir("checkpoint-kept-project")?;
+    let shadow = temp_dir("checkpoint-kept-shadow")?;
+    fs::write(project.join("a.txt"), "before\n")?;
+    fs::write(project.join("b.txt"), "before\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&shadow, &project)?;
+    let turn_start = checkpoints.capture()?;
+    fs::write(project.join("a.txt"), "turn\n")?;
+    fs::write(project.join("n.txt"), "turn\n")?;
+    let turn_end = checkpoints.capture()?;
+    fs::write(project.join("a.txt"), "hand\n")?;
+    fs::write(project.join("b.txt"), "hand\n")?;
+    fs::write(project.join("c.txt"), "hand\n")?;
+
+    let mut changed = checkpoints.restore(&turn_start, Some(&turn_end))?;
+    changed.sort_by(|left, right| left.path.cmp(&right.path));
+    let listed: Vec<(String, yi_tools::ChangeKind)> = changed
+        .iter()
+        .map(|change| (change.path.display().to_string(), change.kind))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("a.txt".to_owned(), yi_tools::ChangeKind::Kept),
+            ("n.txt".to_owned(), yi_tools::ChangeKind::Deleted),
+        ]
+    );
+    assert_eq!(fs::read_to_string(project.join("a.txt"))?, "hand\n");
+    assert_eq!(fs::read_to_string(project.join("b.txt"))?, "hand\n");
+    assert_eq!(fs::read_to_string(project.join("c.txt"))?, "hand\n");
+    assert!(!project.join("n.txt").exists());
+    Ok(())
+}
+
+#[test]
+fn checkpoint_restore_undoes_a_rename() -> TestResult {
+    let project = temp_dir("checkpoint-rename-project")?;
+    let shadow = temp_dir("checkpoint-rename-shadow")?;
+    fs::write(project.join("a.txt"), "same content either name\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&shadow, &project)?;
+    let turn_start = checkpoints.capture()?;
+    fs::rename(project.join("a.txt"), project.join("b.txt"))?;
+    let turn_end = checkpoints.capture()?;
+
+    let changed = checkpoints.restore(&turn_start, Some(&turn_end))?;
+    assert_eq!(changed.len(), 2, "{changed:?}");
+    assert_eq!(
+        fs::read_to_string(project.join("a.txt"))?,
+        "same content either name\n"
+    );
+    assert!(!project.join("b.txt").exists());
     Ok(())
 }
 
@@ -1807,5 +1862,57 @@ fn a_wrong_typed_argument_is_not_reported_as_missing() -> TestResult {
     assert!(!text.contains("missing"), "{text}");
     assert!(text.contains("a JSON object, not a string"), "{text}");
     assert!(text.contains("json.dumps"), "{text}");
+    Ok(())
+}
+
+/// A path that does not exist answered "No matches found", a clean miss over a typo.
+#[test]
+fn grep_refuses_a_missing_path_naming_it() -> TestResult {
+    let dir = temp_dir("grep-missing-path")?;
+    fs::write(dir.join("one.txt"), "needle\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let missing = GrepTool::default().execute(
+        args(&[("pattern", json!("needle")), ("path", json!("nope/"))]),
+        &context,
+    );
+    let text = output_text(&missing);
+    assert!(missing.is_error, "{text}");
+    assert!(text.contains("nope/"), "{text}");
+    assert!(!text.contains("No matches found"), "{text}");
+    Ok(())
+}
+
+/// A negative offset became 0 and paged from the top as if the request were fine.
+#[test]
+fn grep_refuses_a_negative_offset() -> TestResult {
+    let dir = temp_dir("grep-negative-offset")?;
+    fs::write(dir.join("one.txt"), "needle\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let refused = GrepTool::default().execute(
+        args(&[("pattern", json!("needle")), ("offset", json!(-1))]),
+        &context,
+    );
+    let text = output_text(&refused);
+    assert!(refused.is_error, "{text}");
+    assert!(text.contains("offset") && text.contains("-1"), "{text}");
+    Ok(())
+}
+
+/// A negative context ran with 0 and said nothing, unlike the clamp of a large one.
+#[test]
+fn grep_reports_a_context_it_could_not_honour() -> TestResult {
+    let dir = temp_dir("grep-negative-context")?;
+    fs::write(dir.join("one.txt"), "needle\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let ran = GrepTool::default().execute(
+        args(&[("pattern", json!("needle")), ("context", json!(-2))]),
+        &context,
+    );
+    let text = output_text(&ran);
+    assert!(text.contains("one.txt:1:needle"), "{text}");
+    assert!(
+        text.contains("[context ignored: asked -2, not a non-negative integer; 0 used]"),
+        "{text}"
+    );
     Ok(())
 }

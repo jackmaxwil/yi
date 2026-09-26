@@ -220,7 +220,15 @@ edited by hand.
 - [D241](adr/d241.md) - the kernel's `bash()` runs inside the kernel's own sandbox
 - [D240](adr/d240.md) - a contained kernel may write its family board (amends D87)
 - [D239](adr/d239.md) - one process owns a session's kernel snapshot (amends K10)
+- [D246](adr/d246.md) - yi defers a heartbeat on streaming, compacting or queued work (amends H8)
 - [D244](adr/d244.md) - syntax highlighting reads bat's grammar set through `two-face` (default...
 - [D243](adr/d243.md) - the design states what is built and names no other agent
+- [D248](adr/d248.md) - a restore moves only what the turn moved
+- [D247](adr/d247.md) - D220's inventory is corrected at two rows, count 45 -> 44 (amends D220)
+- [D251](adr/d251.md) - the advisor's cadence review path is deleted outright (amends D56)
+- [D245](adr/d245.md) - a fired interrupt answers every unrun call as `Aborted` and sends no further...
+- [D249](adr/d249.md) - the dist binary budget is a measured ratchet under a hard cap of 8 MiB, not...
+- [D253](adr/d253.md) - the hashline shapes the patch docs call WRONG are refused, not repaired...
+- [D254](adr/d254.md) - The plan tool keeps recording into `.yi/plans/` under the process cwd, as today
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

@@ -487,7 +487,8 @@ impl<'a> Patcher<'a> {
         let Some(seen) = &snapshot.seen_lines else {
             return Ok(());
         };
-        if seen.is_empty() {
+        // Incident: a `read` with `limit: 0` recorded an empty set, read here as unrestricted.
+        if seen.is_empty() && snapshot.text.is_empty() {
             return Ok(());
         }
         let lines = u64::try_from(snapshot.text.split('\n').count()).unwrap_or(u64::MAX);
@@ -639,13 +640,21 @@ impl<'a> Patcher<'a> {
         expected_text: &str,
         hash_recognized: bool,
     ) -> Result<MismatchError, String> {
-        let actual = self.snapshots.record(canonical_path, normalized, None);
+        let file_lines: Vec<String> = normalized.split('\n').map(str::to_owned).collect();
+        let anchor_lines = section.collect_anchor_lines()?;
+        let shown = anchored_lines(
+            &anchor_lines,
+            u64::try_from(file_lines.len()).unwrap_or(u64::MAX),
+        );
+        let actual = self
+            .snapshots
+            .record(canonical_path, normalized, Some(&shown));
         Ok(MismatchError {
             path: Some(section.path.clone()),
             expected_file_hash: expected_text.to_owned(),
             actual_file_hash: actual,
-            file_lines: normalized.split('\n').map(str::to_owned).collect(),
-            anchor_lines: section.collect_anchor_lines()?,
+            file_lines,
+            anchor_lines,
             hash_recognized,
         })
     }
