@@ -89,6 +89,74 @@ fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// D85's row for the login verbs (D191): a key piped on stdin lands 0600 in the
+/// token store, an unknown provider names the profile path, and bare `yi logout`
+/// clears even a token whose profile is gone. The login fast path answers before
+/// the shared flags parse, so the binary is driven directly.
+#[test]
+fn login_logout_round_trip() -> TestResult {
+    let workspace = Workspace::new("login")?;
+    let home = workspace.0.join("home");
+    let login = |args: &[&str], stdin_text: &str| -> Result<Output, Box<dyn Error>> {
+        use std::io::Write;
+        use std::process::Stdio;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the login fast path's contract is argv, stdin, exit code and files"
+        )]
+        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        let mut child = command
+            .args(args)
+            .env("HOME", &home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .take()
+            .ok_or("stdin")?
+            .write_all(stdin_text.as_bytes())?;
+        Ok(child.wait_with_output()?)
+    };
+
+    let listed = login(&["login", "--list"], "")?;
+    assert_eq!(listed.status.code(), Some(0));
+    assert!(stdout(&listed).contains("openai"), "{}", stdout(&listed));
+
+    let unknown = login(&["login", "bogus"], "")?;
+    assert_eq!(unknown.status.code(), Some(2));
+    let complaint = String::from_utf8_lossy(&unknown.stderr).into_owned();
+    assert!(complaint.contains(".yi/oauth/bogus.json"), "{complaint}");
+
+    // The documented path: the key comes from stdin, never argv.
+    let saved = login(&["login", "openai"], "sk-test-pasted\n")?;
+    assert_eq!(saved.status.code(), Some(0), "{:?}", saved);
+    let token = home.join(".yi/providers/tokens/openai.json");
+    let stored: Value = serde_json::from_str(&std::fs::read_to_string(&token)?)?;
+    assert_eq!(stored["kind"], "key");
+    assert_eq!(stored["access"], "sk-test-pasted");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&token)?.permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    // A token whose profile was never written still logs out.
+    std::fs::write(
+        home.join(".yi/providers/tokens/lonely.json"),
+        r#"{"version":1,"kind":"key","access":"x"}"#,
+    )?;
+    let cleared = login(&["logout"], "")?;
+    assert_eq!(cleared.status.code(), Some(0));
+    assert!(!token.exists(), "openai token removed");
+    assert!(!home.join(".yi/providers/tokens/lonely.json").exists());
+    Ok(())
+}
+
 fn ask(workspace: &Workspace, prompt: &str, extra: &[&str]) -> Result<Output, Box<dyn Error>> {
     let mut args = vec!["ask", "--model", "faux/faux-1"];
     args.extend_from_slice(extra);
@@ -141,10 +209,22 @@ fn sessions_rm_removes_the_session() -> TestResult {
         .and_then(Value::as_str)
         .ok_or("no session id")?
         .to_owned();
+    let family = workspace.0.join("home/sessions/family");
+    std::fs::create_dir_all(family.join(&id))?;
+    std::fs::write(family.join(&id).join("note.json"), "{}")?;
+    std::fs::create_dir_all(family.join("other"))?;
     workspace.yi(&["sessions", "rm", &id])?;
     let after: Value =
         serde_json::from_str(&stdout(&workspace.yi(&["sessions", "--json", "list"])?))?;
     assert_eq!(after.as_array().map(Vec::len), Some(0));
+    assert!(
+        !family.join(&id).exists(),
+        "the D242 board outlives its session"
+    );
+    assert!(
+        family.join("other").exists(),
+        "rm reached another session's board"
+    );
     Ok(())
 }
 
@@ -222,7 +302,7 @@ fn undo_without_a_session_fails_loudly() -> TestResult {
     Ok(())
 }
 
-/// Checkpoints are a no-op without git (design 5.3), and so is this test.
+/// Checkpoints are a no-op without git (design §7.7), and so is this test.
 fn git_missing(output: &Output) -> bool {
     String::from_utf8_lossy(&output.stderr).contains("git is unavailable")
 }
@@ -380,6 +460,46 @@ fn a_broken_config_file_fails_instead_of_reading_as_absent() -> TestResult {
     assert_eq!(answered.status.code(), Some(2));
     let complaint = String::from_utf8_lossy(&answered.stderr);
     assert!(complaint.contains("config.json"), "{complaint}");
+    Ok(())
+}
+
+/// Invariant: the levers override rides an eval harness's own `--eval`, so the variable
+/// alone is inert in a user's run, `--deadline` or not, and a refused file stops the run
+/// before any model call (D220).
+#[test]
+fn yi_levers_is_read_only_under_the_eval_flag() -> TestResult {
+    let workspace = Workspace::new("levers")?;
+    let out_of_range = workspace.project().join("wide.json");
+    std::fs::write(&out_of_range, r#"{"plan.width_max": 99}"#)?;
+    let wide = out_of_range.display().to_string();
+    let refused = workspace.yi_env(
+        &["ask", "--model", "faux/faux-1", "--eval", "hi"],
+        &[("YI_LEVERS", wide.as_str())],
+    )?;
+    assert_eq!(refused.status.code(), Some(1));
+    let reason = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(
+        reason.contains("plan.width_max wants an integer in 1..=16, not 99")
+            && reason.contains("refusal:config"),
+        "{reason}"
+    );
+    for extra in [&[][..], &["--deadline", "600"][..]] {
+        let mut args = vec!["ask", "--model", "faux/faux-1"];
+        args.extend_from_slice(extra);
+        args.push("hi");
+        let ran = workspace.yi_env(&args, &[("YI_LEVERS", wide.as_str())])?;
+        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+        assert!(!said.contains("YI_LEVERS"), "the file was read: {said}");
+        assert!(!said.contains("levers:"), "the run was overridden: {said}");
+    }
+    let narrow = workspace.project().join("narrow.json");
+    std::fs::write(&narrow, r#"{"plan.width_max": 4}"#)?;
+    let announced = workspace.yi_env(
+        &["ask", "--model", "faux/faux-1", "--eval", "hi"],
+        &[("YI_LEVERS", narrow.display().to_string().as_str())],
+    )?;
+    let banner = String::from_utf8_lossy(&announced.stderr).into_owned();
+    assert!(banner.contains("levers: this run reads"), "{banner}");
     Ok(())
 }
 
@@ -650,10 +770,19 @@ fn catalog_reports_the_bundle_before_any_refresh() -> TestResult {
     let listed = workspace.yi(&["catalog"])?;
     assert_eq!(listed.status.code(), Some(0), "{}", stdout(&listed));
     let text = stdout(&listed);
-    for provider in ["anthropic", "openai", "openrouter"] {
+    for provider in [
+        "anthropic",
+        "openai",
+        "openrouter",
+        "openai-codex",
+        "google",
+    ] {
         assert!(text.contains(provider), "{text}");
     }
-    assert_eq!(text.matches("bundled only").count(), 3, "{text}");
+    // Every listed row is bundled-only before any refresh; the row count comes from the
+    // binary's own output so a new provider fails on presence, not on a stale count.
+    let rows = text.lines().filter(|line| !line.trim().is_empty()).count();
+    assert_eq!(text.matches("bundled only").count(), rows, "{text}");
     let wrong = workspace.yi(&["catalog", "purge"])?;
     assert_eq!(wrong.status.code(), Some(2));
     Ok(())
@@ -855,6 +984,27 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
     Ok(())
 }
 
+/// A report-only doctor on a machine with no toolchain says what the build would fetch; the
+/// dead proxy makes a regression fail fast instead of downloading uv.
+#[test]
+fn doctor_without_fix_reports_the_uv_fetch_instead_of_running_it() -> TestResult {
+    let workspace = Workspace::new("doctor-no-toolchain")?;
+    let dead = "http://127.0.0.1:9";
+    let seen = workspace.yi_env(
+        &["doctor"],
+        &[("PATH", ""), ("ALL_PROXY", dead), ("HTTPS_PROXY", dead)],
+    )?;
+    let lines = doctor_lines(&seen);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("ok    kernel-toolchain") && l.contains("fetches uv")),
+        "{lines:?}"
+    );
+    assert!(!workspace.0.join("home/.yi/uv").exists());
+    Ok(())
+}
+
 /// A config that will not parse is what `doctor` exists to say; it must not die of it first.
 #[test]
 fn doctor_runs_over_a_broken_config_and_names_the_key() -> TestResult {
@@ -990,5 +1140,79 @@ fn memory_imports_lists_checks_and_forgets() -> TestResult {
     assert_eq!(show.status.code(), Some(1));
     let usage = workspace.yi(&["memory", "frobnicate"])?;
     assert_eq!(usage.status.code(), Some(2));
+    Ok(())
+}
+
+/// A `--faux` script: a bash call running `command`, then `after` if given.
+fn bash_script(
+    workspace: &Workspace,
+    command: &str,
+    after: Option<&str>,
+) -> Result<String, Box<dyn Error>> {
+    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_types::message::StopReason;
+    let args = serde_json::json!({"command": command});
+    let call = faux_tool_call("c1", "bash", args.as_object().cloned().unwrap_or_default());
+    let mut lines = vec![serde_json::to_string(&faux_assistant_message(
+        vec![call],
+        StopReason::ToolUse,
+    ))?];
+    if let Some(text) = after {
+        let said = faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+        lines.push(serde_json::to_string(&said)?);
+    }
+    let path = workspace.project().join("script.jsonl");
+    std::fs::write(&path, lines.join("\n"))?;
+    Ok(path.display().to_string())
+}
+
+/// Dies with the last word started at `--deadline` and followed 90 s past it: the eval
+/// harness kills `yi ask` at the deadline, so the answer and the lane release were lost.
+#[test]
+fn a_run_past_its_deadline_answers_and_exits_inside_it() -> TestResult {
+    let workspace = Workspace::new("deadline-last-word")?;
+    let script = bash_script(&workspace, "sleep 100", Some("the last word"))?;
+    let started = std::time::Instant::now();
+    let answered = ask(
+        &workspace,
+        "go",
+        &["--faux", &script, "--json", "--deadline", "12"],
+    )?;
+    let took = started.elapsed();
+    assert!(took < std::time::Duration::from_secs(12), "{took:?}");
+    assert!(
+        stdout(&answered).contains("the last word"),
+        "{}",
+        stdout(&answered)
+    );
+    assert_eq!(answered.status.code(), Some(0));
+    Ok(())
+}
+
+/// Dies with the no-answer exit untried live: a run with no assistant text exits 1, and an
+/// eval run exits 0 and says `no_answer` in its stream, since harbor reads 1 as a crash.
+#[test]
+fn a_run_with_no_text_exits_one_except_under_eval() -> TestResult {
+    let workspace = Workspace::new("no-answer")?;
+    let script = bash_script(&workspace, "true", None)?;
+    let bare = ask(&workspace, "go", &["--faux", &script, "--json"])?;
+    assert_eq!(
+        bare.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&bare.stderr)
+    );
+    let eval = ask(&workspace, "go", &["--faux", &script, "--json", "--eval"])?;
+    assert_eq!(
+        eval.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&eval.stderr)
+    );
+    assert!(
+        stdout(&eval).contains(r#""type":"no_answer""#),
+        "{}",
+        stdout(&eval)
+    );
     Ok(())
 }

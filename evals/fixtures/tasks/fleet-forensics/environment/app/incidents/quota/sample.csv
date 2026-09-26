@@ -1,0 +1,56 @@
+﻿event_id,recorded_at,account,delta_bytes,note
+E-447037,2031-06-03T19:44:46+09:00,acct-birch,13690262,
+E-252704,1938100564000,acct-amber,4142515,"operator said ""retry later"""
+E-071690,2031-06-04T15:20:19+09:00,acct-amber,-2926553,"see the row below
+E-243701,1938320419000,acct-amber,104000000,forwarded"
+E-666509,2031-06-01T00:32:58+00:00,acct-amber,-4911986,"bulk import, batch 4"
+E-540074,1938381093000,acct-birch,"9,653,227",
+E-849606,02/06/2031 09:18:00 +0530,acct-amber,11968919,"operator said ""retry later"""
+E-408751,1938330498000,acct-amber,9738526,thumbnail pass
+E-498739,2031-06-04T17:54:22-05:00,acct-amber,10388793,
+E-863782,2031-06-03T01:31:11-05:00,acct-amber,+10917298,"operator said ""retry later"""
+E-064257,2031-06-02T20:41:33-08:00,acct-amber,-4675249,restore from cold tier
+E-412057,2031-06-02 21:20:34Z,acct-amber,"6,948,295",nightly sync
+E-828822,2031-06-02T11:41:05+05:30,acct-amber,5200387,
+E-398618,2031-06-01 23:26:25Z,acct-birch,11163585,
+E-786084,2031-06-02T19:03:03-05:00,acct-birch,10446753,
+E-819763,2031-06-04 22:57:44Z,acct-birch,13838726,
+E-286343,2031-06-02T08:48:22+00:00,acct-birch,5638275,"bulk import, batch 4"
+E-071690,03/06/2031 19:42:01 -0500,acct-amber,-2926553,
+E-367488,2031-06-01T06:26:54+05:30,acct-amber,3391863,"bulk import, batch 4"
+E-398618,1938142448000,acct-birch,11163585,"bulk import, batch 4"
+E-145736,2031-06-02T07:53:51+05:30,acct-amber,12988308,thumbnail pass
+E-390991,1938162081000,acct-birch,7876349,"operator said ""retry later"""
+E-500459,02/06/2031 04:31:37 -0500,acct-birch,4535223,"bulk import, batch 4"
+E-309670,2031-06-03 22:11:29Z,acct-amber,-7773859,
+E-478395,1938057589000,acct-amber,4339475,"operator said ""retry later"""
+E-514460,1938126484000,acct-amber,5590151,"operator said ""retry later"""
+E-140274,2031-06-01 18:59:36Z,acct-amber,6939334,nightly sync
+E-810355,03/06/2031 17:12:16 +0530,acct-birch,14681191,
+E-557907,1938212464000,acct-amber,8641910,restore from cold tier
+E-697211,1938171662000,acct-birch,5342867,thumbnail pass
+E-847716,03/06/2031 02:25:01 -0800,acct-birch,16287226,"operator said ""retry later"""
+E-947585,2031-06-03T05:01:29+05:30,acct-birch,"19,243,812","see the row below
+E-874172,2031-06-02 23:31:29Z,acct-birch,148000000,forwarded"
+E-032481,02/06/2031 10:21:57 +0900,acct-birch,17272377,thumbnail pass
+E-787095,1938112426000,acct-amber,-2433412,restore from cold tier
+E-849788,1938119897000,acct-birch,15856037,"operator said ""retry later"""
+E-144918,04/06/2031 10:33:20 +0530,acct-amber,12221342,
+E-581391,1938376683000,acct-birch,10123616,restore from cold tier
+E-218758,2031-06-01 08:57:49Z,acct-birch,"14,469,520",
+E-680596,04/06/2031 07:55:44 -0500,acct-birch,4323154,
+E-443528,1938038786000,acct-birch,7574999,
+E-736514,03/06/2031 17:00:31 +0530,acct-amber,5163786,"operator said ""retry later"""
+E-575962,1938124747000,acct-birch,16017629,"bulk import, batch 4"
+E-034124,04/06/2031 00:12:58 +0900,acct-birch,5844732,
+E-719365,2031-06-03T01:05:18+02:00,acct-amber,-1198782,nightly sync
+E-881645,1938338147000,acct-amber,2547340,thumbnail pass
+E-246543,2031-06-04T15:05:40+02:00,acct-amber,12861401,
+E-964533,2031-06-04 05:29:46Z,acct-birch,13925588,
+E-974907,1938382799000,acct-birch,9923927,
+E-922781,2031-06-03 15:08:55Z,acct-birch,18162768,nightly sync
+E-760834,1938117593000,acct-birch,"3,884,360",thumbnail pass
+E-440665,2031-06-03 18:52:23Z,acct-amber,11685159,thumbnail pass
+E-408751,04/06/2031 00:56:22 +0000,acct-amber,9738526,restore from cold tier
+E-408751,2031-06-04 03:53:53Z,acct-amber,9738526,
+E-252704,2031-06-01 16:07:12Z,acct-amber,4142515,

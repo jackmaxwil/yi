@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// Advice severity (design V6): `Note`/`Warn` land as advisory entries,
-/// `Hold` goes through the permission engine (M5) and degrades headless.
+/// Advice severity (design §16): `Note`/`Warn` land as advisory entries,
+/// `Hold` goes through the permission engine (§8) and degrades headless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AdvisorySeverity {
@@ -10,7 +10,7 @@ pub enum AdvisorySeverity {
     Hold,
 }
 
-/// What kind of problem the advice names (design V6).
+/// What kind of problem the advice names (design §16).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AdviceKind {
@@ -30,7 +30,7 @@ pub struct Advice {
     pub text: String,
 }
 
-/// Outcome record for one delivered advice (design V9): feeds
+/// Outcome record for one delivered advice (design §16): feeds
 /// `/advisor stats` and, later, cadence tuning.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

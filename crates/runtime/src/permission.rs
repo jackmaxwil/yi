@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
@@ -20,7 +21,7 @@ pub enum AskOutcome {
 }
 
 /// One approval request. `description` and `patch` are separate so a structured consumer
-/// (ACP C7) sends the patch as content while a text one renders `text()` over both.
+/// (ACP, §17.2) sends the patch as content while a text one renders `text()` over both.
 pub struct PermissionAsk<'a> {
     pub title: &'a str,
     pub description: &'a str,
@@ -68,6 +69,7 @@ pub struct PermissionBroker {
     /// nothing in this file behaves differently from before it existed.
     reviewer: std::sync::OnceLock<Arc<crate::auto_review::Reviewer>>,
     ledger: Mutex<ActionLedger>,
+    confirms: AtomicU64,
 }
 
 pub struct CallOutcome {
@@ -127,6 +129,7 @@ impl PermissionBroker {
             events,
             reviewer: std::sync::OnceLock::new(),
             ledger: Mutex::new(ActionLedger::new()),
+            confirms: AtomicU64::new(0),
         }
     }
 
@@ -167,6 +170,30 @@ impl PermissionBroker {
         self.contained_failures
             .lock()
             .is_ok_and(|failures| scopes.iter().any(|scope| failures.contains(scope)))
+    }
+
+    /// A question with no tool call behind it, asked once and answered once: an allow-always
+    /// is an allow-once here, so a confirmation never becomes a standing rule.
+    pub fn confirm(&self, ask: &PermissionAsk<'_>) -> AskOutcome {
+        let ordinal = self
+            .confirms
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let tool_call_id = format!("confirm-{ordinal}");
+        let _ = self.events.send(AgentEvent::PermissionRequested {
+            tool_call_id: tool_call_id.clone(),
+            title: ask.title.to_owned(),
+            description: ask.text(),
+        });
+        let outcome = self
+            .asker
+            .as_ref()
+            .map_or(AskOutcome::Reject, |asker| asker(ask));
+        let _ = self.events.send(AgentEvent::PermissionResolved {
+            tool_call_id,
+            allowed: matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_)),
+        });
+        outcome
     }
 
     /// Whether an interactive asker exists — without one, an advisor Hold
@@ -364,7 +391,7 @@ impl PermissionBroker {
         }
     }
 
-    /// The M7 gate. Off (no role named) or out of jurisdiction, this is exactly
+    /// The §8 auto-review gate. Off (no role named) or out of jurisdiction, this is exactly
     /// [`PermissionBroker::run_ask`] and nothing else has changed.
     fn gated_ask(
         &self,
@@ -520,26 +547,21 @@ impl PermissionBroker {
             };
         };
         let (sender, receiver) = std::sync::mpsc::channel();
+        let timeout = std::time::Duration::from_secs(crate::levers::get().review_timeout_s);
         handle.spawn(async move {
             // Incident: nothing held the join handle, so a stalled provider kept streaming,
             // and billing, past the denial below. The deadline rides the future itself.
-            let outcome = tokio::time::timeout(
-                crate::auto_review::REVIEW_TIMEOUT,
-                reviewer.review(&request),
-            )
-            .await
-            .unwrap_or_else(|_elapsed| crate::auto_review::ReviewOutcome::Deny {
-                reason: "the reviewer did not answer in time".to_owned(),
-            });
+            let outcome = tokio::time::timeout(timeout, reviewer.review(&request))
+                .await
+                .unwrap_or_else(|_elapsed| crate::auto_review::ReviewOutcome::Deny {
+                    reason: "the reviewer did not answer in time".to_owned(),
+                });
             let _receiver_may_have_timed_out = sender.send(outcome);
         });
         receiver
-            .recv_timeout(crate::auto_review::REVIEW_TIMEOUT)
+            .recv_timeout(timeout)
             .unwrap_or_else(|_| crate::auto_review::ReviewOutcome::Deny {
-                reason: format!(
-                    "the reviewer did not answer within {}s",
-                    crate::auto_review::REVIEW_TIMEOUT.as_secs()
-                ),
+                reason: format!("the reviewer did not answer within {}s", timeout.as_secs()),
             })
     }
 
@@ -643,12 +665,15 @@ impl PermissionBroker {
                     tool_call_id: tool_call_id.to_owned(),
                     allowed: false,
                 });
+                let asked = yi_permission::Decision::Ask {
+                    title: ask.title.to_owned(),
+                    description: rendered,
+                    reviewable: false,
+                };
                 return CallOutcome {
                     allowed: false,
                     contained: false,
-                    reason: format!(
-                        "Permission required but no interactive surface is available. {rendered} Run with --yolo, or add an allow rule for this call."
-                    ),
+                    reason: crate::gate::Report::reason_of(&crate::gate::compile_ask(asked, false)),
                 };
             }
         };

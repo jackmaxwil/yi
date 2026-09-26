@@ -1,16 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::subagent::ChildStatus;
-
 use serde_json::{Map, Value};
 use yi_types::model::Model;
 
 use crate::mailbox::{ParentLink, register_child_messaging};
 use crate::session::AgentSession;
-use crate::subagent::{
-    ChildBuild, ChildFactory, DEFAULT_MAX_CHILDREN, SubagentHost, SubagentHostOptions,
-};
+use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOptions};
 
 /// A child is a fresh session: it runs its own extensions against its own cwd
 /// and shares the universal cached prefix with its parent.
@@ -39,7 +35,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             schema_instruction: None,
             context_window: child.model().context_window,
         }));
-        attach_runtime(
+        let host = attach_runtime(
             &mut child,
             RuntimeWiring {
                 depth: wiring.depth.saturating_add(1),
@@ -47,10 +43,12 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
                 cwd: child_cwd,
                 parent_link: Some(build.link),
                 wall: build.wall,
+                deadline: build.deadline,
                 kernel_prewarm: false,
                 ..wiring.clone()
             },
         );
+        host.set_grant(child.wall(), build.tokens);
         Ok(child)
     })
 }
@@ -70,21 +68,24 @@ pub struct RuntimeWiring {
     pub depth: u8,
     pub max_depth: u8,
     pub rlm_dir: PathBuf,
-    /// §12 roles resolved to models; `None` keeps the session's own model.
+    /// The family board keyed by the root session (D242); `None`, as before the store is
+    /// known, falls back to `rlm_dir`'s own `family/`. Children inherit it.
+    pub family_dir: Option<PathBuf>,
+    /// §5 roles resolved to models; `None` keeps the session's own model.
     pub summarizer: Option<Model>,
     /// Naming `models.advisor` in config enables the LLM reviewer (D28).
     pub advisor: Option<Model>,
     /// Model consulted on a Write or Exec permission ask; `None` keeps admission fully
-    /// deterministic, so no permission decision costs a model call (M7, D81).
+    /// deterministic, so no permission decision costs a model call (§8, D81).
     pub auto_review: Option<Model>,
     /// `plan.staleReminderTurns` config; None keeps the default.
     pub plan_stale_turns: Option<u64>,
     /// `plans.dir` config; None reads `.yi/plans` under the cwd. Resolved once
     /// at the root so worktree children share the owner's store.
     pub plans_dir: Option<PathBuf>,
-    /// Set for a child: its B6 route back into the family that spawned it.
+    /// Set for a child: its §12 route back into the family that spawned it.
     pub parent_link: Option<ParentLink>,
-    /// B1 reduction: paths this session may not touch (plan §3.4 wall).
+    /// The wall reduction: paths this session may not touch (plan §3.4 wall).
     pub wall: crate::wall::Wall,
     /// D13 `bash.autoBackgroundMs`; None keeps every command in the turn.
     pub auto_background: Option<std::time::Duration>,
@@ -104,19 +105,65 @@ pub struct RuntimeWiring {
     pub kernels: Arc<crate::fetch::KernelServiceMap>,
 }
 
+pub(crate) fn family_dir_of(rlm_dir: &std::path::Path) -> PathBuf {
+    let mut dir = rlm_dir;
+    while dir
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with("sub-"))
+        && let Some(parent) = dir.parent()
+    {
+        dir = parent;
+    }
+    dir.join("family")
+}
+
+/// Invariant: every sandboxed family member can plant a link on the board (D240), so host
+/// code reads and writes only regular files there and never follows one.
+pub(crate) fn is_board_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|seen| seen.file_type().is_file())
+}
+
+/// The file opened must be the one `lstat` saw, so a link swapped in between is refused too.
+pub(crate) fn read_board(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let seen = std::fs::symlink_metadata(path)?;
+    let mut file = std::fs::File::open(path)?;
+    let opened = file.metadata()?;
+    if !seen.file_type().is_file() || (seen.dev(), seen.ino()) != (opened.dev(), opened.ino()) {
+        return Err(std::io::Error::other(format!(
+            "{} is a link on the family board, which is never followed",
+            path.display()
+        )));
+    }
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    Ok(text)
+}
+
+/// A fresh file created exclusively, then renamed over `path`: rename replaces a link.
+pub(crate) fn write_board(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let fresh = path.with_extension("tmp");
+    let _a_stale_file_or_link_is_only_unlinked = std::fs::remove_file(&fresh);
+    std::fs::File::create_new(&fresh)?.write_all(bytes)?;
+    std::fs::rename(&fresh, path)
+}
+
 impl RuntimeWiring {
-    /// the root session's `family/` directory, shared by every member; a child's (D164)
-    /// `rlm_dir` sits under the root's as `sub-*`, so the root is the first non-`sub-` ancestor.
+    /// The shared board: the root session's `family/<id>` once its store is known (D242), else
+    /// the root `rlm_dir`'s `family/`, the first non-`sub-*` ancestor of a child's (D164).
     pub fn family_dir(&self) -> PathBuf {
-        let mut dir = self.rlm_dir.as_path();
-        while dir
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with("sub-"))
-            && let Some(parent) = dir.parent()
-        {
-            dir = parent;
-        }
-        dir.join("family")
+        self.family_dir
+            .clone()
+            .unwrap_or_else(|| family_dir_of(&self.rlm_dir))
+    }
+
+    /// The kernel's own profile, which its `bash()` jobs run under too (D241).
+    fn exec_sandbox(&self) -> Option<yi_tools::Sandbox> {
+        crate::workspace_sandbox(&self.cwd, &self.home, &self.kernel_dir()).map(|sandbox| {
+            crate::kernel::kernel_profile(&sandbox, &self.home, Some(&self.family_dir()))
+        })
     }
 
     /// The kernel's snapshot, `RLM_SESSION_DIR` and writable root. Incident: the root's was
@@ -169,10 +216,11 @@ fn wire_schedule(
 fn wire_goal(
     session: &AgentSession,
     registry: &mut crate::kernel::HostRegistry,
-    plan_stale_turns: Option<u64>,
+    wiring: &RuntimeWiring,
     plans_dir: &Path,
 ) {
-    let service = crate::goal::attach_goal(session, plans_dir.to_path_buf());
+    let plan_stale_turns = wiring.plan_stale_turns;
+    let service = crate::goal::attach_goal(session, plans_dir.to_path_buf(), wiring.cwd.clone());
     service.register(registry);
     session.set_goal_service(service);
     let plan = crate::plan::attach_plan(session, plan_stale_turns, plans_dir.to_path_buf());
@@ -225,8 +273,14 @@ fn wire_fetch(
             let url: yi_types::url::Url = raw
                 .parse()
                 .map_err(|error: yi_types::url::UrlError| format!("{raw}: {error}"))?;
+            let page = crate::fetch::Page::from_payload(&payload)?;
             // a family member asks for the object; the owner dills it to the family dir (D164).
             if payload.get("object").and_then(Value::as_bool) == Some(true) {
+                if page.is_some() {
+                    return Err(
+                        "fetch pages text; drop \"object\" to page a kernel:// read".to_owned()
+                    );
+                }
                 let dump = Arc::clone(&resolver);
                 let (path, bytes) = tokio::task::spawn_blocking(move || dump.dump_kernel(&url))
                     .await
@@ -241,16 +295,11 @@ fn wire_fetch(
                 reply.insert("bytes".to_owned(), Value::from(bytes));
                 return Ok(reply);
             }
-            let fetched = tokio::task::spawn_blocking(move || resolver.fetch(&url))
+            let fetched = tokio::task::spawn_blocking(move || resolver.fetch_page(&url, page))
                 .await
                 .map_err(|error| format!("fetch task failed: {error}"))?
                 .map_err(|error| error.to_string())?;
-            let mut reply = Map::new();
-            reply.insert("url".to_owned(), Value::String(fetched.url.to_string()));
-            reply.insert("text".to_owned(), Value::String(fetched.text));
-            reply.insert("hash".to_owned(), Value::String(fetched.hash));
-            reply.insert("servedBy".to_owned(), Value::String(fetched.served_by));
-            Ok(reply)
+            Ok(fetched.into_reply(page.is_some()))
         })
     });
     register_history_grep(registry, session.store_handle());
@@ -310,71 +359,175 @@ pub fn register_history_grep(
     });
 }
 
-/// The plan engine, its tool, and the loop coupling, composed over the live
-/// [`SubagentHost`]; children get the tool view-only and no coupling.
-fn wire_plan_engine(
+/// The engine and `plan.op` with this session's principal; `None` (no plan surface at all)
+/// when the store is unavailable or a child's name is not a valid agent id.
+fn wire_plan_request(
     session: &AgentSession,
     wiring: &RuntimeWiring,
     plans_dir: &Path,
     host: &Arc<SubagentHost>,
-    tools: &mut Vec<Arc<dyn yi_tools::Tool>>,
+    registry: &mut crate::kernel::HostRegistry,
     log: Arc<crate::fetch::FetchLog>,
     resolver: Arc<crate::fetch::Resolver>,
-) {
-    let actor = if wiring.depth == 0 {
-        crate::plan::ops::Actor::Owner
+) -> Option<PlanWiring> {
+    // Invariant: a child's engine stands on its parent's host and checkout, since its `submit`
+    // settles the lane the parent holds and integrates onto the parent's generation (6.6).
+    let (actor, host, cwd) = if wiring.depth == 0 {
+        (
+            crate::plan::ops::Actor::Owner,
+            Arc::clone(host),
+            wiring.cwd.clone(),
+        )
     } else {
-        let Some(name) = wiring
-            .parent_link
-            .as_ref()
-            .and_then(|link| yi_types::plan::doc::AgentId::new(&link.child_name).ok())
-        else {
-            return;
-        };
-        crate::plan::ops::Actor::Child(name)
+        let link = wiring.parent_link.as_ref()?;
+        let name = yi_types::plan::doc::AgentId::new(&link.child_name).ok()?;
+        let parent = link.host.upgrade()?;
+        let cwd = parent.options.cwd.clone();
+        (crate::plan::ops::Actor::Child(name), parent, cwd)
     };
+    let host = &host;
     let store = match crate::plan::store::PlanStore::open(plans_dir.to_path_buf()) {
         Ok(store) => store,
         Err(error) => {
             (session.notice_hook())(&format!("plan store unavailable: {error}"));
-            return;
+            return None;
         }
     };
     let deliver: crate::goal::DeliverFn = {
         let hook = session.heartbeat_hook();
         Arc::new(move |message, mode| hook(message, mode))
     };
-    let probe_deliver = Arc::clone(&deliver);
     let delegate = Arc::new(crate::plan::dispatch::SessionDelegate::new(
         Arc::clone(host),
         deliver,
         log,
     ));
-    let ops = Arc::new(crate::plan::ledger::SessionOpSink(session.store_handle()));
-    let engine = Arc::new(
-        crate::plan::ops::PlanEngine::new(store, delegate)
-            .with_output_resolve(resolver)
-            .with_op_sink(ops),
-    );
-    tools.push(Arc::new(crate::plan::tool::PlanTool::new(
-        Arc::clone(&engine),
-        actor,
-    )));
     let todo_actor = wiring
         .parent_link
         .as_ref()
         .map_or_else(|| "main".to_owned(), |link| link.child_name.clone());
     let todos = crate::todo::TodoStore::new(session.store_handle(), todo_actor);
+    let mut ops: Arc<dyn crate::plan::ops::OpSink> =
+        Arc::new(crate::plan::ledger::SessionOpSink(session.store_handle()));
+    if wiring.depth == 0 {
+        todos.set_resync(crate::todo::mirror::Mirror::resync(store.clone()));
+        todos.resync();
+        ops = Arc::new(crate::todo::mirror::Mirror {
+            inner: ops,
+            todos: Arc::clone(&todos),
+            store: store.clone(),
+        });
+    }
+    let liveness: Arc<dyn crate::plan::recovery::Liveness> = delegate.clone();
+    let mut engine = crate::plan::ops::PlanEngine::new(store, delegate)
+        .with_output_resolve(resolver)
+        .with_op_sink(ops)
+        .with_liveness(liveness)
+        .with_cwd(cwd.clone());
+    // This session's host seats the juries (plan section 6.4). A verification never outlives
+    // the run (D177): the verifier and every lane settle read the session's deadline too.
+    let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
+        .with_judge(Arc::new(crate::plan::judge::Jury::new(Arc::clone(host))));
+    if let Some(deadline) = session.deadline()
+        && let Some(ends) = deadline.started.checked_add(deadline.total)
+    {
+        verifier = verifier.with_deadline(ends);
+        host.set_deadline(Some(ends));
+    }
+    engine = engine.with_verifier(verifier);
+    // The staging and verification checkouts come from the lane pool, split with the host's
+    // workers over one object (sections 6.6 and 7.6), opened at the first checkout needed.
+    engine = engine
+        .with_lane_home(wiring.home.clone(), wiring.lane_slots)
+        .with_capacity(host.capacity());
+    // The verification snapshot is the shadow gitdir tree the turn checkpoints capture (plan
+    // section 6.3); without git the engine hashes the workspace itself.
+    if let Some(snapshotter) = crate::plan::snapshot::shadow_tree(&wiring.home, &cwd, plans_dir) {
+        engine = engine.with_snapshotter(snapshotter);
+    }
+    let engine = Arc::new(engine);
+    if wiring.depth == 0 {
+        todos.set_carry(crate::todo::mirror::carry(Arc::downgrade(&engine)));
+    }
+    crate::plan::request::register(Arc::clone(&engine), actor.clone(), registry);
+    Some((engine, actor, todos))
+}
+
+type PlanWiring = (
+    Arc<crate::plan::ops::PlanEngine>,
+    crate::plan::ops::Actor,
+    Arc<crate::todo::TodoStore>,
+);
+
+fn wire_plan_engine(
+    session: &AgentSession,
+    wiring: &RuntimeWiring,
+    plans_dir: &Path,
+    host: &Arc<SubagentHost>,
+    tools: &mut Vec<Arc<dyn yi_tools::Tool>>,
+    plan: Option<PlanWiring>,
+) {
+    let Some((engine, actor, todos)) = plan else {
+        return;
+    };
+    let probe_deliver: crate::goal::DeliverFn = {
+        let hook = session.heartbeat_hook();
+        Arc::new(move |message, mode| hook(message, mode))
+    };
+    if let Some(service) = session.plan_service() {
+        service.set_engine(Arc::clone(&engine), actor.clone());
+    }
+    tools.push(Arc::new(crate::plan::tool::PlanTool::new(
+        Arc::clone(&engine),
+        actor,
+    )));
     tools.push(Arc::new(crate::todo::tool::TodoTool::new(Arc::clone(
         &todos,
     ))));
     session.set_todos(Arc::clone(&todos));
     let inner = (wiring.depth == 0).then(|| {
-        crate::plan::probe::spawn(Arc::new(crate::plan::probe::ProbeLadder::new(
-            engine,
-            plans_dir.to_path_buf(),
-            probe_deliver,
-        )));
+        crate::plan::finish::install(host, &engine, {
+            let hook = session.heartbeat_hook();
+            Arc::new(move |message, mode| hook(message, mode))
+        });
+        let children = Arc::clone(host);
+        let leased = Arc::clone(host);
+        let ladder = Arc::new(
+            crate::plan::probe::ProbeLadder::new(engine, (plans_dir, &wiring.cwd), probe_deliver)
+                .with_children(Arc::new(move || children.states()), {
+                    let (notice, stalled) = (lifecycle_notice(session), Arc::clone(host));
+                    Arc::new(move |text: &str, news| {
+                        notice(text, news);
+                        stalled.publish_all();
+                    })
+                })
+                .with_leases(Arc::new(move || {
+                    let host = Arc::clone(&leased);
+                    tokio::spawn(async move { host.expire().await });
+                }))
+                .with_owned({
+                    let store = session.store_handle();
+                    Arc::new(move || {
+                        store()
+                            .map(|session| crate::plan::ledger::owned_roots(&session))
+                            .unwrap_or_default()
+                    })
+                }),
+        );
+        // A grace rides the loop's own due-time set, so an earlier one interrupts its sleep.
+        let timer = Arc::clone(&ladder);
+        host.set_lease_clock(
+            None,
+            Some(Arc::new(move |grace| {
+                timer.wake_at(
+                    timer
+                        .now()
+                        .checked_add(grace)
+                        .unwrap_or_else(|| timer.now()),
+                );
+            })),
+        );
+        crate::plan::probe::spawn(ladder);
         crate::plan::loop_coupling::coupling(
             session,
             crate::plan::loop_coupling::CouplingOptions {
@@ -388,17 +541,7 @@ fn wire_plan_engine(
         todos,
         crate::todo::coupling::Options {
             eager: crate::todo::coupling::Eager::Prelude,
-            children_running: Arc::new(move || {
-                children
-                    .children
-                    .lock()
-                    .map(|children| {
-                        children
-                            .values()
-                            .any(|child| child.status == ChildStatus::Running)
-                    })
-                    .unwrap_or(false)
-            }),
+            children_running: Arc::new(move || children.busy()),
             inner,
         },
     );
@@ -420,7 +563,7 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
             true
         }) as crate::advisor::HoldSink
     });
-    // V10: ADVISOR.md attention text, project-local, best-effort.
+    // §16: ADVISOR.md attention text, project-local, best-effort.
     let attention = std::fs::read_to_string(wiring.cwd.join("ADVISOR.md")).ok();
     let llm = wiring.advisor.clone().map(|model| {
         Arc::new(crate::advisor::review::LlmReviewer::new(
@@ -442,7 +585,7 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
     session.set_advisor(advisor);
 }
 
-/// A job finishing between turns reports through the R3 follow-up queue, so the
+/// A job finishing between turns reports through the §4.3 follow-up queue, so the
 /// model hears about it without a turn being interrupted.
 fn wire_job_completions(session: &AgentSession) {
     let follow_up = session.follow_up_hook();
@@ -480,10 +623,10 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
-    registry.register_exec(wiring.cwd.clone());
+    registry.register_exec(wiring.cwd.clone(), wiring.exec_sandbox());
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort
-        // the turn whose cell awaits the reply (design §6).
+        // the turn whose cell awaits the reply (design §9.2).
         registry.register("compact.run", move |payload| {
             let instructions = payload
                 .get("instructions")
@@ -515,6 +658,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     }
     let host = subagent_host(session, &wiring, &plans_dir);
     host.register(&mut registry);
+    crate::mailbox::register_receive(session, &host, &mut registry);
     session.set_environment(crate::environment::hook(
         session,
         &wiring,
@@ -524,7 +668,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         register_child_messaging(link, &host, &mut registry);
     }
     wire_schedule(session, &wiring, &mut registry);
-    wire_goal(session, &mut registry, wiring.plan_stale_turns, &plans_dir);
+    wire_goal(session, &mut registry, &wiring, &plans_dir);
     let fetch_log = Arc::new(crate::fetch::FetchLog::new());
     fetch_log.attach_session_handle(session.store_handle());
     let kernels = Arc::clone(&wiring.kernels);
@@ -538,6 +682,15 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         Arc::clone(&kernels),
     );
     wire_plan_compaction(session, &plans_dir);
+    let plan = wire_plan_request(
+        session,
+        &wiring,
+        &plans_dir,
+        &host,
+        &mut registry,
+        Arc::clone(&fetch_log),
+        Arc::clone(&resolver),
+    );
     let restore_notice = session.notice_hook();
     let service = Arc::new(crate::kernel::KernelService::new(
         crate::kernel::KernelServiceOptions {
@@ -568,12 +721,11 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         &service,
     );
     let mut tools = (wiring.tools)();
+    crate::fetch::route_urls(&mut tools, &resolver);
     tools.push(crate::kernel::ipython_tool(Arc::clone(&service)));
     crate::auto_review::wire(session, &wiring, &mut tools);
     let fetch_for_rules = Arc::clone(&fetch_log);
-    wire_plan_engine(
-        session, &wiring, &plans_dir, &host, &mut tools, fetch_log, resolver,
-    );
+    wire_plan_engine(session, &wiring, &plans_dir, &host, &mut tools, plan);
     if let (Some(plan), Some(advisor)) = (session.plan_service(), session.advisor()) {
         plan.set_on_change(Arc::new(move |plan| {
             advisor.request_review(Some(crate::plan::summary_line(plan)));
@@ -587,7 +739,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         }
     }
     // Attached even with zero rules: the adapters capture this Arc when tools
-    // are installed, so a rule promoted mid-session (V11) arms immediately.
+    // are installed, so a rule promoted mid-session (§16) arms immediately.
     let engine = Arc::new(crate::rules::RuleEngine::new(rule_set.rules));
     engine.set_fetch(fetch_for_rules);
     crate::rules::attach_rules(session, Arc::clone(&engine));
@@ -604,31 +756,33 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     host
 }
 
+/// A child's lifecycle notice wakes its parent (§7.5) unless its news was read before a turn
+/// would present it.
+pub fn lifecycle_notice(session: &AgentSession) -> Arc<crate::subagent::NoticeFn> {
+    let wake = session.wake_idle_hook();
+    Arc::new(move |text: &str, news| wake(crate::session::user_message(text), news))
+}
+
 fn subagent_host(
     session: &AgentSession,
     wiring: &RuntimeWiring,
     plans_dir: &Path,
 ) -> Arc<SubagentHost> {
     let factory = child_factory(wiring.clone());
-    Arc::new(SubagentHost::new(SubagentHostOptions {
+    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: wiring.depth,
         max_depth: wiring.max_depth,
-        max_children: DEFAULT_MAX_CHILDREN,
+        max_children: crate::levers::get().family_max_children,
         parent_session_dir: wiring.rlm_dir.clone(),
         defaults: session.settings_handle(),
         factory,
-        notice: session.notice_hook(),
+        notice: lifecycle_notice(session),
         events: session.events_sender(),
         parent_messages: session.history_handle(),
         cwd: wiring.cwd.clone(),
         home: wiring.home.clone(),
         lane_slots: wiring.lane_slots,
-        report: {
-            let deliver = session.heartbeat_hook();
-            Arc::new(move |message| {
-                deliver(message, yi_types::schedule::DeliveryMode::Steer);
-            })
-        },
+        report: session.deliver_hook(),
         attribute: session.attribution_handle(),
         store: session.store_handle(),
         plans_dir: plans_dir.to_path_buf(),
@@ -636,7 +790,17 @@ fn subagent_host(
             let kernels = Arc::clone(&wiring.kernels);
             Arc::new(move || kernels.live())
         },
-    }))
+    }));
+    host.set_grant(wiring.wall.clone(), None);
+    host.family.get_or_init(|| wiring.family_dir());
+    let counted = Arc::downgrade(&host);
+    session.set_waits(Arc::new(move || {
+        let host = counted.upgrade();
+        host.map_or(0, |host| {
+            host.waits.load(std::sync::atomic::Ordering::SeqCst)
+        })
+    }));
+    host
 }
 
 /// §12: the ledger names what is load-bearing at every compaction and the summarizer
@@ -677,7 +841,11 @@ fn wire_compacted(
             let file = handle
                 .as_ref()
                 .and_then(|store| yi_session::lock_session(store).file_path().cloned());
-            notice(&crate::affordance::compacted(file.as_deref()));
+            let kept = match file.is_some() {
+                true => yi_types::graph::SESSION_ON_DISK,
+                false => yi_types::graph::SESSION_IN_MEMORY,
+            };
+            notice(&crate::affordance::next("compact.run", &[kept], ""));
             crate::advisor::note_last_compaction(advisor.as_deref(), handle.as_ref());
             tokio::spawn(async move {
                 if let Some(text) = service.sync_after_compaction().await {

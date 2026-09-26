@@ -56,8 +56,15 @@ impl AbortFlag {
     }
 
     pub async fn fired(&self) {
-        while !self.is_fired() {
-            self.0.notify.notified().await;
+        loop {
+            // Invariant: registered before the check, so a fire() between them still wakes it.
+            let notified = self.0.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_fired() {
+                return;
+            }
+            notified.await;
         }
     }
 }
@@ -65,7 +72,7 @@ impl AbortFlag {
 pub type HostReply = Result<Map<String, Value>, String>;
 pub type HostFuture = Pin<Box<dyn Future<Output = HostReply> + Send>>;
 
-/// Host-side dispatch for `host.request` comms (design K7). Returning `None`
+/// Host-side dispatch for `host.request` comms (design §9.2). Returning `None`
 /// means the type is not registered and errors rather than replying.
 pub trait HostHandlers: Send + Sync {
     fn dispatch(&self, request_type: &str, payload: Map<String, Value>) -> Option<HostFuture>;
@@ -75,7 +82,7 @@ pub trait HostHandlers: Send + Sync {
     fn retire(&self) {}
 }
 
-/// Where and how the kernel namespace is persisted (design K10). Only
+/// Where and how the kernel namespace is persisted (design §9). Only
 /// sessions with an artifact directory get a revivable snapshot.
 #[derive(Debug, Clone)]
 pub struct KernelSnapshotConfig {
@@ -167,7 +174,7 @@ pub(crate) struct Inner {
     // from detached asyncio tasks can still attribute their spawning program.
     pub(crate) last_cell_code: Mutex<Option<String>>,
     pub(crate) kernel_stderr: Mutex<String>,
-    pub(crate) in_flight_host: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    pub(crate) in_flight_host: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
     pub(crate) child_pid: Mutex<Option<u32>>,
     pub(crate) snapshot: Option<KernelSnapshotConfig>,
     pub(crate) snapshot_timer: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -209,7 +216,7 @@ pub(crate) fn now_iso() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
-/// Hinnant civil-from-days, shared with the runtime scheduler (H1 cron math).
+/// Hinnant civil-from-days, shared with the runtime scheduler (§15.2 cron math).
 pub fn civil_from_days(days: u64) -> (u64, u64, u64) {
     // Howard Hinnant's civil-from-days, unsigned since the epoch is 1970.
     let z = days + 719_468;
@@ -241,6 +248,8 @@ fn spawn_kernel_process(
     command
         .args(["-m", "ipykernel_launcher", "-f"])
         .arg(connection_path)
+        // Incident: every cell, Yi's own included, landed in the user's ~/.ipython history.
+        .arg("--HistoryManager.enabled=False")
         // ipykernel's parent poller exits the kernel if this pid dies
         // (covers SIGKILL of the owner).
         .env("JPY_PARENT_PID", std::process::id().to_string())
@@ -600,7 +609,7 @@ impl KernelManager {
             Lifecycle::Idle | Lifecycle::Starting => {}
         }
         // The boot gate wraps start only — never bootstrap-cell or restore
-        // executes, which would pin a permit on a wedged kernel (design K9).
+        // executes, which would pin a permit on a wedged kernel (design §9).
         let permit = boot_gate()
             .clone()
             .acquire_owned()
@@ -843,7 +852,14 @@ impl KernelManager {
         if self.inner.state() == Lifecycle::Shutdown {
             return Err(ExecuteError::ShutDown);
         }
-        let _queue = self.inner.execution_queue.lock().await;
+        // Incident: a 5 s read waited out whole cells here; nothing is sent before this lock.
+        let _queue = match options.abort.as_ref() {
+            Some(abort) => tokio::select! {
+                queue = self.inner.execution_queue.lock() => queue,
+                () = abort.fired() => return Ok(aborted_result()),
+            },
+            None => self.inner.execution_queue.lock().await,
+        };
         self.wait_for_active_to_clear_for_reuse(options.abort.as_ref())
             .await?;
         if options.abort.as_ref().is_some_and(AbortFlag::is_fired) {
@@ -974,7 +990,7 @@ impl KernelManager {
                 abort.fired().await;
                 inner.interrupt();
                 // 1 s grace, then force-Aborted; a user cell keeps the slot, since it may still
-                // run and busy-reuse owns recovery (K8), while Yi's own cell gives it up.
+                // run and busy-reuse owns recovery (§9), while Yi's own cell gives it up.
                 tokio::time::sleep(std::time::Duration::from_millis(KERNEL_ABORT_GRACE_MS)).await;
                 inner.resolve_active(Some(&request_id), internal, Some(ExecuteStatus::Aborted));
             })
@@ -1094,7 +1110,7 @@ impl KernelManager {
         let in_flight: Vec<_> = inner
             .in_flight_host
             .lock()
-            .map(|mut tasks| tasks.drain(..).collect())
+            .map(|mut tasks| tasks.drain(..).map(|(_, task)| task).collect())
             .unwrap_or_default();
         if !in_flight.is_empty() {
             let deadline = std::time::Duration::from_millis(HOST_REQUEST_DISPOSE_TIMEOUT_MS);

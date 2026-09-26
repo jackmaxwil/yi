@@ -6,10 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+yi-oauth = { workspace = true }
 yi-types = { workspace = true }
 ureq = { workspace = true }
 thiserror = { workspace = true }
-sha2 = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

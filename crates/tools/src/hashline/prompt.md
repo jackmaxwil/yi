@@ -1,7 +1,7 @@
 Line-anchored patch language: name original lines/gaps to replace, insert, cut, or paste; then give new content. `:` headers take `+` body rows; colonless paste `PUT`, `CUT`, `REM`, `MV` take none.
 
 <headers>
-Section: `[PATH#TAG]` or `[PATH]`; `TAG`: 4-hex snapshot from the `read`/`grep`/`edit` output the numbers came from; omitted = the latest one shown. New files: `write`; hashline edits existing files only.
+Section: `[PATH#TAG]` or `[PATH]`; `TAG`: 4-hex snapshot from the `read`/`grep`/`write`/`edit` output the numbers came from; omitted = the latest one shown. New files: `write`; hashline edits existing files only.
 </headers>
 
 <ops>

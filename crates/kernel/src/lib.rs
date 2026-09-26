@@ -5,12 +5,14 @@ pub mod client;
 pub mod connection;
 pub mod framing;
 pub mod journal;
+mod lock;
 pub(crate) mod pump;
 pub mod reduce;
 #[cfg(test)]
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 pub mod snapshot;
+pub mod uv_install;
 
 // Generous backstop for a kernel alive but wedged: crashes surface in one 25ms poll and warm
 // boots return in under a second, but a cold boot may need tens of seconds of imports.

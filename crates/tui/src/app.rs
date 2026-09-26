@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{self, Event as CtEvent};
 use ratatui::text::Line;
 use serde_json::{Value, json};
-use yi_runtime::{AgentSession, ChildStatus, ChildUpdate, SubagentHost, session::user_input};
+use yi_runtime::{AgentSession, ChildUpdate, SubagentHost};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Attribution, StopReason};
 
@@ -52,6 +52,11 @@ pub enum Command {
     Slash(String),
     StopChild(String),
     ChildHistory(String),
+    Answer {
+        child_id: String,
+        question: String,
+        text: String,
+    },
     Abort,
     Shutdown,
 }
@@ -84,7 +89,7 @@ pub struct TuiOptions {
     pub pace: u16,
 }
 
-// U2: starting tall anchors the composer mid-screen until the first commit pushes it down,
+// Starting tall anchors the composer mid-screen until the first commit pushes it down,
 // so the viewport opens at an empty live region's height and grows upward from the cursor.
 const MIN_VIEWPORT_ROWS: u16 = 4;
 
@@ -98,7 +103,9 @@ pub struct TaskState {
     pub(crate) started: Instant,
     /// When the child reached a terminal state, so the strike can sweep.
     pub(crate) finished: Option<Instant>,
-    pub(crate) session: Option<Arc<AgentSession>>,
+    /// The call id of the kernel cell running when the child appeared, if one was.
+    pub(crate) born_under: Option<String>,
+    pub(crate) session: Option<yi_runtime::ChildFeed>,
 }
 
 pub struct App {
@@ -129,7 +136,7 @@ pub struct App {
     pub selection: crate::model::Selection,
     pending_repaint: bool,
     pub(crate) pending_prompt_mark: bool,
-    /// U34: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots travel between the
+    /// §17.3: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots travel between the
     /// two; there is one orb, never a static one beside a moving one.
     pub(crate) logo_phase: f64,
     pub(crate) logo_target: f64,
@@ -166,6 +173,7 @@ pub struct App {
     pub(crate) last_esc_at: Option<Instant>,
     pub(crate) ctrl_c_at: Option<Instant>,
     pub(crate) focused: Option<String>,
+    pub(crate) reply_bound: Option<asks::ReplyTarget>,
     pub(crate) hud_hidden: bool,
     seen_turn: bool,
     /// Incident: a submitted prompt reaches the runtime thread over a channel, so the UI can
@@ -200,11 +208,19 @@ pub struct App {
     turn_cost: f64,
     pub(crate) width: usize,
     pub(crate) rows: usize,
+    pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
 }
 
 pub use crate::frame::next_spinner_wake;
 
+mod asks;
+mod bridge;
+mod children;
 mod stream;
+
+pub(crate) use asks::mail_source;
+pub use bridge::forward;
+pub(crate) use bridge::spawn_runtime_bridge;
 
 impl App {
     pub fn new(options: TuiOptions, theme: Theme, keymap: Keymap, width: usize) -> Self {
@@ -263,6 +279,7 @@ impl App {
             last_esc_at: None,
             ctrl_c_at: None,
             focused: None,
+            reply_bound: None,
             hud_hidden: false,
             seen_turn: false,
             submitted_turns: 0,
@@ -291,6 +308,7 @@ impl App {
             turn_cost: 0.0,
             width,
             rows: 24,
+            pane_hold: None,
         };
         app.branch = crate::port::git_branch(&app.options.cwd);
         app.scheduler.request();
@@ -706,10 +724,11 @@ impl App {
                 custom_type,
                 content,
                 display: true,
+                details,
                 ..
             } => {
                 let cell = Cell::Advisory {
-                    source: custom_type.clone(),
+                    source: asks::mail_source(custom_type, details.as_ref()),
                     text: user_text(content),
                 };
                 self.commit_cell(&cell);
@@ -746,10 +765,16 @@ impl App {
         }
         match event {
             AgentEvent::MessageStart {
-                message: AgentMessage::User { content, .. },
-            } => self.commit_cell(&Cell::User {
-                text: user_text(&content),
-            }),
+                message:
+                    AgentMessage::User {
+                        content,
+                        attribution,
+                        ..
+                    },
+            } => self.commit_cell(&crate::port::user_cell(
+                user_text(&content),
+                attribution == yi_types::message::Attribution::User,
+            )),
             AgentEvent::MessageEnd { message } => self.reduce_message_end(&message),
             AgentEvent::ToolExecutionEnd {
                 tool_name,
@@ -774,90 +799,6 @@ impl App {
             }
             _ => {}
         }
-    }
-
-    pub fn sync_children(&mut self, children: &[yi_runtime::ChildView]) {
-        for child in children {
-            self.adopt(&child.update, Some(Arc::clone(&child.session)));
-        }
-    }
-
-    /// A child seen for the first time gets its task cell; every sighting updates it.
-    pub fn adopt(&mut self, update: &ChildUpdate, session: Option<Arc<AgentSession>>) {
-        let id = update.id.as_str().to_owned();
-        if !self.tasks.contains_key(&id) {
-            self.task_order.push(id.clone());
-            self.tasks.insert(
-                id.clone(),
-                TaskState {
-                    streaming: None,
-                    cell: TaskCell {
-                        child_id: id.clone(),
-                        description: update.name.clone(),
-                        status: TaskStatus::Running,
-                        last_tool: None,
-                        toolcalls: 0,
-                        tokens: 0,
-                        elapsed_ms: 0,
-                        error: None,
-                        spawn: self.spawning_cell(),
-                        answer: None,
-                        activity: update.activity,
-                    },
-                    started: Instant::now(),
-                    finished: None,
-                    session,
-                },
-            );
-            self.scheduler.request();
-        }
-        self.reduce_child_update(update);
-    }
-
-    /// Invariant: the sole source of a child's status and counters; a task cell
-    /// commits after the tool cell it was born under, never before.
-    pub fn reduce_child_update(&mut self, update: &ChildUpdate) {
-        let id = update.id.as_str();
-        let Some(state) = self.tasks.get_mut(id) else {
-            return;
-        };
-        let status = match update.status {
-            ChildStatus::Running => TaskStatus::Running,
-            ChildStatus::Completed => TaskStatus::Done,
-            ChildStatus::Error => TaskStatus::Failed,
-        };
-        let toolcalls = u32::try_from(update.tool_use_count).unwrap_or(u32::MAX);
-        if state.cell.status != status
-            || state.cell.toolcalls != toolcalls
-            || state.cell.tokens != update.token_count
-            || state.cell.activity != update.activity
-        {
-            state.cell.status = status;
-            state.cell.activity = update.activity;
-            state.cell.error = update.error.clone();
-            state.cell.toolcalls = toolcalls;
-            state.cell.tokens = update.token_count;
-            state.cell.elapsed_ms = elapsed_ms(state.started);
-            if status != TaskStatus::Running && state.finished.is_none() {
-                state.finished = Some(Instant::now());
-                let answer = state
-                    .session
-                    .as_ref()
-                    .map(|session| session.messages())
-                    .unwrap_or_default()
-                    .iter()
-                    .rev()
-                    .find_map(|m| match m {
-                        AgentMessage::Assistant { content, .. } => Some(text_of(content)),
-                        _ => None,
-                    });
-                if let Some(text) = answer.filter(|t| !t.trim().is_empty()) {
-                    state.cell.answer = Some(crate::cell::tail_bounded(text));
-                }
-            }
-            self.scheduler.request();
-        }
-        self.commit_finished_tasks();
     }
 
     fn start_turn(&mut self) {
@@ -899,143 +840,12 @@ impl App {
         self.commit_cell(&Cell::Footer { text });
     }
 
-    fn commit_finished_tasks(&mut self) {
-        let spawning = |tool: &ToolCell| tool.name == "ipython" && tool.status != ToolStatus::Done;
-        if self.live_tools.iter().any(spawning) {
-            return;
-        }
-        for id in self.task_order.clone() {
-            let Some(cell) = self.tasks.get(&id).map(|state| state.cell.clone()) else {
-                continue;
-            };
-            if cell.status == TaskStatus::Running || !self.committed_tasks.insert(id) {
-                continue;
-            }
-            self.commit_cell(&Cell::Task(cell));
-        }
-    }
-
     pub fn set_focus(&mut self, target: Option<String>) {
         set_focus(self, target);
     }
 }
 
-type Bridge = (
-    Receiver<UiEvent>,
-    tokio::sync::mpsc::UnboundedSender<Command>,
-    std::thread::JoinHandle<()>,
-);
-
-/// Every session call happens inside the runtime context; `spawn_run` needs it.
-pub(crate) fn spawn_runtime_bridge(
-    runtime: tokio::runtime::Runtime,
-    session: &Arc<AgentSession>,
-    host: &Arc<SubagentHost>,
-    ask_rx: Receiver<AskRequest>,
-    roster_every: Duration,
-) -> Bridge {
-    let (ui_tx, ui_rx) = std::sync::mpsc::channel::<UiEvent>();
-    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Command>();
-    let handle = runtime.handle().clone();
-
-    let events_tx = ui_tx.clone();
-    let mut events = session.subscribe();
-    handle.spawn(async move {
-        while let Ok(event) = events.recv().await {
-            if events_tx.send(UiEvent::Agent(event)).is_err() {
-                break;
-            }
-        }
-    });
-
-    let ask_tx = ui_tx.clone();
-    std::thread::spawn(move || {
-        for ask in ask_rx {
-            if ask_tx.send(UiEvent::Ask(ask)).is_err() {
-                break;
-            }
-        }
-    });
-
-    let roster_tx = ui_tx.clone();
-    let roster_host = Arc::clone(host);
-    let roster_handle = handle.clone();
-    handle.spawn(async move {
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut interval = tokio::time::interval(roster_every);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            interval.tick().await;
-            let children = roster_host.children_view();
-            for child in &children {
-                let child_id = child.update.id.as_str().to_owned();
-                if !seen.insert(child_id.clone()) {
-                    continue;
-                }
-                let mut events = child.session.subscribe();
-                let child_tx = roster_tx.clone();
-                roster_handle.spawn(async move {
-                    while let Ok(event) = events.recv().await {
-                        let sent = child_tx.send(UiEvent::Child {
-                            child_id: child_id.clone(),
-                            event,
-                        });
-                        if sent.is_err() {
-                            break;
-                        }
-                    }
-                });
-            }
-            if roster_tx.send(UiEvent::Children(children)).is_err() {
-                break;
-            }
-        }
-    });
-
-    let driver_session = Arc::clone(session);
-    let driver_host = Arc::clone(host);
-    let reply_tx = ui_tx.clone();
-    let runtime_thread =
-        std::thread::spawn(move || {
-            runtime.block_on(async move {
-                while let Some(command) = cmd_rx.recv().await {
-                    match command {
-                        Command::Prompt(text) => {
-                            let _ = driver_session.prompt_message(user_input(&text));
-                        }
-                        Command::Steer(text) => driver_session.steer_message(user_input(&text)),
-                        Command::SummarizeBranch(stub) => {
-                            let session = Arc::clone(&driver_session);
-                            tokio::spawn(async move {
-                                yi_runtime::summarize_branch(&session, stub).await
-                            });
-                        }
-                        Command::Slash(line) => {
-                            crate::port::slash_off_thread(&driver_session, line, &reply_tx);
-                        }
-                        Command::StopChild(child_id) => {
-                            if let Some(child) = crate::port::child_of(&driver_host, &child_id) {
-                                child.session.abort();
-                            }
-                        }
-                        Command::ChildHistory(child_id) => {
-                            if let Some(child) = crate::port::child_of(&driver_host, &child_id) {
-                                let entries = crate::port::branch_of(&child.session);
-                                let _ = reply_tx.send(UiEvent::Reply(
-                                    crate::port::Reply::ChildHistory { child_id, entries },
-                                ));
-                            }
-                        }
-                        Command::Abort => driver_session.abort(),
-                        Command::Shutdown => break,
-                    }
-                }
-            });
-        });
-    (ui_rx, cmd_tx, runtime_thread)
-}
-
-/// U7 drain-then-draw loop, synchronous: the tokio runtime is on its own thread.
+/// §17.3 drain-then-draw loop, synchronous: the tokio runtime is on its own thread.
 pub fn run_tui(
     runtime: tokio::runtime::Runtime,
     session: Arc<AgentSession>,
@@ -1128,7 +938,7 @@ pub fn run_tui(
         } else {
             timeout
         };
-        // U36: the reflow deadline is the only thing firing after a drag stops, and a settled
+        // §17.3: the reflow deadline is the only thing firing after a drag stops, and a settled
         // terminal sends no events, so without a wake the rebuild waits for a keypress.
         if let Some(deadline) = app.reflow.pending_until() {
             let now = Instant::now();

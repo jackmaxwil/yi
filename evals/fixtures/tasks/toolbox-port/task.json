@@ -1,0 +1,6 @@
+{
+  "id": "toolbox-port",
+  "dryReward": 0,
+  "timeoutSec": 3600,
+  "note": "faux never edits, so all seven tools stay stubs"
+}

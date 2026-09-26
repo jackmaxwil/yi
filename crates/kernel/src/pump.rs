@@ -56,7 +56,7 @@ pub(crate) fn spawn_child_tasks(
                         }
                         inner.exit_notify.notify_waiters();
                         // The journal record flips inactive only on a confirmed kill: a wrong
-                        // inactive write could mask a reused pid (design K8).
+                        // inactive write could mask a reused pid (design §9).
                         if let Some(pid) = child.id().or_else(|| inner.child_pid.lock().ok().and_then(|slot| *slot))
                             && kill_confirmed {
                                 record_orphan_process_state(pid, false, now_iso());
@@ -184,7 +184,7 @@ pub(crate) fn spawn_iopub_task(
                 continue;
             };
             // Comms dispatch before the parent-header filter: a detached task's host request
-            // must dispatch with no active execution (design K7).
+            // must dispatch with no active execution (design §9.2).
             match decoded.header.msg_type.as_str() {
                 "comm_open" | "comm_msg" | "comm_close" => handle_comm(&inner, &decoded),
                 _ => handle_execution_message(&inner, &decoded),
@@ -194,7 +194,7 @@ pub(crate) fn spawn_iopub_task(
 }
 
 // Shell replies are never read by callers; drain them in a background task or
-// the receive queue grows unboundedly (design K4).
+// the receive queue grows unboundedly (design §9).
 pub(crate) fn spawn_shell_task(
     mut shell: zeromq::DealerSocket,
     mut shell_rx: mpsc::UnboundedReceiver<Vec<Vec<u8>>>,
@@ -291,6 +291,15 @@ pub(crate) fn handle_comm(inner: &Arc<Inner>, message: &JupyterMessage) {
             if let Ok(mut targets) = inner.comm_targets.lock() {
                 targets.remove(comm_id);
             }
+            // Incident: an abandoned `rlm.receive` polled on for 300 s and lost the mail it took.
+            if let Ok(mut in_flight) = inner.in_flight_host.lock() {
+                in_flight.retain(|(id, task)| {
+                    if id == comm_id {
+                        task.abort();
+                    }
+                    id != comm_id
+                });
+            }
             if let Ok(mut handled) = inner.handled_host_comm_ids.lock() {
                 handled.remove(comm_id);
             }
@@ -324,7 +333,7 @@ fn start_host_request(inner: &Arc<Inner>, comm_id: &str, data: Option<&Value>) {
             return;
         };
         // One dispatch per comm id: the Python shim's comm_open carries the
-        // payload and a duplicate comm_msg must not double-dispatch (design K7).
+        // payload and a duplicate comm_msg must not double-dispatch (design §9.2).
         if !handled.insert(comm_id.to_owned()) {
             return;
         }
@@ -332,6 +341,7 @@ fn start_host_request(inner: &Arc<Inner>, comm_id: &str, data: Option<&Value>) {
     let payload = data.and_then(Value::as_object).cloned();
     let inner_task = Arc::clone(inner);
     let comm_id = comm_id.to_owned();
+    let comm_id_owned = comm_id.clone();
     let task = tokio::spawn(async move {
         let reply = dispatch_host_request(&inner_task, payload).await;
         let data = match reply {
@@ -363,7 +373,7 @@ fn start_host_request(inner: &Arc<Inner>, comm_id: &str, data: Option<&Value>) {
             .and_then(|connection| {
                 let message = inner_task.build("comm_msg", content).ok()?;
                 // Replies go on the control channel so a busy shell cannot
-                // starve them (design K7).
+                // starve them (design §9.2).
                 Some(inner_task.send_control(encode(&message, &connection.key)))
             });
         if !matches!(reply_send, Some(Ok(()))) {
@@ -373,8 +383,8 @@ fn start_host_request(inner: &Arc<Inner>, comm_id: &str, data: Option<&Value>) {
         }
     });
     if let Ok(mut in_flight) = inner.in_flight_host.lock() {
-        in_flight.retain(|task| !task.is_finished());
-        in_flight.push(task);
+        in_flight.retain(|(_, task)| !task.is_finished());
+        in_flight.push((comm_id_owned, task));
     }
 }
 

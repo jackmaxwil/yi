@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Request-prefix budget and tool-surface lock, ratcheted (design 9, D188): the
+"""Request-prefix budget and tool-surface lock, ratcheted (design §21, D188): the
 system block plus the tool table are what every turn pays before the
 conversation starts, and the surface a model reads is locked so a PR that
 changes it owes the sections check_pr_metadata.py names. Measured by
@@ -23,8 +23,9 @@ LOCK = BASE / "tool_surface.json"
 def measure():
     """One cargo run prices the prefix and renders the surface, so the lock
     rides a test the guardrails lane already pays for."""
+    # --workspace for the reason check_behavior.py gives: one build shared with the test lane.
     out = subprocess.run(
-        ["cargo", "test", "-q", "-p", "yi-runtime", "--test", "request_budget",
+        ["cargo", "test", "-q", "--workspace", "--test", "request_budget",
          "report_the_prefix_size", "--", "--nocapture"],
         cwd=ROOT, capture_output=True, text=True)
     if out.returncode != 0:

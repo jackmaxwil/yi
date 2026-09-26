@@ -28,7 +28,7 @@ pub fn empty_assistant(model: &Model) -> AgentMessage {
 }
 
 /// Invariant: a configured proxy is applied or startup fails — degrading to a
-/// direct connection in an air-gapped runner is an unattributable hang (A4/E2).
+/// direct connection in an air-gapped runner is an unattributable hang (E2).
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
     proxy: ureq::Proxy,
@@ -93,7 +93,7 @@ fn redacted(url: &str) -> String {
     format!("{scheme}***@{host}")
 }
 
-fn host_of(url: &str) -> &str {
+pub fn host_of(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     let rest = rest.split_once('/').map_or(rest, |(host, _)| host);
     rest.split_once(':').map_or(rest, |(host, _)| host)
@@ -346,7 +346,7 @@ pub fn terminal_event(output: AgentMessage) -> crate::EventOut {
 /// Invariant: a `~/.yi/catalog/<provider>.json` name replaces the adapter's own header
 /// case-insensitively; empty removes it, since a gateway retarget must drop `x-api-key`.
 pub fn headers_for(model: &Model, base: Vec<(&str, String)>) -> Vec<(String, String)> {
-    let mut merged: Vec<(String, String)> = base
+    let merged: Vec<(String, String)> = base
         .into_iter()
         .map(|(name, value)| (name.to_owned(), value))
         .collect();
@@ -357,6 +357,15 @@ pub fn headers_for(model: &Model, base: Vec<(&str, String)>) -> Vec<(String, Str
         .into_iter()
         .flatten()
         .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_owned())));
+    merge_headers(merged, overlay)
+}
+
+/// The one merge the wire has: a catalog overlay (D170) and a login profile's
+/// `stream_headers` (D191) both arrive here, so both obey the same replace/remove rule.
+pub fn merge_headers(
+    mut merged: Vec<(String, String)>,
+    overlay: impl IntoIterator<Item = (String, String)>,
+) -> Vec<(String, String)> {
     for (name, value) in overlay {
         let at = merged
             .iter()
@@ -381,9 +390,10 @@ pub fn openai_bearer_post(
     api_key: &str,
     body: &Value,
     proxy: Option<&ProxyConfig>,
+    extra: &[(String, String)],
 ) -> Result<ureq::Response, String> {
     let headers = headers_for(model, vec![("authorization", format!("Bearer {api_key}"))]);
-    send_with_retry(url, &headers, body, proxy)
+    send_with_retry(url, &merge_headers(headers, extra.to_vec()), body, proxy)
 }
 
 /// What one request needs beside its body: the key, the proxy, and the loop's cut flag.
@@ -392,6 +402,31 @@ pub struct Wire<'a> {
     pub api_key: &'a str,
     pub proxy: Option<&'a ProxyConfig>,
     pub stop: Option<&'a std::sync::atomic::AtomicBool>,
+    /// The login profile's `stream_headers`, and anything else only the live
+    /// credential knows: never static model data, so the catalog cannot hold it.
+    pub extra: &'a [(String, String)],
+    /// A stored OAuth credential is on the wire (D191): a 401 then names the login
+    /// verb instead of dumping the provider's body.
+    pub oauth: bool,
+}
+
+/// A 401 with a stored OAuth credential means the login was rejected or expired past
+/// repair; the provider's body dump helps nobody. Name the verb that fixes it.
+pub fn auth_hint(message: &str, oauth: bool, provider: &str) -> String {
+    if oauth && message.starts_with("HTTP 401") {
+        format!("{message} — credential rejected; run: yi login {provider}")
+    } else {
+        message.to_owned()
+    }
+}
+
+/// The owned half of a [`Wire`]: what the spawned thread must hold for the request.
+pub struct WireOwned {
+    pub api_key: String,
+    pub proxy: Option<ProxyConfig>,
+    pub stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub extra: Vec<(String, String)>,
+    pub oauth: bool,
 }
 
 /// The OpenAI-style stream shape, shared by the completions and responses paths: one
@@ -400,19 +435,19 @@ pub fn spawn_stream(
     fail: impl FnOnce(&Model, &str) -> crate::EventOut + Send + 'static,
     model: &Model,
     body: Value,
-    api_key: &str,
-    proxy: Option<ProxyConfig>,
-    stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    owned: WireOwned,
     run: impl FnOnce(&Model, &Value, Wire<'_>, &Sender<crate::EventOut>) -> Result<(), String>
     + Send
     + 'static,
 ) -> Receiver<crate::EventOut> {
-    let (model, api_key) = (model.clone(), api_key.to_owned());
+    let model = model.clone();
     spawn_provider_stream(move |sender| {
         let wire = Wire {
-            api_key: &api_key,
-            proxy: proxy.as_ref(),
-            stop: stop.as_deref(),
+            api_key: &owned.api_key,
+            proxy: owned.proxy.as_ref(),
+            stop: owned.stop.as_deref(),
+            extra: &owned.extra,
+            oauth: owned.oauth,
         };
         if let Err(message) = run(&model, &body, wire, sender) {
             let _ = sender.blocking_send(fail(&model, &message));

@@ -13,8 +13,9 @@ impl Tokens {
     }
 }
 
-// Estimate images as 4000 chars plus block overhead.
-const IMAGE_ESTIMATE_CHARS: u64 = 4800;
+// Invariant: the most an image costs on Claude's high-resolution tier, 4784 visual tokens
+// (a larger one is downscaled to that), at four chars a token.
+const IMAGE_ESTIMATE_CHARS: u64 = 19_136;
 
 fn chars_to_tokens(chars: u64) -> Tokens {
     Tokens(chars.div_ceil(4))
@@ -127,7 +128,7 @@ pub fn estimate_context(messages: &[AgentMessage]) -> Estimate {
     }
 }
 
-/// Which tokens count against the compaction budget (design P3): the whole context, or only
+/// Which tokens count against the compaction budget (design §4.4): the whole context, or only
 /// growth past the cached prefix — the ~10 %-priced prefix must not be charged full price.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Scope {

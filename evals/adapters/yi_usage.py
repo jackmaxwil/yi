@@ -2,7 +2,7 @@
 
 Pure functions only: no harness imports, so evals/selftest.py exercises the
 command contract and the usage parse without harbor, pier, docker, or keys.
-Contracts: YI_DESIGN 15.2 (gates E1-E9), 15.4 (emission map), 15.5 (adapters).
+Contracts: evals/README.md (gates E1-E9, emission map, adapters).
 """
 
 import hashlib
@@ -21,7 +21,7 @@ REMOTE_EVENTS_PATH = "/logs/agent/yi.jsonl"
 EVENTS_FILENAME = "yi.jsonl"
 SESSIONS_SUBDIR = "yi/sessions"
 
-# E5: Pi's wire spells usage in camelCase. One definition, both parsers -- a
+# E5: the Pi v4 session format spells usage in camelCase. One definition, both parsers -- a
 # snake_case slip here reads every column as zero instead of failing loudly.
 TOKEN_KEYS = ("input", "output", "cacheRead", "cacheWrite")
 
@@ -31,6 +31,7 @@ TASK_TIMEOUT_SEC = 28800
 
 # OpenRouter's provider object for a routing A/B, as JSON; never `YI_*`, the harness's name.
 ROUTING_ENV = "EVAL_ROUTING"
+LEVERS_ENV = "YI_LEVERS"
 
 
 def with_budget(instruction, deadline_sec):
@@ -66,6 +67,19 @@ def routing_label(environ):
     return "+routing" + json.dumps(routing, sort_keys=True, separators=(",", ":"))
 
 
+def levers_label(environ):
+    """The override's hash as it rides the fingerprint's mode (plan section 10.6): two runs
+    under different levers are different configs, and two under the same levers are one
+    config however the file was spelled, so the hash is of the canonical object. The binary
+    reads the file, never this."""
+    path = environ.get(LEVERS_ENV)
+    if not path:
+        return ""
+    with open(path, "rb") as handle:
+        canonical = json.dumps(json.loads(handle.read()), sort_keys=True, separators=(",", ":"))
+    return "+levers" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
 KERNEL_ROWS = ("kernel-toolchain", "kernel-boot")
 
 
@@ -98,7 +112,9 @@ def run_command(model_name, instruction, resume=False, deadline_sec=None):
 
     E6: no `grep` stage -- under harbor's `set -o pipefail` a fully filtered
     stream exits 1 and scores the trial 0. E7: the instruction is one shell
-    quoted argv. E8: `--yolo`, because a permission prompt is a hang.
+    quoted argv. E8: `--yolo`, because a permission prompt is a hang. `--here`:
+    the grader reads the task's checkout, and an ask in a repository takes a
+    lane outside it (D119).
     """
     if not model_name or "/" not in model_name:
         raise ValueError("model name must be 'provider/model'")
@@ -115,7 +131,7 @@ def run_command(model_name, instruction, resume=False, deadline_sec=None):
     # mid-event at 172,032 bytes; `stdbuf -oL`, since busybox grep has no
     # `--line-buffered`.
     return (
-        "yi ask --json --yolo "
+        "yi ask --json --yolo --here "
         f"--model {shlex.quote(model_name)} "
         f"--session-dir {REMOTE_SESSION_DIR} "
         f"{deadline_flag}{resume_flag}{shlex.quote(instruction)} "
@@ -225,7 +241,7 @@ def session_extras(sessions_dir):
 
     peak = the largest single assistant input context (input + cache reads and
     writes); summarizations = compaction entries; steps = assistant messages
-    (YI_DESIGN 15.4 maps turns to those). All-or-none per E9.
+    (evals/README.md maps turns to those). All-or-none per E9.
     """
     peak = 0
     compactions = 0

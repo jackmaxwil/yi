@@ -1,5 +1,7 @@
 # Yi, the proposal: four primitives and a plan engine
 
+Open: expectation before action (primitive 3). The plan engine landed as D97-D99 (0.106.0).
+
 ```
 status:  PROPOSAL. Self-contained capstone of the 2026-08-31 design sessions.
          Where it conflicts with earlier session docs, this document wins.

@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
+mod ask;
 mod catalog;
 mod doctor;
 mod fetch;
@@ -21,7 +22,6 @@ use lanes::{claim_lane, configured_lanes, release_lane, run_lanes};
 
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, resolve_model};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
-use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Effort, Model, ModelCost, UnknownEffort};
 
 #[derive(Clone)]
@@ -46,13 +46,15 @@ struct Args {
     faux: Option<String>,
     record: Option<String>,
     snap: Option<String>,
+    /// An eval harness launched this run: `YI_LEVERS` is read, and nothing else (D220).
+    eval: bool,
     deadline: Option<u64>,
     resume: Resume,
     schema: Option<String>,
     prompt: String,
 }
 
-/// Which session file `yi ask` writes to (X1 `--continue` / `--session`).
+/// Which session file `yi ask` writes to (§17.1 `--continue` / `--session`).
 #[derive(Clone, PartialEq, Eq)]
 enum Resume {
     Fresh,
@@ -83,6 +85,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut faux = None;
     let mut record = None;
     let mut snap = None;
+    let mut eval = false;
     let mut deadline = None;
     let mut continue_leaf = false;
     let mut session = None;
@@ -120,6 +123,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("faux") => faux = Some(parser.value()?.string()?),
             Long("record") => record = Some(parser.value()?.string()?),
             Long("snap") => snap = Some(parser.value()?.string()?),
+            Long("eval") => eval = true,
             Long("deadline") => deadline = Some(parser.value()?.parse()?),
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
@@ -143,7 +147,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         && let Some(flag) = [
             ("--keys", keys.is_some()),
             ("--frames", frames.is_some()),
-            ("--faux", faux.is_some()),
             ("--record", record.is_some()),
             ("--snap", snap.is_some()),
         ]
@@ -152,6 +155,12 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     {
         return Err(lexopt::Error::Custom(
             format!("{flag} needs --headless").into(),
+        ));
+    }
+    if faux.is_some() && !headless && !solo && matches!(command.as_str(), "" | "console") {
+        return Err(lexopt::Error::Custom(
+            "--faux runs in-process only: add --solo, or use `yi tui`, `yi ask` or --headless"
+                .into(),
         ));
     }
     Ok(Args {
@@ -174,6 +183,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         faux,
         record,
         snap,
+        eval,
         deadline,
         resume: match (session, continue_leaf) {
             (Some(id), _) => Resume::Named(id),
@@ -229,7 +239,7 @@ fn render_text(event: &AgentEvent) -> Option<String> {
 }
 
 /// Yi has no built-in default model; the user's config carries it, either as
-/// `"model"` or as the §12 `"models"` role table.
+/// `"model"` or as the §5 `"models"` role table.
 fn configured_model() -> Option<String> {
     let roles = configured_roles();
     if let Some(primary) = roles.primary {
@@ -240,7 +250,7 @@ fn configured_model() -> Option<String> {
 
 static CONFIG: std::sync::OnceLock<yi_types::config::UserConfig> = std::sync::OnceLock::new();
 
-/// X7: the one config load, strict, before dispatch — a typo that reads as an unset default
+/// The one config load, strict, before dispatch — a typo that reads as an unset default
 /// is the failure nobody sees. It lives here because no fs or `$HOME` may reach yi-types.
 fn load_config() -> Result<(), String> {
     let Some(home) = std::env::var_os("HOME") else {
@@ -262,7 +272,7 @@ fn load_config() -> Result<(), String> {
     set_config(config)
 }
 
-/// A relative home would read `<cwd>/.yi/config.json`, which is X7's project
+/// A relative home would read `<cwd>/.yi/config.json`, which is §17.1's project
 /// layer, not this one; [`load_config`] is the only caller for that reason.
 fn read_config(home: &std::path::Path) -> Result<(UserConfig, Vec<ConfigMigration>), String> {
     let path = home.join(".yi/config.json");
@@ -289,7 +299,7 @@ fn config() -> &'static yi_types::config::UserConfig {
     CONFIG.get_or_init(yi_types::config::UserConfig::default)
 }
 
-/// X7: `thinking` in the user config, overridden by `--thinking`.
+/// The `thinking` field in the user config, overridden by `--thinking`.
 fn configured_thinking() -> Option<Effort> {
     config().thinking
 }
@@ -303,7 +313,7 @@ fn configured_auto_background() -> Option<std::time::Duration> {
     (millis > 0).then(|| std::time::Duration::from_millis(millis))
 }
 
-/// §12: an unset role falls back to the primary model. Naming `models.advisor` is what turns
+/// §5: an unset role falls back to the primary model. Naming `models.advisor` is what turns
 /// the LLM reviewer on (D28/D50); an unknown selector warns and leaves the advisor silent.
 fn advisor_model() -> Option<Model> {
     let spec = configured_roles().advisor?;
@@ -314,7 +324,7 @@ fn advisor_model() -> Option<Model> {
     resolved
 }
 
-/// Naming `models.autoReview` is the switch for the M7 permission reviewer
+/// Naming `models.autoReview` is the switch for the §8 permission reviewer
 /// (D81); an unknown selector warns and auto mode stays deterministic.
 fn auto_review_model() -> Option<Model> {
     let spec = configured_roles().auto_review?;
@@ -376,6 +386,13 @@ fn build_session(
     asker: Option<yi_runtime::Asker>,
     session_id: Option<&str>,
 ) -> Result<(AgentSession, std::sync::Arc<yi_runtime::SubagentHost>), Refused> {
+    // Invariant: the first statement here, so no lever is read on both sides of the
+    // override and a refused file stops the run before the session, and any model call.
+    yi_runtime::levers::init(args.eval).map_err(|reason| Refused {
+        code: 1,
+        reason,
+        class: yi_types::telemetry::ErrorClass::RefusalConfig,
+    })?;
     if args.model.is_empty() {
         return Err(Refused {
             code: 2,
@@ -391,17 +408,6 @@ fn build_session(
         });
     };
     let faux = model.provider == "faux";
-    let api_key = yi_ai_key(&model.provider);
-    if api_key.is_none() && !faux {
-        return Err(Refused {
-            code: 4,
-            reason: format!(
-                "no API key for provider {} (set the provider env var)",
-                model.provider
-            ),
-            class: yi_types::telemetry::ErrorClass::RefusalNoKey,
-        });
-    }
     let interactive = {
         use std::io::IsTerminal;
         std::io::stdin().is_terminal()
@@ -422,8 +428,18 @@ fn build_session(
             }
         }
     };
+    // Resolved through the session's proxy so an OAuth refresh can reach the token
+    // endpoint from behind the same wall the stream rides through.
+    let resolved = yi_runtime::auth::resolve_with_proxy(&model.provider, proxy.as_ref());
+    if resolved.is_none() && !faux {
+        return Err(login::no_credential(&model.provider));
+    }
     if !faux {
-        catalog::spawn_refresh(&model.provider, api_key.as_ref(), proxy.as_ref());
+        catalog::spawn_refresh(
+            &model.provider,
+            resolved.as_ref().map(|f| &f.secret),
+            proxy.as_ref(),
+        );
     }
     let telemetry = config()
         .telemetry
@@ -432,7 +448,7 @@ fn build_session(
         .unwrap_or(false)
         .then(|| Arc::new(yi_runtime::Telemetry::default()));
     let provider = Arc::new(
-        ProviderStream::new(api_key, None)
+        login::stream_for(&model.provider, resolved.as_ref())
             .with_long_cache(interactive)
             .with_proxy(proxy)
             .with_routing(config().routing.clone())
@@ -520,6 +536,7 @@ fn build_session(
             depth: 0,
             max_depth: config().rlm.as_ref().map_or(1, RlmConfig::depth),
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
+            family_dir: session_id.map(|id| sessions::board_dir(&default_session_dir(args), id)),
             sessions_dir: Some(default_session_dir(args)),
             summarizer: summarizer_model(args),
             advisor: advisor_model(),
@@ -707,120 +724,6 @@ fn default_session_dir(args: &Args) -> std::path::PathBuf {
     )
 }
 
-fn run(args: &Args) -> i32 {
-    use std::io::IsTerminal;
-    let interactive = std::io::stdin().is_terminal();
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return 1;
-        }
-    };
-    // Session wiring spawns runtime tasks (the H4 scheduler timer), so the
-    // runtime context must exist before build_session.
-    let session = {
-        let _guard = runtime.enter();
-        let asker: Option<yi_runtime::Asker> =
-            interactive.then(|| std::sync::Arc::new(tty::tty_ask) as yi_runtime::Asker);
-        match build_session(args, asker, None) {
-            Ok((session, _host)) => session,
-            Err(refused) => return exit_refused(refused),
-        }
-    };
-    match attach_store(args, &session) {
-        Ok(_id) => {}
-        // A requested resume that cannot be honoured is an error; an
-        // unavailable store for a fresh turn only costs the recording.
-        Err(error) if args.resume == Resume::Fresh => {
-            eprintln!("warning: session store unavailable: {error}");
-        }
-        Err(error) => {
-            eprintln!("error: {error}");
-            return 1;
-        }
-    }
-    let json = args.json;
-    let prompt = args.prompt.clone();
-    let schema = match args.schema.as_deref().map(yi_runtime::schema::Schema::load) {
-        Some(Ok(schema)) => Some(schema),
-        Some(Err(error)) => {
-            eprintln!("error: {error}");
-            return 2;
-        }
-        None => None,
-    };
-    let mut answer = String::new();
-    let lane = session.lane();
-    let code = runtime.block_on(async move {
-        let mut events = session.subscribe();
-        if session
-            .prompt_message(yi_runtime::session::user_input(&prompt))
-            .is_err()
-        {
-            eprintln!("error: session busy");
-            return 1;
-        }
-        let mut exit = 0;
-        loop {
-            let event = match events.recv().await {
-                Ok(event) => event,
-                // A slow reader is not the end of the run: breaking here exited 0 mid-turn.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                    eprintln!("warning: {missed} events dropped behind a slow reader");
-                    continue;
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            };
-            if json && let Ok(line) = serde_json::to_string(&event) {
-                println!("{line}");
-            }
-            if let Some(chunk) = render_text(&event) {
-                if schema.is_some() {
-                    answer.push_str(&chunk);
-                } else if !json {
-                    print!("{chunk}");
-                    use std::io::Write;
-                    let _ = std::io::stdout().flush();
-                }
-            }
-            match &event {
-                AgentEvent::MessageEnd {
-                    message:
-                        AgentMessage::Assistant {
-                            stop_reason: StopReason::Error,
-                            error_message,
-                            ..
-                        },
-                } => {
-                    if !json {
-                        eprintln!(
-                            "error: {}",
-                            error_message.as_deref().unwrap_or("provider error")
-                        );
-                        exit = 1;
-                    }
-                }
-                AgentEvent::AgentEnd { .. } => {
-                    if let Some(schema) = &schema {
-                        exit = emit_structured(schema, &answer, json);
-                    } else if !json {
-                        println!();
-                    }
-                    break;
-                }
-                _ => {}
-            }
-        }
-        exit
-    });
-    release_lane(lane.as_deref());
-    code
-}
-
 /// A flag names what the user wants now, a resumed session what they wanted last time.
 /// Flags apply after `attach_store` or `--continue --model X` silently keeps the old model.
 fn repin(args: &Args, session: &AgentSession) {
@@ -834,10 +737,15 @@ fn repin(args: &Args, session: &AgentSession) {
     }
 }
 
-/// X1: every `yi ask` turn is recorded, so `--continue` has a leaf to resume.
-fn attach_store(args: &Args, session: &AgentSession) -> Result<String, String> {
-    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
-    let mut repo = JsonlRepo::new(
+/// The session a run records into, settled before the session is built so its wiring can key
+/// the family board by the id (D242); the file itself is created only by [`attach_store`].
+pub(crate) struct SessionTarget {
+    pub(crate) id: String,
+    exists: bool,
+}
+
+pub(crate) fn session_target(args: &Args) -> SessionTarget {
+    let mut repo = yi_runtime::session_store::JsonlRepo::new(
         default_session_dir(args),
         effective_cwd(args).display().to_string(),
     );
@@ -846,12 +754,35 @@ fn attach_store(args: &Args, session: &AgentSession) -> Result<String, String> {
         Resume::Leaf => sessions::latest_id(&mut repo),
         Resume::Named(id) => Some(id.clone()),
     };
-    let store = match existing {
-        Some(id) => repo.open(&id).map_err(|error| error.to_string())?,
-        None => repo
-            .create(CreateOptions::default())
-            .map_err(|error| error.to_string())?,
-    };
+    match existing {
+        Some(id) => SessionTarget { id, exists: true },
+        None => SessionTarget {
+            id: yi_runtime::session_store::IdGenerator::new().next_id(),
+            exists: false,
+        },
+    }
+}
+
+/// X1: every `yi ask` turn is recorded, so `--continue` has a leaf to resume.
+fn attach_store(
+    args: &Args,
+    session: &AgentSession,
+    target: &SessionTarget,
+) -> Result<String, String> {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let mut repo = JsonlRepo::new(
+        default_session_dir(args),
+        effective_cwd(args).display().to_string(),
+    );
+    let store = if target.exists {
+        repo.open(&target.id)
+    } else {
+        repo.create(CreateOptions {
+            id: Some(target.id.clone()),
+            ..CreateOptions::default()
+        })
+    }
+    .map_err(|error| error.to_string())?;
     let id = lock_session(&store).metadata().id.clone();
     session
         .attach_store(store)
@@ -875,7 +806,7 @@ fn print_resume_hint(session: &AgentSession, id: &str) {
     eprintln!("\n\x1b[2mResume this session with `yi --session {id}`\x1b[0m");
 }
 
-/// T14: restore the files the last turn changed, from the cwd's leaf session.
+/// Checkpoints (§7.7) restore the files the last turn changed, from the cwd's leaf session.
 fn run_undo(args: &Args) -> i32 {
     use yi_runtime::session_store::{JsonlRepo, SessionRepo};
     let cwd = effective_cwd(args);
@@ -1018,6 +949,7 @@ fn mcp_enabled() -> bool {
     config().mcp.as_ref().and_then(|mcp| mcp.enabled) == Some(true)
 }
 
+mod login;
 mod shells;
 use shells::{run_console_command, run_serve_command, run_tui_command};
 
@@ -1045,6 +977,7 @@ fn main() {
         eprintln!("error: {error}");
         std::process::exit(2);
     }
+    login::fast_path();
     mcp_fast_path();
     let args = match parse_args() {
         Ok(args) => args,
@@ -1063,7 +996,7 @@ fn main() {
                 );
                 std::process::exit(2);
             }
-            std::process::exit(run(&args));
+            std::process::exit(ask::run(&args));
         }
         "rpc" => {
             let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -1166,7 +1099,7 @@ fn main() {
             );
         }
         other => {
-            // X1: `yi <prompt words>` opens the TUI on a TTY, plain ask otherwise.
+            // §17.1: `yi <prompt words>` opens the TUI on a TTY, plain ask otherwise.
             use std::io::IsTerminal;
             let mut full = other.to_owned();
             if !args.prompt.is_empty() {
@@ -1178,7 +1111,7 @@ fn main() {
             }
             let mut ask_args = args.clone();
             ask_args.prompt = full;
-            std::process::exit(run(&ask_args));
+            std::process::exit(ask::run(&ask_args));
         }
     }
 }

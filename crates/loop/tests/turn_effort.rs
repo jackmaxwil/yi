@@ -214,3 +214,29 @@ async fn a_forced_choice_is_spent_on_the_first_turn_and_gone_by_the_second()
     );
     Ok(())
 }
+
+/// Dies with the wind-down ending the run on a tool call: the stopped run gets one last
+/// request, with tool choice `none`, and no second one however that turn ends.
+#[tokio::test]
+async fn a_stop_after_a_tool_call_asks_once_for_a_tool_free_last_word() {
+    let mut config = LoopConfig::new(faux_model());
+    config.should_stop_after_turn = Some(Box::new(|_| true));
+    config.last_word = Some(Box::new(|_| {
+        Some(AgentMessage::host_user(
+            yi_types::message::UserContent::Text("[deadline] Time is up".to_owned()),
+            0,
+        ))
+    }));
+    let call = || {
+        faux_assistant_message(
+            vec![faux_tool_call("call-1", "noop", serde_json::Map::new())],
+            StopReason::ToolUse,
+        )
+    };
+    let choices: Vec<Option<ToolChoice>> = run_spied(config, vec![call(), call()])
+        .await
+        .into_iter()
+        .map(|(_, choice)| choice)
+        .collect();
+    assert_eq!(choices, vec![None, Some(ToolChoice::None)]);
+}

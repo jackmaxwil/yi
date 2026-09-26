@@ -4,7 +4,13 @@ use std::io::Write;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR unset")?);
-    for name in ["anthropic", "openai", "openrouter"] {
+    for name in [
+        "anthropic",
+        "openai",
+        "openrouter",
+        "openai-codex",
+        "google",
+    ] {
         let source = format!("data/{name}.json");
         println!("cargo::rerun-if-changed={source}");
         let raw = std::fs::read(&source)?;

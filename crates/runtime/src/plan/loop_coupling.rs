@@ -46,7 +46,7 @@ pub mod gate {
     /// True for multi-step work: the verdict is advisory to the loop and never
     /// to the model — false suppresses the forced tool_choice, nothing more.
     pub fn eager_init(prompt: &str) -> bool {
-        let trimmed = prompt.trim();
+        let (trimmed, levers) = (prompt.trim(), crate::levers::get());
         if trimmed.is_empty() || trimmed.ends_with('?') {
             return false;
         }
@@ -57,7 +57,7 @@ pub mod gate {
         {
             return false;
         }
-        if trimmed.lines().filter_map(enumerated).count() >= ENUMERATED_ITEMS_MIN {
+        if trimmed.lines().filter_map(enumerated).count() >= levers.plan_enumerated_min {
             return true;
         }
         let conjunctions = words
@@ -69,11 +69,11 @@ pub mod gate {
             .count()
             .saturating_add(trimmed.matches("! ").count())
             .saturating_add(trimmed.matches("? ").count());
-        let long = usize::from(words.len() >= LONG_PROMPT_WORDS);
+        let long = usize::from(words.len() >= levers.plan_long_prompt_words);
         conjunctions
             .saturating_add(extra_sentences)
             .saturating_add(long)
-            >= MULTI_STEP_SCORE
+            >= levers.plan_multi_step_score
     }
 }
 
@@ -124,7 +124,7 @@ pub fn stop_posture(plan: &Plan) -> StopPosture {
             }
             TodoState::Failed { cause: _, last: _ } => failed = true,
             TodoState::Pending
-            | TodoState::Done { output: _ }
+            | TodoState::Done { .. }
             | TodoState::Abandoned
             | TodoState::Other(_) => {}
         }
@@ -211,7 +211,7 @@ pub fn coupling(session: &AgentSession, options: CouplingOptions) -> TurnCouplin
             }
             if cycle
                 .lock()
-                .map(|cycle| cycle.interceptions >= gate::STOP_CAP_PER_CYCLE)
+                .map(|cycle| cycle.interceptions >= crate::levers::get().plan_stop_cap)
                 .unwrap_or(true)
             {
                 return None;
@@ -252,7 +252,11 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plans");
         let mut seen = 0usize;
         for entry in std::fs::read_dir(dir)? {
-            let fixture: Value = serde_json::from_str(&std::fs::read_to_string(entry?.path())?)?;
+            let path = entry?.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+            let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
             let prompt = fixture
                 .get("prompt")
                 .and_then(Value::as_str)
@@ -291,6 +295,11 @@ mod tests {
             subplan: None,
             retries: RetryCount::default(),
             children: Vec::new(),
+            note: None,
+            attempt: yi_types::plan::doc::AttemptId::FIRST,
+            refusals: 0,
+            contract: None,
+            contract_hash: None,
             extra: serde_json::Map::new(),
         })
     }
@@ -337,7 +346,13 @@ mod tests {
             "a running child re-wakes the loop"
         );
 
-        let finished = plan_of(vec![todo("ship", TodoState::Done { output: None })?])?;
+        let finished = plan_of(vec![todo(
+            "ship",
+            TodoState::Done {
+                output: None,
+                resolution: None,
+            },
+        )?])?;
         assert_eq!(stop_posture(&finished), StopPosture::Quiet);
 
         let inline = AgentId::new(OWNER_AGENT)?;
@@ -373,8 +388,20 @@ mod tests {
     #[test]
     fn the_reinjection_keeps_the_frontier_and_drops_the_rest() -> Fallible {
         let plan = plan_of(vec![
-            todo("cut the scope", TodoState::Done { output: None })?,
-            todo("write the codec", TodoState::Done { output: None })?,
+            todo(
+                "cut the scope",
+                TodoState::Done {
+                    output: None,
+                    resolution: None,
+                },
+            )?,
+            todo(
+                "write the codec",
+                TodoState::Done {
+                    output: None,
+                    resolution: None,
+                },
+            )?,
             todo("ship the tool", TodoState::Pending)?,
         ])?;
         let text = reinjection_text(&plan);

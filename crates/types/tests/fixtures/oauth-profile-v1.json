@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "kind": "oauth-code",
+  "client_id": "fixture-client",
+  "authorize": "https://example.com/oauth/authorize",
+  "token": "https://example.com/oauth/token",
+  "scopes": "openid profile",
+  "callback_port": 8317,
+  "callback_path": "/callback",
+  "stream_headers": {
+    "user-agent": "fixture-agent"
+  }
+}

@@ -4,6 +4,7 @@ members = [
   "crates/types",
   "crates/loop",
   "crates/ai",
+  "crates/oauth",
   "crates/orb",
   "crates/session",
   "crates/context",
@@ -25,6 +26,7 @@ license = "MIT"
 rust-version = "1.94"
 
 [workspace.dependencies]
+yi-oauth = { path = "crates/oauth" }
 yi-types = { path = "crates/types" }
 yi-loop = { path = "crates/loop" }
 yi-ai = { path = "crates/ai" }
@@ -59,7 +61,8 @@ ureq = { version = "2", default-features = false, features = ["tls", "native-cer
 ratatui = { version = "0.29", default-features = false, features = ["crossterm", "scrolling-regions"] }
 tui-textarea = { version = "0.7", default-features = false, features = ["crossterm"] }
 pulldown-cmark = { version = "0.12", default-features = false }
-syntect = { version = "5.3", default-features = false, features = ["parsing", "default-syntaxes", "regex-fancy"] }
+syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
 unicode-width = { version = "0.2", default-features = false }
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 vt100 = "0.15"

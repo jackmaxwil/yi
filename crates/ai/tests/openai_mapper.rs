@@ -348,3 +348,115 @@ fn a_call_streamed_as_text_finishes_as_a_tool_call() -> Result<(), Box<dyn Error
     );
     Ok(())
 }
+
+/// A Claude model reached through OpenRouter keeps Claude's limits: the newest 20 images ride,
+/// while a GPT model takes every one.
+#[test]
+fn a_routed_claude_request_keeps_its_newest_twenty_images() {
+    let turns = |count: usize| LlmContext {
+        system_prompt: String::new(),
+        messages: (0..count)
+            .map(|_| {
+                AgentMessage::host_user(
+                    UserContent::Blocks(vec![Content::Image {
+                        data: "iVBORw0KGgo=".to_owned(),
+                        mime_type: "image/png".to_owned(),
+                    }]),
+                    0,
+                )
+            })
+            .collect(),
+        tools: None,
+        tool_choice: None,
+    };
+    let images = |params: &Value| params.to_string().matches("data:image/png;base64").count();
+    let mut claude = model(false);
+    claude.id = "anthropic/claude-sonnet-5".to_owned();
+    let options = OpenAiOptions::default();
+    assert_eq!(images(&build_params(&claude, &turns(25), &options)), 20);
+    assert_eq!(
+        images(&build_params(&model(false), &turns(25), &options)),
+        25
+    );
+}
+
+/// A kernel cell's tool call and its result: text, then the image it attached.
+fn image_exchange(api: &str, id: &str) -> Vec<AgentMessage> {
+    vec![
+        AgentMessage::Assistant {
+            content: vec![Content::ToolCall {
+                id: id.to_owned(),
+                name: "ipython".to_owned(),
+                arguments: serde_json::Map::new(),
+                thought_signature: None,
+                namespace: None,
+            }],
+            api: api.to_owned(),
+            provider: "test".to_owned(),
+            model: "m".to_owned(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: yi_types::message::Usage::zero(),
+            stop_reason: StopReason::ToolUse,
+            deferred: None,
+            error_message: None,
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 0,
+        },
+        AgentMessage::ToolResult {
+            tool_call_id: id.to_owned(),
+            tool_name: "ipython".to_owned(),
+            content: vec![
+                Content::Text {
+                    text: "attached".to_owned(),
+                    text_signature: None,
+                },
+                Content::Image {
+                    data: "iVBORw0KGgo=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                },
+            ],
+            details: None,
+            usage: None,
+            added_tool_names: None,
+            is_error: false,
+            timestamp: 0,
+        },
+    ]
+}
+
+/// Chat completions takes only text in a tool message, so the image follows as a
+/// user message, and only for a model that reads images.
+#[test]
+fn a_tool_result_image_follows_as_a_user_message_for_a_vision_model() -> Result<(), Box<dyn Error>>
+{
+    let mut ctx = context();
+    ctx.messages
+        .extend(image_exchange("openai-completions", "call_1"));
+    let params = build_params(&model(false), &ctx, &OpenAiOptions::default());
+    let messages = params["messages"].as_array().ok_or("messages")?;
+    let tail = messages
+        .get(messages.len().saturating_sub(2)..)
+        .ok_or("tail")?;
+    assert_eq!(
+        tail,
+        [
+            json!({"role": "tool", "content": "attached", "tool_call_id": "call_1"}),
+            json!({"role": "user", "content": [
+                {"type": "text", "text": "Attached image(s) from tool result:"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+            ]}),
+        ]
+    );
+    let mut blind = model(false);
+    blind.input = vec!["text".to_owned()];
+    let params = build_params(&blind, &ctx, &OpenAiOptions::default());
+    let messages = params["messages"].as_array().ok_or("messages")?;
+    assert_eq!(
+        messages.last().ok_or("last")?,
+        &json!({"role": "tool", "content": "attached\n(tool image omitted: model does not support images)", "tool_call_id": "call_1"})
+    );
+    Ok(())
+}

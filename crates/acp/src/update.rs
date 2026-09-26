@@ -1,12 +1,12 @@
-use serde_json::Value;
+use serde_json::{Value, json};
 use yi_types::acp::{
-    AcpContentBlock, AcpExtensionUpdate, AcpSessionUpdate, AcpState, AcpStopReason,
+    AcpContentBlock, AcpExtensionUpdate, AcpOtherBlock, AcpSessionUpdate, AcpState, AcpStopReason,
     AcpTerminalExit, AcpToolCallStatus, AcpToolContent, AcpToolKind,
 };
 use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::goal::Goal;
-use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
+use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
 use yi_types::subagent::ChildId;
 
 pub fn extension<K: Into<String>>(
@@ -96,7 +96,7 @@ pub fn replay_update(frame: &ReplayFrame<'_>) -> AcpSessionUpdate {
     extension("_yi/replay", fields)
 }
 
-/// Per-session translation state (design C3): message ids are allocated
+/// Per-session translation state (design §17.2): message ids are allocated
 /// here, tool-call and terminal ids pass through from the event stream.
 #[derive(Debug, Default)]
 pub struct IdMap {
@@ -161,6 +161,20 @@ fn text_of(content: &[Content]) -> String {
         .join("")
 }
 
+fn image_block(block: &Content) -> Option<AcpContentBlock> {
+    let Content::Image { data, mime_type } = block else {
+        return None;
+    };
+    Some(AcpContentBlock::Other(AcpOtherBlock {
+        block_type: "image".to_owned(),
+        fields: [
+            ("data".to_owned(), Value::String(data.clone())),
+            ("mimeType".to_owned(), Value::String(mime_type.clone())),
+        ]
+        .into(),
+    }))
+}
+
 fn user_blocks(content: &UserContent) -> Vec<AcpContentBlock> {
     match content {
         UserContent::Text(text) => vec![AcpContentBlock::Text { text: text.clone() }],
@@ -174,7 +188,36 @@ fn user_blocks(content: &UserContent) -> Vec<AcpContentBlock> {
     }
 }
 
-/// Wraps a Custom message as a `_yi/<custom_type>` extension update (C9).
+fn user_update(content: &UserContent, typed: bool, ids: &mut IdMap) -> AcpSessionUpdate {
+    let message_id = ids.allocate();
+    let content = user_blocks(content);
+    if typed {
+        return AcpSessionUpdate::UserMessage {
+            message_id,
+            content,
+        };
+    }
+    let content = content
+        .into_iter()
+        .map(|block| match block {
+            AcpContentBlock::Text { text } => AcpContentBlock::Other(AcpOtherBlock {
+                block_type: "text".to_owned(),
+                fields: [
+                    ("text".to_owned(), Value::String(text)),
+                    ("_meta".to_owned(), json!({"yi": {"hostNotice": true}})),
+                ]
+                .into(),
+            }),
+            other => other,
+        })
+        .collect();
+    AcpSessionUpdate::AgentMessage {
+        message_id,
+        content,
+    }
+}
+
+/// Wraps a Custom message as a `_yi/<custom_type>` extension update (§17.2).
 fn extension_of(
     custom_type: &str,
     content: &UserContent,
@@ -234,7 +277,7 @@ fn tool_call_update(
     }
 }
 
-/// Pure event → update mapping (design C3, C7 terminal half, C9).
+/// Pure event → update mapping (design §17.2).
 /// Exhaustive over `AgentEvent` so a new variant fails compile, not wire.
 pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> {
     match event {
@@ -248,10 +291,11 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
                 ids.allocate();
                 Vec::new()
             }
-            AgentMessage::User { content, .. } => vec![AcpSessionUpdate::UserMessage {
-                message_id: ids.allocate(),
-                content: user_blocks(content),
-            }],
+            AgentMessage::User {
+                content,
+                attribution,
+                ..
+            } => vec![user_update(content, *attribution == Attribution::User, ids)],
             AgentMessage::Custom {
                 custom_type,
                 content,
@@ -360,9 +404,12 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
                     tool_call_id,
                     status,
                     Some(result.details.clone()),
-                    Some(vec![AcpToolContent::Content {
-                        content: AcpContentBlock::Text { text },
-                    }]),
+                    Some(
+                        std::iter::once(AcpContentBlock::Text { text })
+                            .chain(result.content.iter().filter_map(image_block))
+                            .map(|content| AcpToolContent::Content { content })
+                            .collect(),
+                    ),
                 )]
             }
         }
@@ -393,12 +440,14 @@ fn object_extension(name: &str, value: serde_json::Result<Value>) -> Vec<AcpSess
     })]
 }
 
-/// Replay (design C6): a stored branch walked into full-message updates.
+/// Replay (design §17.2): a stored branch walked into full-message updates.
 pub fn replay_updates(entries: &[Entry], ids: &mut IdMap) -> Vec<AcpSessionUpdate> {
     let mut updates = Vec::new();
     for entry in entries {
         match entry {
-            Entry::Message { message, .. } => match message {
+            Entry::Message {
+                message, timestamp, ..
+            } => match message {
                 AgentMessage::Assistant { content, .. } => {
                     updates.push(AcpSessionUpdate::AgentMessage {
                         message_id: ids.allocate(),
@@ -407,12 +456,15 @@ pub fn replay_updates(entries: &[Entry], ids: &mut IdMap) -> Vec<AcpSessionUpdat
                         }],
                     });
                 }
-                AgentMessage::User { content, .. } => {
-                    updates.push(AcpSessionUpdate::UserMessage {
-                        message_id: ids.allocate(),
-                        content: user_blocks(content),
-                    });
-                }
+                AgentMessage::User {
+                    content,
+                    attribution,
+                    ..
+                } => updates.push(user_update(
+                    content,
+                    attribution.reads_as_typed(*timestamp),
+                    ids,
+                )),
                 AgentMessage::Custom {
                     custom_type,
                     content,

@@ -1,0 +1,95 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0225
+Title: New dosing setpoints
+Site: Merrow Basin
+Requested by: Oona Farrow
+Implemented: 2031-03-04
+
+Outcome: ROLLED BACK
+
+Description
+-----------
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. The stores count showed 32 discrepancies, all traced to
+items issued to vans without a ticket.
+
+The change was rolled back on the day after implementation when the expected
+improvement did not appear.
+
+Risk and rollback plan
+----------------------
+
+The rollback plan was rehearsed on the test rig beforehand.
+
+The handover notes between shifts were sampled by the safety committee and found
+complete in all but 35 cases. Lucan Marsh raised the question of lone working at
+Harrow Weir and was referred to the existing guidance held by the control room.
+
+Verification
+------------
+
+It was noted that access to Low Fennick remains difficult after heavy rain and that
+the track will be regraded when crews allow. Flooding on the lane to Eastmere Intake
+delayed the delivery by a day; no cost was incurred by the cooperative. The draft
+drawing register for Pike Hollow is 34 percent complete and will be issued once the
+as-built survey is checked.
+
+Annex A. Any other business
+---------------------------
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. Petra Vosk reported that the telemetry outstation at
+Low Fennick had been inspected and found serviceable, with minor wear noted on the
+seals. The telemetry link to Eastmere Intake dropped twice in the period; both outages
+were under 6 minutes and no alarms were missed. A minor oil weep from the flow meter
+at Osier Bank was cleaned up and a drip tray fitted pending the next service. The
+stores count showed 14 discrepancies, all traced to items issued to vans without a
+ticket.
+
+Annex B. Correspondence
+-----------------------
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. No complaints were received from neighbours of Tolland
+Sluice during the works, and the liaison log has been closed. Hollis Wray presented a
+short paper on sensor drift and recommended a comparison check at Cindergate Station
+every 25 weeks.
+
+An energy audit of Tolland Sluice suggested that running the penstock actuator off-
+peak would reduce cost without affecting service. A minor oil weep from the telemetry
+outstation at Osier Bank was cleaned up and a drip tray fitted pending the next
+service. The handover notes between shifts were sampled by the asset planning group
+and found complete in all but 17 cases.
+
+The stores count showed 11 discrepancies, all traced to items issued to vans without a
+ticket. the field crews will coordinate with Oona Farrow on the training calendar,
+which currently shows 24 open places. Flooding on the lane to Tolland Sluice delayed
+the delivery by a day; no cost was incurred by the cooperative. A minor oil weep from
+the standby pump at Brackwater Lock was cleaned up and a drip tray fitted pending the
+next service. Vegetation clearance around the control panel at Eastmere Intake was
+completed and the area photographed for the asset record.
+
+Annex C. Training and rota
+--------------------------
+
+the asset planning group reminded everyone that permits for confined spaces must be
+closed out the same day. Lucan Marsh confirmed that spares for the penstock actuator
+are held at the central store and that the reorder level is 5 units. Flooding on the
+lane to Tolland Sluice delayed the delivery by a day; no cost was incurred by the
+cooperative.
+
+Hollis Wray reported that the inlet screen at Eastmere Intake had been inspected and
+found serviceable, with minor wear noted on the seals. Oona Farrow thanked the
+networks team for covering the holiday rota at short notice. The draft drawing
+register for Tolland Sluice is 11 percent complete and will be issued once the as-
+built survey is checked. Flooding on the lane to Merrow Basin delayed the delivery by
+a day; no cost was incurred by the cooperative. Sampling results for the quarter were
+within the expected band at every point except one, which is being resampled.
+
+Vegetation clearance around the surge vessel at Low Fennick was completed and the area
+photographed for the asset record. Lucan Marsh raised the question of lone working at
+Cindergate Station and was referred to the existing guidance held by the control room.
+Vegetation clearance around the duty pump at Pike Hollow was completed and the area
+photographed for the asset record. A minor oil weep from the duty pump at Tolland
+Sluice was cleaned up and a drip tray fitted pending the next service.

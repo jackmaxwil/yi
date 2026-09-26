@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Goal status vocabulary (design G1). The model may report
-/// `Complete`/`Blocked`; the host owns the rest (G2).
+/// Goal status vocabulary (design §15.1). The model may report
+/// `Complete`/`Blocked`; the host owns the rest (§15.1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalStatus {
@@ -21,7 +21,7 @@ impl GoalStatus {
         matches!(self, Self::Active)
     }
 
-    /// Terminal states free the session for a new goal (G2 create rule).
+    /// Terminal states free the session for a new goal (§15.1 create rule).
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::BudgetLimited | Self::Complete)
     }
@@ -39,7 +39,7 @@ impl GoalStatus {
     }
 }
 
-/// One goal per session (design G1), stored as a session-store fact beside the header, never
+/// One goal per session (design §15.1), stored as a session-store fact beside the header, never
 /// a transcript entry, so compaction cannot lose it. Timestamps are epoch milliseconds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

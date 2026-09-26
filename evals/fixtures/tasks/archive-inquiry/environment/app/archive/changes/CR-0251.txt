@@ -1,0 +1,101 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0251
+Title: Budget amendment, North Sluice gate refit (proposal)
+Site: North Sluice
+Requested by: Mirela Stanck
+Implemented: not implemented
+
+Outcome: WITHDRAWN
+
+Description
+-----------
+
+Petra Vosk confirmed that spares for the surge vessel are held at the central store
+and that the reorder level is 23 units. Members of the networks team asked for the
+seasonal demand figures to be circulated before the next meeting.
+
+This proposal would have raised the budget for the North Sluice gate refit to 190,000
+to cover additional painting. It was withdrawn before decision and has no effect.
+
+Risk and rollback plan
+----------------------
+
+A rollback was prepared but was not needed.
+
+The draft drawing register for Pike Hollow is 3 percent complete and will be issued
+once the as-built survey is checked. It was noted that access to Tolland Sluice
+remains difficult after heavy rain and that the track will be regraded when crews
+allow.
+
+Verification
+------------
+
+The draft drawing register for Eastmere Intake is 24 percent complete and will be
+issued once the as-built survey is checked. Bram Ketteridge reported that the dosing
+skid at Merrow Basin had been inspected and found serviceable, with minor wear noted
+on the seals. No complaints were received from neighbours of Eastmere Intake during
+the works, and the liaison log has been closed.
+
+Annex A. Correspondence
+-----------------------
+
+A walkdown of Low Fennick found the signage faded; replacement boards have been
+ordered under the routine budget. the networks team reminded everyone that permits for
+confined spaces must be closed out the same day. Ysolde Quint raised the question of
+lone working at Pike Hollow and was referred to the existing guidance held by the
+safety committee. A minor oil weep from the duty pump at Low Fennick was cleaned up
+and a drip tray fitted pending the next service. Tamsin Orrel reported that the
+telemetry outstation at Osier Bank had been inspected and found serviceable, with
+minor wear noted on the seals.
+
+An energy audit of Harrow Weir suggested that running the surge vessel off-peak would
+reduce cost without affecting service. The draft drawing register for Tolland Sluice
+is 31 percent complete and will be issued once the as-built survey is checked. Hollis
+Wray confirmed that spares for the dosing skid are held at the central store and that
+the reorder level is 28 units. Flooding on the lane to Cindergate Station delayed the
+delivery by a day; no cost was incurred by the cooperative.
+
+Annex B. Training and rota
+--------------------------
+
+A walkdown of Merrow Basin found the signage faded; replacement boards have been
+ordered under the routine budget. The handover notes between shifts were sampled by
+the control room and found complete in all but 16 cases. The telemetry link to
+Eastmere Intake dropped twice in the period; both outages were under 21 minutes and no
+alarms were missed. The telemetry link to Pike Hollow dropped twice in the period;
+both outages were under 21 minutes and no alarms were missed.
+
+Ysolde Quint raised the question of lone working at Harrow Weir and was referred to
+the existing guidance held by the networks team. Members of the networks team asked
+for the seasonal demand figures to be circulated before the next meeting. Petra Vosk
+raised the question of lone working at Merrow Basin and was referred to the existing
+guidance held by the control room. Sampling results for the quarter were within the
+expected band at every point except one, which is being resampled.
+
+Annex C. Site notes
+-------------------
+
+Oona Farrow thanked the safety committee for covering the holiday rota at short
+notice. the finance office will coordinate with Mirela Stanck on the training
+calendar, which currently shows 25 open places. Flooding on the lane to Eastmere
+Intake delayed the delivery by a day; no cost was incurred by the cooperative. An
+energy audit of Merrow Basin suggested that running the level sensor off-peak would
+reduce cost without affecting service.
+
+Bram Ketteridge presented a short paper on sensor drift and recommended a comparison
+check at Low Fennick every 21 weeks. The contractor's method statement for work at
+Merrow Basin was reviewed by the control room and returned with 5 comments. A minor
+oil weep from the standby pump at Brackwater Lock was cleaned up and a drip tray
+fitted pending the next service. It was noted that access to Eastmere Intake remains
+difficult after heavy rain and that the track will be regraded when crews allow. the
+control room will coordinate with Ysolde Quint on the training calendar, which
+currently shows 7 open places.
+
+Flooding on the lane to Brackwater Lock delayed the delivery by a day; no cost was
+incurred by the cooperative. A minor oil weep from the telemetry outstation at
+Cindergate Station was cleaned up and a drip tray fitted pending the next service.
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. It was noted that access to Merrow Basin remains
+difficult after heavy rain and that the track will be regraded when crews allow. It
+was noted that access to Merrow Basin remains difficult after heavy rain and that the
+track will be regraded when crews allow.

@@ -1,0 +1,66 @@
+{
+  "openai-responses": {
+    "gpt-5.5": {
+      "id": "gpt-5.5",
+      "name": "GPT-5.5 (ChatGPT Codex)",
+      "api": "openai-responses",
+      "provider": "openai-codex",
+      "baseUrl": "https://chatgpt.com/backend-api/codex",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 1.75,
+        "output": 14,
+        "cacheRead": 0.175,
+        "cacheWrite": 0
+      },
+      "contextWindow": 400000,
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": "none",
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "xhigh"
+      },
+      "compat": {
+        "supportsStrictMode": true,
+        "supportsOpenAIGrammarTools": true
+      }
+    },
+    "gpt-5.4-mini": {
+      "id": "gpt-5.4-mini",
+      "name": "GPT-5.4 Mini (ChatGPT Codex)",
+      "api": "openai-responses",
+      "provider": "openai-codex",
+      "baseUrl": "https://chatgpt.com/backend-api/codex",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0.75,
+        "output": 4.5,
+        "cacheRead": 0.075,
+        "cacheWrite": 0
+      },
+      "contextWindow": 400000,
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": "none",
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "xhigh"
+      },
+      "compat": {
+        "supportsStrictMode": true,
+        "supportsOpenAIGrammarTools": true
+      }
+    }
+  }
+}

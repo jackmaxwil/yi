@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
 
@@ -75,16 +75,16 @@ impl<'a> View<'a> {
 
 pub struct HashlineReadTool {
     pub state: SharedHashline,
-    /// The formats last described and the text built from them; the text is leaked because the
-    /// trait hands out `&str`, and it is rebuilt only when the venv's format list changes.
-    description: Mutex<(Vec<String>, &'static str)>,
+    /// Invariant: decided the first time the session sends its tools, then held, so a venv
+    /// landing mid-session never rewrites the tool table and the cached prefix behind it.
+    description: OnceLock<String>,
 }
 
 impl HashlineReadTool {
     pub fn new(state: SharedHashline) -> Self {
         Self {
             state,
-            description: Mutex::new((Vec::new(), READ_DESCRIPTION)),
+            description: OnceLock::new(),
         }
     }
 }
@@ -99,18 +99,11 @@ impl Tool for HashlineReadTool {
     }
 
     fn description(&self) -> &str {
-        let formats = documents(&self.state)
-            .map_or_else(Vec::new, |documents| (documents.converter)().formats);
-        let mut cached = self
-            .description
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cached.0 != formats {
-            let text: &'static str =
-                Box::leak(crate::document::describe(READ_DESCRIPTION, &formats).into_boxed_str());
-            *cached = (formats, text);
-        }
-        cached.1
+        self.description.get_or_init(|| {
+            let formats = documents(&self.state)
+                .map_or_else(Vec::new, |documents| (documents.converter)().formats);
+            crate::document::describe(READ_DESCRIPTION, &formats)
+        })
     }
 
     fn schema(&self) -> Value {
@@ -777,6 +770,20 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
     if result.op != SectionOp::Delete {
         let lines: Vec<&str> = result.after.split('\n').collect();
         let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
+        // Invariant: an unchanged line the model saw is still a line it saw, so the prior
+        // seen set rebases onto the new tag rather than shrinking to the hunk windows (#473).
+        let carried: Vec<u64> = match snapshots.by_content(&result.canonical_path, &result.before) {
+            Some(prior) => {
+                let map = super::rebase::LineMap::between(&result.before, &result.after);
+                prior
+                    .seen_lines
+                    .iter()
+                    .flatten()
+                    .filter_map(|line| map.line(*line))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
         let mut seen: Vec<u64> = Vec::new();
         // Every hunk gets a window, not just the first: a window the model cannot see is a
         // line it cannot anchor to, forcing a full re-read after each multi-hunk edit.
@@ -794,6 +801,7 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
                 }
             }
         }
+        seen.extend(carried);
         snapshots.record_seen_lines(&result.canonical_path, result.file_hash, &seen);
     }
     for warning in &result.warnings {
@@ -1097,10 +1105,14 @@ fn grid_check(context: &ToolContext) -> GridLayer {
     }
 }
 
-pub fn record_write_snapshot(state: &SharedHashline, path: &Path, content: &str) {
+pub fn record_write_snapshot(
+    state: &SharedHashline,
+    path: &Path,
+    content: &str,
+) -> super::format::FileTag {
     let line_count = u64::try_from(content.split('\n').count()).unwrap_or(u64::MAX);
     let seen: Vec<u64> = (1..=line_count).collect();
-    record_view_snapshot(state, path, content, &seen);
+    record_view_snapshot(state, path, content, &seen)
 }
 
 /// A view of `content` the model has just seen through some other tool: the rows in `seen`

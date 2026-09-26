@@ -87,8 +87,10 @@ fn an_unbuilt_venv_is_named_beside_the_plain_error() -> TestResult {
     Ok(())
 }
 
+/// Incident: the forge live lane's bash-marker read 0 cached tokens because the venv landed
+/// between its first and second request and rewrote the tool table in front of the transcript.
 #[test]
-fn the_description_follows_a_venv_built_mid_session() -> TestResult {
+fn the_tool_table_holds_still_when_the_venv_lands_mid_session() -> TestResult {
     let built = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&built);
     let documents = Documents {
@@ -102,10 +104,26 @@ fn the_description_follows_a_venv_built_mid_session() -> TestResult {
         }),
         ..Documents::fixed(std::env::temp_dir(), Converter::default())
     };
-    let read = read_of(builtin_tools_with(false, Some(documents)))?;
-    assert!(!read.description().contains("docx"));
+    let table = |tools: &[Arc<dyn Tool>]| -> String {
+        tools
+            .iter()
+            .map(|tool| {
+                format!(
+                    "{}\n{}\n{}\n",
+                    tool.name(),
+                    tool.description(),
+                    tool.schema()
+                )
+            })
+            .collect()
+    };
+    let session = builtin_tools_with(false, Some(documents.clone()));
+    let before = table(&session);
     built.store(true, Ordering::SeqCst);
-    assert!(read.description().contains("converted to Markdown: docx."));
+    assert_eq!(table(&session), before, "the venv landed mid-session");
+    assert!(!before.contains("docx"));
+    let next = read_of(builtin_tools_with(false, Some(documents)))?;
+    assert!(next.description().contains("converted to Markdown: docx."));
     Ok(())
 }
 

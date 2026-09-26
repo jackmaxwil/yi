@@ -424,7 +424,7 @@ async fn an_unknown_request_number_is_named_rather_than_guessed() -> TestResult 
 }
 
 /// The off switch. With no role named the reviewer is never constructed and
-/// the outcome is the deterministic one this file had before M7 existed.
+/// the outcome is the deterministic one this file had before auto review existed.
 #[tokio::test]
 async fn with_no_reviewer_named_the_decision_is_byte_identical_to_today() -> TestResult {
     let harness = setup(Some(AskOutcome::Reject), false)?;
@@ -472,10 +472,10 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
         let mut tools: Vec<Arc<dyn yi_tools::Tool>> = Vec::new();
         yi_runtime::auto_review::wire_role(
             &session,
-            named.then(faux_model),
-            Some(Arc::clone(&harness.broker)),
+            (named.then(faux_model), Some(Arc::clone(&harness.broker))),
             &harness.provider,
             &mut tools,
+            None,
         );
         let registered = tools.iter().any(|tool| tool.name() == "ask_user");
         let prompt = session

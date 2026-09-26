@@ -630,3 +630,79 @@ fn an_edit_to_a_charted_file_carries_a_named_grid_layer() -> TestResult {
     assert_eq!(plain.result.details["grid"], json!("skipped"));
     Ok(())
 }
+
+/// The header from the #481 confirmation run: one stray `:` between the range halves.
+#[test]
+fn a_one_mark_near_miss_header_applies_and_names_the_repair() -> TestResult {
+    let fixture = Fixture::new("near-miss")?;
+    let body: String = (1..=45).map(|n| format!("row {n}\n")).collect();
+    fixture.write("rows.txt", &body)?;
+    let tag = fixture.tag_of("rows.txt")?;
+    let edit = fixture.edit(&format!("[rows.txt#{tag}]\nPUT 40.:=40:\n+row forty\n"));
+    assert!(!edit.is_error, "{}", output_text(&edit));
+    let text = output_text(&edit);
+    assert!(
+        text.contains("read the hunk header `PUT 40.:=40:` as `PUT 40.=40:`"),
+        "{text}"
+    );
+    let content = fixture.content("rows.txt")?;
+    assert!(content.contains("row 39\nrow forty\nrow 41\n"), "{content}");
+    Ok(())
+}
+
+/// Dropping one `.` of `PUT 4.5.:` reads lines 4-5, dropping the other reads line 45.
+#[test]
+fn an_ambiguous_near_miss_header_is_still_refused() -> TestResult {
+    let fixture = Fixture::new("near-miss-ambiguous")?;
+    fixture.write("rows.txt", "a\nb\nc\nd\ne\nf\n")?;
+    let tag = fixture.tag_of("rows.txt")?;
+    let edit = fixture.edit(&format!("[rows.txt#{tag}]\nPUT 4.5.:\n+x\n"));
+    assert!(edit.is_error, "{}", output_text(&edit));
+    assert!(
+        output_text(&edit).contains("no preceding hunk header"),
+        "{}",
+        output_text(&edit)
+    );
+    assert_eq!(fixture.content("rows.txt")?, "a\nb\nc\nd\ne\nf\n");
+    Ok(())
+}
+
+/// All four `never displayed` refusals in the confirmation corpora cited lines past the end of
+/// a file the model had just written in full; the refusal must name the length instead.
+#[test]
+fn an_anchor_past_the_end_is_not_called_unseen() -> TestResult {
+    let fixture = Fixture::new("past-eof")?;
+    let content: String = (1..=135).map(|n| format!("line {n}\n")).collect();
+    let write = WriteTool {
+        hashline: Some(std::sync::Arc::clone(&fixture.state)),
+    }
+    .execute(
+        args(&[("path", json!("rot.py")), ("content", json!(content))]),
+        &fixture.context,
+    );
+    assert!(!write.is_error, "{}", output_text(&write));
+    let tag = output_text(&write)
+        .lines()
+        .next()
+        .and_then(|line| line.rsplit_once('#'))
+        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
+        .ok_or("no tag on the write result")?;
+    let edit = fixture.edit(&format!("[rot.py#{tag}]\nPUT 134.=148:\n+x\n"));
+    assert!(edit.is_error);
+    let text = output_text(&edit);
+    assert!(!text.contains("never displayed"), "{text}");
+    assert!(text.contains("136 lines"), "{text}");
+    Ok(())
+}
+
+/// A bare body row `REM.` in a batch file is one mark from `REM`, which deletes the file.
+#[test]
+fn a_near_miss_never_reads_as_a_file_op() -> TestResult {
+    let fixture = Fixture::new("near-miss-rem")?;
+    fixture.write("run.bat", "@echo off\nexit\n")?;
+    let tag = fixture.tag_of("run.bat")?;
+    let edit = fixture.edit(&format!("[run.bat#{tag}]\nPUT 1:\n@echo off\nREM.\n"));
+    assert!(!edit.is_error, "{}", output_text(&edit));
+    assert_eq!(fixture.content("run.bat")?, "@echo off\nREM.\nexit\n");
+    Ok(())
+}

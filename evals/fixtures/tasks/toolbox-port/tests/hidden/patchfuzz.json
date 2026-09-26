@@ -1,0 +1,589 @@
+[
+ {
+  "id": "clean",
+  "args": [
+   "change.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "change.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 0,
+  "stdout": "patching file notes.txt\nHunk #1 applied at 17 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "change.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 CHANGED\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 25b inserted\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  }
+ },
+ {
+  "id": "offset",
+  "args": [
+   "change.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "change.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "preface one\npreface two\nrow 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 0,
+  "stdout": "patching file notes.txt\nHunk #1 applied at 19 (offset 2, fuzz 0)\n",
+  "files_after": {
+   "change.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "preface one\npreface two\nrow 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 CHANGED\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 25b inserted\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  }
+ },
+ {
+  "id": "needs-fuzz-refused",
+  "args": [
+   "change.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "change.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 touched by someone else\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 1,
+  "stdout": "patching file notes.txt\nHunk #1 FAILED\n",
+  "files_after": {
+   "change.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 touched by someone else\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  }
+ },
+ {
+  "id": "needs-fuzz-granted",
+  "args": [
+   "--fuzz",
+   "1",
+   "change.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "change.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 touched by someone else\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 0,
+  "stdout": "patching file notes.txt\nHunk #1 applied at 17 (offset 0, fuzz 1)\n",
+  "files_after": {
+   "change.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 touched by someone else\nrow 18 sage\nrow 19 tarn\nrow 20 CHANGED\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 25b inserted\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  }
+ },
+ {
+  "id": "create-and-delete",
+  "args": [
+   "both.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "both.patch": "--- /dev/null\n+++ b/docs/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n--- a/old.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-one\n-two\n",
+   "old.txt": "one\ntwo\n"
+  },
+  "exit": 0,
+  "stdout": "patching file docs/new.txt\nHunk #1 applied at 1 (offset 0, fuzz 0)\npatching file old.txt\nHunk #1 applied at 1 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "both.patch": "--- /dev/null\n+++ b/docs/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n--- a/old.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-one\n-two\n",
+   "docs/new.txt": "hello\nworld\n"
+  }
+ },
+ {
+  "id": "malformed",
+  "args": [
+   "bad.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "bad.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 2,
+  "stdout": "",
+  "files_after": {
+   "bad.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  }
+ },
+ {
+  "id": "reverse",
+  "args": [
+   "--reverse",
+   "change.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "change.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 CHANGED\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 25b inserted\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 0,
+  "stdout": "patching file notes.txt\nHunk #1 applied at 17 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "change.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  }
+ },
+ {
+  "id": "no-newline-added",
+  "args": [
+   "nl.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "nl.patch": "--- a/n.txt\n+++ b/n.txt\n@@ -1,3 +1,3 @@\n one\n two\n-three\n\\ No newline at end of file\n+3\n\\ No newline at end of file\n",
+   "n.txt": "one\ntwo\nthree"
+  },
+  "exit": 0,
+  "stdout": "patching file n.txt\nHunk #1 applied at 1 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "n.txt": "one\ntwo\n3",
+   "nl.patch": "--- a/n.txt\n+++ b/n.txt\n@@ -1,3 +1,3 @@\n one\n two\n-three\n\\ No newline at end of file\n+3\n\\ No newline at end of file\n"
+  }
+ },
+ {
+  "id": "two-hunks-offset-carries",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -2,7 +2,7 @@\n row 02 cobalt\n row 03 dune\n row 04 ember\n-row 05 fjord\n+row 05 EDITED\n row 06 gale\n row 07 heron\n row 08 iris\n@@ -31,7 +31,7 @@\n row 31 lark\n row 32 moss\n row 33 nook\n-row 34 opal\n+row 34 EDITED\n row 35 pine\n row 36 quay\n row 37 reed\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nextra a\nextra b\nextra c\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 0,
+  "stdout": "patching file notes.txt\nHunk #1 applied at 2 (offset 0, fuzz 0)\nHunk #2 applied at 34 (offset 3, fuzz 0)\n",
+  "files_after": {
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 EDITED\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nextra a\nextra b\nextra c\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 EDITED\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n",
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -2,7 +2,7 @@\n row 02 cobalt\n row 03 dune\n row 04 ember\n-row 05 fjord\n+row 05 EDITED\n row 06 gale\n row 07 heron\n row 08 iris\n@@ -31,7 +31,7 @@\n row 31 lark\n row 32 moss\n row 33 nook\n-row 34 opal\n+row 34 EDITED\n row 35 pine\n row 36 quay\n row 37 reed\n"
+  }
+ },
+ {
+  "id": "two-hunks-clean",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -2,7 +2,7 @@\n row 02 cobalt\n row 03 dune\n row 04 ember\n-row 05 fjord\n+row 05 EDITED\n row 06 gale\n row 07 heron\n row 08 iris\n@@ -31,7 +31,7 @@\n row 31 lark\n row 32 moss\n row 33 nook\n-row 34 opal\n+row 34 EDITED\n row 35 pine\n row 36 quay\n row 37 reed\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 0,
+  "stdout": "patching file notes.txt\nHunk #1 applied at 2 (offset 0, fuzz 0)\nHunk #2 applied at 31 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 EDITED\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 EDITED\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n",
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -2,7 +2,7 @@\n row 02 cobalt\n row 03 dune\n row 04 ember\n-row 05 fjord\n+row 05 EDITED\n row 06 gale\n row 07 heron\n row 08 iris\n@@ -31,7 +31,7 @@\n row 31 lark\n row 32 moss\n row 33 nook\n-row 34 opal\n+row 34 EDITED\n row 35 pine\n row 36 quay\n row 37 reed\n"
+  }
+ },
+ {
+  "id": "fuzz-two-ends",
+  "args": [
+   "--fuzz",
+   "3",
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 touched by someone else\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 touched too\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 0,
+  "stdout": "patching file notes.txt\nHunk #1 applied at 17 (offset 0, fuzz 1)\n",
+  "files_after": {
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 touched by someone else\nrow 18 sage\nrow 19 tarn\nrow 20 CHANGED\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 25b inserted\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 touched too\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n",
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n"
+  }
+ },
+ {
+  "id": "fuzz-one-is-not-enough",
+  "args": [
+   "--fuzz",
+   "1",
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 touched\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 1,
+  "stdout": "patching file notes.txt\nHunk #1 FAILED\n",
+  "files_after": {
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 touched\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n",
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n"
+  }
+ },
+ {
+  "id": "fuzz-two-is",
+  "args": [
+   "--fuzz",
+   "2",
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "lead\nrow 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 touched\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 0,
+  "stdout": "patching file notes.txt\nHunk #1 applied at 18 (offset 1, fuzz 2)\n",
+  "files_after": {
+   "notes.txt": "lead\nrow 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 touched\nrow 19 tarn\nrow 20 CHANGED\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 25b inserted\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n",
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n"
+  }
+ },
+ {
+  "id": "fuzz-cannot-eat-changes",
+  "args": [
+   "--fuzz",
+   "9",
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 rewritten\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 1,
+  "stdout": "patching file notes.txt\nHunk #1 FAILED\n",
+  "files_after": {
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 rewritten\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n",
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n"
+  }
+ },
+ {
+  "id": "nearest-wins-forward-on-tie",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/dup.txt\n+++ b/dup.txt\n@@ -14,3 +14,3 @@\n same\n-block\n+BLOCK\n here\n",
+   "dup.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nsame\nblock\nhere\nmid 01 birch\nmid 02 cobalt\nmid 03 dune\nmid 04 ember\nsame\nblock\nhere\ntail 01 birch\ntail 02 cobalt\ntail 03 dune\ntail 04 ember\ntail 05 fjord\ntail 06 gale\ntail 07 heron\ntail 08 iris\n"
+  },
+  "exit": 0,
+  "stdout": "patching file dup.txt\nHunk #1 applied at 16 (offset 2, fuzz 0)\n",
+  "files_after": {
+   "dup.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nsame\nblock\nhere\nmid 01 birch\nmid 02 cobalt\nmid 03 dune\nmid 04 ember\nsame\nBLOCK\nhere\ntail 01 birch\ntail 02 cobalt\ntail 03 dune\ntail 04 ember\ntail 05 fjord\ntail 06 gale\ntail 07 heron\ntail 08 iris\n",
+   "p.patch": "--- a/dup.txt\n+++ b/dup.txt\n@@ -14,3 +14,3 @@\n same\n-block\n+BLOCK\n here\n"
+  }
+ },
+ {
+  "id": "nearest-wins-backward",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/dup.txt\n+++ b/dup.txt\n@@ -11,3 +11,3 @@\n same\n-block\n+BLOCK\n here\n",
+   "dup.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nsame\nblock\nhere\nmid 01 birch\nmid 02 cobalt\nmid 03 dune\nmid 04 ember\nsame\nblock\nhere\ntail 01 birch\ntail 02 cobalt\ntail 03 dune\ntail 04 ember\ntail 05 fjord\ntail 06 gale\ntail 07 heron\ntail 08 iris\n"
+  },
+  "exit": 0,
+  "stdout": "patching file dup.txt\nHunk #1 applied at 9 (offset -2, fuzz 0)\n",
+  "files_after": {
+   "dup.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nsame\nBLOCK\nhere\nmid 01 birch\nmid 02 cobalt\nmid 03 dune\nmid 04 ember\nsame\nblock\nhere\ntail 01 birch\ntail 02 cobalt\ntail 03 dune\ntail 04 ember\ntail 05 fjord\ntail 06 gale\ntail 07 heron\ntail 08 iris\n",
+   "p.patch": "--- a/dup.txt\n+++ b/dup.txt\n@@ -11,3 +11,3 @@\n same\n-block\n+BLOCK\n here\n"
+  }
+ },
+ {
+  "id": "dry-run",
+  "args": [
+   "--dry-run",
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "preface one\npreface two\nrow 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 0,
+  "stdout": "patching file notes.txt\nHunk #1 applied at 19 (offset 2, fuzz 0)\n",
+  "files_after": {
+   "notes.txt": "preface one\npreface two\nrow 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n",
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n"
+  }
+ },
+ {
+  "id": "one-file-fails",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -2,7 +2,7 @@\n row 02 cobalt\n row 03 dune\n row 04 ember\n-row 05 fjord\n+row 05 EDITED\n row 06 gale\n row 07 heron\n row 08 iris\n@@ -31,7 +31,7 @@\n row 31 lark\n row 32 moss\n row 33 nook\n-row 34 opal\n+row 34 EDITED\n row 35 pine\n row 36 quay\n row 37 reed\n--- a/other.txt\n+++ b/other.txt\n@@ -2,6 +2,7 @@\n o 02 cobalt\n o 03 dune\n o 04 ember\n+new\n o 05 fjord\n o 06 gale\n o 07 heron\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n",
+   "other.txt": "o 01 birch\no 02 cobalt\no 03 dune\no 04 ember\no 05 fjord\no 06 gale\no 07 heron\no 08 iris\no 09 jade\n"
+  },
+  "exit": 1,
+  "stdout": "patching file notes.txt\nHunk #1 FAILED\nHunk #2 applied at 26 (offset -5, fuzz 0)\npatching file other.txt\nHunk #1 applied at 2 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n",
+   "other.txt": "o 01 birch\no 02 cobalt\no 03 dune\no 04 ember\nnew\no 05 fjord\no 06 gale\no 07 heron\no 08 iris\no 09 jade\n",
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -2,7 +2,7 @@\n row 02 cobalt\n row 03 dune\n row 04 ember\n-row 05 fjord\n+row 05 EDITED\n row 06 gale\n row 07 heron\n row 08 iris\n@@ -31,7 +31,7 @@\n row 31 lark\n row 32 moss\n row 33 nook\n-row 34 opal\n+row 34 EDITED\n row 35 pine\n row 36 quay\n row 37 reed\n--- a/other.txt\n+++ b/other.txt\n@@ -2,6 +2,7 @@\n o 02 cobalt\n o 03 dune\n o 04 ember\n+new\n o 05 fjord\n o 06 gale\n o 07 heron\n"
+  }
+ },
+ {
+  "id": "partial-failure-leaves-file",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -2,7 +2,7 @@\n row 02 cobalt\n row 03 dune\n row 04 ember\n-row 05 fjord\n+row 05 EDITED\n row 06 gale\n row 07 heron\n row 08 iris\n@@ -31,7 +31,7 @@\n row 31 lark\n row 32 moss\n row 33 nook\n-row 34 opal\n+row 34 EDITED\n row 35 pine\n row 36 quay\n row 37 reed\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\n"
+  },
+  "exit": 1,
+  "stdout": "patching file notes.txt\nHunk #1 applied at 2 (offset 0, fuzz 0)\nHunk #2 FAILED\n",
+  "files_after": {
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\n",
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -2,7 +2,7 @@\n row 02 cobalt\n row 03 dune\n row 04 ember\n-row 05 fjord\n+row 05 EDITED\n row 06 gale\n row 07 heron\n row 08 iris\n@@ -31,7 +31,7 @@\n row 31 lark\n row 32 moss\n row 33 nook\n-row 34 opal\n+row 34 EDITED\n row 35 pine\n row 36 quay\n row 37 reed\n"
+  }
+ },
+ {
+  "id": "create-over-existing",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- /dev/null\n+++ b/docs/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n",
+   "docs/new.txt": "already here\n"
+  },
+  "exit": 1,
+  "stdout": "patching file docs/new.txt\nHunk #1 FAILED\n",
+  "files_after": {
+   "p.patch": "--- /dev/null\n+++ b/docs/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n",
+   "docs/new.txt": "already here\n"
+  }
+ },
+ {
+  "id": "create-over-empty",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- /dev/null\n+++ b/docs/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n",
+   "docs/new.txt": ""
+  },
+  "exit": 0,
+  "stdout": "patching file docs/new.txt\nHunk #1 applied at 1 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "p.patch": "--- /dev/null\n+++ b/docs/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n",
+   "docs/new.txt": "hello\nworld\n"
+  }
+ },
+ {
+  "id": "delete-leaves-rest",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/old.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-one\n-two\n",
+   "old.txt": "one\ntwo\nthree\n"
+  },
+  "exit": 0,
+  "stdout": "patching file old.txt\nHunk #1 applied at 1 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "old.txt": "three\n",
+   "p.patch": "--- a/old.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-one\n-two\n"
+  }
+ },
+ {
+  "id": "insert-only",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -3,0 +4,2 @@\n+added one\n+added two\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\n"
+  },
+  "exit": 0,
+  "stdout": "patching file notes.txt\nHunk #1 applied at 4 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nadded one\nadded two\nrow 04 ember\nrow 05 fjord\nrow 06 gale\n",
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -3,0 +4,2 @@\n+added one\n+added two\n"
+  }
+ },
+ {
+  "id": "missing-target",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -2,7 +2,7 @@\n row 02 cobalt\n row 03 dune\n row 04 ember\n-row 05 fjord\n+row 05 EDITED\n row 06 gale\n row 07 heron\n row 08 iris\n@@ -31,7 +31,7 @@\n row 31 lark\n row 32 moss\n row 33 nook\n-row 34 opal\n+row 34 EDITED\n row 35 pine\n row 36 quay\n row 37 reed\n"
+  },
+  "exit": 1,
+  "stdout": "patching file notes.txt\nHunk #1 FAILED\nHunk #2 FAILED\n",
+  "files_after": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -2,7 +2,7 @@\n row 02 cobalt\n row 03 dune\n row 04 ember\n-row 05 fjord\n+row 05 EDITED\n row 06 gale\n row 07 heron\n row 08 iris\n@@ -31,7 +31,7 @@\n row 31 lark\n row 32 moss\n row 33 nook\n-row 34 opal\n+row 34 EDITED\n row 35 pine\n row 36 quay\n row 37 reed\n"
+  }
+ },
+ {
+  "id": "from-stdin",
+  "args": [
+   "-"
+  ],
+  "stdin": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+  "files": {
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 0,
+  "stdout": "patching file notes.txt\nHunk #1 applied at 17 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 CHANGED\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 25b inserted\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  }
+ },
+ {
+  "id": "git-preamble-and-timestamps",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "diff --git a/notes.txt b/notes.txt\nindex 1234567..89abcde 100644\n--- a/notes.txt\t2031-01-01 10:00:00\n+++ b/notes.txt\n@@ -17,12 +17,13 @@ def section():\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n",
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 amber\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n"
+  },
+  "exit": 0,
+  "stdout": "patching file notes.txt\nHunk #1 applied at 17 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "notes.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss\nrow 13 nook\nrow 14 opal\nrow 15 pine\nrow 16 quay\nrow 17 reed\nrow 18 sage\nrow 19 tarn\nrow 20 CHANGED\nrow 21 birch\nrow 22 cobalt\nrow 23 dune\nrow 24 ember\nrow 25 fjord\nrow 25b inserted\nrow 26 gale\nrow 27 heron\nrow 28 iris\nrow 29 jade\nrow 30 kelp\nrow 31 lark\nrow 32 moss\nrow 33 nook\nrow 34 opal\nrow 35 pine\nrow 36 quay\nrow 37 reed\nrow 38 sage\nrow 39 tarn\nrow 40 amber\n",
+   "p.patch": "diff --git a/notes.txt b/notes.txt\nindex 1234567..89abcde 100644\n--- a/notes.txt\t2031-01-01 10:00:00\n+++ b/notes.txt\n@@ -17,12 +17,13 @@ def section():\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n"
+  }
+ },
+ {
+  "id": "newline-gained",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/n.txt\n+++ b/n.txt\n@@ -1,3 +1,4 @@\n one\n two\n three\n\\ No newline at end of file\n+four\n",
+   "n.txt": "one\ntwo\nthree"
+  },
+  "exit": 0,
+  "stdout": "patching file n.txt\nHunk #1 applied at 1 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "n.txt": "one\ntwo\nthree\nfour",
+   "p.patch": "--- a/n.txt\n+++ b/n.txt\n@@ -1,3 +1,4 @@\n one\n two\n three\n\\ No newline at end of file\n+four\n"
+  }
+ },
+ {
+  "id": "newline-lost-reverse",
+  "args": [
+   "--reverse",
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/n.txt\n+++ b/n.txt\n@@ -1,3 +1,4 @@\n one\n two\n three\n\\ No newline at end of file\n+four\n",
+   "n.txt": "one\ntwo\nthree\nfour\n"
+  },
+  "exit": 0,
+  "stdout": "patching file n.txt\nHunk #1 applied at 1 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "n.txt": "one\ntwo\nthree",
+   "p.patch": "--- a/n.txt\n+++ b/n.txt\n@@ -1,3 +1,4 @@\n one\n two\n three\n\\ No newline at end of file\n+four\n"
+  }
+ },
+ {
+  "id": "newline-untouched-in-the-middle",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/n.txt\n+++ b/n.txt\n@@ -1,6 +1,6 @@\n row 01 birch\n row 02 cobalt\n-row 03 dune\n+mid\n row 04 ember\n row 05 fjord\n row 06 gale\n",
+   "n.txt": "row 01 birch\nrow 02 cobalt\nrow 03 dune\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss"
+  },
+  "exit": 0,
+  "stdout": "patching file n.txt\nHunk #1 applied at 1 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "n.txt": "row 01 birch\nrow 02 cobalt\nmid\nrow 04 ember\nrow 05 fjord\nrow 06 gale\nrow 07 heron\nrow 08 iris\nrow 09 jade\nrow 10 kelp\nrow 11 lark\nrow 12 moss",
+   "p.patch": "--- a/n.txt\n+++ b/n.txt\n@@ -1,6 +1,6 @@\n row 01 birch\n row 02 cobalt\n-row 03 dune\n+mid\n row 04 ember\n row 05 fjord\n row 06 gale\n"
+  }
+ },
+ {
+  "id": "reverse-create-is-delete",
+  "args": [
+   "--reverse",
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- /dev/null\n+++ b/docs/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n",
+   "docs/new.txt": "hello\nworld\n"
+  },
+  "exit": 0,
+  "stdout": "patching file docs/new.txt\nHunk #1 applied at 1 (offset 0, fuzz 0)\n",
+  "files_after": {
+   "p.patch": "--- /dev/null\n+++ b/docs/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n"
+  }
+ },
+ {
+  "id": "short-body",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n a\n-b\n",
+   "x": "a\nb\nc\n"
+  },
+  "exit": 2,
+  "stdout": "",
+  "files_after": {
+   "p.patch": "--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n a\n-b\n",
+   "x": "a\nb\nc\n"
+  }
+ },
+ {
+  "id": "no-header",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "just some text\n"
+  },
+  "exit": 2,
+  "stdout": "",
+  "files_after": {
+   "p.patch": "just some text\n"
+  }
+ },
+ {
+  "id": "bad-option",
+  "args": [
+   "--fuzz",
+   "lots",
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n"
+  },
+  "exit": 2,
+  "stdout": "",
+  "files_after": {
+   "p.patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -17,12 +17,13 @@\n row 17 reed\n row 18 sage\n row 19 tarn\n-row 20 amber\n+row 20 CHANGED\n row 21 birch\n row 22 cobalt\n row 23 dune\n row 24 ember\n row 25 fjord\n+row 25b inserted\n row 26 gale\n row 27 heron\n row 28 iris\n"
+  }
+ },
+ {
+  "id": "second-hunk-stays-after-first",
+  "args": [
+   "p.patch"
+  ],
+  "stdin": "",
+  "files": {
+   "p.patch": "--- a/r.txt\n+++ b/r.txt\n@@ -2,1 +2,1 @@\n-x\n+X\n@@ -5,1 +5,1 @@\n-x\n+Y\n",
+   "r.txt": "a\nb\nc\nx\nd\n"
+  },
+  "exit": 1,
+  "stdout": "patching file r.txt\nHunk #1 applied at 4 (offset 2, fuzz 0)\nHunk #2 FAILED\n",
+  "files_after": {
+   "p.patch": "--- a/r.txt\n+++ b/r.txt\n@@ -2,1 +2,1 @@\n-x\n+X\n@@ -5,1 +5,1 @@\n-x\n+Y\n",
+   "r.txt": "a\nb\nc\nx\nd\n"
+  }
+ }
+]

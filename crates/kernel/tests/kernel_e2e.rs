@@ -21,8 +21,26 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 struct EchoHost;
 
+/// Set when a `test.hold` request's host future is dropped rather than left running.
+static HOLD_DROPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct Held;
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        HOLD_DROPPED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 impl HostHandlers for EchoHost {
     fn dispatch(&self, request_type: &str, payload: Map<String, Value>) -> Option<HostFuture> {
+        if request_type == "test.hold" {
+            return Some(Box::pin(async move {
+                let _held = Held;
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                Ok(Map::new())
+            }));
+        }
         if request_type != "test.echo" {
             return None;
         }
@@ -166,6 +184,26 @@ async fn cells_stream_error_host_request_interrupt_and_shutdown() -> TestResult 
     Ok(())
 }
 
+/// Dies with the host task outliving its comm: an `rlm.receive` the cell stopped awaiting
+/// kept polling for 300 s, marked the mail it took as read and replied to a closed comm.
+#[tokio::test]
+async fn an_abandoned_host_request_stops_its_host_task() -> TestResult {
+    let kernel = manager()?;
+    let cell = "import asyncio, rlm\ntry:\n    await asyncio.wait_for(rlm.host_request('test.hold', {}), 0.3)\nexcept asyncio.TimeoutError:\n    print('gave up')";
+    let result = kernel.execute(cell, ExecuteOptions::default()).await?;
+    assert_eq!(result.stdout.trim(), "gave up", "{}", result.stderr);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !HOLD_DROPPED.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host task still runs after its comm closed"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    kernel.dispose().await;
+    Ok(())
+}
+
 /// Incident: the debounced snapshot's 5 s abort left its cell in the active slot, so the
 /// user's next cell waited out the busy window and was refused (the 2026-09-10 audit, S7).
 #[tokio::test]
@@ -195,6 +233,91 @@ async fn an_aborted_internal_cell_clears_the_active_slot() -> TestResult {
         "the user's next cell must run once Yi's own cell is abandoned"
     );
     kernel.dispose().await;
+    Ok(())
+}
+
+/// Incident: nothing remembered a skip, so a variable over the per-variable cap was
+/// serialized up to the cap, and thrown away, on every checkpoint.
+#[tokio::test]
+async fn an_over_cap_variable_is_serialized_once_not_every_checkpoint() -> TestResult {
+    let dir = Scratch::new("yi-snap-overcap")?;
+    let kernel = manager_with_snapshot(Some(KernelSnapshotConfig {
+        path: snapshot_path_in(&dir),
+        manifest_path: manifest_path_in(&dir),
+        max_bytes: None,
+        max_variable_bytes: Some(1 << 20),
+        debounce_ms: None,
+    }))?;
+    kernel
+        .execute(
+            "class Big:\n    reduced = 0\n    def __reduce__(self):\n        Big.reduced += 1\n        return (bytes, (b'x' * (2 << 20),))\nbig = Big()",
+            ExecuteOptions::default(),
+        )
+        .await?;
+    for _ in 0..2 {
+        let snapshot = kernel.snapshot_state().await.ok_or("snapshot result")?;
+        assert!(
+            snapshot.skipped.iter().any(|skip| skip.name == "big"),
+            "{snapshot:?}"
+        );
+    }
+    let count = kernel
+        .execute("print(Big.reduced)", ExecuteOptions::default())
+        .await?;
+    kernel.dispose().await;
+    assert_eq!(count.stdout.trim(), "1", "{}", count.stderr);
+    Ok(())
+}
+
+/// Incident: the over-cap memo matched a list shrunk in place (same id, type and size), so
+/// the post-compaction prune deleted a variable that no longer crossed the cap.
+#[tokio::test]
+async fn a_prune_keeps_an_over_cap_variable_that_shrank_in_place() -> TestResult {
+    let dir = Scratch::new("yi-snap-shrunk")?;
+    let kernel = manager_with_snapshot(Some(KernelSnapshotConfig {
+        path: snapshot_path_in(&dir),
+        manifest_path: manifest_path_in(&dir),
+        max_bytes: None,
+        max_variable_bytes: Some(1 << 20),
+        debounce_ms: None,
+    }))?;
+    kernel
+        .execute("rows = [b'x' * (2 << 20)]", ExecuteOptions::default())
+        .await?;
+    let first = kernel.snapshot_state().await.ok_or("snapshot result")?;
+    assert!(
+        first.skipped.iter().any(|skip| skip.name == "rows"),
+        "{first:?}"
+    );
+    kernel
+        .execute("rows[0] = b'small'", ExecuteOptions::default())
+        .await?;
+    let prune = kernel
+        .prune_oversized_variables()
+        .await
+        .ok_or("prune result")?;
+    let alive = kernel
+        .execute("print('rows' in globals())", ExecuteOptions::default())
+        .await?;
+    kernel.dispose().await;
+    assert!(prune.pruned.is_empty(), "{prune:?}");
+    assert_eq!(alive.stdout.trim(), "True", "{}", alive.stderr);
+    Ok(())
+}
+
+/// Incident: every cell, Yi's own included, was written to the user's
+/// `~/.ipython/profile_default/history.sqlite`, one sqlite lock shared by every kernel.
+#[tokio::test]
+async fn the_kernel_keeps_no_ipython_history() -> TestResult {
+    let kernel = manager()?;
+    let probe = kernel
+        .execute(
+            "print(get_ipython().history_manager.enabled)",
+            ExecuteOptions::default(),
+        )
+        .await?;
+    kernel.dispose().await;
+    assert_eq!(probe.stdout.trim(), "False", "{}", probe.stderr);
     Ok(())
 }
 
@@ -244,6 +367,18 @@ async fn namespace_snapshot_revives_across_kernels() -> TestResult {
         "IPython-injected names must never be snapshotted"
     );
     assert!(snapshot.bytes > 0 && config.path.is_file());
+    let held = std::fs::File::open(&config.manifest_path)?;
+    let before = std::fs::read(&config.manifest_path)?;
+    first.execute("more = 1", ExecuteOptions::default()).await?;
+    first.snapshot_state().await.ok_or("second snapshot")?;
+    assert_ne!(
+        std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&config.manifest_path)?),
+        std::os::unix::fs::MetadataExt::ino(&held.metadata()?),
+        "a reader holding the manifest must keep the old file, not see it rewritten in place"
+    );
+    let mut kept = Vec::new();
+    std::io::Read::read_to_end(&mut &held, &mut kept)?;
+    assert_eq!(kept, before);
     first.dispose().await;
 
     let second = manager_with_snapshot(Some(config.clone()))?;

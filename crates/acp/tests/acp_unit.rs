@@ -108,6 +108,45 @@ fn agent_lifecycle_maps_to_state_updates_with_stop_reason() -> TestResult {
     Ok(())
 }
 
+/// The console notebook draws a cell's image from the update's content, since the
+/// details record no longer carries the bytes.
+#[test]
+fn a_tool_result_image_reaches_the_tool_call_content() -> TestResult {
+    let end = to_updates(
+        &AgentEvent::ToolExecutionEnd {
+            tool_call_id: "t1".to_owned(),
+            tool_name: "ipython".to_owned(),
+            result: ToolResult {
+                content: vec![
+                    Content::Text {
+                        text: "attached".to_owned(),
+                        text_signature: None,
+                    },
+                    Content::Image {
+                        data: "iVBORw0KGgo=".to_owned(),
+                        mime_type: "image/png".to_owned(),
+                    },
+                ],
+                details: json!({}),
+                usage: None,
+                added_tool_names: None,
+                terminate: None,
+            },
+            is_error: false,
+        },
+        &mut IdMap::new(1000),
+    );
+    let json = serde_json::to_value(&end)?;
+    assert_eq!(
+        json[0]["content"],
+        json!([
+            {"type": "content", "content": {"type": "text", "text": "attached"}},
+            {"type": "content", "content": {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"}},
+        ])
+    );
+    Ok(())
+}
+
 #[test]
 fn tool_execution_maps_to_tool_call_updates_and_bash_to_terminals() -> TestResult {
     let mut ids = IdMap::new(1000);
@@ -214,6 +253,8 @@ fn child_updates_become_a_subagent_update_notification() -> TestResult {
                 token_count: 1200,
                 answer_preview: None,
                 error: None,
+                exit: None,
+                flag: None,
             },
         },
         &mut ids,
@@ -245,7 +286,7 @@ fn replay_walks_entries_into_full_message_updates() -> TestResult {
     let entries = vec![
         Entry::Message {
             id: "e1".to_owned(),
-            message: AgentMessage::host_user(UserContent::Text("fix the bug".to_owned()), 0),
+            message: AgentMessage::user_input(UserContent::Text("fix the bug".to_owned()), 0),
             terminate: None,
             parent_id: None,
             seq: 1,
@@ -271,6 +312,47 @@ fn replay_walks_entries_into_full_message_updates() -> TestResult {
     let second = serde_json::to_value(&updates[1])?;
     assert_eq!(second["sessionUpdate"], "_yi/compaction");
     assert_eq!(second["summary"], "earlier work");
+    Ok(())
+}
+
+/// Dies with host notices sent as `user_message`: a stock client drew "[subagent writer
+/// finished]" as if the user had typed it, live and on replay. Dies too with the notice as a
+/// custom update no stock client decodes, and with a prompt typed before D25 replayed as a notice.
+#[test]
+fn a_host_notice_is_never_a_user_message() -> TestResult {
+    let notice = AgentMessage::host_user(
+        UserContent::Text("[subagent writer finished]".to_owned()),
+        0,
+    );
+    let live = to_updates(
+        &AgentEvent::MessageStart {
+            message: notice.clone(),
+        },
+        &mut IdMap::new(1000),
+    );
+    let entry = Entry::Message {
+        id: "e1".to_owned(),
+        message: notice,
+        terminate: None,
+        parent_id: None,
+        seq: 1,
+        timestamp: yi_types::message::ATTRIBUTED_SINCE_MS,
+    };
+    let replayed = replay_updates(&[entry], &mut IdMap::new(1000));
+    for update in live.iter().chain(&replayed) {
+        let json = serde_json::to_value(update)?;
+        assert_eq!(json["sessionUpdate"], "agent_message", "{json}");
+        let block = &json["content"][0];
+        assert_eq!(block["type"], "text", "{json}");
+        assert_eq!(block["text"], "[subagent writer finished]", "{json}");
+        assert_eq!(block["_meta"]["yi"]["hostNotice"], true, "{json}");
+    }
+    assert_eq!((live.len(), replayed.len()), (1, 1));
+    // A line from a session written on 2026-08-30, before any message carried an attribution.
+    let typed = r#"{"kind":"entry","lane":"main","type":"message","id":"01a03699-7a72-77dd-893e-6a5a2644e7e9","message":{"role":"user","content":"hello","timestamp":0},"parentId":null,"seq":1,"timestamp":1787622423154}"#;
+    let typed: Entry = serde_json::from_str(typed)?;
+    let replayed = serde_json::to_value(replay_updates(&[typed], &mut IdMap::new(1000)))?;
+    assert_eq!(replayed[0]["sessionUpdate"], "user_message", "{replayed}");
     Ok(())
 }
 
@@ -386,6 +468,8 @@ fn child_update() -> yi_types::subagent::ChildUpdate {
         token_count: 1200,
         answer_preview: None,
         error: None,
+        exit: None,
+        flag: None,
     }
 }
 

@@ -1,14 +1,38 @@
 use serde_json::Value;
 
-/// A JSON Schema subset: `type`, `required`, `properties`, `items`, `enum`.
-/// Anything else in the document is carried to the model and ignored here.
+/// A JSON Schema subset: `type`, `required`, `properties`, `items`, `enum`. An instruction to
+/// a model carries anything else and ignores it; a contract criterion refuses it instead.
 pub struct Schema(Value);
 
 const MAX_DEPTH: u32 = 32;
 
+/// What a criterion may carry: the five keywords this subset decides, then the descriptive ones
+/// that assert nothing. An allowlist, so an unimplemented keyword is refused, never ignored.
+const CRITERION_KEYWORDS: [&str; 12] = [
+    "type",
+    "required",
+    "properties",
+    "items",
+    "enum",
+    "description",
+    "title",
+    "examples",
+    "default",
+    "$comment",
+    "$schema",
+    "$id",
+];
+
 impl Schema {
     pub fn from_value(value: Value) -> Result<Self, String> {
-        shape(&value, "$", 0)?;
+        shape(&value, "$", 0, false)?;
+        Ok(Self(value))
+    }
+
+    /// # Errors
+    /// Malformed, or carrying a keyword this subset does not implement and so cannot decide.
+    pub fn criterion(value: Value) -> Result<Self, String> {
+        shape(&value, "$", 0, true)?;
         Ok(Self(value))
     }
 
@@ -40,7 +64,7 @@ impl Schema {
     }
 }
 
-fn shape(schema: &Value, path: &str, depth: u32) -> Result<(), String> {
+fn shape(schema: &Value, path: &str, depth: u32, criterion: bool) -> Result<(), String> {
     if depth > MAX_DEPTH {
         return Err(format!("{path}: schema nests deeper than {MAX_DEPTH}"));
     }
@@ -50,6 +74,12 @@ fn shape(schema: &Value, path: &str, depth: u32) -> Result<(), String> {
             kind(schema)
         ));
     };
+    if criterion && let Some(name) = object.keys().find(|name| !known_keyword(name)) {
+        return Err(format!(
+            "{path}.{name}: this schema subset does not implement {name}, so a criterion \
+             may not assert it"
+        ));
+    }
     if let Some(declared) = object.get("type")
         && !declared.as_str().is_some_and(|name| {
             matches!(
@@ -84,6 +114,7 @@ fn shape(schema: &Value, path: &str, depth: u32) -> Result<(), String> {
                     child,
                     &format!("{path}.properties.{name}"),
                     depth.saturating_add(1),
+                    criterion,
                 )?;
             }
         }
@@ -96,7 +127,12 @@ fn shape(schema: &Value, path: &str, depth: u32) -> Result<(), String> {
         None => {}
     }
     match object.get("items") {
-        Some(items) => shape(items, &format!("{path}.items"), depth.saturating_add(1)),
+        Some(items) => shape(
+            items,
+            &format!("{path}.items"),
+            depth.saturating_add(1),
+            criterion,
+        ),
         None => Ok(()),
     }
 }
@@ -155,6 +191,10 @@ fn check(schema: &Value, value: &Value, path: &str, depth: u32) -> Result<(), St
         }
     }
     Ok(())
+}
+
+fn known_keyword(keyword: &str) -> bool {
+    CRITERION_KEYWORDS.contains(&keyword)
 }
 
 fn matches_type(expected: &str, value: &Value) -> bool {

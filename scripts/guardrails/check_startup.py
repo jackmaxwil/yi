@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Startup budget via hyperfine (13.6). Fails loudly if hyperfine is missing (design 9:
+"""Startup budget via hyperfine (design §18.6). Fails loudly if hyperfine is missing (design §21:
 a guardrail whose tooling is absent must not silently pass).
 
 Scored on the *minimum* of the run, not the mean: startup is bounded below by real
@@ -10,11 +10,11 @@ not; the mean read 6.5-7.4 ms there against 3.1-4.4 ms idle on the same binary, 
 that is the number that blocked a push in a path `--version` never touches."""
 import json, shutil, subprocess, sys, tempfile, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, BASE, fail
+from _common import BASE, DIST_BIN, fail
 
 if shutil.which("hyperfine") is None:
     fail(["hyperfine not installed (brew install hyperfine)"], "startup")
-bin_path = ROOT / "target/dist/yi"
+bin_path = DIST_BIN
 if not bin_path.exists():
     fail([f"{bin_path} missing - run: cargo build --profile dist -p yi-cli"], "startup")
 budgets = json.loads((BASE / "startup_ms_budget.json").read_text())

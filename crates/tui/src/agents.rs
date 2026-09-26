@@ -91,7 +91,7 @@ impl AgentsPopup {
         let share = tokens.saturating_mul(BAR_CELLS) / self.context_window.max(1);
         let filled = usize::try_from(share.min(BAR_CELLS)).unwrap_or(0);
         let percent = tokens.saturating_mul(100) / self.context_window.max(1);
-        // U16's rule for the context gauge: over the window is an error, not a
+        // §17.3's rule for the context gauge: over the window is an error, not a
         // warning, and the bar clamps while the number keeps telling the truth.
         let style = match percent {
             0..=79 => Style::default().fg(theme.accent),
@@ -252,16 +252,22 @@ impl crate::app::App {
         Some(crate::pycell::preview(code)).filter(|line| !line.is_empty())
     }
 
-    /// The host's `interrupt` ends a run by aborting the child's own session, which the App
-    /// already holds; the record it keeps besides that is the host's either way.
+    /// That cell's call id: the one cell a finished card waits on before it commits.
+    pub(crate) fn spawning_call(&self) -> Option<String> {
+        self.live_tools
+            .iter()
+            .rev()
+            .find(|tool| tool.name == "ipython" && tool.status != ToolStatus::Done)
+            .map(|tool| tool.call_id.clone())
+    }
+
+    /// A stop is the host's `interrupt`, asked for through the driver: the App holds a
+    /// child's feed, never a handle that could end its run behind the host's record.
     pub fn stop_child(&mut self, child_id: &str) {
-        let Some(state) = self.tasks.get(child_id) else {
+        if !self.tasks.contains_key(child_id) {
             return;
-        };
-        match &state.session {
-            Some(session) => session.abort(),
-            None => self.pending_stop = Some(child_id.to_owned()),
         }
+        self.pending_stop = Some(child_id.to_owned());
         self.commit_cell(&Cell::Notice {
             text: format!("stopped {child_id}"),
         });

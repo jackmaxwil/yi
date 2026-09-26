@@ -6,6 +6,7 @@ use tokio::sync::mpsc::Receiver;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
+use yi_types::subagent::LoopSignal;
 
 use crate::config::{ExecutionMode, LoopConfig, TurnSnapshot};
 use crate::interrupt::InterruptSignal;
@@ -184,7 +185,7 @@ async fn execute_one(
         .map(|tool| tool.definition().name.clone())
         .collect();
     let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
-    // L13: one deterministic repair, then the call fails with the real error.
+    // One deterministic repair, then the call fails with the real error.
     let resolved = crate::repair::repair_tool_name(&call.name, &borrowed)
         .map(str::to_owned)
         .unwrap_or_else(|| call.name.clone());
@@ -397,8 +398,10 @@ struct Cut {
 /// sent back to act; from the prompt's second cut it is told what to write and where it stopped.
 fn length_redrive(rung: u32, cut: Option<&Cut>) -> AgentMessage {
     let details = match cut {
-        Some(cut) => json!({"rung": rung, "cut": true, "reasoningChars": cut.chars}),
-        None => json!({"rung": rung, "cut": false}),
+        Some(cut) => {
+            json!({"rung": rung, "cut": true, "reasoningChars": cut.chars, "signal": LoopSignal::LengthRedrive})
+        }
+        None => json!({"rung": rung, "cut": false, "signal": LoopSignal::LengthRedrive}),
     };
     // Incident: coq-block-bound's cut requests carried only the nudge; six turns derived from zero
     let text = match cut {
@@ -546,7 +549,7 @@ fn repeat_break() -> AgentMessage {
         custom_type: REPEAT_BREAK_CUSTOM_TYPE.to_owned(),
         content: yi_types::message::UserContent::Text(REPEAT_BREAK_TEXT.to_owned()),
         display: false,
-        details: None,
+        details: Some(json!({"signal": LoopSignal::RepeatBreak})),
         timestamp: 0,
     }
 }
@@ -555,6 +558,16 @@ struct TurnRequest<'a> {
     model: &'a Model,
     effort: Effort,
     tool_choice: Option<ToolChoice>,
+    watch: bool,
+}
+
+async fn due_now(due: Option<&(dyn Fn() -> bool + Send + Sync)>, watch: bool) {
+    let Some(due) = due.filter(|_| watch) else {
+        return std::future::pending().await;
+    };
+    while !due() {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
 }
 
 async fn stream_assistant_response<S: StreamFn>(
@@ -564,11 +577,12 @@ async fn stream_assistant_response<S: StreamFn>(
     signal: &InterruptSignal,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
     stream: &S,
-) -> (AgentMessage, Option<Cut>) {
+) -> (AgentMessage, Option<Cut>, bool) {
     let TurnRequest {
         model,
         effort,
         tool_choice,
+        watch,
     } = turn;
     let mut messages = context.messages.clone();
     if let Some(transform) = &config.transform_context
@@ -595,12 +609,18 @@ async fn stream_assistant_response<S: StreamFn>(
     let mut final_message: Option<AgentMessage> = None;
     let mut budget = ReasoningBudget::default();
     let mut cut: Option<usize> = None;
+    let mut timed_out = false;
     loop {
         // The provider's stream takes no cancellation input, so this is a streaming answer's
         // only interrupt checkpoint; without it a tool-less turn ran to completion first.
         let event = tokio::select! {
             biased;
             () = signal.wait() => None,
+            () = due_now(config.last_word_due.as_deref(), watch) => {
+                timed_out = true;
+                signal.cut();
+                None
+            }
             event = receiver.recv() => event,
         };
         let Some(event) = event else {
@@ -658,7 +678,7 @@ async fn stream_assistant_response<S: StreamFn>(
         None => None,
     };
     let final_message = final_message.unwrap_or_else(|| {
-        if signal.is_fired() {
+        if signal.is_fired() || timed_out {
             aborted_message(
                 added_partial.then(|| context.messages.last()).flatten(),
                 model,
@@ -680,7 +700,7 @@ async fn stream_assistant_response<S: StreamFn>(
     emit(AgentEvent::MessageEnd {
         message: final_message.clone(),
     });
-    (final_message, cut)
+    (final_message, cut, timed_out)
 }
 
 pub async fn run_loop<S: StreamFn>(
@@ -714,6 +734,7 @@ pub async fn run_loop<S: StreamFn>(
     let mut recent: VecDeque<String> = VecDeque::with_capacity(REPEAT_WINDOW);
     let mut repeating: u32 = 0;
     let mut steered = false;
+    let mut last_word_said = false;
     let mut tool_choice = config.first_turn_tool_choice.clone();
     let mut pending: Vec<AgentMessage> = config
         .get_steering_messages
@@ -744,13 +765,14 @@ pub async fn run_loop<S: StreamFn>(
             {
                 context.messages = compacted;
             }
-            let (message, cut) = stream_assistant_response(
+            let (message, cut, timed_out) = stream_assistant_response(
                 context,
                 config,
                 TurnRequest {
                     model: &current_model,
                     effort: current_effort,
                     tool_choice: tool_choice.take(),
+                    watch: !last_word_said,
                 },
                 signal,
                 emit,
@@ -761,6 +783,27 @@ pub async fn run_loop<S: StreamFn>(
             collected.push(message.clone());
 
             let reason = stop_reason_of(&message);
+            if timed_out {
+                emit(AgentEvent::TurnEnd {
+                    message: message.clone(),
+                    tool_results: Vec::new(),
+                });
+                let snapshot = TurnSnapshot {
+                    message: &message,
+                    tool_results: &[],
+                };
+                if let Some(word) = config.last_word.as_ref().and_then(|word| word(&snapshot)) {
+                    last_word_said = true;
+                    tool_choice = Some(ToolChoice::None);
+                    pending = vec![word];
+                    has_more_tool_calls = false;
+                    continue;
+                }
+                emit(AgentEvent::AgentEnd {
+                    messages: collected.clone(),
+                });
+                return collected;
+            }
             if reason == StopReason::Error
                 && stream_retries < STREAM_RETRY_AT
                 && nothing_delivered(&message)
@@ -790,24 +833,7 @@ pub async fn run_loop<S: StreamFn>(
             // a clean turn ends the error streak: the next error gets its own retry
             stream_retries = 0;
 
-            let repeats = match batch_signature(&message) {
-                Some(batch) => {
-                    if recent.len() >= REPEAT_WINDOW {
-                        recent.pop_front();
-                    }
-                    let seen = recent.iter().filter(|past| **past == batch).count();
-                    recent.push_back(batch);
-                    // a batch new to the window is progress: the next stretch earns its own steer
-                    if seen == 0 {
-                        steered = false;
-                        repeating = 0;
-                    } else {
-                        repeating = repeating.saturating_add(1);
-                    }
-                    u32::try_from(seen.saturating_add(1)).unwrap_or(u32::MAX)
-                }
-                None => 0,
-            };
+            let waits_before = config.waiting.as_ref().map(|count| count());
             let calls = extract_tool_calls(&message);
             let mut tool_results: Vec<AgentMessage> = Vec::new();
             has_more_tool_calls = false;
@@ -837,6 +863,28 @@ pub async fn run_loop<S: StreamFn>(
                 }
             }
 
+            // The host saw the batch block on the family: a wait for work, never a repeat.
+            let waited = waits_before
+                .zip(config.waiting.as_ref())
+                .is_some_and(|(before, count)| count() > before);
+            let repeats = match batch_signature(&message).filter(|_| !waited) {
+                Some(batch) => {
+                    if recent.len() >= REPEAT_WINDOW {
+                        recent.pop_front();
+                    }
+                    let seen = recent.iter().filter(|past| **past == batch).count();
+                    recent.push_back(batch);
+                    // a batch new to the window is progress: the next stretch earns its own steer
+                    if seen == 0 {
+                        steered = false;
+                        repeating = 0;
+                    } else {
+                        repeating = repeating.saturating_add(1);
+                    }
+                    u32::try_from(seen.saturating_add(1)).unwrap_or(u32::MAX)
+                }
+                None => 0,
+            };
             emit(AgentEvent::TurnEnd {
                 message: message.clone(),
                 tool_results: tool_results.clone(),
@@ -858,6 +906,16 @@ pub async fn run_loop<S: StreamFn>(
             if let Some(should_stop) = &config.should_stop_after_turn
                 && should_stop(&snapshot)
             {
+                let word = config.last_word.as_ref().filter(|_| has_more_tool_calls);
+                if let Some(word) = word
+                    .filter(|_| !last_word_said)
+                    .and_then(|word| word(&snapshot))
+                {
+                    last_word_said = true;
+                    tool_choice = Some(ToolChoice::None);
+                    pending = vec![word];
+                    continue;
+                }
                 emit(AgentEvent::AgentEnd {
                     messages: collected.clone(),
                 });

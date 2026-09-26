@@ -1,0 +1,96 @@
+[
+ {
+  "id": "basic",
+  "args": [
+   "--max-size",
+   "100"
+  ],
+  "stdin": "write app.log 60\nwrite app.log 50\ntick 10\nwrite app.log 100\nwrite app.log 1\ntick 5\nwrite db.log 10\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "app.log 1 10\napp.log.1 100 10\napp.log.2 50 0\napp.log.3 60 0\ndb.log 10 15\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "keep-and-compress",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep",
+   "2",
+   "--compress-from",
+   "2"
+  ],
+  "stdin": "write app.log 60\nwrite app.log 50\ntick 10\nwrite app.log 100\nwrite app.log 1\ntick 5\nwrite db.log 10\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "app.log 1 10\napp.log.1 100 10\napp.log.2.gz 13 0\ndb.log 10 15\ndropped 1 15\n",
+  "files_after": {}
+ },
+ {
+  "id": "oversize-write",
+  "args": [
+   "--max-size",
+   "100"
+  ],
+  "stdin": "write a 250\nwrite a 1\nwrite a 99\nwrite a 1\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 1 0\na.1 100 0\na.2 250 0\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "max-age",
+  "args": [
+   "--max-size",
+   "50",
+   "--max-age",
+   "30"
+  ],
+  "stdin": "write a 40\nwrite a 40\ntick 20\nwrite a 40\ntick 11\nwrite a 5\ntick 20\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 45 31\ndropped 2 80\n",
+  "files_after": {}
+ },
+ {
+  "id": "forced-rotate",
+  "args": [
+   "--max-size",
+   "100"
+  ],
+  "stdin": "rotate a\nwrite a 0\nrotate a\nwrite a 5\nrotate a\nrotate a\nwrite a 7\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 7 0\na.1 5 0\ndropped 0 0\n",
+  "files_after": {}
+ },
+ {
+  "id": "keep-bytes",
+  "args": [
+   "--max-size",
+   "100",
+   "--keep",
+   "9",
+   "--keep-bytes",
+   "150"
+  ],
+  "stdin": "write a 90\nwrite a 90\nwrite a 90\nwrite a 90\n",
+  "files": {},
+  "exit": 0,
+  "stdout": "a 90 0\na.1 90 0\ndropped 2 180\n",
+  "files_after": {}
+ },
+ {
+  "id": "bad-command",
+  "args": [
+   "--max-size",
+   "100"
+  ],
+  "stdin": "write a 5\nappend a 5\n",
+  "files": {},
+  "exit": 2,
+  "stdout": "",
+  "files_after": {}
+ }
+]

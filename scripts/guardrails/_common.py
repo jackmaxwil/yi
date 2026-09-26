@@ -1,4 +1,4 @@
-import json, pathlib, subprocess, sys
+import json, os, pathlib, subprocess, sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 # Net src lines a version may add unpriced (040). Here rather than in check_growth
@@ -6,6 +6,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 # copies of a budget is two budgets.
 FREE_BAND = 150
 BASE = ROOT / "scripts/guardrails/baselines"
+# Cargo builds under CARGO_TARGET_DIR when it is set; a fixed target/ path measured a stale binary.
+DIST_BIN = ROOT / os.environ.get("CARGO_TARGET_DIR", "target") / "dist/yi"
 
 def src_files():
     return sorted((ROOT / "crates").glob("*/src/**/*.rs"))

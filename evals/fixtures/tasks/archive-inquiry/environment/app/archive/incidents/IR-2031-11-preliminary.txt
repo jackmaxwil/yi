@@ -1,0 +1,110 @@
+Quillfen Water Cooperative
+INCIDENT REVIEW IR-2031-11
+Stage: PRELIMINARY
+Site: Pike Hollow
+
+Occurred: 2031-10-21. Severity as assessed at this stage: 3.
+
+Summary
+-------
+
+The contractor's method statement for work at Harrow Weir was reviewed by the asset
+planning group and returned with 5 comments. The stores count showed 31 discrepancies,
+all traced to items issued to vans without a ticket.
+
+Timeline
+--------
+
+  06:47  duty manager informed
+  07:24  alarm received in the control room
+  07:36  duty manager informed
+  08:13  duty manager informed
+
+Findings
+--------
+
+The contractor's method statement for work at Osier Bank was reviewed by the asset
+planning group and returned with 19 comments. Members of the safety committee asked
+for the seasonal demand figures to be circulated before the next meeting. The draft
+drawing register for Brackwater Lock is 27 percent complete and will be issued once
+the as-built survey is checked. A minor oil weep from the standby pump at Merrow Basin
+was cleaned up and a drip tray fitted pending the next service. The contractor's
+method statement for work at Cindergate Station was reviewed by the safety committee
+and returned with 32 comments.
+
+Root cause
+----------
+
+Low chlorine residual at the sample tap; cause under investigation.
+
+Recommendations
+---------------
+
+1. Resample daily.
+
+Annex A. Routine matters
+------------------------
+
+the control room reminded everyone that permits for confined spaces must be closed out
+the same day. The stores count showed 24 discrepancies, all traced to items issued to
+vans without a ticket. A walkdown of Low Fennick found the signage faded; replacement
+boards have been ordered under the routine budget.
+
+Annex B. Site notes
+-------------------
+
+A walkdown of Brackwater Lock found the signage faded; replacement boards have been
+ordered under the routine budget. the networks team will coordinate with Lucan Marsh
+on the training calendar, which currently shows 39 open places. The draft drawing
+register for Cindergate Station is 4 percent complete and will be issued once the as-
+built survey is checked.
+
+A walkdown of Osier Bank found the signage faded; replacement boards have been ordered
+under the routine budget. Mirela Stanck noted that the calibration certificate for the
+dosing skid expires next quarter and has booked the visit. Ansel Brightwater presented
+a short paper on sensor drift and recommended a comparison check at Merrow Basin every
+30 weeks. The stores count showed 22 discrepancies, all traced to items issued to vans
+without a ticket.
+
+Members of the networks team asked for the seasonal demand figures to be circulated
+before the next meeting. A minor oil weep from the penstock actuator at Osier Bank was
+cleaned up and a drip tray fitted pending the next service. No complaints were
+received from neighbours of Eastmere Intake during the works, and the liaison log has
+been closed. The handover notes between shifts were sampled by the asset planning
+group and found complete in all but 7 cases.
+
+Annex C. Routine matters
+------------------------
+
+The draft drawing register for Eastmere Intake is 11 percent complete and will be
+issued once the as-built survey is checked. No complaints were received from
+neighbours of Brackwater Lock during the works, and the liaison log has been closed.
+The handover notes between shifts were sampled by the control room and found complete
+in all but 33 cases. Bram Ketteridge presented a short paper on sensor drift and
+recommended a comparison check at Cindergate Station every 21 weeks. The contractor's
+method statement for work at Pike Hollow was reviewed by the asset planning group and
+returned with 16 comments.
+
+The stores count showed 6 discrepancies, all traced to items issued to vans without a
+ticket. Flooding on the lane to Cindergate Station delayed the delivery by a day; no
+cost was incurred by the cooperative. The draft drawing register for Harrow Weir is 5
+percent complete and will be issued once the as-built survey is checked. A walkdown of
+Merrow Basin found the signage faded; replacement boards have been ordered under the
+routine budget. The stores count showed 14 discrepancies, all traced to items issued
+to vans without a ticket.
+
+Annex D. Housekeeping
+---------------------
+
+A walkdown of Harrow Weir found the signage faded; replacement boards have been
+ordered under the routine budget. An energy audit of Tolland Sluice suggested that
+running the sample tap off-peak would reduce cost without affecting service. Petra
+Vosk noted that the calibration certificate for the inlet screen expires next quarter
+and has booked the visit.
+
+the control room will coordinate with Petra Vosk on the training calendar, which
+currently shows 19 open places. Vegetation clearance around the duty pump at Eastmere
+Intake was completed and the area photographed for the asset record. the field crews
+will coordinate with Bram Ketteridge on the training calendar, which currently shows 5
+open places. Ysolde Quint presented a short paper on sensor drift and recommended a
+comparison check at Osier Bank every 22 weeks.

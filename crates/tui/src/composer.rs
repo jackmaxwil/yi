@@ -35,8 +35,8 @@ impl Default for Composer {
     }
 }
 
-/// Verbatim paste sanitization: tabs expand to three spaces, as the reference
-/// code does. NFC normalization is dropped — it needs a Unicode tables dep.
+/// Paste sanitization: CRLF and CR become LF, tabs expand to three spaces, other controls
+/// drop. NFC normalization is dropped — it needs a Unicode tables dep.
 pub fn sanitize_paste(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -77,14 +77,19 @@ impl Composer {
     }
 
     /// Re-styled per draw so theme and running state stay current.
-    pub fn set_frame(&mut self, border: ratatui::style::Style, placeholder: ratatui::style::Style) {
+    pub fn set_frame(
+        &mut self,
+        border: ratatui::style::Style,
+        placeholder: ratatui::style::Style,
+        title: Option<String>,
+    ) {
         use ratatui::widgets::{Block, BorderType, Borders};
         self.textarea.set_placeholder_style(placeholder);
         let mut block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(border);
-        if let Some(title) = self.search_title() {
+        if let Some(title) = self.search_title().or(title) {
             block = block.title(title);
         }
         self.textarea.set_block(block);

@@ -50,7 +50,7 @@ fn pi_v4_fixtures_roundtrip_byte_identical() -> Result<(), Box<dyn Error>> {
 #[test]
 fn goal_without_check_fields_still_deserializes_and_reserializes_clean()
 -> Result<(), Box<dyn std::error::Error>> {
-    // A pre-check-gate goal fact (0.10.0 shape) must parse forever (§19), and
+    // A pre-check-gate goal fact (0.10.0 shape) must parse forever (§20), and
     // absent Options must not appear on re-serialize.
     let stored = r#"{"objective":"ship","status":"active","tokensUsed":5,"timeUsedSeconds":2,"created":1,"updated":2}"#;
     let goal: yi_types::goal::Goal = serde_json::from_str(stored)?;
@@ -78,7 +78,7 @@ fn goal_check_fields_round_trip() -> Result<(), Box<dyn std::error::Error>> {
 fn goal_discovery_ledger_round_trips_with_unknown_fields() -> Result<(), Box<dyn std::error::Error>>
 {
     // The drain gate re-reads this ledger after a resume, so a row an older
-    // writer produced must come back byte-identical (§19).
+    // writer produced must come back byte-identical (§20).
     let stored = r#"{"objective":"ship","status":"active","tokensUsed":0,"timeUsedSeconds":0,"created":1,"updated":1,"discoveries":[{"text":"the wall config is stale","violatesCheckOf":"t2","fingerprint":"abc","source":"finder"}]}"#;
     let goal: yi_types::goal::Goal = serde_json::from_str(stored)?;
     assert_eq!(goal.discoveries.len(), 1);
@@ -102,7 +102,7 @@ fn daemon_ledger_fixture_round_trips_with_unknown_fields() -> Result<(), Box<dyn
 #[test]
 fn task_without_a_check_still_deserializes_and_reserializes_clean()
 -> Result<(), Box<dyn std::error::Error>> {
-    // A pre-check-gate plan fact must parse forever (§19), and an absent check
+    // A pre-check-gate plan fact must parse forever (§20), and an absent check
     // must not appear on re-serialize.
     let stored = r#"{"fact":"plan","plan":{"version":1,"tasks":[{"id":"t1","title":"x","acceptance":"y","state":"done"}],"created":1,"updated":2}}"#;
     let fact: yi_types::wire::Fact = serde_json::from_str(stored)?;
@@ -115,11 +115,9 @@ fn task_without_a_check_still_deserializes_and_reserializes_clean()
 }
 
 #[test]
-fn a_persisted_red_streak_lands_on_typed_fields_not_the_extra_map()
--> Result<(), Box<dyn std::error::Error>> {
-    // A renamed or misspelled wire key would still round-trip byte-identical
-    // through the flatten map, while the ladder read None and a resumed
-    // session laundered the streak back to rung one.
+fn a_persisted_red_streak_lands_in_the_extra_map() -> Result<(), Box<dyn std::error::Error>> {
+    // D77's ladder is gone (F0c): the streak is unread data that still round-trips byte for
+    // byte through the flatten map, so an old fact parses forever and re-emits itself.
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v4-plan-red.jsonl");
     let content = fs::read_to_string(&path)?;
     let line = content.lines().nth(1).ok_or("fixture needs a fact line")?;
@@ -133,20 +131,15 @@ fn a_persisted_red_streak_lands_on_typed_fields_not_the_extra_map()
     let task = plan
         .task(&yi_types::plan::TaskId("t1".to_owned()))
         .ok_or("t1")?;
-    assert_eq!(task.red_count, Some(2));
-    assert_eq!(task.red_fingerprint.as_deref(), Some("3f6a1c0b9d2e4857"));
-    assert!(
-        task.extra.is_empty(),
-        "the streak must not park in the flatten map: {:?}",
-        task.extra
-    );
-    let untouched = plan
-        .task(&yi_types::plan::TaskId("t2".to_owned()))
-        .ok_or("t2")?;
+    assert_eq!(task.extra.get("redCount"), Some(&serde_json::json!(2)));
     assert_eq!(
-        (untouched.red_count, untouched.red_fingerprint.as_deref()),
-        (None, None),
-        "a task that never went red carries no streak"
+        task.extra.get("redFingerprint"),
+        Some(&serde_json::json!("3f6a1c0b9d2e4857"))
+    );
+    assert_eq!(
+        serde_json::to_string(&serde_json::from_str::<Mutation>(line)?)?,
+        line,
+        "unread data re-emits verbatim"
     );
     Ok(())
 }
@@ -154,7 +147,7 @@ fn a_persisted_red_streak_lands_on_typed_fields_not_the_extra_map()
 #[test]
 fn plan_fact_round_trips_with_unknown_fields_and_states() -> Result<(), Box<dyn std::error::Error>>
 {
-    // Durable §19 rules: unknown fields survive the flatten map; an unknown
+    // Durable §20 rules: unknown fields survive the flatten map; an unknown
     // task state decodes to Other and re-emits verbatim.
     let line = r#"{"fact":"plan","plan":{"version":3,"tasks":[{"id":"t1","title":"x","acceptance":"y","state":"paused_by_future_yi","futureField":7}],"created":1,"updated":2,"planWide":"kept"}}"#;
     let fact: yi_types::wire::Fact = serde_json::from_str(line)?;
@@ -201,11 +194,9 @@ fn an_unreported_usage_lands_typed_and_a_reported_zero_stays_free()
 }
 
 #[test]
-fn a_readmission_grant_lands_on_a_typed_field_not_the_extra_map()
--> Result<(), Box<dyn std::error::Error>> {
-    // A misspelled wire key parks the grant in the flatten map and re-emits
-    // byte-identical, while the rung reads None and a resumed session mints an
-    // attempt its escalation had refused.
+fn readmit_lands_in_extra() -> Result<(), Box<dyn std::error::Error>> {
+    // D77's `readmit` grant has no reader since F0c; the field parks in the flatten map and
+    // re-emits byte-identical, and `Task` carries no typed slot for it.
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v4-plan-readmit.jsonl");
     let content = fs::read_to_string(&path)?;
     let line = content.lines().nth(1).ok_or("fixture needs a fact line")?;
@@ -219,19 +210,15 @@ fn a_readmission_grant_lands_on_a_typed_field_not_the_extra_map()
     let task = plan
         .task(&yi_types::plan::TaskId("t1".to_owned()))
         .ok_or("t1")?;
-    assert_eq!(task.readmit, Some(true));
-    assert_eq!(task.red_count, Some(2), "a grant never clears the streak");
-    assert!(
-        task.extra.is_empty(),
-        "the grant must not park in the flatten map: {:?}",
-        task.extra
-    );
+    assert_eq!(task.extra.get("readmit"), Some(&serde_json::json!(true)));
+    assert_eq!(task.extra.get("redCount"), Some(&serde_json::json!(2)));
     let ungranted = plan
         .task(&yi_types::plan::TaskId("t2".to_owned()))
         .ok_or("t2")?;
-    assert_eq!(
-        ungranted.readmit, None,
-        "a task no rung refuses carries no grant"
+    assert!(
+        ungranted.extra.is_empty(),
+        "a task no rung refused carries nothing: {:?}",
+        ungranted.extra
     );
     assert_eq!(
         serde_json::to_string(&serde_json::from_str::<Mutation>(line)?)?,
