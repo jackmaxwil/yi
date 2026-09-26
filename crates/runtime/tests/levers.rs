@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use yi_runtime::levers::Levers;
+use yi_types::config::RlmConfig;
 
 fn shared(name: &str) -> Result<Value, Box<dyn Error>> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -29,6 +30,13 @@ fn the_default_fixture_equals_the_compiled_defaults() -> Result<(), Box<dyn Erro
     assert_eq!(shared("default.json")?, Levers::DEFAULT.to_value());
     assert_eq!(Levers::default(), Levers::DEFAULT);
     Ok(())
+}
+
+/// Invariant: `family.depth`'s default is the same number an unset `rlm.maxDepth` resolves
+/// to, so the inventory names the config's real default rather than a shadow copy of it.
+#[test]
+fn family_depth_matches_the_unset_rlm_max_depth() {
+    assert_eq!(Levers::DEFAULT.family_depth, RlmConfig::default().depth());
 }
 
 /// Invariant: the manifest's ranges and tunable marks are the ones the loader enforces.

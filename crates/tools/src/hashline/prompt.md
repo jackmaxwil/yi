@@ -23,7 +23,7 @@ Only below `:` headers. Row: verbatim `+TEXT` (leading whitespace preserved); `+
 
 <rules>
 - Numbers: `LINE:TEXT` from any `read`/`grep`/`edit` output this session; the tool maps them onto the current file (`rebased` in the response). A cited line that itself changed since is rejected with the current text. Within one call numbers are original, never shifted by hunks.
-- Touch displayed lines only; undisplayed hunks REJECTED. Far from read window: re-`read`; confirm construct.
+- Touch only lines a view of this file has displayed (any `read`/`grep`/`edit`/`write` output this session); undisplayed hunks REJECTED. Far from read window: re-`read`; confirm construct.
 - Elisions UNSEEN: `…`, `..`, collapsed `N-M:` rows. NEVER hunk in/across one; `read` first.
 - NEVER start/end range mid-expression or mid-block.
 - Ranges: changed lines only; NEVER widen over keepers. Non-adjacent changes: separate hunks.

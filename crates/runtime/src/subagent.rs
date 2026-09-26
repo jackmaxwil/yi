@@ -22,7 +22,6 @@ pub(crate) use record::Step;
 use record::preview;
 pub(crate) use service::Standing;
 
-pub const DEFAULT_MAX_DEPTH: u8 = 1;
 // A completed child holds its slot until closed: the cap forces the parent to
 // reap with rlm.delete_subagent instead of leaking children (design §11).
 pub const DEFAULT_MAX_CHILDREN: usize = 8;
