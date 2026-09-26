@@ -106,13 +106,6 @@ impl SidebarMode {
             Self::Full => Self::Rail,
         }
     }
-
-    pub fn width(self) -> u16 {
-        match self {
-            Self::Rail => 9,
-            Self::Full => 29,
-        }
-    }
 }
 
 #[expect(
@@ -347,6 +340,7 @@ pub struct ConsoleState {
     pub dropped_frames: u64,
     pub quit: bool,
     pub sidebar: SidebarMode,
+    pub sidebar_cols: usize,
     pub cursor_moved: bool,
     pub diffs: BTreeMap<SessionId, SessionDiff>,
     pub side_opened: std::collections::BTreeSet<SessionId>,
@@ -380,6 +374,7 @@ impl ConsoleState {
             orphan_asks: Vec::new(),
             dropped_frames: 0,
             sidebar: SidebarMode::Rail,
+            sidebar_cols: 0,
             cursor_moved: false,
             diffs: BTreeMap::new(),
             side_opened: std::collections::BTreeSet::new(),

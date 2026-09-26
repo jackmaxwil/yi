@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Ledger entry kinds (design P10): no `skill`, no refine events in Yi.
+/// Ledger entry kinds (design §4.4): no `skill`, no refine events in Yi.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HarnessKind {

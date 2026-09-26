@@ -86,7 +86,7 @@ fn from_file(path: &Path, entry: Option<&str>) -> Result<(String, McpServerSpec)
     }
 }
 
-/// Resolves `connect <server>` (design §5.2): a URL, a `<config-file>:<entry>`
+/// Resolves `connect <server>` (design §7.6): a URL, a `<config-file>:<entry>`
 /// reference, a config-file path, or a bare name looked up in `~/.yi/mcp.json`.
 pub fn resolve_server(server: &str, home: &Path) -> Result<(String, McpServerSpec), String> {
     if server.contains("://") {

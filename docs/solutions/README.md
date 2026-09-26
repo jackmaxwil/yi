@@ -1,11 +1,11 @@
 # Solutions
 
-Distilled reference material for working on Yi. The design docs remain the law
-(docs/YI_DESIGN.md deep design, docs/ARCHITECTURE.md map + decision log); these
-files are the derived, readable views. Regenerate the ADRs from the decision log
-when it changes rather than editing them by hand.
+Derived views for working on Yi. The law is [YI_DESIGN.md](../YI_DESIGN.md) (what Yi is) and
+[ARCHITECTURE.md](../ARCHITECTURE.md) (feature ledger and decision log). Each ADR is rendered from
+its decision-log row by `just adr <N>`, which also appends its line to the index below; neither is
+edited by hand.
 
-- [architecture.md](architecture.md) - the system in one page
+- [architecture.md](architecture.md) - a one-page map into the design doc
 - [coding-practices.md](coding-practices.md) - how code is written and gated here
 - [comment-style.md](comment-style.md) - typed comment referents and named grants (D55)
 - [adr/](adr/) - one architecture decision record per decision-log row
@@ -216,8 +216,12 @@ when it changes rather than editing them by hand.
 - [D236](adr/d236.md) - the mailbox's leftovers close
 - [D237](adr/d237.md) - tool ergonomics and harness fixes
 - [D238](adr/d238.md) - the last rung of the kernel toolchain is a pinned, verified uv, not a piped...
+- [D242](adr/d242.md) - the family board belongs to the root session, not the process (amends D164)
+- [D241](adr/d241.md) - the kernel's `bash()` runs inside the kernel's own sandbox
 - [D240](adr/d240.md) - a contained kernel may write its family board (amends D87)
 - [D239](adr/d239.md) - one process owns a session's kernel snapshot (amends K10)
+- [D244](adr/d244.md) - syntax highlighting reads bat's grammar set through `two-face` (default...
+- [D243](adr/d243.md) - the design states what is built and names no other agent
 - [D245](adr/d245.md) - a fired interrupt answers every unrun call as `Aborted` and sends no further...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

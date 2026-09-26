@@ -66,7 +66,7 @@ pub struct CompactStatus {
 
 pub struct Compactor {
     pub settings: Settings,
-    /// §12 `summarizer` role. The window math stays on the turn's own model: a cheaper
+    /// §5 `summarizer` role. The window math stays on the turn's own model: a cheaper
     /// summarizer with a smaller window must not make compaction look overdue.
     pub summarizer: Option<Model>,
     scope: Scope,

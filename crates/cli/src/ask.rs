@@ -6,7 +6,7 @@ use yi_types::message::{AgentMessage, StopReason};
 
 use super::{
     Args, Resume, attach_store, build_session, emit_structured, exit_refused, release_lane,
-    render_text, tty,
+    render_text, session_target, tty,
 };
 
 const HOLD_POLL: Duration = Duration::from_millis(500);
@@ -29,16 +29,17 @@ pub(super) fn run(args: &Args) -> i32 {
         }
     };
     // Session wiring spawns runtime tasks, so the runtime context must exist before it.
+    let target = session_target(args);
     let (session, host) = {
         let _guard = runtime.enter();
         let asker: Option<yi_runtime::Asker> =
             interactive.then(|| std::sync::Arc::new(tty::tty_ask) as yi_runtime::Asker);
-        match build_session(args, asker, None) {
+        match build_session(args, asker, Some(&target.id)) {
             Ok(built) => built,
             Err(refused) => return exit_refused(refused),
         }
     };
-    match attach_store(args, &session) {
+    match attach_store(args, &session, &target) {
         Ok(_id) => {}
         // A requested resume that cannot be honoured is an error; an
         // unavailable store for a fresh turn only costs the recording.

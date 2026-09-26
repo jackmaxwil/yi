@@ -1,5 +1,7 @@
 # TUI capture and proof — frames for the agent, recordings for the humans
 
+Landed: 0.96.0.
+
 ```
 status:  LANDED 2026-08-30 at 0.86.0 (D88), all six phases. Renumbered from
          0.85.0 on the merge with `origin/main`, which had spent that number.

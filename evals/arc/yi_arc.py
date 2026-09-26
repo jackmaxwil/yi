@@ -2,7 +2,7 @@
 
 One Yi session per game: the first action opens it, every later action resumes
 it with `--continue`, so Yi's own context management carries the game state
-across the turn loop. Nothing here is written into the ref/ clone.
+across the turn loop. Nothing here is written into the scaffold clone.
 
     cd ref/benchmarks/ARC-AGI-3-Agents
     ARC_API_KEY=... OPENROUTER_API_KEY=... \
