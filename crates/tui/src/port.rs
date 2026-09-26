@@ -588,7 +588,7 @@ impl App {
     }
 
     pub fn orb_animating(&self) -> bool {
-        self.logo_phase != self.logo_target || self.logo_target > 0.0
+        !self.orb.at_rest(self.orb_state())
     }
 }
 

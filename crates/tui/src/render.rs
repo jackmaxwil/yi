@@ -96,7 +96,6 @@ fn draw_frame<B>(
     });
     app.orb_placement = placed.orb;
     app.logo_rows = logo_rows(placed.bottom);
-    app.logo_target = if layout.orb { 1.0 } else { 0.0 };
 }
 
 fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Line<'static>> {
@@ -160,7 +159,6 @@ pub struct ChatLayout {
     composer_height: u16,
     show_working: bool,
     kitty: bool,
-    orb: bool,
     pub floor: u16,
 }
 
@@ -307,7 +305,6 @@ pub fn layout_chat(
         composer_height,
         show_working,
         kitty: app.kitty,
-        orb: orb_state.is_some(),
         floor,
     }
 }
@@ -450,7 +447,6 @@ pub fn paint_pane(
     let placed = paint_chat(app, &layout, buffer, chat_area);
     app.orb_placement = placed.orb;
     app.logo_rows = logo_rows(placed.bottom);
-    app.logo_target = if layout.orb { 1.0 } else { 0.0 };
     thumb
 }
 

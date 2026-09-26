@@ -136,10 +136,9 @@ pub struct App {
     pub selection: crate::model::Selection,
     pending_repaint: bool,
     pub(crate) pending_prompt_mark: bool,
-    /// §17.3: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots travel between the
-    /// two; there is one orb, never a static one beside a moving one.
-    pub(crate) logo_phase: f64,
-    pub(crate) logo_target: f64,
+    /// §17.3: the `Yi` wordmark at rest and one looping pose per agent state; the dots travel
+    /// between them, so there is one orb, never a static one beside a moving one.
+    pub(crate) orb: yi_orb::Orb,
     pub(crate) history: crate::history::History,
     pub(crate) reflow: crate::reflow::ReflowState,
     pub(crate) streaming: Option<AgentMessage>,
@@ -251,8 +250,7 @@ impl App {
             selection: crate::model::Selection::new(options.model.clone()),
             pending_repaint: false,
             pending_prompt_mark: false,
-            logo_phase: 0.0,
-            logo_target: 0.0,
+            orb: yi_orb::Orb::default(),
             history: crate::history::History::default(),
             reflow: crate::reflow::ReflowState::default(),
             streaming: None,
@@ -329,10 +327,6 @@ impl App {
 
     pub fn set_width(&mut self, width: usize) {
         self.width = width;
-    }
-
-    pub fn logo_target(&self) -> f64 {
-        self.logo_target
     }
 
     pub fn set_kitty(&mut self, kitty: bool) {
@@ -564,22 +558,40 @@ impl App {
             .find(|t| t.status == ToolStatus::Running)
         {
             return Some(match tool.name.as_str() {
-                "grep" | "glob" | "find" | "web_search" | "fetch" => OrbState::Searching,
-                "edit" | "write" => OrbState::Solving,
+                "read" | "ls" | "document" | "get_context" => OrbState::Reading,
+                "grep" | "glob" | "find" => OrbState::Searching,
+                "web_search" | "fetch" => OrbState::Browsing,
+                "edit" | "write" => OrbState::Editing,
+                "bash" => OrbState::Executing,
+                "ipython" => OrbState::Computing,
+                "todo" | "plan" => {
+                    let progress = self.todos.as_ref().map(|todos| todos.progress());
+                    let count = |n: usize| u8::try_from(n).unwrap_or(u8::MAX);
+                    OrbState::Planning {
+                        done: progress.map_or(0, |p| count(p.done)),
+                        total: progress.map_or(0, |p| count(p.total)),
+                    }
+                }
                 _ => OrbState::Working,
             });
         }
-        if self
+        let children = self
             .tasks
             .values()
-            .any(|s| s.cell.status == TaskStatus::Running)
-        {
-            return Some(OrbState::Connecting);
+            .filter(|s| s.cell.status == TaskStatus::Running)
+            .count();
+        if children > 0 {
+            return Some(OrbState::Delegating {
+                children: u8::try_from(children).unwrap_or(u8::MAX),
+            });
         }
         if !self.live_markdown.is_empty() {
             return Some(OrbState::Composing);
         }
-        Some(OrbState::Working)
+        if !self.live_thought.is_empty() {
+            return Some(OrbState::Thinking);
+        }
+        Some(OrbState::Awaiting)
     }
 
     pub(crate) fn spinner_phase(&self) -> usize {
@@ -928,11 +940,10 @@ pub fn run_tui(
                 .tasks
                 .values()
                 .any(|state| state.cell.status == TaskStatus::Running);
-        let orb_moving = app.kitty
-            && app.orb_placement.is_some()
-            && (app.logo_target > 0.0 || app.logo_phase > 0.0);
+        let orb_moving =
+            app.kitty && app.orb_placement.is_some() && !app.orb.at_rest(app.orb_state());
         let mut timeout = if orb_moving {
-            timeout.min(Duration::from_millis(33))
+            timeout.min(orb_tick.wake())
         } else if animating {
             timeout.min(next_spinner_wake(app.started_at.elapsed().as_millis()))
         } else {
