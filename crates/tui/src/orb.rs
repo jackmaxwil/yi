@@ -56,11 +56,12 @@ pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mu
         return;
     }
     let want = app.orb_state();
-    let due = !app.orb.at_rest(want) && state.last.elapsed() >= FRAME;
+    let resting = app.orb.at_rest(want);
+    let due = !resting && state.last.elapsed() >= FRAME;
     let stale = app.take_orb_stale();
     match app.orb_placement {
         Some((col, row)) if due || stale || !state.shown => {
-            let frame = app.orb.frame(state.last.elapsed().as_secs_f64(), want);
+            let frame = app.orb.frame(state.last.elapsed(), want);
             state.last = Instant::now();
             let (width, height) = pixel_size();
             let rgba = kitty::paint_rgba(&frame, 64.0, width, height);
@@ -99,12 +100,14 @@ pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mu
         None if state.shown => state.hide(out),
         _ => {}
     }
+    if resting {
+        state.last = Instant::now();
+    }
 }
 
 const MAX_ORB_PX: usize = 384;
 
-/// The orb's cell rect in the terminal's pixels, so the image lands unresampled; no pixel
-/// size reported (tmux, some ssh hops) gets the square fallback, a huge font the 384 cap.
+/// The orb's rect in the terminal's own pixels (square fallback without one, 384 cap).
 fn pixel_size() -> (usize, usize) {
     let fallback = (crate::app::ORB_PX, crate::app::ORB_PX);
     let Ok(size) = ratatui::crossterm::terminal::window_size() else {

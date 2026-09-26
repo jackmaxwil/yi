@@ -621,6 +621,29 @@ fn each_kind_of_work_puts_its_own_state_on_the_orb() -> TestResult {
         });
         assert_eq!(working.orb_state(), Some(state), "a running {tool} call");
     }
+    // A read ends in milliseconds; the orb keeps reading until the model streams again.
+    app.reduce_agent(yi_types::event::AgentEvent::ToolExecutionStart {
+        tool_call_id: "call-read".to_owned(),
+        tool_name: "read".to_owned(),
+        args: serde_json::json!({}),
+    });
+    app.reduce_agent(yi_types::event::AgentEvent::ToolExecutionEnd {
+        tool_call_id: "call-read".to_owned(),
+        tool_name: "read".to_owned(),
+        result: yi_types::event::ToolResult {
+            content: vec![],
+            details: serde_json::Value::Null,
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+        is_error: false,
+    });
+    assert_eq!(
+        app.orb_state(),
+        Some(OrbState::Reading),
+        "a finished read holds the orb until the model streams again"
+    );
     app.reduce_agent(yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
     assert_eq!(
         app.orb_state(),

@@ -20,8 +20,9 @@ language below are the same philosophy seen from two sides.
    mean anything, it is decoration. Owner, verbatim: "the visual representation of the concept".
 3. **Deterministic and exact.** State is data, triggers read data, loops close exactly,
    transitions start and end on fixed poses. Nothing is random, nothing is judged at runtime.
-4. **Least motion.** One primary motion per state; transitions take the shortest paths and
-   never cross. Owner: "the movement looks most natural and least movement".
+4. **Least motion.** One primary motion per state; transitions take the least total travel,
+   and no two points ever meet mid-flight. Owner: "the movement looks most natural and least
+   movement".
 5. **Calm, not slow.** Motion never pulls the eye off the answer, but a surface that drags
    reads as broken. Half speed was "all too slow"; some loops were "slightly too fast".
 6. **Loud about limits.** A cut, a cap, a fallback names itself where it happens (045).

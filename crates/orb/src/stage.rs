@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use crate::core::{Dot, OrbFrame, finalize_frame, radius_scale};
-use crate::states::{OrbState, Point, V, add, dot, exit_after, pose, rot_x, smooth};
+use crate::states::{OrbState, Point, V, add, dot, exit_after, pose, rot_x, smooth, spec};
 
 const CANVAS: f64 = 64.0;
 const RADIUS: f64 = CANVAS / 2.0 * 0.78;
@@ -13,18 +17,36 @@ const LEAD: f64 = 0.1;
 /// unclamped step consumed a whole animation. The orb's clock advances at most this per frame.
 const MAX_STEP: f64 = 0.1;
 
+type Key = (Option<OrbState>, u64, Option<OrbState>);
+
 #[derive(Default)]
 pub struct Orb {
     now: Option<OrbState>,
     clock: f64,
     next: Option<Next>,
     morph: Option<Morph>,
+    pairings: HashMap<Key, Vec<usize>>,
+}
+
+enum Job {
+    Ready(Vec<usize>),
+    Running(JoinHandle<Option<Vec<usize>>>, Arc<AtomicBool>),
+    Failed,
 }
 
 struct Next {
     to: Option<OrbState>,
     at: f64,
-    job: Option<JoinHandle<Vec<usize>>>,
+    key: Key,
+    job: Job,
+}
+
+impl Drop for Next {
+    fn drop(&mut self) {
+        if let Job::Running(_, stop) = &self.job {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 struct Morph {
@@ -36,16 +58,19 @@ struct Morph {
 }
 
 impl Orb {
+    pub fn showing(state: Option<OrbState>) -> Self {
+        Self {
+            now: state,
+            ..Self::default()
+        }
+    }
+
     pub fn at_rest(&self, want: Option<OrbState>) -> bool {
         self.now.is_none() && want.is_none() && self.next.is_none() && self.morph.is_none()
     }
 
-    pub fn frame(&mut self, dt: f64, want: Option<OrbState>) -> OrbFrame {
-        let dt = if dt.is_finite() {
-            dt.clamp(0.0, MAX_STEP)
-        } else {
-            0.0
-        };
+    pub fn frame(&mut self, dt: Duration, want: Option<OrbState>) -> OrbFrame {
+        let dt = dt.as_secs_f64().min(MAX_STEP);
         if let Some(morph) = &mut self.morph {
             morph.t += dt;
             if morph.t < MORPH {
@@ -62,14 +87,25 @@ impl Orb {
         } else {
             self.plan(want);
             match self.next.take() {
-                Some(next) if self.clock + dt >= next.at => {
+                Some(mut next) if self.clock + dt >= next.at => {
+                    // Invariant: the loop never waits on the pairing; the exit pose holds until it lands.
+                    if let Job::Running(handle, _) = &next.job
+                        && !handle.is_finished()
+                    {
+                        self.clock = next.at;
+                        self.next = Some(next);
+                        return render(&pose(self.now, self.clock));
+                    }
                     let from = pose(self.now, next.at);
                     let target = pose(next.to, 0.0);
-                    let perm = next
-                        .job
-                        .and_then(|job| job.join().ok())
-                        .filter(|perm| perm.len() == target.len())
-                        .unwrap_or_else(|| matching(&from, &target));
+                    let perm = match std::mem::replace(&mut next.job, Job::Failed) {
+                        Job::Ready(perm) => Some(perm),
+                        Job::Running(handle, _) => handle.join().ok().flatten(),
+                        Job::Failed => None,
+                    }
+                    .filter(|perm| perm.len() == target.len())
+                    .unwrap_or_else(|| matching(&from, &target));
+                    self.pairings.insert(next.key, perm.clone());
                     let t = self.clock + dt - next.at;
                     let frame = render(&blend(&from, &target, &perm, t / MORPH));
                     self.morph = Some(Morph {
@@ -99,12 +135,31 @@ impl Orb {
             return;
         }
         let at = exit_after(self.now, self.clock + LEAD);
-        let (from, target) = (pose(self.now, at), pose(want, 0.0));
-        let job = std::thread::Builder::new()
-            .name("orb-matching".into())
-            .spawn(move || matching(&from, &target))
-            .ok();
-        self.next = Some(Next { to: want, at, job });
+        let (secs, exits) = spec(self.now);
+        let phase = if exits.is_empty() {
+            0
+        } else {
+            ((at / secs).rem_euclid(1.0) * 1e6).round() as u64
+        };
+        let key = (self.now, phase, want);
+        let job = match self.pairings.get(&key) {
+            Some(perm) => Job::Ready(perm.clone()),
+            None => {
+                let (from, target) = (pose(self.now, at), pose(want, 0.0));
+                let stop = Arc::new(AtomicBool::new(false));
+                let flag = Arc::clone(&stop);
+                std::thread::Builder::new()
+                    .name("orb-matching".into())
+                    .spawn(move || pairing(&from, &target, &flag))
+                    .map_or(Job::Failed, |handle| Job::Running(handle, stop))
+            }
+        };
+        self.next = Some(Next {
+            to: want,
+            at,
+            key,
+            job,
+        });
     }
 }
 
@@ -151,55 +206,70 @@ pub fn blend(from: &[Point], target: &[Point], perm: &[usize], f: f64) -> Vec<Po
         .collect()
 }
 
-/// Invariant: straight paths of the least-squares pairing (Hungarian method) never cross;
-/// swapping a crossing pair would shorten the total.
+/// Invariant: in the least-squares pairing (Hungarian method) no two points meet mid-morph;
+/// a meeting would make the swapped pairing shorter.
 pub fn matching(from: &[Point], target: &[Point]) -> Vec<usize> {
+    pairing(from, target, &AtomicBool::new(false))
+        .unwrap_or_else(|| (0..from.len().min(target.len())).collect())
+}
+
+fn pairing(from: &[Point], target: &[Point], stop: &AtomicBool) -> Option<Vec<usize>> {
     let n = from.len().min(target.len());
-    let identity: Vec<usize> = (0..n).collect();
     let cost: Vec<f64> = target
         .iter()
         .take(n)
         .flat_map(|b| from.iter().take(n).map(move |a| gap(a.at, b.at)))
         .collect();
     if cost.iter().any(|c| !c.is_finite()) {
-        return identity;
+        return None;
     }
-    let mut u = vec![0.0; n + 1];
-    let mut v = vec![0.0; n + 1];
-    let mut owner = vec![0usize; n + 1];
-    let mut way = vec![0usize; n + 1];
+    let (mut u, mut v) = (vec![0.0; n + 1], vec![0.0; n + 1]);
+    let (mut owner, mut way) = (vec![0usize; n + 1], vec![0usize; n + 1]);
+    let (mut least, mut used) = (vec![f64::INFINITY; n + 1], vec![false; n + 1]);
     for row in 1..=n {
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
         owner[0] = row;
+        least.fill(f64::INFINITY);
+        used.fill(false);
         let mut col = 0;
-        let mut least = vec![f64::INFINITY; n + 1];
-        let mut used = vec![false; n + 1];
         loop {
             used[col] = true;
             let r = owner[col];
+            let base = r.checked_sub(1)?.checked_mul(n)?;
+            let costs = cost.get(base..base + n)?;
+            let ur = u[r];
             let (mut delta, mut next) = (f64::INFINITY, 0);
-            for j in 1..=n {
-                if used[j] {
+            let lanes = costs
+                .iter()
+                .zip(v.get(1..)?)
+                .zip(least.get_mut(1..)?)
+                .zip(way.get_mut(1..)?)
+                .zip(used.get(1..)?);
+            for (j, ((((&c, &vj), lj), wj), &taken)) in lanes.enumerate() {
+                if taken {
                     continue;
                 }
-                let reduced = cost[(r - 1) * n + j - 1] - u[r] - v[j];
-                if reduced < least[j] {
-                    least[j] = reduced;
-                    way[j] = col;
+                let reduced = c - ur - vj;
+                if reduced < *lj {
+                    *lj = reduced;
+                    *wj = col;
                 }
-                if least[j] < delta {
-                    delta = least[j];
-                    next = j;
+                if *lj < delta {
+                    delta = *lj;
+                    next = j + 1;
                 }
             }
             if next == 0 {
-                return identity;
+                return None;
             }
-            for j in 0..=n {
-                if used[j] {
+            for (j, (&taken, lj)) in used.iter().zip(least.iter_mut()).enumerate() {
+                if taken {
                     u[owner[j]] += delta;
                     v[j] -= delta;
                 } else {
-                    least[j] -= delta;
+                    *lj -= delta;
                 }
             }
             col = next;
@@ -213,13 +283,13 @@ pub fn matching(from: &[Point], target: &[Point]) -> Vec<usize> {
             col = prev;
         }
     }
-    let mut perm = identity;
+    let mut perm: Vec<usize> = (0..n).collect();
     for (j, &r) in owner.iter().enumerate().skip(1) {
         if let Some(slot) = perm.get_mut(r.wrapping_sub(1)) {
             *slot = j - 1;
         }
     }
-    perm
+    Some(perm)
 }
 
 fn gap(a: V, b: V) -> f64 {

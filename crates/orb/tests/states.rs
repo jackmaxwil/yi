@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::time::Duration;
 
 use yi_orb::stage::{blend, matching};
 use yi_orb::states::spec;
@@ -102,77 +103,67 @@ fn every_state_loops_without_a_seam() -> TestResult {
 
 #[test]
 fn a_change_waits_for_the_next_exit_then_lands_on_the_entry_pose() -> TestResult {
-    let dt = 0.0625;
-    let mut orb = Orb::default();
-    for _ in 0..80 {
-        let _ = orb.frame(dt, Some(OrbState::Reading));
-    }
-    // The scan runs down and back up, so one frame matches two times; two frames match one.
-    let (a, b) = (
-        orb.frame(dt, Some(OrbState::Reading)),
-        orb.frame(dt, Some(OrbState::Reading)),
-    );
+    let step = 0.0625;
+    let dt = Duration::from_secs_f64(step);
     let reading = |t: f64| render(&pose(Some(OrbState::Reading), t));
-    let mut clock = (0..700)
-        .map(|k| f64::from(k) * 0.0125 + dt)
-        .find(|t| same(&a, &reading(t - dt)) && same(&b, &reading(*t)))
-        .ok_or("the orb never settled into the reading loop")?;
-    while clock < 8.0 * 3.0 + 0.5 {
-        clock += dt;
+    let mut orb = Orb::showing(Some(OrbState::Reading));
+    let mut clock = 0.0;
+    while clock < 24.5 {
+        clock += step;
         let frame = orb.frame(dt, Some(OrbState::Reading));
         assert!(
-            same(&frame, &render(&pose(Some(OrbState::Reading), clock))),
-            "reading plays on at {clock}"
+            same(&frame, &reading(clock)),
+            "reading plays on at {clock} s"
         );
     }
     let exit = (clock / 2.0).ceil() * 2.0;
     loop {
         let frame = orb.frame(dt, Some(OrbState::Searching));
-        if clock + dt >= exit {
-            assert!(
-                !same(&frame, &render(&pose(Some(OrbState::Reading), clock + dt))),
-                "the morph begins at the exit, {exit} s into the loop"
-            );
-            clock += dt - exit;
+        if clock + step >= exit {
             break;
         }
-        clock += dt;
+        clock += step;
         assert!(
-            same(&frame, &render(&pose(Some(OrbState::Reading), clock))),
+            same(&frame, &reading(clock)),
             "a requested change waits for the exit at {exit} s; at {clock} s the loop still plays"
         );
     }
-    while clock < 0.5 {
-        clock += dt;
+    // The pairing runs on its own thread; until it lands the orb holds the exit pose.
+    let held = reading(exit);
+    let mut waited = 0;
+    let mut frame = orb.frame(dt, Some(OrbState::Searching));
+    while same(&frame, &held) {
+        waited += 1;
+        assert!(waited < 30_000, "the pairing never landed");
+        std::thread::sleep(Duration::from_millis(1));
+        frame = orb.frame(dt, Some(OrbState::Searching));
+    }
+    let mut morph = step;
+    while morph + step < 0.5 {
+        morph += step;
         let _ = orb.frame(dt, Some(OrbState::Searching));
     }
+    let mut since = morph + step - 0.5;
     for _ in 0..16 {
-        clock += dt;
         let frame = orb.frame(dt, Some(OrbState::Searching));
         assert!(
-            same(
-                &frame,
-                &render(&pose(Some(OrbState::Searching), clock - 0.5))
-            ),
+            same(&frame, &render(&pose(Some(OrbState::Searching), since))),
             "after the morph the searching loop plays from its entry pose"
         );
+        since += step;
     }
     Ok(())
 }
 
 #[test]
 fn a_long_gap_between_frames_advances_the_orb_one_step() {
-    let settle = |orb: &mut Orb| {
-        for _ in 0..30 {
-            let _ = orb.frame(0.05, Some(OrbState::Thinking));
-        }
-    };
-    let (mut idle, mut busy) = (Orb::default(), Orb::default());
-    settle(&mut idle);
-    settle(&mut busy);
+    let (mut idle, mut busy) = (
+        Orb::showing(Some(OrbState::Thinking)),
+        Orb::showing(Some(OrbState::Thinking)),
+    );
     // A surface that stopped repainting can hand the orb minutes at once.
-    let after_gap = idle.frame(90.0, Some(OrbState::Thinking));
-    let after_step = busy.frame(0.1, Some(OrbState::Thinking));
+    let after_gap = idle.frame(Duration::from_secs(90), Some(OrbState::Thinking));
+    let after_step = busy.frame(Duration::from_millis(100), Some(OrbState::Thinking));
     assert!(
         same(&after_gap, &after_step),
         "a 90 s gap moves the orb no further than one step"

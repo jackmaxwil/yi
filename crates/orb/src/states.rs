@@ -21,7 +21,7 @@ pub struct Point {
     pub ghost: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrbState {
     Awaiting,
     Thinking,
@@ -95,7 +95,7 @@ pub(crate) fn exit_after(state: Option<OrbState>, t: f64) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
-/// Invariant: every parameter runs whole cycles per loop, so a loop's end pose is its start.
+/// Invariant: a loop's end pose is its start: whole cycles, or a symmetry turn or lane swap.
 pub fn pose(state: Option<OrbState>, t: f64) -> Vec<Point> {
     let th = (t / spec(state).0).rem_euclid(1.0);
     let points = match state {
@@ -593,7 +593,7 @@ fn computing(th: f64) -> Vec<Point> {
 
 fn planning(th: f64, done: u8, total: u8) -> Vec<Point> {
     let layers = f64::from(total.clamp(1, 9));
-    let done = f64::from(done).min(layers);
+    let done = f64::from(done.min(total)) * layers / f64::from(total.max(1));
     (0..POINTS)
         .map(|i| {
             let d = fib(i, POINTS);

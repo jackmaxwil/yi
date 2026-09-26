@@ -256,9 +256,8 @@ fn orb_engine_feeds_the_kitty_painter() -> TestResult {
     Ok(())
 }
 
-/// Incident: the painter scaled 0-255 ink by 255 again, so every lit pixel saturated to
-/// white and depth shading never reached the screen. Straight alpha keeps a dot's soft
-/// edge the dot's own colour instead of darkening toward black.
+/// Incident: ink scaled by 255 twice saturated every lit pixel to white. Straight alpha keeps
+/// a dot's soft edge its own colour instead of darkening toward black.
 #[test]
 fn a_dot_paints_its_ink_to_the_edge() -> TestResult {
     use yi_orb::core::Dot;

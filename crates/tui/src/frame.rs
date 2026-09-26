@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 
-/// 120 fps ceiling (design §17.3): matches ProMotion and 120 Hz panels so scrolling
-/// and the streamed tail stay smooth; the adaptive floor still backs off a slow draw.
+/// 120 fps ceiling (design §17.3); the adaptive floor still backs off a slow draw.
 pub const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(8_333);
 /// Adaptive floor cap: a draw costing c schedules the next no earlier than
 /// start + 2c, capped so a pathological draw cannot freeze the UI.
@@ -18,6 +17,10 @@ pub struct FrameScheduler {
 impl FrameScheduler {
     pub fn request(&mut self) {
         self.dirty = true;
+    }
+
+    pub fn take_request(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
     }
 
     /// Dirty, past the 120 fps ceiling, and past the adaptive floor
