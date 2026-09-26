@@ -181,6 +181,9 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 - The summarizer replays system prompt and converted messages plus a trailing directive, no
   tools; model `models.summarizer`, else the session's; a failure retries once without the first
   quarter, then yields an empty summary. The summary leads with `<yi_compact_view>`.
+- A compaction whose entry fails to write is not applied: history and window stay as they were, a
+  `[compaction not saved: …]` notice reaches the model, and auto-compaction pauses until an
+  explicit `/compact` succeeds.
 - Owner: [`crates/runtime/src/compaction.rs`](../crates/runtime/src/compaction.rs),
   [`crates/context/src/`](../crates/context/src/)
 - Shapes: `Entry::Compaction { summary, retained_tail, tokens_before, details?, usage? }`,
