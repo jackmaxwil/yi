@@ -29,6 +29,10 @@ pub fn loop_hook(
     unsaved: Arc<dyn Fn(&yi_session::SessionError) + Send + Sync>,
 ) -> CompactHook {
     Box::new(move |messages: &[AgentMessage]| {
+        let _span = yi_types::trace::span("compact.hook");
+        if !compactor.wanted(messages, &model) {
+            return Box::pin(std::future::ready(None));
+        }
         let compactor = Arc::clone(&compactor);
         let provider = Arc::clone(&provider);
         let model = model.clone();
@@ -290,6 +294,10 @@ impl Compactor {
         }
     }
 
+    fn wanted(&self, messages: &[AgentMessage], model: &Model) -> bool {
+        self.settings.enabled && self.due(messages, model)
+    }
+
     fn due(&self, messages: &[AgentMessage], model: &Model) -> bool {
         if self.pending.load(Ordering::Relaxed) {
             return true;
@@ -314,7 +322,7 @@ impl Compactor {
         store: Option<&yi_session::SharedSession>,
         signal: &InterruptSignal,
     ) -> Result<Option<Vec<AgentMessage>>, yi_session::SessionError> {
-        if !self.settings.enabled || !self.due(messages, model) {
+        if !self.wanted(messages, model) {
             return Ok(None);
         }
         self.pending.store(false, Ordering::Relaxed);
