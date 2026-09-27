@@ -39,7 +39,10 @@ pub(super) fn run(args: &Args) -> i32 {
             Err(refused) => return exit_refused(refused),
         }
     };
-    match attach_store(args, &session, &target) {
+    let attaching = yi_types::trace::span("ask.attach_store");
+    let attached = attach_store(args, &session, &target);
+    drop(attaching);
+    match attached {
         Ok(_id) => {}
         // A requested resume that cannot be honoured is an error; an
         // unavailable store for a fresh turn only costs the recording.
