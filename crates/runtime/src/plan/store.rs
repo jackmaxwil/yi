@@ -38,7 +38,7 @@ const TEMP_SUFFIX: &str = ".tmp";
 
 /// Invariant: unique per call within a process, so a temp path and a lease
 /// hold each name one write and one holder rather than the whole process.
-fn nonce() -> String {
+pub(crate) fn nonce() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     format!(
         "{}.{}",
