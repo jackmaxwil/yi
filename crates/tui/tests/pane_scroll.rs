@@ -240,3 +240,32 @@ fn a_held_view_keeps_its_offset_across_a_resize() -> TestResult {
     assert_eq!(scroll, 5);
     Ok(())
 }
+
+/// A drag copies the source of the cell each painted row names; a row named for a neighbour
+/// pasted the neighbour's text, at the bottom and after a scroll alike.
+#[test]
+fn each_painted_row_names_the_cell_it_was_drawn_from() -> TestResult {
+    let mut app = seeded();
+    for start in [0, 12, 0] {
+        let mut scroll = start;
+        let (rows, _) = paint(&mut app, &mut scroll);
+        let mut owned = 0;
+        for (y, row) in (0u16..).zip(&rows) {
+            let words = row
+                .trim()
+                .trim_start_matches(|c: char| !c.is_alphanumeric())
+                .trim();
+            if let Some(Some((index, Some(source)))) = app.pane_row(y)
+                && !words.is_empty()
+            {
+                assert!(
+                    source.contains(words),
+                    "scroll {start} row {y} cell {index}: {words:?} not in {source:?}"
+                );
+                owned += 1;
+            }
+        }
+        assert!(owned > 5, "scroll {start}: {owned} rows named a cell");
+    }
+    Ok(())
+}

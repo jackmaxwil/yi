@@ -2565,7 +2565,7 @@ fn a_drag_over_the_transcript_flashes_what_it_copied() -> TestResult {
          mouse down 32 2\n\
          mouse drag 60 5\n\
          mouse up 60 5\n\
-         wait-frame 3000 copied 4 lines\n\
+         wait-frame 3000 copied 3 lines\n\
          quit\n",
     )
 }
