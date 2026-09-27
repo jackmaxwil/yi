@@ -305,7 +305,7 @@ fn in_flight(plan: &yi_types::plan::doc::Plan) -> usize {
         .count()
 }
 
-/// The journal's filesystem seam with one failure point the fuzzer flips for a single op.
+/// The store's filesystem seam with one journal failure point the fuzzer flips for one op.
 #[derive(Default)]
 struct CrashPoint {
     fail_write: AtomicBool,
@@ -320,11 +320,17 @@ impl Fs for CrashPoint {
         RealFs.write_all(file, bytes)
     }
 
-    fn sync_data(&self, file: &std::fs::File) -> std::io::Result<()> {
+    /// No crash here loses the page cache, so a sync that succeeds need not reach the disk:
+    /// the device flush was most of every case's wall time, and nothing the fuzzer reads.
+    fn sync_data(&self, _file: &std::fs::File) -> std::io::Result<()> {
         if self.fail_sync.load(Ordering::SeqCst) {
             return Err(std::io::Error::other("fuzzed: the sync failed"));
         }
-        RealFs.sync_data(file)
+        Ok(())
+    }
+
+    fn sync_all(&self, _file: &std::fs::File) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -459,6 +465,27 @@ impl Case {
             }
         }
         Ok(None)
+    }
+
+    /// Incident: with no active root an owner's start reads the closed root holding the label
+    /// as delegated and touches nothing; the fuzzer took it for no plan and expected a touch.
+    fn owner_root(
+        &self,
+        label: &TodoLabel,
+    ) -> Result<Option<yi_types::plan::doc::Plan>, TestCaseError> {
+        let mut closed = None;
+        for id in self.store.roots().map_err(fail)? {
+            let plan = self.store.read(&id).map_err(fail)?;
+            let delegated = plan
+                .todo(label)
+                .is_some_and(|todo| todo.delegation.is_some());
+            match plan.state {
+                PlanState::Active => return Ok(Some(plan)),
+                PlanState::Done if delegated && closed.is_none() => closed = Some(plan),
+                _ => {}
+            }
+        }
+        Ok(closed)
     }
 
     fn family_flight(&self, root: &PlanId) -> Result<usize, TestCaseError> {
@@ -749,7 +776,11 @@ fn owner(plan: Option<PlanId>, op: Op) -> OpRequest {
 fn act_start(case: &mut Case, target: Target, slot: usize) -> Result<(), TestCaseError> {
     let plan = case.resolve_target(target)?;
     let lbl = label(slot)?;
-    if let Some(file) = case.read_target(&plan)?
+    let file = match &plan {
+        Some(_) => case.read_target(&plan)?,
+        None => case.owner_root(&lbl)?,
+    };
+    if let Some(file) = &file
         && let Some(todo) = file.todo(&lbl)
         && todo.delegation.is_some()
         && matches!(todo.state, TodoState::Pending)
@@ -760,7 +791,7 @@ fn act_start(case: &mut Case, target: Target, slot: usize) -> Result<(), TestCas
         return Ok(());
     }
     // An owner's start on a delegated todo only reads its standing: the engine starts it.
-    let delegated = case.read_target(&plan)?.is_some_and(|file| {
+    let delegated = file.is_some_and(|file| {
         file.todo(&lbl)
             .is_some_and(|todo| todo.delegation.is_some())
     });
@@ -1252,13 +1283,24 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                 },
                 Bump::Touch,
             )?;
+            // Incident: a crash left a delegated todo ready and unstarted; the reset's own
+            // dispatch starts it, so the fuse reads exactly what that dispatch spent.
             if let Ok(outcome) = result {
-                proptest::prop_assert!(outcome.plan.spawns().is_zero());
-                case.spawn_floor.insert(outcome.plan.id.to_string(), 0);
+                let spawns = outcome.plan.spawns().get();
+                proptest::prop_assert_eq!(
+                    usize::try_from(spawns).map_err(fail)?,
+                    outcome.spawned.len(),
+                    "the reset fuse counts more than its own dispatch spent"
+                );
+                case.spawn_floor.insert(outcome.plan.id.to_string(), spawns);
             }
         }
         Action::Repair => {
+            let starts = |case: &Case| -> Result<u64, TestCaseError> {
+                Ok(case.engine_starts()?.values().sum())
+            };
             let spawns_before = case.stub.serial.load(Ordering::SeqCst);
+            let starts_before = starts(case)?;
             let result = case.apply(
                 owner(
                     None,
@@ -1275,10 +1317,17 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                 ),
                 "repair without resolutions refused: {result:?}"
             );
-            proptest::prop_assert_eq!(
-                case.stub.serial.load(Ordering::SeqCst),
-                spawns_before,
-                "repair spawned"
+            // Incident: a crash left a delegated todo ready and unstarted and the scheduler's
+            // pass after the repair (D224) started it; a spawn with no engine start is repair's.
+            let spawned = case
+                .stub
+                .serial
+                .load(Ordering::SeqCst)
+                .saturating_sub(spawns_before);
+            let started = starts(case)?.saturating_sub(starts_before);
+            proptest::prop_assert!(
+                u64::from(spawned) <= started,
+                "repair spawned {spawned} children beyond the scheduler's {started} starts"
             );
         }
         Action::Crash { at_sync, specs } => {
@@ -1437,6 +1486,65 @@ fn random_op_sequences_hold_every_invariant() -> Result<(), Box<dyn Error>> {
             "the lane reached {verified} verified completions and {refused} refused verdicts; both must be reached"
         )
         .into());
+    }
+    Ok(())
+}
+
+const DELEGATED: SpecPick = SpecPick {
+    slot: 0,
+    delegated: true,
+    declares: false,
+    after: None,
+    contract: None,
+};
+
+/// Dies with the fuzzer charging the scheduler's start to the op before it: a sync that failed
+/// after the write kept a delegated todo, and the reset's or repair's dispatch pass started it.
+#[test]
+fn a_crash_kept_todo_is_started_by_the_next_dispatch_pass() -> Result<(), Box<dyn Error>> {
+    for last in [Action::FuseReset, Action::Repair] {
+        let actions = [
+            Action::Init { specs: Vec::new() },
+            Action::Crash {
+                at_sync: true,
+                specs: vec![DELEGATED],
+            },
+            last,
+        ];
+        run_case(1, &actions).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Dies with the fuzzer reading no plan where the engine reads the closed root holding the
+/// label: the owner's start on its delegated todo only reads its standing and touches nothing.
+#[test]
+fn a_start_in_a_closed_root_reads_its_standing() -> Result<(), Box<dyn Error>> {
+    let closing = [
+        Action::Fail {
+            target: Target::Root,
+            slot: 0,
+            produced: LastPick::Nothing,
+            discard: false,
+        },
+        Action::Done {
+            target: Target::Root,
+            slot: 0,
+            output: OutPick::Nothing,
+        },
+    ];
+    for close in closing {
+        let actions = [
+            Action::Init {
+                specs: vec![DELEGATED],
+            },
+            close,
+            Action::Start {
+                target: Target::Root,
+                slot: 0,
+            },
+        ];
+        run_case(1, &actions).map_err(|error| error.to_string())?;
     }
     Ok(())
 }

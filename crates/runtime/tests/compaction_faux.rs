@@ -498,3 +498,33 @@ async fn an_unknown_usage_never_pins_the_window_prefill() -> Result<(), Box<dyn 
     );
     Ok(())
 }
+
+/// Incident: the loop's hook ran before every request and copied the whole history, read
+/// the store and assembled the system prompt, only to learn compaction was not due.
+#[tokio::test]
+async fn a_request_that_is_not_due_assembles_nothing() -> Result<(), Box<dyn Error>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut compactor = yi_runtime::Compactor::new("w".to_owned());
+    compactor.settings = tight_settings();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let (prompts, stores) = (Arc::clone(&asked), Arc::clone(&asked));
+    let hook = yi_runtime::compaction::loop_hook(
+        Arc::new(compactor),
+        Arc::new(ProviderStream::new(None, None)),
+        faux_model(2_000),
+        Arc::new(move || {
+            prompts.fetch_add(1, Ordering::SeqCst);
+            "sys".to_owned()
+        }),
+        Arc::new(move || {
+            stores.fetch_add(1, Ordering::SeqCst);
+            None
+        }),
+        Arc::new(|| {}),
+        Arc::new(|_| {}),
+    );
+    let history = [reply_with_usage("small", 10, 20)];
+    assert!(hook(&history).await.is_none());
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
+    Ok(())
+}

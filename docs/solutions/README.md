@@ -236,5 +236,9 @@ edited by hand.
 - [D255](adr/d255.md) - todo evidence stays the agent's claim, not a checked fact
 - [D260](adr/d260.md) - a session's build runs off the worker's request loop
 - [D265](adr/d265.md) - a wait wakes on the event it waits for, not on a timer
+- [D266](adr/d266.md) - a resume and the session list stop paying for what nobody reads
+- [D268](adr/d268.md) - nothing between a prompt and its first request waits on work the request...
+- [D270](adr/d270.md) - the global harness store is written only by the host
+- [D269](adr/d269.md) - a kernel venv that passed its live import check is trusted by a stamp until...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
