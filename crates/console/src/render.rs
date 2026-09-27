@@ -758,6 +758,7 @@ fn title_tile(app: &mut App, id: &str, seed: &str, hue: usize, x: u16, y: u16) -
             key: format!("{id}#{x},{y}"),
             seed: id.to_owned(),
             accent: yi_tui::colors::accent_rgb(hue),
+            state: None,
         });
     }
     Span::raw(" ".repeat(text.chars().count()))

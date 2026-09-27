@@ -37,6 +37,24 @@ impl SessionStatus {
         }
     }
 
+    pub fn need(self) -> usize {
+        match self {
+            Self::Blocked => 0,
+            Self::DoneUnseen => 1,
+            Self::Working => 2,
+            Self::Idle => 3,
+            Self::Unknown => 4,
+        }
+    }
+
+    pub fn section(self) -> &'static str {
+        match self {
+            Self::Blocked | Self::DoneUnseen => "needs you",
+            Self::Working => "working",
+            Self::Idle | Self::Unknown => "idle",
+        }
+    }
+
     pub fn from_state(state: &AcpState, seen: bool) -> Self {
         match state {
             AcpState::Running => Self::Working,
@@ -420,6 +438,19 @@ impl ConsoleState {
     }
 
     /// Every chat showing the session, across every tab.
+    pub fn chat(&self, id: &SessionId) -> Option<&Chat> {
+        self.panes
+            .values()
+            .find_map(|pane| match &pane.content {
+                PaneContent::Session {
+                    session: Some(bound),
+                    chat: Some(chat),
+                } if bound == id => Some(chat.as_ref()),
+                _ => None,
+            })
+            .or_else(|| self.parked.get(id).map(Box::as_ref))
+    }
+
     pub fn chats_mut(&mut self, id: &SessionId) -> Vec<&mut Chat> {
         let parked = self.parked.get_mut(id).map(Box::as_mut);
         self.panes
@@ -498,13 +529,12 @@ impl ConsoleState {
             })
             .map(|(index, _)| index)
             .collect();
-        let roots = self.roots();
         rows.sort_by_key(|index| {
             let row = self.order.get(*index).and_then(|id| self.sessions.get(id));
-            let rank = row
-                .and_then(|row| roots.iter().position(|root| *root == row.root))
-                .unwrap_or(usize::MAX);
-            (rank, std::cmp::Reverse(row.map_or(0, SessionRow::recency)))
+            (
+                row.map_or(usize::MAX, |row| row.status.need()),
+                std::cmp::Reverse(row.map_or(0, SessionRow::recency)),
+            )
         });
         rows
     }

@@ -195,6 +195,15 @@ impl App {
                 }
                 self.dirty = true;
             }
+            Decoded::Name(name) => {
+                if let Some(row) = self.state.sessions.get_mut(id) {
+                    row.name = Some(name.clone());
+                }
+                for chat in self.state.chats_mut(id) {
+                    chat.app.set_session_name(name.clone());
+                }
+                self.dirty = true;
+            }
             Decoded::Claims(claims) => {
                 for chat in self.state.chats_mut(id) {
                     chat.port.set_claims(claims.clone());

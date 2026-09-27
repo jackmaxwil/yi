@@ -388,6 +388,7 @@ impl AcpState {
             last_workdir: Value::Null,
             last_claims: Value::Null,
             last_plan: Value::Null,
+            titled: lock_session(store).name().is_some(),
             launch_cwd: self.cwd.clone(),
         };
         parent.watch_workdir();

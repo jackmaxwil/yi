@@ -237,11 +237,6 @@ pub fn layout_chat(
     };
     let show_working = app.running || matches!(app.bottom, Some(Bottom::Approval(..)));
     let orb_state = app.orb_state();
-    let waiting = app
-        .wait
-        .as_ref()
-        .filter(|_| app.running)
-        .map(|(wait, since)| crate::pen::wait_label(wait, *since, &app.selection.model.provider));
     // On kitty the mark is always on screen, spelling `Yi` at rest and rearranging into
     // the orb for the turn. Elsewhere the plain spinner line appears only while a turn runs.
     let esc_armed = app
@@ -249,11 +244,7 @@ pub fn layout_chat(
         .is_some_and(|at| at.elapsed() < crate::input::ESC_WINDOW);
     let working: Vec<Line<'static>> = if app.kitty {
         let mut rows: Vec<Line<'static>> = (0..ORB_ROWS).map(|_| Line::default()).collect();
-        if let (Some(mid), Some(state)) = (rows.get_mut(1), orb_state) {
-            let label = waiting
-                .clone()
-                .or_else(|| app.intent.clone())
-                .unwrap_or_else(|| state.label().to_owned());
+        if let (Some(mid), Some(label)) = (rows.get_mut(1), app.working_label()) {
             let hint = if esc_armed {
                 "esc again to interrupt"
             } else {
@@ -268,7 +259,7 @@ pub fn layout_chat(
         rows
     } else if orb_state.is_some() {
         vec![working_line(
-            waiting.as_deref().or(app.intent.as_deref()),
+            app.working_label().as_deref(),
             spinner,
             esc_armed,
             &theme,
