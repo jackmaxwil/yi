@@ -1295,6 +1295,7 @@ async fn a_program_and_its_json_fixture_reach_the_same_plan_json() -> Fallible<(
                 on_restore: None,
                 sandbox: None,
                 snapshot_key: None,
+                per_session_state: false,
                 cell_ceiling: None,
             },
         ));
