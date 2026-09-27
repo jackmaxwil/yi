@@ -157,9 +157,8 @@ fn the_cut_grammar_set_keeps_every_named_language() -> TestResult {
     Ok(())
 }
 
-/// The dist binary links only the Unicode tables the shipped grammars use (vendor/syntect). A
-/// pattern needing a dropped table would fail to compile when its fence renders, so every pattern
-/// compiles here; the only refusals are back-references, which syntect fills in per match.
+/// A pattern needing a Unicode table vendor/syntect dropped aborts the process when its fence
+/// renders; `just test` reruns this under yi-tui's own features, as the workspace links them all.
 #[test]
 fn every_shipped_grammar_pattern_compiles_on_the_linked_tables() -> TestResult {
     use syntect::parsing::syntax_definition::Pattern;
@@ -176,18 +175,42 @@ fn every_shipped_grammar_pattern_compiles_on_the_linked_tables() -> TestResult {
                 continue;
             };
             let source = pattern.regex.regex_str();
-            match syntect::parsing::Regex::try_compile(source) {
-                None => compiled += 1,
-                Some(error) => assert!(
-                    error.to_string().contains("back reference"),
-                    "{}: {source}: {error}",
-                    grammar.name
-                ),
+            let source = if pattern.has_captures {
+                with_captures_filled(source)
+            } else {
+                source.to_owned()
+            };
+            if let Some(error) = syntect::parsing::Regex::try_compile(&source) {
+                return Err(format!("{}: {source}: {error}", grammar.name).into());
             }
+            compiled += 1;
         }
     }
     assert!(compiled > 5_000, "{compiled} patterns");
     Ok(())
+}
+
+/// Invariant: syntect fills each `\N` with the escaped text of capture N before it compiles the
+/// pattern, by this same walk; any literal stands in for that text.
+fn with_captures_filled(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut escaped = false;
+    for c in source.chars() {
+        match (escaped, c) {
+            (true, digit) if digit.is_ascii_digit() => out.push('x'),
+            (true, other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            (false, '\\') => {}
+            (false, other) => out.push(other),
+        }
+        escaped = c == '\\' && !escaped;
+    }
+    if escaped {
+        out.push('\\');
+    }
+    out
 }
 
 /// An unknown fence language must render, not vanish or panic.

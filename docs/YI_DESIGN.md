@@ -801,7 +801,7 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `sha2` | — | types, oauth, permission, runtime, kernel | message signing, permission digests, PKCE, plan digests | — |
 | `xxhash-rust` | `xxh32` | tools | hashline tags | — |
 | `globset` | — | permission, tools, runtime | permission patterns, file tools | `glob`: no brace sets |
-| `regex` | `std`, `perf`, `unicode-case` | tools | the `grep` tool; full Unicode tables stay out | — |
+| `regex` | `std`, `perf`, `unicode-case`, `unicode-script` | tools | the `grep` tool; the Age and break-property tables stay out | — |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
 | `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
 | `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, and the uv archive | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
