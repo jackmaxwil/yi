@@ -25,6 +25,7 @@ fn service() -> Arc<KernelService> {
         family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
+        on_boot: None,
         sandbox: None,
         snapshot_key: None,
         per_session_state: false,

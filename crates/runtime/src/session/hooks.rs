@@ -107,6 +107,11 @@ impl AgentSession {
         })
     }
 
+    /// Notified whenever a message joins the steer queue, for a wait on [`Self::mail_hook`].
+    pub fn mail_arrived(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.shared.mail)
+    }
+
     pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage, Option<StillNews>) + Send + Sync> {
         let parts = self.parts();
         Arc::new(move |message, news| {
@@ -227,6 +232,15 @@ impl AgentSession {
         })
     }
 
+    pub fn wait_hook(&self) -> Arc<crate::compaction::WaitFn> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move |wait| {
+            let _ = shared
+                .events
+                .send(yi_types::event::AgentEvent::Wait { wait });
+        })
+    }
+
     pub fn notice_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
         let parts = self.parts();
         Arc::new(move |text: &str| {
@@ -242,13 +256,9 @@ impl AgentSession {
         let compactor = self.compactor.clone()?;
         let shared = Arc::clone(&self.shared);
         let model = self.model();
-        Some(Arc::new(move || {
-            let messages = shared
-                .messages
-                .lock()
-                .map(|messages| messages.clone())
-                .unwrap_or_default();
-            compactor.status(&messages, &model)
+        Some(Arc::new(move || match shared.messages.lock() {
+            Ok(messages) => compactor.status(&messages, &model),
+            Err(_) => compactor.status(&[], &model),
         }))
     }
 

@@ -2,8 +2,7 @@
 //! only the parent bus and the roster folds both into cards, and no card may say `Running`
 //! once the host holds no record for it. A failing property shrinks to the shortest sequence.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::collections::HashMap;

@@ -15,9 +15,11 @@ use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Content, UserContent};
 use yi_types::subagent::ChildId;
 
+use crate::LineSink;
+use crate::update::update_notification;
 use crate::update::{IdMap, event_update, extension, gap_update, to_updates};
-use crate::{LineSink, update_notification};
 
+#[derive(Clone)]
 pub(crate) struct Forward {
     pub(crate) session_id: String,
     pub(crate) child: Option<ChildId>,
@@ -70,6 +72,9 @@ pub(crate) struct Parent {
     pub(crate) seen: HashSet<String>,
     pub(crate) last_goal: Value,
     pub(crate) last_workdir: Value,
+    pub(crate) last_claims: Value,
+    pub(crate) last_plan: Value,
+    pub(crate) titled: bool,
     pub(crate) launch_cwd: std::path::PathBuf,
 }
 
@@ -103,6 +108,56 @@ impl Parent {
         }
     }
 
+    pub(crate) fn watch_claims(&mut self) {
+        let claims = serde_json::to_value(yi_runtime::todo::claims::session_claims(&self.session))
+            .unwrap_or(Value::Null);
+        if claims != self.last_claims {
+            self.last_claims = claims.clone();
+            self.forward
+                .emit(extension("_yi/claims", [("claims", claims)]));
+        }
+    }
+
+    pub(crate) fn watch_plan(&mut self) {
+        let plan = self
+            .session
+            .plan_service()
+            .and_then(|service| service.read_plan().ok())
+            .map(|plan| {
+                let progress = yi_types::plan::doc::progress(&plan.todos);
+                serde_json::json!({
+                    "done": progress.done,
+                    "total": progress.total,
+                    "running": progress.running.map(|label| label.to_string()),
+                })
+            })
+            .unwrap_or(Value::Null);
+        if plan != self.last_plan {
+            self.last_plan = plan.clone();
+            self.forward
+                .emit(extension("_yi/plan_progress", [("plan", plan)]));
+        }
+    }
+
+    fn title(&mut self) {
+        let scripted = self.session.summarizer().provider == yi_runtime::faux::FAUX_PROVIDER;
+        if std::mem::replace(&mut self.titled, true) || scripted {
+            return;
+        }
+        let (session, forward) = (Arc::clone(&self.session), self.forward.clone());
+        tokio::spawn(async move {
+            let update = match yi_runtime::title::title_session(&session).await {
+                Ok(Some(name)) => extension("_yi/name", [("name", Value::String(name))]),
+                Ok(None) => return,
+                Err(error) => extension(
+                    "_yi/notice",
+                    [("text", Value::String(format!("session title: {error}")))],
+                ),
+            };
+            forward.emit(update);
+        });
+    }
+
     pub(crate) fn watch_workdir(&mut self) {
         // A released lane hands the session back: say so, or the row names a lane that is gone.
         let workdir = match self.session.lane().and_then(|lane| lane.row()) {
@@ -133,6 +188,14 @@ impl Parent {
             | AgentEvent::AgentEnd { .. } => {
                 self.watch_goal();
                 self.watch_workdir();
+                self.watch_plan();
+                if matches!(event, AgentEvent::ToolExecutionEnd { tool_name, .. } if tool_name == "todo")
+                {
+                    self.watch_claims();
+                }
+                if matches!(event, AgentEvent::AgentEnd { .. }) {
+                    self.title();
+                }
             }
             _ => {}
         }

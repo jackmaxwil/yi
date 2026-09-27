@@ -170,6 +170,7 @@ fn kinds(events: &[AgentEvent]) -> Vec<&'static str> {
             AgentEvent::PermissionResolved { .. } => "permission_resolved",
             AgentEvent::ChildUpdate { .. } => "child_update",
             AgentEvent::LandingState { .. } => "landing_state",
+            AgentEvent::Wait { .. } => "wait",
         })
         .collect()
 }
@@ -2221,4 +2222,75 @@ async fn an_interrupt_answers_every_call_and_sends_no_request()
         })
     ));
     Ok(())
+}
+
+struct Retried;
+
+impl yi_loop::run::StreamFn for Retried {
+    fn stream(
+        &self,
+        _model: &Model,
+        _context: &LlmContext,
+        _effort: yi_types::model::Effort,
+        _signal: &InterruptSignal,
+    ) -> Receiver<AssistantMessageEvent> {
+        let (sender, receiver) = tokio::sync::mpsc::channel(64);
+        let mut events = stream_with_deltas(&faux_assistant_message(
+            vec![faux_text("ok")],
+            StopReason::Stop,
+        ));
+        events.insert(
+            1,
+            AssistantMessageEvent::Waiting {
+                wait: yi_types::event::Wait::Retry {
+                    attempt: 1,
+                    of: 3,
+                    delay_ms: 500,
+                    cause: "HTTP 429".to_owned(),
+                },
+            },
+        );
+        for event in events {
+            let _ = sender.try_send(event);
+        }
+        receiver
+    }
+}
+
+/// Dies with the retry folded into the message as a silent delta: nothing told a surface the
+/// turn was waiting out a provider's backoff.
+#[tokio::test]
+async fn a_provider_retry_reaches_the_surfaces_as_a_wait() {
+    let mut context = LoopContext {
+        system_prompt: "sys".to_owned(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let (events, mut emit) = collector();
+    run_loop(
+        &mut context,
+        vec![user("hi")],
+        &LoopConfig::new(faux_model()),
+        &InterruptSignal::default(),
+        &mut emit,
+        &Retried,
+    )
+    .await;
+    let events = events.lock().unwrap_or_else(|error| error.into_inner());
+    let waits: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::Wait { wait } => Some(wait.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        waits,
+        vec![Some(yi_types::event::Wait::Retry {
+            attempt: 1,
+            of: 3,
+            delay_ms: 500,
+            cause: "HTTP 429".to_owned(),
+        })]
+    );
 }

@@ -5,6 +5,7 @@ mod attach;
 pub mod cells;
 pub mod daemon;
 mod forward;
+pub mod review;
 pub mod update;
 
 use std::collections::{HashMap, HashSet};
@@ -21,14 +22,16 @@ use yi_runtime::session_store::{
 use yi_runtime::{AgentSession, AskOutcome, Asker, SubagentHost, available_models, resolve_model};
 use yi_types::acp::{
     AcpConfigOption, AcpErrorResponse, AcpErrorShape, AcpFrame, AcpImplementation,
-    AcpInitializeResult, AcpNotification, AcpPermissionOption, AcpPermissionOptionKind,
-    AcpPermissionOutcome, AcpResponse, AcpSessionResult, AcpSessionUpdate, AcpUpdateParams,
+    AcpInitializeResult, AcpPermissionOption, AcpPermissionOptionKind, AcpPermissionOutcome,
+    AcpResponse, AcpSessionResult, AcpSessionUpdate,
 };
 use yi_types::event::AgentEvent;
 use yi_types::subagent::ChildId;
 
 use crate::forward::{Forward, Parent, forward_parent, session_name};
-use crate::update::{IdMap, ReplayFrame, extension, replay_update, replay_updates};
+use crate::update::{
+    IdMap, ReplayFrame, extension, replay_update, replay_updates, update_notification,
+};
 
 pub const PROTOCOL_VERSION: u16 = 2;
 pub const VERSION_MISMATCH_ERROR: &str =
@@ -68,11 +71,14 @@ pub struct SessionDefaults {
 pub fn stdout_sink() -> LineSink {
     Arc::new(|value: &Value| {
         let _span = yi_types::trace::span("acp.write_frame");
+        // One write per frame: stdout's line buffer turned a 1.4 MB frame into 1 KB syscalls.
+        let Ok(mut line) = serde_json::to_vec(value) else {
+            return;
+        };
+        line.push(b'\n');
         let mut stdout = std::io::stdout().lock();
-        if serde_json::to_writer(&mut stdout, value).is_ok() {
-            let _stdout_gone_means_exit = stdout.write_all(b"\n");
-            let _flush = stdout.flush();
-        }
+        let _stdout_gone_means_exit = stdout.write_all(&line);
+        let _flush = stdout.flush();
     })
 }
 
@@ -217,36 +223,6 @@ struct AcpState {
     cwd: PathBuf,
 }
 
-fn undo_text(session: &AgentSession, cwd: &std::path::Path) -> String {
-    if session.status() == yi_runtime::Status::Running {
-        return "/undo: the current turn is still running (esc stops it)".to_owned();
-    }
-    let Some(store) = session.store() else {
-        return "/undo: this session has no store to read checkpoints from".to_owned();
-    };
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_default();
-    match yi_runtime::undo(&store, cwd, &home) {
-        yi_runtime::UndoOutcome::Restored { changes, scoped } => {
-            format!("/undo: {}", yi_runtime::describe_undo(&changes, scoped))
-        }
-        yi_runtime::UndoOutcome::NoCheckpoint => "/undo: no checkpoint to restore".to_owned(),
-        yi_runtime::UndoOutcome::Failed(error) => format!("/undo: {error}"),
-    }
-}
-
-pub(crate) fn update_notification(session_id: &str, update: AcpSessionUpdate) -> Value {
-    json!(AcpNotification {
-        jsonrpc: "2.0".to_owned(),
-        method: "session/update".to_owned(),
-        params: json!(AcpUpdateParams {
-            session_id: session_id.to_owned(),
-            update,
-        }),
-    })
-}
-
 fn mode_value(mode: Option<yi_runtime::PermissionMode>) -> &'static str {
     match mode {
         Some(yi_runtime::PermissionMode::Yolo) => "yolo",
@@ -386,9 +362,14 @@ impl AcpState {
             seen: HashSet::new(),
             last_goal: Value::Null,
             last_workdir: Value::Null,
+            last_claims: Value::Null,
+            last_plan: Value::Null,
+            titled: lock_session(store).name().is_some(),
             launch_cwd: self.cwd.clone(),
         };
         parent.watch_workdir();
+        parent.watch_claims();
+        parent.watch_plan();
         let forwarder = tokio::spawn(forward_parent(events, parent));
         self.sessions.insert(
             session_id.clone(),
@@ -657,8 +638,15 @@ impl AcpState {
                 if let Some(replay_from) = params.get("replayFrom").filter(|v| !v.is_null()) {
                     let from = replay_from.as_u64().unwrap_or(0);
                     let window = self.context_window(&id);
-                    let replayed_to = self.replay(&id, &store, from, window)?;
-                    self.emit_replay_from(&id, &store, from, window, None)?;
+                    let standard =
+                        params.get("replayUpdates").and_then(Value::as_bool) != Some(false);
+                    let replayed = if standard {
+                        Some(self.replay(&id, &store, from, window)?)
+                    } else {
+                        None
+                    };
+                    let total = self.emit_replay_from(&id, &store, from, window, None)?;
+                    let replayed_to = replayed.unwrap_or(total);
                     if let Some(map) = result.as_object_mut() {
                         map.insert("replayedTo".to_owned(), json!(replayed_to));
                     }
@@ -684,8 +672,10 @@ impl AcpState {
                 Ok(json!({}))
             }
             "session/set_config_option" => self.set_config_option(params),
-            "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/kernel_execute"
-            | "_yi/kernel_cancel" | "_yi/slash" => self.handle_extension(method, params),
+            "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/branch_diff" | "_yi/tape"
+            | "_yi/kernel_execute" | "_yi/kernel_cancel" | "_yi/slash" => {
+                self.handle_extension(method, params)
+            }
             "_yi/steer" | "_yi/rewind" | "_yi/plan" | "_yi/todo" | "_yi/child_replay"
             | "_yi/child_abort" | "_yi/child_answer" => self.handle_control(method, params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
@@ -702,8 +692,16 @@ impl AcpState {
                 Ok(json!({}))
             }
             "_yi/rewind" => {
-                let rewound = yi_runtime::rewind_to(&handle.session, text("entryId"))
-                    .map_err(|error| (INVALID_PARAMS, error))?;
+                let files = params.get("files").and_then(Value::as_bool) == Some(true);
+                let (rewound, restored) = if files {
+                    let (rewound, restored) =
+                        crate::review::restore_before(&handle.session, text("entryId"), &self.cwd)?;
+                    (rewound, Some(restored))
+                } else {
+                    let rewound = yi_runtime::rewind_to(&handle.session, text("entryId"))
+                        .map_err(|error| (INVALID_PARAMS, error))?;
+                    (rewound, None)
+                };
                 let summarizing = rewound.abandoned.is_some();
                 if let Some(stub) = rewound.abandoned {
                     let session = Arc::clone(&handle.session);
@@ -716,6 +714,7 @@ impl AcpState {
                     "leafId": rewound.leaf,
                     "unsent": rewound.unsent,
                     "summarizing": summarizing,
+                    "restored": restored,
                 }))
             }
             "_yi/todo" => {
@@ -806,6 +805,16 @@ impl AcpState {
                 let root = std::path::Path::new(text("root"));
                 Ok(json!({"tracked": yi_runtime::environment::tracked(root, &paths)}))
             }
+            "_yi/why" => Ok(crate::review::why(&handle.session, &self.cwd, params)),
+            "_yi/tape" | "_yi/branch_diff" => {
+                let value = if method == "_yi/tape" {
+                    serde_json::to_value(yi_runtime::tape::session_tape(&handle.session))
+                } else {
+                    let root = crate::review::root(&handle.session, &self.cwd);
+                    serde_json::to_value(yi_runtime::environment::branch_diff(&root))
+                };
+                Ok(value.unwrap_or(Value::Null))
+            }
             "_yi/slash" => {
                 let line = text("line").trim();
                 let (command, args) = line
@@ -814,7 +823,7 @@ impl AcpState {
                 let before = (handle.session.model().id, handle.session.effort());
                 let reply = match command {
                     "sessions" => self.sessions_text()?,
-                    "undo" => undo_text(&handle.session, &self.cwd),
+                    "undo" => crate::review::undo_text(&handle.session, &self.cwd),
                     // Routed through `_yi/heartbeat`, not `slash::run`, so the client keeps `_yi/heartbeat_changed` (C9).
                     "heartbeat" => {
                         return self.handle_extension(
@@ -949,6 +958,7 @@ impl AcpState {
         };
         let context_window = handle.session.model().context_window;
         self.emit_replay_from(session_id, &store, from, context_window, child)
+            .map(|_| ())
     }
 
     fn emit_replay_from(
@@ -958,7 +968,7 @@ impl AcpState {
         from: u64,
         context_window: u64,
         child: Option<&ChildId>,
-    ) -> Result<(), (i64, String)> {
+    ) -> Result<u64, (i64, String)> {
         let mut span = yi_types::trace::span("acp.emit_replay");
         let (entries, leaf, goal) = {
             let session = lock_session(store);
@@ -1010,7 +1020,7 @@ impl AcpState {
             };
             (self.sink)(&update_notification(session_id, replay_update(&frame)));
         }
-        Ok(())
+        Ok(total)
     }
 
     /// Design §17.2: the stored branch replayed as `session/update`s. `from` skips entries the

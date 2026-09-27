@@ -1,7 +1,6 @@
 //! `kernel://<child>/var` is a parent reading a namespace that is not its own,
 //! so the proof is one map shared by two sessions the wiring built.
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -259,6 +258,7 @@ fn bare_service(root: &Scratch) -> Result<Arc<KernelService>, Box<dyn Error>> {
             family_dir: None,
             host: Arc::new(registry),
             on_restore: None,
+            on_boot: None,
             sandbox: None,
             snapshot_key: None,
             per_session_state: false,

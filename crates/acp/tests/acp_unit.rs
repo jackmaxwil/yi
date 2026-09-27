@@ -1,9 +1,14 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+
 use std::error::Error;
 
 use serde_json::{Map, Value, json};
-use yi_acp::update::{IdMap, base64, replay_updates, to_updates};
+use yi_acp::update::{IdMap, base64, extension, replay_updates, to_updates, update_notification};
 use yi_acp::{VERSION_MISMATCH_ERROR, negotiate};
-use yi_types::acp::{AcpSessionUpdate, AcpState, AcpStopReason, AcpToolCallStatus};
+use yi_types::acp::{
+    AcpNotification, AcpSessionUpdate, AcpState, AcpStopReason, AcpToolCallStatus, AcpUpdateParams,
+};
 use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
@@ -269,6 +274,30 @@ fn child_updates_become_a_subagent_update_notification() -> TestResult {
         json.get("answerPreview").is_none(),
         "an absent preview stays absent on the wire: {json}"
     );
+    Ok(())
+}
+
+/// The hand-built frame is the wire the serde types spell, for extensions and standard kinds.
+#[test]
+fn update_notifications_match_the_serde_wire_shape() -> TestResult {
+    let updates = [
+        extension(
+            "_yi/replay",
+            [("entries", json!([{"a": 1}])), ("from", json!(0))],
+        ),
+        AcpSessionUpdate::StateUpdate(AcpState::Running),
+    ];
+    for update in updates {
+        let expected = serde_json::to_value(AcpNotification {
+            jsonrpc: "2.0".to_owned(),
+            method: "session/update".to_owned(),
+            params: serde_json::to_value(AcpUpdateParams {
+                session_id: "s1".to_owned(),
+                update: update.clone(),
+            })?,
+        })?;
+        assert_eq!(update_notification("s1", update), expected);
+    }
     Ok(())
 }
 
@@ -561,5 +590,69 @@ fn yi_event_round_trips_every_variant() -> TestResult {
         parent.get("childId").is_none(),
         "the parent stream carries no childId key: {parent}"
     );
+    Ok(())
+}
+
+/// Dies with `used` copied from the reply: a provider that sent no usage object told every
+/// client the context had emptied.
+#[test]
+fn a_reply_without_usage_reports_no_context_figure() -> TestResult {
+    let mut ids = IdMap::new(1000);
+    let mut message = assistant_partial();
+    if let AgentMessage::Assistant { usage, .. } = &mut message {
+        usage.unknown = true;
+    }
+    let updates = to_updates(&AgentEvent::MessageEnd { message }, &mut ids);
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, AcpSessionUpdate::UsageUpdate { .. })),
+        "{updates:?}"
+    );
+    Ok(())
+}
+
+/// Dies with every unanswerable line called uncommitted and the hunks past the cap dropped
+/// unnamed: a stale patch or a non-repo read as work not yet committed.
+#[test]
+fn why_names_an_uncommitted_line_the_real_error_and_the_lines_past_its_cap() -> TestResult {
+    let repo = scratch::Scratch::new("yi-acp-why")?;
+    let git = |args: &[&str]| -> Result<(), Box<dyn Error>> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the fixture is a real repository, which `git blame` reads"
+        )]
+        let status = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
+            .arg(&*repo)
+            .args(args)
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("git {args:?} failed").into())
+        }
+    };
+    let text: String = (1..=10).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(repo.join("a.rs"), &text)?;
+    git(&["init", "-q"])?;
+    git(&["add", "a.rs"])?;
+    git(&["commit", "-q", "-m", "Add a"])?;
+    std::fs::write(repo.join("a.rs"), format!("{text}línea once\n"))?;
+    let asked = [11, 1, 40, 2, 3, 4, 5, 6, 7, 8];
+    let reply = yi_acp::review::why_answers(&repo, "a.rs", &asked);
+    let answers = reply["answers"].as_array().ok_or("no answers")?;
+    assert_eq!(answers.len(), yi_acp::review::WHY_LINES);
+    assert_eq!(answers[0]["uncommitted"], true, "{reply}");
+    assert_eq!(answers[1]["subject"], "Add a", "{reply}");
+    let error = answers[2]["error"].as_str().ok_or("line 40 answered")?;
+    assert!(!error.contains("not committed"), "{error}");
+    assert_eq!(reply["unasked"], json!([7, 8]));
+    let outside = scratch::Scratch::new("yi-acp-why-bare")?;
+    let bare = yi_acp::review::why_answers(&outside, "a.rs", &[1]);
+    let error = bare["answers"][0]["error"]
+        .as_str()
+        .ok_or("a bare dir answered")?;
+    assert!(error.contains("not a git repository"), "{error}");
     Ok(())
 }

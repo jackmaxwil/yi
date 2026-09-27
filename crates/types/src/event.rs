@@ -44,6 +44,10 @@ pub enum AssistantMessageEvent {
     ToolCallStart {
         #[serde(rename = "contentIndex")]
         content_index: usize,
+        /// The tool's name when the provider sends it with the block's start, so a surface can
+        /// draw the call while its arguments stream.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
     #[serde(rename = "toolcall_delta")]
     ToolCallDelta {
@@ -57,6 +61,10 @@ pub enum AssistantMessageEvent {
         content_index: usize,
         #[serde(rename = "toolCall")]
         tool_call: Content,
+    },
+    /// The request has not reached the model yet: the provider asked it to wait.
+    Waiting {
+        wait: Wait,
     },
     Done {
         reason: StopReason,
@@ -102,12 +110,15 @@ pub fn apply(message: &mut AgentMessage, event: &AssistantMessageEvent) {
                 redacted: None,
             },
         ),
-        AssistantMessageEvent::ToolCallStart { content_index } => place(
+        AssistantMessageEvent::ToolCallStart {
+            content_index,
+            name,
+        } => place(
             content,
             *content_index,
             Content::ToolCall {
                 id: String::new(),
-                name: String::new(),
+                name: name.clone().unwrap_or_default(),
                 arguments: serde_json::Map::new(),
                 thought_signature: None,
                 namespace: None,
@@ -149,7 +160,7 @@ pub fn apply(message: &mut AgentMessage, event: &AssistantMessageEvent) {
             content_index,
             tool_call,
         } => place(content, *content_index, tool_call.clone()),
-        AssistantMessageEvent::ToolCallDelta { .. } => {}
+        AssistantMessageEvent::ToolCallDelta { .. } | AssistantMessageEvent::Waiting { .. } => {}
     }
 }
 
@@ -276,4 +287,39 @@ pub enum AgentEvent {
     LandingState {
         landing: crate::lane::Landing,
     },
+    /// The agent is held up by something other than the model's reply or a tool; `None`
+    /// when that hold is over.
+    Wait {
+        wait: Option<Wait>,
+    },
+}
+
+/// A stretch the agent spends on neither the model's reply nor a tool's work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Wait {
+    /// The provider refused or dropped the request; attempt `attempt` of `of` goes out after
+    /// `delay_ms`.
+    Retry {
+        attempt: u32,
+        of: u32,
+        #[serde(rename = "delayMs")]
+        delay_ms: u64,
+        cause: String,
+    },
+    /// The context is being summarized down from `tokens`.
+    Compaction { tokens: u64 },
+    /// The Python kernel is starting; `step` is its latest progress line.
+    KernelBoot { step: String },
+}
+
+impl Wait {
+    /// A boot line a person must act on (a skill or package that failed to install): it
+    /// outlives the wait that carried it, so a surface keeps it where the wait row is gone.
+    pub fn warning(&self) -> Option<&str> {
+        match self {
+            Self::KernelBoot { step } if step.starts_with("Warning:") => Some(step),
+            Self::Retry { .. } | Self::Compaction { .. } | Self::KernelBoot { .. } => None,
+        }
+    }
 }

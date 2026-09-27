@@ -231,6 +231,16 @@ pub(crate) fn capture(
     args: &[&str],
     deadline: std::time::Duration,
 ) -> Result<String, String> {
+    capture_capped(cwd, program, args, deadline, 30_000).map(|capture| capture.stdout)
+}
+
+pub(crate) fn capture_capped(
+    cwd: &Path,
+    program: &str,
+    args: &[&str],
+    deadline: std::time::Duration,
+    cap: usize,
+) -> Result<yi_tools::CommandCapture, String> {
     let _span = yi_types::trace::span("lane.capture").arg("program", program);
     let mut command = yi_tools::command(program);
     command.current_dir(cwd).args(args);
@@ -238,10 +248,10 @@ pub(crate) fn capture(
         .checked_add(deadline)
         .unwrap_or_else(std::time::Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
-    let capture = yi_tools::run_captured(command, None, &cancelled, 30_000)
+    let capture = yi_tools::run_captured(command, None, &cancelled, cap)
         .map_err(|error| format!("{program} {}: {error}", args.join(" ")))?;
     if capture.exit_code == Some(0) {
-        return Ok(capture.stdout);
+        return Ok(capture);
     }
     Err(format!(
         "{program} {} failed:\n{}{}",
@@ -437,14 +447,36 @@ pub struct Pool {
     slots: u8,
 }
 
+static FOUND: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+
+fn remember_repo(dir: &Path, repo: &Path) {
+    if let Ok(mut found) = FOUND.lock()
+        && !found.iter().any(|(known, _)| known == dir)
+    {
+        found.push((dir.to_path_buf(), repo.to_path_buf()));
+    }
+}
+
 /// Invariant: a lane is itself a worktree, so lanes and memory key off the common git dir.
 pub fn canonical_repo(cwd: &Path) -> Option<PathBuf> {
+    let hit = FOUND.lock().ok().and_then(|found| {
+        found
+            .iter()
+            .find(|(dir, _)| dir == cwd)
+            .map(|(_, repo)| repo.clone())
+    });
+    if hit.is_some() {
+        return hit;
+    }
+    let _span = yi_types::trace::span("lane.canonical_repo");
     let common = git(
         cwd,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )
     .ok()?;
-    PathBuf::from(common.trim()).parent()?.canonicalize().ok()
+    let repo = PathBuf::from(common.trim()).parent()?.canonicalize().ok()?;
+    remember_repo(cwd, &repo);
+    Some(repo)
 }
 
 impl Pool {
@@ -600,28 +632,57 @@ impl Pool {
         Ok(views)
     }
 
-    fn fetch_if_stale(&self) {
-        let fetch_head = self.repo.join(".git/FETCH_HEAD");
-        let fresh = std::fs::metadata(&fetch_head)
+    fn fetch_fresh(&self) -> bool {
+        std::fs::metadata(self.repo.join(".git/FETCH_HEAD"))
             .and_then(|meta| meta.modified())
             .ok()
             .and_then(|modified| modified.elapsed().ok())
-            .is_some_and(|age| age.as_millis() < u128::from(FETCH_FRESH_MS));
-        if fresh || git(&self.repo, &["remote", "get-url", "origin"]).is_err() {
-            return;
-        }
-        let _ = git(&self.repo, &["fetch", "-q", "origin", "main"]);
+            .is_some_and(|age| age.as_millis() < u128::from(FETCH_FRESH_MS))
     }
 
-    fn resolve(&self, base: &ClaimBase) -> Result<String, LaneError> {
+    fn fetch_if_stale(&self) -> bool {
+        let _span = yi_types::trace::span("lane.fetch_if_stale");
+        if self.fetch_fresh() || git(&self.repo, &["remote", "get-url", "origin"]).is_err() {
+            return false;
+        }
+        let _ = git(&self.repo, &["fetch", "-q", "origin", "main"]);
+        true
+    }
+
+    /// A claim starts from the `origin/main` last fetched and refreshes it beside the session.
+    fn refresh_in_background(&self) {
+        static FETCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.fetch_fresh() || FETCHING.swap(true, SeqCst) {
+            return;
+        }
+        let pool = self.clone();
+        std::thread::spawn(move || {
+            pool.fetch_if_stale();
+            FETCHING.store(false, SeqCst);
+        });
+    }
+
+    fn resolve(&self, base: &ClaimBase, background: bool) -> Result<String, LaneError> {
         let candidates: Vec<String> = match base {
             ClaimBase::Main => {
-                self.fetch_if_stale();
-                vec![
-                    "origin/main".to_owned(),
-                    "main".to_owned(),
-                    "HEAD".to_owned(),
-                ]
+                let known = background.then(|| {
+                    git(
+                        &self.repo,
+                        &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
+                    )
+                });
+                if let Some(Ok(sha)) = &known {
+                    self.refresh_in_background();
+                    return Ok(sha.trim().to_owned());
+                }
+                let fetched = self.fetch_if_stale();
+                let missing = known.is_some() && !fetched;
+                ["origin/main", "main", "HEAD"]
+                    .into_iter()
+                    .filter(|name| !missing || *name != "origin/main")
+                    .map(str::to_owned)
+                    .collect()
             }
             ClaimBase::Commit(sha) => vec![sha.clone()],
         };
@@ -642,6 +703,7 @@ impl Pool {
     }
 
     pub fn claim(&self, session: &str, base: ClaimBase) -> Result<Lane, LaneError> {
+        let _span = yi_types::trace::span("lane.claim");
         let _pool = self.lock()?;
         let (mut held, mut orphans) = (0_u8, 0_u8);
         let mut free = None;
@@ -688,37 +750,51 @@ impl Pool {
             Some(guard) => guard,
             None => self.probe(slot)?.0,
         };
-        let sha = self.resolve(&base)?;
+        let branch = BranchName::for_session(session)?;
+        let sha = self.resolve(&base, true)?;
         let path = self.slot_path(slot);
+        let reason = format!("session:{session}");
+        let text = path.to_string_lossy().into_owned();
         if fresh {
-            let text = path.to_string_lossy().into_owned();
             git(
                 &self.repo,
-                &["worktree", "add", "-q", "--detach", &text, &sha],
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "--lock",
+                    "--reason",
+                    &reason,
+                    "-B",
+                    branch.as_str(),
+                    &text,
+                    &sha,
+                ],
             )?;
         } else {
             self.stop_warmer(slot)?;
-            git(&path, &["reset", "-q", "--hard", &sha])?;
+            git(
+                &path,
+                &["checkout", "-q", "-f", "-B", branch.as_str(), &sha],
+            )?;
             git(&path, &["clean", "-qfd"])?;
+            let _ = git(
+                &self.repo,
+                &["worktree", "lock", "--reason", &reason, &text],
+            );
         }
-        let branch = BranchName::for_session(session)?;
-        git(&path, &["checkout", "-q", "-B", branch.as_str()])?;
         let mut state = self.read_state(slot)?;
         state.base = Some(sha);
         state.session = Some(session.to_owned());
         self.write_state(slot, &state)?;
-        let reason = format!("session:{session}");
-        let text = path.to_string_lossy().into_owned();
-        let _ = git(
-            &self.repo,
-            &["worktree", "lock", "--reason", &reason, &text],
-        );
+        remember_repo(&path, &self.repo);
         Ok(Lane {
             slot,
             path,
             branch,
             pool: self.clone(),
             session: session.to_owned(),
+            locked: true,
             released: false,
             _held: guard,
         })
@@ -729,12 +805,14 @@ impl Pool {
         let branch = BranchName::for_session(session)?;
         let path = self.slot_path(slot);
         git(&path, &["checkout", "-q", branch.as_str()])?;
+        remember_repo(&path, &self.repo);
         Ok(Lane {
             slot,
             path,
             branch,
             pool: self.clone(),
             session: session.to_owned(),
+            locked: false,
             released: false,
             _held: guard,
         })
@@ -754,6 +832,8 @@ impl Pool {
         let _the_poll_below_sees_a_failed_term =
             capture(&self.dir, "/bin/sh", &term, probe_deadline());
         let started = std::time::Instant::now();
+        let _span = yi_types::trace::span("lane.warmer_exit");
+        let mut pace = yi_types::backoff::backoff(std::time::Duration::from_millis(200));
         while running()? {
             if started.elapsed().as_millis() >= u128::from(WARMER_EXIT_WAIT_MS) {
                 return Err(LaneError::WarmerStuck {
@@ -762,7 +842,7 @@ impl Pool {
                     waited_ms: WARMER_EXIT_WAIT_MS,
                 });
             }
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(pace());
         }
         if let Some(warm) = state.warm.as_mut() {
             warm.pid = None;
@@ -785,7 +865,7 @@ impl Pool {
             Err(_) => return Ok(false),
         };
         let branch = branch.as_str();
-        let base = self.resolve(&ClaimBase::Main)?;
+        let base = self.resolve(&ClaimBase::Main, false)?;
         Ok(git(&self.repo, &["merge-base", "--is-ancestor", branch, &base]).is_ok())
     }
 
@@ -837,7 +917,7 @@ impl Pool {
         let Some(branch) = branch else {
             return Ok(false);
         };
-        let base = self.resolve(&ClaimBase::Main)?;
+        let base = self.resolve(&ClaimBase::Main, false)?;
         let merged = git(&self.repo, &["merge-base", "--is-ancestor", branch, &base]).is_ok();
         if merged {
             git(&self.repo, &["branch", "-q", "-D", branch])?;
@@ -858,6 +938,8 @@ pub struct Lane {
     branch: BranchName,
     pool: Pool,
     session: String,
+    /// The worktree lock names `session`: set by this process, so a bind to it again is a no-op.
+    locked: bool,
     released: bool,
     _held: File,
 }
@@ -904,6 +986,10 @@ impl Lane {
 
     /// Invariant: the branch carries the session id, or a resume cannot find it.
     pub fn bind_session(&mut self, session: &str) -> Result<(), LaneError> {
+        let _span = yi_types::trace::span("lane.bind_session");
+        if self.locked && self.session == session {
+            return Ok(());
+        }
         let branch = BranchName::for_session(session)?;
         if branch != self.branch {
             git(&self.path, &["branch", "-q", "-m", branch.as_str()])?;
@@ -920,6 +1006,7 @@ impl Lane {
             &self.pool.repo,
             &["worktree", "lock", "--reason", &reason, &text],
         );
+        self.locked = true;
         Ok(())
     }
 

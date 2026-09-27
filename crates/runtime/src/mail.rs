@@ -1,5 +1,6 @@
 //! Family envelopes: ids and per-pair order, the durable inbox, and request waiters (D214).
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use tokio::sync::oneshot;
@@ -769,6 +770,44 @@ impl SubagentHost {
             self.publish(&key);
         }
     }
+}
+
+pub fn register_receive(
+    session: &crate::session::AgentSession,
+    host: &Arc<SubagentHost>,
+    registry: &mut crate::kernel::HostRegistry,
+) {
+    let (take, host, mail) = (
+        session.mail_hook(),
+        Arc::clone(host),
+        session.mail_arrived(),
+    );
+    registry.register("rlm.receive", move |payload| {
+        let asked = crate::mailbox::timeout_of(&payload);
+        let (take, host, mail) = (Arc::clone(&take), Arc::clone(&host), Arc::clone(&mail));
+        Box::pin(async move {
+            let asked = asked?;
+            let clamped = asked.clamp(crate::mailbox::WAIT_MIN_MS, crate::mailbox::WAIT_MAX_MS);
+            let started = std::time::Instant::now();
+            let deadline = std::time::Duration::from_millis(clamped);
+            let _span = yi_types::trace::span("wait.mail_receive");
+            loop {
+                let mut arrived = std::pin::pin!(mail.notified());
+                arrived.as_mut().enable();
+                let envelopes = take();
+                if !envelopes.is_empty() || started.elapsed() >= deadline {
+                    host.waited_on(!envelopes.is_empty());
+                    let mut reply = Map::new();
+                    reply.insert("envelopes".to_owned(), Value::Array(envelopes));
+                    reply.insert("timeout_ms".to_owned(), Value::from(clamped));
+                    reply.insert("clamped".to_owned(), Value::Bool(clamped != asked));
+                    return Ok(reply);
+                }
+                let left = deadline.saturating_sub(started.elapsed());
+                let _ = tokio::time::timeout(left, arrived).await;
+            }
+        })
+    });
 }
 
 #[cfg(test)]

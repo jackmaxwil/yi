@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::time::{Duration, Instant};
 
 use yi_tui::orb::kitty;
 
@@ -133,7 +134,16 @@ pub struct Placement {
     pub key: String,
     pub seed: String,
     pub accent: (u8, u8, u8),
+    pub state: Option<yi_tui::orb::OrbState>,
 }
+
+struct Motion {
+    orb: yi_tui::orb::Orb,
+    state: yi_tui::orb::OrbState,
+    last: Instant,
+}
+
+const MOTION_FRAME: Duration = Duration::from_millis(66);
 
 /// One placement per rail row on screen; moved rows re-place, gone rows delete.
 #[derive(Default)]
@@ -141,6 +151,7 @@ pub struct Avatars {
     pool: ImageIds,
     ids: HashMap<String, ImageId>,
     placed: HashMap<String, (u16, u16, u16, u16)>,
+    motion: HashMap<String, Motion>,
 }
 
 impl Avatars {
@@ -156,6 +167,7 @@ impl Avatars {
         // that scrolled back in placed a freed image and showed nothing.
         for key in gone {
             self.placed.remove(&key);
+            self.motion.remove(&key);
             if let Some(image) = self.ids.remove(&key) {
                 let _ = kitty::delete_id(out, image.raw());
             }
@@ -178,6 +190,23 @@ impl Avatars {
                     image
                 }
             };
+            match (place.state, self.motion.get_mut(&place.key)) {
+                (Some(state), Some(motion)) => motion.state = state,
+                (Some(state), None) => {
+                    let motion = Motion {
+                        orb: yi_tui::orb::Orb::default(),
+                        state,
+                        last: Instant::now(),
+                    };
+                    self.motion.insert(place.key.clone(), motion);
+                }
+                (None, Some(_)) => {
+                    self.motion.remove(&place.key);
+                    let identicon = rgba(&grid(&place.seed), place.accent);
+                    let _ = kitty::transmit(out, image.raw(), &identicon, (PX, PX));
+                }
+                (None, None) => {}
+            }
             if self.placed.get(&place.key) == Some(&(col, row, cols, rows)) {
                 continue;
             }
@@ -188,11 +217,34 @@ impl Avatars {
         }
     }
 
+    pub fn animate(&mut self, out: &mut impl Write) {
+        for (key, motion) in &mut self.motion {
+            let (Some(image), elapsed) = (self.ids.get(key), motion.last.elapsed()) else {
+                continue;
+            };
+            if elapsed < MOTION_FRAME {
+                continue;
+            }
+            motion.last = Instant::now();
+            let frame = motion.orb.frame(elapsed, Some(motion.state));
+            let pixels = kitty::paint_rgba(&frame, 64.0, PX, PX);
+            let _ = kitty::transmit(out, image.raw(), &pixels, (PX, PX));
+        }
+    }
+
+    pub fn wake(&self) -> Option<Duration> {
+        self.motion
+            .values()
+            .map(|motion| MOTION_FRAME.saturating_sub(motion.last.elapsed()))
+            .min()
+    }
+
     /// Incident: a resize clears the screen, and kitty drops every placement with the cells
     /// under it; the ledger still said placed, so the tiles showed until the row moved.
     pub fn forget(&mut self) {
         self.placed.clear();
         self.ids.clear();
+        self.motion.clear();
     }
 
     pub fn hide_all(&mut self, out: &mut impl Write) {
@@ -203,6 +255,7 @@ impl Avatars {
         }
         for key in std::mem::take(&mut self.placed).into_keys() {
             self.ids.remove(&key);
+            self.motion.remove(&key);
         }
     }
 }
@@ -237,6 +290,7 @@ mod tests {
             key: "s-alpha".to_owned(),
             seed: "s-alpha".to_owned(),
             accent: (1, 2, 3),
+            state: None,
         };
         let mut avatars = Avatars::default();
         let mut first = Vec::new();
@@ -267,6 +321,7 @@ mod tests {
             key: "s-alpha".to_owned(),
             seed: "s-alpha".to_owned(),
             accent: (1, 2, 3),
+            state: None,
         };
         let mut avatars = Avatars::default();
         avatars.sync(&mut Vec::new(), std::slice::from_ref(&place));

@@ -176,6 +176,7 @@ impl RuntimeWiring {
         host: Arc<dyn yi_kernel::client::HostHandlers>,
         on_restore: Arc<crate::kernel::RestoreNoticeFn>,
         snapshot_key: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+        on_boot: Arc<crate::kernel::BootFn>,
     ) -> crate::kernel::KernelServiceOptions {
         crate::kernel::KernelServiceOptions {
             cwd: self.cwd.clone(),
@@ -184,6 +185,7 @@ impl RuntimeWiring {
             family_dir: Some(self.family_dir()),
             host,
             on_restore: Some(on_restore),
+            on_boot: Some(on_boot),
             sandbox: self.session_sandbox(),
             snapshot_key: Some(snapshot_key),
             per_session_state: self.depth == 0 && self.sessions_dir.is_some(),
@@ -430,7 +432,8 @@ fn wire_plan_request(
         .with_output_resolve(resolver)
         .with_op_sink(ops)
         .with_liveness(liveness)
-        .with_cwd(cwd.clone());
+        .with_cwd(cwd.clone())
+        .with_owned(owned_roots(session, host));
     // This session's host seats the juries (plan section 6.4). A verification never outlives
     // the run (D177): the verifier and every lane settle read the session's deadline too.
     let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
@@ -458,6 +461,19 @@ fn wire_plan_request(
     }
     crate::plan::request::register(Arc::clone(&engine), actor.clone(), registry);
     Some((engine, actor, todos))
+}
+
+/// A child works its owner's plan, so its scope is its own session's and the host's.
+/// ponytail: one level up; a grandchild naming no plan sees its parent's roots, not the root's.
+fn owned_roots(
+    session: &AgentSession,
+    host: &Arc<SubagentHost>,
+) -> Arc<crate::plan::ledger::OwnedFn> {
+    let (own, owner) = (session.store_handle(), Arc::clone(&host.options.store));
+    Arc::new(move || {
+        let stores: Vec<_> = [own(), owner()].into_iter().flatten().collect();
+        crate::plan::ledger::Owned::of(&stores)
+    })
 }
 
 type PlanWiring = (
@@ -601,8 +617,10 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
 fn wire_job_completions(session: &AgentSession) {
     let follow_up = session.follow_up_hook();
     tokio::spawn(async move {
+        let settled = job_settled();
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let mut next = std::pin::pin!(settled.notified());
+            next.as_mut().enable();
             for report in yi_tools::jobs::registry().take_finished() {
                 follow_up(&format!(
                     "<async_result job=\"{}\" exit=\"{}\">{}\n{}</async_result>",
@@ -612,8 +630,28 @@ fn wire_job_completions(session: &AgentSession) {
                     report.output
                 ));
             }
+            next.await;
         }
     });
+}
+
+/// One thread turns the job registry's settles into a wake the per-session loops can await.
+fn job_settled() -> &'static tokio::sync::Notify {
+    static SETTLED: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    static BRIDGE: std::sync::Once = std::sync::Once::new();
+    BRIDGE.call_once(|| {
+        let bridge = std::thread::Builder::new().name("yi-job-settles".to_owned());
+        let _spawned = bridge.spawn(|| {
+            let mut seen = 0;
+            loop {
+                seen = yi_tools::jobs::registry().wait_settle(seen);
+                SETTLED
+                    .get_or_init(tokio::sync::Notify::new)
+                    .notify_waiters();
+            }
+        });
+    });
+    SETTLED.get_or_init(tokio::sync::Notify::new)
 }
 
 pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> Arc<SubagentHost> {
@@ -635,6 +673,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
     registry.register_exec(wiring.cwd.clone(), wiring.exec_sandbox());
+    crate::kernel_state::register_harness_save(&mut registry, wiring.broker.clone(), &wiring.home);
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort
         // the turn whose cell awaits the reply (design §9.2).
@@ -703,10 +742,16 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         Arc::clone(&resolver),
     );
     let restore_notice = session.notice_hook();
+    let waits = session.wait_hook();
     let service = Arc::new(crate::kernel::KernelService::new(wiring.kernel_options(
         Arc::new(registry),
         Arc::new(move |restore| restore_notice(&crate::kernel::restore_notice_text(restore))),
         session.store_id_hook(),
+        Arc::new(move |step: Option<&str>| {
+            waits(step.map(|step| yi_types::event::Wait::KernelBoot {
+                step: step.to_owned(),
+            }));
+        }),
     )));
     wire_advisor(session, &wiring);
     if wiring.kernel_prewarm {

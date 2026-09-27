@@ -213,6 +213,7 @@ fn freeform_names(context: &LlmContext) -> std::collections::BTreeSet<String> {
 }
 
 fn convert_input(model: &Model, context: &LlmContext) -> Vec<Value> {
+    let _span = yi_types::trace::span("ai.convert_messages");
     let transformed = transform_messages(
         &context.messages,
         model,
@@ -337,6 +338,9 @@ fn apply_reasoning(model: &Model, options: &OpenAiOptions, params: &mut Value) {
 }
 
 pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Value {
+    let _span = yi_types::trace::span("ai.build_params")
+        .arg("api", "responses")
+        .arg("messages", context.messages.len());
     let mut params = json!({
         "model": model.id,
         "input": convert_input(model, context),
@@ -601,7 +605,10 @@ impl EventMapper {
             partial_args: String::new(),
             freeform: false,
         });
-        events.push(AssistantMessageEvent::ToolCallStart { content_index });
+        events.push(AssistantMessageEvent::ToolCallStart {
+            content_index,
+            name: (!name.is_empty()).then(|| name.to_owned()),
+        });
         Some(self.tools.len().saturating_sub(1))
     }
 
@@ -959,6 +966,7 @@ fn run_request(
     let url = format!("{}/responses", model.base_url);
     let mut mapper = EventMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
+    let retried = crate::request::waiting(sender);
     let resent = crate::request::pump_sse_with_resend(
         wire.stop,
         || {
@@ -969,6 +977,7 @@ fn run_request(
                 body,
                 wire.proxy,
                 wire.extra,
+                &retried,
             )
         },
         |sse| {
