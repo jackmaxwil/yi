@@ -927,7 +927,7 @@ impl Tool for HashlineEditTool {
         let hash = input_hash(&patch_text);
         let mut rendered: Vec<String> = Vec::new();
         let mut diff = String::new();
-        let mut syntax: Option<String> = None;
+        let mut checked: Vec<(usize, &str)> = Vec::new();
         for result in &results {
             if result.op == SectionOp::Noop {
                 let entry = noop
@@ -962,17 +962,10 @@ impl Tool for HashlineEditTool {
                 )
                 .as_str(),
             );
-            let mut section = render_section_result(result, snapshots);
-            if result.op != SectionOp::Delete
-                && let Some(line) = crate::syntax::verdict(Path::new(&result.canonical_path))
-            {
-                section.push('\n');
-                section.push_str(&line);
-                if syntax.as_deref().is_none_or(|kept| kept == "syntax: ok") {
-                    syntax = Some(line);
-                }
+            if result.op != SectionOp::Delete {
+                checked.push((rendered.len(), result.canonical_path.as_str()));
             }
-            rendered.push(section);
+            rendered.push(render_section_result(result, snapshots));
         }
         let charted = results.iter().any(|result| {
             result.op == SectionOp::Update
@@ -981,14 +974,22 @@ impl Tool for HashlineEditTool {
                     .and_then(|extension| extension.to_str())
                     .is_some_and(|extension| matches!(extension, "rs" | "py"))
         });
-        let grid = if charted {
-            let _span = yi_types::trace::span("edit.grid");
-            let layer = grid_check(context);
+        let (verdicts, layer) = post_edit_checks(&checked, charted, context);
+        let mut syntax: Option<String> = None;
+        for ((index, _), line) in checked.iter().zip(verdicts) {
+            let Some(line) = line else { continue };
+            if let Some(section) = rendered.get_mut(*index) {
+                section.push('\n');
+                section.push_str(&line);
+            }
+            if syntax.as_deref().is_none_or(|kept| kept == "syntax: ok") {
+                syntax = Some(line);
+            }
+        }
+        let grid = layer.map_or("skipped", |layer| {
             rendered.push(layer.render());
             layer.name()
-        } else {
-            "skipped"
-        };
+        });
         let mut output = text_output(rendered.join("\n\n"));
         if !diff.is_empty() {
             output.result.details = crate::diff::patch_details(&GitPatch::from_text(diff));
@@ -1062,6 +1063,32 @@ impl GridLayer {
             }
         }
     }
+}
+
+/// Both read the settled tree, so the grid check runs beside the syntax verdicts.
+fn post_edit_checks(
+    paths: &[(usize, &str)],
+    charted: bool,
+    context: &ToolContext,
+) -> (Vec<Option<String>>, Option<GridLayer>) {
+    std::thread::scope(|scope| {
+        let grid = charted.then(|| {
+            scope.spawn(|| {
+                let _span = yi_types::trace::span("edit.grid");
+                grid_check(context)
+            })
+        });
+        let verdicts = paths
+            .iter()
+            .map(|(_, path)| crate::syntax::verdict(Path::new(path)))
+            .collect();
+        let layer = grid.map(|handle| {
+            handle
+                .join()
+                .unwrap_or(GridLayer::Unavailable(Unavailable::NoBinary))
+        });
+        (verdicts, layer)
+    })
 }
 
 /// Exit 3 is grid's finding; anything else means the layer is absent.
