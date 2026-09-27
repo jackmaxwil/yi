@@ -879,6 +879,7 @@ impl Tool for HashlineEditTool {
             Ok(patch) => patch.to_owned(),
             Err(message) => return error_output(message),
         };
+        let parsing = yi_types::trace::span("edit.parse");
         let patch = match Patch::parse(&patch_text, Some(&context.cwd)) {
             Ok(patch) => patch,
             Err(message) => {
@@ -905,8 +906,11 @@ impl Tool for HashlineEditTool {
             ..
         } = &mut *state;
         let mut host_clipboard = std::mem::take(clipboard);
+        drop(parsing);
+        let applying = yi_types::trace::span("edit.apply");
         let mut patcher = Patcher::new(snapshots, context.cwd.clone());
         let results = patcher.apply(&patch, &mut host_clipboard);
+        drop(applying);
         *clipboard = host_clipboard;
         let results = match results {
             Ok(results) => results,
@@ -978,6 +982,7 @@ impl Tool for HashlineEditTool {
                     .is_some_and(|extension| matches!(extension, "rs" | "py"))
         });
         let grid = if charted {
+            let _span = yi_types::trace::span("edit.grid");
             let layer = grid_check(context);
             rendered.push(layer.render());
             layer.name()

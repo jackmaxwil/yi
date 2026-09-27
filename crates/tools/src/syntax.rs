@@ -41,6 +41,7 @@ pub fn verdict(path: &Path) -> Option<String> {
         });
     }
     let (program, flags) = checker(extension)?;
+    let _span = yi_types::trace::span("syntax.check").arg("program", program);
     if !on_path(program) {
         return None;
     }
