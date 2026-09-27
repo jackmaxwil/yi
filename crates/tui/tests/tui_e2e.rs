@@ -469,9 +469,8 @@ fn a_streamed_line_is_written_as_an_append() -> TestResult {
         "the region stays anchored to the bottom row:\n{contents}"
     );
 
-    // Past the live tail's limit each streamed line commits one, so the region
-    // shrinks back and takes the erase path the append never took. Pinned here
-    // so the append's measured win stays attached to the phase it was measured in.
+    // Past the live tail's limit each streamed item commits the one above it whole, cut at
+    // its start: the region keeps its height, so the commit is a scroll and no repaint.
     for n in 9..=20 {
         body.push_str(&format!("- item {n} of the answer\n"));
         app.reduce_agent(streamed(&body));
@@ -490,9 +489,8 @@ fn a_streamed_line_is_written_as_an_append() -> TestResult {
         "the live tail is capped at {capped}; the region must stop following the answer"
     );
     assert!(
-        written.contains("\u{1b}[J"),
-        "a saturated tail still repaints — if this stopped being true the append \
-         now covers the commit path too, and the 0.98.0 row must say so: {written:?}"
+        !written.contains("\u{1b}[J") && written.contains("\u{1b}[1S"),
+        "a saturated tail scrolls its committed item off instead of repainting: {written:?}"
     );
     Ok(())
 }

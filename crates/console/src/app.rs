@@ -57,7 +57,7 @@ pub enum RequestKind {
     Slash(SessionId),
     Rewind(SessionId),
     Plan(SessionId),
-    SetConfig,
+    SetConfig(SessionId),
     Steer,
     Shutdown,
 }
@@ -493,7 +493,7 @@ impl App {
             RequestKind::Tape(session) => self.absorb_tape(&session, &result),
             RequestKind::KernelExecute
             | RequestKind::KernelCancel
-            | RequestKind::SetConfig
+            | RequestKind::SetConfig(_)
             | RequestKind::Steer
             | RequestKind::Shutdown => {}
             RequestKind::Slash(session) => {
