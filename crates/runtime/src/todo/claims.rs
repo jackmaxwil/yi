@@ -16,16 +16,16 @@ pub fn claims(list: &TodoList, entries: &[Entry]) -> Vec<Claim> {
         .collect();
     list.items()
         .filter(|item| item.state == TodoStateName::Done)
-        .filter_map(|item| {
-            let spans = quoted(item.evidence.as_deref()?);
+        .map(|item| {
+            let spans = quoted(item.evidence.as_deref().unwrap_or(""));
             let observed = records
                 .iter()
                 .find(|(_, text)| spans.iter().any(|span| text.contains(span)))
                 .map(|(id, _)| (*id).to_owned());
-            Some(Claim {
+            Claim {
                 label: item.label.as_str().to_owned(),
                 observed,
-            })
+            }
         })
         .collect()
 }
@@ -57,12 +57,19 @@ fn quoted(evidence: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Invariant: the list's own calls carry the evidence under test, so they can never observe it.
 fn records_of(message: &AgentMessage) -> Vec<(&str, &str)> {
+    let own = |name: &str| name == crate::todo::tool::NAME || name == "plan";
     match message {
         AgentMessage::Assistant { content, .. } => content
             .iter()
             .flat_map(|block| match block {
-                Content::ToolCall { id, arguments, .. } => arguments
+                Content::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                    ..
+                } if !own(name) => arguments
                     .values()
                     .filter_map(|value| value.as_str().map(|text| (id.as_str(), text)))
                     .collect(),
@@ -71,9 +78,10 @@ fn records_of(message: &AgentMessage) -> Vec<(&str, &str)> {
             .collect(),
         AgentMessage::ToolResult {
             tool_call_id,
+            tool_name,
             content,
             ..
-        } => content
+        } if !own(tool_name) => content
             .iter()
             .filter_map(|block| match block {
                 Content::Text { text, .. } => Some((tool_call_id.as_str(), text.as_str())),
