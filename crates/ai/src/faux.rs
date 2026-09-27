@@ -160,6 +160,7 @@ pub fn stream_with_deltas(message: &AgentMessage) -> Vec<AssistantMessageEvent> 
                 built.push(faux_tool_call(id, name, Map::new()));
                 events.push(AssistantMessageEvent::ToolCallStart {
                     content_index: index,
+                    name: Some(name.clone()),
                 });
                 let serialized = Value::Object(arguments.clone()).to_string();
                 for chunk in chunks(&serialized) {

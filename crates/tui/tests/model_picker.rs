@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use serde_json::json;
 use yi_tui::colors::{ColorTier, Theme};

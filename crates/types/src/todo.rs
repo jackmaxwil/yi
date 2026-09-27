@@ -109,6 +109,16 @@ impl std::fmt::Display for TodoId {
     }
 }
 
+/// A done todo's evidence held against the session ledger: `observed` is the recorded call
+/// whose arguments or output hold a span the evidence quotes; `None` is a claim nothing checks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Claim {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed: Option<String>,
+}
+
 /// One todo: `note` is the blocker, the drop reason or the fail cause, `evidence`
 /// the check quoted at `done`; a child carries the same fields one level down.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

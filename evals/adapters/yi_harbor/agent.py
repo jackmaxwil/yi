@@ -166,7 +166,7 @@ class Yi(BaseInstalledAgent):
             return None
         lines = []
         for path in sessions:
-            lines.extend(path.read_text(errors="replace").splitlines())
+            lines.extend(path.read_text(errors="replace").split("\n"))
         trajectory = atif.convert(lines, self.version() or "unknown", self.model_name)
         target = self.logs_dir / TRAJECTORY_FILENAME
         target.write_text(json.dumps(trajectory, indent=2) + "\n")

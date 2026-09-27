@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use std::error::Error;
 
@@ -376,7 +376,7 @@ fn a_turn_ends_with_a_dim_footer() -> TestResult {
     let rows = flat(&app.take_commits());
     let footer = rows
         .iter()
-        .find(|r| r.starts_with("  ↳ 1 tool · "))
+        .find(|r| r.starts_with("  ↳ ran 1 · "))
         .ok_or_else(|| format!("no footer: {rows:?}"))?;
     assert!(footer.contains("3K in / 620 out · 64% cached"), "{footer}");
     Ok(())
@@ -420,4 +420,199 @@ fn injected_text_takes_one_callout_shape_and_a_run_is_one_block() -> TestResult 
         vec!["  ▌ ⚑ This task has outgrown one-shot handling; write the plan now."]
     );
     Ok(())
+}
+
+/// Dies with "3 tools" for a turn that read, edited and ran: the receipt now says which work
+/// the turn did and how much of its time the model took.
+#[test]
+fn a_turn_receipt_names_its_kinds_of_work_and_the_model_share() -> TestResult {
+    let mut app = app();
+    app.reduce_agent(AgentEvent::AgentStart);
+    let reply = || AgentMessage::Assistant {
+        content: Vec::new(),
+        api: "faux".to_owned(),
+        provider: "faux".to_owned(),
+        model: "faux-1".to_owned(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: Usage::zero(),
+        stop_reason: StopReason::Stop,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 0,
+    };
+    app.reduce_agent(AgentEvent::MessageStart { message: reply() });
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    app.reduce_agent(AgentEvent::MessageEnd { message: reply() });
+    for (id, name) in [("c1", "read"), ("c2", "todo"), ("c3", "edit")] {
+        app.reduce_agent(AgentEvent::ToolExecutionStart {
+            tool_call_id: id.to_owned(),
+            tool_name: name.to_owned(),
+            args: json!({ "path": "src/lib.rs" }),
+        });
+        app.reduce_agent(AgentEvent::ToolExecutionEnd {
+            tool_call_id: id.to_owned(),
+            tool_name: name.to_owned(),
+            result: ToolResult {
+                content: Vec::new(),
+                details: serde_json::Value::Null,
+                usage: None,
+                added_tool_names: None,
+                terminate: None,
+            },
+            is_error: false,
+        });
+    }
+    ran(&mut app, "c4", "ok");
+    app.reduce_agent(AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    let rows = flat(&app.take_commits());
+    let footer = rows
+        .iter()
+        .find(|r| r.starts_with("  ↳ "))
+        .ok_or_else(|| format!("no footer: {rows:?}"))?;
+    assert!(
+        footer.starts_with("  ↳ read 1 · edited 1 · ran 1 · "),
+        "{footer}"
+    );
+    assert!(footer.contains(" · model "), "{footer}");
+    Ok(())
+}
+
+struct ClaimsPort(Vec<yi_types::todo::Claim>);
+
+impl yi_tui::port::SessionPort for ClaimsPort {
+    fn history(&mut self) -> yi_tui::port::Answer {
+        yi_tui::port::Answer::Later
+    }
+    fn entries(&mut self) -> yi_tui::port::Answer {
+        yi_tui::port::Answer::Later
+    }
+    fn rewind(&mut self, _: &str) -> yi_tui::port::Answer {
+        yi_tui::port::Answer::Later
+    }
+    fn new_session(&mut self, _: &str, _: &str) -> yi_tui::port::Answer {
+        yi_tui::port::Answer::Later
+    }
+    fn undo(&mut self, _: &str) -> yi_tui::port::Answer {
+        yi_tui::port::Answer::Later
+    }
+    fn slash(&mut self, _: &str, _: &str, _: &str) -> yi_tui::port::Answer {
+        yi_tui::port::Answer::Later
+    }
+    fn select(
+        &mut self,
+        _: yi_types::model::Model,
+        _: yi_types::model::Effort,
+    ) -> yi_tui::port::Answer {
+        yi_tui::port::Answer::Later
+    }
+    fn plan(&mut self) -> yi_tui::port::Answer {
+        yi_tui::port::Answer::Later
+    }
+    fn goal(&self) -> Option<yi_tui::hud::GoalView> {
+        None
+    }
+    fn claims(&self, _: bool) -> Option<Vec<yi_types::todo::Claim>> {
+        Some(self.0.clone())
+    }
+}
+
+fn footer_of(app: &mut App) -> Result<String, String> {
+    flat(&app.take_commits())
+        .into_iter()
+        .find(|row| row.starts_with("  ↳ "))
+        .ok_or_else(|| "no footer".to_owned())
+}
+
+/// Dies with a turn's receipt counting todos a past turn closed, and with a turn that only
+/// moved its list reading "1 tool", a count the receipt's own kinds leave out.
+#[test]
+fn a_receipt_counts_only_the_todos_its_turn_closed_and_no_list_calls() -> TestResult {
+    let claim = |label: &str| yi_types::todo::Claim {
+        label: label.to_owned(),
+        observed: None,
+    };
+    let mut app = app();
+    app.reduce_agent(AgentEvent::AgentStart);
+    app.sync_port(Some(&ClaimsPort(vec![claim("write the report")])));
+    ran(&mut app, "c1", "ok");
+    app.reduce_agent(AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    let first = footer_of(&mut app)?;
+    assert!(first.contains(" · done 0 observed, 1 claimed"), "{first}");
+    let listed = |app: &mut App, id: &str| {
+        app.reduce_agent(AgentEvent::ToolExecutionStart {
+            tool_call_id: id.to_owned(),
+            tool_name: "todo".to_owned(),
+            args: json!({"op": "view"}),
+        });
+        app.reduce_agent(AgentEvent::ToolExecutionEnd {
+            tool_call_id: id.to_owned(),
+            tool_name: "todo".to_owned(),
+            result: ToolResult {
+                content: Vec::new(),
+                details: serde_json::Value::Null,
+                usage: None,
+                added_tool_names: None,
+                terminate: None,
+            },
+            is_error: false,
+        });
+    };
+    app.reduce_agent(AgentEvent::AgentStart);
+    listed(&mut app, "c2");
+    ran(&mut app, "c3", "ok");
+    app.reduce_agent(AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    let second = footer_of(&mut app)?;
+    assert!(second.starts_with("  ↳ ran 1 · "), "{second}");
+    assert!(!second.contains("claimed"), "{second}");
+    app.reduce_agent(AgentEvent::AgentStart);
+    listed(&mut app, "c4");
+    app.reduce_agent(AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    let third = footer_of(&mut app);
+    assert!(
+        third.as_ref().is_err(),
+        "a list-only turn used no tool: {third:?}"
+    );
+    Ok(())
+}
+
+/// The loop retries a stream that died before saying anything, so a 402 ends two turns
+/// with the same words; the transcript says them once.
+#[test]
+fn a_retried_stream_error_draws_one_notice() {
+    let failed = || AgentEvent::MessageEnd {
+        message: AgentMessage::Assistant {
+            content: Vec::new(),
+            api: "faux".to_owned(),
+            provider: "faux".to_owned(),
+            model: "faux-1".to_owned(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::zero(),
+            stop_reason: StopReason::Error,
+            deferred: None,
+            error_message: Some("HTTP 402: in-flight budget exhausted".to_owned()),
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 0,
+        },
+    };
+    let mut app = app();
+    app.reduce_agent(failed());
+    app.reduce_agent(failed());
+    let rows = flat(&app.reflowed(80));
+    let said = rows.iter().filter(|r| r.contains("HTTP 402")).count();
+    assert_eq!(said, 1, "{rows:?}");
 }

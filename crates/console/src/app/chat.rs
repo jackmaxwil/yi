@@ -141,9 +141,9 @@ impl App {
             {
                 // Incident: resetting the scroll here pinned every reader to the bottom mid-turn.
                 let _ = chat.events.0.send(make());
+                self.dirty = true;
             }
         }
-        self.dirty = true;
     }
 
     pub(super) fn drop_frame(&mut self) {
@@ -155,7 +155,7 @@ impl App {
         &mut self,
         outbound: &Outbound,
         id: &SessionId,
-        extension: &AcpExtensionUpdate,
+        extension: AcpExtensionUpdate,
     ) {
         let Ok(decoded) = decode(extension) else {
             return self.drop_frame();
@@ -195,7 +195,33 @@ impl App {
                 }
                 self.dirty = true;
             }
-            Decoded::Config(config) => self.apply_config(id, &config, true),
+            Decoded::Name(name) => {
+                if let Some(row) = self.state.sessions.get_mut(id) {
+                    row.name = Some(name.clone());
+                }
+                for chat in self.state.chats_mut(id) {
+                    chat.app.set_session_name(name.clone());
+                }
+                self.dirty = true;
+            }
+            Decoded::Claims(claims) => {
+                for chat in self.state.chats_mut(id) {
+                    chat.port.set_claims(claims.clone());
+                }
+                self.dirty = true;
+            }
+            Decoded::Plan(plan) => {
+                for chat in self.state.chats_mut(id) {
+                    chat.port.set_plan(plan.clone());
+                }
+                self.dirty = true;
+            }
+            Decoded::Config(config) => {
+                // A pick's two requests each echo a frame before their answers; only the last announces.
+                let own = RequestKind::SetConfig(id.clone());
+                let in_flight = self.pending.values().filter(|p| p.kind == own).count();
+                self.apply_config(id, &config, in_flight <= 1);
+            }
             Decoded::Child(child) => {
                 keep_child_row(self.state.children.entry(id.clone()).or_default(), &child);
                 self.fan_out(id, || UiEvent::ChildUpdates(vec![child.clone()]));
@@ -496,11 +522,13 @@ impl App {
                 "sessionId": session.0,
                 "cwd": root,
                 "replayFrom": offset.unwrap_or(0),
+                "replayUpdates": false,
             }),
         );
     }
 
     pub(super) fn pump_chats(&mut self, outbound: &Outbound) {
+        self.ask_branches(outbound);
         let ids: Vec<PaneId> = self.state.panes.keys().copied().collect();
         for pane_id in ids {
             let Some(session) = self
@@ -661,13 +689,13 @@ impl App {
                 drop(model);
                 self.send_request(
                     outbound,
-                    RequestKind::SetConfig,
+                    RequestKind::SetConfig(session.clone()),
                     "session/set_config_option",
                     json!({"sessionId": id, "configId": "model", "value": value}),
                 );
                 self.send_request(
                     outbound,
-                    RequestKind::SetConfig,
+                    RequestKind::SetConfig(session.clone()),
                     "session/set_config_option",
                     json!({"sessionId": id, "configId": "thought_level", "value": effort.to_string()}),
                 );

@@ -1,5 +1,4 @@
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -225,6 +224,7 @@ async fn a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land() -
         family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
+        on_boot: None,
         sandbox: None,
         snapshot_key: None,
         per_session_state: false,

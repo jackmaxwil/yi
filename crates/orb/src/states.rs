@@ -36,6 +36,9 @@ pub enum OrbState {
     Planning { done: u8, total: u8 },
     Delegating { children: u8 },
     Listening,
+    Stalled,
+    Condensing,
+    KernelBoot,
 }
 
 impl OrbState {
@@ -54,6 +57,9 @@ impl OrbState {
             Self::Planning { .. } => "Planning…",
             Self::Delegating { .. } => "Delegating…",
             Self::Listening => "Listening…",
+            Self::Stalled => "Retrying…",
+            Self::Condensing => "Condensing…",
+            Self::KernelBoot => "Starting the kernel…",
         }
     }
 }
@@ -75,7 +81,10 @@ pub fn spec(state: Option<OrbState>) -> (f64, &'static [f64]) {
             | OrbState::Executing
             | OrbState::Computing
             | OrbState::Planning { .. }
-            | OrbState::Delegating { .. },
+            | OrbState::Delegating { .. }
+            | OrbState::Stalled
+            | OrbState::Condensing
+            | OrbState::KernelBoot,
         ) => (8.0, QUARTERS),
     }
 }
@@ -113,6 +122,9 @@ pub fn pose(state: Option<OrbState>, t: f64) -> Vec<Point> {
         Some(OrbState::Planning { done, total }) => planning(th, done, total),
         Some(OrbState::Delegating { children }) => delegating(th, children),
         Some(OrbState::Listening) => listening(th),
+        Some(OrbState::Stalled) => stalled(th),
+        Some(OrbState::Condensing) => condensing(th),
+        Some(OrbState::KernelBoot) => kernel_boot(th),
     };
     pad(points)
 }
@@ -655,6 +667,94 @@ fn listening(th: f64) -> Vec<Point> {
                 scale(fib(i, POINTS), radius),
                 0.45 - 0.3 * breath,
                 0.7 + 0.3 * breath,
+            )
+        })
+        .collect()
+}
+
+fn stalled(th: f64) -> Vec<Point> {
+    const SAND: usize = 233;
+    const GLASS: usize = 89;
+    let flip = |at: V| [-at[0], -at[1], at[2]];
+    let golden = PI * (3.0 - 5f64.sqrt());
+    let cone = |y: f64| 0.05 + 0.62 * y / 0.92;
+    let mut out = Vec::with_capacity(POINTS);
+    for j in 0..GLASS {
+        let y = 0.04 + 0.88 * (j as f64 + 0.5) / GLASS as f64;
+        let a = j as f64 * golden;
+        let rim = [cone(y) * a.cos(), y, cone(y) * a.sin()];
+        out.push(body(rim, 0.7, 0.5));
+        out.push(body(flip(rim), 0.7, 0.5));
+    }
+    let drain = 1.0 / PHI;
+    for k in 0..SAND {
+        let rank = (k as f64 + 0.5) / SAND as f64;
+        let y = 0.05 + 0.5 * rank.cbrt();
+        let r = cone(y) * 0.9 * ((k * 89 % SAND) as f64 / SAND as f64).sqrt();
+        let a = k as f64 * golden;
+        let slot = [r * a.cos(), y, r * a.sin()];
+        let start = (1.0 - rank) * drain * 0.8;
+        let f = ((th - start) / (drain * 0.2)).clamp(0.0, 1.0);
+        let at = if f < 0.4 {
+            scale(slot, 1.0 - smooth(f / 0.4))
+        } else {
+            scale(flip(slot), smooth((f - 0.4) / 0.6))
+        };
+        out.push(body(at, -0.6, 1.0));
+    }
+    let turn = smooth((th - 0.7) / 0.25) * PI;
+    let (sin, cos) = turn.sin_cos();
+    out.into_iter()
+        .map(|point| {
+            let [x, y, z] = point.at;
+            Point {
+                at: [x * cos - y * sin, x * sin + y * cos, z],
+                ..point
+            }
+        })
+        .collect()
+}
+
+fn condensing(th: f64) -> Vec<Point> {
+    let pull = if th < 0.5 {
+        smooth(th / 0.5)
+    } else {
+        1.0 - smooth((th - 1.0 / PHI) / (1.0 - 1.0 / PHI))
+    };
+    let mut out = ghosts();
+    let n = POINTS - GHOSTS;
+    for i in 0..n {
+        let d = fib(i, n);
+        let radius = 0.95 * (1.0 - pull * (1.0 - 1.0 / (PHI * PHI)));
+        let twist = pull * (PI / PHI) * (1.0 - d[1].abs());
+        let kept = i % 2 == 0;
+        out.push(body(
+            scale(rot_y(d, twist), radius),
+            0.4 - pull,
+            if kept {
+                0.75 + 0.25 * pull
+            } else {
+                0.75 - 0.45 * pull
+            },
+        ));
+    }
+    out
+}
+
+fn kernel_boot(th: f64) -> Vec<Point> {
+    let half = 0.8 / 3f64.sqrt();
+    let g = |c: usize| (c as f64 / 5.0 * 2.0 - 1.0) * half;
+    let level = 6.0 * smooth(th * PHI);
+    let rest = 1.0 - smooth((th - 0.8) / 0.2);
+    (0..216)
+        .map(|i| {
+            let v = [g(i / 36), g(i / 6 % 6), g(i % 6)];
+            let layer = (i / 6 % 6) as f64;
+            let lit = smooth(level - layer) * rest;
+            body(
+                rot_x(rot_y(v, 0.6), 0.45),
+                0.3 - 0.5 * lit,
+                0.45 + 0.55 * lit,
             )
         })
         .collect()

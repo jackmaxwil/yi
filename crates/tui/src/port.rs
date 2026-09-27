@@ -1,6 +1,7 @@
 //! The session port: every touch the chat makes on its session, answered now by the
 //! in-process session or later by whatever hosts the chat over a wire.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use yi_runtime::session_store::{
@@ -17,10 +18,10 @@ use crate::cell::Cell;
 use crate::cell::{ToolCell, ToolStatus};
 use crate::hud::GoalView;
 use crate::plantree::PlanTreeView;
-use crate::transcript::{text_of, user_text};
+use crate::transcript::{arg_summary, text_of, user_text};
 use crate::tree::{TreeFilter, TreeView};
 use serde_json::Value;
-use yi_types::message::AgentMessage;
+use yi_types::message::{AgentMessage, Content};
 
 pub enum Answer {
     Now(Box<Reply>),
@@ -81,6 +82,9 @@ pub trait SessionPort {
         None
     }
     fn memory(&self) -> Option<Arc<yi_runtime::memory::Activity>> {
+        None
+    }
+    fn claims(&self, _list_changed: bool) -> Option<Vec<yi_types::todo::Claim>> {
         None
     }
 }
@@ -293,6 +297,10 @@ impl SessionPort for Arc<AgentSession> {
         AgentSession::todos(self.as_ref()).map(|store| store.list())
     }
 
+    fn claims(&self, list_changed: bool) -> Option<Vec<yi_types::todo::Claim>> {
+        list_changed.then(|| yi_runtime::todo::claims::session_claims(self))
+    }
+
     fn memory(&self) -> Option<Arc<yi_runtime::memory::Activity>> {
         AgentSession::memory(self.as_ref())
     }
@@ -319,79 +327,95 @@ pub(crate) fn user_cell(text: String, typed: bool) -> Cell {
 }
 
 impl App {
-    /// The model's context and the screen must agree about what was said.
+    /// Invariant: a replayed turn reads as it did live; both settle calls through `settle_tool`.
     pub fn replay_entries(&mut self, entries: &[Entry]) {
         let _span = yi_types::trace::span("tui.replay_entries").arg("entries", entries.len());
-        let cells: Vec<Cell> = entries
-            .iter()
-            .filter_map(|entry| match entry {
-                Entry::Message {
-                    message, timestamp, ..
-                } => match message {
-                    AgentMessage::User {
-                        content,
-                        attribution,
-                        ..
-                    } => Some(user_cell(
-                        user_text(content),
-                        attribution.reads_as_typed(*timestamp),
-                    )),
-                    AgentMessage::Custom {
-                        custom_type,
-                        content,
-                        display: true,
-                        details,
-                        ..
-                    } => Some(Cell::Advisory {
-                        source: crate::app::mail_source(custom_type, details.as_ref()),
-                        text: user_text(content),
-                    }),
-                    AgentMessage::Assistant { content, .. } => {
-                        let text = text_of(content);
-                        if text.is_empty() {
-                            None
-                        } else {
-                            Some(Cell::Assistant { markdown: text })
+        let mut calls: HashMap<&str, Value> = HashMap::new();
+        for entry in entries {
+            let Entry::Message {
+                message, timestamp, ..
+            } = entry
+            else {
+                continue;
+            };
+            match message {
+                AgentMessage::User {
+                    content,
+                    attribution,
+                    ..
+                } => {
+                    let typed = attribution.reads_as_typed(*timestamp);
+                    if typed {
+                        self.open_user_turn();
+                    }
+                    self.commit_cell(&user_cell(user_text(content), typed));
+                }
+                AgentMessage::Custom {
+                    custom_type,
+                    content,
+                    display: true,
+                    details,
+                    ..
+                } => self.commit_cell(&Cell::Advisory {
+                    source: crate::app::mail_source(custom_type, details.as_ref()),
+                    text: user_text(content),
+                }),
+                AgentMessage::Assistant { content, .. } => {
+                    for block in content {
+                        match block {
+                            Content::Thinking {
+                                thinking, redacted, ..
+                            } if *redacted != Some(true) && !thinking.trim().is_empty() => self
+                                .commit_cell(&Cell::Thought {
+                                    markdown: thinking.clone(),
+                                }),
+                            Content::ToolCall { id, arguments, .. } => {
+                                calls.insert(id, Value::Object(arguments.clone()));
+                            }
+                            _ => {}
                         }
                     }
-                    AgentMessage::ToolResult {
-                        tool_name,
-                        content,
-                        is_error,
-                        details,
-                        ..
-                    } => Some(Cell::Tool(ToolCell {
+                    let text = crate::transcript::prose_of(content);
+                    if !text.is_empty() {
+                        self.commit_cell(&Cell::Assistant { markdown: text });
+                    }
+                }
+                AgentMessage::ToolResult {
+                    tool_call_id,
+                    tool_name,
+                    content,
+                    is_error,
+                    details,
+                    ..
+                } => {
+                    let args = calls.get(tool_call_id.as_str()).unwrap_or(&Value::Null);
+                    let cell = ToolCell {
                         name: tool_name.clone(),
-                        // A replayed entry has no live call to pair with, and the
-                        // session never recorded how long the call took.
-                        call_id: String::new(),
+                        call_id: tool_call_id.clone(),
                         intent: None,
-                        status: if *is_error {
-                            ToolStatus::Failed
-                        } else {
-                            ToolStatus::Done
-                        },
-                        summary: ToolCell::summary_of(tool_name, ""),
-                        digest: ToolCell::digest_of(tool_name, &text_of(content), *is_error),
+                        status: ToolStatus::Running,
+                        summary: ToolCell::summary_of(tool_name, &arg_summary(tool_name, args)),
+                        digest: None,
                         preview: Vec::new(),
                         elapsed_ms: 0,
                         calls: 1,
-                        details: details.clone().unwrap_or(Value::Null),
-                    })),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect();
-        for cell in cells {
-            self.commit_cell(&cell);
+                        details: Value::Null,
+                    };
+                    let details = details.clone().unwrap_or(Value::Null);
+                    self.settle_tool(cell, &text_of(content), *is_error, details);
+                }
+                _ => {}
+            }
         }
     }
 
     /// The one writer for whatever a port answers, now or later.
     pub fn apply(&mut self, reply: Reply) {
         match reply {
-            Reply::History(entries) => self.replay_entries(&entries),
+            Reply::History(entries) => {
+                self.seed_context(&entries);
+                self.replay_entries(&entries);
+            }
             Reply::Entries { entries, leaf } => {
                 if entries.is_empty() {
                     self.notice("no session store attached — tree unavailable");
@@ -411,6 +435,8 @@ impl App {
                 self.pending_summary = abandoned;
                 self.pending_clear = true;
                 self.reset_transcript();
+                self.context_used = 0;
+                self.seed_context(&entries);
                 self.replay_entries(&entries);
                 if let Some(text) = unsent
                     && self.composer.is_empty()
@@ -422,6 +448,7 @@ impl App {
                 self.options.session_name = name;
                 self.cost_total = 0.0;
                 self.cost_unknown = false;
+                self.context_used = 0;
                 self.pending_clear = true;
                 self.reset_transcript();
             }

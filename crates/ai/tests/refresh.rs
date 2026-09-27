@@ -6,8 +6,7 @@ use serde_json::Value;
 use yi_ai::catalog::Catalog;
 use yi_ai::refresh::{catalog_from, is_stale, reachable_ids};
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;

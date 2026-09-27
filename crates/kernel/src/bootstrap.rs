@@ -122,7 +122,7 @@ fn has_python_sources(root: &Path) -> bool {
     root.join("yi_runtime").is_dir()
 }
 
-fn fnv1a(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
         hash ^= u64::from(*byte);
@@ -205,6 +205,7 @@ pub fn unpack_embedded_python(home: &Path) -> Result<PathBuf, String> {
     let parent = home.join(".yi");
     std::fs::create_dir_all(&parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     let target = parent.join("python");
+    let _span = yi_types::trace::span("kernel.unpack_python");
     // Incident: parallel first boots each replaced the tree while another hashed or installed it.
     let _lock = acquire_bootstrap_lock(&target)?;
     if home_tree_current(&target) {
@@ -369,7 +370,7 @@ pub(crate) fn command(program: &Path) -> std::process::Command {
     std::process::Command::new(program)
 }
 
-fn output(program: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn output(program: &Path, args: &[&str]) -> Result<String, String> {
     let mut cmd = command(program);
     cmd.args(args).stdin(std::process::Stdio::null());
     let out = cmd
@@ -431,12 +432,11 @@ pub fn has_runtime(python: &Path) -> bool {
 }
 
 fn missing_extra_imports(python: &Path) -> Vec<String> {
-    DEFAULT_RLM_EXTRA_IMPORT_NAMES
-        .iter()
+    let required: Vec<&str> = DEFAULT_RLM_EXTRA_IMPORT_NAMES
+        .into_iter()
         .filter(|name| !OPTIONAL_IMPORT_NAMES.contains(name))
-        .filter(|name| !python_imports(python, name))
-        .map(|name| (*name).to_owned())
-        .collect()
+        .collect();
+    crate::probe::failed_imports(python, &required)
 }
 
 pub(crate) fn is_executable(path: &Path) -> bool {
@@ -504,6 +504,7 @@ pub fn find_toolchain(options: &BootstrapOptions) -> Result<Toolchain, String> {
 }
 
 fn create_venv(toolchain: &Toolchain, venv_text: &str) -> Result<(), String> {
+    let _span = yi_types::trace::span("kernel.venv_create");
     match toolchain {
         Toolchain::Uv(uv) => {
             // The interpreter that exists; a managed CPython only when none does.
@@ -534,6 +535,7 @@ fn create_venv(toolchain: &Toolchain, venv_text: &str) -> Result<(), String> {
 }
 
 fn pip_install(toolchain: &Toolchain, python: &Path, packages: &[&str]) -> Result<(), String> {
+    let _span = yi_types::trace::span("kernel.pip_install").arg("packages", packages.len());
     let python_text = python.to_string_lossy().into_owned();
     let mut args: Vec<&str> = match toolchain {
         Toolchain::Uv(_) => vec![
@@ -552,12 +554,14 @@ fn pip_install(toolchain: &Toolchain, python: &Path, packages: &[&str]) -> Resul
     }
 }
 
-fn missing_extra_packages(python: &Path) -> Vec<&'static str> {
+pub(crate) fn missing_extra_packages(python: &Path) -> Vec<&'static str> {
+    let _span = yi_types::trace::span("kernel.extras_probe");
+    let failed = crate::probe::failed_imports(python, &DEFAULT_RLM_EXTRA_IMPORT_NAMES);
     DEFAULT_RLM_EXTRA_UV_ARGS
-        .iter()
-        .zip(DEFAULT_RLM_EXTRA_IMPORT_NAMES.iter())
-        .filter(|(_, import_name)| !python_imports(python, import_name))
-        .map(|(package, _)| *package)
+        .into_iter()
+        .zip(DEFAULT_RLM_EXTRA_IMPORT_NAMES)
+        .filter(|(_, import_name)| failed.iter().any(|name| name == import_name))
+        .map(|(package, _)| package)
         .collect()
 }
 
@@ -571,6 +575,7 @@ pub fn resolve_python_identity(
     source_dir: &Path,
     skills_dir: Option<&Path>,
 ) -> Result<String, String> {
+    let _span = yi_types::trace::span("kernel.identity");
     let mut files = vec![source_dir.join("pyproject.toml")];
     collect_py_files(&source_dir.join("src"), &mut files)?;
     if let Some(skills_dir) = skills_dir {
@@ -667,7 +672,7 @@ pub fn document_converter(home: &Path) -> (PathBuf, Vec<String>) {
     (kernel_python(&venv), formats)
 }
 
-fn write_bootstrap_version(
+pub(crate) fn write_bootstrap_version(
     venv: &Path,
     runtime_identity: &str,
     document_formats: Vec<String>,
@@ -700,17 +705,27 @@ fn write_bootstrap_version(
         .map_err(|error| error.to_string())
 }
 
-fn kernel_ready(python: &Path, venv: &Path, runtime_identity: &str) -> bool {
+/// The version file, then the import probe, which a stamp of the files it last proved
+/// stands in for: a warm boot spent ~150 ms re-importing ipykernel to learn nothing.
+pub(crate) fn kernel_ready(python: &Path, venv: &Path, runtime_identity: &str) -> bool {
+    let mut span = yi_types::trace::span("kernel.ready_check");
     let version = read_bootstrap_version(venv);
     if !bootstrap_version_current(version.as_ref(), runtime_identity) {
         return false;
     }
-    let live = run(
-        python,
-        &["-c", &format!("import ipykernel; {RUNTIME_READY_CHECK}")],
-        false,
-    )
-    .is_ok();
+    let stamped = crate::probe::stamped(python, venv);
+    let live = stamped
+        || run(
+            python,
+            &["-c", &format!("import ipykernel; {RUNTIME_READY_CHECK}")],
+            false,
+        )
+        .is_ok();
+    span.set("live", live);
+    span.set("stamped", stamped);
+    if live && !stamped {
+        crate::probe::stamp(python, venv);
+    }
     let probe = serde_json::Value::from(document_probe_hash());
     if live && version.is_some_and(|version| version.extra.get(DOCUMENT_PROBE_KEY) != Some(&probe))
     {
@@ -780,7 +795,9 @@ fn bootstrap_venv(
             extras.join(", ")
         ));
     }
+    let probing = yi_types::trace::span("kernel.formats_probe");
     let document_formats = document_formats_of(&python);
+    drop(probing);
     if document_formats.is_empty() && python_imports(&python, "anydoc") {
         options.progress(
             "Warning: anydoc reports no formats; read will not list documents until it does",
@@ -810,6 +827,7 @@ pub fn ready_kernel_python(options: &BootstrapOptions) -> Option<PathBuf> {
 }
 
 pub fn ensure_kernel_python(options: &BootstrapOptions) -> Result<PathBuf, String> {
+    let _span = yi_types::trace::span("kernel.ensure_python");
     if let Some(python) = env_path("YI_KERNEL_PYTHON") {
         let mut missing = Vec::new();
         if !python_imports(&python, "ipykernel") {
@@ -864,7 +882,9 @@ pub fn ensure_kernel_python(options: &BootstrapOptions) -> Result<PathBuf, Strin
             options.progress("rebuilding kernel venv");
             std::fs::remove_dir_all(&venv).map_err(|error| error.to_string())?;
         }
+        let building = yi_types::trace::span("kernel.venv_build");
         bootstrap_venv(&venv, options, &runtime_identity)?;
+        drop(building);
         options.progress("✓ ready");
         Ok(python.clone())
     })();
@@ -1108,6 +1128,7 @@ mod tests {
         assert_eq!(root, home.join(".yi").join("python"));
         assert!(root.join("yi_runtime").join("src").join("rlm").is_dir());
         assert!(root.join("skills").is_dir());
+        assert!(!root.join("yi_runtime").join("tests").exists());
         assert_ne!(
             root, fallback,
             "the compile-time path never serves an installed binary"

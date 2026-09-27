@@ -1,5 +1,4 @@
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -130,6 +129,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
+        on_boot: None,
         sandbox: None,
         snapshot_key: None,
         per_session_state: false,
@@ -493,6 +493,7 @@ async fn save_read_forget_through_the_kernel() -> TestResult {
         family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
+        on_boot: None,
         sandbox: None,
         snapshot_key: None,
         per_session_state: false,

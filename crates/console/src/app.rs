@@ -50,12 +50,14 @@ pub enum RequestKind {
     Cancel,
     Seen,
     Tracked(SessionId, Vec<String>),
+    BranchDiff(SessionId),
+    Tape(SessionId),
     KernelExecute,
     KernelCancel,
     Slash(SessionId),
     Rewind(SessionId),
     Plan(SessionId),
-    SetConfig,
+    SetConfig(SessionId),
     Steer,
     Shutdown,
 }
@@ -380,13 +382,17 @@ impl App {
             None => self.reduce_response(outbound, &value),
             Some("session/update") => {
                 if let Some(params) = value.get_mut("params").map(Value::take)
-                    && let Ok(update) = serde_json::from_value::<AcpUpdateParams>(params)
+                    && let Some(update) = port::update_params(params)
                 {
+                    // An agent event shows only through a pane's chat, which asks for its frame.
+                    let event = matches!(&update.update,
+                        AcpSessionUpdate::Extension(e) if e.session_update == "_yi/event");
                     self.reduce_update(outbound, update);
+                    self.dirty |= !event;
                 } else {
                     self.state.dropped_frames = self.state.dropped_frames.saturating_add(1);
+                    self.dirty = true;
                 }
-                self.dirty = true;
             }
             Some("session/request_permission") => {
                 let id = value.get("id").and_then(Value::as_str).map(str::to_owned);
@@ -483,9 +489,11 @@ impl App {
                 self.sync_chat_names();
             }
             RequestKind::Tracked(session, paths) => self.absorb_tracked(&session, &paths, &result),
+            RequestKind::BranchDiff(session) => self.absorb_branch(&session, &result),
+            RequestKind::Tape(session) => self.absorb_tape(&session, &result),
             RequestKind::KernelExecute
             | RequestKind::KernelCancel
-            | RequestKind::SetConfig
+            | RequestKind::SetConfig(_)
             | RequestKind::Steer
             | RequestKind::Shutdown => {}
             RequestKind::Slash(session) => {
@@ -645,15 +653,19 @@ impl App {
     }
 
     fn reduce_update(&mut self, outbound: &Outbound, update: AcpUpdateParams) {
-        let id = SessionId(update.session_id.clone());
+        let id = SessionId(update.session_id);
         if port::writes_transcript(&update.update) {
             self.resume_offsets.remove(&id);
             self.state.parked.remove(&id);
         }
-        if let AcpSessionUpdate::Extension(extension) = &update.update {
-            self.reduce_extension(outbound, &id, extension);
-        }
-        if let AcpSessionUpdate::StateUpdate(state) = &update.update {
+        self.absorb_review(&id, &update.update);
+        let update = match update.update {
+            AcpSessionUpdate::Extension(extension) => {
+                return self.reduce_extension(outbound, &id, extension);
+            }
+            other => other,
+        };
+        if let AcpSessionUpdate::StateUpdate(state) = &update {
             let focused = self.state.focused_session().as_ref() == Some(&id);
             let mut status = SessionStatus::from_state(state, false);
             let was_working = self
@@ -679,19 +691,19 @@ impl App {
                 _ => self.notes.disarm(&id),
             }
         }
-        if let AcpSessionUpdate::UsageUpdate { size, .. } = &update.update {
+        if let AcpSessionUpdate::UsageUpdate { size, .. } = &update {
             for chat in self.state.chats_mut(&id) {
                 chat.app.set_context_window(*size);
             }
         }
-        self.absorb_edit(outbound, &id, &update.update);
-        self.absorb_kernel(&id, &update.update);
+        self.absorb_edit(outbound, &id, &update);
+        self.absorb_kernel(&id, &update);
         for (pane_id, pane) in &mut self.state.panes {
             if pane.session() != Some(&id) {
                 continue;
             }
             if let PaneContent::Notebook { cells, .. } = &mut pane.content
-                && apply_notebook(cells, &update.update)
+                && apply_notebook(cells, &update)
             {
                 pane.scroll_from_bottom = 0;
                 if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
@@ -911,6 +923,7 @@ impl App {
             Action::ToggleSidebar => self.state.sidebar = self.state.sidebar.next(),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
+            Action::ToggleTape => self.toggle_side(outbound, diffs::SideKind::Tape),
             Action::OpenEditor => self.open_navigator("e "),
             Action::Find => self.open_navigator("/"),
             Action::Save | Action::Undo | Action::Redo => {
@@ -1143,6 +1156,8 @@ impl App {
                     self.dirty = true;
                 }
             },
+            Zone::Panes if self.on_review().is_some() => self.review_key(key),
+            Zone::Panes if self.on_tape() => self.tape_key(key),
             Zone::Panes => self.chat_event(CtEvent::Key(key)),
         }
     }
@@ -1155,6 +1170,7 @@ mod mouse;
 mod navigator;
 mod notebook;
 pub mod port;
+mod review;
 
 pub use mouse::MouseKind;
 pub use navigator::PaletteEntry;

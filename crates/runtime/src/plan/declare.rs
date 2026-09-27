@@ -217,7 +217,7 @@ impl PlanEngine {
     /// With no plan open, the closed plan holding the label: the engine closes one at its last accept.
     fn owner_root(&self, label: &TodoLabel) -> Option<(PlanId, super::state::RootState)> {
         let mut closed = None;
-        for root in self.store.roots().ok()? {
+        for root in self.roots().ok()? {
             let Some(family) = self.family(&root) else {
                 continue;
             };
@@ -265,7 +265,7 @@ impl PlanEngine {
                 .and_then(|meta| meta.modified())
                 .ok()
         };
-        let roots = self.store.roots().ok()?;
+        let roots = self.roots().ok()?;
         roots
             .into_iter()
             .filter(|id| self.store.read(id).is_ok())
