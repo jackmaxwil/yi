@@ -278,7 +278,17 @@ fn a_plan_op_racing_an_owner_row_write_never_undoes_it() -> TestResult {
                 .is_ok();
             lost += usize::from(!blocked || state_of(&todos) != Some(TodoStateName::Blocked));
             let label = first.clone();
-            lost += usize::from(todos.apply(TodoOp::Unblock { label }, None).is_err());
+            lost += usize::from(
+                todos
+                    .apply(
+                        TodoOp::Unblock {
+                            label,
+                            answer: None,
+                        },
+                        None,
+                    )
+                    .is_err(),
+            );
         }
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         lost
@@ -640,7 +650,13 @@ fn an_owner_row_is_not_promoted_to_running_while_the_plan_is_open() -> TestResul
         None,
     )?;
     let label = TodoLabel::new("first")?;
-    todos.apply(TodoOp::Unblock { label }, None)?;
+    todos.apply(
+        TodoOp::Unblock {
+            label,
+            answer: None,
+        },
+        None,
+    )?;
     let rows = ids(&todos);
     assert_eq!(rows[0].2, TodoStateName::Pending, "{rows:?}");
     assert_eq!(

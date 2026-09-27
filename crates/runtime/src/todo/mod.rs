@@ -58,6 +58,7 @@ pub enum Op {
     },
     Unblock {
         label: TodoLabel,
+        answer: Option<Box<yi_types::plan::ask::Answer>>,
     },
     Rm {
         target: Target,
@@ -87,7 +88,7 @@ impl Op {
 
     fn label(&self) -> Option<&TodoLabel> {
         match self {
-            Self::Start { label } | Self::Block { label, .. } | Self::Unblock { label } => {
+            Self::Start { label } | Self::Block { label, .. } | Self::Unblock { label, .. } => {
                 Some(label)
             }
             Self::Done {
@@ -153,6 +154,8 @@ pub enum TodoError {
     Mirrored { plan: String },
     #[error(transparent)]
     Doc(#[from] DocError),
+    #[error(transparent)]
+    Unanswered(#[from] yi_types::plan::doc::PlanIssue),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -214,6 +217,7 @@ impl TodoStore {
 
     /// A done that names no item means the one running item; several running is ambiguous.
     pub fn aim(&self, op: Op) -> Result<Op, TodoError> {
+        let op = self.ask(op)?;
         let Op::Done {
             target: Target::All,
             evidence,
@@ -241,6 +245,30 @@ impl TodoStore {
             }
         };
         Ok(Op::Done { target, evidence })
+    }
+
+    fn ask(&self, mut op: Op) -> Result<Op, TodoError> {
+        let said = || {
+            let store = (self.store)();
+            store
+                .map(|store| crate::plan::ask::said(&store))
+                .unwrap_or_default()
+        };
+        match &mut op {
+            Op::Block { ask: Some(ask), .. } => crate::plan::ask::stamp(ask, &said()),
+            Op::Unblock { label, answer } => {
+                let list = self.list();
+                let at = locate(&list, label.as_str()).ok();
+                let item = at.and_then(|at| list.items().nth(at));
+                if let Some(item) = item.filter(|item| item.state == TodoStateName::Blocked)
+                    && let Some(ask) = item.ask.as_ref().filter(|ask| ask.answer.is_none())
+                {
+                    *answer = crate::plan::ask::reply_to(ask, &item.label, &said())?.map(Box::new);
+                }
+            }
+            _ => {}
+        }
+        Ok(op)
     }
 
     pub fn carry(&self, op: &Op) -> Option<Result<String, String>> {
@@ -860,7 +888,7 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             note,
             ask,
         } => block(list, &label, on, note, ask),
-        Op::Unblock { label } => {
+        Op::Unblock { label, answer } => {
             let item = resolve(list, &label)?;
             if item.state != TodoStateName::Blocked {
                 return Err(illegal("unblock", item));
@@ -868,6 +896,12 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             item.state = TodoStateName::Pending;
             item.on = None;
             item.note = None;
+            if let (Some(answer), Some(ask)) = (answer, item.ask.as_mut()) {
+                if !item.intent.contains(&answer.address) {
+                    item.intent.push(answer.address.clone());
+                }
+                ask.answer = Some(*answer);
+            }
             Ok(())
         }
         Op::Rm { target } => match target {

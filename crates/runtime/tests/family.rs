@@ -321,3 +321,27 @@ fn a_child_that_blocks_a_todo_on_you_needs_you_and_names_its_options() -> TestRe
     );
     Ok(())
 }
+
+/// Dies with a stale question: the newest todo record answered it, yet an older one still in the
+/// recent window makes the child read `needs_you`.
+#[test]
+fn only_the_newest_todo_record_says_a_child_needs_you() -> TestResult {
+    let session = store("answered");
+    let mut record: serde_json::Value = serde_json::from_str(include_str!(
+        "../../types/tests/fixtures/todo-record-ask-v1.json"
+    ))?;
+    yi_session::lock_session(&session).append_custom("main", "todo", Some(record.clone()))?;
+    yi_session::lock_session(&session).append_message("main", custom("mail", json!({})))?;
+    let item = record
+        .pointer_mut("/list/phases/0/items/0")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or("fixture item")?;
+    item.insert("state".to_owned(), json!("pending"));
+    item.remove("on");
+    item.remove("note");
+    yi_session::lock_session(&session).append_custom("main", "todo", Some(record))?;
+    let recent = recent_entries(&session);
+    let (state, note, _) = state_from_records(LIVE, None, &recent, yi_session::now_ms());
+    assert_eq!((state, note), (MemberState::Running, None));
+    Ok(())
+}

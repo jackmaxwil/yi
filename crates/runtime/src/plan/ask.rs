@@ -1,8 +1,12 @@
 //! A todo blocked on the user with 3 to 5 options; only the user's reply picks one.
 
+use std::collections::HashSet;
+
 use serde_json::{Map, Value};
 use yi_types::plan::ask::{Answer, Ask, AskError, AskOption};
-use yi_types::plan::doc::{BlockedOn, Plan, PlanId, PlanIssue, Todo, TodoState};
+use yi_types::plan::doc::{
+    BlockedOn, Plan, PlanId, PlanIssue, Todo, TodoLabel, TodoState, TodoStateName,
+};
 use yi_types::plan::op::Op;
 
 use super::ops::{PlanEngine, PlanOpError};
@@ -36,27 +40,99 @@ pub(super) fn block(args: &Map<String, Value>, kind: OpKind) -> Result<Op, ArgEr
     })
 }
 
-/// The option a reply names by its number, its id or its whole label; the first word decides,
-/// so "B, but less copy" picks B.
+/// The option a reply picks: its first word, ended by punctuation or the reply's end, is an
+/// option's number, id or label, and no later word names another; "B, but less copy" picks B.
 fn named<'a>(ask: &'a Ask, reply: &str) -> Option<&'a AskOption> {
     let reply = reply.trim();
-    let head = reply
-        .split(|c: char| c.is_whitespace() || matches!(c, ',' | '.' | ')' | ':' | ';'))
-        .next()?
-        .trim_start_matches('#');
-    let by_number = head
-        .parse::<usize>()
-        .ok()
-        .and_then(|n| n.checked_sub(1))
-        .and_then(|at| ask.options.get(at));
-    let by_name = ask.options.iter().find(|option| {
-        option.id.as_str().eq_ignore_ascii_case(head)
-            || option.label.as_str().eq_ignore_ascii_case(reply)
-    });
-    by_name.or(by_number)
+    let whole = ask
+        .options
+        .iter()
+        .find(|option| option.label.as_str().eq_ignore_ascii_case(reply));
+    if whole.is_some() {
+        return whole;
+    }
+    let names = |word: &str| {
+        let word = word.trim_start_matches('#');
+        let by_number = word
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| ask.options.get(n.checked_sub(1)?));
+        by_number.or_else(|| {
+            ask.options.iter().find(|option| {
+                option.id.as_str().eq_ignore_ascii_case(word)
+                    || option.label.as_str().eq_ignore_ascii_case(word)
+            })
+        })
+    };
+    let mut words = reply
+        .split(|c: char| c.is_whitespace() || ",.):;!?('’".contains(c))
+        .filter(|word| !word.is_empty());
+    let head = words.next()?;
+    let rest = reply.strip_prefix(head)?;
+    if !(rest.is_empty() || rest.starts_with([',', '.', ')', ':', ';', '!'])) {
+        return None;
+    }
+    let pick = names(head)?;
+    words
+        .filter_map(names)
+        .all(|other| other.id == pick.id)
+        .then_some(pick)
 }
 
-fn asking<'a>(plan: &'a Plan, label: &yi_types::plan::doc::TodoLabel) -> Option<&'a Ask> {
+/// The user's typed messages oldest first, `None` where a rewind left one off the live branch.
+pub(crate) fn said(store: &yi_session::SharedSession) -> Vec<Option<String>> {
+    let typed = crate::fetch::user_entries(store).unwrap_or_default();
+    let query = yi_session::EntryQuery::default();
+    let branch = yi_session::lock_session(store)
+        .find_entries_on_branch("main", &query, &yi_session::BranchBounds::default())
+        .unwrap_or_default();
+    let live: HashSet<&str> = branch.iter().map(yi_types::entry::Entry::id).collect();
+    typed
+        .iter()
+        .map(|(id, content)| {
+            live.contains(id.as_str())
+                .then(|| crate::rewind::user_text(content))
+        })
+        .collect()
+}
+
+pub(crate) fn stamp(ask: &mut Ask, said: &[Option<String>]) {
+    ask.after = Some(said.len()).filter(|n| *n > 0).and_then(user_url);
+}
+
+/// The newest live reply since the ask decides, a pick or the user's own words; `Ok(None)` where
+/// nobody types, as in a child, whose parent's mail answers unrecorded.
+pub(crate) fn reply_to(
+    ask: &Ask,
+    label: &TodoLabel,
+    said: &[Option<String>],
+) -> Result<Option<Answer>, PlanIssue> {
+    if said.is_empty() {
+        return Ok(None);
+    }
+    let since = ask.after.as_ref().and_then(ordinal).unwrap_or(0);
+    let reply = said
+        .iter()
+        .enumerate()
+        .skip(since)
+        .rev()
+        .find_map(|(at, text)| Some((user_url(at.saturating_add(1))?, text.as_deref()?)));
+    let (address, text) = reply.ok_or_else(|| unanswered(ask, label))?;
+    Ok(Some(Answer {
+        address,
+        option: named(ask, text).map(|option| option.id.clone()),
+        extra: Map::new(),
+    }))
+}
+
+fn unanswered(ask: &Ask, label: &TodoLabel) -> PlanIssue {
+    PlanIssue::Unanswered {
+        label: label.clone(),
+        options: ask.options.len(),
+    }
+}
+
+fn asking<'a>(plan: &'a Plan, label: &TodoLabel) -> Option<&'a Ask> {
     let todo = plan.todo(label)?;
     let blocked = matches!(
         &todo.state,
@@ -71,59 +147,44 @@ fn asking<'a>(plan: &'a Plan, label: &yi_types::plan::doc::TodoLabel) -> Option<
 }
 
 impl PlanEngine {
-    fn said(&self) -> Vec<String> {
-        let typed = self
-            .owner_words
-            .as_ref()
-            .and_then(|words| words())
-            .and_then(|store| crate::fetch::user_entries(&store).ok());
-        typed
-            .unwrap_or_default()
-            .iter()
-            .map(|(_, content)| crate::rewind::user_text(content))
-            .collect()
-    }
-
-    /// Stamps a new ask with the newest user message, and an unblock of an open ask with the
-    /// reply after it: the newest that names an option, else the newest in the user's own words.
+    /// Stamps a new ask, answers an unblock of an open one from the user's reply, and refuses a
+    /// `set` that would move an open ask off blocked around that reply.
     pub(super) fn ask_default(&self, mut op: Op, plan: Option<&PlanId>) -> Result<Op, PlanOpError> {
+        let typed = || {
+            let store = self.owner_words.as_ref().and_then(|words| words());
+            store.map(|store| said(&store)).unwrap_or_default()
+        };
+        let current = || {
+            let id = self.resolve(plan.cloned()).ok()?;
+            self.store.read(&id).ok()
+        };
+        let invalid = |issue| PlanOpError::Invalid { issue };
         match &mut op {
-            Op::Block { ask: Some(ask), .. } => {
-                ask.after = Some(self.said().len())
-                    .filter(|n| *n > 0)
-                    .and_then(user_url);
-            }
+            Op::Block { ask: Some(ask), .. } => stamp(ask, &typed()),
             Op::Unblock {
                 label,
                 answer: answer @ None,
             } => {
-                let current = self.resolve(plan.cloned()).ok();
-                let current = current.and_then(|id| self.store.read(&id).ok());
-                let Some(ask) = current.as_ref().and_then(|plan| asking(plan, label)) else {
-                    return Ok(op);
-                };
-                let since = ask.after.as_ref().and_then(ordinal).unwrap_or(0);
-                let replies: Vec<(usize, String)> =
-                    self.said().into_iter().enumerate().skip(since).collect();
-                let picked = replies.iter().rev().find_map(|(at, reply)| {
-                    named(ask, reply).map(|option| (*at, Some(option.id.clone())))
-                });
-                let reply = picked.or_else(|| replies.last().map(|(at, _)| (*at, None)));
-                let address =
-                    reply.and_then(|(at, option)| Some((user_url(at.saturating_add(1))?, option)));
-                let Some((address, option)) = address else {
-                    return Err(PlanOpError::Invalid {
-                        issue: PlanIssue::Unanswered {
-                            label: label.clone(),
-                            options: ask.options.len(),
-                        },
-                    });
-                };
-                *answer = Some(Box::new(Answer {
-                    address,
-                    option,
-                    extra: Map::new(),
-                }));
+                let current = current();
+                if let Some(ask) = current.as_ref().and_then(|plan| asking(plan, label)) {
+                    *answer = reply_to(ask, label, &typed())
+                        .map_err(invalid)?
+                        .map(Box::new);
+                }
+            }
+            Op::Set { rows, .. } => {
+                let current = current();
+                let moved = rows
+                    .iter()
+                    .filter(|row| row.state != TodoStateName::Blocked);
+                for row in moved {
+                    if let Some(ask) = current
+                        .as_ref()
+                        .and_then(|plan| asking(plan, &row.spec.label))
+                    {
+                        return Err(invalid(unanswered(ask, &row.spec.label)));
+                    }
+                }
             }
             _ => {}
         }
@@ -165,7 +226,7 @@ pub(super) fn line(todo: &Todo) -> String {
     };
     let Some(answer) = &ask.answer else {
         return format!(
-            "; options {ask}; the user's reply picks by number, id or label, and unattended it stays blocked: nothing picks for the user"
+            "; options {ask}; the user's next reply decides: opening with one option's number, id or label picks it, anything else is kept in their own words; unattended it stays blocked: nothing picks for the user"
         );
     };
     let rejected: Vec<&str> = ask

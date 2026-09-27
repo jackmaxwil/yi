@@ -324,6 +324,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         },
         "unblock" => Op::Unblock {
             label: label(args, "unblock")?,
+            answer: None,
         },
         "rm" => Op::Rm {
             target: target(args, "rm")?,

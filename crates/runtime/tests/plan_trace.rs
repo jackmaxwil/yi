@@ -281,7 +281,7 @@ async fn a_todo_asking_three_options_takes_the_users_pick_by_number() -> TestRes
     );
     let early = tool_text(&store, "c4")?;
     assert!(
-        early.contains("no user message came after it asked"),
+        early.contains("with none since it asked, end your turn"),
         "an unblock with no reply since the ask is refused: {early}"
     );
     let picked = tool_text(&store, "c5")?;
@@ -306,5 +306,193 @@ async fn a_todo_asking_three_options_takes_the_users_pick_by_number() -> TestRes
     );
     let intent: Vec<String> = todo.cites.intent.iter().map(ToString::to_string).collect();
     assert_eq!(intent, ["user://1", "user://2"]);
+    Ok(())
+}
+
+fn hero_block() -> serde_json::Value {
+    let option = |id: &str, label: &str| json!({"id": id, "label": label});
+    json!({"op": "block", "label": "hero style", "on": {"user": null}, "note": "which hero?",
+        "options": [option("calm", "Calm hero"), option("serif", "Bold serif"), option("sans", "Bold sans")]})
+}
+
+/// A recorded answer: the reply's address and the option it picked, if any.
+type Picked = (String, Option<String>);
+
+struct Asking {
+    root: Scratch,
+    provider: Arc<ProviderStream>,
+    session: yi_runtime::AgentSession,
+    store: yi_session::SharedSession,
+}
+
+impl Asking {
+    /// A wired session whose plan's "hero style" waits on three options, asked on `first`.
+    async fn new(first: AgentMessage) -> Result<Self, Box<dyn Error>> {
+        let root = Scratch::new("yi-plan-pick")?;
+        let provider = Arc::new(ProviderStream::new(None, None));
+        let init =
+            json!({"op": "init", "goal": "land the page", "todos": [{"label": "hero style"}]});
+        provider.queue_faux(vec![
+            call("i", init),
+            call("b", hero_block()),
+            faux_assistant_message(vec![faux_text("which hero?")], StopReason::Stop),
+        ]);
+        let mut session = session(Arc::clone(&provider));
+        let store = memory_store();
+        session.attach_store(Arc::clone(&store))?;
+        wired(&mut session, &root, Arc::clone(&provider));
+        session.prompt_message(first)?;
+        session.wait_idle().await;
+        Ok(Self {
+            root,
+            provider,
+            session,
+            store,
+        })
+    }
+
+    /// One turn on `prompt` whose model makes the plan call `op` as call `u`, if any.
+    async fn turn(&self, prompt: AgentMessage, op: Option<serde_json::Value>) -> TestResult {
+        let mut replies: Vec<AgentMessage> = op.into_iter().map(|op| call("u", op)).collect();
+        replies.push(faux_assistant_message(
+            vec![faux_text("ok")],
+            StopReason::Stop,
+        ));
+        self.provider.queue_faux(replies);
+        self.session.prompt_message(prompt)?;
+        self.session.wait_idle().await;
+        Ok(())
+    }
+
+    async fn unblock_on(&self, reply: &str) -> TestResult {
+        let unblock = json!({"op": "unblock", "label": "hero style"});
+        self.turn(yi_runtime::session::user_input(reply), Some(unblock))
+            .await
+    }
+
+    fn todo(&self) -> Result<Todo, Box<dyn Error>> {
+        let plan =
+            PlanStore::open(self.root.join("plans"))?.read(&PlanId::new("land-the-page")?)?;
+        Ok(plan
+            .todo(&TodoLabel::new("hero style")?)
+            .ok_or("no hero todo")?
+            .clone())
+    }
+
+    fn answer(&self) -> Result<Option<Picked>, Box<dyn Error>> {
+        let todo = self.todo()?;
+        let answer = todo.ask.and_then(|ask| ask.answer);
+        Ok(answer.map(|answer| {
+            let option = answer.option.map(|id| id.as_str().to_owned());
+            (answer.address.to_string(), option)
+        }))
+    }
+}
+
+fn host(text: &str) -> AgentMessage {
+    AgentMessage::host_user(yi_types::message::UserContent::Text(text.to_owned()), 0)
+}
+
+/// Dies with a reply that mentions an option in passing, names two, or only shares a label's
+/// first word recorded as the user's pick, the worst failure: a choice the user never made.
+#[tokio::test]
+async fn a_reply_picks_only_when_it_opens_with_one_option_and_names_no_other() -> TestResult {
+    let cases: [(&str, Option<&str>); 15] = [
+        ("2", Some("serif")),
+        ("#3", Some("sans")),
+        ("serif, but calmer", Some("serif")),
+        ("bold serif", Some("serif")),
+        ("calm.", Some("calm")),
+        ("2 more things: fix the footer first", None),
+        ("2 and 3", None),
+        ("2, 3", None),
+        ("1, though 3's colours", None),
+        ("no, none of these", None),
+        ("maybe serif?", None),
+        ("serif but calmer", None),
+        ("Bold", None),
+        ("Ça, 2", None),
+        ("２", None),
+    ];
+    let mut wrong = Vec::new();
+    for (reply, want) in cases {
+        let asking = Asking::new(yi_runtime::session::user_input("draft the hero")).await?;
+        asking.unblock_on(reply).await?;
+        let got = asking.answer()?.ok_or("every reply is recorded")?;
+        if got != ("user://2".to_owned(), want.map(str::to_owned)) {
+            wrong.push(format!("{reply:?} -> {got:?}, want {want:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    Ok(())
+}
+
+/// Dies with an older pick outliving the user's newer word: "2" then "none of these" is not 2.
+#[tokio::test]
+async fn the_newest_reply_decides_so_a_retraction_is_not_a_pick() -> TestResult {
+    let asking = Asking::new(yi_runtime::session::user_input("draft the hero")).await?;
+    asking
+        .turn(yi_runtime::session::user_input("2"), None)
+        .await?;
+    asking
+        .unblock_on("actually, none of these: make it green")
+        .await?;
+    assert_eq!(asking.answer()?, Some(("user://3".to_owned(), None)));
+    Ok(())
+}
+
+/// Dies with a pick the user rewound away counted as their answer when a wake unblocks.
+#[tokio::test]
+async fn a_pick_on_a_rewound_branch_does_not_answer() -> TestResult {
+    let asking = Asking::new(yi_runtime::session::user_input("draft the hero")).await?;
+    asking
+        .turn(yi_runtime::session::user_input("2"), None)
+        .await?;
+    let typed = yi_session::lock_session(&asking.store).find_entries(&yi_session::EntryQuery {
+        order: yi_session::EntryOrder::NewestFirst,
+        ..yi_session::EntryQuery::default()
+    })?;
+    let two = typed
+        .iter()
+        .find(|entry| {
+            matches!(entry, Entry::Message { message: AgentMessage::User { content: yi_types::message::UserContent::Text(text), .. }, .. } if text == "2")
+        })
+        .ok_or("no typed 2")?;
+    yi_runtime::rewind::rewind_to(&asking.session, two.id())?;
+    let unblock = json!({"op": "unblock", "label": "hero style"});
+    asking.turn(host("[wake]"), Some(unblock)).await?;
+    let refused = tool_text(&asking.store, "u")?;
+    assert!(refused.contains("waits on the user's pick"), "{refused}");
+    assert_eq!(asking.answer()?, None);
+    Ok(())
+}
+
+/// Dies with a child stuck forever: no one types into a child's session, so a refusal that waits
+/// for a typed reply never lifts; its parent's mail answers, unrecorded.
+#[tokio::test]
+async fn a_session_no_user_types_into_unblocks_its_ask_unrecorded() -> TestResult {
+    let asking = Asking::new(host("draft the hero")).await?;
+    let unblock = json!({"op": "unblock", "label": "hero style"});
+    asking.turn(host("parent: serif"), Some(unblock)).await?;
+    let text = tool_text(&asking.store, "u")?;
+    assert_eq!(asking.todo()?.state, TodoState::Pending, "{text}");
+    assert_eq!(asking.answer()?, None);
+    Ok(())
+}
+
+/// Dies with `set` rewriting the asked todo to pending: the unblock's refusal routed around.
+#[tokio::test]
+async fn a_set_cannot_move_an_unanswered_ask_off_blocked() -> TestResult {
+    let asking = Asking::new(yi_runtime::session::user_input("draft the hero")).await?;
+    let set = json!({"op": "set", "list": "- [ ] hero style\n"});
+    asking
+        .turn(yi_runtime::session::user_input("go on"), Some(set))
+        .await?;
+    let refused = tool_text(&asking.store, "u")?;
+    assert!(refused.contains("waits on the user's pick"), "{refused}");
+    assert!(
+        matches!(asking.todo()?.state, TodoState::Blocked { .. }),
+        "{refused}"
+    );
     Ok(())
 }
