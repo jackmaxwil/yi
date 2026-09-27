@@ -201,3 +201,57 @@ fn a_retried_request_says_which_attempt_and_how_long_it_waits() -> Res {
     );
     Ok(())
 }
+
+/// Dies with the reason cut off: ureq writes the URL before the error, and an 80-char cut of
+/// a long endpoint left the row saying where it failed but never why.
+#[test]
+fn a_dropped_connection_retry_names_the_reason_not_the_url() -> Res {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = std::thread::spawn(move || -> std::io::Result<()> {
+        drop(listener.accept()?);
+        let (stream, _) = listener.accept()?;
+        let mut reader = BufReader::new(stream);
+        let mut length = 0usize;
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
+                break;
+            }
+            if let Some((name, value)) = header.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap_or(0);
+            }
+        }
+        let mut body = vec![0u8; length];
+        reader.read_exact(&mut body)?;
+        reader
+            .into_inner()
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")?;
+        Ok(())
+    });
+    let seen = std::sync::Mutex::new(Vec::new());
+    let sent = send_with_retry(
+        &format!(
+            "http://127.0.0.1:{port}/api/v1/openai-compatible/chat/completions/with/a/long/deployment/path"
+        ),
+        &[],
+        &json!({"model": "probe"}),
+        None,
+        &|wait| seen.lock().map(|mut seen| seen.push(wait)).unwrap_or(()),
+    );
+    assert!(
+        sent.is_ok(),
+        "the second attempt succeeds: {:?}",
+        sent.err()
+    );
+    server.join().map_err(|_| "server thread panicked")??;
+    let seen = seen.lock().map_err(|_| "poisoned")?.clone();
+    let [yi_types::event::Wait::Retry { cause, .. }] = seen.as_slice() else {
+        return Err(format!("one retry expected: {seen:?}").into());
+    };
+    assert!(!cause.contains("127.0.0.1"), "{cause}");
+    assert!(!cause.starts_with("http") && !cause.is_empty(), "{cause}");
+    Ok(())
+}

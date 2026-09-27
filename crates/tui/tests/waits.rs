@@ -122,3 +122,37 @@ fn a_tool_call_draws_while_its_arguments_stream() -> TestResult {
     }
     Ok(())
 }
+
+/// Dies with a failed install flashed on the working row and gone: every boot line became
+/// the wait's step, so the warning a person must act on lasted until the next line.
+#[test]
+fn a_boot_warning_outlives_the_boot_wait() -> TestResult {
+    let mut app = running();
+    let warning = "Warning: default packages (numpy) failed to install: pip exited 1";
+    for step in [warning, "✓ ready"] {
+        app.reduce_agent(AgentEvent::Wait {
+            wait: Some(Wait::KernelBoot {
+                step: step.to_owned(),
+            }),
+        });
+    }
+    app.reduce_agent(AgentEvent::Wait { wait: None });
+    let rows: Vec<String> = app
+        .take_commits()
+        .iter()
+        .map(|line| {
+            let row: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            row.trim_end().to_owned()
+        })
+        .collect();
+    assert!(
+        rows.iter().any(|row| row == &format!("  ▌ ⚑ {warning}")),
+        "{rows:#?}"
+    );
+    assert!(rows.iter().all(|row| !row.contains("✓ ready")), "{rows:#?}");
+    Ok(())
+}
