@@ -282,7 +282,6 @@ class HarnessState:
         if self.file_path is None:
             # in_memory fallback: nothing to persist.
             return self
-        self.file_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "schema": 1,
             "entries": {
@@ -291,6 +290,14 @@ class HarnessState:
             },
             "refinements": [asdict(event) for event in self.refinements],
         }
+        if self.scope == "global" and os.environ.get("RLM_GLOBAL_HARNESS_HOST"):
+            # The kernel cannot write the global store (#583); the host asks, then writes it.
+            from . import _host_request_blocking
+
+            _host_request_blocking("harness.save_global", {"state": data})
+            self._loaded_mtime = self._disk_mtime()
+            return self
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
         with self.file_path.open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         self._loaded_mtime = self._disk_mtime()
