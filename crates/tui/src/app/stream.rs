@@ -651,6 +651,15 @@ pub(super) fn fold_child(
 }
 
 impl App {
+    pub fn gate_red(&self) -> bool {
+        matches!(&self.landing, Some(yi_types::lane::Landing::Open { jobs, .. })
+            if jobs.iter().any(|job| job.state == yi_types::lane::JobState::Red))
+    }
+
+    pub fn landing_line(&self) -> Option<String> {
+        self.landing.as_ref().map(yi_runtime::slash::landing_line)
+    }
+
     /// A finished call leaves the live region for scrollback as its card; a todo step leaves
     /// nothing, since the HUD carries the list, and only the list's close is a row.
     pub(super) fn tool_ended(
