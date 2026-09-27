@@ -240,3 +240,56 @@ async fn a_stop_after_a_tool_call_asks_once_for_a_tool_free_last_word() {
         .collect();
     assert_eq!(choices, vec![None, Some(ToolChoice::None)]);
 }
+
+/// Records every request's messages and answers `done`.
+struct Recorder(Arc<Mutex<Vec<Vec<AgentMessage>>>>);
+
+impl yi_loop::run::StreamFn for Recorder {
+    fn stream(
+        &self,
+        _model: &Model,
+        context: &LlmContext,
+        _effort: Effort,
+        _signal: &InterruptSignal,
+    ) -> Receiver<AssistantMessageEvent> {
+        if let Ok(mut seen) = self.0.lock() {
+            seen.push(context.messages.clone());
+        }
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let message = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+        let _ = sender.try_send(AssistantMessageEvent::Done {
+            reason: StopReason::Stop,
+            message,
+        });
+        receiver
+    }
+}
+
+/// The per-request tail (the environment block) trails the request and never enters the
+/// history; it used to be appended to a full copy of the history on every request.
+#[tokio::test]
+async fn the_request_tail_trails_each_request_and_stays_out_of_the_history() {
+    let text = |value: &str| {
+        AgentMessage::host_user(yi_types::message::UserContent::Text(value.to_owned()), 0)
+    };
+    let mut config = LoopConfig::new(faux_model());
+    config.request_tail = Some(Box::new(move || vec![text("tail")]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let mut emit = |_: AgentEvent| {};
+    let stream = Recorder(Arc::clone(&seen));
+    let signal = InterruptSignal::default();
+    let prompt = vec![text("hi")];
+    run_loop(&mut context, prompt, &config, &signal, &mut emit, &stream).await;
+    let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
+    assert_eq!(seen, vec![vec![text("hi"), text("tail")]]);
+    assert!(
+        !context.messages.contains(&text("tail")),
+        "{:?}",
+        context.messages
+    );
+}
