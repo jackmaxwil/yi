@@ -754,6 +754,8 @@ impl Pool {
         let _the_poll_below_sees_a_failed_term =
             capture(&self.dir, "/bin/sh", &term, probe_deadline());
         let started = std::time::Instant::now();
+        let _span = yi_types::trace::span("lane.warmer_exit");
+        let mut pace = yi_types::backoff::backoff(std::time::Duration::from_millis(200));
         while running()? {
             if started.elapsed().as_millis() >= u128::from(WARMER_EXIT_WAIT_MS) {
                 return Err(LaneError::WarmerStuck {
@@ -762,7 +764,7 @@ impl Pool {
                     waited_ms: WARMER_EXIT_WAIT_MS,
                 });
             }
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(pace());
         }
         if let Some(warm) = state.warm.as_mut() {
             warm.pid = None;

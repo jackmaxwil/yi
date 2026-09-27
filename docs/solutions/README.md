@@ -237,6 +237,8 @@ edited by hand.
 - [D260](adr/d260.md) - a session's build runs off the worker's request loop
 - [D262](adr/d262.md) - the highlighter ships bat's grammar set cut to 44 named languages and the 15...
 - [D263](adr/d263.md) - the dist binary links only the Unicode tables bat's grammars use
-- [D265](adr/d265.md) - a macOS build of a release-derived profile (`release`, `dist`) links without...
+- [D265](adr/d265.md) - a wait wakes on the event it waits for, not on a timer
+- [D266](adr/d266.md) - a resume and the session list stop paying for what nobody reads
+- [D268](adr/d268.md) - a macOS build of a release-derived profile (`release`, `dist`) links without...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
