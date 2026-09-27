@@ -380,7 +380,7 @@ impl App {
             None => self.reduce_response(outbound, &value),
             Some("session/update") => {
                 if let Some(params) = value.get_mut("params").map(Value::take)
-                    && let Ok(update) = serde_json::from_value::<AcpUpdateParams>(params)
+                    && let Some(update) = port::update_params(params)
                 {
                     // An agent event shows only through a pane's chat, which asks for its frame.
                     let event = matches!(&update.update,
@@ -649,15 +649,18 @@ impl App {
     }
 
     fn reduce_update(&mut self, outbound: &Outbound, update: AcpUpdateParams) {
-        let id = SessionId(update.session_id.clone());
+        let id = SessionId(update.session_id);
         if port::writes_transcript(&update.update) {
             self.resume_offsets.remove(&id);
             self.state.parked.remove(&id);
         }
-        if let AcpSessionUpdate::Extension(extension) = &update.update {
-            self.reduce_extension(outbound, &id, extension);
-        }
-        if let AcpSessionUpdate::StateUpdate(state) = &update.update {
+        let update = match update.update {
+            AcpSessionUpdate::Extension(extension) => {
+                return self.reduce_extension(outbound, &id, extension);
+            }
+            other => other,
+        };
+        if let AcpSessionUpdate::StateUpdate(state) = &update {
             let focused = self.state.focused_session().as_ref() == Some(&id);
             let mut status = SessionStatus::from_state(state, false);
             let was_working = self
@@ -683,19 +686,19 @@ impl App {
                 _ => self.notes.disarm(&id),
             }
         }
-        if let AcpSessionUpdate::UsageUpdate { size, .. } = &update.update {
+        if let AcpSessionUpdate::UsageUpdate { size, .. } = &update {
             for chat in self.state.chats_mut(&id) {
                 chat.app.set_context_window(*size);
             }
         }
-        self.absorb_edit(outbound, &id, &update.update);
-        self.absorb_kernel(&id, &update.update);
+        self.absorb_edit(outbound, &id, &update);
+        self.absorb_kernel(&id, &update);
         for (pane_id, pane) in &mut self.state.panes {
             if pane.session() != Some(&id) {
                 continue;
             }
             if let PaneContent::Notebook { cells, .. } = &mut pane.content
-                && apply_notebook(cells, &update.update)
+                && apply_notebook(cells, &update)
             {
                 pane.scroll_from_bottom = 0;
                 if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
