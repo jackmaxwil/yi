@@ -482,7 +482,6 @@ fn build_session(
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
-    let session_dir = default_session_dir(args);
     let claiming = yi_types::trace::span("build_session.claim_lane");
     let claimed = claim_lane(args, &home, session_id);
     drop(claiming);
@@ -507,7 +506,7 @@ fn build_session(
             asker,
             session.events_sender(),
         )
-        .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, &session_dir)),
+        .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, None)),
     );
     let tools_home = home.clone();
     let extensions = yi_types::trace::span("build_session.install_extensions");

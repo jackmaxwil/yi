@@ -2024,6 +2024,7 @@ async fn a_service_whose_kernel_dies_respawns_with_its_pending_mail() -> TestRes
                 on_restore: None,
                 sandbox: None,
                 snapshot_key: None,
+                per_session_state: false,
                 cell_ceiling: None,
             }));
             child.use_tools(
@@ -2544,6 +2545,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        per_session_state: false,
         cell_ceiling: None,
     }));
 
@@ -3796,6 +3798,7 @@ async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        per_session_state: false,
         cell_ceiling: None,
     }));
     let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
