@@ -32,7 +32,7 @@ fn is_side(content: &PaneContent, session: &SessionId) -> bool {
             session: Some(bound),
             ..
         }
-        | PaneContent::SessionDiff { session: bound } => bound == session,
+        | PaneContent::SessionDiff { session: bound, .. } => bound == session,
         _ => false,
     }
 }
@@ -63,6 +63,8 @@ impl App {
             added: count("added"),
             removed: count("removed"),
             tracked: false,
+            serving: self.serving(session),
+            turn: self.state.diffs.get(session).map_or(0, |diff| diff.turn),
         };
         self.state
             .diffs
@@ -198,6 +200,9 @@ impl App {
         session: Option<SessionId>,
         kind: SideKind,
     ) -> Option<PaneId> {
+        if let (SideKind::Diff, Some(session)) = (kind, &session) {
+            self.refresh_branch(session);
+        }
         if let Some(tab) = self.state.tab_mut() {
             tab.layout.focus_pane(home);
         }
@@ -205,7 +210,10 @@ impl App {
         let opened = self.state.focused_pane_id().filter(|id| *id != home);
         if let Some(pane) = self.state.focused_pane_mut() {
             pane.content = match (kind, session) {
-                (SideKind::Diff, Some(session)) => PaneContent::SessionDiff { session },
+                (SideKind::Diff, Some(session)) => PaneContent::SessionDiff {
+                    session,
+                    scope: crate::model::ReviewScope::default(),
+                },
                 (_, session) => PaneContent::Notebook {
                     session,
                     cells: Vec::new(),
