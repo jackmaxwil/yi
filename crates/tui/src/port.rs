@@ -347,7 +347,7 @@ impl App {
                         text: user_text(content),
                     }),
                     AgentMessage::Assistant { content, .. } => {
-                        let text = text_of(content);
+                        let text = crate::transcript::prose_of(content);
                         if text.is_empty() {
                             None
                         } else {
