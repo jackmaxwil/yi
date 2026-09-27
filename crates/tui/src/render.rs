@@ -131,6 +131,7 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
             .live_markdown
             .get(app.live_cut..app.pacing.prose.shown())
             .unwrap_or_default();
+        let _span = yi_types::trace::span("tui.live_tail");
         live_lines.extend(app.prose_block(tail).0);
     }
     if let Some(pen) = &app.pen {
@@ -383,6 +384,7 @@ pub fn paint_pane(
     area: Rect,
     scroll: &mut usize,
 ) -> Option<(usize, usize)> {
+    let _span = yi_types::trace::span("tui.paint_pane");
     // A pane never scrolls anything off: `History` keeps every cell, so the
     // terminal-bound commits and the clear are drained here and dropped.
     let _ = app.take_commits();
@@ -400,7 +402,9 @@ pub fn paint_pane(
     let (width, theme, mode) = (app.content_width(), app.theme, app.mode);
     let (shown, thumb) = if *scroll == 0 {
         app.pane_hold = None;
+        let history = yi_types::trace::span("tui.history_rows");
         let mut column = app.reflowed(above.saturating_sub(live.len()).max(1));
+        drop(history);
         column.extend(live);
         let start = column.len().saturating_sub(above);
         (column.split_off(start), None)

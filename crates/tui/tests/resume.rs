@@ -1,5 +1,5 @@
 //! A session resumed into a pane reads as it did live: the same cards, the same context figure.
-mod common;
+use crate::common;
 
 use std::error::Error;
 

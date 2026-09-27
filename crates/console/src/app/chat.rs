@@ -141,9 +141,9 @@ impl App {
             {
                 // Incident: resetting the scroll here pinned every reader to the bottom mid-turn.
                 let _ = chat.events.0.send(make());
+                self.dirty = true;
             }
         }
-        self.dirty = true;
     }
 
     pub(super) fn drop_frame(&mut self) {

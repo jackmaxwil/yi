@@ -587,7 +587,7 @@ A worktree todo needs a contract; it is Done only via acceptance or as `Accepted
   it quotes in backticks appears verbatim in a recorded call's arguments or output, and claimed
   otherwise (`todo::claims`). Nothing is refused (D255); the HUD marks claimed rows.
 - Owner: [`schedule.rs`](../crates/runtime/src/plan/schedule.rs). Settled by: D224, D225, D226,
-  D229, D262.
+  D229, D275.
 
 ## 14. Lane
 A lane is a git worktree slot, leased from a per-repository pool and handed back by move.
@@ -783,7 +783,7 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   `SessionStatus{Blocked, Working, DoneUnseen, Idle, Unknown}`, `SidebarMode{Rail, Full}`,
   `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Keys}`
 - Owner: [`lib.rs`](../crates/console/src/lib.rs), [`model.rs`](../crates/console/src/model.rs)
-- Settled by: D95, D96, D112, D113, D141, D201, D263, D264, D267
+- Settled by: D95, D96, D112, D113, D141, D201, D276, D264, D267
 
 ## 18. Dependencies and size
 
@@ -808,7 +808,7 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
 `release` is cargo's default (no `[profile.release]`), unwinding intact. `dist` ships and is
 what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 `package."*"`), `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = "symbols"`,
-`debug = false`, `incremental = false`. `scripts/build_dist.sh` builds it.
+`debug = false`, `incremental = false`; on macOS the `yi` binary of a release-derived profile links with `-no_function_starts` (`crates/cli/build.rs`). `scripts/build_dist.sh` builds it.
 
 ### 18.3 Allowed dependencies
 | Crate | Features | Used by | Reason | Alternative considered |
@@ -822,18 +822,18 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `sha2` | — | types, oauth, permission, runtime, kernel | message signing, permission digests, PKCE, plan digests | — |
 | `xxhash-rust` | `xxh32` | tools | hashline tags | — |
 | `globset` | — | permission, tools, runtime | permission patterns, file tools | `glob`: no brace sets |
-| `regex` | `std`, `perf`, `unicode-case` | tools | the `grep` tool; full Unicode tables stay out | — |
+| `regex` | `std`, `perf`, `unicode-case`, `unicode-script` | tools | the `grep` tool; the Age and break-property tables stay out | — |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
 | `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
 | `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, and the uv archive | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
 | `ratatui` | `crossterm`, `scrolling-regions` | tui, console | terminal rendering | — |
 | `tui-textarea` | `crossterm` | tui, console | the composer | — |
 | `pulldown-cmark` | — | tui | Markdown rendering | — |
-| `syntect` | `parsing`, `default-syntaxes`, `regex-fancy` | tui | syntax highlighting on the pure-Rust regex engine | `onig` (C engine, banned) |
+| `syntect` | `parsing`, `regex-fancy`, `dump-load` | tui | syntax highlighting on the pure-Rust regex engine, over bat's grammars cut at build time; `vendor/syntect` patches its manifest to four Unicode tables | `onig` (C engine, banned) |
 | `unicode-width` | — | tui | terminal cell width | — |
 
 Dev: `vt100`, `insta` (tui), `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
-`macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets.
+`macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets; `two-face`, `syntect` with `dump-create` and `serde_json` (tui) cut bat's grammar set.
 
 ### 18.4 Features
 Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep:yi-console"]`.

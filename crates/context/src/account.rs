@@ -105,6 +105,7 @@ pub struct Estimate {
 
 /// Last authoritative assistant usage plus chars/4 for trailing messages.
 pub fn estimate_context(messages: &[AgentMessage]) -> Estimate {
+    let _span = yi_types::trace::span("context.estimate").arg("messages", messages.len());
     let last = messages
         .iter()
         .enumerate()

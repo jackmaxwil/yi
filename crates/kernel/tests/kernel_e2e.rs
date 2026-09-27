@@ -400,6 +400,42 @@ async fn namespace_snapshot_revives_across_kernels() -> TestResult {
     Ok(())
 }
 
+/// A dispose re-serialized the whole namespace though the last checkpoint held every cell;
+/// a cell run after the checkpoint must still reach the disk.
+#[tokio::test]
+async fn dispose_flushes_only_what_the_last_checkpoint_missed() -> TestResult {
+    let dir = Scratch::new("yi-snap-settled")?;
+    let config = KernelSnapshotConfig {
+        path: snapshot_path_in(&dir),
+        manifest_path: manifest_path_in(&dir),
+        max_bytes: None,
+        max_variable_bytes: None,
+        debounce_ms: Some(600_000),
+    };
+    let inode =
+        || std::fs::metadata(&config.path).map(|meta| std::os::unix::fs::MetadataExt::ino(&meta));
+    let first = manager_with_snapshot(Some(config.clone()))?;
+    first.execute("x = 1", ExecuteOptions::default()).await?;
+    first.snapshot_state().await.ok_or("snapshot result")?;
+    let checkpoint = inode()?;
+    first.dispose().await;
+    assert_eq!(
+        inode()?,
+        checkpoint,
+        "dispose rewrote a checkpoint that held every cell"
+    );
+
+    let second = manager_with_snapshot(Some(config.clone()))?;
+    second.execute("y = 2", ExecuteOptions::default()).await?;
+    second.dispose().await;
+    let manifest = std::fs::read_to_string(&config.manifest_path)?;
+    assert!(
+        manifest.contains("\"y\""),
+        "the cell after the checkpoint was lost: {manifest}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn prune_removes_oversized_variables_and_list_names_reports() -> TestResult {
     let dir = Scratch::new("yi-prune-e2e")?;

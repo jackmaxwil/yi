@@ -26,6 +26,9 @@ test:
     else
       cargo test --workspace
     fi
+    # A workspace build unifies proptest's regex-syntax, which links every Unicode table, so the
+    # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
+    cargo test -p yi-cli -p yi-tui -p yi-tools --test integration --test tools linked_tables
 
 # The lanes `check` runs, named so CI can run them as separate jobs.
 lint: fmt-check clippy
@@ -242,6 +245,7 @@ postmerge-evals:
     cargo build -p yi-cli
     python3 evals/run.py --dry --binary target/debug/yi --model faux/faux-1
     python3 evals/surface.py --dry --binary target/debug/yi --model faux/faux-1
+    python3 evals/judge_replay.py all --dry --model faux/faux-1
 
 # Prefill the PR narrative's counted sections from the diff against main.
 pr-body:

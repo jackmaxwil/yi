@@ -2,8 +2,7 @@
 //! a `BranchSummary` behind, written by the summarizer role and replayed by the
 //! same projection every other entry goes through.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
