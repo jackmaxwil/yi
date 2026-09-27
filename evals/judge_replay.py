@@ -907,7 +907,7 @@ def cmd_mark(args):
 
 def listing(directories):
     return sorted((str(p), p.stat().st_mtime_ns, p.stat().st_size)
-                  for d in directories for p in Path(d).rglob("*") if p.is_file())
+                  for d in directories for p in Path(d).expanduser().rglob("*") if p.is_file())
 
 
 def cmd_all(args):
@@ -917,6 +917,9 @@ def cmd_all(args):
         return 2
     specs = [spec.split(":", 1) for spec in args.corpus] or [[k, str(v)] for k, v in FIXTURES.items()]
     before = listing(d for _, d in specs)
+    if not before:
+        print("FAIL judge_replay_dry: no file under the corpus, so nothing was checked")
+        return 1
     if not args.out:
         args.out = tempfile.mkdtemp(prefix="yi-replay-out-")
         atexit.register(shutil.rmtree, args.out, True)
