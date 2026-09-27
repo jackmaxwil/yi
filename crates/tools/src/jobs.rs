@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::process::{CommandCapture, OUTPUT_CAP, command, run_captured_live};
@@ -136,6 +136,9 @@ const MAX_JOBS: usize = 32;
 pub struct Jobs {
     inner: Mutex<HashMap<u64, Job>>,
     next: AtomicU64,
+    settled: Condvar,
+    /// Settles so far, moved under `inner` so a waiter on `settled` cannot miss one.
+    settles: AtomicU64,
 }
 
 /// One per process: a backgrounded command outlives the call that started it.
@@ -178,9 +181,34 @@ impl Jobs {
     }
 
     fn finish(&self, id: JobId, capture: CommandCapture) {
-        if let Some(job) = self.lock().get_mut(&id.0) {
+        let mut jobs = self.lock();
+        if let Some(job) = jobs.get_mut(&id.0) {
             job.capture = Some(capture);
         }
+        self.settles.fetch_add(1, Ordering::SeqCst);
+        drop(jobs);
+        self.settled.notify_all();
+    }
+
+    /// Blocks until the settle count passes `seen`, and returns the new count.
+    pub fn wait_settle(&self, seen: u64) -> u64 {
+        let moved = |_: &mut HashMap<u64, Job>| self.settles.load(Ordering::SeqCst) == seen;
+        drop(self.settled.wait_while(self.lock(), moved));
+        self.settles.load(Ordering::SeqCst)
+    }
+
+    /// Blocks until job `id` (the latest when `None`) settles or `timeout` passes.
+    pub fn wait_settled(&self, id: Option<JobId>, timeout: Duration) {
+        let running = |jobs: &mut HashMap<u64, Job>| {
+            let job = match id {
+                Some(id) => jobs.get(&id.0),
+                None => jobs.values().max_by_key(|job| job.started),
+            };
+            job.is_some_and(|job| job.capture.is_none())
+        };
+        let _woken = self
+            .settled
+            .wait_timeout_while(self.lock(), timeout, running);
     }
 
     fn mark_reported(&self, id: JobId) {
@@ -598,6 +626,35 @@ mod tests {
         assert_eq!(registry().kill(id)?, KillOutcome::AlreadySettled(exited));
         registry().release(id)?;
         assert_eq!(registry().kill(id), Err(JobError::UnknownJob(id)));
+        Ok(())
+    }
+
+    /// Dies with a settle that notifies no one: the completion wait never wakes (the 2 s poll
+    /// it replaced reported a finished job up to two seconds late).
+    #[test]
+    fn a_settle_wakes_the_completion_wait() -> Fallible {
+        let reaper = Reaper::Poller { reported: false };
+        let id = registry().insert(
+            "true",
+            Path::new("."),
+            reaper,
+            Arc::default(),
+            Arc::default(),
+        );
+        let (woke, waking) = std::sync::mpsc::channel();
+        std::thread::spawn(move || woke.send(registry().wait_settle(0)));
+        std::thread::sleep(Duration::from_millis(20));
+        let capture = CommandCapture {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            cancelled: false,
+            truncated: false,
+            kill_error: None,
+        };
+        registry().finish(id, capture);
+        assert_eq!(waking.recv_timeout(Duration::from_secs(5))?, 1);
+        assert_eq!(registry().take_finished().len(), 1);
         Ok(())
     }
 
