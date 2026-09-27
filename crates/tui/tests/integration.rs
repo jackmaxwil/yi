@@ -18,6 +18,7 @@ mod pane_scroll;
 mod plantree;
 mod pycell;
 mod reveal;
+mod settled;
 mod toolcells;
 mod tui_e2e;
 mod tui_unit;
