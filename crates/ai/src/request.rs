@@ -128,6 +128,39 @@ pub fn get_json(
     serde_json::from_slice(&body).map_err(|error| format!("{url}: {error}"))
 }
 
+/// Past this a pooled connection is not trusted: a NAT may have dropped it without a FIN.
+const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(30);
+
+static POOLED: std::sync::Mutex<Option<(ureq::Agent, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
+
+// ponytail: a proxied request pools nothing; key the pool by proxy if that path matters.
+fn stream_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
+    let builder = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(30))
+        .timeout_read(std::time::Duration::from_secs(60));
+    if let Some(proxy) = proxy {
+        return builder.proxy(proxy.clone()).build();
+    }
+    let Ok(mut pooled) = POOLED.lock() else {
+        return builder.build();
+    };
+    let agent = match pooled.take() {
+        Some((agent, idle_since)) if idle_since.elapsed() < KEEP_ALIVE => agent,
+        _ => builder.build(),
+    };
+    *pooled = Some((agent.clone(), std::time::Instant::now()));
+    agent
+}
+
+fn pooled_idle_from_now() {
+    if let Ok(mut pooled) = POOLED.lock()
+        && let Some((_, idle_since)) = pooled.as_mut()
+    {
+        *idle_since = std::time::Instant::now();
+    }
+}
+
 pub fn send_with_retry(
     url: &str,
     headers: &[(String, String)],
@@ -136,13 +169,7 @@ pub fn send_with_retry(
 ) -> Result<ureq::Response, String> {
     let policy = RetryPolicy::default();
     let started = std::time::Instant::now();
-    let mut builder = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(30))
-        .timeout_read(std::time::Duration::from_secs(60));
-    if let Some(proxy) = proxy.and_then(|config| config.proxy_for(host_of(url))) {
-        builder = builder.proxy(proxy.clone());
-    }
-    let agent = builder.build();
+    let agent = stream_agent(proxy.and_then(|config| config.proxy_for(host_of(url))));
     let body = {
         let _span = yi_types::trace::span("ai.serialize");
         body.to_string()
@@ -256,7 +283,10 @@ pub fn pump_sse_with_resend(
             on_event(event)
         });
         match pumped {
-            Ok(()) => return Ok(first_error),
+            Ok(()) => {
+                pooled_idle_from_now();
+                return Ok(first_error);
+            }
             // Incident: `Bad address (os error 14)` killed a trial's third request
             // before any byte arrived (ledger 0017, issue #256).
             Err(text) if resend_dead_stream(delivered, first_error.is_some()) => {

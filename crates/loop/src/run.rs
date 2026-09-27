@@ -583,15 +583,16 @@ async fn stream_assistant_response<S: StreamFn>(
     } = turn;
     let preparing =
         yi_types::trace::span("loop.prepare_request").arg("messages", context.messages.len());
-    let mut messages = context.messages.clone();
-    if let Some(transform) = &config.transform_context
-        && let Some(transformed) = transform(&messages)
-    {
-        messages = transformed;
-    }
+    let tail = config
+        .request_tail
+        .as_ref()
+        .map(|tail| tail())
+        .unwrap_or_default();
     let llm_messages = {
         let _span = yi_types::trace::span("loop.convert_to_llm");
-        (config.convert_to_llm)(&messages)
+        let mut converted = (config.convert_to_llm)(&context.messages);
+        converted.extend((config.convert_to_llm)(&tail));
+        converted
     };
     let tool_defs: Vec<ToolDef> = context.tools.iter().map(|tool| tool.definition()).collect();
     let llm_context = LlmContext {
@@ -730,6 +731,24 @@ async fn stream_assistant_response<S: StreamFn>(
     (final_message, cut, timed_out)
 }
 
+async fn side_work(config: &LoopConfig) {
+    if let Some(gate) = &config.side_work {
+        gate().await;
+    }
+}
+
+async fn end(
+    config: &LoopConfig,
+    emit: &mut (dyn FnMut(AgentEvent) + Send),
+    collected: Vec<AgentMessage>,
+) -> Vec<AgentMessage> {
+    side_work(config).await;
+    emit(AgentEvent::AgentEnd {
+        messages: collected.clone(),
+    });
+    collected
+}
+
 pub async fn run_loop<S: StreamFn>(
     context: &mut LoopContext,
     new_messages: Vec<AgentMessage>,
@@ -829,10 +848,7 @@ pub async fn run_loop<S: StreamFn>(
                     has_more_tool_calls = false;
                     continue;
                 }
-                emit(AgentEvent::AgentEnd {
-                    messages: collected.clone(),
-                });
-                return collected;
+                return end(config, emit, collected).await;
             }
             if reason == StopReason::Error
                 && stream_retries < STREAM_RETRY_AT
@@ -855,10 +871,7 @@ pub async fn run_loop<S: StreamFn>(
                     message,
                     tool_results: Vec::new(),
                 });
-                emit(AgentEvent::AgentEnd {
-                    messages: collected.clone(),
-                });
-                return collected;
+                return end(config, emit, collected).await;
             }
             // a clean turn ends the error streak: the next error gets its own retry
             stream_retries = 0;
@@ -873,6 +886,7 @@ pub async fn run_loop<S: StreamFn>(
                     (fail_truncated_calls(calls, emit), false)
                 } else {
                     length_stops = 0;
+                    side_work(config).await;
                     let (finalized, terminate) =
                         execute_tool_calls(context, calls, config.tool_execution, signal, emit)
                             .await;
@@ -946,19 +960,13 @@ pub async fn run_loop<S: StreamFn>(
                     pending = vec![word];
                     continue;
                 }
-                emit(AgentEvent::AgentEnd {
-                    messages: collected.clone(),
-                });
-                return collected;
+                return end(config, emit, collected).await;
             }
             if repeats >= REPEAT_STOP_AT
                 || length_stops >= LENGTH_STOP_AT
                 || cut_stops >= CUT_STOP_AT
             {
-                emit(AgentEvent::AgentEnd {
-                    messages: collected.clone(),
-                });
-                return collected;
+                return end(config, emit, collected).await;
             }
             pending = config
                 .get_steering_messages
@@ -998,8 +1006,5 @@ pub async fn run_loop<S: StreamFn>(
         pending = follow_ups;
     }
 
-    emit(AgentEvent::AgentEnd {
-        messages: collected.clone(),
-    });
-    collected
+    end(config, emit, collected).await
 }

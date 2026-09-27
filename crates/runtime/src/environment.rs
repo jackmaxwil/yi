@@ -160,13 +160,8 @@ pub fn render(lines: &[String]) -> String {
     format!("{ENVIRONMENT_TAG}\n{}\n</environment>", lines.join("\n"))
 }
 
-pub fn append(messages: &[AgentMessage], block: &str) -> Vec<AgentMessage> {
-    let mut out = messages.to_vec();
-    out.push(AgentMessage::host_user(
-        UserContent::Text(block.to_owned()),
-        0,
-    ));
-    out
+pub fn message(block: String) -> AgentMessage {
+    AgentMessage::host_user(UserContent::Text(block), 0)
 }
 
 /// What the turn says about the machine: os, arch, shell, and where yi runs (D209).
