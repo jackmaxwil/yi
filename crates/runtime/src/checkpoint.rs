@@ -50,7 +50,10 @@ fn capture_hook(
         let Some(store) = store() else {
             return;
         };
-        let Some(Ok(tree)) = shadow.get().map(Checkpoints::capture) else {
+        let span = yi_types::trace::span("checkpoint.capture").arg("at", format!("{at:?}"));
+        let captured = shadow.get().map(Checkpoints::capture);
+        drop(span);
+        let Some(Ok(tree)) = captured else {
             return;
         };
         let _capture_failure_never_fails_a_turn =

@@ -94,6 +94,7 @@ pub(super) fn enqueue(parts: &RunParts, entry: Queued) -> Delivery {
     if let Ok(mut queue) = parts.shared.steer.lock() {
         push(&mut queue, entry);
     }
+    parts.shared.mail.notify_waiters();
     if *status == Status::Running {
         return Delivery::Queued;
     }

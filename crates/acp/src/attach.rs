@@ -9,7 +9,8 @@ use yi_runtime::session_store::{SharedSession, lock_session};
 use yi_runtime::{AgentSession, SubagentHost};
 
 use crate::update::extension;
-use crate::{AcpState, bridge_asker, update_notification};
+use crate::update::update_notification;
+use crate::{AcpState, bridge_asker};
 
 pub(crate) type Built = Result<(AgentSession, Arc<SubagentHost>), String>;
 
