@@ -230,5 +230,6 @@ edited by hand.
 - [D249](adr/d249.md) - the dist binary budget is a measured ratchet under a hard cap of 8 MiB, not...
 - [D253](adr/d253.md) - the hashline shapes the patch docs call WRONG are refused, not repaired...
 - [D254](adr/d254.md) - The plan tool keeps recording into `.yi/plans/` under the process cwd, as today
+- [D259](adr/d259.md) - judge replay is stage 0's falsification test
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

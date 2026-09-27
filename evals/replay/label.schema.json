@@ -1,0 +1,24 @@
+{
+ "type": "object",
+ "required": [
+  "label",
+  "objection",
+  "quote"
+ ],
+ "properties": {
+  "label": {
+   "type": "string",
+   "enum": [
+    "objected",
+    "check_revealed",
+    "accepted"
+   ]
+  },
+  "objection": {
+   "type": "string"
+  },
+  "quote": {
+   "type": "string"
+  }
+ }
+}

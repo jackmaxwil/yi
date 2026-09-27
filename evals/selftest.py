@@ -36,6 +36,7 @@ import axes  # noqa: E402
 import yi_usage  # noqa: E402
 import test_refine  # noqa: E402
 import test_levers  # noqa: E402
+import test_judge_replay  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 EVENTS = FIXTURES / "ask_events.jsonl"
@@ -571,8 +572,17 @@ def check_levers():
     assert yi_usage.levers_label({}) == "" and len(yi_usage.levers_label(environ)) == len("+levers") + 12
 
 
+def check_judge_replay():
+    """D258: the readers on recorded transcripts, blindness, quote bytes, the caps and the metrics."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_judge_replay)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 14 and result.wasSuccessful(), report.getvalue()
+
+
 CHECKS = (
     check_surface,
+    check_judge_replay,
     check_graph_refiner,
     check_levers,
     check_cost_cap,

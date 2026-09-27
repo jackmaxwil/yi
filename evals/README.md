@@ -22,6 +22,7 @@ levers.py                    the levers manifest, floors and the two gates (D220
 levers/                      levers.json, default.json, floors.json; split.json (development, validation, final task groups)
 graph/refine.py              offline refiner for the procedural graph (D219): proposals in, a held-out gate, rejection memory
 orient_census.py             read-only census of route telemetry and get_context packets in session files
+judge_replay.py              stage 0 judge replay over recorded sessions, read-only (D259); replay/ holds its prompts and schemas
 rule_fires.py                labelled haystack lanes against what the rule matcher can see
 journeys/ab.py               journey prompts under one prompt ref, scored by the session-mining extractor
 drivers/                     harbor sweep drivers, spend and wall caps (drivers/README.md)
@@ -192,6 +193,77 @@ covers the scenario schema and the census with no binary and no key. A
 real-model run refuses without `OPENROUTER_API_KEY` and without `--cap-usd`,
 naming the missing precondition and never a key value, and prints its
 `docs/eval-ledger.md` row.
+
+## Judge replay (D259)
+
+```
+python3 evals/judge_replay.py all --dry --binary target/debug/yi --model faux/faux-1
+python3 evals/judge_replay.py extract --corpus yi:$HOME/.yi/sessions \
+    --corpus claude:$HOME/.claude/projects --out runs/replay
+python3 evals/judge_replay.py label --out runs/replay --model <provider/model> --cap-usd 3 --jobs 4
+python3 evals/judge_replay.py judge --out runs/replay --model <provider/model> --split fit \
+    --limit 200 --cap-usd 3 --jobs 4
+python3 evals/judge_replay.py match --out runs/replay --model <provider/model> --cap-usd 1
+python3 evals/judge_replay.py report --out runs/replay
+python3 evals/judge_replay.py mark --out runs/replay <boundary-id> objected
+```
+
+Stage 0 of `docs/plans/2026-09-24-seven-primitives.md`: does a judge that reads the owner's
+words by address, and nothing after the boundary, predict the owner's first objection? A
+boundary is a human message whose nearest message ancestor on the session tree is an assistant
+turn end. `extract` (free) writes `boundaries.jsonl`: the intent record (file, entry id and text
+of every earlier human message on that tree path), the turn (final text, one line per tool
+call), the next message and the agent's reply to it. Sessions split 70/30 into `fit` and
+`held-out` by the hash of the file name. `label` writes `labels.jsonl` (`objected`,
+`check_revealed`, `accepted`), `mark` writes the owner's overrides to `marks.jsonl`, which win.
+`judge` writes `verdicts/<model>-<prompt sha256>.jsonl`, `--limit` taking up to half positives,
+and resolves every quote to a UTF-8 byte range of the named message. `match` asks, for each
+positive the judge flagged, whether an objection names the owner's. `report` prints, per corpus
+and split, n, positive rate, citation resolution, recall, specificity, balanced accuracy with a
+session bootstrap 95% interval, catch rate and cost; the two no-judge baselines (0.5 by
+construction); the gate line, PASS iff held-out resolution >= 0.95 and the interval's lower
+bound > 0.5; and every judge run that has touched held-out, so tuning on it shows. Tune on `fit`.
+
+What counts as the owner, surveyed on 2026-09-26 over 437 Yi files and 225 top-level Claude
+Code transcripts:
+
+- Yi: a `user` message, except in a child session (a `parentSessionId` header, or a file under
+  `sub-*`: the corpus's `rlm-*/sub-*` children carry no header link) and except the runtime's
+  own user-role notices: `[subagent …]`, `<ipython_state_restored>` and `[host] request`.
+- Claude Code: 49,617 of 54,166 `user` entries are tool results. Skipped besides: `isMeta`
+  (skill bodies, command caveats, image notes), `isCompactSummary`, an `origin` other than
+  `human` (1,699 `<task-notification>` entries), slash commands (`<command-name>`,
+  `<command-message>`: typed, but the text is the harness's template), `<local-command-stdout>`,
+  `<create-pr-command>` (a button) and `[Request interrupted …]`. A leading `<system-reminder>`
+  block (38 messages) is cut and the typed rest kept, its byte offset recorded. A prompt typed
+  mid-turn is an `attachment` of type `queued_command` with `commandMode` `prompt` (163): the
+  owner's words, in the intent record. Files under `subagents/` are skipped; `isSidechain`
+  appears only there.
+
+The corpus that day: 72 Yi boundaries in 35 sessions (17 held-out), 1,403 Claude Code
+boundaries in 177 sessions (485 held-out).
+
+Each call is `yi ask --json --confirm --here --schema replay/<phase>.schema.json` in an empty
+temporary cwd under a temporary HOME (kernel prewarm off), its session under
+`--out/sessions/<phase>`; `yi ask` runs in-process and never reaches the serve daemon, so no
+`--solo`. With no terminal `--confirm` refuses every tool that is not read-only, but `read`,
+`grep` and `glob` still run anywhere outside the credential stores, so a judge could read a
+transcript past its boundary: the prompt forbids tools, each row counts the calls its model
+made, and the report names the verdicts that ran one. Keys come from the environment only,
+since the HOME is temporary; a refusal before any request (exit 2 or 4) stops the phase. Two
+caps speak where they cut: `intent_chars=60000` drops the oldest messages, `digest_head=120`
+shortens a tool-call head. The prompt rides argv, so an input over `argv_bytes=512000` is not
+sent and its row says so. Cost is the provider's `usage.cost.total` (E14); a call in flight
+when `--cap-usd` trips still lands, so a phase overshoots by at most `--jobs` - 1 calls.
+
+A real run is the owner's: capped, and ledgered in `docs/eval-ledger.md` with the model, the
+prompt hash and the gate line before any claim cites it. `--dry` is faux only, answers with
+host-built JSON, and checks that no file under the corpus changed; it rides
+`just postmerge-evals`. `fixtures/replay/yi/` is one real faux session driven over `yi acp`
+(prompt, prompt, `_yi/rewind` to the second, prompt; its `ext_state` entry omitted and its cwd
+replaced); `fixtures/replay/claude/` is three real transcripts and one subagent file with every
+text replaced and the structure kept, the entries read as typed by hand marked `typed <line>:`.
+`selftest.py::check_judge_replay` runs `tests/test_judge_replay.py`.
 
 ## Axes (D140)
 
