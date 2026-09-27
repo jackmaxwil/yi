@@ -1,7 +1,6 @@
 //! `kernel://<child>/var` is a parent reading a namespace that is not its own,
 //! so the proof is one map shared by two sessions the wiring built.
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;

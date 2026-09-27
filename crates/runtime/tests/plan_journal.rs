@@ -26,8 +26,7 @@
 //! of every kind this stage writes), `journal/canonical.md` (the canonical JSON
 //! and digest rule), `python/yi_runtime/tests/vectors/canonical.json`.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -465,7 +464,7 @@ fn kill_nine_between_append_and_checkpoint_recovers_the_record() -> TestResult {
         reason = "the kill-nine row needs a real process to SIGKILL, and the test binary is it"
     )]
     let mut child = std::process::Command::new(std::env::current_exe()?)
-        .args(["--exact", "kill_nine_child", "--nocapture"])
+        .args(["--exact", "plan_journal::kill_nine_child", "--nocapture"])
         .env(KILL_CHILD_DIR, &*dir)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
