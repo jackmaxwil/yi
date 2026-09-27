@@ -433,7 +433,8 @@ fn wire_plan_request(
         .with_op_sink(ops)
         .with_liveness(liveness)
         .with_cwd(cwd.clone())
-        .with_owned(owned_roots(session, host));
+        .with_owned(owned_roots(session, host))
+        .with_owner_words(session.store_handle());
     // This session's host seats the juries (plan section 6.4). A verification never outlives
     // the run (D177): the verifier and every lane settle read the session's deadline too.
     let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)

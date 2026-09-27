@@ -21,7 +21,7 @@ pub fn schema() -> Value {
         "type": "object",
         "properties": {
             "op": {"type": "string", "enum": OPS, "description": "done/drop/rm also take a phase, or nothing for all"},
-            "list": {"type": "string", "description": "set: the checklist"},
+            "list": {"type": "string", "description": "set: the checklist; trailing `user://<n>` tokens on a row cite the user messages it serves"},
             "phases": {"type": "array", "items": {"type": "object"}, "description": "init: [{name, items: [label]}]"},
             "items": {"type": "array", "items": {"type": "string"}, "description": "init (flat, one phase) or append: labels to add"},
             "phase": {"type": "string", "description": "append: the phase (created if missing); done/drop/rm: every item in it"},

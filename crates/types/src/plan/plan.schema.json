@@ -171,6 +171,24 @@
             "description": "present when state is done: verified_done, accepted_by_user or legacy_unverified; absent on an uncontracted todo",
             "type": "string"
           },
+          "intent": {
+            "description": "addresses of the owner's messages this todo serves (user://<n>); addresses only, never text",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "waived": {
+            "description": "owner messages this plan deliberately leaves unserved",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "address",
+                "reason"
+              ]
+            }
+          },
           "after": {
             "description": "sibling labels this todo follows; ordering only",
             "type": "array",

@@ -46,7 +46,7 @@ impl yi_runtime::plan::ops::OpSink for Nothing {
     }
 }
 
-fn faux_model() -> Model {
+pub(crate) fn faux_model() -> Model {
     let zero = || serde_json::Number::from(0u64);
     Model {
         id: "faux-1".to_owned(),
@@ -71,7 +71,7 @@ fn faux_model() -> Model {
     }
 }
 
-fn session(provider: Arc<ProviderStream>) -> AgentSession {
+pub(crate) fn session(provider: Arc<ProviderStream>) -> AgentSession {
     AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
@@ -83,7 +83,7 @@ fn session(provider: Arc<ProviderStream>) -> AgentSession {
     )
 }
 
-fn memory_store() -> yi_session::SharedSession {
+pub(crate) fn memory_store() -> yi_session::SharedSession {
     Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
         yi_session::SessionMetadata {
             id: "mirror".to_owned(),
@@ -119,6 +119,7 @@ fn spec(text: &str, delegated: bool) -> Result<TodoSpec, Box<dyn Error>> {
         delegation,
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     })
 }
 
@@ -383,8 +384,23 @@ async fn a_plan_opened_through_the_tool_is_the_sessions_todo_list() -> TestResul
     ]);
     let mut session = session(Arc::clone(&provider));
     session.attach_store(memory_store())?;
+    wired(&mut session, &root, provider);
+    session.prompt("open a plan")?;
+    session.wait_idle().await;
+    let list = session.todos().ok_or("no todo store")?.list();
+    assert!(plan_of(&list).is_some(), "{list:?}");
+    assert_eq!(
+        text::header(&list),
+        "Todos 1/2",
+        "the todo tool's done reached the plan"
+    );
+    Ok(())
+}
+
+/// A root session wired as `yi` wires one, its plans under `root/plans`.
+pub(crate) fn wired(session: &mut AgentSession, root: &Scratch, provider: Arc<ProviderStream>) {
     yi_runtime::attach_runtime(
-        &mut session,
+        session,
         yi_runtime::RuntimeWiring {
             provider,
             system_prompt: "sys".to_owned(),
@@ -413,16 +429,6 @@ async fn a_plan_opened_through_the_tool_is_the_sessions_todo_list() -> TestResul
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
-    session.prompt("open a plan")?;
-    session.wait_idle().await;
-    let list = session.todos().ok_or("no todo store")?.list();
-    assert!(plan_of(&list).is_some(), "{list:?}");
-    assert_eq!(
-        text::header(&list),
-        "Todos 1/2",
-        "the todo tool's done reached the plan"
-    );
-    Ok(())
 }
 
 // Dies with the resync in `apply_as`: the list keeps the finished plan's lock and every todo op

@@ -64,3 +64,32 @@ fn an_unknown_blocker_and_an_intercept_record_round_trip() -> TestResult {
     assert_eq!(serde_json::from_str::<TodoInterceptRecord>(&text)?, record);
     Ok(())
 }
+
+/// Dies with the intent dropped, renamed or reordered: a session file written with it must read
+/// back and re-serialize to the same bytes, and one written before it (v1 above) is unchanged.
+#[test]
+fn a_record_carrying_intent_round_trips_byte_for_byte() -> TestResult {
+    let raw = include_str!("fixtures/todo-record-intent-v1.json");
+    let record: TodoRecord = serde_json::from_str(raw)?;
+    let intents: Vec<Vec<String>> = record
+        .list
+        .items()
+        .map(|item| item.intent.iter().map(ToString::to_string).collect())
+        .collect();
+    assert_eq!(intents, [["user://2"], ["user://2"]]);
+    assert_eq!(serde_json::to_string(&record)?, raw);
+    Ok(())
+}
+
+/// Dies with a trailing citation left in the label, or a label word mistaken for one.
+#[test]
+fn trailing_user_addresses_on_a_row_are_its_intent() -> TestResult {
+    let item = yi_types::todo::TodoItem::from_text("wire the parser user://1 user://3")?;
+    assert_eq!(item.label.as_str(), "wire the parser");
+    let cited: Vec<String> = item.intent.iter().map(ToString::to_string).collect();
+    assert_eq!(cited, ["user://1", "user://3"]);
+    let plain = yi_types::todo::TodoItem::from_text("read the notes at user://notes")?;
+    assert_eq!(plain.label.as_str(), "read the notes at user://notes");
+    assert!(plain.intent.is_empty());
+    Ok(())
+}

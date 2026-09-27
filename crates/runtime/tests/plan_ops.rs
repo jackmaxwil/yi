@@ -130,6 +130,7 @@ fn spec(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
         delegation: None,
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     })
 }
 
@@ -161,6 +162,7 @@ fn delegated_spec(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
         delegation: Some(delegation()),
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     })
 }
 
@@ -673,6 +675,7 @@ fn a_cycle_is_refused_at_insert() -> TestResult {
         delegation: None,
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     };
     let out = init(&engine, vec![spec("first job")?, second])?;
     let refused = engine.apply(owner(Op::AddEdge {
@@ -1051,6 +1054,7 @@ fn start_refuses_unmet_after_edges() -> TestResult {
         delegation: Some(delegation()),
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     };
     let out = init(&engine, vec![spec("first job")?, follows])?;
     let refused = engine.apply(as_engine(Op::Start {
@@ -1278,6 +1282,7 @@ fn a_declared_output_is_validated_against_its_schema() -> TestResult {
             delegation: Some(declaring("local://schemas/report.json")?),
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         }],
     )?;
     let refused = engine.apply(owner(Op::Done {
@@ -1310,6 +1315,7 @@ fn a_declared_output_with_no_resolver_is_refused() -> TestResult {
             delegation: Some(declaring("local://schemas/report.json")?),
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         }],
     )?;
     engine.apply(owner(Op::Start {
@@ -1338,6 +1344,7 @@ fn a_product_that_satisfies_its_schema_completes() -> TestResult {
             delegation: Some(declaring("local://schemas/report.json")?),
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         }],
     )?;
     let out = engine.apply(owner(Op::Done {
@@ -1370,6 +1377,7 @@ fn a_schema_that_is_not_json_refuses_the_done_naming_the_schema() -> TestResult 
             delegation: Some(declaring("local://schemas/report.json")?),
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         }],
     )?;
     let refused = engine.apply(owner(Op::Done {
@@ -1426,6 +1434,7 @@ fn a_declared_output_must_resolve_at_done() -> TestResult {
             delegation: Some(declared),
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         }],
     )?;
     let unresolved = "local://nowhere/never-written.txt";
@@ -1474,6 +1483,7 @@ fn row(text: &str, state: TodoStateName, children: &[&str]) -> Result<SetRow, Bo
             contract: None,
             contract_hash: None,
             extra: Map::new(),
+            cites: Default::default(),
         });
     }
     let mut spec = spec(text)?;
@@ -2233,6 +2243,7 @@ mod contracts {
                     None => None,
                 },
                 children: Vec::new(),
+                cites: Default::default(),
             });
         }
         Ok((goal, specs))

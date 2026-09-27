@@ -49,6 +49,7 @@ fn todo(label: &str, state: TodoState) -> Result<Todo, Box<dyn Error>> {
         contract: None,
         contract_hash: None,
         extra: serde_json::Map::new(),
+        cites: Default::default(),
     })
 }
 
@@ -410,6 +411,7 @@ fn delegated(label: &str) -> Result<yi_runtime::plan::ops::TodoSpec, Box<dyn Err
         }),
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     })
 }
 
@@ -928,6 +930,7 @@ fn an_engine_never_resolves_or_conflicts_over_another_sessions_plan() -> TestRes
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         })
     };
@@ -984,6 +987,7 @@ fn a_lost_ledger_write_does_not_orphan_the_plan_it_opened() -> TestResult {
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         })
     };

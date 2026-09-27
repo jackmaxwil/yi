@@ -150,6 +150,7 @@ fn parse_specs(value: &Value, what: &str) -> Fallible<Vec<TodoSpec>> {
                 delegation,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }),
             Some(raw) => {
                 let count = raw
@@ -162,6 +163,7 @@ fn parse_specs(value: &Value, what: &str) -> Fallible<Vec<TodoSpec>> {
                         delegation: delegation.clone(),
                         contract: None,
                         children: Vec::new(),
+                        cites: Default::default(),
                     });
                 }
             }
