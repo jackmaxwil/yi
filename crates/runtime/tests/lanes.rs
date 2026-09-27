@@ -33,11 +33,9 @@
 //! disposition through `fail` or `drop` as any other non-accept exit does. Writing it from
 //! the repossession needs a road from the host into the engine's journal, which F3a owns.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
+use crate::support;
 use scratch::Scratch;
-#[path = "support/family.rs"]
-mod support;
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
