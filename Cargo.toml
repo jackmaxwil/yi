@@ -132,9 +132,10 @@ panic = "abort"
 strip = "symbols"
 debug = false
 incremental = false
-
-[profile.dist.package."*"]
-opt-level = "z"
+# No `[profile.dist.package."*"]`: the profile's own opt-level already covers every
+# dependency, and a `"*"` override outranks build-override, so it also compiled syn, serde_derive
+# and every build script at "z" — 20 s more CPU and 5.5 s longer before the final link,
+# for code that never reaches the binary.
 
 # The orb paints and pairs points every frame and on every state change; at "z" the pairing
 # took 59-326 ms and the painter 0.65 ms a frame, at 3 about a fifth and a third of that.

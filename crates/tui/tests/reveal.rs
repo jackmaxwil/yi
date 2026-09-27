@@ -117,7 +117,7 @@ fn a_late_tick_reveals_one_step_not_a_screenful() -> TestResult {
     Ok(())
 }
 
-mod common;
+use crate::common;
 
 fn app_with_pace(pace: u16) -> yi_tui::app::App {
     yi_tui::app::App::new(

@@ -1,7 +1,7 @@
 //! The streaming commit path against its one invariant: what a message commits to scrollback,
 //! slice by slice, is what the history rebuilds on a resize.
 
-mod common;
+use crate::common;
 
 use ratatui::text::Line;
 use serde_json::json;
