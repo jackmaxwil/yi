@@ -23,9 +23,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::crossterm::event::{
-    self as ct_event, DisableBracketedPaste, EnableBracketedPaste, Event as CtEvent,
-};
+use ratatui::crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, Event as CtEvent};
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -104,12 +102,18 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
     Ok(steps)
 }
 
-const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// The idle tick: request deadlines, the list poll and animations advance at least this often.
+const IDLE_POLL: Duration = Duration::from_millis(50);
 
 fn drain(app: &mut App, outbound: &Outbound, events: &std::sync::mpsc::Receiver<ClientEvent>) {
+    let mut span = yi_types::trace::span("console.drain");
+    let mut count = 0_u64;
     while let Ok(event) = events.try_recv() {
+        count = count.saturating_add(1);
         app.reduce_client(outbound, event);
     }
+    span.set("events", count);
+    let _tick = yi_types::trace::span("console.tick");
     app.tick(outbound);
 }
 
@@ -122,8 +126,12 @@ fn draw<B: Backend>(
         return Ok(());
     }
     app.dirty = false;
+    let _span = yi_types::trace::span("console.draw");
     terminal.draw(|frame| {
+        let computing = yi_types::trace::span("console.compute_view");
         let mut view = render::compute_view(app, frame.area(), theme);
+        drop(computing);
+        let _rendering = yi_types::trace::span("console.render");
         render::render(app, frame, &mut view, theme);
         app.selected = match app.selection {
             Some(selection) => crate::select::selected(
@@ -150,7 +158,10 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
         ),
         detect_dark(std::env::var("COLORFGBG").ok().as_deref()),
     );
-    let (events, outbound, threads) = client::spawn(options.socket.clone());
+    let setup = yi_types::trace::span("console.setup");
+    yi_tui::highlight::prewarm();
+    let (event_tx, events) = client::events();
+    let (outbound, threads) = client::spawn(options.socket.clone(), event_tx.clone());
     let mut app = App::new(options.root.clone(), theme);
     app.autostart = options.autostart;
     app.kitty = crate::kitty::supported(
@@ -197,7 +208,12 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
         }
     };
 
+    let stop_input = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let input = client::spawn_input(event_tx, std::sync::Arc::clone(&stop_input));
+    drop(setup);
     let code = run_interactive(&mut app, &mut terminal, &events, &outbound, &theme);
+    stop_input.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = input.join();
     restore_terminal();
     outbound.shutdown();
     drop(events);
@@ -216,30 +232,32 @@ fn run_interactive(
     // (payload length, rect) of the placed image; unchanged frames skip the
     // retransmit entirely.
     let mut placed: Option<(usize, ratatui::layout::Rect)> = None;
-    let mut last_draw = Instant::now()
-        .checked_sub(FRAME_INTERVAL)
-        .unwrap_or_else(Instant::now);
+    let mut scheduler = yi_tui::frame::FrameScheduler::default();
     while !app.state.quit {
         drain(app, outbound, events);
-        match ct_event::poll(Duration::from_millis(50)) {
-            Ok(true) => {
-                let Ok(event) = ct_event::read() else {
-                    return 1;
-                };
-                app.handle_event(outbound, event);
-                while let Ok(true) = ct_event::poll(Duration::ZERO) {
-                    let Ok(event) = ct_event::read() else { break };
-                    app.handle_event(outbound, event);
-                }
-            }
-            Ok(false) => {}
-            Err(error) => {
+        if app.dirty {
+            scheduler.request();
+        }
+        let wake = scheduler
+            .poll_timeout(Instant::now())
+            .min(IDLE_POLL)
+            .min(orb_wake(app));
+        // Incident: a 50 ms input poll delayed every daemon frame; any event now wakes the loop.
+        match events.recv_timeout(wake) {
+            Ok(ClientEvent::InputClosed(error)) => {
                 eprintln!("error: input: {error}");
                 return 1;
             }
+            Ok(event) => app.reduce_client(outbound, event),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return 1,
         }
-        if app.dirty && last_draw.elapsed() >= FRAME_INTERVAL {
-            last_draw = Instant::now();
+        drain(app, outbound, events);
+        if app.dirty {
+            scheduler.request();
+        }
+        if scheduler.should_draw(Instant::now()) {
+            let start = Instant::now();
             // The whole frame lands inside one synchronized update, so a
             // split-ratio animation step can never tear.
             let mut out = std::io::stdout();
@@ -257,11 +275,17 @@ fn run_interactive(
             }
             if kitty_ok {
                 use std::io::Write;
-                place_chat_orbs(app, &mut out);
                 place_avatars(app, &mut out);
                 place_notebook_image(app, &mut out, &mut placed);
                 let _ = out.flush();
             }
+            scheduler.mark_drawn(start, Instant::now());
+        }
+        if kitty_ok {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            place_chat_orbs(app, &mut out);
+            let _ = out.flush();
         }
     }
     0
@@ -287,6 +311,21 @@ fn place_avatars(app: &mut App, out: &mut std::io::Stdout) {
         .map(|hits| hits.avatars.clone())
         .unwrap_or_default();
     app.avatars.sync(out, &rows);
+}
+
+fn orb_wake(app: &App) -> Duration {
+    use crate::model::PaneContent;
+    app.state
+        .panes
+        .values()
+        .filter_map(|pane| match &pane.content {
+            PaneContent::Session {
+                chat: Some(chat), ..
+            } if chat.app.orb_animating() => Some(chat.orb.wake()),
+            _ => None,
+        })
+        .min()
+        .unwrap_or(IDLE_POLL)
 }
 
 /// One orb per chat pane, each on its own image ids; only the focused pane animates.
@@ -386,7 +425,8 @@ fn join_with_deadline(threads: client::ClientThreads) {
 /// .ruler/085-tui.md drive contract for this crate).
 pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let theme = Theme::new(ColorTier::Ansi16, true);
-    let (events, outbound, threads) = client::spawn(options.socket.clone());
+    let (event_tx, events) = client::events();
+    let (outbound, threads) = client::spawn(options.socket.clone(), event_tx);
     let mut app = App::new(options.root.clone(), theme);
     app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;

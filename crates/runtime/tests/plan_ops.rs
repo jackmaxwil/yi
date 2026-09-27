@@ -221,6 +221,40 @@ fn an_engine_init_on_a_fresh_directory_publishes_the_gitignore() -> TestResult {
     Ok(())
 }
 
+/// D254: the schema is a build output of `PLAN_SCHEMA`, republished on every open, never a
+/// tracked document unlike `plan.json`; git's own ignore rules are the ground truth here, not
+/// a string match on our own write.
+#[test]
+fn the_schema_dir_is_git_ignored_after_a_publish() -> TestResult {
+    let scratch = Scratch::new("yi-plan-ops-schema-ignore")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test asserts against git's own ignore rules, not our own string"
+    )]
+    let init = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .arg(&scratch)
+        .status()?;
+    assert!(init.success(), "git init failed");
+    let plans = scratch.join(".yi/plans");
+    std::fs::create_dir_all(&plans)?;
+    PlanStore::open(plans)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test asserts against git's own ignore rules, not our own string"
+    )]
+    let ignored = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&scratch)
+        .args(["check-ignore", "-q", ".yi/schemas/plan.schema.json"])
+        .status()?;
+    assert!(
+        ignored.success(),
+        "the generated schema is not ignored by git"
+    );
+    Ok(())
+}
+
 #[test]
 fn width_is_the_family_cap_not_the_host() -> TestResult {
     // This replaces width_clamps_low_and_high, which pinned width(1) = 1 and width(2) = 1.
@@ -1996,6 +2030,65 @@ mod refusals {
             &ToolContext::new(std::env::temp_dir()),
         );
         assert!(!appended.is_error, "{appended:?}");
+        Ok(())
+    }
+
+    fn admitted(tool: &PlanTool, args: serde_json::Value) -> Result<String, Box<dyn Error>> {
+        let input = args.as_object().cloned().unwrap_or_default();
+        let output = tool.execute(input, &ToolContext::new(std::env::temp_dir()));
+        let text: String = output
+            .result
+            .content
+            .iter()
+            .map(|content| match content {
+                yi_types::message::Content::Text { text, .. } => text.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        if output.is_error {
+            return Err(text.into());
+        }
+        Ok(text)
+    }
+
+    /// Dies with `body` listing the running todo `render` had already led with: a probe
+    /// session's `plan start` printed `- running tablefmt by main` twice.
+    #[test]
+    fn a_started_todo_prints_its_running_row_once() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let init = serde_json::json!({"op": "init", "goal": "ship it", "todos": [{"label": "tablefmt"}, {"label": "docs"}]});
+        admitted(&tool, init)?;
+        let text = admitted(
+            &tool,
+            serde_json::json!({"op": "start", "label": "tablefmt"}),
+        )?;
+        let rows = text
+            .lines()
+            .filter(|line| line.starts_with("- running tablefmt"))
+            .count();
+        assert_eq!(rows, 1, "{text}");
+        Ok(())
+    }
+
+    /// Dies with the label refused through `Malformed`: one long label refused a whole init
+    /// naming neither its todo nor the cap, and the schema never stated the cap.
+    #[test]
+    fn an_over_long_init_label_names_its_todo_and_the_cap() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let todos = |label: String| serde_json::json!([{"label": "cut"}, {"label": label}]);
+        let text = refusal(
+            &tool,
+            serde_json::json!({"op": "init", "goal": "ship it", "todos": todos("é".repeat(81))}),
+        );
+        assert!(
+            text.contains("init todos[1]: label is 81 chars, the cap is 80"),
+            "{text}"
+        );
+        let schema = tool.schema()["properties"]["todos"]["description"].to_string();
+        assert!(schema.contains("label (at most 80 chars)"), "{schema}");
+        let at_cap =
+            serde_json::json!({"op": "init", "goal": "ship it", "todos": todos("é".repeat(80))});
+        admitted(&tool, at_cap)?;
         Ok(())
     }
 }

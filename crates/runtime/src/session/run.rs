@@ -8,7 +8,7 @@ use yi_types::message::AgentMessage;
 
 use super::{
     RunParts, SessionError, Shared, Status, dispatch_ext, extensions_of, hooks, persist_message,
-    store_of,
+    record_store_error, store_of,
 };
 
 const LAST_WORD: &str = "[deadline] Time is up: no more tool calls. Write your final answer now from what you have, and say plainly what is unfinished.";
@@ -94,6 +94,7 @@ pub(super) fn enqueue(parts: &RunParts, entry: Queued) -> Delivery {
     if let Ok(mut queue) = parts.shared.steer.lock() {
         push(&mut queue, entry);
     }
+    parts.shared.mail.notify_waiters();
     if *status == Status::Running {
         return Delivery::Queued;
     }
@@ -104,6 +105,16 @@ pub(super) fn enqueue(parts: &RunParts, entry: Queued) -> Delivery {
     drop(status);
     launch(parts.clone(), prompt, None);
     Delivery::Woken
+}
+
+pub(super) fn unsaved_compaction(parts: &RunParts, error: &yi_session::SessionError) {
+    record_store_error(&parts.shared, error);
+    let notice =
+        format!("[compaction not saved: {error}; history left uncompacted, /compact retries]");
+    enqueue(
+        parts,
+        Queued::new(super::user_message(&notice), false, None),
+    );
 }
 
 pub(super) fn follow(parts: &RunParts, message: AgentMessage) -> bool {
@@ -225,6 +236,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
         let stores = Arc::clone(&shared);
         let notify = Arc::clone(&shared);
         let hook = on_compacted.clone();
+        let unsaved = parts.clone();
         config.maybe_compact = Some(crate::compaction::loop_hook(
             compactor,
             Arc::clone(&provider),
@@ -237,6 +249,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
                     hook();
                 }
             }),
+            Arc::new(move |error| unsaved_compaction(&unsaved, error)),
         ));
     }
     wire_queues_and_coupling(&mut config, &shared, &prompt);

@@ -79,13 +79,30 @@ impl Tool for GetContextTool {
 
 fn packet(symbol: Option<&str>, context: &ToolContext) -> String {
     let root = context.cwd.as_path();
+    // The grid calls wait on another process, so they run beside the heat and the walk.
+    let (roots, near, heat, skeleton) = std::thread::scope(|scope| {
+        let roots = scope.spawn(|| {
+            let _span = yi_types::trace::span("context.grid");
+            grid(context, &["roots"])
+        });
+        let near = scope.spawn(|| {
+            let _span = yi_types::trace::span("context.grid");
+            neighborhood(symbol, context)
+        });
+        let heat_span = yi_types::trace::span("context.heat");
+        let heat = change_heat(context);
+        drop(heat_span);
+        let _span = yi_types::trace::span("context.skeletons");
+        let skeleton = skeletons(root, symbol, heat.as_ref().ok(), context);
+        (joined(roots), joined(near), heat, skeleton)
+    });
     let layers: [(&str, LayerBody); 6] = [
         // Invariant: this tool only reads. `grid survey` charts the worktree,
         // so the packet takes a slice of an existing chart instead.
-        ("grid roots", grid(context, &["roots"])),
-        ("symbol neighborhood", neighborhood(symbol, context)),
-        ("file skeletons", skeletons(root, context)),
-        ("git change heat", git_heat(context)),
+        ("grid roots", roots),
+        ("symbol neighborhood", near),
+        ("file skeletons", skeleton),
+        ("git change heat", git_heat(heat)),
         ("gate commands", gates(root)),
         ("prior issues", issues(root, context)),
     ];
@@ -106,6 +123,12 @@ fn packet(symbol: Option<&str>, context: &ToolContext) -> String {
         out.push('\n');
     }
     out
+}
+
+fn joined(layer: std::thread::ScopedJoinHandle<'_, LayerBody>) -> LayerBody {
+    layer
+        .join()
+        .unwrap_or_else(|_| Err("the layer's thread panicked".to_owned()))
 }
 
 fn clamp(name: &str, mut body: String) -> String {
@@ -161,7 +184,12 @@ fn hidden(context: &ToolContext, path: &Path) -> bool {
         .any(|denied| normalized.starts_with(yi_permission::lexical_normalize(denied)))
 }
 
-fn skeletons(root: &Path, context: &ToolContext) -> LayerBody {
+fn skeletons(
+    root: &Path,
+    symbol: Option<&str>,
+    heat: Option<&Heat>,
+    context: &ToolContext,
+) -> LayerBody {
     let mut files: Vec<PathBuf> = Vec::new();
     crate::builtins::walk_files(root, &mut |path| {
         let interesting = path
@@ -177,19 +205,32 @@ fn skeletons(root: &Path, context: &ToolContext) -> LayerBody {
     if files.is_empty() {
         return Err("no source files under the working directory".to_owned());
     }
-    let mut named: Vec<String> = files
+    // Incident: name order spent the whole layer on the alphabetically first
+    // crate, so a symbol's own file was never shown.
+    let mut ranked: Vec<(u8, usize, String)> = files
         .iter()
         .map(|path| {
-            path.strip_prefix(root)
+            let name = path
+                .strip_prefix(root)
                 .unwrap_or(path)
                 .to_string_lossy()
-                .into_owned()
+                .into_owned();
+            // ponytail: heat keys are repo-root relative, so from a subdirectory
+            // cwd nothing matches; the order line then reports 0 with heat.
+            let hot = heat.and_then(|heat| heat.counts.get(&name)).copied();
+            (symbol_rank(path, symbol), hot.unwrap_or(0), name)
         })
         .collect();
-    named.sort();
-    let total = named.len();
-    let mut out = String::new();
-    for name in named.iter().take(SKELETON_FILES) {
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then(right.1.cmp(&left.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+    let total = ranked.len();
+    let mut out = order_line(&ranked, symbol);
+    for (_, _, name) in ranked.iter().take(SKELETON_FILES) {
         out.push_str(name);
         out.push('\n');
         for line in skeleton_lines(&root.join(name)) {
@@ -200,10 +241,42 @@ fn skeletons(root: &Path, context: &ToolContext) -> LayerBody {
     }
     if total > SKELETON_FILES {
         out.push_str(&format!(
-            "[skeletons truncated: {SKELETON_FILES} of {total} files]\n"
+            "[skeletons truncated: {SKELETON_FILES} of {total} files at the {SKELETON_FILES}-file cap; \
+             read a directory for its skeletons, or pass symbol to rank its files first]\n"
         ));
     }
     Ok(out.trim_end().to_owned())
+}
+
+/// 2 defines the symbol, 1 only mentions it, 0 neither or no symbol given.
+fn symbol_rank(path: &Path, symbol: Option<&str>) -> u8 {
+    let Some(symbol) = symbol else { return 0 };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return 0;
+    };
+    if text
+        .lines()
+        .any(|line| is_decl(line) && line.contains(symbol))
+    {
+        2
+    } else {
+        u8::from(text.contains(symbol))
+    }
+}
+
+/// Invariant: printed first, because the layer clamp cuts from the end.
+fn order_line(ranked: &[(u8, usize, String)], symbol: Option<&str>) -> String {
+    let count =
+        |keep: fn(&(u8, usize, String)) -> bool| ranked.iter().filter(|row| keep(row)).count();
+    let hot = count(|row| row.1 > 0);
+    match symbol {
+        Some(symbol) => format!(
+            "[order: {} defining `{symbol}`, {} mentioning it, {hot} with change heat, then name]\n",
+            count(|row| row.0 == 2),
+            count(|row| row.0 == 1),
+        ),
+        None => format!("[order: {hot} with change heat, then name]\n"),
+    }
 }
 
 fn skeleton_lines(path: &Path) -> Vec<String> {
@@ -237,7 +310,12 @@ pub(crate) fn is_decl(line: &str) -> bool {
     DECL_HEADS.iter().any(|head| trimmed.starts_with(head))
 }
 
-fn git_heat(context: &ToolContext) -> LayerBody {
+struct Heat {
+    counts: BTreeMap<String, usize>,
+    truncated: bool,
+}
+
+fn change_heat(context: &ToolContext) -> Result<Heat, String> {
     let mut spawn = command("git");
     spawn
         .arg("-C")
@@ -256,18 +334,26 @@ fn git_heat(context: &ToolContext) -> LayerBody {
             capture.stderr.lines().next().unwrap_or_default()
         ));
     }
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for line in capture.stdout.lines().filter(|line| !line.is_empty()) {
-        let count = counts.entry(line).or_default();
+        let count = counts.entry(line.to_owned()).or_default();
         *count = count.saturating_add(1);
     }
     if counts.is_empty() {
         return Err("git log named no changed files".to_owned());
     }
-    let total = counts.len();
+    Ok(Heat {
+        counts,
+        truncated: capture.truncated,
+    })
+}
+
+fn git_heat(heat: Result<Heat, String>) -> LayerBody {
+    let heat = heat?;
+    let total = heat.counts.len();
     // A tie on count would otherwise order by hash-map chance; the packet is
     // compared byte for byte across runs.
-    let mut rows: Vec<(usize, &str)> = counts.into_iter().map(|(p, c)| (c, p)).collect();
+    let mut rows: Vec<(usize, &str)> = heat.counts.iter().map(|(p, c)| (*c, p.as_str())).collect();
     rows.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
     let mut out = String::new();
     for (count, path) in rows.iter().take(HEAT_ROWS) {
@@ -276,7 +362,7 @@ fn git_heat(context: &ToolContext) -> LayerBody {
     if total > HEAT_ROWS {
         out.push_str(&format!("[heat truncated: {HEAT_ROWS} of {total} paths]\n"));
     }
-    if capture.truncated {
+    if heat.truncated {
         out.push_str("[git log output was capped before counting]\n");
     }
     Ok(out.trim_end().to_owned())

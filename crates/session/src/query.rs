@@ -1,5 +1,5 @@
-use serde::Serialize;
 use serde_json::{Map, Value};
+pub use yi_types::wire::{SessionMetadata, SessionStats};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EntryOrder {
@@ -41,52 +41,17 @@ pub struct LogOptions {
     pub limit: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryHit {
     pub entry_id: String,
     pub entry_type: String,
     pub snippet: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionStats {
-    pub message_count: u64,
-    pub cached_tokens: i64,
-    pub uncached_tokens: i64,
-    pub total_tokens: i64,
-    pub cost_total: f64,
-}
-
-impl SessionStats {
-    pub fn zero() -> Self {
-        Self {
-            message_count: 0,
-            cached_tokens: 0,
-            uncached_tokens: 0,
-            total_tokens: 0,
-            cost_total: 0.0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanePointer {
     pub lane: String,
     pub leaf_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionMetadata {
-    pub id: String,
-    pub created_at: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -23,6 +23,9 @@ pub const PLAN_CAP_BYTES: usize = 32 * 1024;
 pub const CHECKPOINT_NAME: &str = "plan.json";
 pub const JOURNAL_NAME: &str = "ops.jsonl";
 const GITIGNORE: &str = "*/ops.jsonl\n";
+/// D254: the schema is a build output of `PLAN_SCHEMA`, republished on every open; unlike
+/// `plan.json` it is never a tracked document, so the whole directory is ignored.
+const SCHEMA_GITIGNORE: &str = "*\n";
 const SCHEMA_DIR: &str = "schemas";
 const SCHEMA_NAME: &str = "plan.schema.json";
 const LEASE_NAME: &str = ".lease";
@@ -305,11 +308,15 @@ impl PlanStore {
             return Ok(());
         }
         let schemas = parent.join(SCHEMA_DIR);
+        std::fs::create_dir_all(&schemas).map_err(io_at(&schemas))?;
+        let schema_ignore = schemas.join(".gitignore");
+        if !schema_ignore.exists() {
+            std::fs::write(&schema_ignore, SCHEMA_GITIGNORE).map_err(io_at(&schema_ignore))?;
+        }
         let target = schemas.join(SCHEMA_NAME);
         if std::fs::read(&target).is_ok_and(|bytes| bytes == PLAN_SCHEMA.as_bytes()) {
             return Ok(());
         }
-        std::fs::create_dir_all(&schemas).map_err(io_at(&schemas))?;
         let tmp = schemas.join(format!(".{SCHEMA_NAME}.{}", nonce()));
         std::fs::write(&tmp, PLAN_SCHEMA).map_err(io_at(&tmp))?;
         std::fs::rename(&tmp, &target).map_err(io_at(&target))

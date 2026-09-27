@@ -447,6 +447,20 @@ fn slash_verbs_run_on_the_worker_and_unknown_ones_are_refused() -> TestResult {
             .is_some_and(|frame| frame["error"].is_object()),
         "an unknown verb is an error, not a prompt: {unknown:?}"
     );
+    let heartbeat = client.request(
+        "6",
+        "_yi/slash",
+        json!({"sessionId": session_id, "line": "heartbeat every 10m watch the build"}),
+    )?;
+    assert!(
+        text_of(&heartbeat).is_some(),
+        "/heartbeat routes through the worker: {heartbeat:?}"
+    );
+    let changed = updates_of(&heartbeat, "_yi/heartbeat_changed");
+    assert!(
+        !changed.is_empty(),
+        "/heartbeat over _yi/slash must still notify the client (C9): {heartbeat:?}"
+    );
     client.finish()
 }
 
@@ -792,6 +806,50 @@ fn resume_replays_the_branch_verbatim_and_rewind_reloads_it() -> TestResult {
     client.finish()
 }
 
+/// `replayUpdates: false` drops the standard updates a yi client would decode twice; the
+/// default resume keeps them for generic ACP clients.
+#[test]
+fn resume_can_opt_out_of_the_standard_replay_updates() -> TestResult {
+    let dir = temp_dir("replay-opt-out")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    prompt_until_idle(&mut client, "3", &session_id, "just the extension")?;
+
+    let lean = client.request(
+        "4",
+        "session/resume",
+        json!({"sessionId": session_id, "replayFrom": 0, "replayUpdates": false}),
+    )?;
+    let standard = ["user_message", "agent_message"];
+    assert!(
+        standard
+            .iter()
+            .all(|kind| updates_of(&lean, kind).is_empty()),
+        "no standard replay updates when opted out: {lean:?}"
+    );
+    let replays = updates_of(&lean, "_yi/replay");
+    assert_eq!(replays.len(), 1, "the extension still replays: {lean:?}");
+    let entries = replays[0]["params"]["update"]["entries"]
+        .as_array()
+        .map_or(0, Vec::len);
+    assert!(entries > 0, "the replay carries the branch");
+    let response = lean.last().ok_or("no resume response")?;
+    assert_eq!(response["result"]["replayedTo"], entries);
+
+    let full = client.request(
+        "5",
+        "session/resume",
+        json!({"sessionId": session_id, "replayFrom": 0}),
+    )?;
+    assert!(
+        standard
+            .iter()
+            .all(|kind| !updates_of(&full, kind).is_empty()),
+        "the default resume still sends the standard updates: {full:?}"
+    );
+    client.finish()
+}
+
 fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
     #[expect(
         clippy::disallowed_methods,
@@ -827,12 +885,15 @@ fn two_sessions_on_one_worker_hold_two_lanes() -> Result<(), Box<dyn Error>> {
     let mut client = AcpClient::spawn(&dir)?;
     client.request("1", "initialize", json!({"protocolVersion": 2}))?;
     let mut ids = Vec::new();
+    let is_workdir = |frame: &Value| frame["params"]["update"]["sessionUpdate"] == "_yi/workdir";
+    let mut workdirs = 0;
     for id in ["2", "3"] {
         let frames = client.request(
             id,
             "session/new",
             json!({"cwd": dir.display().to_string(), "mcpServers": []}),
         )?;
+        workdirs += frames.iter().filter(|frame| is_workdir(frame)).count();
         let last = frames.last().ok_or("no response")?;
         assert!(
             last.get("error").is_none(),
@@ -844,6 +905,11 @@ fn two_sessions_on_one_worker_hold_two_lanes() -> Result<(), Box<dyn Error>> {
                 .ok_or("no sessionId")?
                 .to_owned(),
         );
+    }
+    // Each lane is claimed after its `session/new` answers and named once it is held.
+    while workdirs < 2 {
+        client.read_until(is_workdir)?;
+        workdirs += 1;
     }
     let worktrees = git_in(&dir, &["worktree", "list", "--porcelain"])?;
     for id in &ids {
@@ -878,11 +944,14 @@ fn attach_names_the_lane_path_not_the_launch_root() -> Result<(), Box<dyn Error>
     )?;
     let mut client = AcpClient::spawn(&dir)?;
     client.request("1", "initialize", json!({"protocolVersion": 2}))?;
-    let frames = client.request(
+    // The lane is claimed after `session/new` answers, so the update follows the response.
+    client.request(
         "2",
         "session/new",
         json!({"cwd": dir.display().to_string(), "mcpServers": []}),
     )?;
+    let frames =
+        client.read_until(|frame| frame["params"]["update"]["sessionUpdate"] == "_yi/workdir")?;
     let workdir = frames
         .iter()
         .filter(|frame| frame["method"] == "session/update")

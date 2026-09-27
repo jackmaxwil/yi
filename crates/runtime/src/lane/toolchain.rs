@@ -129,6 +129,7 @@ fn contained(tree: &Path, home: &Path, argv: &[&str]) -> Option<(String, Vec<Str
 
 /// Invariant: a matching lockfile hash makes the claim git-only.
 pub fn sync(pool: &Pool, slot: SlotIndex, tree: &Path) -> Result<Option<String>, LaneError> {
+    let _span = yi_types::trace::span("lane.toolchain_sync");
     let Some(toolchain) = detect(tree) else {
         return Ok(None);
     };
