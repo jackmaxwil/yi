@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use std::error::Error;
 use std::sync::Arc;
@@ -15,8 +15,7 @@ use yi_tui::keymap::default_keymap;
 use yi_types::message::StopReason;
 use yi_types::model::{Model, ModelCost};
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;

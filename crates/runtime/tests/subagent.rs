@@ -1,9 +1,7 @@
 //! The host's own rules for a child: how an exit reads, and what a spawn may draw (D215).
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-#[path = "support/family.rs"]
-mod support;
+use crate::scratch;
+use crate::support;
 
 use std::time::{Duration, Instant};
 

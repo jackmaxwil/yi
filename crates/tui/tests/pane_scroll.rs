@@ -10,7 +10,7 @@ use yi_tui::colors::{ColorTier, Theme};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, StopReason};
 
-mod common;
+use crate::common;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
