@@ -135,6 +135,8 @@ impl Tool for WriteTool {
     }
 }
 
+/// Name order within each directory: the filesystem's own order differs between machines, and
+/// every cap and page over this walk would keep a different set.
 pub(crate) fn walk_files(root: &Path, visit: &mut dyn FnMut(&Path) -> bool) {
     let mut ignore = crate::ignore::Ignore::default();
     let mut stack = vec![root.to_path_buf()];
@@ -143,19 +145,23 @@ pub(crate) fn walk_files(root: &Path, visit: &mut dyn FnMut(&Path) -> bool) {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
-        for entry in entries.flatten() {
+        let mut entries: Vec<fs::DirEntry> = entries.flatten().collect();
+        entries.sort_by_key(fs::DirEntry::file_name);
+        let mut subdirs: Vec<PathBuf> = Vec::new();
+        for entry in entries {
             let path = entry.path();
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
             if file_type.is_dir() {
                 if !ignore.ignored(&path, true) {
-                    stack.push(path);
+                    subdirs.push(path);
                 }
             } else if file_type.is_file() && !ignore.ignored(&path, false) && !visit(&path) {
                 return;
             }
         }
+        stack.extend(subdirs.into_iter().rev());
     }
 }
 
