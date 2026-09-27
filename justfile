@@ -26,6 +26,9 @@ test:
     else
       cargo test --workspace
     fi
+    # A workspace build unifies proptest's regex-syntax, which links every Unicode table, so the
+    # table guards see only what the binary ships when yi-cli's graph resolves the features alone.
+    cargo test -p yi-cli -p yi-tui -p yi-tools --test highlight --test tools linked_tables
 
 # The lanes `check` runs, named so CI can run them as separate jobs.
 lint: fmt-check clippy
