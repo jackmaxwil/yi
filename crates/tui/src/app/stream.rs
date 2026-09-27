@@ -8,20 +8,23 @@ use std::time::{Duration, Instant};
 use ratatui::text::Line;
 use serde_json::Value;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult, apply};
-use yi_types::message::{AgentMessage, Content};
+use yi_types::message::AgentMessage;
 
 use super::{App, TaskState, UiEvent};
 use crate::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
+use crate::markdown::StableScan;
 use crate::motion::elapsed_ms;
 use crate::reveal::{FRAME, Reveal};
 use crate::transcript::{preview_lines, text_of, todo_finished};
 
-/// Both reveal cursors, their speed, and the events waiting behind them.
+/// Both reveal cursors, their speed, the events waiting behind them, and their cut scans.
 pub(crate) struct Pacing {
     pub(crate) prose: Reveal,
     pub(crate) thought: Reveal,
     pace: u16,
     pub(crate) held: VecDeque<UiEvent>,
+    prose_scan: StableScan,
+    thought_scan: StableScan,
 }
 
 impl Pacing {
@@ -31,12 +34,16 @@ impl Pacing {
             thought: Reveal::default(),
             pace,
             held: VecDeque::new(),
+            prose_scan: StableScan::default(),
+            thought_scan: StableScan::default(),
         }
     }
 
     pub(crate) fn reset(&mut self) {
         self.prose.reset();
         self.thought.reset();
+        self.prose_scan = StableScan::default();
+        self.thought_scan = StableScan::default();
     }
 
     pub(crate) fn drain(&mut self) {
@@ -134,7 +141,7 @@ impl App {
         // carry, so a fenced block commits whole or not at all.
         let shown = self.pacing.thought.shown();
         let stream =
-            crate::markdown::stable_stream(self.live_thought.get(..shown).unwrap_or_default());
+            (self.pacing.thought_scan).scan(self.live_thought.get(..shown).unwrap_or_default());
         let fenced = stream.reopen.is_some();
         let stable = if fenced { 0 } else { stream.cut };
         let mut cut = stable.max(self.live_thought_cut);
@@ -188,8 +195,10 @@ impl App {
     /// the whole prefix let trailing-blank trimming duplicate list items mid-stream.
     pub(super) fn commit_stable_prefix(&mut self) {
         let shown = self.pacing.prose.shown();
+        let scanning = yi_types::trace::span("tui.stable_stream");
         let stream =
-            crate::markdown::stable_stream(self.live_markdown.get(..shown).unwrap_or_default());
+            (self.pacing.prose_scan).scan(self.live_markdown.get(..shown).unwrap_or_default());
+        drop(scanning);
         if stream.cut > self.live_cut {
             self.commit_prose(stream.cut, true);
             self.live_reopen = stream.reopen;
@@ -200,12 +209,15 @@ impl App {
             .live_markdown
             .get(self.live_cut..shown)
             .unwrap_or_default();
-        if let Some(forced) = overflow_cut(
+        let cutting = yi_types::trace::span("tui.overflow_cut");
+        let overflow = overflow_cut(
             tail,
             crate::render::live_tail_rows(self.rows),
             width,
             |text| crate::markdown::render(text, inner, &theme).len(),
-        ) {
+        );
+        drop(cutting);
+        if let Some(forced) = overflow {
             let spaced = table_span(tail).is_some_and(|span| span.start == forced);
             self.commit_prose(self.live_cut + forced, spaced);
         }
@@ -224,10 +236,14 @@ impl App {
             .get(self.live_cut..cut)
             .unwrap_or_default()
             .to_owned();
+        let rendering = yi_types::trace::span("tui.commit_prose");
         let (lines, lang) = self.prose_block(&slice);
+        drop(rendering);
         self.live_lang = lang;
-        if !lines.is_empty() {
-            self.pending_commit.extend(lines);
+        self.pending_commit.extend(lines);
+        // Incident: a lone closing fence renders no rows; dropped here, it left the
+        // rest of the message rendering as code on every replay.
+        if !slice.is_empty() {
             self.retain(Cell::Assistant { markdown: slice });
         }
         self.live_cut = cut;
@@ -256,19 +272,19 @@ impl App {
     /// D145: a whole message (`Start`, `Done`, `Error`) opens or settles the stream;
     /// a delta grows the message `MessageStart` opened.
     pub(super) fn fold_stream(&mut self, event: &AssistantMessageEvent) {
+        let _span = yi_types::trace::span("tui.stream_delta");
         fold(&mut self.streaming, event);
         if let Some(AgentMessage::Assistant { content, .. }) = &self.streaming {
-            let content = content.clone();
-            self.arrive(&content);
+            self.live_markdown = crate::transcript::text_of(content);
+            self.live_thought = crate::transcript::thinking_of(content);
+            self.arrive();
         }
     }
 
     /// A snapshot of the message so far: the arrival feeds the rate, the cursors move on
     /// their own clock, and nothing commits before the reader has seen it.
-    pub(super) fn arrive(&mut self, content: &[Content]) {
+    fn arrive(&mut self) {
         let now = Instant::now();
-        self.live_markdown = crate::transcript::text_of(content);
-        self.live_thought = crate::transcript::thinking_of(content);
         self.pacing.prose.on_arrival(self.live_markdown.len(), now);
         self.pacing.thought.on_arrival(self.live_thought.len(), now);
         self.step_reveal(now);

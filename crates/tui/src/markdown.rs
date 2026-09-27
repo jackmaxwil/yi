@@ -8,6 +8,7 @@ use crate::wrap::wrap_line;
 
 const CODE_RAIL: &str = "│";
 const CODE_RAIL_INDENT: &str = "│ ";
+const OPTIONS: Options = Options::ENABLE_STRIKETHROUGH.union(Options::ENABLE_TABLES);
 
 /// Where the streamed source is safe to commit, and how to render a slice
 /// that starts past the cut.
@@ -20,36 +21,75 @@ pub struct StableStream {
     pub reopen: Option<String>,
 }
 
+thread_local! {
+    static WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Bytes this thread has scanned for cuts and rendered: what a streamed delta costs.
+pub fn work() -> (usize, usize) {
+    WORK.with(std::cell::Cell::get)
+}
+
+fn count(scanned: usize, rendered: usize) {
+    WORK.with(|work| {
+        let (was_scanned, was_rendered) = work.get();
+        work.set((was_scanned + scanned, was_rendered + rendered));
+    });
+}
+
 /// The §17.3 commit gate. Outside a fence only a blank line is stable (paragraphs re-wrap, lists
 /// renumber); inside a top-level fence every completed line is. Indented fences stay opaque.
 pub fn stable_stream(source: &str) -> StableStream {
-    let mut cut = 0;
-    let mut reopen = None;
-    let mut offset = 0;
+    StableScan::default().scan(source)
+}
+
+/// `stable_stream` resumed after the complete lines it has seen, so a delta costs its own
+/// bytes. An unfinished line cannot move the cut, so stopping before it changes nothing.
+#[derive(Default)]
+pub struct StableScan {
+    offset: usize,
+    cut: usize,
+    reopen: Option<String>,
     // (marker, open run length, top level, opening line)
-    let mut fence: Option<(char, usize, bool, String)> = None;
-    let mut previous_blank = false;
-    for line in source.split_inclusive('\n') {
-        let complete = line.ends_with('\n');
+    fence: Option<(char, usize, bool, String)>,
+    previous_blank: bool,
+}
+
+impl StableScan {
+    pub fn scan(&mut self, source: &str) -> StableStream {
+        let complete = source.rfind('\n').map_or(0, |at| at + 1);
+        if complete < self.offset || !source.is_char_boundary(self.offset) {
+            *self = Self::default();
+        }
+        let lines = source.get(self.offset..complete).unwrap_or_default();
+        count(lines.len(), 0);
+        for line in lines.split_inclusive('\n') {
+            self.step(line);
+        }
+        StableStream {
+            cut: self.cut,
+            reopen: self.reopen.clone(),
+        }
+    }
+
+    fn step(&mut self, line: &str) {
+        let end = self.offset + line.len();
         let trimmed = line.trim();
         let run = |marker: char| trimmed.chars().take_while(|ch| *ch == marker).count();
-        match &fence {
+        match &self.fence {
             Some((marker, open_len, top, open_line)) => {
                 let closes = run(*marker) >= *open_len && trimmed.chars().all(|ch| ch == *marker);
-                if closes && complete {
+                if closes {
                     if *top {
-                        cut = offset + line.len();
-                        reopen = None;
+                        (self.cut, self.reopen) = (end, None);
                     }
-                    fence = None;
-                } else if *top && complete {
-                    cut = offset + line.len();
-                    reopen = Some(open_line.clone());
+                    self.fence = None;
+                } else if *top {
+                    (self.cut, self.reopen) = (end, Some(open_line.clone()));
                 }
             }
             None => {
-                let backticks = run('`');
-                let tildes = run('~');
+                let (backticks, tildes) = (run('`'), run('~'));
                 if backticks >= 3 || tildes >= 3 {
                     let (marker, open_len) = if backticks >= 3 {
                         ('`', backticks)
@@ -58,21 +98,18 @@ pub fn stable_stream(source: &str) -> StableStream {
                     };
                     let top = line.starts_with(marker);
                     let open_line = line.trim_end_matches('\n').to_owned();
-                    if top && complete {
-                        cut = offset + line.len();
-                        reopen = Some(open_line.clone());
+                    if top {
+                        (self.cut, self.reopen) = (end, Some(open_line.clone()));
                     }
-                    fence = Some((marker, open_len, top, open_line));
-                } else if trimmed.is_empty() && !previous_blank && offset > 0 && complete {
-                    cut = offset + line.len();
-                    reopen = None;
+                    self.fence = Some((marker, open_len, top, open_line));
+                } else if trimmed.is_empty() && !self.previous_blank && self.offset > 0 {
+                    (self.cut, self.reopen) = (end, None);
                 }
             }
         }
-        previous_blank = trimmed.is_empty();
-        offset += line.len();
+        self.previous_blank = trimmed.is_empty();
+        self.offset = end;
     }
-    StableStream { cut, reopen }
 }
 
 struct Builder<'t> {
@@ -468,6 +505,7 @@ pub fn render_stream(
     continued: bool,
     lang: &mut Option<crate::highlight::Lang>,
 ) -> Vec<Line<'static>> {
+    count(0, source.len());
     let width = width.max(4);
     let mut b = Builder {
         theme,
@@ -484,10 +522,7 @@ pub fn render_stream(
         link_dest: None,
         table: None,
     };
-    let parser = Parser::new_ext(
-        source,
-        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES,
-    );
+    let parser = Parser::new_ext(source, OPTIONS);
     for event in parser {
         let Some(event) = reduce_inline(&mut b, event) else {
             continue;
@@ -615,4 +650,114 @@ pub fn render_stream(
         b.out.pop();
     }
     b.out
+}
+
+/// Rows of a source that only grows, rendered past its last settled point alone: blocks
+/// before the last one can no longer change, and an open fence settles line by line.
+#[derive(Default)]
+pub struct Settled {
+    at: usize,
+    reopen: Option<String>,
+    lang: Option<crate::highlight::Lang>,
+    shown: bool,
+    opaque: bool,
+}
+
+impl Settled {
+    /// The rows newly settled and the rows of the rest, which extend every earlier call's
+    /// settled rows to `render(source)`. `None` once a link definition makes rows global.
+    pub fn advance(
+        &mut self,
+        source: &str,
+        width: usize,
+        theme: &Theme,
+    ) -> Option<(Vec<Line<'static>>, Vec<Line<'static>>)> {
+        let rest = source.get(self.at..)?;
+        self.opaque |= rest.lines().any(|line| {
+            let body = line.trim_start_matches(' ');
+            line.len() - body.len() <= 3 && body.starts_with('[') && body.contains("]:")
+        });
+        if self.opaque {
+            return None;
+        }
+        let complete = rest.rfind('\n').map_or(0, |at| at + 1);
+        let mut settled = Vec::new();
+        if let Some((cut, reopen)) = self.settle_point(rest.get(..complete)?) {
+            let mut lang = self.lang.take();
+            settled = self.segment(rest.get(..cut)?, width, theme, &mut lang);
+            (self.at, self.reopen, self.lang) = (self.at + cut, reopen, lang);
+            self.shown |= !settled.is_empty();
+        }
+        let tail = source.get(self.at..)?;
+        Some((
+            settled,
+            self.segment(tail, width, theme, &mut self.lang.clone()),
+        ))
+    }
+
+    /// The last top-level block's start, or past the last complete line of its open fence.
+    fn settle_point(&self, text: &str) -> Option<(usize, Option<String>)> {
+        let open = self.reopen.as_ref().map(|line| format!("{line}\n"));
+        let doc = format!("{}{text}", open.as_deref().unwrap_or_default());
+        let (mut depth, mut last, mut code) = (0_usize, None, 0_usize);
+        for (event, range) in Parser::new_ext(&doc, OPTIONS).into_offset_iter() {
+            match &event {
+                Event::Text(body) if depth == 1 => code += body.len(),
+                Event::End(_) => depth = depth.saturating_sub(1),
+                _ if depth > 0 => {}
+                _ => {
+                    let line = doc.get(..range.start)?.rfind('\n').map_or(0, |at| at + 1);
+                    let fenced = matches!(
+                        event,
+                        Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_)))
+                    );
+                    (last, code) = (Some((line, fenced)), 0);
+                }
+            }
+            if let Event::Start(_) = event {
+                depth += 1;
+            }
+        }
+        let (start, fenced) = last?;
+        let opener = doc.get(start..)?.split_inclusive('\n').next()?;
+        // A fence whose code runs to the end is still open, and each complete line is final.
+        let open_fence = fenced && start + opener.len() + code == doc.len();
+        let (cut, reopen) = match open_fence && opener.ends_with('\n') {
+            true => (doc.len(), Some(opener.trim_end_matches('\n').to_owned())),
+            false => (start, None),
+        };
+        let cut = cut.checked_sub(open.map_or(0, |line| line.len()))?;
+        (cut > 0).then_some((cut, reopen))
+    }
+
+    /// A continued fence joins the rows above; any other block gets the blank row between.
+    fn segment(
+        &self,
+        text: &str,
+        width: usize,
+        theme: &Theme,
+        lang: &mut Option<crate::highlight::Lang>,
+    ) -> Vec<Line<'static>> {
+        let (mut text, mut reopen) = (text, self.reopen.as_deref());
+        // A fence closing before any code leaves no row to set the next block off from.
+        if let Some(open) = reopen {
+            let doc = format!("{open}\n{text}");
+            let mut events = Parser::new_ext(&doc, OPTIONS).into_offset_iter();
+            if let (Some((Event::Start(_), block)), Some((Event::End(_), _))) =
+                (events.next(), events.next())
+            {
+                let after = block.end.saturating_sub(open.len() + 1);
+                (text, reopen) = (text.get(after..).unwrap_or_default(), None);
+            }
+        }
+        let source = match reopen {
+            Some(open) if !text.is_empty() => format!("{open}\n{text}"),
+            _ => text.to_owned(),
+        };
+        let mut rows = render_stream(&source, width, theme, reopen.is_some(), lang);
+        if self.shown && reopen.is_none() && !rows.is_empty() {
+            rows.insert(0, Line::default());
+        }
+        rows
+    }
 }
