@@ -9,9 +9,9 @@ status:  PROPOSAL, revision 2 (2026-09-26). Revision 1 audited what yi can be sc
          took three more decisions (§13, round 4). Extends D140 (axes), D219 (graph
          refiner), D220 (levers) and D186 (the calibrated slice). Method: the yi-ideate
          skill.
-tree:    main @ 7339bae5 (0.350.0, last decision row D260). Every ✓ was re-read there.
+tree:    main @ e0da990e (0.375.0), re-read 2026-09-27. Every ✓ was re-read there.
 marks:   ✓ exists on main · ✚ new in this proposal · ⏸ deferred
-issues:  #652 (P0) blocks #653, #654, #655, #656, #657
+issues:  #652 (P0) blocks #653-#657 and #681-#688; #689 follows #688; T11 is #76
 ```
 
 ## 0. Summary
@@ -22,8 +22,10 @@ together, and three gaps keep the loop from starting:
 - **The levers never reach a benchmark trial.** The harbor command carries neither
   `--eval` nor `YI_LEVERS` (`evals/adapters/yi_usage.py:133-139`). The 0.281.0
   changelog row says so under its limits.
-- **The gates can only read suites that are saturated or at the floor.** The fixtures
-  read 21/21 in rows 0036 through 0054. The six-task Terminal-Bench subset read 3/18 in
+- **The gates can only read suites that sit at the ceiling or at the floor.** The seven
+  fixtures read 21/21 in rows 0036 through 0054; with `fan-out` added, row 0056 read 23/24
+  for the base against 22/24 for the candidate, a one-trial wash. The six-task
+  Terminal-Bench subset read 3/18 in
   rows 0018, 0021, 0023 and 0025, the same task passing each time. The twelve-task slice
   that D186 calibrated for partial credit near 0.5 (`evals/drivers/tbv4_slice.txt`) has
   never had a ledger row.
@@ -39,7 +41,7 @@ evaluators cheapest-first.
 |---|---|---|
 | **Candidate** | a base sha plus a patch and/or a levers file and a config (routing, skills, effort) | ✓ fingerprint (`yi_usage.config_fingerprint`, :281); ✚ one `candidate.json`; identity is the hash of the patch plus the levers object, never the rationale |
 | **Runner** | `<runner> <candidate.json> <task>...`, which prints one trial row per trial | ✓ the protocol, twice (`levers.py:14`, `refine.py:13`); ✚ harbor through the existing sweep driver |
-| **Trial row** | `task, reward, partialScore, input, cacheRead, output, costUsd, wallSec, censored` | ✓ `axes.py:79-150`; ✚ committed store `evals/trials/<run-id>.jsonl` |
+| **Trial row** | `task, reward, partialScore, input, cacheRead, output, costUsd, wallSec, censored` | ✓ `axes.py:79-102`, `:145-159` (all but `censored`, which is ✚); ✚ committed store `evals/trials/<run-id>.jsonl` |
 | **Gate** | a paired verdict of a candidate against a fresh base, over one task group, one difference per task | ✓ `levers.interval` (:179-196), floors (:116-133); ✚ task-level pairing, graded metric, two roads |
 
 A **verdict** is not a fifth store. It is the gate's output, written as the first row of
@@ -66,7 +68,7 @@ that signal away:
 **The levers cannot reach the benchmark.** `Levers::init` reads `YI_LEVERS` only under
 `--eval` (`crates/runtime/src/levers.rs:145-155`). Two runners pass `--eval`: `run.py`
 (:147) and `surface.py` (:130-133). The harbor command does not
-(`evals/adapters/yi_usage.py:133-139`; `yi_harbor/agent.py:56-61`).
+(`evals/adapters/yi_usage.py:133-139`; `yi_harbor/agent.py:136-151`).
 
 **Per-task history is lost.** Row 0055, the calibration sweep, found 19 of 38 tasks at
 partial credit 0.2 to 0.8. The harbor job's directory was never kept, so those per-task
@@ -78,9 +80,10 @@ of the new mechanisms". The candidate's directed cells cost $1.05 against the ba
 $0.93 and scored no better.
 
 **The model's own noise.** Every scored row uses glm-5.3-flash. Its reasoning spirals
-arrive in upstream-side episodes (memory glm-flash-spiral-episodes, 2026-09-08). Row
+arrive in upstream-side episodes (observed 2026-09-08: the endpoint, not a prompt change,
+explained them). Row
 0055 spread its turns over nine upstreams. The provider API takes no seed: `openai.rs`
-sends `temperature` when one is given (:340-341) and never a seed. Pairing and pinning
+sends `temperature` when one is given (:344-345) and never a seed. Pairing and pinning
 the upstream are the only variance controls available.
 
 **Where the money goes.** Row 0055's tokens are 25,711,091 uncached input, 99,237,504
@@ -94,26 +97,29 @@ catalog**. Prompt bytes are a real but secondary lever. Cache hits and tool-resu
 are the primary ones.
 
 **Some signals the gate would read are wrong today.**
-- `extract.py:417` counts `evidence_shape_refused` on the string "done needs evidence
+- `extract.py:419` counts `evidence_shape_refused` on the string "done needs evidence
   shaped". The live refusal reads "done needs evidence:"
-  (`crates/runtime/src/todo/mod.rs:131`), so the signal reads 0 on the current binary
+  (`crates/runtime/src/todo/mod.rs:132`), so the signal reads 0 on the current binary
   while the refusal still fires.
-- `length_forced` reads `details.forced` (`extract.py:324`), which no live message sets.
+- `length_forced` reads `details.forced` (`extract.py:326`), which no live message sets.
   The redrive details are `rung`, `cut` and `reasoningChars`
   (`crates/loop/src/run.rs:399-401`).
 - A truncated tool call increments `length_stops` without writing a redrive
-  (`run.rs:843-845`).
+  (`run.rs:888-890`).
 
 **Compaction never fires on the benchmark model.** glm-5.3-flash has a 1,048,576-token
 window. Every tbv4, ARC and journey row reports 0 compactions, including peaks of
-277,242 (0055) and 418,485 (0010). The trigger also has a latent defect:
+277,242 (0055) and 418,485 (0010). The trigger's scope matters on smaller windows:
 - It charges only the growth past the first request's full input: the prefill latches
-  at `compaction.rs:260-275`, and the subtraction is at `account.rs:143`.
-- It fires when that growth exceeds `window − 16,384` (`compaction.rs:300-303`,
+  at `compaction.rs:296-303`, and the subtraction is at `account.rs:151`.
+- It fires when that growth exceeds `window − 16,384` (`compaction.rs:333-336`,
   `policy.rs:14-24`).
 
-So the real total at trigger time is past the window whenever the first request exceeds
-16,384 tokens. That is invisible at 1M tokens and matters on any 128k model.
+That scope is deliberate: `Scope::BodyAfterPrefix` is the default because the cached
+prefix bills near a tenth of full price (design §4.4, `account.rs:139-140`). Its cost is
+that the real total at trigger time is past the window whenever the first request exceeds
+16,384 tokens: invisible at 1M tokens, and it matters on any 128k model. Charging the prefix
+there would change a settled decision, so it is a proposal needing its own D-row (§14).
 
 ## 2. Laws, in the owner's words
 
@@ -130,14 +136,14 @@ The budget, from round 4:
 Standing laws carried forward:
 
 - "the only part I have seen work at scale real world is data driven optimizations,
-  driven by deterministic signals. We can't leave too much up to the LLM." (memory
-  deterministic-over-llm-loops). On 2026-09-26 the owner overruled its trigger half for
-  the classifier only. No scheduled reflection and bounded injection still stand.
+  driven by deterministic signals. We can't leave too much up to the LLM." (the owner's
+  standing rule). On 2026-09-26 the owner overruled its trigger half for the classifier
+  only (#587). No scheduled reflection and bounded injection still stand.
 - Prompt-flywheel law 2: "The LLM writes gated prose and generates candidates and
   proposals; it never decides when anything fires, persists, ships, or dies."
 - Budget discipline: "Timeouts are never retried." and "Defaults are what is
   benchmarked. A high-effort variant is a separate ledgered row"
-  (`evals/README.md:340-344`).
+  (`evals/README.md:487-491`).
 - The value tolerance: "aggregate fully accounted cost and median task wall within **10
   percent** of the baseline … (the owner's number, 2026-09-13)"
   (`docs/archive/plans/2026-09-12-yi-operating-system.md` §10.3).
@@ -154,17 +160,17 @@ benchmark effect. **Uncovered** means nothing measures it.
 | feature | where | purpose | coverage |
 |---|---|---|---|
 | System prompt assembly | `crates/runtime/src/ext/assemble.rs:121`, `ext/install.rs:33` | slots by rank, three cache blocks joined by `\u{1d}` | partial: `request_budget.rs`, `prompt_drift.rs`, byte lock |
-| identity.md, doctrine.md (5,628 + 21,279 bytes) | `crates/runtime/src/lib.rs:88`, `:93` | who yi is, its method | partial: journeys `ab.py` (one row, 0014); never A/B gated |
+| identity.md, doctrine.md (5,628 + 21,279 bytes) | `crates/runtime/src/lib.rs:89-90`, `:94-95` | who yi is, its method | partial: journeys `ab.py` (one row, 0014); never A/B gated |
 | Permission-mode fragment | `crates/permission/src/decide.rs:20-31` | tells the model the policy | uncovered: benchmarks run `--yolo` |
-| Skills catalog | `crates/runtime/src/skills.rs:60-104` | `<skills>` block, 8–32 KiB | partial: lever L1 in rows 0006/0007 (−45% on trivial tasks); benchmark trials install no skills (`Justfile:339-342` is never run by an adapter) |
+| Skills catalog | `crates/runtime/src/skills.rs:60-104` | `<skills>` block, 8–32 KiB | partial: lever L1 in rows 0006/0007 (−45% on trivial tasks); benchmark trials install no skills (`justfile:343-346` is never run by an adapter) |
 | Project instructions | `crates/runtime/src/ext/project.rs:164` | AGENTS.md/CLAUDE.md, trust-pinned | uncovered |
 | Language pack (har-core) | `ext/install.rs:13,24` | attached on Cargo.toml or the first `.rs` write | uncovered |
 | grid fragment | `crates/runtime/src/ext/grid.rs:54` | only when `grid` is on PATH | uncovered (absent in task images) |
-| Environment block | `crates/runtime/src/environment.rs:182` | a trailing per-request message | partial: `request_budget.rs:661` (the prefix does not move) |
+| Environment block | `crates/runtime/src/environment.rs:177` | a trailing per-request message | partial: `request_budget.rs:661` (the prefix does not move) |
 | Memory block | `crates/runtime/src/memory/store.rs:12-13` (200 lines, 25,000 bytes) | recalled notes | uncovered in benchmarks (fresh HOME) |
 | Route prefilter | `crates/runtime/src/ext/orchestrate.rs:86`, consts `:134-137` | keyword score; Complex attaches orchestrate.md | partial: `orient_census.py`; rows 0002/0003 found it degenerate |
 | Graph `next:` lines | `crates/runtime/src/affordance.rs:11,26` | ≤2 hints per tool result | partial: `refine.py` exists, never paid |
-| Compaction trigger | `crates/context/src/policy.rs:20`, `crates/runtime/src/compaction.rs:293-303` | summarize past the prefill | uncovered on flash (0 compactions in every row); cassette `compaction-constraint-survival` covers correctness |
+| Compaction trigger | `crates/context/src/policy.rs:20`, `crates/runtime/src/compaction.rs:326-337` | summarize past the prefill | uncovered on flash (0 compactions in every row); cassette `compaction-constraint-survival` covers correctness |
 | Retention floor | `crates/context/src/floor.rs:5` | user messages verbatim, 64k | partial: unit tests |
 | Per-source byte budgets | `crates/context/src/budget.rs:17-20` | instructions, skills, ledger, memory caps | partial |
 | Internal-context wrapper | `crates/context/src/wrapper.rs:49` | dropped at compaction; nudges are not in its list | partial |
@@ -177,9 +183,9 @@ benchmark effect. **Uncovered** means nothing measures it.
 | edit | `hashline/prompt.md` (133 lines), `tool.rs:819`, no-op guard `:27` | anchored edits | covered: `surface.py` (17 scenarios) |
 | write | `crates/tools/src/builtins.rs:37` | whole-file write | covered: `surface.py` |
 | bash + reducer | `builtins.rs:506`, `reduce.rs:11-20`, `process.rs:11` (30,000 B) | shell; over 8,192 B keeps head 80, tail 40, grep 60 lines | partial: `reduced_results`, `pointer_never_read` counted, never gated |
-| grep | `crates/tools/src/grep.rs:713` | paged search | partial: `broad_search_refused` |
+| grep | `crates/tools/src/grep.rs:721` | paged search | partial: `broad_search_refused` |
 | get_context | `crates/tools/src/orient.rs:57` | orientation packet | partial: `orient_census.py` P13, not ready |
-| ipython / kernel | `crates/tools/src/ipython.rs:46`, `crates/kernel/src/lib.rs:23` (65,536 chars) | Python cells, `rlm` | partial: `kernel_cells`, `kernel_dead` in rows 0024/0025 |
+| ipython / kernel | `crates/tools/src/ipython.rs:46`, `crates/kernel/src/lib.rs:24` (65,536 chars) | Python cells, `rlm` | partial: `kernel_cells`, `kernel_dead` in rows 0024/0025 |
 | todo + coupling | `crates/runtime/src/todo/tool.rs:13`, `todo/coupling.rs:22-28` | the list and its nudges | covered: fixtures `five-items`, `seen-red`; persistence axis; levers tunable |
 | plan + coupling | `crates/runtime/src/plan/tool.rs:767`, `plan/loop_coupling.rs:17-25` | plans, delegation | partial: directed surface runs 0057-0059; 0056 found zero undirected use |
 | ask_user | `crates/runtime/src/auto_review.rs:176-180` | block on the user | covered: fixture `block-on-user` |
@@ -190,13 +196,13 @@ benchmark effect. **Uncovered** means nothing measures it.
 
 | feature | where | purpose | coverage |
 |---|---|---|---|
-| Reasoning cut | `crates/loop/src/reasoning.rs:7` (48,000 chars), `run.rs:379-405` | cut a spiral, quote it back | partial: `spiral_cut` counted (24 in 0025); not tunable |
-| Length / cut stop | `crates/loop/src/run.rs:382` (3), `:385` (6); truncated calls `:843-845` | end the run after repeated stops | partial; `length_forced` is a dead signal (§1) |
-| Repeat breaker | `run.rs:508-512` | steer at 3, stop at 6 in a 6-turn window | covered: rows 0020 (D152), 0037 (D179) |
-| Stream retry | `run.rs:466-472` | rerun an empty error turn once | partial: `stream_retry` |
-| Deadline + last word | `crates/runtime/src/session/deadline.rs:6-9`, `crates/loop/src/run.rs:797` | stop before harbor kills the trial | covered: row 0035 (D177), E12 |
-| No max-turns cap | `run.rs:707` | — | n/a: the deadline, the breakers and the watcher bound a trial |
-| Tool-name repair, leaked-call recovery, JSON salvage | `crates/loop/src/repair.rs:3`, `crates/ai/src/leak.rs:16`, `json_salvage.rs:17` | recover malformed calls | partial: unit tests |
+| Reasoning cut | `crates/loop/src/reasoning.rs:7` (48,000 chars), `run.rs:380-420` | cut a spiral, quote it back | partial: `spiral_cut` counted (24 in 0025); not tunable |
+| Length / cut stop | `crates/loop/src/run.rs:383` (3), `:386` (6); truncated calls `:888-890` | end the run after repeated stops | partial; `length_forced` is a dead signal (§1) |
+| Repeat breaker | `run.rs:509-513` | steer at 3, stop at 6 in a 6-turn window | covered: rows 0020 (D152), 0037 (D179) |
+| Stream retry | `run.rs:467-473` | rerun an empty error turn once | partial: `stream_retry` |
+| Deadline + last word | `crates/runtime/src/session/deadline.rs:6-9`, `crates/loop/src/run.rs:848` | stop before harbor kills the trial | covered: row 0035 (D177), E12 |
+| No max-turns cap | `run.rs:756` | — | n/a: the deadline, the breakers and the watcher bound a trial |
+| Tool-name repair, leaked-call recovery, JSON salvage | `crates/loop/src/repair.rs:3`, `crates/ai/src/leak.rs:16`, `crates/types/src/json_salvage.rs:17` | recover malformed calls | partial: unit tests |
 
 ### 3.4 Provider, routing, caching
 
@@ -205,10 +211,10 @@ benchmark effect. **Uncovered** means nothing measures it.
 | OpenRouter default routing | `crates/ai/src/openai.rs:33-36`; `EVAL_ROUTING` (`yi_usage.py:45-58`) | throughput/latency preference | covered: routing A/B rows 0031-0033, upstreams column (D174) |
 | HTTP retry | `crates/ai/src/retry.rs:11-16` (3 attempts, 300 s total), backoff cap 8 s at `:49` | transient errors | partial |
 | Settling cut turns | `crates/ai/src/settle.rs:37` | price turns cut mid-stream | partial: an unpriced turn still stopped drivers (rows 0025, 0056) |
-| Anthropic cache breakpoints | `crates/ai/src/anthropic.rs:52,233-250` | 3 system blocks plus the newest message | covered: live lane `cache-warm`, `request_budget.rs:335-384` |
-| OpenAI cache key | `openai.rs:321-324`, only when `base_url` is api.openai.com | `prompt_cache_key` = session | covered for OpenAI; **not on the OpenRouter path flash uses** |
+| Anthropic cache breakpoints | `crates/ai/src/anthropic.rs:52,234-249` | 3 system blocks plus the newest message | covered: live lane `cache-warm`, `request_budget.rs:335-384` |
+| OpenAI cache key | `openai.rs:325-328`, only when `base_url` is api.openai.com | `prompt_cache_key` = session | covered for OpenAI; **not on the OpenRouter path flash uses** |
 | Upstream cache on flash | — | whatever the upstream does | partial: `cache_probe.sh` (row 0013, a warm miss on glm); hit rate in the experience column |
-| Effort default (Medium) | `crates/types/src/model.rs:12`; mapping `openai.rs:359-370` | reasoning effort | uncovered: no row varies it |
+| Effort default (Medium) | `crates/types/src/model.rs:12`; mapping `openai.rs:363-372` | reasoning effort | uncovered: no row varies it |
 | Output ceiling | `crates/runtime/src/provider.rs:234` (32,768) | max output per request | uncovered |
 | Cost | `crates/ai/src/catalog.rs:112`; E14 provider cost | spend | covered: E9/E14 cross-checks |
 
@@ -226,13 +232,13 @@ benchmark effect. **Uncovered** means nothing measures it.
 
 | feature | where | purpose | coverage |
 |---|---|---|---|
-| Session JSONL v4 | `crates/types/src/wire.rs:15`, `crates/session/src/jsonl.rs:105` | the one ledger | covered: conformance tests; every eval reads it |
+| Session JSONL v4 | `crates/types/src/wire.rs:15`, `crates/session/src/jsonl.rs:62` | the one ledger | covered: conformance tests; every eval reads it |
 | Telemetry sidecar | `crates/runtime/src/telemetry.rs:71` | ttft, tokens, cost per span | covered: live lane, `axes.py` experience ttft |
 | Levers | `crates/runtime/src/levers.rs:66-111` (44 listed, 25 tunable) | eval-only overrides | partial: `run.py` and `surface.py` only |
 | `yi ask --json --eval --deadline` | `crates/cli/src/ask.rs:15`, `main.rs:127-128` | the harness entry | covered: E1, `selftest.py` |
 | **Trial watcher** | `evals/drivers/watch.py:32-33,121` (a trial past $1 or 180 turns is stopped) | censors runaways | partial: shapes every sweep number (0055's $0.13 median), and the gate ignores it today |
-| Kernel bootstrap, prewarm | `crates/kernel/src/bootstrap.rs:812`, `crates/runtime/src/wiring.rs:94-96` | venv, boot | partial: the adapter's `yi doctor --fix` |
-| Session-mining extractor | `skills/yi/session-mining/extract.py:258-276` | μ, issues, signals | covered, with the two stale signals of §1 |
+| Kernel bootstrap, prewarm | `crates/kernel/src/bootstrap.rs:829`, `crates/runtime/src/wiring.rs:94-96` | venv, boot | partial: the adapter's `yi doctor --fix` |
+| Session-mining extractor | `skills/yi/session-mining/extract.py:260-278` | μ, issues, signals | covered, with the two stale signals of §1 |
 | console, tui, orb, acp, mcp-cli, oauth | `crates/{console,tui,orb,acp,mcp-cli,oauth}` | surfaces | no benchmark effect; drive, PTY and protocol tests |
 
 **Reading.** The tool surface and the todo loop are covered, because `surface.py` and
@@ -277,8 +283,9 @@ otherwise reject candidates for a provider failure. Settling them is in §8 stag
 
 ### 5.1 Precedents
 
-- **Karpathy's autoresearch** (`~/Development/autoresearch`): an agent edits one file,
-  trains for a fixed five minutes, and keeps the change if `val_bpb` improved.
+- **Karpathy's autoresearch** (<https://github.com/karpathy/autoresearch>): an agent
+  edits one file, trains for a fixed five minutes, and keeps the change if `val_bpb`
+  improved.
   `program.md` maps to the proposer's brief, `train.py` to the lever surface, and the
   fixed budget to the soft/hard caps. **The one deliberate difference:** autoresearch
   trusts a single validation number. Agent evals are small-N and clustered by task, so
@@ -310,7 +317,7 @@ otherwise reject candidates for a provider failure. Settling them is in §8 stag
 | **E16: levers inside a harbor trial** | ✚ | adapter uploads the file and passes `--eval` |
 | **Harbor as a runner** | ✚ | `tbv4_sweep.sh` + `watch.py` take a candidate binary and a task list; no new driver |
 | **Task-level pairing, graded metric, two roads** | ✚ | `levers.per_task`, `judge` |
-| **Trial store with verdict rows** | ✚ | `evals/trials/<run-id>.jsonl`; sessions under `~/Development/yi-runs/<run-id>/`; `rejected.jsonl` folds in |
+| **Trial store with verdict rows** | ✚ | `evals/trials/<run-id>.jsonl`; sessions under `<runs>/<run-id>/`, where `<runs>` is a per-host runs-directory setting outside the repo, as `TBV4_RUNS_DIR` is today; `rejected.jsonl` folds in |
 | **Split and floors for benchmark tasks** | ✚ | `split.json` gains `tbv4/<id>` entries |
 | **Loop guards tunable** | ✚ | runtime copies `levers::get()` into `LoopConfig`; `run.rs` and `ReasoningBudget` read those fields; yi-loop never calls `levers::get()` (it may depend only on yi-types, `scripts/guardrails/boundaries.toml`) |
 | **Census in the extractor** | ✚ | `extract.py` gains the flip counts; its two stale signals are fixed |
@@ -340,8 +347,9 @@ The owner types `just improve`. Nothing else starts a round.
    - The patch touches only the lever surface: `crates/runtime/src/prompts/`,
      tool-description files, and the levers and config objects.
    - If it moves a locked baseline (`tool_surface.json`, `request_budget.json`), the
-     ratchet is its **own commit ahead of** the code commit, as
-     `check_commit_style.py:133-154` requires. The candidate hash covers both.
+     ratchet is its **own commit ahead of** the code commit. `check_commit_style.py:133-154`
+     refuses a baseline edit in a commit that touches code; the order is repo law. The
+     candidate hash covers both.
    - `just check` is green.
    - The candidate's hash (patch plus levers object) is not in any verdict row on the
      same base.
@@ -371,7 +379,8 @@ $4.68 + $6.24).
 
 - Each stage has a soft cap of $8 and a hard cap of $10. The owner's "$10/run" is per
   stage (round 4).
-- **The week has a soft cap of $25 and a hard cap of $30.** A candidate starts only when
+- **The week has a soft cap of $25 and a hard cap of $30**, approved by the owner on
+  2026-09-27. A candidate starts only when
   the week's spend plus its predicted cost fits under $25. The hard cap stops the
   stream mid-stage. These are the existing `tb21_cost.py` semantics, applied to the
   week's summed ledger rows.
@@ -418,7 +427,7 @@ another agent.
 **The graded score, everywhere:** `partialScore` as `axes.py` fills it (a trace's
 `partial_score` or `diagnostic_score`, else `trace_summary.json`'s passed/total), else
 `reward`. **Never the ctrf tally.** That tally can be a wrapper test that always passes:
-`selftest.py:319-331` pins freight-dispatch-shift's one-test wrapper beside a 0.56 trace
+`selftest.py:323-335` pins freight-dispatch-shift's one-test wrapper beside a 0.56 trace
 score, and vba-userform-port's four passing wrappers beside 7/28 traces.
 
 ### 6.1 N1: A/A calibration of the slice
@@ -516,16 +525,16 @@ score, and vba-userform-port's four passing wrappers beside 7/28 traces.
   - `loop.cut_stop_at`: consecutive `length_redrive` entries with `cut: true`
     (`run.rs:399`);
   - `todo.intercept_cap`: `TodoInterceptRecord` `rung` and `cycle_total`
-    (`crates/types/src/todo.rs:283-288`);
+    (`crates/types/src/todo.rs:293-298`);
   - the route thresholds: route features, as `orient_census.py` reads them.
 - **Not census-able until the session records the counter.** `loop.reasoning_cap`: a cut
   aborts the stream at the cap, so no longer reasoning exists to count.
-  `loop.length_stop_at`: truncated calls count without a redrive (`run.rs:843-845`).
+  `loop.length_stop_at`: truncated calls count without a redrive (`run.rs:888-890`).
   `todo.nudge_work`: a nudge does not carry the work count. These go straight to the
   cascade, and S1 is their cheapest screen.
 - **Threshold.** Zero flips refuses the candidate with `no_activation`.
 - **Fixes that land with it.** Point `evidence_shape_refused` at the live string
-  ("done needs evidence:", `todo/mod.rs:131`), and drop `length_forced` or record
+  ("done needs evidence:", `todo/mod.rs:132`), and drop `length_forced` or record
   `forced` at the source.
 - **Pinning.** `selftest.py` pins each census predicate against a Rust fixture.
 
@@ -552,17 +561,17 @@ cheapest stage that can decide.
 
 | rank | target | expected gain | deciding cost | first paid run (one task) |
 |---|---|---|---|---|
-| **1** | T1 upstream pin and cache | ~20% catalog cost at a 0.9 hit rate (computed), and lower variance for every later row | <$0.05 + a candidate | N4 probe, then one slice dev task, k=1, pinned (~$0.13) |
-| **2** | T2 loop guards | recovers trials lost to spirals (photonic 0/3 in every subset row; 0056 stopped) | $0 census + a candidate | the dev task with the most `spiral_cut` in N1, k=1, at the census value ($0.13-0.78) |
-| **3** | T3 tool descriptions and refusal texts | fewer wasted turns (0.283.0 precedent) | $0.25-0.60 | one surface scenario, k=1 (~$0.03), then one dev task, k=1 |
-| **4** | T4 done/evidence loop | unknown until the signal is recounted | $0 recount | first a $0 recount on N1's sessions; then one dev task, k=1, with `plan.done_refusal_cap` (~$0.13) |
-| **5** | T5 tool-result bytes | a share of the 49% uncached-input cost | a candidate | one dev task, k=1, with the reducer patch (~$0.13) |
-| 6 | T6 compaction threshold | cost on long trials | $0 + a candidate | — |
-| 7 | T7 effort | graded, likely outside +10% | a candidate | — |
-| 8 | T8 doctrine text | diffuse | $0.17 + a candidate | — |
-| 9 | T9 skills in the trial HOME | unknown sign | a candidate | — |
-| 10 | T10 graph lines | small | a candidate | — |
-| 11-12 | T11 route, T12 plan/family | expected zero | $0 | — |
+| **1** | T1 upstream pin and cache (#653) | ~20% catalog cost at a 0.9 hit rate (computed), and lower variance for every later row | <$0.05 + a candidate | N4 probe, then one slice dev task, k=1, pinned (~$0.13) |
+| **2** | T2 loop guards (#654) | recovers trials lost to spirals (photonic 0/3 in every subset row; 0056 stopped) | $0 census + a candidate | the dev task with the most `spiral_cut` in N1, k=1, at the census value ($0.13-0.78) |
+| **3** | T3 tool descriptions and refusal texts (#655) | fewer wasted turns (0.283.0 precedent) | $0.25-0.60 | one surface scenario, k=1 (~$0.03), then one dev task, k=1 |
+| **4** | T4 done/evidence loop (#656) | unknown until the signal is recounted | $0 recount | first a $0 recount on N1's sessions; then one dev task, k=1, with `plan.done_refusal_cap` (~$0.13) |
+| **5** | T5 tool-result bytes (#657) | a share of the 49% uncached-input cost | a candidate | one dev task, k=1, with the reducer patch (~$0.13) |
+| 6 | T6 compaction threshold (#682) | cost on long trials | $0 + a candidate | — |
+| 7 | T7 effort (#683) | graded, likely outside +10% | a candidate | — |
+| 8 | T8 doctrine text (#684) | diffuse | $0.17 + a candidate | — |
+| 9 | T9 skills in the trial HOME (#685) | unknown sign | a candidate | — |
+| 10 | T10 graph lines (#686) | small | a candidate | — |
+| 11-12 | T11 route (#76), T12 plan/family (#687) | expected zero | $0 | — |
 | ⏸ | T13-T15 | no benchmark path | — | — |
 
 P0 (#652) is the prerequisite for every row. Its first paid run is one slice task, k=1,
@@ -575,12 +584,12 @@ reaches a benchmark trial today.
 
 | stage | builds | demo | gate | paid |
 |---|---|---|---|---|
-| 0 | E16. Harbor runner via `tbv4_sweep.sh` + `watch.py` (candidate binary, task list, `censored` rows). Trial store with verdict rows. Task-level gate, graded metric (no ctrf), two roads, reason codes, Bonferroni access count. Settle unpriced turns so the driver never stops on one. `extract.py`'s two stale signals. | a faux-tier harbor run whose fingerprint carries `+levers<hash>`; one row in `evals/trials/` | `selftest.py` pins E16, the graded metric, the per-task pairing, both roads, the censor rule and every reason code | $0.13 (one task) |
-| 1 | N4 pin probe; N1 A/A; fill the dev half of `split.json` and `floors.json`, and set δ | ledger rows; the task-level difference table | tolerances and δ written from data | ~$6.50 |
-| 2 | N2 draw; the T1 verdict | the first real verdict row | N4's rule; the gate | ~$14 |
-| 3 | `LoopConfig` fields read by `run.rs`/`ReasoningBudget`; N5 census; T2 | the census flip count; the T2 verdict | `crates/loop` tests prove defaults unchanged; `levers::the_manifest_matches`; `boundaries.toml` unchanged | ~$12 |
-| 4 | Proposer container, `brief.md`, `just improve`; `rejected.jsonl` folds into the trial store | one owner-started round | the planted-validation-id mount test; S0 refusals pinned | ≤$25 week |
-| 5 | Semantic session search (memory agent) mounted into the proposer | — | the same mount test | — |
+| 0 (#652) | E16. Harbor runner via `tbv4_sweep.sh` + `watch.py` (candidate binary, task list, `censored` rows). Trial store with verdict rows. Task-level gate, graded metric (no ctrf), two roads, reason codes, Bonferroni access count. Settle unpriced turns so the driver never stops on one. `extract.py`'s two stale signals. | a faux-tier harbor run whose fingerprint carries `+levers<hash>`; one row in `evals/trials/` | `selftest.py` pins E16, the graded metric, the per-task pairing, both roads, the censor rule and every reason code | $0.13 (one task) |
+| 1 (#652, #653) | N4 pin probe; N1 A/A; fill the dev half of `split.json` and `floors.json`, and set δ | ledger rows; the task-level difference table | tolerances and δ written from data | ~$6.50 |
+| 2 (#681, #653) | N2 draw; the T1 verdict | the first real verdict row | N4's rule; the gate | ~$14 |
+| 3 (#654) | `LoopConfig` fields read by `run.rs`/`ReasoningBudget`; N5 census; T2 | the census flip count; the T2 verdict | `crates/loop` tests prove defaults unchanged; `levers::the_manifest_matches`; `boundaries.toml` unchanged | ~$12 |
+| 4 (#688) | Proposer container, `brief.md`, `just improve`; `rejected.jsonl` folds into the trial store | one owner-started round | the planted-validation-id mount test; S0 refusals pinned | ≤$25 week |
+| 5 (#689) | Semantic session search (memory agent) mounted into the proposer | — | the same mount test | — |
 
 ## 9. What this deletes or merges
 
@@ -620,7 +629,8 @@ reaches a benchmark trial today.
 2. The candidate is `{patch: none, levers: {}, config: {routing: {"order":["parasail"],
    "allow_fallbacks":false}}}`. S0 costs $0: no patch, no census, and not an integer
    lever.
-3. S1 runs the fixtures at k=3, paired, for about $0.61: 21/21 against 21/21.
+3. S1 runs the eight fixtures at k=3, paired, for about $0.61: say 23/24 against 23/24,
+   the base's reading in row 0056. One missed trial is inside the class tolerance.
 4. S2 runs one dev task and gets a measurable trial for about $0.11.
 5. S3 screens dev at k=3, paired, against a fresh base. The median task-level graded
    difference is ≥0, and no pass is lost.
@@ -628,7 +638,7 @@ reaches a benchmark trial today.
    Say the cost interval over the 12 per-task differences lies below 0, and at most one
    task's graded difference is ≤ −δ, so road 2 passes. The round opens a PR changing
    the pinned routing in the three workflows that `selftest.py` holds to one value
-   (`evals/README.md:413-414`), with the ledger row and the trial rows.
+   (`evals/README.md:560-561`), with the ledger row and the trial rows.
 
 The numbers in steps 1, 5 and 6 illustrate the shape of a result. They are not
 predictions.
@@ -683,6 +693,11 @@ Round 4, after the review:
 - Issues: "Yes, update the four (Recommended)"
 - Budget: "you can make the budget a soft and hard budget so we can comfoterbly fit 2 runs"
 
+Round 5, 2026-09-27:
+
+- Weekly caps: "$25 soft / $30 hard" (approved)
+- Rows without an issue: "File issues, cite #N"
+
 ## 14. Open questions
 
 1. Does semantic search over sessions supersede the memory plan's "No embeddings"
@@ -693,22 +708,24 @@ Round 4, after the review:
    tasks are replaced often, and the 36-task pool lasts roughly six draws.
 3. The proposer's lever surface is text assets, levers and config. No Rust.
 4. Which Buildhost VM hosts harbor, and on which disk? Not the runner VM's CI runners, and never
-   under `/tmp` (memory buildhost-tmp-is-ram).
-5. The compaction trigger's prefill scoping (§1) needs its own deterministic test and
-   fix, outside this program.
-6. `extract.py`'s `denials` counts only "Permission denied" (`:629`). That matters once a
+   under `/tmp`, which is RAM on the Buildhost host.
+5. Should the compaction trigger charge the cached prefix on small-window models (§1)?
+   That changes design §4.4's deliberate scope, so it needs its own D-row and
+   deterministic test, outside this program.
+6. `extract.py`'s `denials` counts only "Permission denied" (`:631`). That matters once a
    Mac or auto-mode suite exists.
 
-## 15. D-rows owed (placeholders; renumber against the live file and open PRs)
+## 15. D-rows owed
 
-- D261: the task-level graded gate, the two roads, the censor rule and the reason codes
+Numbered at landing from the next free row on main; check open PRs for collisions.
+
+- The task-level graded gate, the two roads, the censor rule and the reason codes
   (extends D220).
-- D262: the trial store with verdict rows absorbs D219's rejection memory; the
-  validation access budget with its Bonferroni threshold.
-- D263: the loop guards become tunable through `LoopConfig` fields (amends the D220
-  manifest).
-- D264: E16; harbor through the sweep driver; the soft/hard weekly budget.
-- D265: the improvement round: the proposer container, the mount rule, the cascade.
+- The trial store with verdict rows absorbs D219's rejection memory; the validation
+  access budget with its Bonferroni threshold.
+- The loop guards become tunable through `LoopConfig` fields (amends the D220 manifest).
+- E16; harbor through the sweep driver; the soft/hard weekly budget.
+- The improvement round: the proposer container, the mount rule, the cascade.
 
 ## 16. Not building
 
@@ -736,15 +753,15 @@ Each major was re-checked against the tree before it was accepted.
 | Road 1 compared cost as a point | accepted | §6.3 cost interval |
 | Dropped pairs hide blow-ups | accepted | §6.3 one-sided failure is a loss |
 | Base reuse, uncorrected validation reuse | accepted | §5.3 fresh base; §6.3 Bonferroni over A=4 |
-| ctrf fallback scores wrappers as 1.0 | accepted; `selftest.py:319-331` | §6 graded score, never ctrf |
+| ctrf fallback scores wrappers as 1.0 | accepted; `selftest.py:323-335` | §6 graded score, never ctrf |
 | N1 drops tasks on a k=2 sample | accepted | §6.1 no drops |
 | Budget arithmetic ($9.83, one-arm S1) | accepted | §5.3 recomputed ($11.66) |
 | Prefix 3% mixed billed and catalog; tools omitted | accepted; 9.3% (computed) | §1, §4 T8 |
 | "~30%" was the 95% case | accepted | §4 T1, §7 (~20% at 0.9) |
 | Watcher censoring missing | accepted | §3.6, §6.3, §12 |
 | Leakage via ledger, trials, PR history | accepted | §5.5 mount rule, no history |
-| Census predicates unrecoverable; stale signals | accepted; `extract.py:324,417` and `todo/mod.rs:131` re-read | §6.5 three predicates; fixes |
-| Baseline lock riding the code commit | accepted; `check_commit_style.py:152` | §5.3 S0 |
+| Census predicates unrecoverable; stale signals | accepted; `extract.py:326,419` and `todo/mod.rs:132` re-read | §6.5 three predicates; fixes |
+| Baseline lock riding the code commit | accepted; `check_commit_style.py:151-154` | §5.3 S0 |
 | Rationale waives the predictor | accepted | §5.3 S0, §6.7 |
 | Dangling "§7 stage 0" for unpriced turns | accepted | §8 stage 0 |
 | T4 evidence stale | accepted | §4 T4, §7 recount first |
