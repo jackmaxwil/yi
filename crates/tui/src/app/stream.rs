@@ -389,25 +389,35 @@ impl App {
                 details: Value::Null,
             },
         };
+        cell.elapsed_ms = elapsed;
+        let text = text_of(&result.content);
+        self.settle_tool(cell, &text, is_error, result.details.clone());
+        self.commit_finished_tasks();
+        self.intent = None;
+    }
+
+    pub(crate) fn settle_tool(
+        &mut self,
+        mut cell: ToolCell,
+        text: &str,
+        is_error: bool,
+        details: Value,
+    ) {
         cell.status = if is_error {
             ToolStatus::Failed
         } else {
             ToolStatus::Done
         };
-        cell.elapsed_ms = elapsed;
-        let text = text_of(&result.content);
-        cell.digest = ToolCell::digest_of(&tool_name, &text, is_error);
-        cell.preview = preview_lines(&text, 12, 6);
-        cell.details = result.details.clone();
+        cell.digest = ToolCell::digest_of(&cell.name, text, is_error);
+        cell.preview = preview_lines(text, 12, 6);
+        cell.details = details;
         // The HUD carries the list; a card per step was six cards a turn.
-        if tool_name == "todo" && !is_error {
-            if let Some(done) = todo_finished(&text) {
+        if cell.name == "todo" && !is_error {
+            if let Some(done) = todo_finished(text) {
                 self.commit_cell(&Cell::Footer { text: done });
             }
         } else {
             self.commit_cell(&Cell::Tool(cell));
         }
-        self.commit_finished_tasks();
-        self.intent = None;
     }
 }

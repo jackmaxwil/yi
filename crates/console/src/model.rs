@@ -438,7 +438,12 @@ impl ConsoleState {
         match self.sessions.get_mut(&row.id) {
             Some(existing) => {
                 existing.root = row.root;
-                existing.status = row.status;
+                // Invariant: done stays loud until a focus clears it; no poll can.
+                if !(existing.status == SessionStatus::DoneUnseen
+                    && row.status == SessionStatus::Idle)
+                {
+                    existing.status = row.status;
+                }
                 existing.attached = row.attached;
                 existing.name = row.name.or(existing.name.take());
                 existing.created_ms = existing.created_ms.max(row.created_ms);

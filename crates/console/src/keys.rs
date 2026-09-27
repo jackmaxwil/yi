@@ -233,7 +233,7 @@ pub const CHORDS: [Chord; 19] = [
     ),
     chord("chat: hide or show the HUD", "ctrl+t", "ctrl+t", "", None),
     chord(
-        "sidebar glyphs: ◐ running · ○ done · ✕ error",
+        "sidebar: ✕ needs you · ◐ working · ● done, unseen · ○ idle",
         "",
         "",
         "",

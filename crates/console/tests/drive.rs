@@ -2433,7 +2433,7 @@ fn a_todo_update_paints_the_block_above_the_composer() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 5000 Todos 1/2\n\
-         wait-frame 5000 2. ▶ write the plan\n\
+         wait-frame 5000 2. ▷ write the plan\n\
          quit\n",
     )
 }
