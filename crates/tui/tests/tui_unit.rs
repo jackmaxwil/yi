@@ -1835,6 +1835,47 @@ fn the_row_cap_is_enforced_while_rendering_from_source() -> TestResult {
     Ok(())
 }
 
+/// A replay chunk that lands after a paint renders newest-first up to the cap, never every
+/// cell in it, and a later append still extends the same window.
+#[test]
+fn an_append_after_a_paint_renders_only_the_tail() -> TestResult {
+    use yi_tui::cell::TranscriptMode;
+    use yi_tui::history::History;
+
+    let theme = theme();
+    let mut history = History::default();
+    let _ = History::replay(&history, 80, &theme, TranscriptMode::Normal, 20);
+    for n in 1..=200 {
+        history.retain(Cell::Notice {
+            text: format!("notice {n}"),
+        });
+    }
+    let shown: Vec<String> = History::replay(&history, 80, &theme, TranscriptMode::Normal, 20)
+        .iter()
+        .map(flat)
+        .collect();
+    assert!(
+        shown.iter().any(|line| line.contains("notice 200")),
+        "{shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|line| line.contains("notice 1 ")),
+        "{shown:?}"
+    );
+    history.retain(Cell::Notice {
+        text: "notice 201".to_owned(),
+    });
+    let shown: Vec<String> = History::replay(&history, 80, &theme, TranscriptMode::Normal, 20)
+        .iter()
+        .map(flat)
+        .collect();
+    assert!(
+        shown.iter().any(|line| line.contains("notice 201")),
+        "{shown:?}"
+    );
+    Ok(())
+}
+
 /// The blanket per-iteration request made every turn draw at the 16 ms frame
 /// ceiling — five frames per visible spinner step, four of them byte-identical.
 /// Waking on the spinner's own boundary is what lets the request be dropped

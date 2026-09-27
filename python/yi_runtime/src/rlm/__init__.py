@@ -177,6 +177,8 @@ async def _watch(timeout: float, cursor: int | None) -> "Reply | None":
     """``wait`` for a helper watching one child. The host refuses a wait repeated at an
     ``asks`` or ``settled`` state; the helper pauses on it and gets None, since it waits on
     its own child, not on that state."""
+    # A budget's remainder is a clock difference that can land a hair under zero; wait refuses it.
+    timeout = max(0.0, timeout)
     quiet = _QUIET.set(True)
     try:
         return await wait(timeout=timeout, cursor=cursor)

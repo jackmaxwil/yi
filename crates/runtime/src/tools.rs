@@ -224,6 +224,7 @@ impl AgentTool for ToolAdapter {
                 });
             }
             // User rules gate before permission: a matching gate rule denies with its body.
+            let gate_span = yi_types::trace::span("tool.gate").arg("tool", tool.name());
             let args_json = serde_json::to_string(&args).unwrap_or_default();
             if let Some(rules) = &rules
                 && let Some(denial) = rules.check_tool(tool.name(), &args_json)
@@ -245,6 +246,7 @@ impl AgentTool for ToolAdapter {
                     is_error: true,
                 };
             }
+            drop(gate_span);
             let mut contained: Option<Arc<PermissionBroker>> = None;
             if let Some(broker) = permission {
                 let sandbox = broker.sandbox().cloned();
@@ -253,7 +255,10 @@ impl AgentTool for ToolAdapter {
                 let gate_args = args.clone();
                 let gate_cwd = context.cwd.clone();
                 let outcome = tokio::task::spawn_blocking(move || {
+                    let span = yi_types::trace::span("tool.preview").arg("tool", gate_tool.name());
                     let preview = gate_tool.preview(&gate_args, &gate_cwd);
+                    drop(span);
+                    let _span = yi_types::trace::span("tool.decide").arg("tool", gate_tool.name());
                     broker.decide_call(
                         gate_tool.name(),
                         gate_tool.kind(),
@@ -299,9 +304,14 @@ impl AgentTool for ToolAdapter {
             let written = (tool.kind_for(&args) == yi_tools::ToolKind::Write)
                 .then(|| crate::permission::extract_targets(&name, &args, &context.cwd));
             let (cwd, cancel) = (context.cwd.clone(), Arc::clone(&context.cancelled));
-            let output = tokio::task::spawn_blocking(move || tool.execute(args, &context)).await;
+            let output = tokio::task::spawn_blocking(move || {
+                let _span = yi_types::trace::span("tool.execute").arg("tool", tool.name());
+                tool.execute(args, &context)
+            })
+            .await;
             match output {
                 Ok(mut output) => {
+                    let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());
                     // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
                     if let Some(broker) = &contained
                         && yi_tools::denial_hint(
