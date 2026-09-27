@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -402,6 +403,13 @@ def check_driver_ceiling():
         done = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, timeout=60,
                               cwd=ROOT.parent)
         assert done.returncode == 1 and "OPENROUTER_API_KEY" in done.stderr, (name, done.stderr)
+    # The runner mode (`<runner> <overrides.json> <task>...`, the protocol levers.py calls) files
+    # its rows under a run id, so a call without one or without a task is refused before it pays.
+    sweep, env = ROOT / "drivers" / "tbv4_sweep.sh", {"PATH": os.environ.get("PATH", "")}
+    for argv, said in ((["--runner", "o.json"], "--runner wants"), (["--runner", "o.json", "t"], "EVAL_RUN_ID")):
+        done = subprocess.run(["sh", str(sweep), *argv], capture_output=True, text=True, env=env, timeout=60,
+                              cwd=ROOT.parent)
+        assert done.returncode == 1 and said in done.stderr, (argv, done.stderr)
 
 
 def check_watch_stops():
@@ -418,6 +426,68 @@ def check_watch_stops():
                                "--poll", "0.2", "--", "sh", "-c", "exit 3"], capture_output=True, text=True,
                               timeout=60)
         assert done.returncode == 3, done
+
+    def trial_events(path, cost=None, unknown=False):
+        lines = EVENTS.read_text().splitlines()
+        for index, line in enumerate(lines):
+            event = json.loads(line)
+            message = event.get("message") or {}
+            if event.get("type") == "message_end" and message.get("role") == "assistant":
+                message["usage"]["cost"] = {"total": cost}
+                message["usage"]["unknown"] = unknown
+                lines[index] = json.dumps(event)
+        path.parent.mkdir(parents=True)
+        path.write_text("\n".join(lines) + "\n")
+
+    # A trial the watcher stops is marked `censored`: its verifier may still score whatever the
+    # stop left, and the gate must not read that as the arm's own result.
+    with tempfile.TemporaryDirectory() as tmp:
+        runs = Path(tmp) / "runs"
+        trial_events(runs / "job" / "task__one" / "agent" / "yi.jsonl", cost=2.0)
+        done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "1.5", "--wall", "60",
+                               "--poll", "0.2", "--", "sleep", "30"], capture_output=True, text=True, timeout=60)
+        assert done.returncode == 2 and "TRIAL STOP task__one" in done.stdout, done
+        assert "$1 or 180 turns" in (runs / "job" / "task__one" / "censored").read_text(), "a stopped trial is censored"
+    # An unpriced trial is charged the per-trial cap it cannot exceed, never $0 and never a
+    # price table (E14), and the stream goes on while the charge fits under the hard cap.
+    with tempfile.TemporaryDirectory() as tmp:
+        runs = Path(tmp) / "runs"
+        trial_events(runs / "job" / "task__two" / "agent" / "yi.jsonl", unknown=True)
+        done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "0.5", "--wall", "60",
+                               "--poll", "0.2", "--", "sleep", "30"], capture_output=True, text=True, timeout=60)
+        assert done.returncode == 2 and "spend $1.000 passed the hard cap" in done.stdout, done
+
+
+def check_trials():
+    """One row per harbor trial, whatever sessions it wrote, and the caps a runner call may spend."""
+    import trials
+    with tempfile.TemporaryDirectory() as tmp:
+        job = Path(tmp) / "job"
+        shutil.copytree(FIXTURES / "axes" / "harbor" / "job", job)
+        # A child session beside the root one: the trial's tokens and cost are the sum of both.
+        root = next((job / "fixture-a__x" / "agent" / "yi" / "sessions").glob("*.jsonl"))
+        shutil.copy(root, root.with_name("1787544431470_fixture-a-child.jsonl"))
+        (job / "fixture-b__y" / "censored").write_text("stopped\n")
+        rows = {row["trial"]: row for row in trials.trial_rows(job)}
+        assert sorted(rows) == ["fixture-a__x", "fixture-b__y"], rows
+        assert (rows["fixture-a__x"]["input"], rows["fixture-a__x"]["costUsd"]) == (2400, 0.014864), rows["fixture-a__x"]
+        assert rows["fixture-b__y"]["censored"] and not rows["fixture-a__x"]["censored"], rows
+        for key in ("task", "reward", "partialScore", "cacheRead", "output", "wallSec", "errored"):
+            assert key in rows["fixture-a__x"], key
+    now = 1790000000  # 2026-09-21T14:13:20Z, a Monday
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Path(tmp)
+        def put(run, *costs, at=now):
+            with (store / f"{run}.jsonl").open("a") as sink:
+                for cost in costs:
+                    sink.write(json.dumps({"task": "t", "costUsd": cost, "at": at}) + "\n")
+        put("old", 50.0, at=now - 8 * 86400)
+        put("r1", 20.0, None)
+        assert trials.spend(store, now) == (0.0, 21.0), "last week is not this week; an unpriced trial costs $1"
+        assert trials.caps("r2", 12, store, now) == (9.0, None), "hard: the smaller of the stage's $10 and the week's $30 left"
+        assert trials.caps("r2", 40, store, now)[1].startswith("week soft cap"), "21 + 40 x 0.13 passes the $25 soft cap"
+        put("r2", 7.95)
+        assert trials.caps("r2", 1, store, now)[1].startswith("stage soft cap"), "7.95 + 0.13 passes the stage's $8"
 
 
 def check_record():
@@ -619,6 +689,7 @@ CHECKS = (
     check_judge_replay,
     check_graph_refiner,
     check_levers,
+    check_trials,
     check_cost_cap,
     check_orient_census,
     check_rule_fires,
