@@ -814,9 +814,13 @@ impl AcpState {
                 Ok(json!({"tracked": yi_runtime::environment::tracked(root, &paths)}))
             }
             "_yi/branch_diff" => {
-                let root = std::path::Path::new(text("root"));
+                let root = handle
+                    .session
+                    .lane()
+                    .and_then(|lane| lane.path())
+                    .unwrap_or_else(|| self.cwd.clone());
                 Ok(
-                    serde_json::to_value(yi_runtime::environment::branch_diff(root))
+                    serde_json::to_value(yi_runtime::environment::branch_diff(&root))
                         .unwrap_or(Value::Null),
                 )
             }

@@ -368,7 +368,7 @@ pub fn review_view(
         files.len()
     );
     let base = match (unbased, scope) {
-        (true, _) => format!("no git base, so this session's edits{base}"),
+        (true, _) => format!("no branch diff from git, so this session's edits{base}"),
         (false, ReviewScope::Branch) => base,
         (false, ReviewScope::Turn) => format!("the last turn's edits{base}"),
         (false, ReviewScope::Session) => format!("this session's edits{base}"),
@@ -388,7 +388,7 @@ pub fn review_view(
             .filter(|path| {
                 !files
                     .iter()
-                    .any(|(changed, _, _)| path.ends_with(changed.as_str()))
+                    .any(|(changed, _, _)| std::path::Path::new(path).ends_with(changed))
             })
             .count()
     });
