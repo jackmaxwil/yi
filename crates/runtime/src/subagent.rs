@@ -83,6 +83,8 @@ pub(crate) struct Children {
     /// Removed names at their reap's epoch: a cursor from before the reap reads them as moved.
     removed: std::collections::VecDeque<(String, u64)>,
     forgotten: u64,
+    /// Wakes a family wait on every epoch move and every published update.
+    pub(crate) stirred: Arc<tokio::sync::Notify>,
 }
 
 const REMOVED_KEPT: usize = 64;
@@ -105,6 +107,7 @@ impl Children {
 
     pub(crate) fn touch(&mut self, key: &str, cause: crate::family::Cause) -> u64 {
         self.epoch = self.epoch.saturating_add(1);
+        self.stirred.notify_waiters();
         let epoch = self.epoch;
         if let Some(record) = self.records.get_mut(key) {
             record.changed_at_epoch = epoch;
@@ -540,11 +543,10 @@ impl SubagentHost {
     }
 
     pub(crate) fn publish(&self, child_id: &str) {
-        let update = self
-            .children
-            .lock()
-            .ok()
-            .and_then(|children| children.get(child_id).map(|record| record.update(child_id)));
+        let update = self.children.lock().ok().and_then(|children| {
+            children.stirred.notify_waiters();
+            children.get(child_id).map(|record| record.update(child_id))
+        });
         if let Some(update) = update {
             let views = self.member_states(Some(&update.name));
             let update = crate::family::flagged(update, &views);
