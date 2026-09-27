@@ -178,6 +178,7 @@ pub(crate) struct Inner {
     pub(crate) child_pid: Mutex<Option<u32>>,
     pub(crate) snapshot: Option<KernelSnapshotConfig>,
     pub(crate) snapshot_timer: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub(crate) checkpoints: crate::snapshot::Checkpoints,
     pub(crate) wrap: Option<(String, Vec<String>)>,
 }
 
@@ -581,6 +582,7 @@ impl KernelManager {
                 child_pid: Mutex::new(None),
                 snapshot: options.snapshot,
                 snapshot_timer: Mutex::new(None),
+                checkpoints: crate::snapshot::Checkpoints::default(),
                 wrap: options.wrap,
             }),
         })
@@ -621,6 +623,7 @@ impl KernelManager {
     }
 
     async fn do_start(&self) -> Result<(), String> {
+        let _span = yi_types::trace::span("kernel.start");
         let inner = &self.inner;
         let generation = inner
             .start_generation
@@ -753,6 +756,7 @@ impl KernelManager {
         &self,
         path: &std::path::Path,
     ) -> Result<ConnectionInfo, String> {
+        let _span = yi_types::trace::span("kernel.ports");
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_millis(PORTS_RESOLVE_TIMEOUT_MS);
         while tokio::time::Instant::now() < deadline {
@@ -787,6 +791,7 @@ impl KernelManager {
         shell: &mut zeromq::DealerSocket,
         info: &ConnectionInfo,
     ) -> Result<(), String> {
+        let _span = yi_types::trace::span("kernel.kernel_info");
         let message = self.inner.build("kernel_info_request", Map::new())?;
         let request_id = message.header.msg_id.clone();
         let frames = zmq_message(encode(&message, &info.key)).ok_or("empty kernel_info_request")?;
@@ -869,15 +874,11 @@ impl KernelManager {
             return Err(ExecuteError::ShutDown);
         }
         let internal = options.internal;
+        let span = yi_types::trace::span("kernel.execute").arg("internal", internal);
         let result = self.execute_inner(code, options).await;
-        // Refresh the on-disk snapshot after real work so a later resume (or a
-        // crash before graceful shutdown) revives the most recent namespace.
-        if !internal
-            && result
-                .as_ref()
-                .is_ok_and(|result| result.status == ExecuteStatus::Ok)
-        {
-            self.schedule_snapshot();
+        drop(span);
+        if !internal {
+            self.after_user_cell(&result);
         }
         result
     }
@@ -1097,7 +1098,7 @@ impl KernelManager {
         let generation = inner.start_generation.load(Ordering::SeqCst);
         // Final namespace flush while the kernel is live, bounded so a wedged kernel cannot
         // hang dispose; the debounced on-disk copy is the fallback past that bound.
-        if inner.snapshot.is_some() && self.is_running() {
+        if inner.snapshot.is_some() && self.is_running() && inner.checkpoints.behind() {
             inner.clear_snapshot_timer();
             let deadline = std::time::Duration::from_millis(SNAPSHOT_DISPOSE_TIMEOUT_MS);
             let _ = tokio::time::timeout(deadline, self.snapshot_state()).await;
