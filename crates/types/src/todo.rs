@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::plan::doc::{DocError, TODO_LABEL_MAX, TodoLabel, TodoStateName};
+use crate::url::{Scheme, Url};
 
 pub const TODO_ENTRY_TYPE: &str = "todo";
 pub const TODO_INTERCEPT_ENTRY_TYPE: &str = "todo_intercept";
@@ -53,6 +54,22 @@ impl From<PhaseName> for String {
     fn from(name: PhaseName) -> Self {
         name.0
     }
+}
+
+/// A checklist row's trailing `user://<n>` tokens are its intent, cut from the label.
+pub fn split_cited(text: &str) -> (&str, Vec<Url>) {
+    let mut rest = text.trim_end();
+    let mut cited = Vec::new();
+    while let Some((head, token)) = rest.rsplit_once(' ')
+        && let Ok(url) = token.parse::<Url>()
+        && url.scheme() == &Scheme::User
+        && url.path().bytes().all(|byte| byte.is_ascii_digit())
+    {
+        cited.push(url);
+        rest = head.trim_end();
+    }
+    cited.reverse();
+    (rest, cited)
 }
 
 /// Who a blocked todo waits on; `user` is the one value that ends a turn cleanly.
@@ -136,6 +153,9 @@ pub struct TodoItem {
     pub evidence: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<TodoItem>,
+    /// The owner messages this item serves, by address only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intent: Vec<Url>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -150,19 +170,21 @@ impl TodoItem {
             note: None,
             evidence: None,
             children: Vec::new(),
+            intent: Vec::new(),
             extra: Map::new(),
         }
     }
 
-    /// Text over the label max is cut to a label and kept whole as the note.
+    /// Text over the label max is cut to a label and kept whole as the note; trailing
+    /// `user://<n>` tokens are the intent.
     pub fn from_text(text: &str) -> Result<Self, DocError> {
-        let text = text.trim();
-        if text.chars().count() <= TODO_LABEL_MAX {
-            return Ok(Self::pending(TodoLabel::new(text)?));
-        }
+        let (text, intent) = split_cited(text.trim());
         let cut: String = text.chars().take(TODO_LABEL_MAX).collect();
         let mut item = Self::pending(TodoLabel::new(cut.trim_end())?);
-        item.note = Some(text.to_owned());
+        if cut.len() < text.len() {
+            item.note = Some(text.to_owned());
+        }
+        item.intent = intent;
         Ok(item)
     }
 

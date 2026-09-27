@@ -5,7 +5,7 @@ use yi_context::{
     Attributed, BriefLine, Bytes, CompiledView, FileOps, Prefill, Scope, Settings, Tokens, Window,
     attribute_child_usage, compile_view, compose_summary, context_tokens, drop_internal,
     estimate_context, fit, internal_source, prepare_compaction, project, retain_floor, select_cut,
-    serialize_conversation, should_compact, wrap_internal,
+    serialize_conversation, should_compact, user_key, wrap_internal,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage, UserContent};
@@ -324,6 +324,41 @@ fn serialization_labels_roles_and_truncates_tool_results() -> TestResult {
     assert!(text.contains("[Tool result]:"));
     assert!(text.contains("more characters truncated]"));
     assert!(!text.contains(&long));
+    Ok(())
+}
+
+/// Dies with a host-written message counted into the ordinals, or with the head cut silently:
+/// the summarizer would cite `user://3` for what the resolver serves as `user://2`.
+#[test]
+fn the_user_key_names_each_typed_message_by_its_resolvable_address() -> TestResult {
+    let typed = |text: &str| AgentMessage::user_input(UserContent::Text(text.to_owned()), 1);
+    let long = format!("{}{}", "é".repeat(59), "ab and the rest of a long message");
+    let window = [
+        typed("keep the guardrails green"),
+        user("[host] the turn ended with open todos"),
+        typed(&long),
+        typed("never typed into this session's index"),
+    ];
+    let index = [
+        UserContent::Text("an earlier message the window no longer holds".to_owned()),
+        UserContent::Text("keep the guardrails green".to_owned()),
+        UserContent::Text(long.clone()),
+    ];
+    let key = user_key(&window, &index);
+    let rows: Vec<&str> = key
+        .lines()
+        .filter(|row| row.starts_with("user://"))
+        .collect();
+    let head: String = long.chars().take(60).collect();
+    assert_eq!(
+        rows,
+        [
+            "user://2: \"keep the guardrails green\"".to_owned(),
+            format!("user://3: {head:?}"),
+        ]
+    );
+    assert!(key.contains("each quote is its first 60 characters and the whole message is in the conversation above"), "{key}");
+    assert_eq!(user_key(&[user("host only")], &index), "");
     Ok(())
 }
 

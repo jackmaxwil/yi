@@ -420,11 +420,7 @@ impl Txn {
     }
 
     pub(super) fn derived(&self, suffix: &str) -> Result<RequestId, PlanOpError> {
-        RequestId::new(format!("{}/{suffix}", self.request)).map_err(|error| {
-            PlanOpError::Doc(DocError::AgentIdWhitespace {
-                id: error.to_string(),
-            })
-        })
+        minted(format!("{}/{suffix}", self.request))
     }
 }
 
@@ -451,6 +447,7 @@ pub struct PlanEngine {
     pub(super) refused: super::schedule::Refused,
     pub(super) previewed: super::covers::Previewed,
     pub(super) host: super::ledger::Host,
+    pub(super) owner_words: Option<crate::goal::StoreHandle>,
 }
 
 impl PlanEngine {
@@ -474,6 +471,7 @@ impl PlanEngine {
             refused: super::schedule::Refused::default(),
             previewed: super::covers::Previewed::default(),
             host: super::ledger::Host::Bare,
+            owner_words: None,
         }
     }
 
@@ -544,18 +542,13 @@ impl PlanEngine {
             expected_revision,
         } = request;
         check_actor(&actor, &op)?;
+        let op = self.cite_default(op, plan.as_ref());
         if let Op::View { full } = op {
             return self.view(plan, full);
         }
         let request = match request_id {
             Some(id) => id,
-            None => {
-                RequestId::new(format!("auto-{}", self.store.request_nonce())).map_err(|error| {
-                    PlanOpError::Doc(DocError::AgentIdWhitespace {
-                        id: error.to_string(),
-                    })
-                })?
-            }
+            None => minted(format!("auto-{}", self.store.request_nonce()))?,
         };
         // Done and a worktree submit take their own leases around the verifier (sections 6.3
         // and 6.6); the probe holds one too, and a read that fails refuses the op outright.
@@ -587,11 +580,7 @@ impl PlanEngine {
                 // Invariant: the caller's id names the Set, so a retry after a crash between
                 // the two commits replays or finishes the Set instead of hitting the init.
                 let specs = rows.iter().map(|row| row.spec.clone()).collect();
-                let opening = RequestId::new(format!("{request}/init")).map_err(|error| {
-                    PlanOpError::Doc(DocError::AgentIdWhitespace {
-                        id: error.to_string(),
-                    })
-                })?;
+                let opening = minted(format!("{request}/init"))?;
                 let opened = self.init(goal.clone(), specs, &actor, opening)?;
                 let set = Op::Set {
                     goal: Some(goal),
@@ -693,7 +682,8 @@ impl PlanEngine {
         let committed = self.commit(&mut txn, record)?;
         self.store.checkpoint_family(&txn.state)?;
         self.emit(&committed);
-        self.conclude(&id, &txn.state, &[], Delta::default())
+        let delta = Delta::default().noticed(&committed.record);
+        self.conclude(&id, &txn.state, &[], delta)
     }
 
     pub(super) fn view(&self, plan: Option<PlanId>, _full: bool) -> Result<Outcome, PlanOpError> {
@@ -930,6 +920,7 @@ impl PlanEngine {
         let committed = self.commit(txn, record)?;
         self.store.checkpoint_family(&txn.state)?;
         self.emit(&committed);
+        delta = delta.noticed(&committed.record);
         delta.subplan = applied.subplan;
         Ok(delta)
     }
@@ -1002,6 +993,7 @@ impl PlanEngine {
                 .extra
                 .insert("prior".to_owned(), Value::from(prior));
         }
+        self.trace_into(op, plan, &mut record.record.extra);
         Ok(record)
     }
 
@@ -1145,6 +1137,14 @@ pub(super) fn admitted(plan: &Plan, slots: usize) -> Vec<TodoLabel> {
         .into_iter()
         .filter(|label| admit(plan, label, slots).is_ok())
         .collect()
+}
+
+fn minted(text: String) -> Result<RequestId, PlanOpError> {
+    RequestId::new(text).map_err(|error| {
+        PlanOpError::Doc(DocError::AgentIdWhitespace {
+            id: error.to_string(),
+        })
+    })
 }
 
 /// Invariant: `by` is compared to the actor, not its word: a child named `main` is no owner.

@@ -345,6 +345,7 @@ pub(super) fn new_todo(spec: TodoSpec) -> Todo {
         refusals: 0,
         contract: spec.contract,
         contract_hash: None,
+        cites: spec.cites,
         extra: Map::new(),
     }
 }

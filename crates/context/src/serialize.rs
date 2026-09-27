@@ -1,4 +1,4 @@
-use yi_types::message::{AgentMessage, Content, UserContent};
+use yi_types::message::{AgentMessage, Attribution, Content, UserContent};
 
 // Tool results are truncated in serialized summaries; full content is not
 // needed for summarization.
@@ -115,4 +115,38 @@ pub fn serialize_conversation(messages: &[AgentMessage]) -> String {
         }
     }
     parts.join("\n\n")
+}
+
+/// Characters of each message the key quotes, enough to tell one message from the next.
+pub const KEY_HEAD_CHARS: usize = 60;
+
+/// The summarizer's key from each typed message in `window` to its `user://<n>`, `inputs[n-1]`.
+/// ponytail: matched by content in order, so of two identical messages the first address wins.
+pub fn user_key(window: &[AgentMessage], inputs: &[UserContent]) -> String {
+    let mut rows = Vec::new();
+    let mut from = 0usize;
+    for message in window {
+        let AgentMessage::User {
+            content,
+            attribution: Attribution::User,
+            ..
+        } = message
+        else {
+            continue;
+        };
+        let Some(at) = inputs.iter().skip(from).position(|input| input == content) else {
+            continue;
+        };
+        let ordinal = from.saturating_add(at).saturating_add(1);
+        from = ordinal;
+        let head: String = user_text(content).chars().take(KEY_HEAD_CHARS).collect();
+        rows.push(format!("user://{ordinal}: {head:?}"));
+    }
+    if rows.is_empty() {
+        return String::new();
+    }
+    format!(
+        "<user-messages>\nThe user's own messages above, by address; each quote is its first {KEY_HEAD_CHARS} characters and the whole message is in the conversation above.\n{}\n</user-messages>\n\n",
+        rows.join("\n")
+    )
 }

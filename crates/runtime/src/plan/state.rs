@@ -1050,6 +1050,9 @@ fn apply_set(plan: &mut Plan, rows: &[SetRow]) -> Result<(), PlanOpError> {
         if let Some(contract) = &row.spec.contract {
             todo.contract = Some(contract.clone());
         }
+        if !row.spec.cites.is_empty() {
+            todo.cites = row.spec.cites.clone();
+        }
         if TodoStateName::of(&todo.state) != row.state {
             todo.state = match row.state {
                 TodoStateName::Running => TodoState::Running {

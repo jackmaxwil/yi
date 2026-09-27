@@ -39,6 +39,7 @@ pub mod store;
 pub mod submit;
 pub mod table;
 pub mod tool;
+pub mod trace;
 pub mod verify;
 pub mod why;
 

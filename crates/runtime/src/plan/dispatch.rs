@@ -556,6 +556,7 @@ pub(crate) mod tests {
             }),
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         })
     }
 
