@@ -153,7 +153,8 @@ def redact_line(line):
 
 
 def redact(text):
-    kept = [redact_line(l) for l in str(text).splitlines()]
+    # Incident: `splitlines` also splits at U+2028, so a recorded prompt replayed a newline.
+    kept = [redact_line(l) for l in str(text).split("\n")]
     return "\n".join(l for l in kept if l is not None)
 
 

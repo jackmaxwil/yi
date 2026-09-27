@@ -327,6 +327,66 @@ fn a_search_over_many_files_escalates() -> TestResult {
     Ok(())
 }
 
+async fn grep_events(dir: &Path, files: usize) -> Result<Vec<Event>, Box<dyn Error>> {
+    for index in 0..files {
+        std::fs::write(dir.join(format!("m{index}.rs")), "fn needle() {}\n")?;
+    }
+    let grep = yi_tools::builtin_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "grep")
+        .ok_or("no grep tool")?;
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&seen);
+    let hook: yi_runtime::session::ExtHook = std::sync::Arc::new(move |event| {
+        if let Ok(mut events) = sink.lock() {
+            events.push(event);
+        }
+    });
+    let adapter = yi_runtime::tools::ToolAdapter::new(
+        grep,
+        dir.to_path_buf(),
+        std::sync::Arc::new(|| false),
+        None,
+    )
+    .with_extensions(Some(hook));
+    let mut args = serde_json::Map::new();
+    args.insert("pattern".to_owned(), serde_json::json!("needle"));
+    let signal = yi_loop::interrupt::InterruptSignal::default();
+    yi_loop::AgentTool::execute(&adapter, "call-1", args, &signal).await;
+    let events = std::mem::take(&mut *seen.lock().map_err(|_| "poisoned")?);
+    Ok(events)
+}
+
+fn files_matched_of(events: &[Event]) -> Option<u32> {
+    events.iter().find_map(|event| match event {
+        Event::ToolResult { files_matched, .. } => Some(*files_matched),
+        _ => None,
+    })
+}
+
+// Dies with a router parser that misreads grep's `[path#TAG]` headers and `LINE:TEXT` rows:
+// six files hit on line 1 counted as one, and the plan nudge never attached.
+#[tokio::test]
+async fn a_real_grep_over_six_files_counts_six_and_escalates() -> TestResult {
+    let dir = Scratch::new("yi-ext-grep-six")?;
+    let events = grep_events(&dir, 6).await?;
+    assert_eq!(files_matched_of(&events), Some(6));
+    let mut host = started(&dir, &dir);
+    for event in &events {
+        host.dispatch(event, None);
+    }
+    assert!(host.system_prompt().contains("# Orchestrate"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_real_grep_with_no_hits_counts_zero() -> TestResult {
+    let dir = Scratch::new("yi-ext-grep-none")?;
+    let events = grep_events(&dir, 0).await?;
+    assert_eq!(files_matched_of(&events), Some(0));
+    Ok(())
+}
+
 #[test]
 fn a_rust_repository_loads_the_language_pack() -> TestResult {
     let dir = Scratch::new("yi-ext-rust")?;
