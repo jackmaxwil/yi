@@ -701,6 +701,7 @@ fn poll_job(input: &Map<String, Value>) -> ToolOutput {
         .and_then(Value::as_u64)
         .map(crate::jobs::clamp_wait);
     let started = std::time::Instant::now();
+    let _span = yi_types::trace::span("wait.job");
     loop {
         let report = match requested {
             Some(id) => crate::jobs::registry().report(id),
@@ -721,7 +722,8 @@ fn poll_job(input: &Map<String, Value>) -> ToolOutput {
         }
         match deadline {
             Some(limit) if started.elapsed() < limit => {
-                std::thread::sleep(std::time::Duration::from_millis(200));
+                crate::jobs::registry()
+                    .wait_settled(requested, limit.saturating_sub(started.elapsed()));
             }
             _ => {
                 let mut output = text_output(format!(
