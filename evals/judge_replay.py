@@ -5,17 +5,18 @@
     python3 evals/judge_replay.py extract --corpus yi:~/.yi/sessions \\
         --corpus claude:~/.claude/projects --out runs/replay
     python3 evals/judge_replay.py label --out runs/replay --model openrouter/M --cap-usd 3
-    python3 evals/judge_replay.py judge --out runs/replay --model openrouter/M --prompt evals/replay/judge.md \\
+    python3 evals/judge_replay.py judge --out runs/replay --model openrouter/M --arm self \\
         --split fit --limit 200 --cap-usd 3
-    python3 evals/judge_replay.py match --out runs/replay --model openrouter/M --cap-usd 1
     python3 evals/judge_replay.py report --out runs/replay
 
-The bet under test: a judge that reads the owner's words by address, and nothing after the
-boundary, predicts the owner's first objection. A boundary is a human message whose nearest
-message ancestor is an assistant turn end; the judge sees the owner's earlier messages on that
-tree path and the turn, and is scored against the message itself, labelled from what the owner
-said and what the agent answered. Conversations split 70/30 into fit and held-out by the hash of
-a file name in each, never within one.
+The bet under test: the working agent asked the owner's check (`--arm self`), or an outside
+judge (`--arm judge`), reading the session up to a boundary and nothing after it, predicts the
+owner's first objection. A boundary is a human message whose nearest message ancestor is an
+assistant turn end; the input is the conversation on that tree path up to the turn end, the
+owner's messages, the agent's text, its tool calls and their results, re-read from the source
+file at call time. It is scored against the message itself, labelled from what the owner said
+and what the agent answered. Conversations split 70/30 into fit and held-out by the hash of a
+file name in each, never within one.
 
 Nothing is written under a corpus. Every model call is one OpenRouter chat completion with no
 tools: the phase's prompt and the rendered input are all the model receives, so it holds nothing
@@ -25,9 +26,12 @@ past the boundary and has no way to fetch it. A real run is the owner's, capped 
 
 import argparse
 import atexit
+import bisect
 import concurrent.futures
+import functools
 import hashlib
 import http.client
+import itertools
 import json
 import os
 import random
@@ -50,12 +54,21 @@ import yi_usage  # noqa: E402
 REPLAY = ROOT / "replay"
 FIXTURES = {"yi": ROOT / "fixtures" / "replay" / "yi", "claude": ROOT / "fixtures" / "replay" / "claude"}
 LABELS = ("objected", "check_revealed", "accepted")
-POSITIVE = ("objected", "check_revealed")
+KINDS = ("intent_loss", "new_info")
+# A boundary's class: v2 labels split `objected` by what it rests on, v1's labels.jsonl keeps it
+# whole. `new_info` is unpredictable by construction, so it is counted and never scored.
+CLASSES = ("intent_loss", "new_info", "check_revealed", "accepted")
+POSITIVE = ("objected", "intent_loss", "check_revealed")
 VERDICTS = ("accept", "revise", "escalate")
-SCHEMAS = {"judge": "verdict", "label": "label", "match": "match"}
+ARMS = ("self", "judge")
+SCHEMAS = {"judge": "verdict", "label": "label"}
 FIT_PERCENT = 70
 INTENT_CHARS = 60_000
-DIGEST_HEAD = 120
+# The whole prefix, about 60k tokens at four chars a token: the smallest target context is Opus
+# 5.5's 1M, and the owner's messages alone peaked at 216,798 chars on the 2026-09-26 corpus.
+PREFIX_CHARS = 240_000
+TOOL_CHARS = 2_000
+OWNER, AGENT, RESULT = "owner", "agent", "result"
 OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
 KEY = "OPENROUTER_API_KEY"
 CALL_TIMEOUT_SEC = 300
@@ -79,7 +92,6 @@ INJECTED = (
     "This session is being continued",
 )
 REMINDERS = re.compile(r"(?:\s*<system-reminder>.*?</system-reminder>)+\s*", re.S)
-DIGEST_KEYS = ("path", "file_path", "command", "pattern", "url", "code", "query", "description", "prompt")
 
 
 def sha(text):
@@ -100,11 +112,8 @@ def blocks_text(content):
     return "\n".join(b.get("text") or "" for b in content if isinstance(b, dict) and b.get("type") == "text")
 
 
-def digest(name, args):
-    """One line per call: the tool and the head of what it touched."""
-    args = args if isinstance(args, dict) else {}
-    head = next((" ".join(str(args[key]).split()) for key in DIGEST_KEYS if args.get(key)), "")
-    return {"name": name or "?", "head": head}
+def call(block, args):
+    return {"id": block.get("id"), "name": block.get("name") or "?", "args": block.get(args)}
 
 
 def read_yi(path):
@@ -129,12 +138,13 @@ def read_yi(path):
                 typed = not text.startswith(YI_INJECTED)
             node.update({"kind": "human", "text": text, "offset": 0} if typed else {"kind": "prompt"})
         elif role == "assistant":
-            calls = [digest(b.get("name"), b.get("arguments")) for b in message.get("content") or []
+            calls = [call(b, "arguments") for b in message.get("content") or []
                      if isinstance(b, dict) and b.get("type") == "toolCall"]
             node.update(kind="assistant", text=blocks_text(message.get("content")), calls=calls,
                         end=message.get("stopReason") != "toolUse", group=entry["id"])
         elif role == "toolResult":
-            node["kind"] = "tool"
+            node.update(kind="tool", results=[{"call": message.get("toolCallId"),
+                                               "text": blocks_text(message.get("content"))}])
         nodes[entry["id"]] = node
     return nodes
 
@@ -187,14 +197,15 @@ def read_claude(path):
         if human:
             node.update(kind="human", text=human[0], offset=human[1])
         elif entry.get("type") == "assistant" and not entry.get("isSidechain"):
-            calls = [digest(b.get("name"), b.get("input")) for b in message.get("content") or []
+            calls = [call(b, "input") for b in message.get("content") or []
                      if isinstance(b, dict) and b.get("type") == "tool_use"]
             node.update(kind="assistant", text=blocks_text(message.get("content")), calls=calls,
                         end=message.get("stop_reason") != "tool_use", group=message.get("id") or uuid)
         elif entry.get("type") == "user":
             content = message.get("content")
-            tool = isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
-            node["kind"] = "tool" if tool else "prompt"
+            results = [{"call": b.get("tool_use_id"), "text": blocks_text(b.get("content"))}
+                       for b in content if isinstance(b, dict) and b.get("type") == "tool_result"] if isinstance(content, list) else []
+            node.update(kind="tool" if results else "prompt", results=results)
         nodes[uuid] = node
     return nodes
 
@@ -267,8 +278,7 @@ def boundaries(corpus, path, nodes):
             "corpus": corpus,
             "session": str(path),
             "intent": [address(n) for n in reversed(chain) if n["kind"] == "human"],
-            "turn": {"entry": end["id"], "text": final_text(turn, end),
-                     "calls": [c for n in turn if n["kind"] == "assistant" for c in n["calls"]]},
+            "turn": {"entry": end["id"], "text": final_text(turn, end)},
             "next": address(node),
             "reply": reply_to(nodes, children, node),
         })
@@ -344,59 +354,150 @@ def cite(boundary, citation):
     return {**citation, "entry": message["entry"], "bytes": span}
 
 
-def render_judge(boundary, cap=INTENT_CHARS):
-    """The judge's whole input: the owner's messages as [u1]..[uN] and the turn, nothing after
-    it. Under `cap` the oldest messages go first, and the cut says so where it is."""
-    rows = [f"[u{i}] {m['text']}" for i, m in enumerate(boundary["intent"], 1)]
-    kept, size = [], 0
+def newest(rows, cap):
+    """How many of the newest rows fit in `cap` chars, a newline each; never fewer than one."""
+    kept = size = 0
     for row in reversed(rows):
         if kept and size + len(row) + 1 > cap:
             break
-        kept.insert(0, row)
-        size += len(row) + 1
-    lines = ["# The owner's messages, oldest first"]
-    if len(kept) < len(rows):
-        lines.append(f"[… kept the newest {len(kept)} of {len(rows)} messages; intent_chars={cap} cut "
-                     f"u1..u{len(rows) - len(kept)}; this input is all there is, the judge has no fetch]")
-    lines += kept or ["(none)"]
-    calls = boundary["turn"]["calls"]
-    lines += ["", "# The turn the owner is reacting to", "## Tool calls, one per line"]
-    lines += [f"- {c['name']}: {c['head'][:DIGEST_HEAD]}" if c["head"] else f"- {c['name']}" for c in calls] or ["(none)"]
-    cut = sum(1 for c in calls if len(c["head"]) > DIGEST_HEAD)
-    if cut:
-        lines.append(f"[… {cut} of {len(calls)} call heads cut to digest_head={DIGEST_HEAD} chars; the judge has no fetch]")
-    lines += ["", "## Final text", boundary["turn"]["text"] or "(no text)"]
+        kept, size = kept + 1, size + len(row) + 1
+    return kept
+
+
+def owner_cut(kept, total, cap):
+    return f"[… kept the newest {kept} of {total} messages; intent_chars={cap} cut u1..u{total - kept}]"
+
+
+def owner_rows(intent, cap=INTENT_CHARS):
+    """The owner's messages as [u1]..[uN]; under `cap` the oldest go first, and the cut says so."""
+    rows = [f"[u{i}] {m['text']}" for i, m in enumerate(intent, 1)]
+    kept = newest(rows, cap)
+    return ([owner_cut(kept, len(rows), cap)] if kept < len(rows) else []) + rows[len(rows) - kept:] or ["(none)"]
+
+
+def clip(text, cap, what):
+    """`text` whole, or its head under `cap` chars and the row that says so where it is cut."""
+    if len(text) <= cap:
+        return [text]
+    return [text[:cap], f"[… kept {cap} of {len(text)} chars{what}; tool_chars={cap}]"]
+
+
+def call_lines(item, cap):
+    """A call's name, then each argument on its own lines, every value clipped alone: a file's
+    path survives the cut of its content."""
+    args = item["args"] if isinstance(item["args"], dict) else {"arguments": item["args"]} if item["args"] else {}
+    lines = [f"[call {item['name']}]"]
+    for key, value in args.items():
+        head, *cut = clip(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False), cap, f" of `{key}`")
+        lines += [f"{key}: {head}", *cut]
+    return lines
+
+
+def conversation(row, nodes, tool_chars):
+    """What the owner saw before the boundary, as (tier, lines) in file order: the path's owner
+    messages and agent text, every other block of an assistant message on it, and each result of
+    a call shown. Claude Code hangs parallel calls and their results off the path, so the path
+    alone loses them. Nothing at or after the boundary is read, nor anything on another branch."""
+    boundary = nodes.get(row["next"]["entry"])
+    if boundary is None:
+        raise LookupError(f"the boundary entry {row['next']['entry']} is not in {row['session']}; extract again")
+    path = list(ancestors(nodes, boundary))
+    owners = [n["id"] for n in reversed(path) if n["kind"] == "human"]
+    if owners != [m["entry"] for m in row["intent"]]:
+        raise LookupError(f"{row['session']} changed since extract: the owner's messages on this path differ; extract again")
+    before = sorted((n for n in nodes.values() if n["order"] < boundary["order"]), key=lambda n: n["order"])
+    groups = {n["group"] for n in path if n["kind"] == "assistant"}
+    shown = {n["id"] for n in path} | {n["id"] for n in before if n["kind"] == "assistant" and n["group"] in groups}
+    names = {c["id"]: c["name"] for n in before if n["id"] in shown and n["kind"] == "assistant" for c in n["calls"]}
+    number, items = {entry: i for i, entry in enumerate(owners, 1)}, []
+    for node in before:
+        if node["kind"] == "human" and node["id"] in number:
+            items.append((OWNER, [f"[u{number[node['id']]}] {node['text']}"]))
+        elif node["kind"] == "assistant" and node["id"] in shown:
+            items += [(AGENT, [f"[agent] {node['text']}"])] if node["text"] else []
+            items += [(AGENT, call_lines(c, tool_chars)) for c in node["calls"]]
+        elif node["kind"] == "tool":
+            items += [(RESULT, [f"[result {names.get(r['call'], '?')}]", *clip(r["text"], tool_chars, "")])
+                      for r in node["results"] if r["call"] in names or node["id"] in shown]
+    return items
+
+
+def fit(items, cap):
+    """The items joined in at most `cap` chars: whole tool results go oldest first, then agent
+    text and calls oldest first, never an owner's message. One row on top names kept of total and
+    the cap; a short row marks each gap. A cut that costs more than it saves waits for a neighbour."""
+    texts = ["\n".join(lines) for _, lines in items]
+    whole = "\n".join(texts)
+    if len(whole) <= cap:
+        return whole
+    order = [i for tier in (RESULT, AGENT) for i, (kind, _) in enumerate(items) if kind == tier]
+    total = {tier: sum(1 for kind, _ in items if kind == tier) for tier in (RESULT, AGENT)}
+    gap = lambda n: f"[… {n} cut: prefix_chars]"
+    summary = lambda kept: (f"[… prefix_chars={cap} kept {kept[RESULT]} of {total[RESULT]} tool results, "
+                            f"{kept[AGENT]} of {total[AGENT]} agent texts and calls; each \"{gap('n')}\" row is a gap]")
+    # Rows priced at their widest, so `size` bounds the rendered length from above.
+    row, cut = len(gap(len(items))) + 1, set()
+    size = len(whole) + len(summary(total)) + 1
+
+    def saving(i):
+        joined = (i - 1 in cut) + (i + 1 in cut)
+        return len(texts[i]) + 1 + (row if joined == 2 else 0 if joined else -row)
+
+    for paying in (True, False):
+        for i in order:
+            if size <= cap:
+                break
+            if i not in cut and (saving(i) > 0 or not paying):
+                size -= saving(i)
+                cut.add(i)
+    kept = {tier: total[tier] - sum(1 for i in cut if items[i][0] == tier) for tier in total}
+    lines, run = [summary(kept)], 0
+    for i, text in enumerate(texts):
+        if i not in cut:
+            lines.append(text)
+            continue
+        run += 1
+        if i + 1 not in cut:
+            lines.append(gap(run))
+            run = 0
     return "\n".join(lines)
 
 
+def prefix(row, nodes, tool_chars=TOOL_CHARS, prefix_chars=PREFIX_CHARS, intent_chars=INTENT_CHARS):
+    """The input both arms read. When the owner's messages alone pass `prefix_chars`, the oldest
+    go by the intent_chars rule first, then `fit` cuts the rest."""
+    items = conversation(row, nodes, tool_chars)
+    owners = [i for i, (kind, _) in enumerate(items) if kind == OWNER]
+    rows = [items[i][1][0] for i in owners]
+    kept = newest(rows, intent_chars)
+    if len("\n".join(rows)) > prefix_chars and kept < len(rows):
+        gone = set(owners[1:len(rows) - kept])
+        items = [(OWNER, [owner_cut(kept, len(rows), intent_chars)]) if i == owners[0] else item
+                 for i, item in enumerate(items) if i not in gone]
+    return fit(items, prefix_chars)
+
+
 def render_label(boundary):
-    return "\n".join(["# The turn the agent ended", boundary["turn"]["text"] or "(no text)", "",
+    return "\n".join(["# The owner's earlier messages, oldest first", *owner_rows(boundary["intent"]), "",
+                      "# The turn the agent ended", boundary["turn"]["text"] or "(no text)", "",
                       "# The owner's next message", boundary["next"]["text"], "",
                       "# The agent's reply to it", boundary["reply"] or "(no reply recorded)"])
 
 
-def render_match(boundary, label, verdict):
-    lines = ["# The owner's next message", boundary["next"]["text"], "",
-             f"# The owner's objection: {label.get('objection', '')}",
-             f"quote: {label.get('quote', '')}", "", "# The judge's predicted objections"]
-    lines += [f"[{i}] {o.get('text', '')}" for i, o in enumerate(verdict.get("objections") or [])]
-    return "\n".join(lines)
-
-
 def faux_answer(phase, boundary):
-    """--dry's host-built reply: valid JSON the pipeline can score, chosen by the id's hash."""
+    """--dry's host-built reply: valid JSON the pipeline can score, chosen by the id's hash. A
+    faux intent_loss on a boundary with no earlier owner message cites nothing and is demoted."""
     bit = int(boundary["id"][0], 16) % 2 == 0
+    newest_quote = [{"msg": f"u{len(boundary['intent'])}", "quote": " ".join(boundary["intent"][-1]["text"].split()[:6])}
+                    ] if boundary["intent"] else []
     if phase == "label":
-        return {"label": "objected" if bit else "accepted", "objection": "faux objection" if bit else "",
-                "quote": " ".join(boundary["next"]["text"].split()[:4]) if bit else ""}
-    if phase == "match":
-        return {"match": True, "index": 0}
-    newest = boundary["intent"][-1:] if boundary["intent"] else []
-    if not bit or not newest:
-        return {"verdict": "accept", "objections": []}
-    quote = " ".join(newest[0]["text"].split()[:6])
-    return {"verdict": "revise", "objections": [
-        {"text": "faux objection", "citations": [{"msg": f"u{len(boundary['intent'])}", "quote": quote}]}]}
+        return {"label": "objected" if bit else "accepted", "kind": "intent_loss" if bit else "",
+                "objection": "faux objection" if bit else "",
+                "quote": " ".join(boundary["next"]["text"].split()[:4]) if bit else "",
+                "rests_on": newest_quote if bit else []}
+    if not bit or not newest_quote:
+        return {"verdict": "accept", "objections": [], "p_objection": 0.2}
+    return {"verdict": "revise", "objections": [{"text": "faux objection", "citations": newest_quote}], "p_objection": 0.8}
 
 
 def parse_answer(text):
@@ -411,12 +512,12 @@ def parse_answer(text):
             return None
 
 
-def request(model, phase, system, prompt, effort=None):
-    """The whole call: the phase's prompt, the rendered input as the one user message, and no
-    tools, so blindness holds by construction. Cost comes back as the provider's `usage.cost`."""
+def request(model, phase, system, turns, effort=None):
+    """The whole call: the phase's prompt, the rendered input and the self arm's check as user
+    turns, and no tools, so blindness holds by construction. Cost comes back as `usage.cost`."""
     schema = json.loads((REPLAY / f"{SCHEMAS[phase]}.schema.json").read_text())
     body = {"model": model.removeprefix("openrouter/"), "temperature": 0,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            "messages": [{"role": "system", "content": system}, *({"role": "user", "content": t} for t in turns)],
             "response_format": {"type": "json_schema",
                                 "json_schema": {"name": SCHEMAS[phase], "strict": True, "schema": schema}},
             "usage": {"include": True}}
@@ -442,10 +543,10 @@ def post(body):
         time.sleep(2 ** attempt)
 
 
-def ask(args, phase, system, prompt, faux=None):
+def ask(args, phase, system, turns, faux=None):
     """One call, as a row: the answer or an error, with the provider's model id, tokens, cost and
     latency. `faux` is --dry's host-built answer, handed back in the provider's shape at no cost."""
-    body, started = request(args.model, phase, system, prompt, args.effort), time.monotonic()
+    body, started = request(args.model, phase, system, turns, args.effort), time.monotonic()
     try:
         reply = post(body) if faux is None else {
             "model": args.model, "choices": [{"message": {"content": json.dumps(faux)}}],
@@ -488,29 +589,32 @@ def append(path, row):
 
 
 def effective_labels(out):
-    """Labels, with the owner's marks winning: the latest mark per boundary."""
-    labels = {k: v.get("label") for k, v in by_id(read_rows(out / "labels.jsonl")).items() if v.get("label")}
+    """Each boundary's class, the owner messages its label rests on, and the file they came from:
+    labels-v2.jsonl when it has rows, else v1's labels.jsonl. The latest owner mark wins."""
+    v2 = [r for r in read_rows(out / "labels-v2.jsonl") if r.get("label") in LABELS]
+    rows = v2 or [r for r in read_rows(out / "labels.jsonl") if r.get("label") in LABELS]
+    classes = {r["id"]: (r.get("kind") or "new_info") if v2 and r["label"] == "objected" else r["label"] for r in rows}
+    rests = {r["id"]: {c.get("msg") for c in r.get("rests_on") or [] if c.get("bytes")} for r in v2}
     for mark in sorted(read_rows(out / "marks.jsonl"), key=lambda m: m.get("ts", 0)):
-        labels[mark.get("boundary")] = mark.get("label")
-    return labels
+        classes[mark.get("boundary")] = mark.get("label") if v2 or mark.get("label") not in KINDS else "objected"
+    return classes, rests, "labels-v2.jsonl" if v2 else "labels.jsonl"
 
 
-def select(rows, split, limit, labels):
-    """Deterministic by id (a hash). With labels, only labelled rows, up to limit/2 positive."""
+def select(rows, split, limit, classes):
+    """Deterministic by id (a hash). With classes: scored rows only, positives and negatives
+    interleaved p, n, p, n in id order, so a cut by --limit or --cap-usd stays balanced."""
     rows = sorted((r for r in rows if not split or r["split"] == split), key=lambda r: r["id"])
-    if not labels:
-        return rows[:limit] if limit else rows
-    positives = [r for r in rows if labels.get(r["id"]) in POSITIVE]
-    negatives = [r for r in rows if labels.get(r["id"]) == "accepted"]
-    if not limit:
-        return sorted(positives + negatives, key=lambda r: r["id"])
-    taken = positives[: limit // 2]
-    return sorted(taken + negatives[: limit - len(taken)], key=lambda r: r["id"])
+    if classes:
+        pairs = itertools.zip_longest([r for r in rows if classes.get(r["id"]) in POSITIVE],
+                                      [r for r in rows if classes.get(r["id"]) == "accepted"])
+        rows = [r for pair in pairs for r in pair if r is not None]
+    return rows[:limit] if limit else rows
 
 
 def run_calls(args, phase, items, sink, build, keep):
     """Calls with --jobs in flight, each row appended as it lands; no call starts once --cap-usd
-    is spent, but calls already in flight still land, so the overshoot is at most jobs - 1."""
+    is spent, but calls already in flight still land, so the overshoot is at most jobs - 1. A
+    build that returns no system prompt lands its error as the row, unasked."""
     spent, stopped, pending, queue = 0.0, None, {}, list(items)
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         while queue or pending:
@@ -518,8 +622,11 @@ def run_calls(args, phase, items, sink, build, keep):
                 if args.cap_usd is not None and spent >= args.cap_usd:
                     stopped = f"cap ${args.cap_usd} reached at ${spent:.4f} with {len(queue)} {phase} calls left"
                     break
-                system, prompt, faux, extra = build(queue.pop(0))
-                pending[pool.submit(ask, args, phase, system, prompt, faux if args.dry else None)] = extra
+                system, turns, faux, extra = build(queue.pop(0))
+                if system is None:
+                    append(sink, keep({**extra, "error": turns, "ts": int(time.time() * 1000)}))
+                    continue
+                pending[pool.submit(ask, args, phase, system, turns, faux if args.dry else None)] = extra
             if not pending:
                 break
             done, _ = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
@@ -533,8 +640,16 @@ def run_calls(args, phase, items, sink, build, keep):
     return 1 if stopped and stopped.startswith("refused:") else 0
 
 
-def run_name(model, prompt_path, effort=None):
-    return f"{model.replace('/', '_')}-{sha(Path(prompt_path).read_text())[:12]}" + (f"-{effort}" if effort else "")
+def run_name(model, arm, frame, effort=None):
+    """The run key: model, arm, the hash of everything the arm adds to the prefix, and effort."""
+    return f"{model.replace('/', '_')}-{arm}-{sha(frame)[:12]}" + (f"-{effort}" if effort else "")
+
+
+def framing(arm, prompt=None):
+    """(system prompt, turns after the prefix): the arm's prompt and the shared answer spec; the
+    self arm then asks the owner's check as the final user turn."""
+    system = Path(prompt or REPLAY / f"{arm}.md").read_text() + "\n" + (REPLAY / "answer.md").read_text()
+    return system, [(REPLAY / "check.md").read_text().strip()] if arm == "self" else []
 
 
 def cmd_extract(args):
@@ -554,74 +669,68 @@ def cmd_extract(args):
 
 
 def cmd_label(args):
+    """labels-v2.jsonl; v1's labels.jsonl is never written again. An `intent_loss` whose
+    `rests_on` resolves to no owner message is demoted to `new_info`."""
     out = Path(args.out)
-    done = by_id(r for r in read_rows(out / "labels.jsonl") if r.get("label"))
-    rows = [r for r in select(read_rows(out / "boundaries.jsonl"), args.split, args.limit, None) if r["id"] not in done]
+    sink = out / "labels-v2.jsonl"
+    done = by_id(r for r in read_rows(sink) if r.get("label"))
+    boundaries_by_id = by_id(read_rows(out / "boundaries.jsonl"))
+    rows = [r for r in select(boundaries_by_id.values(), args.split, args.limit, None) if r["id"] not in done]
     system = (REPLAY / "label.md").read_text()
 
     def build(row):
-        return system, render_label(row), faux_answer("label", row), {"id": row["id"], "model": args.model,
-                                                                      "effort": args.effort}
+        return system, [render_label(row)], faux_answer("label", row), {"id": row["id"], "model": args.model,
+                                                                        "effort": args.effort}
 
     def keep(result):
         answer = result.pop("answer", None) or {}
-        return {**result, **({"label": answer.get("label"), "objection": answer.get("objection", ""),
-                              "quote": answer.get("quote", "")} if answer.get("label") in LABELS else {})}
+        if answer.get("label") not in LABELS:
+            return result
+        kind = (answer.get("kind") if answer.get("kind") in KINDS else "new_info") if answer["label"] == "objected" else ""
+        rests = [cite(boundaries_by_id[result["id"]], c) for c in answer.get("rests_on") or [] if isinstance(c, dict)]
+        demoted = kind == "intent_loss" and not any(c["bytes"] for c in rests)
+        return {**result, "label": answer["label"], "kind": "new_info" if demoted else kind, "demoted": demoted,
+                "objection": answer.get("objection", ""), "quote": answer.get("quote", ""), "rests_on": rests}
 
-    return run_calls(args, "label", rows, out / "labels.jsonl", build, keep)
+    return run_calls(args, "label", rows, sink, build, keep)
 
 
 def cmd_judge(args):
     out = Path(args.out)
-    sink = out / "verdicts" / f"{run_name(args.model, args.prompt, args.effort)}.jsonl"
+    system, turns = framing(args.arm, args.prompt)
+    frame = "\n".join([system, *turns])
+    sink = out / "verdicts" / f"{run_name(args.model, args.arm, frame, args.effort)}.jsonl"
     done = by_id(r for r in read_rows(sink) if r.get("verdict"))
     boundaries_by_id = by_id(read_rows(out / "boundaries.jsonl"))
-    rows = [r for r in select(boundaries_by_id.values(), args.split, args.limit, effective_labels(out)) if r["id"] not in done]
-    system, prompt_hash = Path(args.prompt).read_text(), sha(Path(args.prompt).read_text())
+    rows = [r for r in select(boundaries_by_id.values(), args.split, args.limit, effective_labels(out)[0])
+            if r["id"] not in done]
+    # ponytail: rows arrive interleaved by hash, so this cache rarely hits; group by file if reads dominate.
+    nodes = functools.lru_cache(maxsize=4)(lambda corpus, session: READERS[corpus](Path(session)))
 
     def build(row):
-        return system, render_judge(row), faux_answer("judge", row), {
-            "id": row["id"], "split": row["split"], "corpus": row["corpus"], "model": args.model, "prompt": prompt_hash,
-            "effort": args.effort}
+        extra = {"id": row["id"], "split": row["split"], "corpus": row["corpus"], "model": args.model,
+                 "arm": args.arm, "prompt": sha(frame), "effort": args.effort}
+        try:
+            shown = prefix(row, nodes(row["corpus"], row["session"]))
+        except (LookupError, OSError) as error:
+            return None, f"{type(error).__name__}: {error}", None, extra
+        return system, [shown, *turns], faux_answer("judge", row), extra
 
     def keep(result):
-        answer = result.pop("answer", None) or {}
-        if answer.get("verdict") not in VERDICTS:
+        answer = result.pop("answer", None)
+        if answer is None:
             return result
+        chance = answer.get("p_objection")
+        if answer.get("verdict") not in VERDICTS or isinstance(chance, bool) or not isinstance(chance, (int, float)) \
+                or not 0 <= chance <= 1:
+            return {**result, "error": "no verdict with a p_objection in [0, 1]", "content": json.dumps(answer)}
         boundary = boundaries_by_id[result["id"]]
         objections = [{"text": o.get("text", ""), "citations": [cite(boundary, c) for c in o.get("citations") or []
                                                                if isinstance(c, dict)]}
                       for o in answer.get("objections") or [] if isinstance(o, dict)]
-        return {**result, "verdict": answer["verdict"], "objections": objections}
+        return {**result, "verdict": answer["verdict"], "objections": objections, "p_objection": chance}
 
     return run_calls(args, "judge", rows, sink, build, keep)
-
-
-def cmd_match(args):
-    out = Path(args.out)
-    labels, boundaries_by_id = effective_labels(out), by_id(read_rows(out / "boundaries.jsonl"))
-    label_rows = by_id(read_rows(out / "labels.jsonl"))
-    system = (REPLAY / "match.md").read_text()
-    for verdicts in sorted((out / "verdicts").glob("*.jsonl")):
-        sink = out / "matches" / verdicts.name
-        done = by_id(r for r in read_rows(sink) if "match" in r)
-        rows = [v for v in by_id(read_rows(verdicts)).values()
-                if v.get("verdict") in ("revise", "escalate") and labels.get(v["id"]) in POSITIVE and v["id"] not in done]
-
-        def build(verdict):
-            boundary = boundaries_by_id[verdict["id"]]
-            label = label_rows.get(verdict["id"]) or {}
-            return system, render_match(boundary, label, verdict), faux_answer("match", boundary), {
-                "id": verdict["id"], "model": args.model, "effort": args.effort}
-
-        def keep(result):
-            answer = result.pop("answer", None) or {}
-            return {**result, **({"match": answer["match"], "index": answer.get("index", -1)}
-                                 if isinstance(answer.get("match"), bool) else {})}
-
-        if run_calls(args, "match", rows, sink, build, keep):
-            return 1
-    return 0
 
 
 def balanced(pairs):
@@ -636,14 +745,25 @@ def balanced(pairs):
     return (recall + specificity) / 2, recall, specificity
 
 
-def bootstrap(by_session, draws=BOOTSTRAP_DRAWS, seed=SEED):
-    """95% interval of balanced accuracy, resampling whole sessions with replacement."""
+def auroc(pairs):
+    """Mann-Whitney AUROC over (positive, score) pairs by mean rank, ties counting half: the
+    chance a positive outscores a negative. None when a class is empty."""
+    positives = [score for positive, score in pairs if positive]
+    negatives = len(pairs) - len(positives)
+    if not positives or not negatives:
+        return None
+    ordered = sorted(score for _, score in pairs)
+    ranks = sum((bisect.bisect_left(ordered, s) + bisect.bisect_right(ordered, s) + 1) / 2 for s in positives)
+    return (ranks - len(positives) * (len(positives) + 1) / 2) / (len(positives) * negatives)
+
+
+def bootstrap(by_session, metric, draws=BOOTSTRAP_DRAWS, seed=SEED):
+    """95% interval of `metric`, resampling whole sessions with replacement."""
     rng, sessions, scores = random.Random(seed), sorted(by_session), []
     for _ in range(draws):
-        sample = [pair for _ in sessions for pair in by_session[rng.choice(sessions)]]
-        scored = balanced(sample)
-        if scored:
-            scores.append(scored[0])
+        score = metric([pair for _ in sessions for pair in by_session[rng.choice(sessions)]])
+        if score is not None:
+            scores.append(score)
     if not scores:
         return None
     scores.sort()
@@ -661,23 +781,37 @@ def resolution(verdicts):
     return (resolved / total if total else None), total
 
 
-def section(rows, labels, matches, sessions):
+def caught(verdict, rests):
+    """A flag whose resolved citations name an owner message the label's `rests_on` names."""
+    cited = {c.get("msg") for o in verdict.get("objections") or [] for c in o.get("citations") or [] if c.get("bytes")}
+    return verdict["verdict"] != "accept" and bool(cited & rests)
+
+
+def section(rows, classes, rests, sessions):
     verdicts = [r for r in rows if r.get("verdict") in VERDICTS]
-    scored = [v for v in verdicts if v["id"] in labels]
-    pairs = {}
+    scored = [v for v in verdicts if classes.get(v["id"]) in POSITIVE + ("accepted",)]
+    by_session = {}
     for v in scored:
-        pairs.setdefault(sessions.get(v["id"], v["id"]), []).append((labels[v["id"]] in POSITIVE, v["verdict"] != "accept"))
-    flat = [p for group in pairs.values() for p in group]
-    scores, interval = balanced(flat), bootstrap(pairs)
+        by_session.setdefault(sessions.get(v["id"], v["id"]), []).append(v)
+    flags = {k: [(classes[v["id"]] in POSITIVE, v["verdict"] != "accept") for v in vs] for k, vs in by_session.items()}
+    chances = {k: [(classes[v["id"]] in POSITIVE, v["p_objection"]) for v in vs if "p_objection" in v]
+               for k, vs in by_session.items()}
+    flat = [p for group in flags.values() for p in group]
+    scores = balanced(flat)
     rate, cited = resolution(verdicts)
+    losses = [v for v in scored if classes[v["id"]] == "intent_loss"]
+    revealed = [v["verdict"] != "accept" for v in scored if classes[v["id"]] == "check_revealed"]
     positives = sum(1 for p, _ in flat if p)
-    caught = sum(1 for v in scored if (matches.get(v["id"]) or {}).get("match") is True)
-    return {"n": len(scored), "positive_rate": positives / len(flat) if flat else None,
-            "resolution": rate, "cited": cited, "recall": scores[1] if scores else None,
-            "specificity": scores[2] if scores else None, "balanced": scores[0] if scores else None,
-            "interval": interval, "catch": caught / positives if positives else None,
-            "missing": len(rows) - len(verdicts),
-            "cost": sum(r.get("costUsd") or 0.0 for r in rows)}
+    return {"n": len(scored), "new_info": sum(1 for v in verdicts if classes.get(v["id"]) == "new_info"),
+            "positive_rate": positives / len(flat) if flat else None, "resolution": rate, "cited": cited,
+            "recall": scores[1] if scores else None, "specificity": scores[2] if scores else None,
+            "balanced": scores[0] if scores else None,
+            "interval": bootstrap(flags, lambda pairs: (balanced(pairs) or (None,))[0]),
+            "auroc": auroc([p for group in chances.values() for p in group]),
+            "auroc_interval": bootstrap(chances, auroc),
+            "catch": sum(1 for v in losses if caught(v, rests.get(v["id"], set()))) / len(losses) if losses else None,
+            "revealed": sum(revealed) / len(revealed) if revealed else None,
+            "missing": len(rows) - len(verdicts), "cost": sum(r.get("costUsd") or 0.0 for r in rows)}
 
 
 def fmt(value):
@@ -687,61 +821,73 @@ def fmt(value):
 def gate_line(held):
     """PASS also needs every held-out call answered: an unanswered boundary drops out of the
     score, the hard ones first."""
-    rate, low = held["resolution"], (held["interval"] or (None, None))[0]
+    rate, low = held["resolution"], (held["auroc_interval"] or (None, None))[0]
     ok = rate is not None and rate >= 0.95 and low is not None and low > 0.5 and held["missing"] == 0
     return (f"gate: {'PASS' if ok else 'FAIL'}: held-out citation resolution {fmt(rate)} (>= 0.95), "
-            f"balanced accuracy lower bound {fmt(low)} (> 0.5) and {held['missing']} calls without a verdict (0)")
+            f"AUROC lower bound {fmt(low)} (> 0.5) and {held['missing']} calls without a verdict (0)")
 
 
 def cmd_report(args):
     out = Path(args.out)
-    labels = effective_labels(out)
+    classes, rests, source = effective_labels(out)
     boundaries_by_id = by_id(read_rows(out / "boundaries.jsonl"))
     sessions = {k: v["conversation"] for k, v in boundaries_by_id.items()}
-    label_cost = sum(r.get("costUsd") or 0.0 for r in read_rows(out / "labels.jsonl"))
-    print(f"labels: {len(labels)} of {len(boundaries_by_id)} boundaries, ${label_cost:.4f}")
+    label_rows = read_rows(out / source)
+    print(f"labels ({source}): {len(classes)} of {len(boundaries_by_id)} boundaries, "
+          f"${sum(r.get('costUsd') or 0.0 for r in label_rows):.4f}; "
+          f"{sum(1 for c in classes.values() if c == 'new_info')} new_info left out of scoring, "
+          f"{sum(1 for r in label_rows if r.get('demoted'))} of them demoted for a rests_on that resolved to nothing")
     for key in sorted({(b["corpus"], b["split"]) for b in boundaries_by_id.values()}):
-        mine = [labels[k] for k, b in boundaries_by_id.items() if (b["corpus"], b["split"]) == key and k in labels]
-        rate = sum(1 for label in mine if label in POSITIVE) / len(mine) if mine else None
-        print(f"   {key[0]:8s}{key[1]:10s}{len(mine):5d} labelled, positive rate {fmt(rate)}")
-    touched = set()
+        mine = [classes[k] for k, b in boundaries_by_id.items() if (b["corpus"], b["split"]) == key and k in classes]
+        scored = [c for c in mine if c != "new_info"]
+        rate = sum(1 for c in scored if c in POSITIVE) / len(scored) if scored else None
+        print(f"   {key[0]:8s}{key[1]:10s}{len(mine):5d} labelled, {len(mine) - len(scored)} new_info, "
+              f"positive rate {fmt(rate)}")
+    touched, arms = set(), []
     for path in sorted((out / "verdicts").glob("*.jsonl")):
         rows = list(by_id(read_rows(path)).values())
+        arm = next((r["arm"] for r in rows if r.get("arm")), "v1")
         if any(row.get("split") == "held-out" for row in rows):
             touched.add(path.stem)
         verdicts = [r for r in rows if r.get("verdict") in VERDICTS]
-        matches = by_id(read_rows(out / "matches" / path.name))
-        match_cost = sum(r.get("costUsd") or 0.0 for r in matches.values())
         errors = [r.get("error") for r in rows if r.get("error") and r.get("verdict") not in VERDICTS]
-        print(f"\n== {path.stem}: {len(verdicts)} verdicts, {len(errors)} calls without one; match ${match_cost:.4f}")
+        print(f"\n== {path.stem} ({arm}): {len(verdicts)} verdicts, {len(errors)} calls without one")
         for error in sorted(set(errors))[:5]:
             print(f"   error x{errors.count(error)}: {error}")
-        print(f"   {'corpus':8s}{'split':10s}{'n':>5s}{'pos':>7s}{'cite':>7s}{'recall':>8s}{'spec':>7s}"
-              f"{'bal':>7s}  95% interval   {'catch':>6s}{'cost':>9s}")
+        print(f"   {'corpus':8s}{'split':10s}{'n':>5s}{'pos':>7s}{'new':>5s}{'cite':>7s}{'recall':>8s}{'spec':>7s}"
+              f"{'bal':>7s}  95% interval   {'auroc':>6s}  95% interval   {'catch':>6s}{'check':>7s}{'cost':>9s}")
         held = None
         for split in ("fit", "held-out"):
             for corpus in sorted({r.get("corpus") for r in rows}) + ["all"]:
                 part = [r for r in rows if r.get("split") == split and corpus in ("all", r.get("corpus"))]
                 if not part:
                     continue
-                s = section(part, labels, matches, sessions)
-                if corpus == "all" and split == "held-out":
-                    held = s
+                s = section(part, classes, rests, sessions)
+                if corpus == "all":
+                    arms.append((rows[0].get("model") or "", rows[0].get("effort") or "", split, arm, s))
+                    held = s if split == "held-out" else held
                 low, high = s["interval"] or (None, None)
-                print(f"   {corpus:8s}{split:10s}{s['n']:5d}{fmt(s['positive_rate']):>7s}{fmt(s['resolution']):>7s}"
-                      f"{fmt(s['recall']):>8s}{fmt(s['specificity']):>7s}{fmt(s['balanced']):>7s}  "
-                      f"[{fmt(low)}, {fmt(high)}]{fmt(s['catch']):>7s}{s['cost']:9.4f}")
-        always_accept = balanced([(True, False), (False, False)])
-        always_flag = balanced([(True, True), (False, True)])
-        print(f"   baselines: always-accept {fmt(always_accept[0])}, always-flag {fmt(always_flag[0])}")
-        print("   " + gate_line(held or {"resolution": None, "interval": None, "missing": 0}))
-    print("\njudge runs (model-prompt sha256) that have touched held-out: " + (", ".join(sorted(touched)) or "none"))
+                a_low, a_high = s["auroc_interval"] or (None, None)
+                print(f"   {corpus:8s}{split:10s}{s['n']:5d}{fmt(s['positive_rate']):>7s}{s['new_info']:5d}"
+                      f"{fmt(s['resolution']):>7s}{fmt(s['recall']):>8s}{fmt(s['specificity']):>7s}"
+                      f"{fmt(s['balanced']):>7s}  [{fmt(low)}, {fmt(high)}]{fmt(s['auroc']):>7s}  [{fmt(a_low)}, {fmt(a_high)}]"
+                      f"{fmt(s['catch']):>7s}{fmt(s['revealed']):>7s}{s['cost']:9.4f}")
+        print("   baselines: always-accept and always-flag score balanced accuracy 0.5, a constant p_objection AUROC 0.5")
+        print("   " + gate_line(held or {"resolution": None, "auroc_interval": None, "missing": 0}))
+    print(f"\n== arms side by side, all corpora\n   {'model':38s}{'effort':8s}{'split':10s}{'arm':6s}{'n':>5s}"
+          f"{'auroc':>7s}  95% interval   {'bal':>6s}{'catch':>7s}{'check':>7s}  gate")
+    for model, effort, split, arm, s in sorted(arms, key=lambda a: a[:4]):
+        a_low, a_high = s["auroc_interval"] or (None, None)
+        gate = gate_line(s).split(":")[1].strip() if split == "held-out" else "-"
+        print(f"   {model:38s}{effort:8s}{split:10s}{arm:6s}{s['n']:5d}{fmt(s['auroc']):>7s}  [{fmt(a_low)}, {fmt(a_high)}]"
+              f"{fmt(s['balanced']):>7s}{fmt(s['catch']):>7s}{fmt(s['revealed']):>7s}  {gate}")
+    print("\njudge runs (model-arm-framing sha256) that have touched held-out: " + (", ".join(sorted(touched)) or "none"))
     return 0
 
 
 def cmd_mark(args):
-    if args.label not in LABELS:
-        print(f"refused: label must be one of {', '.join(LABELS)}", file=sys.stderr)
+    if args.label not in CLASSES:
+        print(f"refused: label must be one of {', '.join(CLASSES)}", file=sys.stderr)
         return 2
     append(Path(args.out) / "marks.jsonl", {"boundary": args.boundary, "label": args.label, "ts": int(time.time() * 1000)})
     return 0
@@ -753,7 +899,7 @@ def listing(directories):
 
 
 def cmd_all(args):
-    """The dry pipeline end to end: every phase, then the proof that the corpus was only read."""
+    """The dry pipeline end to end: every phase, both arms, then the proof that the corpus was only read."""
     if not args.dry:
         print("refused: `all` is the dry pipeline; a paid run is its phases, one at a time", file=sys.stderr)
         return 2
@@ -762,9 +908,10 @@ def cmd_all(args):
     if not args.out:
         args.out = tempfile.mkdtemp(prefix="yi-replay-out-")
         atexit.register(shutil.rmtree, args.out, True)
-    args.prompt, args.split, args.limit = str(REPLAY / "judge.md"), None, None
+    args.prompt, args.split, args.limit = None, None, None
     args.corpus = [f"{k}:{d}" for k, d in specs]
-    for phase in (cmd_extract, cmd_label, cmd_judge, cmd_match, cmd_report):
+    for phase, arm in ((cmd_extract, None), (cmd_label, None), (cmd_judge, "self"), (cmd_judge, "judge"), (cmd_report, None)):
+        args.arm = arm
         if phase(args) != 0:
             return 1
     if listing(d for _, d in specs) != before:
@@ -777,12 +924,12 @@ def cmd_all(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("extract", "label", "judge", "match", "report", "mark", "all"):
+    for name in ("extract", "label", "judge", "report", "mark", "all"):
         sub = commands.add_parser(name)
         sub.add_argument("--out", required=name != "all")
         if name in ("extract", "all"):
             sub.add_argument("--corpus", action="append", default=[], help="yi:<dir> or claude:<dir>; repeatable")
-        if name in ("label", "judge", "match", "all"):
+        if name in ("label", "judge", "all"):
             sub.add_argument("--model", required=True)
             sub.add_argument("--effort", choices=("low", "medium", "high"))
             sub.add_argument("--jobs", type=int, default=1)
@@ -792,7 +939,8 @@ def main(argv=None):
             sub.add_argument("--split", choices=("fit", "held-out"))
             sub.add_argument("--limit", type=int, default=None)
         if name == "judge":
-            sub.add_argument("--prompt", default=str(REPLAY / "judge.md"))
+            sub.add_argument("--arm", choices=ARMS, required=True, help="self: the agent asked the owner's check; judge: an outside reader")
+            sub.add_argument("--prompt", help="the arm's system prompt; default replay/<arm>.md")
         if name == "mark":
             sub.add_argument("boundary")
             sub.add_argument("label")

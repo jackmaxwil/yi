@@ -27,10 +27,31 @@ def completion(content, cost=0.25):
                       "prompt_tokens_details": {"cached_tokens": 64}}}
 
 
-def boundary(texts, calls=(), final="done"):
+def boundary(texts):
     intent = [{"file": "f", "entry": f"e{i}", "text": t, "offset": 0} for i, t in enumerate(texts)]
-    return {"id": "0", "intent": intent, "turn": {"entry": "t", "text": final, "calls": list(calls)},
-            "next": {"text": "NEXT-NEEDLE"}, "reply": "REPLY-NEEDLE"}
+    return {"id": "0", "intent": intent, "turn": {"entry": "t", "text": "done"}, "next": {"text": "NEXT-NEEDLE"},
+            "reply": "REPLY-NEEDLE"}
+
+
+# Scrubbed words that name the line they sit on; every tool result reads the same, so a copy
+# renames each after its line.
+NEEDLE = re.compile(r"(?:assistant text|command|description|file_path|typed|result at line) \d+\b")
+
+
+def needled(scratch):
+    """The Claude fixtures copied under `scratch` with each tool result renamed after its line."""
+    for source in jr.corpus_files(CLAUDE):
+        copy = pathlib.Path(scratch) / source.relative_to(CLAUDE)
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_text("\n".join(line.replace('"scrubbed result"', f'"result at line {i}"')
+                                  for i, line in enumerate(source.read_text().split("\n"))))
+    return pathlib.Path(scratch)
+
+
+def fixture_rows(root=CLAUDE):
+    """(row, nodes) for every boundary in the Yi fixtures and the Claude ones under `root`."""
+    rows = jr.extract_corpora([("yi", jr.FIXTURES["yi"]), ("claude", root)])
+    return [(row, jr.READERS[row["corpus"]](pathlib.Path(row["session"]))) for row in rows]
 
 
 class Readers(unittest.TestCase):
@@ -40,7 +61,6 @@ class Readers(unittest.TestCase):
         self.assertEqual(rewound["turn"]["text"], "I wrote the parser in parse.rs.")
         self.assertEqual([m["text"] for m in rewound["intent"]], ["write the parser"])
         self.assertEqual(rewound["reply"], "Renamed the parser to lex.")
-        self.assertEqual(rows["now add the tests"]["turn"]["calls"], [{"name": "bash", "head": "ls"}])
 
     def test_a_child_session_is_not_the_owner(self):
         with tempfile.TemporaryDirectory() as scratch:
@@ -53,8 +73,12 @@ class Readers(unittest.TestCase):
         rows = jr.boundaries("yi", NUDGED, jr.read_yi(NUDGED))
         self.assertEqual([[m["text"] for m in r["intent"] + [r["next"]]] for r in rows],
                          [["fix the typo in notes.txt", "no: read it first"]], "the nudge read as the owner")
-        self.assertEqual(rows[0]["turn"]["calls"], [{"name": "edit", "head": "notes.txt"}],
-                         "the nudge mid-turn cut the edit out of the turn")
+        lines = jr.prefix(rows[0], jr.read_yi(NUDGED)).split("\n")
+        self.assertEqual([l for l in lines if l.startswith("[")],
+                         ["[u1] fix the typo in notes.txt", "[call edit]", "[result edit]",
+                          "[agent] The edit to notes.txt was refused."], "the nudge mid-turn cut the edit out")
+        self.assertIn("path: notes.txt", lines)
+        self.assertFalse([l for l in lines if "outgrown" in l], "a host nudge rendered as the conversation")
 
     def test_a_line_separator_inside_a_message_keeps_the_entry(self):
         # Claude Code and serde_json both write U+2028 raw inside a string; 13 typed messages in
@@ -114,17 +138,77 @@ class Readers(unittest.TestCase):
         self.assertEqual(cited["entry"], message["entry"])
 
 
-class Judge(unittest.TestCase):
-    def test_the_judge_sees_nothing_after_the_boundary(self):
-        rows = jr.extract_corpora([("yi", jr.FIXTURES["yi"]), ("claude", CLAUDE)])
-        self.assertGreater(len(rows), 5)
-        for row in rows:
-            shown = jr.render_judge(row)
-            self.assertNotIn(row["next"]["text"], shown)
-            if row["reply"]:
-                self.assertNotIn(row["reply"], shown)
-        rewound = next(r for r in rows if r["next"]["text"] == "no: rename the parser first")
-        self.assertNotIn("now add the tests", jr.render_judge(rewound), "the abandoned branch leaked")
+class Prefix(unittest.TestCase):
+    def test_the_prefix_holds_nothing_at_or_after_the_boundary(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = needled(scratch)
+            copy = root / "-work-yi" / RESUMED.name
+            entries = [json.loads(line) for line in copy.read_text().split("\n") if line.strip()]
+            parallel = entries[50]
+            # A result for a call on the path, on a branch of its own after the owner's message:
+            # a reader that trusts the call id over file order shows it.
+            late = {"type": "user", "uuid": "late-result", "parentUuid": parallel["uuid"],
+                    "message": {"role": "user", "content": [{"type": "tool_result", "content": "LATE RESULT",
+                                                             "tool_use_id": parallel["message"]["content"][0]["id"]}]}}
+            copy.write_text(copy.read_text() + json.dumps(late) + "\n")
+            checked, shown_by_next = 0, {}
+            for row, nodes in fixture_rows(root):
+                shown = jr.prefix(row, nodes)
+                shown_by_next[row["next"]["text"]] = shown
+                at = nodes[row["next"]["entry"]]["order"]
+                words = lambda n: [n.get("text") or "", *(r["text"] for r in n.get("results") or []),
+                                   *(v for c in n.get("calls") or [] for v in (c["args"] or {}).values() if isinstance(v, str))]
+                earlier = {w for n in nodes.values() if n["order"] < at for w in words(n)}
+                for later in {w for n in nodes.values() if n["order"] >= at for w in words(n)} - earlier - {""}:
+                    checked += 1
+                    self.assertIsNone(re.search(re.escape(later) + r"(?!\d)", shown), f"{later!r} leaked before its boundary")
+        self.assertGreater(checked, 100)
+        self.assertNotIn("LATE RESULT", shown_by_next["typed 65: the owner's words"])
+        for twig in ("description 51", *(f"result at line {i}" for i in range(52, 58))):
+            self.assertRegex(shown_by_next["typed 65: the owner's words"], re.escape(twig) + r"(?!\d)",
+                             "a parallel call or its result hanging off the path was lost")
+        for abandoned in ("now add the tests", "Tests added in tests/parse.rs."):
+            self.assertNotIn(abandoned, shown_by_next["no: rename the parser first"], "the abandoned branch leaked")
+
+    def test_the_tool_cap_speaks_at_limit_plus_one(self):
+        nodes = jr.read_yi(YI)
+        row = next(r for r in jr.boundaries("yi", YI, nodes) if r["next"]["text"] == "now add the tests")
+        size = len("(no output)")
+        at = jr.prefix(row, nodes, tool_chars=size).split("\n")
+        self.assertEqual(at[at.index("[result bash]") + 1], "(no output)")
+        self.assertFalse([l for l in at if l.startswith("[… ")])
+        over = jr.prefix(row, nodes, tool_chars=size - 1).split("\n")
+        at = over.index("[result bash]")
+        self.assertEqual(over[at + 1:at + 3], ["(no output", f"[… kept {size - 1} of {size} chars; tool_chars={size - 1}]"])
+        call = jr.prefix(row, nodes, tool_chars=1).split("\n")
+        at = call.index("[call bash]")
+        self.assertEqual(call[at + 1:at + 3], ["command: l", "[… kept 1 of 2 chars of `command`; tool_chars=1]"])
+
+    def test_the_prefix_cap_cuts_oldest_results_first_at_limit_plus_one_and_keeps_the_owner(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            row, nodes = next((r, n) for r, n in fixture_rows(needled(scratch)) if r["next"]["text"].startswith("typed 339:"))
+            whole = jr.prefix(row, nodes, prefix_chars=10**9)
+            limit, lines = len(whole), whole.split("\n")
+            owners = [l for l in lines if l.startswith("[u")]
+            results = [l for l in lines if l.startswith("result at line")]
+            agent = sum(1 for l in lines if l.startswith(("[agent]", "[call ")))
+            self.assertEqual(jr.prefix(row, nodes, prefix_chars=limit), whole)
+            cut = jr.prefix(row, nodes, prefix_chars=limit - 1)
+            self.assertLessEqual(len(cut), limit - 1)
+            kept = [l for l in cut.split("\n") if l.startswith("result at line")]
+            self.assertEqual(kept, results[len(results) - len(kept):], "a newer result went before an older one")
+            self.assertEqual(cut.split("\n")[0], f"[… prefix_chars={limit - 1} kept {len(kept)} of {len(results)} tool "
+                             f'results, {agent} of {agent} agent texts and calls; each "[… n cut: prefix_chars]" row is a gap]')
+            gaps = [int(l.split()[1]) for l in cut.split("\n") if re.fullmatch(r"\[… \d+ cut: prefix_chars\]", l)]
+            self.assertEqual(sum(gaps), len(results) - len(kept), "a cut left no row where it was")
+            deep = jr.prefix(row, nodes, prefix_chars=len("\n".join(owners)) + 1).split("\n")
+            self.assertEqual([l for l in deep if l.startswith("[u")], owners, "an owner's message was cut")
+            self.assertTrue(deep[0].startswith(f"[… prefix_chars={len(chr(10).join(owners)) + 1} kept 0 of {len(results)} "
+                                               f"tool results, 0 of {agent} agent texts and calls;"), deep[0])
+            alone = jr.prefix(row, nodes, prefix_chars=10, intent_chars=len(owners[-1]) + 1).split("\n")
+            self.assertEqual([l for l in alone if l.startswith("[u")], owners[-1:])
+            self.assertIn(f"[… kept the newest 1 of {len(owners)} messages; intent_chars={len(owners[-1]) + 1} "
+                          f"cut u1..u{len(owners) - 1}]", alone)
 
     def test_quotes_resolve_to_utf8_bytes_and_paraphrases_do_not(self):
         text = "naïve café — ok\n  then   more"
@@ -134,22 +218,65 @@ class Judge(unittest.TestCase):
         self.assertIsNone(jr.resolve(text, ""))
         self.assertIsNone(jr.cite(boundary(["x"]), {"msg": "u2", "quote": "x"})["bytes"])
 
-    def test_the_intent_cap_speaks_at_limit_plus_one(self):
-        row = boundary(["a" * 10, "b" * 20])
+    def test_the_labellers_intent_cap_speaks_at_limit_plus_one(self):
         limit = len("[u1] " + "a" * 10) + 1 + len("[u2] " + "b" * 20) + 1
-        whole = jr.render_judge(row, cap=limit)
-        self.assertNotIn("[…", whole)
-        self.assertIn("[u1] " + "a" * 10, whole)
-        cut = jr.render_judge(boundary(["a" * 11, "b" * 20]), cap=limit)
-        self.assertIn(f"[… kept the newest 1 of 2 messages; intent_chars={limit} cut u1..u1;", cut)
-        self.assertNotIn("[u1]", cut)
-        self.assertIn("[u2] " + "b" * 20, cut)
+        self.assertEqual(jr.owner_rows(boundary(["a" * 10, "b" * 20])["intent"], cap=limit),
+                         ["[u1] " + "a" * 10, "[u2] " + "b" * 20])
+        self.assertEqual(jr.owner_rows(boundary(["a" * 11, "b" * 20])["intent"], cap=limit),
+                         [f"[… kept the newest 1 of 2 messages; intent_chars={limit} cut u1..u1]", "[u2] " + "b" * 20])
+        self.assertIn("\n[u1] the words\n", jr.render_label(boundary(["the words"])))
 
-    def test_the_call_head_cap_speaks_at_limit_plus_one(self):
-        at = jr.render_judge(boundary(["x"], [{"name": "bash", "head": "c" * jr.DIGEST_HEAD}]))
-        self.assertNotIn("[…", at)
-        over = jr.render_judge(boundary(["x"], [{"name": "bash", "head": "c" * (jr.DIGEST_HEAD + 1)}]))
-        self.assertIn(f"[… 1 of 1 call heads cut to digest_head={jr.DIGEST_HEAD} chars;", over)
+
+class Arms(unittest.TestCase):
+    def test_the_self_arm_ends_on_the_owners_check_and_the_judge_arm_does_not(self):
+        check = (jr.REPLAY / "check.md").read_text().strip()
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, True)
+        sent = {}
+        with contextlib.redirect_stdout(io.StringIO()):
+            jr.main(["extract", "--out", out, "--corpus", f"yi:{jr.FIXTURES['yi']}", "--corpus", f"claude:{CLAUDE}"])
+            jr.main(["label", "--out", out, "--model", "faux/faux-1", "--dry"])
+            for arm in jr.ARMS:
+                with mock.patch.object(jr, "request", wraps=jr.request) as request:
+                    self.assertEqual(jr.main(["judge", "--out", out, "--model", "faux/faux-1", "--dry", "--arm", arm]), 0)
+                sent[arm] = [(c.args[2], c.args[3]) for c in request.call_args_list]
+        self.assertTrue(sent["self"])
+        self.assertEqual([turns[-1] for _, turns in sent["self"]], [check] * len(sent["self"]))
+        self.assertTrue(all(len(turns) == 1 and check not in turns[0] and check not in system
+                            for system, turns in sent["judge"]))
+        self.assertEqual(sorted(turns[0] for _, turns in sent["self"]), sorted(turns[0] for _, turns in sent["judge"]),
+                         "the arms read different prefixes")
+        files = {p.name: {r.get("arm") for r in jr.read_rows(p)} for p in (pathlib.Path(out) / "verdicts").glob("*.jsonl")}
+        self.assertEqual(sorted(files.values(), key=str), [{"judge"}, {"self"}])
+        self.assertTrue(all(f"-{arms.copy().pop()}-" in name for name, arms in files.items()), files)
+
+
+class Labels(unittest.TestCase):
+    def test_an_intent_loss_whose_rests_on_does_not_resolve_is_demoted_to_new_info(self):
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, True)
+        expected, turn = [], iter(range(10**6))
+
+        def reply(body):
+            owner = re.search(r"^\[u1\] (\S+ \S+)", body["messages"][-1]["content"], re.M)
+            mode = next(turn) % 3
+            quote = owner.group(1) if owner and mode == 0 else "words the owner never wrote"
+            expected.append(bool(owner) and mode == 0)
+            return completion(json.dumps({"label": "objected", "kind": "intent_loss", "objection": "o", "quote": "q",
+                                          "rests_on": [{"msg": "u99" if mode == 2 else "u1", "quote": quote}]}), cost=0.001)
+
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.dict(os.environ, {jr.KEY: "k"}), \
+                mock.patch.object(jr, "post", side_effect=reply):
+            jr.main(["extract", "--out", out, "--corpus", f"yi:{jr.FIXTURES['yi']}", "--corpus", f"claude:{CLAUDE}"])
+            self.assertEqual(jr.main(["label", "--out", out, "--model", Call.MODEL, "--cap-usd", "1"]), 0)
+        rows = jr.read_rows(pathlib.Path(out) / "labels-v2.jsonl")
+        self.assertEqual({True, False}, set(expected))
+        self.assertEqual([(r["kind"], r["demoted"]) for r in rows],
+                         [("intent_loss", False) if ok else ("new_info", True) for ok in expected])
+        self.assertFalse((pathlib.Path(out) / "labels.jsonl").exists(), "v1's labels were written")
+        classes, rests, source = jr.effective_labels(pathlib.Path(out))
+        self.assertEqual((source, sorted(set(classes.values()))), ("labels-v2.jsonl", ["intent_loss", "new_info"]))
+        self.assertTrue(all(rests[r["id"]] == {"u1"} for r in rows if r["kind"] == "intent_loss"))
 
 
 class Call(unittest.TestCase):
@@ -159,38 +286,34 @@ class Call(unittest.TestCase):
         return types.SimpleNamespace(model=self.MODEL, dry=False, effort=effort, **extra)
 
     def test_the_request_is_the_prompt_and_the_input_with_no_tools(self):
-        rows = jr.extract_corpora([("yi", jr.FIXTURES["yi"]), ("claude", CLAUDE)])
-        for row in rows:
-            shown = jr.render_judge(row)
-            body = jr.request(self.MODEL, "judge", "SYSTEM", shown)
+        for row, nodes in fixture_rows():
+            shown = jr.prefix(row, nodes)
+            body = jr.request(self.MODEL, "judge", "SYSTEM", [shown, "CHECK"])
             self.assertEqual(sorted(body), ["messages", "model", "response_format", "temperature", "usage"])
             self.assertEqual((body["model"], body["temperature"], body["usage"]), ("z-ai/glm-5.3-flash", 0, {"include": True}))
-            self.assertEqual(body["messages"], [{"role": "system", "content": "SYSTEM"}, {"role": "user", "content": shown}])
-            self.assertNotIn(row["next"]["text"], shown)
-            if row["reply"]:
-                self.assertNotIn(row["reply"], shown)
+            self.assertEqual(body["messages"], [{"role": "system", "content": "SYSTEM"}, {"role": "user", "content": shown},
+                                                {"role": "user", "content": "CHECK"}])
         for phase, name in jr.SCHEMAS.items():
             schema = json.loads((jr.REPLAY / f"{name}.schema.json").read_text())
-            self.assertEqual(jr.request(self.MODEL, phase, "s", "p")["response_format"],
+            self.assertEqual(jr.request(self.MODEL, phase, "s", ["p"])["response_format"],
                              {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}})
         for effort in (None, "high"):
             with self.subTest(effort=effort), mock.patch.object(jr, "post", return_value=completion("{}")) as post:
-                jr.ask(self.args(effort=effort), "judge", "s", "p")
+                jr.ask(self.args(effort=effort), "judge", "s", ["p"])
                 sent = post.call_args.args[0]
                 if effort:
                     self.assertEqual(sent["reasoning"]["effort"], "high")
                 else:
                     self.assertNotIn("reasoning", sent)
-        prompt = jr.REPLAY / "judge.md"
-        self.assertEqual(jr.run_name(self.MODEL, prompt), f"openrouter_z-ai_glm-5.3-flash-{jr.sha(prompt.read_text())[:12]}")
-        self.assertEqual(jr.run_name(self.MODEL, prompt, "high"), jr.run_name(self.MODEL, prompt) + "-high")
+        self.assertEqual(jr.run_name(self.MODEL, "self", "frame"), f"openrouter_z-ai_glm-5.3-flash-self-{jr.sha('frame')[:12]}")
+        self.assertEqual(jr.run_name(self.MODEL, "self", "frame", "high"), jr.run_name(self.MODEL, "self", "frame") + "-high")
 
     def test_a_reply_parses_strict_or_fenced_and_garbage_is_an_error_row(self):
         answer = {"label": "objected", "objection": "wrong file", "quote": "no, the other one"}
         for content, parsed in ((json.dumps(answer), answer), (f"```json\n{json.dumps(answer)}\n```", answer),
                                 ("It was accepted, I think.", None), ("{\"label\": \"objected\",", None)):
             with self.subTest(content), mock.patch.object(jr, "post", return_value=completion(content)):
-                row = jr.ask(self.args(), "label", "s", "p")
+                row = jr.ask(self.args(), "label", "s", ["p"])
                 self.assertEqual(row.get("answer"), parsed)
                 if parsed is None:
                     self.assertEqual((row["error"], row["content"]), ("no JSON object in the reply", content))
@@ -241,19 +364,58 @@ class Metrics(unittest.TestCase):
         self.assertEqual(jr.balanced([(True, False), (False, False)])[0], 0.5)
         self.assertEqual(jr.balanced([(True, True), (False, True)])[0], 0.5)
 
+    def test_auroc_on_a_hand_table_with_ties(self):
+        # The 0.9 positive beats both negatives; each 0.5 positive ties the 0.5 negative (a half)
+        # and beats the 0.1: (2 + 1.5 + 1.5) / (3 * 2).
+        self.assertAlmostEqual(jr.auroc([(True, 0.9), (True, 0.5), (True, 0.5), (False, 0.5), (False, 0.1)]), 5 / 6)
+        self.assertEqual(jr.auroc([(True, 0.3), (False, 0.3)]), 0.5)
+        self.assertEqual(jr.auroc([(True, 0.1), (False, 0.9)]), 0.0)
+        self.assertIsNone(jr.auroc([(True, 0.9)]), "AUROC is undefined with no negatives")
+
     def test_the_bootstrap_resamples_sessions(self):
         # A session resample is s1+s1 (1.0), s2+s2 (0.0) or s1+s2 (0.5); resampling the 40 rows
         # instead would pile up near 0.5 and hide how much one session decides.
         by_session = {"s1": [(True, True)] * 10 + [(False, False)] * 10,
                       "s2": [(True, False)] * 10 + [(False, True)] * 10}
-        self.assertEqual(jr.balanced(by_session["s1"] + by_session["s2"])[0], 0.5)
-        self.assertEqual(jr.bootstrap(by_session), (0.0, 1.0))
-        self.assertIsNone(jr.bootstrap({"s1": [(True, True)]}))
+        accuracy = lambda pairs: (jr.balanced(pairs) or (None,))[0]
+        self.assertEqual(accuracy(by_session["s1"] + by_session["s2"]), 0.5)
+        self.assertEqual(jr.bootstrap(by_session, accuracy), (0.0, 1.0))
+        self.assertIsNone(jr.bootstrap({"s1": [(True, True)]}, accuracy))
+        chances = {"s1": [(True, 0.9)] * 10 + [(False, 0.1)] * 10, "s2": [(True, 0.1)] * 10 + [(False, 0.9)] * 10}
+        self.assertEqual(jr.auroc(chances["s1"] + chances["s2"]), 0.5)
+        self.assertEqual(jr.bootstrap(chances, jr.auroc), (0.0, 1.0))
+
+    def test_catch_needs_a_flag_citing_what_the_label_rests_on(self):
+        def verdict(key, said, cited, resolved=True):
+            return {"id": key, "split": "fit", "verdict": said, "p_objection": 0.5, "objections": [
+                {"text": "t", "citations": [{"msg": m, "bytes": [0, 1] if resolved else None} for m in cited]}]}
+
+        classes = {"meets": "intent_loss", "misses": "intent_loss", "accepts": "intent_loss", "unresolved": "intent_loss",
+                   "revealed": "check_revealed", "fine": "accepted"}
+        rows = [verdict("meets", "revise", ["u2", "u1"]), verdict("misses", "revise", ["u2"]),
+                verdict("accepts", "accept", ["u1"]), verdict("unresolved", "escalate", ["u1"], resolved=False),
+                verdict("revealed", "revise", []), verdict("fine", "accept", [])]
+        scored = jr.section(rows, classes, {k: {"u1"} for k in classes}, {})
+        self.assertEqual((scored["catch"], scored["revealed"]), (1 / 4, 1.0))
+
+    def test_an_interleaved_sample_cut_at_k_stays_balanced(self):
+        # Ids in hash order front-load negatives, as the v1 sample did: the first 25 are accepted.
+        rows = [{"id": f"{i:04x}", "split": "fit"} for i in range(60)]
+        classes = {r["id"]: "accepted" if i < 25 or i % 5 == 0 else "intent_loss" for i, r in enumerate(rows)}
+        classes["0021"], classes["0022"] = "check_revealed", "new_info"
+        positives = sum(1 for c in classes.values() if c in jr.POSITIVE)
+        negatives = sum(1 for c in classes.values() if c == "accepted")
+        for k in (1, 2, 3, 9, 2 * min(positives, negatives)):
+            cut = jr.select(rows, None, k, classes)
+            taken = sum(1 for r in cut if classes[r["id"]] in jr.POSITIVE)
+            self.assertEqual(len(cut), k)
+            self.assertLessEqual(abs(taken - (k - taken)), 1, k)
+        self.assertNotIn("0022", {r["id"] for r in jr.select(rows, None, None, classes)}, "new_info was sampled")
 
     def test_the_gate_line_at_its_thresholds(self):
-        held = {"resolution": 0.95, "interval": (0.501, 0.9), "missing": 0}
+        held = {"resolution": 0.95, "auroc_interval": (0.501, 0.9), "missing": 0}
         self.assertTrue(jr.gate_line(held).startswith("gate: PASS"))
-        for change in ({"interval": (0.5, 0.9)}, {"resolution": 0.949}, {"resolution": None, "interval": None},
+        for change in ({"auroc_interval": (0.5, 0.9)}, {"resolution": 0.949}, {"resolution": None, "auroc_interval": None},
                        {"missing": 1}):
             self.assertTrue(jr.gate_line({**held, **change}).startswith("gate: FAIL"), change)
 
