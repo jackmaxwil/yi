@@ -204,6 +204,7 @@ pub enum PaneContent {
     },
     SessionDiff {
         session: SessionId,
+        scope: ReviewScope,
     },
     Editor(Editor),
 }
@@ -255,11 +256,43 @@ pub struct FileDiff {
     pub added: u64,
     pub removed: u64,
     pub tracked: bool,
+    pub serving: Option<String>,
+    pub turn: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReviewScope {
+    #[default]
+    Branch,
+    Turn,
+    Session,
+}
+
+impl ReviewScope {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Branch => Self::Turn,
+            Self::Turn => Self::Session,
+            Self::Session => Self::Branch,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Branch => "branch",
+            Self::Turn => "turn",
+            Self::Session => "session",
+        }
+    }
 }
 
 #[derive(Default)]
 pub struct SessionDiff {
     pub files: Vec<(String, FileDiff)>,
+    pub turn: u64,
+    pub reads: BTreeMap<String, u32>,
+    pub branch: Option<yi_types::lane::BranchDiff>,
+    pub branch_due: bool,
 }
 
 const MAX_DIFF_FILES: usize = 512;

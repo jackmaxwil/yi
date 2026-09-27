@@ -275,3 +275,36 @@ pub fn hook(
         Some(render(&lines))
     })
 }
+
+pub fn branch_diff(root: &Path) -> Option<yi_types::lane::BranchDiff> {
+    let git = |args: &[&str]| crate::lane::capture(root, "git", args, PROBE).ok();
+    let base = git(&["merge-base", "HEAD", "origin/main"])
+        .or_else(|| git(&["merge-base", "HEAD", "main"]))?
+        .trim()
+        .to_owned();
+    let files = git(&["diff", "--numstat", &base])?
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '\t');
+            let added = parts.next()?.parse().unwrap_or(0);
+            let removed = parts.next()?.parse().unwrap_or(0);
+            Some((parts.next()?.to_owned(), added, removed))
+        })
+        .collect();
+    let mut patch = git(&["diff", "--no-color", &base])?;
+    if patch.len() > 4 << 20 {
+        let cut = (0..=4 << 20)
+            .rev()
+            .find(|at| patch.is_char_boundary(*at))
+            .unwrap_or(0);
+        patch = patch.get(..cut).unwrap_or_default().to_owned();
+        patch.push_str("\n[diff cut at 4 MiB; `git diff` has the rest]\n");
+    }
+    Some(yi_types::lane::BranchDiff {
+        base: base.chars().take(8).collect(),
+        files,
+        patch,
+        untracked: git(&["ls-files", "--others", "--exclude-standard"])
+            .map_or(0, |listed| listed.lines().count()),
+    })
+}

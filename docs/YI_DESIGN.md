@@ -701,7 +701,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 |---|---|---|
 | `initialize`, `session/new`, `session/resume{replayFrom?}`, `session/list` | both | The daemon routes new/resume by cwd and lists from its ledger without a cwd |
 | `session/prompt`, `session/cancel`, `session/close`, `session/delete`, `session/set_config_option` | worker | A busy session queues a prompt as a follow-up (§4.3); config ids `mode`, `model`, `thought_level` |
-| `_yi/kernel_execute`, `_yi/kernel_cancel`, `_yi/tracked`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); a session slash verb |
+| `_yi/kernel_execute`, `_yi/kernel_cancel`, `_yi/tracked`, `_yi/branch_diff`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); the lane's diff against its base; a session slash verb |
 | `_yi/heartbeat`, `_yi/goal`, `_yi/steer`, `_yi/rewind`, `_yi/todo`, `_yi/plan`, `_yi/child_answer`, `_yi/child_replay`, `_yi/child_abort` | worker | Solo verbs over the wire (§4, §11, §13, §15) |
 | `_yi/shutdown`, `_yi/seen` | daemon | Stop; clear a session's unseen count |
 | `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once` |
@@ -769,11 +769,16 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   session's avatar plays its state loop at 15 fps in place of its identicon.
 - A session is titled once by the summarizer after its first turn (`_yi/name`); the first
   prompt stays its name until then, and the daemon's ledger keeps the title.
+- ⌘G opens Review beside a session: its scope is the lane's branch against its merge base with
+  main (`_yi/branch_diff`, run by the worker), the last turn, or the session (`s` cycles; a
+  session with no git base shows its own edits). Each file names the todo that was running when
+  it changed, reads that changed nothing are counted, the header carries the claims and the
+  landing, and `l` runs `/land` under the session's title.
 - State: `PaneContent{Session, Markdown, Diff, Notebook, SessionDiff, Editor}`,
   `SessionStatus{Blocked, Working, DoneUnseen, Idle, Unknown}`, `SidebarMode{Rail, Full}`,
   `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Keys}`
 - Owner: [`lib.rs`](../crates/console/src/lib.rs), [`model.rs`](../crates/console/src/model.rs)
-- Settled by: D95, D96, D112, D113, D141, D201, D263
+- Settled by: D95, D96, D112, D113, D141, D201, D263, D264
 
 ## 18. Dependencies and size
 

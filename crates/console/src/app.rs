@@ -50,6 +50,7 @@ pub enum RequestKind {
     Cancel,
     Seen,
     Tracked(SessionId, Vec<String>),
+    BranchDiff(SessionId),
     KernelExecute,
     KernelCancel,
     Slash(SessionId),
@@ -483,6 +484,7 @@ impl App {
                 self.sync_chat_names();
             }
             RequestKind::Tracked(session, paths) => self.absorb_tracked(&session, &paths, &result),
+            RequestKind::BranchDiff(session) => self.absorb_branch(&session, &result),
             RequestKind::KernelExecute
             | RequestKind::KernelCancel
             | RequestKind::SetConfig
@@ -650,6 +652,7 @@ impl App {
             self.resume_offsets.remove(&id);
             self.state.parked.remove(&id);
         }
+        self.absorb_review(&id, &update.update);
         if let AcpSessionUpdate::Extension(extension) = &update.update {
             self.reduce_extension(outbound, &id, extension);
         }
@@ -1143,6 +1146,7 @@ impl App {
                     self.dirty = true;
                 }
             },
+            Zone::Panes if self.on_review().is_some() => self.review_key(key),
             Zone::Panes => self.chat_event(CtEvent::Key(key)),
         }
     }
@@ -1155,6 +1159,7 @@ mod mouse;
 mod navigator;
 mod notebook;
 pub mod port;
+mod review;
 
 pub use mouse::MouseKind;
 pub use navigator::PaletteEntry;

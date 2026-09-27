@@ -522,6 +522,7 @@ impl App {
     }
 
     pub(super) fn pump_chats(&mut self, outbound: &Outbound) {
+        self.ask_branches(outbound);
         let ids: Vec<PaneId> = self.state.panes.keys().copied().collect();
         for pane_id in ids {
             let Some(session) = self

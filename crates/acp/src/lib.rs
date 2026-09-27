@@ -689,8 +689,10 @@ impl AcpState {
                 Ok(json!({}))
             }
             "session/set_config_option" => self.set_config_option(params),
-            "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/kernel_execute"
-            | "_yi/kernel_cancel" | "_yi/slash" => self.handle_extension(method, params),
+            "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/branch_diff"
+            | "_yi/kernel_execute" | "_yi/kernel_cancel" | "_yi/slash" => {
+                self.handle_extension(method, params)
+            }
             "_yi/steer" | "_yi/rewind" | "_yi/plan" | "_yi/todo" | "_yi/child_replay"
             | "_yi/child_abort" | "_yi/child_answer" => self.handle_control(method, params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
@@ -810,6 +812,13 @@ impl AcpState {
                 }
                 let root = std::path::Path::new(text("root"));
                 Ok(json!({"tracked": yi_runtime::environment::tracked(root, &paths)}))
+            }
+            "_yi/branch_diff" => {
+                let root = std::path::Path::new(text("root"));
+                Ok(
+                    serde_json::to_value(yi_runtime::environment::branch_diff(root))
+                        .unwrap_or(Value::Null),
+                )
             }
             "_yi/slash" => {
                 let line = text("line").trim();

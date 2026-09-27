@@ -1312,7 +1312,7 @@ fn edit_to_a_tracked_file_opens_the_diff_pane() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 Δ s-alpha · 1 file · +1 −0\n\
+         wait-frame 5000 Review · session · 1 file +1 −0\n\
          wait-frame 3000 brand new line\n\
          type still typing here\n\
          wait-frame 3000 still typing here\n\
@@ -1338,11 +1338,11 @@ fn untracked_edit_accumulates_without_opening() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 3000 brand new line\n\
-         wait-frame 2000 !Δ s-alpha\n\
+         wait-frame 2000 !Review ·\n\
          cmd-g\n\
-         wait-frame 3000 Δ s-alpha · 1 file · +1 −0\n\
+         wait-frame 3000 Review · session · 1 file +1 −0\n\
          cmd-g\n\
-         wait-frame 3000 !Δ s-alpha\n\
+         wait-frame 3000 !Review ·\n\
          quit\n",
     )
 }
@@ -1368,7 +1368,7 @@ fn first_kernel_cell_opens_the_notebook_and_spends_the_auto_side() -> TestResult
          wait-frame 5000 replayed world\n\
          wait-frame 5000 nb:s-alpha\n\
          wait-frame 5000 brand new line\n\
-         wait-frame 2000 !Δ s-alpha\n\
+         wait-frame 2000 !Review ·\n\
          quit\n",
     )
 }
