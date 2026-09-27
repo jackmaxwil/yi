@@ -280,7 +280,7 @@ impl PlanStore {
     }
 
     pub fn artifacts(&self, id: &PlanId) -> Artifacts {
-        Artifacts::under(&self.plan_dir(id))
+        Artifacts::under(&self.plan_dir(id)).with_fs(Arc::clone(&self.fs))
     }
 
     fn legacy_path(&self, id: &PlanId) -> PathBuf {
@@ -560,10 +560,10 @@ impl PlanStore {
             .open(&tmp)
             .and_then(|mut file| {
                 file.write_all(text.as_bytes())?;
-                file.sync_all()
+                self.fs.sync_all(&file)
             })
             .and_then(|()| std::fs::rename(&tmp, &target))
-            .and_then(|()| std::fs::File::open(&dir)?.sync_all());
+            .and_then(|()| self.fs.sync_all(&std::fs::File::open(&dir)?));
         if let Err(source) = written {
             let _removed_best_effort = std::fs::remove_file(&tmp);
             return Err(StoreError::Io {
