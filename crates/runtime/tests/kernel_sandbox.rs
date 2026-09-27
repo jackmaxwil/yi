@@ -1,7 +1,6 @@
 #![cfg(target_os = "macos")]
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
