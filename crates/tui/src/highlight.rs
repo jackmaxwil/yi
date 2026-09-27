@@ -51,12 +51,13 @@ const INFERRED: [&str; 15] = [
     "Objective-C",
 ];
 
-/// bat's set, since syntect's has no TOML or TypeScript; decompressed on first use, off startup.
+/// bat's set as `build.rs` cut it, since syntect's has no TOML or TypeScript; inflated off startup.
 fn syntaxes() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
     SET.get_or_init(|| {
         let _span = yi_types::trace::span("tui.load_syntaxes");
-        two_face::syntax::extra_newlines()
+        let dump: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grammars.packdump"));
+        syntect::dumps::from_reader(dump).unwrap_or_default()
     })
 }
 
