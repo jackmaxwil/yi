@@ -197,13 +197,13 @@ naming the missing precondition and never a key value, and prints its
 ## Judge replay (D259)
 
 ```
-python3 evals/judge_replay.py all --dry --binary target/debug/yi --model faux/faux-1
+python3 evals/judge_replay.py all --dry --model faux/faux-1
 python3 evals/judge_replay.py extract --corpus yi:$HOME/.yi/sessions \
     --corpus claude:$HOME/.claude/projects --out runs/replay
-python3 evals/judge_replay.py label --out runs/replay --model <provider/model> --cap-usd 3 --jobs 4
-python3 evals/judge_replay.py judge --out runs/replay --model <provider/model> --split fit \
+python3 evals/judge_replay.py label --out runs/replay --model openrouter/<id> --cap-usd 3 --jobs 4
+python3 evals/judge_replay.py judge --out runs/replay --model openrouter/<id> --split fit \
     --limit 200 --cap-usd 3 --jobs 4
-python3 evals/judge_replay.py match --out runs/replay --model <provider/model> --cap-usd 1
+python3 evals/judge_replay.py match --out runs/replay --model openrouter/<id> --cap-usd 1
 python3 evals/judge_replay.py report --out runs/replay
 python3 evals/judge_replay.py mark --out runs/replay <boundary-id> objected
 ```
@@ -225,8 +225,8 @@ positive the judge flagged, whether an objection names the owner's. `report` pri
 and split, n, positive rate, citation resolution, recall, specificity, balanced accuracy with a
 conversation bootstrap 95% interval, catch rate and cost; the two no-judge baselines (0.5 by
 construction); the gate line, PASS iff held-out resolution >= 0.95, the interval's lower bound
-> 0.5, no held-out verdict ran a tool and no held-out call went unanswered; and every judge run
-that has touched held-out, so tuning on it shows. Tune on `fit`.
+> 0.5 and no held-out call went unanswered; and every judge run that has touched held-out, so
+tuning on it shows. Tune on `fit`.
 
 What counts as the owner, surveyed on 2026-09-26 over 437 Yi files and 225 top-level Claude
 Code transcripts:
@@ -253,28 +253,32 @@ The corpus that day: 71 Yi boundaries in 34 conversations (17 held-out), 1,168 C
 boundaries in 125 conversations over 173 files (458 held-out). 13 Claude Code boundaries have
 no earlier owner message on their path (a session opened from a compaction summary).
 
-Each call is `yi ask --json --confirm --here --schema replay/<phase>.schema.json` in an empty
-temporary cwd under a temporary HOME (kernel prewarm off), its session under
-`--out/sessions/<phase>/<boundary>`; `yi ask` runs in-process and never reaches the serve
-daemon, so no `--solo`. With no terminal `--confirm` refuses every tool that is not read-only,
-but `read`, `grep` and `get_context` still run, and a root `yi ask` takes no wall or deny rule
-from config (`UserConfig` has none; the CLI passes an empty `Wall` and no config rules). So the
-host walls the process with Seatbelt, the `sandbox-exec` Yi contains commands with: no read or
-write under a corpus or the real `~/.yi` and `~/.claude`, and no read of `--out` or another
-call's scratch but its own, since those hold the next messages. A real run refuses where
-`/usr/bin/sandbox-exec` is absent. The wall stops the corpus, not every path that quotes the
-owner (a plan in the repo does), so the prompt forbids tools, each row counts the calls its
-model made, and a held-out verdict that ran one fails the gate. Keys come from the environment only,
-since the HOME is temporary; a refusal before any request (exit 2 or 4) stops the phase. Two
-caps speak where they cut: `intent_chars=60000` drops the oldest messages, `digest_head=120`
-shortens a tool-call head. The prompt rides argv, so an input over `argv_bytes=512000` is not
-sent and its row says so. Cost is the provider's `usage.cost.total` (E14); a call in flight
-when `--cap-usd` trips still lands, so a phase overshoots by at most `--jobs` - 1 calls.
+Each call is one `POST https://openrouter.ai/api/v1/chat/completions`, stdlib `urllib`, with
+no tools: the phase's prompt under `replay/` (or `judge --prompt`) as the system message and
+the rendered input as the one user message, `temperature` 0, `response_format` the phase's
+schema under `replay/` as a strict `json_schema`, and `usage: {include: true}`. The model receives nothing but that input,
+so blindness holds by construction. `--model` is `openrouter/<id>` and the key is
+`OPENROUTER_API_KEY` from the environment, sent in a header and never on argv or in a row; a
+real run refuses anything else by name. The reply parses as JSON, else as the first `{…}` in it
+(models fence JSON); otherwise the row carries `error`, the reply's `content` and no answer,
+which the gate counts. A call times out at 300 s and retries 429 and 5xx with backoff, three
+times at most. A row records the model, the provider's model id, `input` (cached tokens
+included, the provider's convention), `output`, `cached`, `costUsd` and `latencyMs`. Cost is the
+provider's own `usage.cost` (E14): a reply without it, or a 401, 402, 403 or 404, which every
+later call would repeat, stops the phase. A call in flight when `--cap-usd` trips still lands,
+so a phase overshoots by at most `--jobs` - 1 calls. Two caps speak where they cut:
+`intent_chars=60000` drops the oldest messages, `digest_head=120` shortens a tool-call head.
+
+The first call path was `yi ask --schema` under Seatbelt. The first paid label pass stopped at
+99 of 1,241 calls ($0.37): 66 returned no label, because Yi's loop pushed a model that had
+already answered the JSON on into tool calls (0 to 65 per label) and it ended on prose, and
+Yi's system prompt and tool schemas rode every call, 29k input plus 77k cached on average.
+An agent is the wrong instrument for a label, a verdict or a match.
 
 A real run is the owner's: capped, and ledgered in `docs/eval-ledger.md` with the model, the
-prompt hash and the gate line before any claim cites it. `--dry` is faux only, answers with
-host-built JSON, checks that no file under the corpus changed and, where Seatbelt exists, that
-scripted `read` calls of a corpus file and of `boundaries.jsonl` come back refused; it rides
+prompt hash and the gate line before any claim cites it. `--dry` is faux only and makes no
+request: each call's host-built JSON comes back in the provider's reply shape at no cost and
+takes the real parse path, and the run checks that no file under the corpus changed; it rides
 `just postmerge-evals`. `fixtures/replay/yi/` is one real faux session driven over `yi acp`
 (prompt, prompt, `_yi/rewind` to the second, prompt; its `ext_state` entry omitted and its cwd
 replaced) and two real `yi ask --confirm` runs, the second `--continue`d, whose refused edit

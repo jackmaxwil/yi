@@ -7,7 +7,8 @@ before any read made Yi's router write its plan nudge; its prompt slots and cwd 
 The Claude Code fixtures are three real transcripts and one subagent file with every text
 replaced and the structure kept; the entries read as typed by hand carry `typed <line>: ...`.
 """
-import json, pathlib, re, shutil, sys, tempfile, threading, types, unittest
+import contextlib, io, json, os, pathlib, re, shutil, sys, tempfile, types, unittest, urllib.error
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import judge_replay as jr  # noqa: E402
@@ -17,6 +18,13 @@ NUDGED = jr.FIXTURES["yi"] / "1790472350067_01a0e077-e929-7cf4-b1e3-58550db33230
 CLAUDE = jr.FIXTURES["claude"]
 RESUMED = CLAUDE / "-work-yi" / "76e146c7-2b99-4d7a-bbaf-e4f129f0328b.jsonl"
 REMINDER = "<system-reminder>\nscrubbed reminder\n</system-reminder>\n"
+
+
+def completion(content, cost=0.25):
+    """A chat completion in OpenRouter's shape, `usage` as `usage: {include: true}` returns it."""
+    return {"model": "z-ai/glm-5.3-flash-20260901", "choices": [{"message": {"role": "assistant", "content": content}}],
+            "usage": {"prompt_tokens": 120, "completion_tokens": 30, "cost": cost,
+                      "prompt_tokens_details": {"cached_tokens": 64}}}
 
 
 def boundary(texts, calls=(), final="done"):
@@ -143,32 +151,75 @@ class Judge(unittest.TestCase):
         over = jr.render_judge(boundary(["x"], [{"name": "bash", "head": "c" * (jr.DIGEST_HEAD + 1)}]))
         self.assertIn(f"[… 1 of 1 call heads cut to digest_head={jr.DIGEST_HEAD} chars;", over)
 
-    def test_parallel_calls_share_one_home(self):
-        saved, jr._HOME[:] = list(jr._HOME), []
-        self.addCleanup(lambda: jr._HOME.__setitem__(slice(None), saved))
-        start, homes, errors = threading.Barrier(16), [], []
 
-        def call():
-            start.wait()
-            try:
-                homes.append(jr.home())
-            except OSError as error:
-                errors.append(error)
+class Call(unittest.TestCase):
+    MODEL = "openrouter/z-ai/glm-5.3-flash"
 
-        threads = [threading.Thread(target=call) for _ in range(16)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        self.assertEqual((errors, len(set(homes))), ([], 1))
+    def args(self, **extra):
+        return types.SimpleNamespace(model=self.MODEL, dry=False, **extra)
 
-    def test_an_input_past_argv_bytes_is_refused_and_named(self):
-        args = types.SimpleNamespace(binary="/usr/bin/false", model="faux/faux-1", out=tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, args.out, True)
-        at = jr.ask(args, "judge", "s", "x" * (jr.ARGV_BYTES - 1))
-        self.assertTrue(at["error"].startswith("exit 1"), at)
-        over = jr.ask(args, "judge", "s", "x" * jr.ARGV_BYTES)
-        self.assertEqual(over, {"error": f"input over argv_bytes={jr.ARGV_BYTES}"})
+    def test_the_request_is_the_prompt_and_the_input_with_no_tools(self):
+        rows = jr.extract_corpora([("yi", jr.FIXTURES["yi"]), ("claude", CLAUDE)])
+        for row in rows:
+            shown = jr.render_judge(row)
+            body = jr.request(self.MODEL, "judge", "SYSTEM", shown)
+            self.assertEqual(sorted(body), ["messages", "model", "response_format", "temperature", "usage"])
+            self.assertEqual((body["model"], body["temperature"], body["usage"]), ("z-ai/glm-5.3-flash", 0, {"include": True}))
+            self.assertEqual(body["messages"], [{"role": "system", "content": "SYSTEM"}, {"role": "user", "content": shown}])
+            self.assertNotIn(row["next"]["text"], shown)
+            if row["reply"]:
+                self.assertNotIn(row["reply"], shown)
+        for phase, name in jr.SCHEMAS.items():
+            schema = json.loads((jr.REPLAY / f"{name}.schema.json").read_text())
+            self.assertEqual(jr.request(self.MODEL, phase, "s", "p")["response_format"],
+                             {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}})
+
+    def test_a_reply_parses_strict_or_fenced_and_garbage_is_an_error_row(self):
+        answer = {"label": "objected", "objection": "wrong file", "quote": "no, the other one"}
+        for content, parsed in ((json.dumps(answer), answer), (f"```json\n{json.dumps(answer)}\n```", answer),
+                                ("It was accepted, I think.", None), ("{\"label\": \"objected\",", None)):
+            with self.subTest(content), mock.patch.object(jr, "post", return_value=completion(content)):
+                row = jr.ask(self.args(), "label", "s", "p")
+                self.assertEqual(row.get("answer"), parsed)
+                if parsed is None:
+                    self.assertEqual((row["error"], row["content"]), ("no JSON object in the reply", content))
+                self.assertEqual((row["providerModel"], row["input"], row["output"], row["cached"], row["costUsd"]),
+                                 ("z-ai/glm-5.3-flash-20260901", 120, 30, 64, 0.25))
+
+    def test_a_real_run_refuses_a_model_off_openrouter_and_a_missing_key(self):
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, True)
+        for model, environ, needle in (("anthropic/claude-x", {jr.KEY: "k"}, "--model is openrouter/<id>, not anthropic/claude-x"),
+                                       (self.MODEL, {}, f"{jr.KEY} is unset"), (self.MODEL, {jr.KEY: " "}, f"{jr.KEY} is unset")):
+            err = io.StringIO()
+            with self.subTest(model=model, environ=environ), mock.patch.dict(os.environ, environ, clear=True), \
+                    mock.patch.object(jr, "post") as post, contextlib.redirect_stderr(err):
+                self.assertEqual(jr.main(["label", "--out", out, "--model", model, "--cap-usd", "1"]), 2)
+                self.assertIn(needle, err.getvalue())
+                post.assert_not_called()
+
+    def test_the_cap_stops_dispatch_once_the_summed_cost_reaches_it(self):
+        items = [{"id": f"b{i}"} for i in range(5)]
+        answer = json.dumps({"label": "accepted", "objection": "", "quote": ""})
+        # A reply with no usage.cost leaves the cap blind, so it stops the phase after one call.
+        for cap, cost, sent, exit in ((0.5, 0.25, 2, 0), (0.5 + 1e-9, 0.25, 3, 0), (0.5, None, 1, 1)):
+            with self.subTest(cap=cap, cost=cost), tempfile.TemporaryDirectory() as scratch, \
+                    contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.object(jr, "post", return_value=completion(answer, cost=cost)) as post:
+                sink = pathlib.Path(scratch) / "labels.jsonl"
+                done = jr.run_calls(self.args(jobs=1, cap_usd=cap), "label", items, sink,
+                                    lambda item: ("s", "p", None, dict(item)), lambda row: row)
+                self.assertEqual((done, post.call_count, len(jr.read_rows(sink))), (exit, sent, sent))
+
+    def test_retries_are_bounded_and_a_client_error_is_not_retried(self):
+        for code, attempts in ((429, jr.RETRIES + 1), (503, jr.RETRIES + 1), (400, 1)):
+            error = urllib.error.HTTPError(jr.OPENROUTER, code, "status", {}, io.BytesIO(b"{}"))
+            self.addCleanup(error.close)
+            with self.subTest(code=code), mock.patch.object(jr.urllib.request, "urlopen", side_effect=error) as urlopen, \
+                    mock.patch.object(jr.time, "sleep"):
+                with self.assertRaises(urllib.error.HTTPError):
+                    jr.post({})
+                self.assertEqual(urlopen.call_count, attempts)
 
 
 class Metrics(unittest.TestCase):
@@ -189,10 +240,10 @@ class Metrics(unittest.TestCase):
         self.assertIsNone(jr.bootstrap({"s1": [(True, True)]}))
 
     def test_the_gate_line_at_its_thresholds(self):
-        held = {"resolution": 0.95, "interval": (0.501, 0.9), "tooled": 0, "missing": 0}
+        held = {"resolution": 0.95, "interval": (0.501, 0.9), "missing": 0}
         self.assertTrue(jr.gate_line(held).startswith("gate: PASS"))
         for change in ({"interval": (0.5, 0.9)}, {"resolution": 0.949}, {"resolution": None, "interval": None},
-                       {"tooled": 1}, {"missing": 1}):
+                       {"missing": 1}):
             self.assertTrue(jr.gate_line({**held, **change}).startswith("gate: FAIL"), change)
 
     def test_a_session_never_lands_on_both_sides(self):

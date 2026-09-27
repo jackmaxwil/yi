@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Judge replay: stage 0 of the seven-primitives plan, read-only (D259, #609).
 
-    python3 evals/judge_replay.py all --dry --binary target/debug/yi --model faux/faux-1
+    python3 evals/judge_replay.py all --dry --model faux/faux-1
     python3 evals/judge_replay.py extract --corpus yi:~/.yi/sessions \\
         --corpus claude:~/.claude/projects --out runs/replay
-    python3 evals/judge_replay.py label --out runs/replay --model M --cap-usd 3
-    python3 evals/judge_replay.py judge --out runs/replay --model M --prompt evals/replay/judge.md \\
+    python3 evals/judge_replay.py label --out runs/replay --model openrouter/M --cap-usd 3
+    python3 evals/judge_replay.py judge --out runs/replay --model openrouter/M --prompt evals/replay/judge.md \\
         --split fit --limit 200 --cap-usd 3
-    python3 evals/judge_replay.py match --out runs/replay --model M --cap-usd 1
+    python3 evals/judge_replay.py match --out runs/replay --model openrouter/M --cap-usd 1
     python3 evals/judge_replay.py report --out runs/replay
 
 The bet under test: a judge that reads the owner's words by address, and nothing after the
@@ -17,36 +17,34 @@ tree path and the turn, and is scored against the message itself, labelled from 
 said and what the agent answered. Conversations split 70/30 into fit and held-out by the hash of
 a file name in each, never within one.
 
-Nothing is written under a corpus: every model call runs `yi ask` in an empty temporary cwd
-under a temporary HOME, with its sessions under `--out`, and under Seatbelt, which refuses it
-the corpus and every other call's input. A real run is the owner's, capped and ledgered
-(evals/README.md); `--dry` is faux only and ships host-built replies.
+Nothing is written under a corpus. Every model call is one OpenRouter chat completion with no
+tools: the phase's prompt and the rendered input are all the model receives, so it holds nothing
+past the boundary and has no way to fetch it. A real run is the owner's, capped and ledgered
+(evals/README.md); `--dry` is faux only, answers with host-built replies and makes no request.
 """
 
 import argparse
 import atexit
 import concurrent.futures
 import hashlib
+import http.client
 import json
 import os
-import pwd
 import random
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
-import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "adapters"))
-sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT.parent / "skills" / "yi" / "session-mining"))
 
 import extract  # noqa: E402
-import run as runner  # noqa: E402
 import yi_usage  # noqa: E402
 
 REPLAY = ROOT / "replay"
@@ -58,11 +56,12 @@ SCHEMAS = {"judge": "verdict", "label": "label", "match": "match"}
 FIT_PERCENT = 70
 INTENT_CHARS = 60_000
 DIGEST_HEAD = 120
-# macOS ARG_MAX is 1 MiB for argv and environment together and `yi ask` reads its prompt only
-# from argv; half of it leaves the environment room.
-ARGV_BYTES = 512_000
-CALL_TIMEOUT_SEC = 600
-SEATBELT = "/usr/bin/sandbox-exec"
+OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
+KEY = "OPENROUTER_API_KEY"
+CALL_TIMEOUT_SEC = 300
+RETRIES = 3
+# Statuses every later call would repeat: a bad key, no credit, a refused or unknown model.
+REFUSALS = (401, 402, 403, 404)
 # Yi's own rule (D25, `Attribution::reads_as_typed`): from this instant a typed message carries
 # `attribution: user` and any other user-role message is the host's.
 ATTRIBUTED_SINCE_MS = 1_788_256_519_000
@@ -400,23 +399,8 @@ def faux_answer(phase, boundary):
         {"text": "faux objection", "citations": [{"msg": f"u{len(boundary['intent'])}", "quote": quote}]}]}
 
 
-_HOME, _HOME_LOCK = [], threading.Lock()
-
-
-def home():
-    """One temporary HOME per process: the caller's ~/.yi is never read or written, and the kernel
-    is not prewarmed, since no judge runs a cell. Locked: --jobs threads ask for it at once."""
-    with _HOME_LOCK:
-        if not _HOME:
-            _HOME.append(tempfile.mkdtemp(prefix="yi-replay-home-"))
-            atexit.register(shutil.rmtree, _HOME[0], True)
-            config = Path(_HOME[0]) / ".yi" / "config.json"
-            config.parent.mkdir(parents=True)
-            config.write_text(json.dumps({**yi_usage.eval_config(os.environ), "kernel": {"prewarm": False}}))
-        return _HOME[0]
-
-
 def parse_answer(text):
+    """The reply as JSON, else the first `{...}` in it: models fence JSON. None when neither parses."""
     try:
         return json.loads(text.strip())
     except ValueError:
@@ -427,71 +411,62 @@ def parse_answer(text):
             return None
 
 
-def faux_reply(content, stop="stop"):
-    """One scripted assistant message for `yi ask --faux`."""
-    zero = {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
-    return {"role": "assistant", "content": content, "api": "faux", "provider": "faux", "model": "faux-1",
-            "stopReason": stop, "timestamp": 0, "usage": {**zero, "totalTokens": 0, "cost": {**zero, "total": 0}}}
+def request(model, phase, system, prompt):
+    """The whole call: the phase's prompt, the rendered input as the one user message, and no
+    tools, so blindness holds by construction. Cost comes back as the provider's `usage.cost`."""
+    schema = json.loads((REPLAY / f"{SCHEMAS[phase]}.schema.json").read_text())
+    return {"model": model.removeprefix("openrouter/"), "temperature": 0,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            "response_format": {"type": "json_schema",
+                                "json_schema": {"name": SCHEMAS[phase], "strict": True, "schema": schema}},
+            "usage": {"include": True}}
 
 
-def seatbelt(out, own_sessions, calls, own_call):
-    """The call's prefix under Seatbelt, the sandbox Yi contains commands with. A root `yi ask`
-    takes no wall or deny rule from config, so the host walls the process: no read or write
-    under a corpus or the real ~/.yi and ~/.claude, and no read of --out or another call's
-    scratch but its own, where the next message and later owner words sit. None off macOS."""
-    if not Path(SEATBELT).is_file():
-        return None
-    homes = {Path(os.environ.get("HOME") or "/"), Path(pwd.getpwuid(os.getuid()).pw_dir)}
-    corpora = json.loads((Path(out) / "corpora.json").read_text()) if (Path(out) / "corpora.json").is_file() else []
-    denied = [*(Path(d).expanduser() for _, d in corpora), *(h / sub for h in homes for sub in (".yi", ".claude"))]
-    params = {f"DENY_{i}": path for i, path in enumerate(denied)}
-    params.update(OUT=out, OWN_SESSIONS=own_sessions, CALLS=calls, OWN_CALL=own_call)
-    rules = " ".join(f'(subpath (param "DENY_{i}"))' for i in range(len(denied)))
-    policy = (f"(version 1)(allow default)(deny file-read* file-write* {rules})"
-              '(deny file-read* (require-all (subpath (param "OUT")) (require-not (subpath (param "OWN_SESSIONS")))))'
-              '(deny file-read* (require-all (subpath (param "CALLS")) (require-not (subpath (param "OWN_CALL")))))')
-    return [SEATBELT, "-p", policy, *(f"-D{k}={os.path.realpath(v)}" for k, v in params.items()), "--"]
-
-
-def ask(args, phase, system, prompt, faux=None, call="call"):
-    """One `yi ask --json --confirm`: with no terminal an ask is a refusal, but read-only tools
-    run, so the call runs walled by `seatbelt` in an empty cwd under a temporary HOME; its
-    session lands under --out/sessions/<phase>/<call>. `faux` is the script --dry replays."""
-    if len(prompt.encode("utf-8")) + len(system.encode("utf-8")) > ARGV_BYTES:
-        return {"error": f"input over argv_bytes={ARGV_BYTES}"}
-    calls = Path(home()) / "calls"
-    calls.mkdir(exist_ok=True)
-    scratch = Path(tempfile.mkdtemp(prefix=f"{phase}-", dir=calls))
-    try:
-        cwd, events, sessions = scratch / "cwd", scratch / "events.jsonl", Path(args.out) / "sessions" / phase / call
-        cwd.mkdir()
-        sessions.mkdir(parents=True, exist_ok=True)
-        command = [args.binary, "ask", "--json", "--confirm", "--here", "--model", args.model,
-                   "--system", system, "--schema", str(REPLAY / f"{SCHEMAS[phase]}.schema.json"),
-                   "--session-dir", str(sessions), "--cwd", str(cwd)]
-        if faux is not None:
-            script = scratch / "faux.jsonl"
-            script.write_text("".join(json.dumps(message) + "\n" for message in faux))
-            command += ["--faux", str(script)]
-        command = (seatbelt(args.out, sessions, calls, scratch) or []) + command
+def post(body):
+    """One chat completion, retried with backoff on 429 and 5xx at most RETRIES times. The key
+    rides a header only, never argv or a row."""
+    data = json.dumps(body).encode("utf-8")
+    headers = {"Authorization": f"Bearer {os.environ.get(KEY, '')}", "Content-Type": "application/json"}
+    for attempt in range(RETRIES + 1):
         try:
-            with events.open("w") as sink:
-                done = subprocess.run([*command, prompt], stdout=sink, stderr=subprocess.PIPE, text=True,
-                                      stdin=subprocess.DEVNULL, env={**os.environ, "HOME": home()},
-                                      timeout=CALL_TIMEOUT_SEC)
-        except subprocess.TimeoutExpired:
-            return {"error": f"timed out after {CALL_TIMEOUT_SEC}s", "costUsd": yi_usage.parse_events(events)["costUsd"]}
-        usage = {key: yi_usage.parse_events(events)[key] for key in ("costUsd", "input", "output", "cacheRead")}
-        # A tool call breaks the judge's premise even when the wall refused it; the gate counts it.
-        usage["tools"] = sum(1 for event in yi_usage.json_lines(events)[0] if event.get("type") == "message_end"
-                             for block in (event.get("message") or {}).get("content") or []
-                             if isinstance(block, dict) and block.get("type") == "toolCall")
-        answer = parse_answer(runner.final_answer(events))
-    finally:
-        shutil.rmtree(scratch, True)
-    if done.returncode != 0 or not isinstance(answer, dict):
-        return {"error": f"exit {done.returncode}: {done.stderr.strip()[-300:]}", **usage}
-    return {"answer": answer, **usage}
+            with urllib.request.urlopen(urllib.request.Request(OPENROUTER, data, headers),
+                                        timeout=CALL_TIMEOUT_SEC) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            if attempt == RETRIES or (error.code != 429 and error.code < 500):
+                raise
+            error.close()
+        time.sleep(2 ** attempt)
+
+
+def ask(args, phase, system, prompt, faux=None):
+    """One call, as a row: the answer or an error, with the provider's model id, tokens, cost and
+    latency. `faux` is --dry's host-built answer, handed back in the provider's shape at no cost."""
+    body, started = request(args.model, phase, system, prompt), time.monotonic()
+    try:
+        reply = post(body) if faux is None else {
+            "model": args.model, "choices": [{"message": {"content": json.dumps(faux)}}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0}}
+    except urllib.error.HTTPError as error:
+        with error:
+            detail = error.read().decode("utf-8", "replace")[:300]
+        return {"error": f"{'refused: ' if error.code in REFUSALS else ''}http {error.code}: {detail}"}
+    except (OSError, ValueError, http.client.HTTPException) as error:
+        return {"error": f"{type(error).__name__}: {error}"}
+    usage = reply.get("usage") or {}
+    row = {"providerModel": reply.get("model"), "input": usage.get("prompt_tokens"),
+           "output": usage.get("completion_tokens"),
+           "cached": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
+           "costUsd": usage.get("cost"), "latencyMs": round((time.monotonic() - started) * 1000)}
+    if reply.get("error"):
+        return {"error": f"provider: {reply['error']}", **row}
+    if not isinstance(row["costUsd"], (int, float)):
+        return {"error": "refused: the reply carried no usage.cost, so --cap-usd cannot count it", **row}
+    content = ((reply.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    answer = parse_answer(content)
+    if not isinstance(answer, dict):
+        return {"error": "no JSON object in the reply", "content": content, **row}
+    return {"answer": answer, **row}
 
 
 def read_rows(path):
@@ -541,21 +516,18 @@ def run_calls(args, phase, items, sink, build, keep):
                     stopped = f"cap ${args.cap_usd} reached at ${spent:.4f} with {len(queue)} {phase} calls left"
                     break
                 system, prompt, faux, extra = build(queue.pop(0))
-                script = [faux_reply([{"type": "text", "text": json.dumps(faux)}])] if args.dry else None
-                pending[pool.submit(ask, args, phase, system, prompt, script, extra["id"])] = extra
+                pending[pool.submit(ask, args, phase, system, prompt, faux if args.dry else None)] = extra
             if not pending:
                 break
             done, _ = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
             for future in done:
                 result = future.result()
                 spent += result.get("costUsd") or 0.0
-                # Exit 2 and 4 are refusals before any request (no key, unknown model): every
-                # later call would repeat them.
-                if result.get("error", "").startswith(("exit 2:", "exit 4:")):
-                    stopped = stopped or f"yi refused: {result['error']}"
+                if result.get("error", "").startswith("refused:"):
+                    stopped = stopped or result["error"]
                 append(sink, keep({**pending.pop(future), **result, "ts": int(time.time() * 1000)}))
     print(f"{phase}: spent ${spent:.4f}" + (f"; stopped: {stopped}" if stopped else ""), flush=True)
-    return 1 if stopped and stopped.startswith("yi refused") else 0
+    return 1 if stopped and stopped.startswith("refused:") else 0
 
 
 def run_name(model, prompt_path):
@@ -699,7 +671,7 @@ def section(rows, labels, matches, sessions):
             "resolution": rate, "cited": cited, "recall": scores[1] if scores else None,
             "specificity": scores[2] if scores else None, "balanced": scores[0] if scores else None,
             "interval": interval, "catch": caught / positives if positives else None,
-            "tooled": sum(1 for v in verdicts if v.get("tools")), "missing": len(rows) - len(verdicts),
+            "missing": len(rows) - len(verdicts),
             "cost": sum(r.get("costUsd") or 0.0 for r in rows)}
 
 
@@ -708,14 +680,12 @@ def fmt(value):
 
 
 def gate_line(held):
-    """PASS also needs every held-out call answered with no tool run: a verdict that read anything
-    broke blindness, and an unanswered boundary drops out of the score, the hard ones first."""
+    """PASS also needs every held-out call answered: an unanswered boundary drops out of the
+    score, the hard ones first."""
     rate, low = held["resolution"], (held["interval"] or (None, None))[0]
-    ok = (rate is not None and rate >= 0.95 and low is not None and low > 0.5
-          and held["tooled"] == 0 and held["missing"] == 0)
+    ok = rate is not None and rate >= 0.95 and low is not None and low > 0.5 and held["missing"] == 0
     return (f"gate: {'PASS' if ok else 'FAIL'}: held-out citation resolution {fmt(rate)} (>= 0.95), "
-            f"balanced accuracy lower bound {fmt(low)} (> 0.5), {held['tooled']} verdicts that ran a tool "
-            f"(0) and {held['missing']} calls without a verdict (0)")
+            f"balanced accuracy lower bound {fmt(low)} (> 0.5) and {held['missing']} calls without a verdict (0)")
 
 
 def cmd_report(args):
@@ -738,9 +708,7 @@ def cmd_report(args):
         matches = by_id(read_rows(out / "matches" / path.name))
         match_cost = sum(r.get("costUsd") or 0.0 for r in matches.values())
         errors = [r.get("error") for r in rows if r.get("error") and r.get("verdict") not in VERDICTS]
-        tooled = sum(1 for r in verdicts if r.get("tools"))
-        print(f"\n== {path.stem}: {len(verdicts)} verdicts, {len(errors)} calls without one, {tooled} that ran a "
-              f"tool against the judge's premise; match ${match_cost:.4f}")
+        print(f"\n== {path.stem}: {len(verdicts)} verdicts, {len(errors)} calls without one; match ${match_cost:.4f}")
         for error in sorted(set(errors))[:5]:
             print(f"   error x{errors.count(error)}: {error}")
         print(f"   {'corpus':8s}{'split':10s}{'n':>5s}{'pos':>7s}{'cite':>7s}{'recall':>8s}{'spec':>7s}"
@@ -761,7 +729,7 @@ def cmd_report(args):
         always_accept = balanced([(True, False), (False, False)])
         always_flag = balanced([(True, True), (False, True)])
         print(f"   baselines: always-accept {fmt(always_accept[0])}, always-flag {fmt(always_flag[0])}")
-        print("   " + gate_line(held or {"resolution": None, "interval": None, "tooled": 0, "missing": 0}))
+        print("   " + gate_line(held or {"resolution": None, "interval": None, "missing": 0}))
     print("\njudge runs (model-prompt sha256) that have touched held-out: " + (", ".join(sorted(touched)) or "none"))
     return 0
 
@@ -798,29 +766,6 @@ def cmd_all(args):
         print("FAIL judge_replay_dry: a file under the corpus changed")
         return 1
     print("ok   judge_replay_dry (the corpus was only read)")
-    return check_wall(args, specs)
-
-
-def check_wall(args, specs):
-    """Scripted reads of a corpus file and of boundaries.jsonl, which holds every next message,
-    come back refused, never as the owner's words."""
-    if not Path(SEATBELT).is_file():
-        print(f"skip judge_replay_wall: no {SEATBELT} here, so a real run refuses on this machine")
-        return 0
-    kind, directory = specs[0]
-    target = corpus_files(directory)[0]
-    words = next(n["text"] for n in READERS[kind](target).values() if n["kind"] == "human")
-    read = faux_reply([{"type": "toolCall", "id": f"c{i}", "name": "read", "arguments": {"path": str(path)}}
-                       for i, path in enumerate((target, Path(args.out) / "boundaries.jsonl"))], "toolUse")
-    done = ask(args, "judge", "", "judge", [read, faux_reply([{"type": "text", "text": json.dumps(
-        {"verdict": "accept", "objections": []})}])], "wall")
-    shown = [block.get("text") or "" for path in (Path(args.out) / "sessions" / "judge" / "wall").rglob("*.jsonl")
-             for entry in read_rows(path) if (entry.get("message") or {}).get("role") == "toolResult"
-             for block in entry["message"].get("content") or [] if isinstance(block, dict)]
-    if done.get("tools") != 2 or len(shown) != 2 or any(words in text for text in shown):
-        print(f"FAIL judge_replay_wall: scripted reads of the corpus and --out returned {shown or done}")
-        return 1
-    print("ok   judge_replay_wall (scripted reads of the corpus and --out came back refused)")
     return 0
 
 
@@ -834,10 +779,9 @@ def main(argv=None):
             sub.add_argument("--corpus", action="append", default=[], help="yi:<dir> or claude:<dir>; repeatable")
         if name in ("label", "judge", "match", "all"):
             sub.add_argument("--model", required=True)
-            sub.add_argument("--binary", default=str(ROOT.parent / "target/debug/yi"))
             sub.add_argument("--jobs", type=int, default=1)
             sub.add_argument("--cap-usd", type=float, default=None)
-            sub.add_argument("--dry", action="store_true", help="faux only, host-built replies, no spend")
+            sub.add_argument("--dry", action="store_true", help="faux only, host-built replies, no request")
         if name in ("label", "judge"):
             sub.add_argument("--split", choices=("fit", "held-out"))
             sub.add_argument("--limit", type=int, default=None)
@@ -856,14 +800,15 @@ def main(argv=None):
         if args.dry != args.model.startswith("faux/"):
             print(f"refused: --dry runs faux only, and faux runs only under --dry, not {args.model}", file=sys.stderr)
             return 2
+        if not args.dry and not args.model.startswith("openrouter/"):
+            print(f"refused: calls go straight to OpenRouter, so --model is openrouter/<id>, not {args.model}",
+                  file=sys.stderr)
+            return 2
+        if not args.dry and not os.environ.get(KEY, "").strip():
+            print(f"refused: {KEY} is unset", file=sys.stderr)
+            return 2
         if not args.dry and args.cap_usd is None:
             print("refused: --cap-usd is required for a real-model run (plan law 3)", file=sys.stderr)
-            return 2
-        if not args.dry and not Path(SEATBELT).is_file():
-            print(f"refused: a real run is walled off the corpus by {SEATBELT}, absent here", file=sys.stderr)
-            return 2
-        if not Path(args.binary).is_file():
-            print(f"refused: no binary at {args.binary} (cargo build -p yi-cli)", file=sys.stderr)
             return 2
     return globals()[f"cmd_{args.command}"](args)
 
