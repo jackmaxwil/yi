@@ -213,20 +213,27 @@ pub fn restart_note(lost: Option<&[String]>) -> String {
 
 pub type BootFn = dyn Fn(Option<&str>) + Send + Sync;
 
-pub(crate) struct Booting(Option<Arc<BootFn>>);
+pub(crate) struct Booting(Option<Arc<BootFn>>, Arc<()>);
 
 impl Booting {
     pub(crate) fn new(report: Option<Arc<BootFn>>) -> Self {
         if let Some(report) = &report {
             report(Some("starting the kernel"));
         }
-        Self(report)
+        Self(report, Arc::new(()))
     }
 
+    /// Invariant: a line after this boot ended (a later restart's) closes the wait it opens.
     pub(crate) fn progress(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
         let report = self.0.clone();
+        let booting = Arc::downgrade(&self.1);
         Arc::new(move |message: &str| match &report {
-            Some(report) => report(Some(message)),
+            Some(report) => {
+                report(Some(message));
+                if booting.strong_count() == 0 {
+                    report(None);
+                }
+            }
             None => eprintln!("{message}"),
         })
     }
@@ -237,5 +244,35 @@ impl Drop for Booting {
         if let Some(report) = &self.0 {
             report(None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// Dies with the working row stuck on a restart's line: the first boot's close had fired,
+    /// and a later start reported through the same progress with nothing to close it.
+    #[test]
+    fn a_line_after_the_boot_ended_closes_its_own_wait() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let report: Arc<BootFn> = Arc::new(move |step: Option<&str>| {
+            sink.lock().expect("sink").push(step.map(str::to_owned));
+        });
+        let booting = Booting::new(Some(report));
+        let progress = booting.progress();
+        progress("rebuilding kernel venv");
+        drop(booting);
+        progress("rebuilding kernel venv");
+        let seen = seen.lock().expect("seen").clone();
+        assert_eq!(seen.last(), Some(&None), "{seen:?}");
+        assert_eq!(
+            seen.iter().filter(|step| step.is_none()).count(),
+            2,
+            "{seen:?}"
+        );
     }
 }

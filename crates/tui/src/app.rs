@@ -772,6 +772,9 @@ impl App {
                 self.fold_stream(&assistant_message_event);
             }
             AgentEvent::Wait { wait } => {
+                if let Some(warning) = wait.as_ref().and_then(yi_types::event::Wait::warning) {
+                    self.notice(warning);
+                }
                 self.wait = wait.map(|wait| (wait, Instant::now()));
                 self.scheduler.request();
             }
