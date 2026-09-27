@@ -133,7 +133,15 @@ fn build_matchers(
         .multi_line(options.multiline)
         .dot_matches_new_line(options.multiline)
         .build()
-        .map_err(|error| invalid(format!("invalid regex pattern: {error}")))?;
+        .map_err(|error| {
+            let error = error.to_string();
+            let unlinked = if error.contains("Unicode property") {
+                "\n[… this build links Unicode categories and scripts; Age and the grapheme, word and sentence break properties are not linked]"
+            } else {
+                ""
+            };
+            invalid(format!("invalid regex pattern: {error}{unlinked}"))
+        })?;
     let include_source = match (
         input.get("include").and_then(Value::as_str),
         input.get("type").and_then(Value::as_str),

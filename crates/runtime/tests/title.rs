@@ -1,6 +1,5 @@
 //! A session's model-written title, cleaned to a short plain line.
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 
 use std::error::Error;
 use std::sync::Arc;

@@ -26,6 +26,7 @@ pub struct Cut {
 /// Cuts at the nearest valid point at or after `keep_recent`, never at a tool result. A cut
 /// inside a non-user turn is a split turn and records the turn's starting user message.
 pub fn select_cut(messages: &[AgentMessage], keep_recent: Tokens) -> Cut {
+    let _span = yi_types::trace::span("context.select_cut").arg("messages", messages.len());
     let Some(first_cut) = messages.iter().position(is_cut_point) else {
         return Cut {
             first_kept_index: 0,

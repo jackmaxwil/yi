@@ -63,7 +63,7 @@ pub(crate) fn restore_before(
         }
         yi_runtime::UndoOutcome::NoCheckpoint => Err((
             INVALID_PARAMS,
-            "that message did not start a turn, so no checkpoint holds its files".to_owned(),
+            "no checkpoint holds the files from before that message".to_owned(),
         )),
         yi_runtime::UndoOutcome::Failed(error) => Err((INTERNAL_ERROR, error)),
     }

@@ -1,8 +1,7 @@
 //! With a plan open the session todo list is the plan's view (D226): every committed plan op
 //! re-projects the plan into the list, and the todo tool refuses to step it.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;

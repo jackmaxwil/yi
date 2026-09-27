@@ -40,6 +40,7 @@ fn as_user(text: String, timestamp: u64) -> AgentMessage {
 /// Design §4.2: harness-internal message kinds become plain user messages, their text
 /// unchanged; kinds with no LLM representation drop.
 pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
+    let _span = yi_types::trace::span("context.convert_to_llm").arg("messages", messages.len());
     messages
         .iter()
         .filter_map(|message| match message {

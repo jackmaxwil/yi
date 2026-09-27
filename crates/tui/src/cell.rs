@@ -127,6 +127,11 @@ pub const CALLOUT_RAIL: &str = "▌";
 const GUTTER_CONTINUATION: &str = "  ";
 const THOUGHT_INDENT: &str = "  ";
 
+/// The gutter's width in columns: [`GUTTER`]`.len()` counts its bytes.
+pub fn gutter_cols() -> usize {
+    UnicodeWidthStr::width(GUTTER)
+}
+
 /// Reasoning prose, dim and italic, with nothing over it: the style is the label. `header`
 /// is false past the first slice, so a thought streamed in paragraphs opens one blank, not many.
 pub fn thought_lines(
@@ -148,19 +153,17 @@ pub fn thought_lines(
     if header {
         out.push(Line::default());
     }
-    // Rendered two columns narrow, matching the indent below: at full width every line that
-    // filled it wrapped again and shed its last word onto a line of its own.
-    for line in markdown::render(markdown, width.saturating_sub(THOUGHT_INDENT.len()), theme) {
+    // Rendered two columns narrow, matching the indent below: a full-width row wrapped again.
+    // Plain, since the restyle drops syntax colour; untrimmed, since a row's lead is its nesting.
+    for line in markdown::render_plain(markdown, width.saturating_sub(THOUGHT_INDENT.len()), theme)
+    {
         let text: String = line
             .spans
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>();
         out.extend(wrap_line(
-            &Line::from(Span::styled(
-                format!("{THOUGHT_INDENT}{}", text.trim_start()),
-                style,
-            )),
+            &Line::from(Span::styled(format!("{THOUGHT_INDENT}{text}"), style)),
             width,
             THOUGHT_INDENT,
         ));
@@ -918,7 +921,7 @@ impl Cell {
             Cell::Assistant { markdown } => {
                 let mut out = vec![Line::default()];
                 out.extend(gutter(
-                    markdown::render(markdown, width.saturating_sub(GUTTER.len()), theme),
+                    markdown::render(markdown, width.saturating_sub(gutter_cols()), theme),
                     true,
                     theme,
                 ));
