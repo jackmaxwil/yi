@@ -458,6 +458,40 @@ def check_watch_stops():
         assert done.returncode == 2 and "spend $1.000 passed the hard cap" in done.stdout, done
 
 
+def check_watch_prune():
+    """An image goes after IDLE_POLLS consecutive unused polls, a use resets its count, and the
+    final prune after harbor exits takes every unused one (PAID-0: a sidecar pruned mid-pull)."""
+    import watch
+    containers, removed, images = {}, [], ["sidecar", "main"]  # container id -> image id
+
+    def fake_docker(*args):
+        if args[0] == "images":
+            return "\n".join(f"harborframework/terminal-bench {i}" for i in images if i not in removed)
+        if args[0] == "ps":
+            return "\n".join(containers)
+        return containers.get(args[-1], "")  # inspect --format {{.Image}} <container>
+
+    # PAID-0's sidecar sat unused for the minutes the main image took to pull; at the
+    # default 60 s poll, ten polls cover that and two did not.
+    assert watch.IDLE_POLLS >= 10, watch.IDLE_POLLS
+    real_docker, real_run = watch.docker, watch.subprocess.run
+    watch.docker = fake_docker
+    watch.subprocess.run = lambda argv, **kw: removed.append(argv[-1]) or subprocess.CompletedProcess(argv, 0)
+    try:
+        idle = {}
+        for _ in range(watch.IDLE_POLLS - 1):
+            watch.prune(idle)
+        assert removed == [], "an image unused for fewer than IDLE_POLLS polls stays"
+        containers["c1"] = "main"  # the main image's container starts: its count resets
+        watch.prune(idle)
+        assert removed == ["sidecar"], removed
+        del containers["c1"]
+        watch.prune(idle)
+        assert removed == ["sidecar"], "main was used one poll ago"
+        assert watch.prune(idle, ripe_at=0) == 1 and removed == ["sidecar", "main"], "the final prune takes every unused image"
+    finally:
+        watch.docker, watch.subprocess.run = real_docker, real_run
+
 def check_trials():
     """One row per harbor trial, whatever sessions it wrote, and the caps a runner call may spend."""
     import trials
@@ -690,6 +724,7 @@ CHECKS = (
     check_graph_refiner,
     check_levers,
     check_trials,
+    check_watch_prune,
     check_cost_cap,
     check_orient_census,
     check_rule_fires,

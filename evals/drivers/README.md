@@ -75,7 +75,7 @@ counts Time Machine local snapshots as free; 3 GB plain `df` as a floor) stops t
 group and this run's trial containers, exits 2 and writes the reason to
 `<runs>.STOPPED`. It also removes terminal-bench images no container uses:
 harbor's `--rmi local` never removes a pulled image, and these are pulled by
-digest, untagged, so they go by id after two idle polls. `evals/selftest.py` (`check_driver_ceiling`,
+digest, untagged, so they go by id after ten consecutive idle polls (a multi-image task pulls its sidecar minutes before it starts the container; two polls removed one mid-trial), and every unused one goes when harbor exits. `evals/selftest.py` (`check_driver_ceiling`,
 `check_watch_stops`) holds the ceiling and the stop path.
 
 ```sh
