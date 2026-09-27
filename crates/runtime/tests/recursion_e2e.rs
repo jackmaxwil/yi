@@ -1,11 +1,7 @@
-#[path = "support/own.rs"]
-mod own;
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
-use own::own;
+use crate::own::own;
+use crate::scratch;
+use crate::support;
 use scratch::Scratch;
-#[path = "support/family.rs"]
-mod support;
 
 use std::error::Error;
 use std::path::PathBuf;

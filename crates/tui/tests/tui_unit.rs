@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use std::error::Error;
 
@@ -13,8 +13,7 @@ use yi_tui::status::StatusInput;
 use yi_tui::tree::{TreeFilter, TreeResult, TreeView};
 use yi_tui::wrap::wrap_line;
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
