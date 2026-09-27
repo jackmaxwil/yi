@@ -1,41 +1,52 @@
 # Yi: seven primitives for agent work at any scale
 
 ```
-status:  PROPOSAL, 2026-09-24. Consolidates the 2026-09-23/24 design sessions: the hive
-         revision, channels, the pressure test, and eight rounds of owner decisions.
-         Extends docs/plans/2026-09-01-hive.md. Nothing lands without its D-rows (§15).
-         The owner's words are quoted verbatim, never paraphrased: §6 says why. Method:
+status:  PROPOSAL, revision 2 (2026-09-26). Revision 1 (2026-09-24, #504) consolidated
+         the 2026-09-23/24 design sessions: the hive revision, channels, the pressure
+         test, and eight rounds of owner decisions. Revision 2 answers an adversarial
+         review (§17) and the owner's four decisions on it. Extends
+         docs/plans/2026-09-01-hive.md. Nothing lands without its D-rows (§15). The
+         owner's words are quoted verbatim, never paraphrased: §6 says why. Method:
          the yi-ideate skill.
-tree:    claude/yi-os-mailbox @ 38854e43 (0.294.0, last decision row D232), the top of
-         the operating-system stack #427 → #467 → #483 → #494, not yet on main.
-marks:   ✓ exists on that stack · ✚ new in this proposal
+tree:    main @ 36cd8eaa (0.319.0, last decision row D244). Every ✓ was re-read there.
+marks:   ✓ exists on main · ✚ new in this proposal · ⏸ deferred
 ```
 
 ## 0. Summary
 
 Every coding agent today, Claude Code included, treats a conversation as the unit of
-work. State lives in a context window. Children return a paragraph and vanish.
-Orchestration is either the model's judgment or a separate script, and nothing runs
-unless someone is watching.
+work:
+- state lives in a context window;
+- children return a paragraph and vanish;
+- orchestration is either the model's judgment or a separate script;
+- nothing runs unless someone is watching.
 
 Yi becomes something else: **seven primitives, and everything else composed from them.**
 
 | primitive | what it is | one line |
 | --- | --- | --- |
-| **Address** | a URL for anything | `scheme://owner[@node]/path`: memory, history, files, plans, channels, blobs, agents |
-| **Todo** | the unit of work | state, intent, gate, lease, placement, result, for every piece of work from a typo up |
-| **Agent** | a process that does todos | session + kernel + mailbox, with a lease and a wall, on a node |
-| **Node** | where work can run | a card listing capacity, power, availability, isolations and price. One computer is a hive of one |
-| **Channel** | how data moves | a durable ordered log with subscriptions and adapters |
-| **Lease** | what work may spend | tokens, dollars and time, inherited downward, only ever shrinking |
-| **Wall** | what work may touch | denied paths, URLs and channels, inherited downward, only ever narrowing |
+| **Address** | a URL for anything | memory, history, files, plans, channels, blobs, agents |
+| **Todo** | the unit of work | state, intent, gate, lease and result, for every piece of work from a typo up |
+| **Agent** | a process that does todos | a session, a kernel and a mailbox, with a lease and a wall, on a node |
+| **Node** | a machine and what it admits | a card whose slots bound the live kernels and roots on that machine. One computer is a hive of one |
+| **Channel** | how outside data moves in | a durable ordered buffer with subscriptions and adapters; it stops being authority once a message is delivered |
+| **Lease** | what work may spend | tokens and time today, dollars later; inherited downward, only ever shrinking |
+| **Wall** | what work may touch | denied paths and URL prefixes, inherited downward, only ever narrowing |
 
-One composite gets its own name: a **plan** is a graph of todos plus the program that
-declared them plus its journal. It is used for non-trivial work only.
+One composite gets its own name: a **plan** is a graph of todos, plus the program that
+declared them, plus its journal. It is used for non-trivial work only.
 
-The same seven primitives run a one-line fix on a single laptop and an org-wide migration
-across a thousand workers. Nothing switches modes between those two cases; only the
-number of nodes and the size of the leases change.
+The same seven primitives run a one-line fix on a laptop and an org-wide migration.
+Nothing switches modes between those two cases; the number of nodes and the size of the
+leases change.
+
+Revision 2 is smaller than revision 1:
+- Several ✓ marks were wrong and are now ✚.
+- Two mechanisms revision 1 called compositions are named as new: a claim protocol and an
+  overlap policy.
+- The clock may no longer start saved code.
+- The build order begins with a read-only experiment that can falsify the core bet
+  before any schema change.
 
 ## 1. The problem
 
@@ -46,15 +57,15 @@ number of nodes and the size of the leases change.
 | no persistent execution state | the shell's working directory was reset to the project root after every command that left it | the kernel: state lives across turns and is readable by address |
 | children return a paragraph, then vanish | a research subagent read the 3,094-line OS plan and returned about 1,500 words; everything else it learned was unreachable | children stay addressable: `kernel://child/var`, `history://child/...` |
 | context is one linear window | a 43 KB tool output spilled to a file that had to be re-read; earlier turns survive compaction only as a summary | history is addressable, paged and searchable; context is a list of addresses |
-| runs only while watched | woken by a few harness events (task completion, PR CI, scheduled wake-ups), never by an arbitrary webhook, log or alarm | channels, adapters, suspend and activation |
+| runs only while watched | woken by a few harness events, never by an arbitrary webhook, log or alarm | channels, adapters, suspend and activation |
 | fixed placements | subagents run locally, in a git worktree, or in the vendor's cloud | nodes and isolation |
-| orchestration is a second language | the Workflow tool is a JavaScript runtime separate from the work, with a guideline of under ten agents and resume only within one session | plans are Python in the same kernel, durable across restarts |
+| orchestration is a second language | a JavaScript workflow runtime separate from the work, with a guideline of under ten agents and resume only within one session | plans are Python in the same kernel, durable across restarts |
 | the owner's words were overwritten | the owner named the primitive "channel"; the assistant renamed it "signal", then "topic". Told to "drop the biology", its next answer kept the biology nouns | the intent record and two-way traceability (§6) |
-| failures found only when asked | asked "what else have you made mistakes on?", it found 13 in one pass: the same model, whose failures surfaced only once asked | boundary checks: the owner's question, asked for them (§6.4) |
+| failures found only when asked | asked "what else have you made mistakes on?", it found 13 in one pass: the same model, which had not looked until asked | boundary checks: the owner's question, asked for them (§6.4) |
 
 ### 1.2 Case study: Codex, OMP, Pi, OpenCode
 
-Studied from their docs under `ref/agents/`, with cited file lines in the session record.
+Studied from their docs under `ref/agents/`.
 
 | | Codex | OMP | Pi | OpenCode |
 | --- | --- | --- | --- | --- |
@@ -75,10 +86,6 @@ Studied from their docs under `ref/agents/`, with cited file lines in the sessio
 7. The agent has no tool to search its past sessions.
 8. Compaction loses detail that nothing restores.
 
-OMP comes closest to Yi (it has `agent://` and `history://` addresses, eval kernels and a
-mailbox hub), and Yi already borrowed from it. The gap left is durability, placement,
-intent and verification.
-
 ### 1.3 The two failures underneath
 
 **Intent loss.** The owner's working loop, in their words:
@@ -88,16 +95,17 @@ intent and verification.
 > 10) immediately ai can recognize things were not done correctly. even such simple
 > questions from myself can trigger this recognizal. this is my biggest frustration.
 
-This loss has two causes:
-- **The telephone effect.** Each hop restates the one before it. The plan paraphrases the
-  brainstorm, the todos paraphrase the plan, a small child model gets a paraphrase of a
-  paraphrase, and the judge gets a rubric, a fourth paraphrase.
-- **Drowning.** The owner's short messages are a tiny share of a context full of system
+Yi already keeps every real user message verbatim through compaction, within a 64,000-token
+floor (`crates/context/src/floor.rs:5,41`). The loss happens elsewhere:
+- **Restatement.** The summarizer writes the "Goal" and "Constraints & Preferences" sections
+  in its own words (`crates/context/src/prompts.rs:9-12`). Plans paraphrase the brainstorm,
+  todos paraphrase the plan, and a child gets a paraphrase of a paraphrase.
+- **Drowning.** The owner's short messages are a small share of a context full of system
   prompts, tools, rules and tool output.
 
 **Verification that grades the restatement.** In the owner's words, judges are "so
 fucking tunnel visioned on the 'rules' rather than the quality of the output". The
-target they set is:
+target they set:
 
 > is this the platonic ideal of the extrapolated intent from the user
 
@@ -105,239 +113,286 @@ target they set is:
 
 1. **Scale-invariant.** "the primitives and foundation should be applicable to personal
    agent or scale to massive scale". There are no modes.
-2. **Compose, don't add.** A feature that is not a composition of the seven primitives
-   needs a D-row explaining why.
-3. **The owner's words are the source of truth.** Intent travels by reference, never by
+2. **Compose, don't add.** A feature that is not a composition of the seven primitives is
+   named as a new mechanism, with its own D-row. It is never called a composition.
+3. **The owner's words are the source of truth.** Intent travels by address, never by
    restatement.
-4. **One ledger.** "the jsonl ledger is the ledger. dont introduce multiple sources of
-   truth". Every other store of session facts is a view or a query.
+4. **One authority per fact.** The owner said "the jsonl ledger is the ledger. dont
+   introduce multiple sources of truth", and on 2026-09-26 chose "One authority per fact".
+   - A session fact's authority is the session JSONL.
+   - A plan fact's authority is the plan journal, `.yi/plans/<root>/ops.jsonl`
+     (YI_DESIGN.md:532), which is already a second JSONL log.
+   - A channel is an adapter buffer. It is not authority for anything once its message
+     is delivered into one of those logs.
+   - Every other store is a view.
 5. **Triggers and routing read data.** Models generate. Judges accept or reject, and may
-   route on their verdict. That last clause is the one amendment to the standing rule,
-   and it needs its own D-row.
-6. **Recovery never runs saved source** (OS plan §8). A wait lives in the plan graph, not
-   in a stack. A scheduled run of a saved definition is a new run, not a recovery.
+   route the work, but only through a closed verdict enum (§6.5). That is the one
+   amendment to the standing rule.
+6. **Neither recovery nor the clock runs saved source.** Recovery reattaches to state
+   (OS plan §8). On 2026-09-26 the owner chose "Clock only creates a todo": a tick appends
+   a todo or a wake, and a live agent decides what code to run.
 7. **Permissive within the lease.** "start with a permissive model along the 'anything
    with a lease' and when we start running into permissions/authentications oversteps,
-   then we add scopes". Every outward action is visible, and one command stops everything.
+   then we add scopes".
+   - On day one, any family member may read another member's kernel (D164). The log that
+     would show an overstep is ✚, and a log is not a gate.
+   - One command stops everything.
 8. **Efficiency is the measure.** "efficiency. speed. performance. no wasted effort. no
    wasted time." It is counted as token yield on accepted work, but "dont over optimize
    for token yield that may result in half done, rushed work".
-9. **Caps are fuses.** Eight workers per parent, sixteen members per family, depth three.
-   Width comes from more roots, never from deeper or wider trees.
+9. **Caps are fuses.** The existing fuses are 8 children per parent, a family cap of 16,
+   and a depth that defaults to 1 with a lever ceiling of 3 (`crates/runtime/src/subagent.rs:25-30`,
+   `crates/runtime/src/levers.rs:90`). They bound a family, not a machine. Roots are bounded
+   by the node card's slots (§3.4).
 
 ## 3. The seven primitives
 
 ### 3.1 Address
 
-```
-scheme://owner[@node]/path[?query]
-```
+✓ Today a `Url` is a scheme, a path and an optional hashline fragment
+(`crates/types/src/url.rs:160-164`), with a durability class (`Durability`, `:22`).
 
-| address | names |
-| --- | --- |
-| `kernel://reviewer@forge/findings` | a live Python object in another agent's memory, on another machine ✓ (D164 within a family; `@node` ✚) |
-| `history://parent/since/412` | a slice of a transcript ✓ |
-| `tree://sibling/src/parser.rs` | a file in a sibling's worktree ✓ |
-| `plan://cve-1234/todos/repo-17` | a todo's state, contract and verdict ✓ |
-| `family://known_breakages` | the family blackboard ✓ |
-| `user://<session>/<n>` | the owner's message n, verbatim ✓ scheme, ✚ as intent |
-| `channel://ci/apex?last=5` | the last five messages on a channel ✚ |
-| `store://sha256:9f2c…` | any blob by content hash ✚ |
-| `agent://reviewer@forge` | an agent: its card, state and mailbox ✓ scheme, ✚ `@node` |
-| `node://forge` | a node's card ✚ |
+✓ Schemes resolve today:
+- `local://`, `kernel://`, `plan://`, `agent://`, `history://`, `checkpoint://`, `mcp://`
+  and `user://`;
+- `family://` and `tree://`, which parse as external schemes (`crates/runtime/src/fetch/schemes.rs:324,356`).
 
-Addresses already carry a durability class (`Durability::{Ephemeral, Durable}` in
-`types/src/url.rs`), so a durable record cannot hold an address that dies with a
-process.
+✚ New:
+- an `owner@node` authority segment;
+- `channel://` and `store://`.
+
+| address | names | |
+| --- | --- | --- |
+| `kernel://reviewer/findings` | a live Python object in another agent's kernel (D164) | ✓ |
+| `history://parent/since/412` | a slice of a transcript | ✓ |
+| `tree://sibling/src/parser.rs` | a file in a sibling's checkout, walled by `deny_read` | ✓ |
+| `plan://cve-1234/todos/repo-17` | a todo's state, contract and verdict | ✓ |
+| `family://known_breakages` | the family blackboard | ✓ |
+| `kernel://reviewer@forge/findings` | the same, on another machine | ⏸ |
+| `channel://ci/apex?last=5` | the last five messages on a channel | ✚ |
+| `store://sha256:9f2c…` | a blob by content hash | ✚ |
 
 Verbs:
-- `fetch(url, offset, limit)` ✓: read anything, paged.
-- `find(query, within=pattern)` ✚: search anything and get back **addresses**, so a
-  search hit is already context.
+- `fetch(url, offset, limit)` ✓ reads anything, paged.
+- `find(query, within=pattern)` ✚ searches and returns **addresses**, so a hit is already
+  context. `history.grep` ✓ (`crates/runtime/src/wiring.rs:316`) is its first case.
 
 ### 3.2 Todo: the unit of work
 
-"TODOs for everything. plans for non-trival only". Today there are two todo types. The
-session list's `TodoItem` (`types/src/todo.rs:116`) has id, label, state, blocked-on,
-note, evidence and children. The plan `Todo` (`types/src/plan/doc.rs:234`) has label,
-edges, state, delegation, contract, attempts and retries. They merge ✚ into one:
+"TODOs for everything. plans for non-trival only". Yi has two todo types today, with
+different serializers and stores:
+
+| | session todo | plan todo |
+| --- | --- | --- |
+| type | `TodoItem` (`crates/types/src/todo.rs:116`) | `Todo` (`crates/types/src/plan/doc.rs:234`) |
+| stored in | `custom` entries in the session JSONL | the plan journal, `ops.jsonl` |
+| ids | `t<n>` | labels |
+| blocked on | a flat `BlockedOn` | `BlockedOn::{Child, User, External { probe }, Other}` (`doc.rs:74`) |
+| other state | — | `after` edges, a delegation, a contract, `Running { by }` (`doc.rs:90`), `Abandoned` |
+
+**Revision 2 does not merge them first.** The owner chose "Judge replay first", so stage
+0 (§14) must hold before any schema change. Once it holds, the merge is a schema change
+to durable data: a version bump, an idempotent migration, and committed before/after
+fixtures (YI_DESIGN §19). Old rows keep their shapes: `Running { by }` gains an optional
+epoch, and `Abandoned` stays `Abandoned`.
+
+The target shape, one type used everywhere:
 
 ```
 Todo {
   id, label
-  state:   Pending | Running { by, lease } | Blocked { on, note } | Done { output } | Failed { cause } | Cut
-  on:      User { question, options? } | Child(AgentId) | Channel { address, filter }   ✚
-           | Partition { node, since } ✚ | External { probe }
-  after:   [TodoId]                  edges; empty in a flat list
-  intent:  [Address]                 ✚ the intent record (§6.1)
-  gate:    Contract + judge + class  ✓ contract, ✚ exam v2 and judge (§7)
-  work:    run = code | delegate = Role { isolation, node?, model, wall, context }
-  lease:   Lease                     ✓
-  output:  Address                   results are addresses
-  attempt, retries, refusals, contract_hash, children (grouping), evidence, extra
+  state:   Pending | Running { by, epoch? ✚ } | Blocked { on, note } | Done { output, resolution }
+           | Failed { cause, last } | Abandoned
+  on:      User { question, options? ✚ } | Child(AgentId) | External { probe }
+           | Channel { address, filter } ✚ | Partition { node, since } ⏸
+  after:   [TodoId]                   edges; empty in a flat list
+  intent:  [Address] ✚                the intent record (§6.1): addresses only
+  gate:    Contract ✓ + intent judge ✚ + class ✚
+  work:    run = code | delegate = Role { isolation, model, wall, context }
+  output:  Address                    results are addresses
+  attempt, retries, refusals, contract_hash, children, note, extra
 }
 ```
 
-- A session's todo list is todos with no edges.
+- A session's list is todos with no edges.
 - A plan is todos with edges, a program and a journal.
-- A child agent is a todo delegated to a new agent.
-- A task-queue item is a ready todo.
-- An approval, a preview, a durable wait and a timer are each a todo blocked on something.
-
-The merge is a schema change to durable data, so it gets a version bump, an idempotent
-migration and committed before/after fixtures (YI_DESIGN §19).
+- A child agent is a delegated todo.
+- An approval, a preview, a durable wait and a timer are each a todo blocked on
+  something.
 
 ### 3.3 Agent
 
 An agent is a process with an address:
-
-- a **session**: the JSONL, which is the ledger ✓;
-- a **kernel**: a persistent IPython memory whose variables are addressable ✓;
-- a **mailbox**: a channel with one reader ✚ (today, D230's ordered queue ✓);
+- a **session**: the JSONL, the authority for its facts ✓;
+- a **kernel**: persistent IPython whose variables are readable by address ✓ (D164,
+  `python/yi_runtime/src/rlm/__init__.py:950`);
+- a **mailbox**: D230's ordered queue ✓, read with `rlm.receive` ✓ (`rlm/__init__.py:677`).
+  It stays an in-process queue plus the session JSONL, and it is not a durable channel;
 - a **lease** and a **wall** ✓;
-- a **node** and an **isolation** ✚.
+- a **node** ✚.
 
-Services are agents with stable names and restart intensity (`rlm.service` ✓). Every
-agent publishes a **card** (address, role, model, node, state, load) on the registry
-channel ✚. With the owner's chosen default, any agent may read any other agent of the
-same owner, and walls take that access away per child.
+Services are agents with stable names and restart intensity (`rlm.service` ✓). A child
+whose todo is blocked on the user already shows as `needs_you` to its family ✓
+(`crates/runtime/src/family.rs:188`).
 
-### 3.4 Node: where work can run
+### 3.4 Node: a machine and what it admits
 
 "not everyone has a home server. most users are 1 computer only. but this node approach
-to resource management is a powerful architectural primitive".
+to resource management is a powerful architectural primitive". On 2026-09-26 the owner
+chose "Node card admits work".
+
+A node is a card:
 
 ```jsonc
 { "name": "laptop", "always_on": false, "power": "battery",
-  "capacity": { "cpus": 10, "mem_gb": 32, "slots": 8 },
-  "isolation": ["worktree", "container"], "price_per_hour": 0, "reach": "local" }
-
-{ "name": "forge", "always_on": true, "power": "ac",
-  "capacity": { "cpus": 16, "mem_gb": 64, "slots": 24 },
-  "isolation": ["worktree", "container", "vm:proxmox/*"], "price_per_hour": 0, "reach": "direct" }
-
-{ "name": "aws", "always_on": true, "elastic": true,
-  "isolation": ["container:fargate/*", "vm:ec2-spot/*"], "price_per_hour": "per template" }
+  "slots": 8, "capacity": { "cpus": 10, "mem_gb": 32 },
+  "isolation": ["worktree", "container"], "price_per_hour": 0 }
 ```
 
-- **One computer is a hive of one.** Its card is computed locally from the machine. The OS
-  plan's capacity counters (workers, worktrees, concurrent model requests, width
-  `clamp(cores−1,1,8)`) become that node's capacity. Admission reads the card. Nothing
-  about a single-computer install changes except that the counters now have a name.
-- **A cloud account is an elastic node.** Its capacity grows through its driver, and it
-  has a price.
-- **Placement** is a choice of (node, isolation), made by a rule that reads cards and the
-  todo's lease (§8.6).
-- Cards live on `channel://nodes`, compacted so each node keeps only its latest card.
+- **Day-one job: admission.** Every live root and kernel on a machine takes a slot. When
+  the slots are full, a new root waits in `Pending`.
 
-### 3.5 Channel: how data moves
+  This is the bound the family caps don't give: a root is a session plus a kernel, and a
+  thousand roots on one laptop is a thousand kernels. The existing width
+  `clamp(cores−1,1,8)` becomes that machine's default slot count.
+- **One computer is a hive of one.** The card is computed locally, and nothing else
+  changes for a single-machine install.
+- **Placement across machines is ⏸.** It waits for a second machine, and so does its
+  default (§8.4).
+- **Sleep.** A laptop card has `always_on: false`, so a scheduled tick can fall while the
+  lid is shut. The catch-up rule is data on the clock subscription (§5.2). The default is
+  to fire once on wake, the way anacron does.
 
-A channel is a named, durable, append-only log. It has:
-- **one home node**, which assigns offsets, so order is total within a channel and
-  undefined across channels, and no consensus is needed;
-- a **retention** policy, required;
-- **key compaction**, optional;
+### 3.5 Channel: how outside data moves in
+
+A channel is a named, durable, append-only **buffer** with one home node. The home
+assigns offsets, so order is total within a channel and undefined across channels. It
+has:
+- a **retention** policy, which is required;
+- optional **key compaction**;
 - messages of at most 16 KiB, with anything larger passed by `store://` reference.
 
-A **subscription** has a filter, batching (`batch {size, window}`), a `min_interval`, a
-consumer `group`, and a durable offset. A match delivers to one of three targets:
-- an **agent**: into its run queue (D230's `Queued { message, wakes, news }`), the only
-  integration point with the run loop;
-- a **todo**: it unblocks a todo blocked on that channel;
-- a **definition**: it starts a run of a saved workflow.
+**Authority (law 4).** A channel carries data that has no other home: CI events, alarms,
+mail, clock ticks. When a subscription delivers a message, the delivery is appended to the
+target's log: the session JSONL through D230's queue (`Queued { message, wakes, news }`,
+`crates/runtime/src/session/run.rs:20`), or the plan journal when it unblocks a todo. From
+then on, that log is the authority. The buffer may be truncated once delivery is acked,
+because nothing reads it for history.
 
-Delivery is at-least-once, idempotent by message id, and presented once per subscription.
-Overflow becomes an explicit gap message, never a silent drop.
+A **subscription** has a filter, batching (`batch {size, window}`), a `min_interval` and a
+durable offset. A match has **two** possible targets:
+- **an agent:** the message enters its run queue;
+- **a todo:** a todo blocked on the channel is unblocked, or a new todo is created.
 
-**Adapters** are the only way in or out. Each is a supervised subprocess speaking JSON
-lines on stdin/stdout, chosen by URI scheme from `~/.yi/adapters/<scheme>/`. A source is
-acknowledged only after the home has written to disk. The only built-in is `clock`.
+Starting a saved definition is not a target (law 6).
 
-**Views versus logs.** A channel that mirrors session state is a projection of the JSONL,
-never a copy: `session/<id>/events` and `log/outward` are examples. A channel carrying
-outside data (CI events, alarms, mail) is its own log, because that data has no other
-home. That is how channels keep law 4.
+**Adapters** are the only way in or out. Each is a supervised subprocess that speaks JSON
+lines on stdin and stdout, chosen by URI scheme. A source is acknowledged only after the
+home has written the message to disk. The only built-in adapter is `clock`.
+
+**Delivery** is at-least-once and idempotent by message id ✚. A channel whose home is
+unreachable pauses, and its subscribers see that as a `Blocked` todo, not as silence. That
+mapping is ✚ and ⏸ until there is a second machine.
+
+**Consumer groups** are not a channel feature. Competing consumers need the claim protocol
+(§9.1), which is a new mechanism, ⏸.
 
 ### 3.6 Lease
 
-A lease holds tokens, a deadline ✓, and dollars ✚. It is drawn from the parent's lease at
-spawn and is only ever smaller. Unspent budget returns at reap. `parent_close` (terminate
-or request_cancel; abandon refused) ✓ matches Temporal's parent-close policy. Two things
-are new:
-- a **verification share** per intake class;
-- **model quota** leased like any other resource, so parallel workers don't trip provider
-  rate limits.
+`Lease` today is `holder, parent, deadline_ms, tokens, granted_at, revoked`
+(`crates/types/src/lease.rs:10`) ✓. It is drawn from the parent's lease at spawn, only
+ever smaller, and unspent budget returns at reap. `parent_close` (`Terminate` or
+`RequestCancel`, `lease.rs:80`) ✓ matches Temporal's parent-close policy. The runtime's
+`expire` (`crates/runtime/src/lease.rs:310`) repossesses revoked children after their
+grace.
 
-An exhausted lease suspends a session rather than killing it.
+A lease has no scope, and it is not a fence. ✚ additions:
+- dollars;
+- a verification share per intake class;
+- model quota.
+
+An exhausted lease suspends a session rather than killing it (✚).
 
 ### 3.7 Wall
 
-`deny_write`, `deny_read` and `deny_url` ✓, plus `deny_channel` ✚. A wall is inherited
-downward and can only narrow. The exam's held-out probes (§7.1) sit behind the writer's
-own `deny_read`, so no new mechanism is needed to hide them.
+`deny_write`, `deny_read` and `deny_url` ✓, inherited downward, only narrowing.
+
+**What each one covers**, per `Wall::check_url` (`crates/runtime/src/wall.rs:77-91`):
+- `deny_read` walls `local://`, `checkpoint://` and `tree://` paths.
+- `kernel://`, `family://` and the other shared schemes are walled only by `deny_url`
+  prefixes.
+
+So an exam's held-out probes (§7.1) are hidden with both: `deny_read` on the exam file, and
+`deny_url` on `kernel://<grader>` and `family://<exam>`. No new mechanism is needed, but the
+right field has to be used.
+
+✚ `deny_channel` walls channel names.
 
 ### 3.8 The composite: Plan
 
-A plan is todos plus `after` edges, plus the recorded program that declared them, plus
-its journal. It is used for non-trivial work only. Everything below exists:
-- `Plan.create(goal, request_id=…)`: a re-run cell opens the same plan, which is
-  Temporal's workflow ID;
-- `todo(key, …)`: the same declaration returns the handle, and a changed one raises
-  `SpecDrift`, which plays the role of Temporal's non-determinism error;
-- `decompose`, `supersede`, `resume` (reattaches to state and never runs source);
+A plan is todos plus `after` edges, plus the recorded program that declared them, plus the
+journal. It is used for non-trivial work only. Each piece exists ✓:
+- `Plan.create(goal, request_id=…)`: a re-run cell opens the same plan, as a Temporal
+  workflow ID does;
+- `todo(key, …)`: a changed declaration raises `SpecDrift`
+  (`python/yi_runtime/src/yi/plan.py:70`), in the role of Temporal's non-determinism error;
+- `decompose`, `supersede`, `resume` (which reattaches to state and never runs source);
 - the shapes `fork_join` and `scatter`, and the recipe `review_pod`;
-- the procedural graph `prompts/graph.json`.
+- the procedural graph, `crates/runtime/src/prompts/graph.json`.
 
-## 4. Composition: everything else is built from the primitives
+## 4. Composition
 
-| capability | composed from | status |
+Each row is marked by what it takes: ✓ composes from what exists, ✚ needs a new piece
+(named), ⏸ deferred.
+
+| capability | composed from | |
 | --- | --- | --- |
-| mailbox | channel `agent://x/mail` with one reader | ✚ replaces the separate delivery path |
-| cron / heartbeat | `clock` channel + subscription → wake an agent or start a definition | ✚ replaces the job store |
-| recurring workflow | saved, content-hashed plan definition + clock subscription | ✚ |
-| event-driven work | adapter channel + subscription → create a todo | ✚ |
-| one-off task | a todo (trivial) or a plan (non-trivial), created by your prompt | ✓ |
-| durable wait / signal | todo `Blocked { on: Channel { filter } }` | ✚ generalizes `External { probe }` |
-| durable timer | todo blocked on the `clock` channel | ✚ |
+| one-off task | a todo (trivial) or a plan (non-trivial), from your prompt | ✓ (two types for now) |
 | approval | todo `Blocked { on: User }` | ✓ |
-| preview | todo `Blocked { on: User { options: 3–5 with previews } }`, via `ask_user` | ✚ |
-| child agent | todo delegated to a new agent on a node | ✓ worktree, ✚ other isolations |
-| task queue | ready todos + a consumer group of agents; a claim is a start with a lease | ✚ |
-| re-dispatch | lease expiry → `Pending`; a late result is refused by its attempt id | ✓ `AttemptId` |
-| partition | todo `Blocked { on: Partition { node } }` for the rest of its lease | ✚ |
-| best-of-N | N todos with one intent record, compared by the intent judge | ✚ |
-| intent record | the owner's words + exemplars, as addresses on a todo | ✚ |
-| standing preference | the address of the owner's verbatim words | ✚ replaces model-written memory notes |
-| gate | contract + intent judge on a todo | ✓ contract, ✚ judge |
-| discovery | registry channel (compacted) of agent and node cards | ✚ |
-| search | `find` over addresses | ✚ generalizes `history.grep` ✓ |
-| remote attach | subscription to `session/<id>/events` from an offset | ✚ |
-| kill switch | message on the control channel; the host obeys without asking a model | ✚ |
-| spend alert | subscription on lease events | ✚ |
-| outward-action log | projection of the JSONL: every tool call with an outward effect | ✚ view, not a store |
-| merge queue | channel + consumer group of one + a check | ✚ |
+| child agent | a delegated todo in a worktree | ✓; other isolations ✚ |
 | review pod, scatter, fork/join | plan shapes | ✓ |
-| resource management | node cards + lease admission | ✚ names what exists |
+| mailbox | D230's queue + session JSONL + `rlm.receive` | ✓ |
+| search | `history.grep` over one session | ✓; `find` over every scheme ✚ |
+| outward-action log | a query over the JSONL: every tool call with an outward effect | recipe |
+| intent record | addresses of your words on a todo; user text already survives compaction (`floor.rs`) | ✚ the field, ✓ the floor |
+| standing preference | the address of your verbatim words | recipe, once the record exists |
+| gate | contract + intent judge; the contract has a judge decider (`Decider::Judge`, `contract.rs:226`) | ✓ contract, ✚ intent judge |
+| preview | todo blocked on the user with 3–5 options | ✚ options payload |
+| cron / heartbeat | `clock` adapter + subscription → a todo per tick | ✚ adapter, subscription table |
+| recurring workflow | a tick creates a todo; an agent runs the content-hashed definition | ✚ |
+| event-driven work | adapter + subscription → a todo | ✚ adapter, ack-after-disk |
+| durable wait / signal | todo `Blocked { on: Channel { filter } }` | ✚ new variant and matcher |
+| durable timer | the same variant, aimed at `clock` | ✚ |
+| overlap and catch-up | policy data on the clock subscription | ✚ |
+| best-of-N | N todos with one intent record, compared by the intent judge | ✚ judge |
+| kill switch | a privileged control message the host obeys | ✚ |
+| spend alert | a subscription on lease events | ✚ event stream |
+| resource admission | node card slots | ✚ |
+| discovery | a compacted registry of agent and node cards | ⏸ |
+| task queue, merge queue, re-dispatch | the claim protocol (§9.1) | ⏸ new mechanism |
+| partition | `Blocked { on: Partition }` + claim epochs | ⏸ |
+| remote attach | a tail of the session JSONL from an offset | ⏸ |
 
 ## 5. Work: one shape for every kind
 
 ### 5.1 Three independent axes
 
-Every piece of work is a todo or a plan. What distinguishes one kind of work from another
-is three independent choices, not three systems:
-
 | | node bodies are code | node bodies are models |
 | --- | --- | --- |
-| **static graph** (declared before running) | nightly backup and checksum: `run=` todos only, zero tokens | the 9 a.m. triage: fixed steps, model bodies |
-| **dynamic graph** (grows while running) | one todo per failing test, computed by code from data | "fix this bug": the model decomposes as it learns |
+| **static graph** | nightly backup and checksum: `run=` todos only, zero tokens | the 9 a.m. triage: fixed steps, model bodies |
+| **dynamic graph** | one todo per failing test, computed by code from data | "fix this bug": the model decomposes as it learns |
 
-The third axis is the **trigger**, and any cell above can have any trigger:
-- a **prompt** makes it one-off;
+The third axis is the **trigger**, and any cell can have any trigger:
+- a **prompt** makes the work one-off;
 - the **clock** makes it recurring;
 - a **channel** makes it event-driven.
 
-Four things hold in every cell: routing and triggering read data, every todo passes its
-gate, the journal records everything, and recovery reads state.
+Every trigger does the same thing: it creates or unblocks a todo. Four things hold in every
+cell:
+- routing reads data;
+- every todo passes its gate;
+- the journal records everything;
+- recovery reads state.
 
 ### 5.2 Temporal, mapped
 
@@ -347,58 +402,48 @@ gate, the journal records everything, and recovery reads state.
 | Workflow definition | plan program (Python) | ✓ |
 | Activity | todo: `run=` code or `delegate=` agent | ✓ |
 | Event history | plan journal + session JSONL | ✓ |
-| Non-determinism error | `SpecDrift` on a changed declaration | ✓ |
-| Retry policy, timeouts, heartbeat | `retry` with a cap, lease deadline, progress mail | ✓ |
+| Non-determinism error | `SpecDrift` | ✓ |
 | Child workflow + ParentClosePolicy | delegated todos + `parent_close` | ✓ |
 | Query / Update | `fetch("plan://…")` / `rlm.request` | ✓ |
 | Continue-as-new | `Plan.supersede`, compaction | ✓ |
+| Retry policy | `retry` with a cap | ✓ |
+| Activity heartbeat timeout | lease deadline + a fenced claim | ⏸ claim protocol |
 | Signal | a message that unblocks a todo | ✚ |
 | Durable timer | todo blocked on `clock` | ✚ |
-| Task queue + workers | ready todos + consumer group | ✚ |
-| Schedules (+ overlap policy) | clock subscription; overlap policy from today's `should_defer` | ✚ |
-| Visibility / search attributes | registry + `find` | ✚ |
+| Schedule + overlap policy | clock subscription creating todos; skip / buffer-one / allow as data | ✚ |
+| Task queue + workers | the claim protocol | ⏸ |
+| Visibility | `find` + registry | ✚ / ⏸ |
 | Saga | a failed todo triggers compensating todos | recipe |
 
-**The one deliberate difference: where a wait lives.** Temporal keeps a waiting workflow's
-position in its code, and after a crash it rebuilds that position by replaying the code
-against the history. That requires deterministic workflow code. Yi's plan programs are
-model-written Python with imports, files and randomness, which is why the OS plan made
-"recovery never runs saved source" a law. So in Yi a wait is a **todo blocked on a
-channel**: the daemon holds the subscription, and a match unblocks the todo. Recovery
-reattaches to state, and there is no stack to rebuild.
-
-What that buys:
-- A plan can wait for days at $0.
-- A crash at hour 9 of 12 resumes with every accepted result intact, and repeats no model
-  call.
-- An activity whose outcome is unknown is surfaced for a decision, never retried blindly.
-  An agent editing a repo is rarely idempotent, so Temporal's retry default doesn't fit.
-- There is no server cluster to run.
+**The deliberate differences.**
+- **Where a wait lives.** Temporal keeps a waiting workflow's position in code and rebuilds
+  it by replay, which requires deterministic workflow code. Yi's plan programs are
+  model-written Python, so a wait is a todo blocked on a channel. Recovery reattaches to
+  state, and there is no stack to rebuild.
+- **What a schedule does.** A Temporal schedule starts workflow code. A Yi tick creates a
+  todo, and an agent decides what to run (law 6). A pure-code job therefore costs one
+  agent turn per tick. That is the price of never running saved source unattended.
 
 ### 5.3 Example: every weekday at 9 a.m.
 
 ```python
-# ~/.yi/workflows/morning.py: a saved definition; every run records its content hash
-from yi.plan import Plan
-from yi.roles import Reader, Writer
+# the definition lives in the store; its content hash names it
+MORNING = "store://sha256:…"            # ✚ workflows/morning.py, frozen at save time
 
-async def morning(fired_at: str) -> None:
-    plan = await Plan.create("morning triage", request_id=f"morning-{fired_at}")  # one run per firing
-    await plan.todo("inbox", run=pull_inbox)                         # code: mail since the last run
-    await plan.todo("triage", after=["inbox"], delegate=Reader())    # model: what needs me, and why
-    await plan.todo("replies", after=["triage"], delegate=Writer(accept=REPLY_EXAM))   # ✚ exam (§7)
-    await plan.todo("brief", after=["triage", "replies"], delegate=Writer(accept=BRIEF_EXAM))
-    await plan.run(budget="20m")
-
-await rlm.subscribe("clock://0 9 * * 1-5", start="workflow://morning")   # ✚ the trigger
+await rlm.subscribe("clock://0 9 * * 1-5", create={          # ✚ a tick creates a todo, nothing else
+    "label": "morning triage for {fired_at}",
+    "intent": MORNING_INTENT,                                 # your words from setup, by address
+    "delegate": {"role": "reader",
+                 "note": f"run {MORNING} for {{fired_at}}; its plan uses request_id morning-{{fired_at}}"},
+    "overlap": "skip", "catch_up": "once",                    # ✚ policy as data
+})
 ```
 
-- The definition's intent record (your words from when you set it up, and the chosen
-  preview) travels with it, so every run is judged against what you asked for, not
-  against a restatement.
-- Editing the file makes a new version. The next run uses it, and each run records the
-  hash it ran.
-- Sending replies is allowed within the lease and shows up in the outward-action log.
+- **The run.** The woken agent fetches the frozen definition by hash and runs it. It
+  creates one plan per firing, with `request_id=morning-<date>`. Replies are allowed within
+  the lease and appear in the outward-action log.
+- **Editing the definition** freezes a new hash, and the subscription is updated to point
+  at it. Every run's record names the hash it used.
 
 ### 5.4 Example: an event creates a todo
 
@@ -415,344 +460,318 @@ await rlm.subscribe("channel://ci/apex?conclusion=failure", create={        # �
 
 ### 6.1 The intent record
 
-The intent record is a list of addresses on a todo. It is not a new store. It contains:
+The intent record is **a list of addresses** on a todo, and nothing else. It has no text
+of its own, so it cannot restate anything. It points at:
+- **your messages in the task**: `user://<session>/<n>` or `history://` spans;
+- **your answers and picks**, and **your corrections and rejections**. These matter most:
+  "don't overengineer", "use my name" and "drop the biology" mark exactly where models
+  drift back;
+- **exemplars**: the previews you chose (§6.3), as `store://` hashes;
+- **standing preferences**: the addresses of your own words.
 
-- **your words in the task**, verbatim: every message from the task's start, your answers
-  and your picks;
-- **your corrections and rejections**. These matter most, because "don't overengineer",
-  "use my name" and "drop the biology" mark exactly where models drift back;
-- **exemplars**: the previews you chose (§6.3), by `store://` hash;
-- **standing preferences**: your exact words plus their ledger address. They replace
-  model-written memory notes, which are themselves restatements.
+**Size.** Your messages already survive compaction verbatim within a 64,000-token floor.
+Past it, the oldest is middle-truncated (`floor.rs:17-41`), and the full text stays one
+fetch away. A paste is material, not intent: it gets an address like anything else.
 
-Size is bounded without restating you:
-- **Your own writing** stays verbatim up to a per-message limit. Past it, the start and
-  end stay verbatim and the full text is one fetch away by address.
-- **A paste** is material, not intent, and terminals report pastes separately (bracketed
-  paste mode). It is stored by hash, carries a short summary in the record, and its full
-  text is one fetch away.
+You asked for "truncation + smart compression for long messages". That lives in how a
+record is **shown**: a head and tail window, or a one-line label on a paste. It never
+lives in the record. A consumer that needs the words fetches them.
 
-**Every child and every judge receives the intent record verbatim.** Compaction may
-summarize tool output and model reasoning; it never paraphrases you ✚. That one rule
-removes the telephone effect at its source.
+**Where the telephone effect is fixed** ✚. The summarizer's "Goal" and "Constraints &
+Preferences" sections (`prompts.rs:9-12`) quote your messages by address instead of
+restating them. That is the one place Yi paraphrases you today.
 
 ### 6.2 Two-way traceability
 
-Every plan item cites the words in the intent record it serves. Every sentence of the
-intent record is covered by an item, or waived with a reason. Both directions are
-mechanical checks, run when the plan is drafted and after every revision.
+Every plan item cites the addresses of the words it serves. Every message in the record is
+covered by an item or waived with a reason. Both are mechanical checks, run when the plan
+is drafted and after each revision:
+- **A message with no item** is something about to be forgotten (step 8).
+- **An item that cites nothing** is something nobody asked for (step 3).
 
-- **A sentence with no item** is something about to be forgotten (step 8). It is caught
-  before the work starts.
-- **An item that cites nothing** is something nobody asked for, which is overengineering
-  (step 3). It is cut before the work starts.
+A citation is an address plus a byte range, so the check reads your words, not a window of
+them.
 
-### 6.3 Previews: always, and light
+### 6.3 Previews
 
 "i think always previews, but not heavy previews. previews can be architecture diagrams,
 mockups, etc. a pattern i have been recently using to great success is a multiple choice
 option for 3 - 5 different styles".
 
-A preview is `ask_user` with 3–5 options, each carrying a light preview: an architecture
-diagram, a mockup, a sample paragraph, an API sketch, or one finished slide. That makes
-it a todo blocked on the user. Who picks depends on who's there:
+A preview is a todo blocked on the user, with 3–5 options that each carry a light preview
+(✚ options payload). What it contains per intake class is set in the table in §7.6.
 
-- **you**, when you're present;
-- **the parent**, inside a child, because M2 routes `ask_user` to the parent;
-- **the calibrated judge** (§6.5), when the run is unattended. The losing options are
-  kept, so you can overrule it later.
+**Who picks:**
+- **you**, when present;
+- **the parent**, inside a child. The child's question already surfaces as `needs_you` ✓;
+  routing the pick is ✚.
+- **the calibrated judge**, when the run is unattended. The losing options are kept, so you
+  can overrule it later.
 
-The pick and every rejected option join the intent record. The pick becomes the
-**exemplar** that every later stage is compared against. "sometimes i dont even know what
-i want until i see it", so the preview shows it before anything commits to a direction.
+The pick and every rejected option join the record as addresses, and the pick becomes the
+**exemplar**.
 
-### 6.4 Boundary checks: your question, asked for you
+### 6.4 Boundary checks
 
-At every boundary, the host asks the intent judge your question: "Is this what they
-meant? What would they object to first?" The boundaries are:
+At a boundary, the host asks the intent judge your question: "Is this what they meant?
+What would they object to first?" The boundaries are:
 - the plan is drafted;
 - the plan is revised after a discovery (step 7);
 - a child finishes;
 - done is claimed (step 9, automated).
 
-The trigger is the boundary, which is an event, not a model's choice. The verdict routes
-the work back with the specific mismatch.
+Which boundaries run the judge is set per intake class in §7.6, one table for both previews
+and judges. The trigger is the boundary event, never a model's choice.
 
 ### 6.5 The intent judge
 
-- **It reads** the intent record verbatim and the exemplars.
-- **It sees what you'd see**: the rendered page rather than the code, the slides rather
+- **It reads** the intent record by address, and the exemplars.
+- **It sees what you'd see:** the rendered page rather than the code, the slides rather
   than the XML.
-- **It compares instead of scoring**: against the exemplar, the previous version or the
-  alternatives. "Which is closer to what they meant?" is more reliable than a number, for
-  models as for people.
-- **It predicts your reaction**, meaning your first objections, instead of grading a
-  checklist.
-- **It is calibrated on you.** Past boundaries where you reacted are already in the JSONL
-  as approvals, rejections, corrections and "you're framing this wrong". Candidate judges
-  are replayed on those moments. The owner's choice is to use the **cheapest judge that
-  predicts your actual reactions well enough for the task class**. The calibration is a
-  query, not a store.
+- **It compares instead of scoring:** against the exemplar, the previous version or the
+  alternatives.
+- **It returns a closed verdict enum ✚:**
+  - `accept`;
+  - `revise { objections, cited_addresses }`;
+  - `escalate`, which goes to you, or to the queue when nobody's there.
+
+  The host acts only on the enum. Free-form routing is cut.
+- **Calibration ✚ on a held-out split.** Your past reactions in the JSONL (approvals,
+  rejections, corrections) are split into a fit set and a held-out set. A judge is chosen
+  on the fit set, and it counts only if it also predicts the held-out set. The owner's
+  choice: the cheapest judge that passes. Calibration re-runs when the held-out agreement
+  drops.
+- **Guarding against gaming.** An output that reproduces the exemplar is caught by the blind
+  reader probes (§7.2), which test use rather than resemblance. A judge verdict alone never
+  accepts work (§7.6).
 
 ### 6.6 Taste stays close to your words
 
 Decisions that carry taste (direction, tone, structure, scope) are made by an agent that
 reads the intent record directly, on a strong model. Children get bounded mechanical work,
-with the intent record and the exemplar passed by reference. A small model never rebuilds
-your taste from a paraphrase.
+with the record and the exemplar passed by address.
 
 ### 6.7 Walkthrough: a landing page
 
-1. **Intent record:** your six brainstorm messages: "calm, like Linear but warmer", "no
-   gradients", "less copy".
-2. **Preview:** a multiple-choice question with five hero mockups. You pick B: "B, but less
-   copy." B becomes the exemplar.
-3. **Plan:** every item cites your words, and "warmer" and "less copy" are both covered. An
-   animated testimonial carousel cites nothing, so it's cut.
-4. **Build:** section children get the intent record and exemplar B by reference.
-5. **Done claimed:** the judge compares the rendered page with B and your words: "They said
-   less copy; the features section has 140 words, B had 40." The fix is sent back before
-   you look.
-6. **Your review:** it looks like B.
+1. **Record:** addresses of your six brainstorm messages: "calm, like Linear but warmer",
+   "no gradients", "less copy".
+2. **Preview:** five hero mockups. You pick B: "B, but less copy." B is the exemplar.
+3. **Plan:** every item cites byte ranges of your words. An animated testimonial carousel
+   cites nothing, so it's cut.
+4. **Build:** section children get the record and B by address.
+5. **Done claimed:** the judge returns `revise`: "They said less copy; features has 140
+   words, B had 40", citing your message. The fix is routed before you look.
 
 ## 7. Gates
 
-Models are good at generating candidates and bad at judging. Mechanical checks are good at
-judging and can't generate. So a gate makes the model search and lets the host decide.
+Models are good at generating candidates and bad at judging them. Mechanical checks are good
+at judging and can't generate. So a gate makes the model search and lets the host decide.
 
 ### 7.1 The exam
 
 At intake, the task becomes probes. Each probe has:
 - a question or check;
 - the expected answer;
-- a decider: command ✓, schema ✓, example ✓, blind reader ✚ or refuter ✚;
+- a decider: command ✓, schema ✓, example ✓, judge ✓ (`Decider`, `contract.rs:226`), blind
+  reader ✚ or refuter ✚;
 - a weight and a critical flag.
 
-The exam is frozen by content hash (`freeze` ✓). The writer sees the requirements and most
-of the probes. **A held-out share stays behind its wall**, the way Terminal-Bench keeps its
-verifier in a separate container. Every probe cites the intent sentence it tests (§6.2).
+The exam is frozen by content hash (`freeze` ✓, `python/yi_runtime/src/yi/contract.py:23`).
+The writer sees the requirements and most of the probes. A held-out share sits behind its
+wall (§3.7): `deny_read` on the file, `deny_url` on `kernel://` and `family://`. Every probe
+cites the intent address it tests.
 
-### 7.2 Blind consumer tests
+### 7.2 Blind consumer tests ✚
 
-An artifact passes if someone can use it. A fresh agent, with no access to the writer's
-context and only the rendered artifact in front of it, does the reader's job:
-- a deck: answer the probes from the slide images;
-- an email: extract the ask and the deadline;
-- a README: follow it in a clean container until the command works.
+A fresh agent does the reader's job using only the rendered artifact:
+- answer the deck's probes from the slide images;
+- extract the ask and the deadline from an email;
+- follow a README in a clean container until the command works.
 
-Answers are compared with the frozen expectations: exact, numeric or set comparison where
-possible, and a single-probe judge otherwise. A failure names the probe, so the fix is
-targeted. This is QA-based evaluation (as in QAGS and QuestEval), and it is what tests
-already do for code.
+Answers are compared with the frozen expectations. A failure names its probe.
 
-### 7.3 Refuters search; the host verifies
+### 7.3 Refuters search; the host verifies ✚
 
-Refuters hunt for counterexamples to each requirement. A finding counts only with evidence
-the host can check mechanically:
-- a quote at a location (`verify_quotes` ✓);
+A finding counts only with evidence the host can check mechanically:
+- a quote at a location (`verify_quotes` ✓, `python/yi_runtime/src/yi/roles.py:149`);
 - a command that reproduces;
 - a number recomputed from its cited source.
 
-Unverified findings are dropped.
+### 7.4 Claims carry addresses ✚
 
-### 7.4 Claims carry addresses
+Every number, fact and "tests pass" in an output cites an address, which the host fetches and
+recomputes.
 
-Every number, fact and "tests pass" in an output cites an address: a ledger row, a kernel
-variable, a `file:line`, or a command. The host fetches and recomputes. In the session
-behind this proposal, a wrong row count and an inflated trial-hours estimate would both
-have failed here.
+### 7.5 Probe ownership through decomposition ✚
 
-### 7.5 Coverage through decomposition
+When a todo splits, every parent probe must be owned by a child or kept by the parent. This
+is new. `Contract.covers` ✓ (`crates/types/src/plan/contract.rs:283`) is a different thing:
+write-path globs that trigger the checker. It stays the write checker.
 
-When a todo splits, every parent probe must be owned by a child or kept by the parent
-(`covers` ✓, D228). Children can't each finish their part while the whole misses
-something.
+### 7.6 Acceptance and one table per class
 
-### 7.6 Acceptance
+**Gates and judge must both pass.** Either one failing sends the work back with its reason.
+After the retry cap, the work goes to you, or to the queue when nobody's there.
 
-**Gates and judge must both pass.** Probes guard correctness, and the judge guards intent.
-Either failing sends the work back with its reason. After the retry cap, the work goes to
-you, or waits in a queue when nobody's there.
+| class | preview | gate | intent judge | example verification share |
+| --- | --- | --- | --- | --- |
+| trivial | open (§15): "always" vs class-bound | one command | sampled, 1 in N | 5% |
+| standard | light: 3–5 options | probes + one blind read | at done | 15% |
+| large | light: 3–5 options | + refuters | at every boundary | 25% |
+| open-ended | 3–5 options; you confirm the exam when present | + refuters | at every boundary | 35% |
 
-The verification budget is set per intake class:
-
-| class | gate | judge | example share of the lease |
-| --- | --- | --- | --- |
-| trivial | one command | sampled, 1 in N | 5% |
-| standard | probes + one blind read | at done | 15% |
-| large | + refuters | at every boundary | 25% |
-| open-ended | + previews, you confirm when present | at every boundary | 35% |
-
-The model sizes the class, and the rules bound it. The shares are data the host enforces,
-and the ledger shows whether they were too much or too little.
+The model sizes the class, and the rules bound it. The shares are data the host enforces.
 
 ## 8. Nodes and placement
 
-### 8.1 Isolation on a node
+### 8.1 Isolation
 
-The existing `isolation` keyword grows from `"worktree"` into a placement:
+`isolation="worktree"` ✓ grows into a placement URL ✚. `container:rust:1.91` comes first,
+on the same machine. VMs and cloud come later (⏸).
 
-```python
-isolation="worktree"                             # ✓ today
-isolation="container:rust:1.91"                  # ✚ first: Docker or Podman on this node
-isolation="vm:proxmox/rust-residence@forge"      # ✚ a VM on another node
-isolation="container:fargate/rust@aws"           # ✚ an elastic node
-```
+### 8.2 Placement drivers ✚
 
-### 8.2 Placement drivers
-
-A placement driver is an executable with two verbs, `up` and `down`, one per isolation
-kind. It starts `yi serve` inside the environment, which reaches home over the `Wire`
-transport. On the same node, that transport is a Unix socket; across nodes it is tailcat
-first.
+A placement driver is an executable per isolation kind, with two verbs, `up` and `down`.
 - **Workspace in:** a git ref plus content-addressed blobs.
-- **Result out:** a diff with its gate verdict. `merge_worktree` ✓ becomes `merge(child)`
-  for every placement.
-- **Transparency:** the child can't tell where it runs. It has the same tools, the same
-  `rlm`, the same lease and wall, and the same address.
+- **Result out:** a diff with its gate verdict. `merge_worktree` ✓ generalizes to
+  `merge(child)`.
 
-### 8.3 Partition
+On one machine the transport is a Unix socket. Across machines it is tailcat first (⏸).
 
-When a node becomes unreachable, its todos become `Blocked { on: Partition { node, since } }`
-for the rest of their lease. A child that returns in time continues. When the lease
-expires, the todo goes back to `Pending` and is re-dispatched, and a late result is refused
-by its attempt id.
+### 8.3 Reads
 
-### 8.4 Reads across nodes
+Reads are open within one owner by default (D164). Walls narrow them per child, but only
+`deny_url` walls `kernel://` and `family://` (§3.7).
 
-Reads across nodes are open within one owner by default, and walls narrow them per child.
-Every cross-node read appears in the outward-action view.
+### 8.4 Across machines (⏸, open)
 
-### 8.5 The default-placement question (open)
-
-This question only exists once there is a second node. On one computer, everything is
-local and the node card only governs admission.
+The default placement once a second machine exists is still open:
 
 | default | for | against |
 | --- | --- | --- |
-| **Local unless told** | predictable; no workspace shipping; works offline; code stays on the machine; simple to reason about | closing the lid pauses the work; battery and thermals; a laptop can't hold wide fan-out |
-| **Nearest strong node** | survives sleep; faster machines; scales | remote without being asked for; uncommitted local edits must ship; work diverges if you keep editing locally; depends on the network; a paid node would mean surprise cost |
-
-A third option for the owner to weigh: **placement follows lifetime and capacity.**
-- **Attended work** (a live client, a short lease) runs on the node you're at.
-- **Unattended work** (scheduled runs, detached children, leases longer than the session)
-  goes to an always-on, free node with the right isolation, if one exists.
-- **Work that exceeds the current node's card** goes to a node that can hold it.
-- **A priced node** is used only when a todo or workflow names it.
-
-On one computer, all three defaults reduce to "local". The owner hasn't decided (§15).
+| local unless told | predictable, offline, private, no workspace shipping | a closed lid pauses the work |
+| nearest strong node | survives sleep, faster, scales | remote without being asked; uncommitted edits must ship; network dependence; a priced node means surprise cost |
+| placement follows lifetime and capacity | attended work stays; unattended or oversized work moves to an always-on free node; a priced node only when named | one more rule to explain |
 
 ## 9. Scale
 
-- **Width comes from roots.** The caps stay as fuses. A thousand workers are a thousand
-  ordinary roots, each within its own caps, coordinated through channels.
-- **A task queue is ready todos plus a consumer group.** A worker's claim is a `start`
-  with a lease; its submission is the gate; an expired lease returns the todo to
-  `Pending`. The queue needs no job type of its own, because its items are todos.
-- **Workers are placed by driver on nodes chosen by card.** Examples: 8 containers on a
-  laptop, 24 on the forge, 200 on an elastic node, each under a lease drawn from the
-  effort's lease.
-- **Model quota is leased**, so parallel workers share provider limits instead of all
+### 9.1 The claim protocol (⏸, a new mechanism)
+
+Task queues, merge queues, re-dispatch and partition all need the same thing, and none of
+it exists:
+
+| piece | why | today |
+| --- | --- | --- |
+| a single claimer per todo | two workers must not both start it | the plan store is single-writer under `.yi/plans/.lease`; no cross-agent claim |
+| an epoch on `Running` | a fencing token | `Running { by }` only |
+| a fence on submit | refuse a result whose epoch is stale | not checked; `AttemptId` (`crates/types/src/plan/ledger.rs:113`) counts retries and is not a fence |
+| an expiry scan | return an expired claim to `Pending` | `expire` handles revoked children only |
+| a group offset | competing consumers on a channel | none |
+
+It gets its own D-row. It is not a composition of todo and channel.
+
+### 9.2 Width
+
+- Width comes from roots. The family fuses stay (law 9), and the node card's slots bound
+  roots per machine (§3.4).
+- A thousand workers means a thousand kernels, so they only exist with enough machines, and
+  enough slots on those machines.
+- Model quota is leased (✚), so parallel workers share provider limits instead of all
   hitting rate limits at once.
-- **Results come back as addresses**; diffs go through a merge queue; the control channel
-  pauses, drains or cancels everything.
-
-```python
-plan = await Plan.create("patch CVE-2026-1234 org-wide", request_id="cve-2026-1234")
-for hit in await rlm.find("openssl-sys < 0.10.70", within="mcp://github/apex"):     # ✚
-    await plan.todo(hit.repo, intent=INTENT,                                          # ✚
-        delegate=Writer(accept="cargo test && cargo deny check advisories",
-                        isolation="container:rust:1.91"))
-await plan.run(shape=queue(group="patchers"), budget="12h")                          # ✚
-```
-
-What limits scale: money, provider rate limits, verification throughput, merge contention
-and human attention. The design makes each one visible, and nothing else should be in the
-way.
 
 ## 10. Safety on day one
 
-The owner chose three day-one protections, and each is a composition:
-- **Outward-action log**: a projection of the JSONL, covering every send, push, PR, cloud
-  call, cross-node read and spend, with a live tail.
-- **Kill switch**: one command, or a message on the control channel, pauses or cancels
-  every run on every node. The host obeys it without asking a model.
-- **Spend alerts**: a subscription on lease events with thresholds.
+The owner chose three day-one protections:
+- **An outward-action log.** A query over the JSONL, so it is a view.
+- **A kill switch.** A privileged control message that pauses or cancels every run (✚). It
+  is unverified whether today's interrupt already covers a single session.
+- **Spend alerts.** A subscription on lease events (✚).
 
-Scopes come later, when the log shows the first overstep.
+Scopes come after the first overstep.
 
-Channel data is the new way untrusted input reaches models, and it gets four defenses:
+For channel data:
 - filters run before any model sees a message;
 - external sources default to batched delivery;
-- every wake costs lease;
-- every message is rendered with its source, as data and never as instructions.
+- a wake costs lease;
+- messages are rendered with their source, as data.
 
 ## 11. Measuring efficiency
 
 - **Token yield:** tokens and dollars of accepted work, divided by the total.
 - **Accepted:** the gates and the judge passed, and the JSONL shows no later revert or
-  rewrite. Rushed work that gets undone becomes waste after the fact.
-- **Every todo measures itself** from its own record: the lease gives cost, the journal
-  gives time, and the gate and judge verdicts plus your later actions give acceptance.
-- **The baseline is the existing session corpus.** No special baseline workflow is needed.
-- **Waste is itemized:** failed attempts, empty wakes, loops, duplicated discovery, and
-  verification spent beyond its class share.
+  rewrite.
+- **Every todo measures itself:** the lease gives cost, the journal gives time, and the
+  verdicts plus your later actions give acceptance.
+- **Baseline:** the existing session corpus.
 
-## 12. What exists and what's new
+## 12. What exists and what's new, on main @ 36cd8eaa
 
-| exists on the branch | where |
+| exists | where |
 | --- | --- |
-| `rlm.run/service/send/request/followup/wait/result/status/fetch/put/get/ls/revoke/merge_worktree` | `python/yi_runtime/src/rlm/__init__.py` |
-| URL schemes and durability classes | `crates/types/src/url.rs` |
-| `Plan`, `todo`, `decompose`, `resume`, contracts, `Writer`/`Reader`, shapes, `review_pod` | `python/yi_runtime/src/yi/` |
-| plan `Todo` with `Delegation.context: Vec<Url>` | `crates/types/src/plan/doc.rs:217-262` |
+| `rlm.run/service/send/request/followup/wait/receive/result/status/fetch/put/get/ls/revoke/merge_worktree` | `python/yi_runtime/src/rlm/__init__.py` (`receive` :677, kernel objects :950) |
+| URL, schemes, durability | `crates/types/src/url.rs:22,160` |
+| `family://`, `tree://` | `crates/runtime/src/fetch/schemes.rs:324,356` |
+| `Plan`, `todo`, `SpecDrift`, `decompose`, `resume`, contracts, roles, shapes | `python/yi_runtime/src/yi/` (`plan.py:70`, `roles.py:149`, `contract.py:23`) |
+| plan `Todo`, `TodoState`, `BlockedOn`, `Delegation.context` | `crates/types/src/plan/doc.rs:74,90,217,234` |
+| `Decider::Judge`, `covers` | `crates/types/src/plan/contract.rs:226,283` |
+| `AttemptId` | `crates/types/src/plan/ledger.rs:113` |
 | session `TodoItem` | `crates/types/src/todo.rs:116` |
-| ordered per-session queue (D230) | `crates/runtime/src/session/run.rs` |
-| leases, `ParentClose` | `crates/runtime/src/lease.rs`, `crates/types/src/lease.rs:80` |
-| walls | `crates/runtime/src/wall.rs` |
-| heartbeat scheduler | `crates/runtime/src/schedule/mod.rs` |
+| ordered session queue (D230) | `crates/runtime/src/session/run.rs:20` |
+| user text kept through compaction | `crates/context/src/floor.rs:5,41` |
+| summarizer sections | `crates/context/src/prompts.rs:9-12` |
+| `Lease`, `ParentClose`, `expire` | `crates/types/src/lease.rs:10,80`; `crates/runtime/src/lease.rs:310` |
+| walls and `check_url` | `crates/runtime/src/wall.rs:77-91` |
+| family fuses | `crates/runtime/src/subagent.rs:25-30`; `crates/runtime/src/levers.rs:90` |
+| `needs_you` | `crates/runtime/src/family.rs:188` |
+| heartbeat scheduler, `should_defer` | `crates/runtime/src/schedule/mod.rs:463` |
 | probe ladder | `crates/runtime/src/plan/probe.rs` |
-| `history.grep` | `crates/runtime/src/wiring.rs:266` |
+| `history.grep` | `crates/runtime/src/wiring.rs:316` |
 | procedural graph | `crates/runtime/src/prompts/graph.json` |
 
 New in this proposal:
-- **primitives:** the merged todo, channels with adapters and `clock`, nodes and their
-  cards, placement drivers and isolation URLs;
-- **addressing:** `@node` and `find`;
-- **intent:** the intent record, the compaction rule, standing preferences as quotes,
-  previews through `ask_user`;
-- **gates:** exam v2 (held-out probes, blind readers, verified refuters, cited claims),
-  the intent judge and its calibration query;
-- **network and safety:** the `Wire` over tailcat, the kill switch, spend alerts, and the
-  outward-action view.
+- **intent and gates:** the intent-record field; summarizer quoting by address; judge
+  replay (stage 0); previews' options; the intent judge and its verdict enum; the exam's
+  blind readers, refuters, cited claims and probe ownership;
+- **resources:** node cards and admission; `container:` placement and drivers;
+- **channels:** the channel buffer, adapters and `clock`; subscriptions creating or
+  unblocking todos; `BlockedOn::Channel`; overlap and catch-up policy;
+- **safety and search:** the kill switch; spend alerts; `find`.
+
+Deferred (⏸):
+- the claim protocol;
+- `@node` addressing and the tailcat `Wire`;
+- the registry;
+- elastic nodes;
+- consumer groups and the merge queue;
+- multi-owner intent.
 
 ## 13. What this deletes (one in, one out)
 
-- the heartbeat job store and service; the cron parsing moves into the `clock` adapter;
-- the probe ladder's polling loop, which becomes an `exec` adapter plus a todo blocked on
-  a channel;
-- the mailbox's separate delivery path, since mail becomes a channel;
-- the session `TodoItem` type, merged into the one todo;
-- model-written memory notes, replaced by verbatim quotes with addresses;
-- from the hive plan: the custom cursor protocol, the idempotency frame field, the
+- **The heartbeat job store and service.** The cron parsing moves into the `clock` adapter,
+  and a tick creates a todo.
+- **The probe ladder's polling loop,** which becomes an `exec` adapter plus a todo blocked
+  on a channel.
+- **Model-written memory notes,** replaced by the addresses of your verbatim words.
+- **From the hive plan:** the custom cursor protocol, the idempotency frame field, the
   drop-box ingest, the `WakeCapsule` job and the anchor wake queue.
 
-These deletions are proven by a falling `src/` count on the size ratchet.
+The mailbox is not deleted: it already is the one ordered queue. The session todo type is
+not deleted until stage 0 holds.
 
 ## 14. Build order
 
-Each stage is demoable and has its own D-row and issue. The first two need no new
-infrastructure and go after the owner's biggest frustration first.
+Each stage has its own demo and gate, and each gets a D-row and an issue when it starts.
 
 | stage | scope | demo | gate |
 | --- | --- | --- | --- |
-| **1. One todo, your words kept** | the todo merge (migration + fixtures); the intent record; compaction never paraphrases you; standing preferences as quotes; two-way traceability | a long session whose early messages survive compaction verbatim; a plan that flags a forgotten sentence and cuts an item nobody asked for | the schema fixtures before and after; the traceability check red on a planted omission |
-| **2. Previews and judges** | `ask_user` with 3–5 previews; the intent judge at boundaries; exam v2; both must pass; class budgets; the calibration query | the landing page of §6.7 | the judge catches a planted drift; the calibration query ranks judges on the existing corpus |
-| **3. Channels** | mailbox and clock on channels; todos blocked on a channel; kill switch; spend alerts; outward-action view | the 9 a.m. workflow; a plan that waits two days for approval at $0 | the eight `mbx-*` trials stay green; the line count falls |
-| **4. Nodes and containers** | node card for one computer; `isolation="container:…"`; admission by card | eight container children on one laptop | the result and merge path are identical to worktrees |
-| **5. Adapters** | `exec`, `file`, `github`, `aws+sqs` | CI red → todo → verified fix | the probe ladder retires |
-| **6. Many nodes** | `@node` addresses, tailcat `Wire`, registry, `find`, partition handling | `fetch("kernel://reviewer@forge/findings")` from a laptop; close the lid and work continues | the hive plan's O1 drive script |
-| **7. Elastic nodes and queues** | cloud drivers, consumer groups, model quota | a 1,000-todo effort, with its ledger | cost per accepted todo reported by query |
+| **0. Judge replay** (read-only) | A judge replays existing session JSONL. At each recorded boundary it predicts your first objections, citing byte ranges of your messages. It is scored against what you actually said next. Nothing is written back. | a report over the corpus: citation accuracy, and agreement with your later corrections on a held-out split | citations resolve to your words; agreement beats a no-judge baseline. **If this fails, the intent/judge bet is false** and stages 1–2 change before anything irreversible is spent |
+| **1. Your words by address** | the intent-record field on todos (both types); summarizer sections quote by address; two-way traceability | a plan that flags a forgotten message and cuts an item nobody asked for | traceability red on a planted omission; no schema change to existing rows |
+| **2. Previews and the judge** | options payload; the intent judge with its verdict enum at the §7.6 boundaries; exam v2; both must pass | the landing page of §6.7 | the judge catches a planted drift; held-out agreement is reported |
+| **3. Todo merge** | one type, migration, before/after fixtures | old sessions and plans load unchanged | the schema fixtures before and after |
+| **4. Channels** | the `clock` adapter; subscriptions creating or unblocking todos; `BlockedOn::Channel`; overlap and catch-up; kill switch; spend alerts | the 9 a.m. workflow on an awake laptop, and a tick missed during sleep that fires once on wake; a plan that waits for approval at $0 | the eight `mbx-*` trials stay green; the heartbeat store retires |
+| **5. Node admission and containers** | the node card for one computer; `container:` placement | eight container children on one laptop, the ninth waiting for a slot | the result and merge path are identical to worktrees |
+| **6. Adapters** | `exec`, `file`, `github`, `aws+sqs` | CI red → todo → verified fix | the probe ladder retires |
+| **7. Claim protocol and many machines** ⏸ | epochs, fences, expiry, `@node`, `Wire`, registry, partition | close the lid and the work continues on the forge | the hive plan's O1 drive script |
 
 ## 15. Decisions and open questions
 
@@ -768,7 +787,6 @@ infrastructure and go after the owner's biggest frustration first.
 | ledger | "the jsonl ledger is the ledger" |
 | daemon | always on |
 | channels reversal | staged, not rejected |
-| paying for features | the absorbed machinery |
 | first placement | local containers |
 | acceptance | "contract passed is bare minimum"; the judge is framed on "the platonic ideal of the extrapolated intent" |
 | judges | may route |
@@ -776,9 +794,9 @@ infrastructure and go after the owner's biggest frustration first.
 | verification budget | per intake class |
 | hidden probes | a held-out share |
 | judge model | the cheapest that passes calibration |
-| intent record | all of your words, bounded; pastes stored as material |
+| intent record | all of your words; "truncation + smart compression for long messages" |
 | standing preferences | quote plus address |
-| previews | always, light, 3–5 styles as multiple choice |
+| previews | "always previews, but not heavy previews" |
 | unattended picks | the calibrated judge |
 | gates vs judge | both must pass |
 | two people | the task's owner wins |
@@ -790,29 +808,79 @@ infrastructure and go after the owner's biggest frustration first.
 | promotion to workflows | "overengineering for now" |
 | nodes | "most users are 1 computer only. but this node approach to resource management is a powerful architectural primitive" |
 
-**Open:**
-1. The default placement once there is a second node (§8.5).
-2. Power policy on battery: should background todos wait for AC power?
+**Owner decisions, 2026-09-26, on the review:**
 
-**D-rows needed before code:**
-- channels: reverses OS plan §3.4's cuts of pub/sub topics and cross-root messaging,
+| fork | decision |
+| --- | --- |
+| what "one ledger" means | "One authority per fact" |
+| may a clock tick start saved Python | "Clock only creates a todo" |
+| first move | "Judge replay first" |
+| what bounds roots on one machine | "Node card admits work" |
+
+How revision 2 reconciles the two sets:
+- "Judges may route" stands, through the verdict enum.
+- The todo merge stands, after stage 0.
+- "Partition: wait on the lease, then re-dispatch" stands, and needs the claim protocol.
+- "The task's owner wins" is deferred until Yi has an owner principal: today `Lease.holder`
+  names a child, not a person.
+
+**Open:**
+1. Previews on trivial todos. The owner said "always", and the review would bind previews to
+   intake classes.
+2. The default placement once there is a second machine (§8.4).
+3. Whether background todos wait for AC power on battery.
+4. Whether the missed-tick default stays "once on wake" for every schedule.
+
+**D-rows owed before code:**
+- law 4 as "one authority per fact", with channels as buffers;
+- channels, reversing the OS plan's cut of pub/sub topics and cross-root messaging,
   "staged, not rejected";
-- the todo merge: a schema version bump, a migration, and fixtures;
-- judges may route: amends the deterministic-trigger rule;
-- the intent record and the compaction rule;
-- the always-on daemon;
-- nodes and placement URLs;
-- previews through `ask_user` options;
+- the clock creating todos only (law 6);
+- judges routing through the verdict enum;
+- the intent-record field and the summarizer rule;
+- node cards and admission;
+- previews' options payload;
+- the todo merge, with migration and fixtures;
+- the claim protocol, when stage 7 starts;
 - the YI_DESIGN §1.1 edit for one-in-one-out.
 
 ## 16. Not building
 
-- **promotion of repeated work into workflows**: the owner's call, "overengineering for now";
-- **Temporal-style replay of saved source**;
-- **a workflow engine, flow language or cluster scheduler**: plans stay Python, and
-  placement stays a driver;
-- **CloudEvents as the internal format**: conversion happens at the adapter boundary;
-- **a second store for signals, feedback or memory**: the JSONL is the ledger;
-- **permission scopes**: until the log shows the first overstep;
-- **new model tools**: everything lives on `rlm` and `yi`, and the fixed prompt prefix
-  stays unchanged.
+- promotion of repeated work into workflows ("overengineering for now");
+- Temporal-style replay of saved source, and clock-started definitions;
+- a channel as authority for anything already delivered;
+- free-form judge routing;
+- `deny_read` as the only probe hide;
+- `should_defer` as an overlap policy, since it gates heartbeats only
+  (`schedule/mod.rs:463-466`);
+- a workflow engine, flow language or cluster scheduler;
+- CloudEvents as the internal format;
+- permission scopes, until the log shows the first overstep;
+- new model tools: everything lives on `rlm` and `yi`.
+
+## 17. Review, 2026-09-26
+
+An adversarial review checked revision 1 against main at `36cd8eaa`. Every code citation it
+made was re-opened for this revision.
+
+| finding | verdict | change |
+| --- | --- | --- |
+| channels break "one ledger"; plans already journal separately | held | law 4 is "one authority per fact"; a channel is a buffer |
+| held-out probes leak through `kernel://` and `family://` | held | walled with `deny_url` as well as `deny_read` (§3.7) |
+| clock-started definitions run saved source | held | a tick only creates a todo (law 6, §5.3) |
+| `should_defer` is not an overlap policy | held | overlap and catch-up are new data on the subscription |
+| lease expiry does not re-dispatch; `AttemptId` is no fence | held | the claim protocol is named as new and deferred (§9.1) |
+| a laptop that sleeps cannot fire a clock | partly | demoable while awake; the missed-tick rule is data, defaulting to once on wake |
+| always-previews and a sampled judge are two policies | partly | both are owner decisions; one table per class (§7.6); trivial previews left open |
+| the intent record's summaries are restatements | held | the record holds addresses only; windows are display |
+| compaction's verbatim floor already exists | held | marked ✓; the fix moves to the summarizer's sections |
+| `covers` is write globs, not probe ownership | held | probe ownership is ✚; `covers` stays the write checker |
+| merging todo types first is the most irreversible first step | held | stage 0 (judge replay) first; the merge is stage 3 |
+| Node should merge into a card on a channel | rebutted | the review's own fix (bound roots by slots) makes the node the admission authority; its placement role is deferred |
+| queues are not a composition | held | claim protocol ⏸ |
+| cross-node reads are open while a lease has no scope | held | stated plainly in law 7 |
+| depth default is 1, not 3 | held | law 9 |
+| `@node` is not today's URL grammar | held | marked ⏸ |
+| the inventory was grounded on a branch | held | regrounded on main @ 36cd8eaa |
+| two owners have no principal | held | deferred |
+| judge calibration can overfit history; an exemplar can be copied | held | held-out calibration; blind-reader probes test use, and a judge alone never accepts |
