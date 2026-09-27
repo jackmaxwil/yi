@@ -205,6 +205,10 @@ pub struct App {
     turn_tools: u64,
     pub(crate) last_tool: Option<String>,
     pub(crate) wait: Option<(yi_types::event::Wait, Instant)>,
+    pub(crate) claims: Vec<yi_types::todo::Claim>,
+    turn_kinds: Vec<(&'static str, u32)>,
+    model_ms: u64,
+    model_since: Option<Instant>,
     pub(crate) pen: Option<crate::pen::Pen>,
     turn_tokens: crate::status::TurnTokens,
     turn_cost: f64,
@@ -308,6 +312,10 @@ impl App {
             turn_tools: 0,
             last_tool: None,
             wait: None,
+            claims: Vec::new(),
+            turn_kinds: Vec::new(),
+            model_ms: 0,
+            model_since: None,
             pen: None,
             turn_tokens: crate::status::TurnTokens::default(),
             turn_cost: 0.0,
@@ -467,7 +475,11 @@ impl App {
     /// paints through `paint_pane`, which never saw the port, so its HUD stayed empty.
     pub fn sync_port(&mut self, port: Option<&dyn SessionPort>) {
         self.plan_progress = port.and_then(|port| port.plan_progress());
-        self.todos = port.and_then(|port| port.todo_list());
+        let todos = port.and_then(|port| port.todo_list());
+        if let Some(claims) = port.and_then(|port| port.claims(todos != self.todos)) {
+            self.claims = claims;
+        }
+        self.todos = todos;
         // ponytail: an idle console pane folds its list on the next event, not at the deadline.
         self.todo_clock.observe(self.todos.as_ref(), Instant::now());
     }
@@ -628,6 +640,23 @@ impl App {
         )
     }
 
+    pub(crate) fn count_kind(&mut self, name: &str) {
+        let verb = match name {
+            "read" | "ls" | "document" | "get_context" => "read",
+            "grep" | "glob" | "find" => "searched",
+            "web_search" | "fetch" => "fetched",
+            "edit" | "write" => "edited",
+            "bash" => "ran",
+            "ipython" => "computed",
+            "todo" | "plan" => return,
+            _ => "used",
+        };
+        match self.turn_kinds.iter_mut().find(|(kind, _)| *kind == verb) {
+            Some((_, count)) => *count = count.saturating_add(1),
+            None => self.turn_kinds.push((verb, 1)),
+        }
+    }
+
     fn tool_state(&self, name: &str) -> OrbState {
         match name {
             "read" | "ls" | "document" | "get_context" => OrbState::Reading,
@@ -678,6 +707,7 @@ impl App {
             }
             AgentEvent::MessageStart { message } => {
                 if let AgentMessage::Assistant { .. } = &message {
+                    self.model_since = Some(Instant::now());
                     return self.streaming = Some(message);
                 }
                 let attribution = message.attribution();
@@ -724,6 +754,9 @@ impl App {
             AgentEvent::MessageEnd { message } => {
                 self.streaming = None;
                 self.pen = None;
+                if let Some(since) = self.model_since.take() {
+                    self.model_ms = self.model_ms.saturating_add(elapsed_ms(since));
+                }
                 if matches!(self.wait, Some((yi_types::event::Wait::Retry { .. }, _))) {
                     self.wait = None;
                 }
@@ -894,6 +927,9 @@ impl App {
         self.esc_armed_at = None;
         self.turn_started = Instant::now();
         self.turn_tools = 0;
+        self.turn_kinds.clear();
+        self.model_ms = 0;
+        self.model_since = None;
         self.last_tool = None;
         self.turn_tokens = crate::status::TurnTokens::default();
         self.turn_cost = 0.0;
@@ -911,18 +947,36 @@ impl App {
             return;
         }
         let tools = usize::try_from(self.turn_tools).unwrap_or(usize::MAX);
-        let mut text = format!(
-            "{} · {} · {} in / {} out",
-            crate::cell::count_label(tools, "tool"),
-            crate::cell::elapsed_label(elapsed_ms(self.turn_started)),
+        let kinds: Vec<String> = self
+            .turn_kinds
+            .iter()
+            .map(|(verb, count)| format!("{verb} {count}"))
+            .collect();
+        let head = if kinds.is_empty() {
+            crate::cell::count_label(tools, "tool")
+        } else {
+            kinds.join(" · ")
+        };
+        let elapsed = elapsed_ms(self.turn_started);
+        let mut text = format!("{head} · {}", crate::cell::elapsed_label(elapsed));
+        if self.model_ms > 0 && elapsed > 0 {
+            text.push_str(&format!(" · model {}%", self.model_ms * 100 / elapsed));
+        }
+        text.push_str(&format!(
+            " · {} in / {} out",
             crate::status::fmt_tokens(input),
             crate::status::fmt_tokens(output),
-        );
+        ));
         if cached > 0 {
             text.push_str(&format!(" · {}% cached", cached * 100 / input.max(1)));
         }
         if self.turn_cost > 0.0 {
             text.push_str(&format!(" · ${:.3}", self.turn_cost));
+        }
+        let observed = self.claims.iter().filter(|c| c.observed.is_some()).count();
+        if self.claims.len() > observed {
+            let claimed = self.claims.len() - observed;
+            text.push_str(&format!(" · done {observed} observed, {claimed} claimed"));
         }
         self.commit_cell(&Cell::Footer { text });
     }

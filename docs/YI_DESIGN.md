@@ -583,8 +583,11 @@ A worktree todo needs a contract; it is Done only via acceptance or as `Accepted
 - The `todo` tool keeps a session list of `custom{todo}` entries. With a plan open at depth 0 the
   list is the plan's view, re-projected by `Mirror` after each op; `todo start|done` on a plan item
   is the owner's plan op, any other change to one is `TodoError::Mirrored`.
+- A done todo's evidence is held against the ledger for display only: it is observed when a span
+  it quotes in backticks appears verbatim in a recorded call's arguments or output, and claimed
+  otherwise (`todo::claims`). Nothing is refused (D255); the HUD marks claimed rows.
 - Owner: [`schedule.rs`](../crates/runtime/src/plan/schedule.rs). Settled by: D224, D225, D226,
-  D229.
+  D229, D262.
 
 ## 14. Lane
 A lane is a git worktree slot, leased from a per-repository pool and handed back by move.
@@ -707,7 +710,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 `tool_call_update`, `state_update`, `usage_update`, `terminal_update`), passes unknown kinds through
 as `Extension`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
 `_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, 512 entries per frame),
-`_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
+`_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
 `_yi/subagent_update`, `_yi/heartbeat_changed`, `_yi/compaction` (replay only), `_yi/<custom_type>`.
 
 `yi serve` is a supervisor on `~/.yi/daemon.sock` (mode 0600): one `yi acp --cwd <root>` worker

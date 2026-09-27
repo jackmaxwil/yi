@@ -376,7 +376,7 @@ fn a_turn_ends_with_a_dim_footer() -> TestResult {
     let rows = flat(&app.take_commits());
     let footer = rows
         .iter()
-        .find(|r| r.starts_with("  ↳ 1 tool · "))
+        .find(|r| r.starts_with("  ↳ ran 1 · "))
         .ok_or_else(|| format!("no footer: {rows:?}"))?;
     assert!(footer.contains("3K in / 620 out · 64% cached"), "{footer}");
     Ok(())
@@ -419,5 +419,66 @@ fn injected_text_takes_one_callout_shape_and_a_run_is_one_block() -> TestResult 
         flat(&notice.lines(80, &theme, TranscriptMode::Thinking, 0)),
         vec!["  ▌ ⚑ This task has outgrown one-shot handling; write the plan now."]
     );
+    Ok(())
+}
+
+/// Dies with "3 tools" for a turn that read, edited and ran: the receipt now says which work
+/// the turn did and how much of its time the model took.
+#[test]
+fn a_turn_receipt_names_its_kinds_of_work_and_the_model_share() -> TestResult {
+    let mut app = app();
+    app.reduce_agent(AgentEvent::AgentStart);
+    let reply = || AgentMessage::Assistant {
+        content: Vec::new(),
+        api: "faux".to_owned(),
+        provider: "faux".to_owned(),
+        model: "faux-1".to_owned(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: Usage::zero(),
+        stop_reason: StopReason::Stop,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 0,
+    };
+    app.reduce_agent(AgentEvent::MessageStart { message: reply() });
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    app.reduce_agent(AgentEvent::MessageEnd { message: reply() });
+    for (id, name) in [("c1", "read"), ("c2", "todo"), ("c3", "edit")] {
+        app.reduce_agent(AgentEvent::ToolExecutionStart {
+            tool_call_id: id.to_owned(),
+            tool_name: name.to_owned(),
+            args: json!({ "path": "src/lib.rs" }),
+        });
+        app.reduce_agent(AgentEvent::ToolExecutionEnd {
+            tool_call_id: id.to_owned(),
+            tool_name: name.to_owned(),
+            result: ToolResult {
+                content: Vec::new(),
+                details: serde_json::Value::Null,
+                usage: None,
+                added_tool_names: None,
+                terminate: None,
+            },
+            is_error: false,
+        });
+    }
+    ran(&mut app, "c4", "ok");
+    app.reduce_agent(AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    let rows = flat(&app.take_commits());
+    let footer = rows
+        .iter()
+        .find(|r| r.starts_with("  ↳ "))
+        .ok_or_else(|| format!("no footer: {rows:?}"))?;
+    assert!(
+        footer.starts_with("  ↳ read 1 · edited 1 · ran 1 · "),
+        "{footer}"
+    );
+    assert!(footer.contains(" · model "), "{footer}");
     Ok(())
 }

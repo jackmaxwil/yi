@@ -57,7 +57,7 @@ fn text(line: &ratatui::text::Line<'_>) -> String {
 
 fn rows(list: &TodoList, full: bool) -> Result<(String, Vec<String>), Box<dyn Error>> {
     let (title, rows) =
-        todo_rows(Some(list), full, true, &theme()).ok_or("open work must render")?;
+        todo_rows(Some(list), full, true, &[], &theme()).ok_or("open work must render")?;
     Ok((title, rows.iter().map(text).collect()))
 }
 
@@ -86,10 +86,10 @@ fn the_block_numbers_open_work_and_hides_a_finished_list() -> TestResult {
     );
     let finished = list(vec![item("read", TodoStateName::Done)?])?;
     assert!(
-        todo_rows(Some(&finished), true, true, &theme()).is_none(),
+        todo_rows(Some(&finished), true, true, &[], &theme()).is_none(),
         "a finished list leaves the HUD alone"
     );
-    assert!(todo_rows(None, true, true, &theme()).is_none());
+    assert!(todo_rows(None, true, true, &[], &theme()).is_none());
     Ok(())
 }
 
@@ -243,7 +243,7 @@ fn under_a_goal_the_items_sit_beneath_their_title() -> TestResult {
 /// `▶` on the step and `now:` on the plan, as though work were under way.
 #[test]
 fn a_step_left_running_reads_as_paused_once_the_turn_ends() -> TestResult {
-    let (_, idle) = todo_rows(Some(&ten(0)?), true, false, &theme()).ok_or("open work")?;
+    let (_, idle) = todo_rows(Some(&ten(0)?), true, false, &[], &theme()).ok_or("open work")?;
     let first = idle.first().map(text).ok_or("no rows")?;
     assert_eq!(first, "1. ▷ item 1");
     let plan = yi_tui::hud::PlanProgress {
@@ -253,5 +253,38 @@ fn a_step_left_running_reads_as_paused_once_the_turn_ends() -> TestResult {
     };
     assert_eq!(plan.line(false), "Plan 1/3 · paused: rebase");
     assert_eq!(plan.line(true), "Plan 1/3 · now: rebase");
+    Ok(())
+}
+
+/// Dies with every done row alike: evidence the ledger holds and evidence nothing checks drew
+/// the same `✓`, so a circular close looked finished.
+#[test]
+fn a_done_row_whose_evidence_nothing_checks_says_claimed() -> TestResult {
+    let open = list(vec![
+        item("run the suite", TodoStateName::Done)?,
+        item("write the report", TodoStateName::Done)?,
+        item("land it", TodoStateName::Running)?,
+    ])?;
+    let claims = [
+        yi_types::todo::Claim {
+            label: "run the suite".to_owned(),
+            observed: Some("c1".to_owned()),
+        },
+        yi_types::todo::Claim {
+            label: "write the report".to_owned(),
+            observed: None,
+        },
+    ];
+    let (title, rows) = todo_rows(Some(&open), true, true, &claims, &theme()).ok_or("open")?;
+    let rows: Vec<String> = rows.iter().map(text).collect();
+    assert_eq!(title, "Todos 2/3 · 1 observed · 1 claimed");
+    assert_eq!(
+        rows,
+        vec![
+            "1. ✓ run the suite",
+            "2. ✓ write the report  claimed",
+            "3. ▶ land it"
+        ]
+    );
     Ok(())
 }

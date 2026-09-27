@@ -39,6 +39,8 @@ pub struct RemotePort {
     leaf: Option<String>,
     goal: Option<GoalView>,
     todos: Option<TodoList>,
+    claims: Vec<yi_types::todo::Claim>,
+    plan: Option<yi_tui::hud::PlanProgress>,
 }
 
 impl RemotePort {
@@ -61,6 +63,14 @@ impl RemotePort {
 
     pub fn set_todos(&mut self, todos: Option<TodoList>) {
         self.todos = todos;
+    }
+
+    pub fn set_claims(&mut self, claims: Vec<yi_types::todo::Claim>) {
+        self.claims = claims;
+    }
+
+    pub fn set_plan(&mut self, plan: Option<yi_tui::hud::PlanProgress>) {
+        self.plan = plan;
     }
 }
 
@@ -114,6 +124,14 @@ impl SessionPort for RemotePort {
     fn todo_list(&self) -> Option<TodoList> {
         self.todos.clone()
     }
+
+    fn plan_progress(&self) -> Option<yi_tui::hud::PlanProgress> {
+        self.plan.clone()
+    }
+
+    fn claims(&self, _list_changed: bool) -> Option<Vec<yi_types::todo::Claim>> {
+        Some(self.claims.clone())
+    }
 }
 
 /// A `_yi/replay` frame's envelope; the entries decode separately so a bad one is counted.
@@ -145,6 +163,8 @@ pub enum Decoded {
     Replay(Box<Replay>, Vec<Entry>),
     Goal(Option<GoalView>),
     Todo(Option<TodoList>),
+    Claims(Vec<yi_types::todo::Claim>),
+    Plan(Option<yi_tui::hud::PlanProgress>),
     Config(Config),
     Child(ChildUpdate),
     Workdir {
@@ -235,6 +255,22 @@ pub fn decode(extension: &AcpExtensionUpdate) -> Result<Decoded, Malformed> {
         "_yi/todo" => Ok(Decoded::Todo(fields.get("list").and_then(|value| {
             serde_json::from_value::<TodoList>(value.clone()).ok()
         }))),
+        "_yi/claims" => Ok(Decoded::Claims(
+            fields
+                .get("claims")
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or_default(),
+        )),
+        "_yi/plan_progress" => Ok(Decoded::Plan(fields.get("plan").and_then(|plan| {
+            Some(yi_tui::hud::PlanProgress {
+                done: usize::try_from(plan.get("done")?.as_u64()?).ok()?,
+                total: usize::try_from(plan.get("total")?.as_u64()?).ok()?,
+                running: plan
+                    .get("running")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            })
+        }))),
         "_yi/config" => {
             let options = fields.get("configOptions").cloned().unwrap_or(Value::Null);
             let options =
@@ -258,7 +294,13 @@ pub fn writes_transcript(update: &yi_types::acp::AcpSessionUpdate) -> bool {
         AcpSessionUpdate::StateUpdate(_) | AcpSessionUpdate::UsageUpdate { .. } => false,
         AcpSessionUpdate::Extension(extension) => !matches!(
             extension.session_update.as_str(),
-            "_yi/config" | "_yi/workdir" | "_yi/goal" | "_yi/todo" | "_yi/notice"
+            "_yi/config"
+                | "_yi/workdir"
+                | "_yi/goal"
+                | "_yi/todo"
+                | "_yi/notice"
+                | "_yi/claims"
+                | "_yi/plan_progress"
         ),
         _ => true,
     }
