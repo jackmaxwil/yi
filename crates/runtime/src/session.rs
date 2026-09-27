@@ -54,6 +54,7 @@ struct Shared {
     effort: Mutex<Effort>,
     messages: Mutex<Vec<AgentMessage>>,
     steer: Mutex<VecDeque<Queued>>,
+    mail: Arc<tokio::sync::Notify>,
     follow_up: Mutex<Vec<AgentMessage>>,
     tools: Mutex<Vec<Arc<dyn yi_loop::AgentTool>>>,
     status: Mutex<Status>,
@@ -161,6 +162,7 @@ impl AgentSession {
                 ),
                 messages: Mutex::new(Vec::new()),
                 steer: Mutex::new(VecDeque::new()),
+                mail: Arc::default(),
                 follow_up: Mutex::new(Vec::new()),
                 tools: Mutex::new(Vec::new()),
                 status: Mutex::new(Status::Idle),
@@ -807,6 +809,7 @@ impl AgentSession {
             taken
                 .into_iter()
                 .for_each(|entry| run::push(&mut queue, entry));
+            self.shared.mail.notify_waiters();
         }
         let follow_ups = dead
             .shared

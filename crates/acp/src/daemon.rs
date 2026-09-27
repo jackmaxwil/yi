@@ -117,6 +117,29 @@ pub fn read_ledger(socket: &std::path::Path) -> Option<DaemonLedger> {
     serde_json::from_str::<DaemonLedger>(&text).ok()
 }
 
+fn spawn_ledger_writer(
+    path: PathBuf,
+) -> (
+    std::sync::mpsc::Sender<DaemonLedger>,
+    std::thread::JoinHandle<()>,
+) {
+    let (sender, snapshots) = std::sync::mpsc::channel::<DaemonLedger>();
+    let writer = std::thread::spawn(move || {
+        let tmp = path.with_extension("json.tmp");
+        while let Ok(mut ledger) = snapshots.recv() {
+            while let Ok(newer) = snapshots.try_recv() {
+                ledger = newer;
+            }
+            if let Ok(text) = serde_json::to_string(&ledger)
+                && std::fs::write(&tmp, text).is_ok()
+            {
+                let _ = std::fs::rename(&tmp, &path);
+            }
+        }
+    });
+    (sender, writer)
+}
+
 fn load_ledger(socket: &std::path::Path) -> HashMap<String, SessionEntry> {
     read_ledger(socket)
         .map(|ledger| {
@@ -156,6 +179,7 @@ fn now_ms() -> u64 {
 /// stdio). Workers outlive client connections, so schedulers fire with nobody attached.
 struct Supervisor {
     options: DaemonOptions,
+    ledger: std::sync::mpsc::Sender<DaemonLedger>,
     workers: HashMap<String, Worker>,
     clients: HashMap<ClientId, mpsc::Sender<String>>,
     /// session_id → routing and ledger state.
@@ -199,14 +223,7 @@ impl Supervisor {
                 .map(|(id, entry)| (id.clone(), entry.to_stored()))
                 .collect(),
         };
-        let path = ledger_path(&self.options.socket);
-        let tmp = path.with_extension("json.tmp");
-        let Ok(text) = serde_json::to_string(&ledger) else {
-            return;
-        };
-        if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(&tmp, &path);
-        }
+        let _ = self.ledger.send(ledger);
     }
 
     fn mark_seen(&mut self, client: ClientId, id: Option<Value>, frame: &Value) {
@@ -709,9 +726,11 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
             std::os::unix::fs::PermissionsExt::from_mode(0o600),
         );
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Input>();
+        let (ledger, ledger_writer) = spawn_ledger_writer(ledger_path(&options.socket));
         let mut supervisor = Supervisor {
             sessions: load_ledger(&options.socket),
             options,
+            ledger,
             workers: HashMap::new(),
             clients: HashMap::new(),
             requests: HashMap::new(),
@@ -768,7 +787,10 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
             let _ = worker.child.kill().await;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let _ = std::fs::remove_file(&supervisor.options.socket);
+        let socket = supervisor.options.socket.clone();
+        drop(supervisor);
+        let _flushed = ledger_writer.join();
+        let _ = std::fs::remove_file(&socket);
         0
     })
 }
@@ -781,6 +803,43 @@ pub fn daemon_protocol_version() -> u16 {
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
+
+    #[test]
+    fn the_ledger_writer_lands_the_newest_snapshot_and_flushes_on_close() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("yi-ledger-writer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+        let path = dir.join("daemon.ledger.json");
+        let (ledger, writer) = spawn_ledger_writer(path.clone());
+        for unseen in 0..200 {
+            let entry = DaemonLedgerEntry {
+                cwd: "/repo".to_owned(),
+                unseen,
+                last_state: None,
+                last_event_ms: 0,
+                name: None,
+                extra: BTreeMap::new(),
+            };
+            let sessions = std::iter::once(("s1".to_owned(), entry)).collect();
+            ledger
+                .send(DaemonLedger { sessions })
+                .map_err(|error| error.to_string())?;
+        }
+        drop(ledger);
+        writer.join().map_err(|_| "writer panicked".to_owned())?;
+        let text = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+        let stored: DaemonLedger =
+            serde_json::from_str(&text).map_err(|error| error.to_string())?;
+        assert_eq!(
+            stored.sessions.get("s1").map(|entry| entry.unseen),
+            Some(199)
+        );
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "the temp file was renamed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn a_client_that_stops_reading_is_dropped_at_the_queue_cap() -> Result<(), String> {

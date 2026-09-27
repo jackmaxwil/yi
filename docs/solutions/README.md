@@ -239,7 +239,9 @@ edited by hand.
 - [D262](adr/d262.md) - a done todo's evidence is held against the session ledger for display only
 - [D263](adr/d263.md) - the console's full sidebar is an inbox
 - [D264](adr/d264.md) - the console's session diff pane becomes Review, keeping ⌘G
-- [D265](adr/d265.md) - the console's Tape shows a session's ledger over wall time
-- [D266](adr/d266.md) - the stack's four gaps close
+- [D267](adr/d267.md) - the console's Tape shows a session's ledger over wall time
+- [D265](adr/d265.md) - a wait wakes on the event it waits for, not on a timer
+- [D266](adr/d266.md) - a resume and the session list stop paying for what nobody reads
+- [D271](adr/d271.md) - the stack's four gaps close
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

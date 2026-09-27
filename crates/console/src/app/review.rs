@@ -2,8 +2,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;
 use yi_tui::port::SessionPort;
 use yi_types::acp::AcpSessionUpdate;
+use yi_types::tape::MarkKind;
 
-use crate::model::{PaneContent, SessionId};
+use crate::model::{PaneContent, SessionId, SessionStatus};
 
 use super::App;
 
@@ -19,6 +20,11 @@ impl App {
         let Some(session) = self.on_review() else {
             return;
         };
+        let armed = self
+            .state
+            .diffs
+            .get_mut(&session)
+            .and_then(|diff| diff.land_armed.take());
         match key.code {
             KeyCode::Char('s') => {
                 if let Some(PaneContent::SessionDiff { scope, .. }) =
@@ -51,20 +57,36 @@ impl App {
                         Some((path, lines));
                 }
             }
-            KeyCode::Char('l') => {
-                let title = self
+            KeyCode::Char('l') => match armed {
+                Some(title) => {
+                    let chat = self.state.chats_mut(&session).into_iter().next();
+                    let sent = chat.map(|chat| {
+                        chat.port
+                            .queue
+                            .push(super::port::PortRequest::Slash(format!("land {title}")));
+                    });
+                    self.note(if sent.is_some() {
+                        "landing: the gate's jobs show in the status row as they run"
+                    } else {
+                        "no chat holds this session, so nothing was sent to land"
+                    });
+                }
+                None => match self
                     .state
                     .sessions
                     .get(&session)
-                    .map(crate::model::SessionRow::label)
-                    .unwrap_or_default();
-                if let Some(chat) = self.state.chats_mut(&session).into_iter().next() {
-                    chat.port
-                        .queue
-                        .push(super::port::PortRequest::Slash(format!("land {title}")));
-                }
-                self.note("landing: the gate's jobs show in the status row as they run");
-            }
+                    .and_then(|row| row.name.clone())
+                {
+                    Some(title) => {
+                        self.state
+                            .diffs
+                            .entry(session.clone())
+                            .or_default()
+                            .land_armed = Some(title);
+                    }
+                    None => self.note("this session has no title yet: /land <title> in its chat"),
+                },
+            },
             _ => {}
         }
         self.dirty = true;
@@ -93,6 +115,14 @@ impl App {
     }
 
     pub(super) fn tape_key(&mut self, key: KeyEvent) {
+        let busy = match self.state.focused_pane().map(|pane| &pane.content) {
+            Some(PaneContent::Tape { session, .. }) => {
+                self.state.sessions.get(session).is_some_and(|row| {
+                    matches!(row.status, SessionStatus::Working | SessionStatus::Blocked)
+                })
+            }
+            _ => return,
+        };
         let Some(PaneContent::Tape {
             session,
             tape,
@@ -106,7 +136,7 @@ impl App {
         let chosen = tape
             .as_ref()
             .and_then(|tape| tape.marks.get(*cursor))
-            .filter(|mark| mark.kind == yi_types::tape::MarkKind::User)
+            .filter(|mark| mark.kind == MarkKind::User)
             .map(|mark| mark.entry.clone());
         let session = session.clone();
         let confirmed = std::mem::take(armed) && key.code == KeyCode::Char('u');
@@ -118,6 +148,10 @@ impl App {
             (KeyCode::Right, _) => {
                 *cursor = (*cursor + 1).min(marks.saturating_sub(1));
                 (None, None)
+            }
+            // Invariant: a rewind re-attaches the history a running turn is writing.
+            (KeyCode::Enter | KeyCode::Char('u'), Some(_)) if busy => {
+                (None, Some("a turn is running: rewind once it ends"))
             }
             (KeyCode::Enter, Some(entry)) => (
                 Some(super::port::PortRequest::Rewind(entry)),
@@ -138,7 +172,7 @@ impl App {
                     ),
                 )
             }
-            (KeyCode::Enter | KeyCode::Char('u'), None) => {
+            (KeyCode::Enter | KeyCode::Char('u'), None) if marks > 0 => {
                 (None, Some("only a turn you typed is a place to rewind to"))
             }
             _ => (None, None),
@@ -165,9 +199,22 @@ impl App {
             } = &mut pane.content
                 && bound == session
             {
-                *cursor = fresh
+                let marks = tape.as_ref().map_or(&[][..], |tape| tape.marks.as_slice());
+                let chosen = marks
+                    .get(*cursor)
+                    .filter(|_| cursor.saturating_add(1) < marks.len());
+                let last = fresh
                     .as_ref()
                     .map_or(0, |tape| tape.marks.len().saturating_sub(1));
+                *cursor = chosen
+                    .and_then(|mark| {
+                        fresh
+                            .as_ref()?
+                            .marks
+                            .iter()
+                            .position(|kept| kept.entry == mark.entry)
+                    })
+                    .unwrap_or(last);
                 tape.clone_from(&fresh);
             }
         }

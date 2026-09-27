@@ -187,7 +187,16 @@ pub fn send_with_retry(
                 if attempt < policy.max_attempts && started.elapsed() < policy.max_total_wall {
                     let delay = retry_delay(attempt, None, None, &policy);
                     attempt = attempt.saturating_add(1);
-                    let cause: String = error.to_string().chars().take(80).collect();
+                    // Incident: ureq writes the URL first, so an 80-char cut kept it and lost why.
+                    let text = error.to_string();
+                    let url = match &error {
+                        ureq::Error::Transport(transport) => {
+                            transport.url().map(|url| format!("{url}: "))
+                        }
+                        ureq::Error::Status(..) => None,
+                    };
+                    let reason = url.and_then(|url| text.strip_prefix(&url)).unwrap_or(&text);
+                    let cause: String = reason.chars().take(80).collect();
                     announce(on_retry, attempt, &policy, delay, cause);
                     if let Some(delay) = delay {
                         std::thread::sleep(delay);
