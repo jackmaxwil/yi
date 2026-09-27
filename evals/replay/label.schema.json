@@ -20,5 +20,6 @@
   "quote": {
    "type": "string"
   }
- }
+ },
+ "additionalProperties": false
 }
