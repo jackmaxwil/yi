@@ -606,6 +606,9 @@ impl AgentSession {
         if let Ok(mut slot) = self.shared.store.lock() {
             *slot = Some(store);
         }
+        if let Some(todos) = self.todos() {
+            todos.rehydrate();
+        }
         if let (Some(telemetry), Some((file, id))) = (self.telemetry(), sidecar) {
             telemetry.bind(&file, &id);
         }

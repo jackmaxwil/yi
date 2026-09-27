@@ -246,5 +246,6 @@ edited by hand.
 - [D273](adr/d273.md) - a crate whose integration tests are many links them as one binary
 - [D259](adr/d259.md) - judge replay is stage 0's falsification test
 - [D274](adr/d274.md) - a macOS build of a release-derived profile (`release`, `dist`) links without...
+- [D252](adr/d252.md) - a session's plan and todos are its own
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

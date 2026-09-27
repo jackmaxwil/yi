@@ -1,3 +1,4 @@
+use crate::own::own;
 use crate::scratch;
 use crate::support;
 use scratch::Scratch;
@@ -3119,6 +3120,7 @@ async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> Test
         cwd: Some(cwd.to_path_buf()),
         wake_parent: None,
     })?;
+    own(&harness.store, "adjudication")?;
     harness
         .host
         .spawn(
@@ -3180,6 +3182,7 @@ async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResul
         cwd: Some(cwd.to_path_buf()),
         wake_parent: None,
     })?;
+    own(&harness.store, "adjudication")?;
     yi_session::lock_session(&harness.store).set_goal(yi_types::goal::Goal {
         objective: "ship the retry fix".to_owned(),
         status: yi_types::goal::GoalStatus::Active,
