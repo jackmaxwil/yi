@@ -239,6 +239,12 @@ edited by hand.
 - [D263](adr/d263.md) - the dist binary links only the Unicode tables bat's grammars use
 - [D265](adr/d265.md) - a wait wakes on the event it waits for, not on a timer
 - [D266](adr/d266.md) - a resume and the session list stop paying for what nobody reads
-- [D268](adr/d268.md) - a macOS build of a release-derived profile (`release`, `dist`) links without...
+- [D268](adr/d268.md) - nothing between a prompt and its first request waits on work the request...
+- [D270](adr/d270.md) - the global harness store is written only by the host
+- [D269](adr/d269.md) - a kernel venv that passed its live import check is trusted by a stamp until...
+- [D272](adr/d272.md) - a streaming answer renders past its settled prefix only
+- [D273](adr/d273.md) - a crate whose integration tests are many links them as one binary
+- [D259](adr/d259.md) - judge replay is stage 0's falsification test
+- [D274](adr/d274.md) - a macOS build of a release-derived profile (`release`, `dist`) links without...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

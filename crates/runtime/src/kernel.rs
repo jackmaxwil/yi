@@ -218,7 +218,6 @@ pub(crate) fn kernel_profile(
     let mut profile = sandbox.clone();
     // Only what the kernel side writes under ~/.yi; the venv stays read-only.
     let yi = home.join(".yi");
-    profile.writable.push(yi.join("harness"));
     profile.writable.push(yi.join("mcp"));
     // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling.
     profile
@@ -362,6 +361,7 @@ impl KernelService {
                 .to_string_lossy()
                 .into_owned(),
         ));
+        env.push(("RLM_GLOBAL_HARNESS_HOST".to_owned(), "1".to_owned()));
         // Set but never read by Python; the host-side depth check is
         // authoritative (design §9).
         env.push(("RLM_DEPTH".to_owned(), "0".to_owned()));
@@ -384,6 +384,7 @@ impl KernelService {
     }
 
     async fn ensure_inner(&self) -> Result<Arc<KernelManager>, String> {
+        let _span = yi_types::trace::span("kernel.ensure");
         // Only an on-disk session is revivable (§9). Incident: `/new`, `switch_session` and
         // `fork` swap the store under a live kernel, which kept writing under the old id.
         let key = self.options.snapshot_key.as_ref().and_then(|key| key());
@@ -450,10 +451,12 @@ impl KernelService {
             .iter()
             .map(|(import_name, _)| *import_name)
             .collect();
+        let booting = yi_types::trace::span("kernel.bootstrap_cell");
         let bootstrap = manager
             .execute(&rlm_bootstrap_code(&imports), ExecuteOptions::default())
             .await
             .map_err(|error| error.to_string())?;
+        drop(booting);
         if bootstrap.status != yi_types::kernel::ExecuteStatus::Ok {
             let mut details = bootstrap.stderr;
             if let Some(error) = bootstrap.error {

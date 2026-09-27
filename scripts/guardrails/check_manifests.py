@@ -5,7 +5,7 @@ frozen at 0.1.0 against a root 0.79.1.
 Also the crate-root string_slice deny (D109): a root carries the attribute unless the crate is
 named in the shrink-only baselines/string_slice_pending.json, and --update may only drop names
 from that list."""
-import json, sys, tomllib, pathlib
+import json, re, sys, tomllib, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, BASE, fail
 
@@ -59,6 +59,16 @@ for m in manifests:
             errs.append(f"{m}: dep {dep} must be {{ workspace = true }} (centralized deps, D31)")
         if name != "yi-types" and dep in ("serde", "serde_derive"):
             errs.append(f"{m}: dep {dep}: serde derives live in yi-types only (.ruler/050-schema.md)")
+    # autotests = false folds a crate's tests into one binary per [[test]] root; a file that
+    # no root names would compile and run nowhere, silently.
+    if pkg.get("autotests") is False:
+        roots = [m.parent / target["path"] for target in t.get("test", [])]
+        named = {p.resolve() for p in roots} | {
+            (r.parent / f"{mod}.rs").resolve()
+            for r in roots for mod in re.findall(r"^mod (\w+);", r.read_text(), re.M)}
+        for f in sorted((m.parent / "tests").glob("*.rs")):
+            if f.resolve() not in named:
+                errs.append(f"{f.relative_to(ROOT)}: autotests = false and no [[test]] root declares `mod {f.stem};`")
     if folder in unlinted and folder not in pending:
         errs.append(f"{crate_root(folder).relative_to(ROOT)}: missing {DENY} (a crate root carries it unless the crate is in baselines/string_slice_pending.json, D109)")
 for folder in sorted(pending - {m.parent.name for m in manifests}):

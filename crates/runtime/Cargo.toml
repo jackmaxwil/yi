@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+# One test binary, not one per file: tests/integration.rs names the modules.
+autotests = false
 
 [lints]
 workspace = true
@@ -25,3 +27,17 @@ globset = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+
+# The two harnesses a guardrail runs by name (`--test behavior`, `--test request_budget`)
+# keep their own binaries; everything else is a module of `integration`.
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[[test]]
+name = "behavior"
+path = "tests/behavior.rs"
+
+[[test]]
+name = "request_budget"
+path = "tests/request_budget.rs"
