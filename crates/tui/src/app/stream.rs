@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use ratatui::text::Line;
 use serde_json::Value;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult, apply};
-use yi_types::message::AgentMessage;
+use yi_types::message::{AgentMessage, Content};
 
 use super::{App, TaskState, UiEvent};
 use crate::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
@@ -52,14 +52,42 @@ impl Pacing {
     }
 }
 
-/// The byte of `tail` to cut at so the rest renders within `budget` rows, or `None` when it
-/// fits. No `stable_cut` boundary is guaranteed: one paragraph can outgrow the screen.
+#[derive(Default, Clone)]
+pub(crate) struct Seam {
+    pub(crate) stub: Option<String>,
+    pub(crate) mid: bool,
+}
+
+impl Seam {
+    fn after(cut: &Cut) -> Self {
+        Self {
+            stub: cut.stub.clone(),
+            mid: cut.word && !cut.line,
+        }
+    }
+}
+
+/// Incident: rendering a cut block's whole head cost 1.3 ms a frame at 20 KB, so a slice renders
+/// under one line, [`Cut::stub`]: the item before the cut, or the item or quote it falls in.
+#[derive(Clone)]
+struct Cut {
+    at: usize,
+    spaced: bool,
+    stub: Option<String>,
+    word: bool,
+    /// At the start of a line, where the text left keeps its own structure.
+    line: bool,
+}
+
+/// Where to cut `tail` (rendered under `context`) so the rest fits `budget` rows; `None` when it
+/// fits or nothing can be cut. No boundary is guaranteed: a paragraph can outgrow the screen.
 fn overflow_cut(
+    context: &str,
     tail: &str,
     budget: usize,
     width: usize,
     rows: impl Fn(&str) -> usize,
-) -> Option<usize> {
+) -> Option<Cut> {
     // Two scans before the render, the expensive half, which runs on every delta rather than
     // once a frame: text filling neither the budget's rows nor its columns cannot overrun.
     if tail.lines().count().max(tail.len() / width.max(1)) <= budget {
@@ -67,42 +95,204 @@ fn overflow_cut(
     }
     // An open fence has no word boundary worth cutting on — broken open it
     // renders as an unterminated code block and its tail as prose.
-    if tail.matches("```").count() % 2 == 1 || rows(tail) <= budget {
+    if crate::markdown::open_fence(tail) {
         return None;
     }
-    // Incident: a cut through a table's body left every row after it as raw pipes.
-    let table = table_span(tail);
-    let breaks: Vec<usize> = tail
-        .match_indices(char::is_whitespace)
-        .map(|(at, ws)| at + ws.len())
-        .filter(|at| {
-            table
-                .as_ref()
-                .is_none_or(|span| *at <= span.start || *at > span.end)
-        })
+    let source = format!("{context}{tail}");
+    let from = context.len();
+    let breaks: Vec<Cut> = breaks(&source)
+        .into_iter()
+        .filter(|cut| cut.at > from)
         .collect();
+    if breaks.is_empty() {
+        return None;
+    }
+    let head = |at: usize| rows(source.get(..at).unwrap_or_default());
+    let total = rows(&source);
+    if total.saturating_sub(head(from)) <= budget {
+        return None;
+    }
     // Monotone in the cut, so the first break that fits is the least the reader
     // loses from the live region. Never `Equal`, so the search never succeeds.
     let index = breaks
-        .binary_search_by(|&at| {
-            if rows(tail.get(at..).unwrap_or_default()) <= budget {
+        .binary_search_by(|cut| {
+            if total.saturating_sub(head(cut.at)) <= budget {
                 Ordering::Greater
             } else {
                 Ordering::Less
             }
         })
         .unwrap_or_else(|index| index);
-    if index == breaks.len()
-        && let Some(span) = table
-    {
-        return (span.start > 0).then_some(span.start);
+    // Incident: `- top 0` cut after `top` dropped the `0`: the word after a cut must open a
+    // row, or the rows before it differ from the whole's (an inline span wraps inside itself).
+    let seam = |cut: &Cut| {
+        !cut.word || {
+            let rest = source.get(cut.at..).unwrap_or_default();
+            let word = rest.trim_start().find(char::is_whitespace);
+            let next = word.map_or(source.len(), |end| {
+                cut.at + (rest.len() - rest.trim_start().len()) + end
+            });
+            head(cut.at) < head(next)
+        }
+    };
+    let found = match breaks.get(index..).filter(|rest| !rest.is_empty()) {
+        None => breaks.iter().rev().find(|cut| !cut.word).cloned(),
+        // Cutting on that arbitrary word leaves the head on a half-empty row every screenful.
+        // The last word that fits the row the break lands on wraps the seam like any other.
+        Some(rest) => {
+            let filled = head(rest.first()?.at);
+            let fills = rest.partition_point(|cut| head(cut.at) <= filled);
+            let (row, later) = rest.split_at(fills);
+            row.iter().rev().chain(later).find(|cut| seam(cut)).cloned()
+        }
+    };
+    found.map(|cut| Cut {
+        at: cut.at - from,
+        ..cut
+    })
+}
+
+/// Incident: cuts inside `**…**`, after a bullet or in a table lost the markup. A forced cut
+/// lands between words of a top-level paragraph, item or quote, or at a block or item start.
+fn breaks(source: &str) -> Vec<Cut> {
+    use pulldown_cmark::{Event, Options, Parser, Tag};
+    let mut cuts: Vec<Cut> = Vec::new();
+    let mut prose: Vec<(std::ops::Range<usize>, Option<usize>, Option<String>)> = Vec::new();
+    let mut atomic: Vec<std::ops::Range<usize>> = Vec::new();
+    // The open top-level list: (start number, items seen).
+    let mut list: (Option<u64>, u64) = (None, 0);
+    let mut depth = 0usize;
+    // A block's range can start past its indent, and a cut there reads `\t```` as a fence.
+    let start = |at: usize, spaced: bool, stub: Option<String>| Cut {
+        at: crate::markdown::line_start(source, at),
+        spaced,
+        stub,
+        word: false,
+        line: true,
+    };
+    let parser = Parser::new_ext(
+        source,
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES,
+    );
+    for (event, range) in parser.into_offset_iter() {
+        match event {
+            Event::Start(tag) => {
+                match tag {
+                    Tag::Paragraph if depth == 0 => {
+                        cuts.push(start(range.start, true, None));
+                        prose.push((range, None, None));
+                    }
+                    Tag::BlockQuote(_) if depth == 0 => {
+                        cuts.push(start(range.start, true, None));
+                        let stub = format!(
+                            "{}> x  \n",
+                            crate::markdown::stub_prefix(source, range.start)
+                        );
+                        prose.push((range.clone(), Some(range.start), Some(stub)));
+                    }
+                    Tag::List(first) if depth == 0 => {
+                        cuts.push(start(range.start, true, None));
+                        list = (first, 0);
+                    }
+                    _ if depth == 0 => cuts.push(start(range.start, true, None)),
+                    Tag::Item if depth == 1 => {
+                        let number = list.0.map(|first| first.saturating_add(list.1));
+                        let before = (list.1 > 0).then(|| item_stub(source, range.start, list));
+                        list.1 += 1;
+                        if before.is_some() {
+                            cuts.push(start(range.start, false, before));
+                        }
+                        // A word cut inside it renders under its marker line ending in a hard break.
+                        let own = crate::markdown::item_line(source, range.start, number, "  \n");
+                        prose.push((range.clone(), Some(range.start), Some(own)));
+                    }
+                    Tag::Paragraph => {}
+                    _ => atomic.push(range),
+                }
+                depth += 1;
+            }
+            Event::End(_) => depth = depth.saturating_sub(1),
+            Event::Code(_) | Event::InlineHtml(_) => atomic.push(range),
+            _ => {}
+        }
     }
-    // Cutting on that arbitrary word leaves the head on a half-empty row every screenful.
-    // The last word that fits the row the break lands on wraps the seam like any other.
-    let rest = breaks.get(index..)?;
-    let head = rows(tail.get(..*rest.first()?).unwrap_or_default());
-    let fills = rest.partition_point(|&at| rows(tail.get(..at).unwrap_or_default()) <= head);
-    rest.get(fills.saturating_sub(1)).copied()
+    let inside = |at: usize, range: &std::ops::Range<usize>| range.start < at && at < range.end;
+    for (at, ws) in source.match_indices(char::is_whitespace) {
+        let at = at + ws.len();
+        let Some((_, block, stub)) = prose.iter().find(|(range, _, _)| inside(at, range)) else {
+            continue;
+        };
+        // An item's head must hold a word past its marker, or it renders as the bare marker.
+        let worded = block.is_none_or(|from| {
+            source
+                .get(from..at)
+                .is_some_and(|head| head.split_whitespace().nth(1).is_some())
+        });
+        // After a line's indent the text left would lose the indent a nested block needs.
+        let indented = source
+            .get(crate::markdown::line_start(source, at)..at)
+            .is_some_and(|lead| !lead.is_empty() && lead.trim().is_empty());
+        if worded && !indented && !atomic.iter().any(|range| inside(at, range)) {
+            let line = source.get(..at).is_some_and(|head| head.ends_with('\n'));
+            // After a blank line the text left opens a paragraph, not a hard-broken line.
+            let stub =
+                stub.clone().map(
+                    |stub| match line && crate::markdown::blank_before(source, at) {
+                        true => format!("{}\n\n", stub.trim_end()),
+                        false => stub,
+                    },
+                );
+            cuts.push(Cut {
+                at,
+                spaced: false,
+                stub,
+                word: true,
+                line,
+            });
+        }
+    }
+    // A row still arriving (`| ` alone) parses outside the table; its lines decide where it ends.
+    let table = table_span(source);
+    cuts.retain(|cut| {
+        cut.at > 0
+            && !table.as_ref().is_some_and(|table| inside(cut.at, table))
+            && !crate::markdown::undecided(source, cut.at)
+    });
+    cuts.sort_by_key(|cut| cut.at);
+    cuts.dedup_by_key(|cut| cut.at);
+    cuts
+}
+
+/// The item before the one at `at`, as one line numbered as the list shows it.
+fn item_stub(source: &str, at: usize, (first, seen): (Option<u64>, u64)) -> String {
+    let indent = crate::markdown::stub_prefix(source, at);
+    let marker = crate::markdown::item_marker(source.get(at..).unwrap_or_default()).unwrap_or("-");
+    let marker = match first {
+        Some(first) => format!(
+            "{}{}",
+            first.saturating_add(seen).saturating_sub(1),
+            marker.chars().last().unwrap_or('.')
+        ),
+        None => marker.to_owned(),
+    };
+    let gap = if crate::markdown::blank_before(source, at) {
+        "\n"
+    } else {
+        ""
+    };
+    format!("{indent}{marker} x\n{gap}")
+}
+
+/// The tail's context: the seam's stub, then the escape a mid-paragraph `- ` wears.
+fn context(seam: &Seam, tail: &str) -> String {
+    // Invariant: the prefix parses the tail as prose and renders no column; an ordered marker's
+    // escape sits after its digits, where a prefix `\` would print.
+    let escape = match crate::transcript::escaped(tail, true) {
+        escaped if !seam.mid || escaped == tail => "",
+        escaped if escaped.starts_with('\\') => "\\",
+        _ => "\u{200b}",
+    };
+    format!("{}{escape}", seam.stub.as_deref().unwrap_or_default())
 }
 
 pub(crate) fn table_span(tail: &str) -> Option<std::ops::Range<usize>> {
@@ -142,12 +332,19 @@ impl App {
         let shown = self.pacing.thought.shown();
         let stream =
             (self.pacing.thought_scan).scan(self.live_thought.get(..shown).unwrap_or_default());
-        let fenced = stream.reopen.is_some();
-        let stable = if fenced { 0 } else { stream.cut };
-        let mut cut = stable.max(self.live_thought_cut);
+        if stream.reopen.is_none() && stream.cut > self.live_thought_cut {
+            self.commit_thought_to(stream.cut, true);
+            self.live_thought_seam = Seam::default();
+        }
         let (width, theme) = (self.content_width(), self.theme);
-        let forced = overflow_cut(
-            self.live_thought.get(cut..shown).unwrap_or_default(),
+        let tail = self
+            .live_thought
+            .get(self.live_thought_cut..shown)
+            .unwrap_or_default();
+        let context = context(&self.live_thought_seam, tail);
+        let cut = overflow_cut(
+            &context,
+            tail,
             crate::render::live_tail_rows(self.rows),
             width,
             |text| {
@@ -155,14 +352,17 @@ impl App {
                     .len()
             },
         );
-        cut += forced.unwrap_or(0);
-        if cut > self.live_thought_cut {
-            self.commit_thought_to(cut);
+        if let Some(cut) = cut {
+            self.commit_thought_to(self.live_thought_cut + cut.at, cut.spaced);
+            self.live_thought_seam = Seam::after(&cut);
         }
     }
 
     /// Reads `live_thought_cut` for the label, so the cut moves last.
-    fn commit_thought_to(&mut self, cut: usize) {
+    fn commit_thought_to(&mut self, cut: usize, spaced: bool) {
+        if cut <= self.live_thought_cut {
+            return;
+        }
         let slice = self
             .live_thought
             .get(self.live_thought_cut..cut)
@@ -171,24 +371,56 @@ impl App {
         if !slice.trim().is_empty() {
             // Invariant: a held run of reads commits above the reasoning that follows it.
             self.flush_explored();
-            let lines = crate::cell::thought_lines(
-                &slice,
-                self.content_width(),
-                &self.theme,
-                self.mode,
-                self.live_thought_cut == 0,
+            let lines = self.thought_block(&slice);
+            self.note_commit(&lines, self.live_thought_cut > 0);
+            // `normal` renders a merged thought as one count row; a slice's rows cannot extend it.
+            let extends = self.live_thought_cut > 0 && self.mode != TranscriptMode::Normal;
+            let rows = extends.then(|| (self.content_width(), lines.clone()));
+            self.history.retain_slice(
+                Cell::Thought { markdown: slice },
+                rows.as_ref().map(|(width, rows)| (*width, rows.as_slice())),
             );
-            self.last_commit_rows = lines.len();
             self.pending_commit.extend(lines);
-            self.retain(Cell::Thought { markdown: slice });
             self.scheduler.request();
+        } else {
+            self.history.retain(Cell::Thought { markdown: slice });
         }
         self.live_thought_cut = cut;
+        self.live_thought_spaced = spaced;
+    }
+
+    pub(crate) fn thought_block(&self, slice: &str) -> Vec<Line<'static>> {
+        let (width, theme, mode) = (self.content_width(), &self.theme, self.mode);
+        let seam = &self.live_thought_seam;
+        let slice = crate::transcript::escaped(slice, seam.mid);
+        let render = |text: &str| crate::cell::thought_lines(text, width, theme, mode, false);
+        if let Some(rows) = seam
+            .stub
+            .as_deref()
+            .and_then(|stub| crate::transcript::under(stub, &slice, render))
+        {
+            return rows;
+        }
+        let header = self.live_thought_cut == 0 || self.live_thought_spaced;
+        crate::cell::thought_lines(&slice, width, theme, mode, header)
+    }
+
+    /// A message's slices are one history cell, so the separator rule measures their sum.
+    fn note_commit(&mut self, lines: &[Line<'static>], continues: bool) {
+        let Some(last) = lines.last() else {
+            return;
+        };
+        self.last_commit_rows = if continues {
+            self.last_commit_rows.saturating_add(lines.len())
+        } else {
+            lines.len()
+        };
+        self.last_commit_blank = crate::history::is_blank(last);
     }
 
     pub(super) fn flush_thought(&mut self) {
         self.pacing.thought.snap(self.live_thought.len());
-        self.commit_thought_to(self.live_thought.len());
+        self.commit_thought_to(self.live_thought.len(), true);
     }
 
     /// Each newly stable slice renders standalone against a byte cursor. Re-rendering
@@ -202,24 +434,30 @@ impl App {
         if stream.cut > self.live_cut {
             self.commit_prose(stream.cut, true);
             self.live_reopen = stream.reopen;
+            self.live_seam = Seam::default();
+        }
+        if self.live_reopen.is_some() {
+            return;
         }
         let (width, theme) = (self.content_width(), self.theme);
-        let inner = width.saturating_sub(crate::cell::GUTTER.len());
+        let inner = width.saturating_sub(crate::cell::gutter_cols());
         let tail = self
             .live_markdown
             .get(self.live_cut..shown)
             .unwrap_or_default();
+        let context = context(&self.live_seam, tail);
         let cutting = yi_types::trace::span("tui.overflow_cut");
-        let overflow = overflow_cut(
+        let cut = overflow_cut(
+            &context,
             tail,
             crate::render::live_tail_rows(self.rows),
             width,
             |text| crate::markdown::render(text, inner, &theme).len(),
         );
         drop(cutting);
-        if let Some(forced) = overflow {
-            let spaced = table_span(tail).is_some_and(|span| span.start == forced);
-            self.commit_prose(self.live_cut + forced, spaced);
+        if let Some(cut) = cut {
+            self.commit_prose(self.live_cut + cut.at, cut.spaced);
+            self.live_seam = Seam::after(&cut);
         }
     }
 
@@ -240,14 +478,15 @@ impl App {
         let (lines, lang) = self.prose_block(&slice);
         drop(rendering);
         self.live_lang = lang;
-        self.pending_commit.extend(lines);
+        self.note_commit(&lines, self.live_drawn);
         // Incident: a lone closing fence renders no rows; dropped here, it left the
         // rest of the message rendering as code on every replay.
-        if !slice.is_empty() {
-            self.retain(Cell::Assistant { markdown: slice });
-        }
+        self.retain(Cell::Assistant { markdown: slice });
+        self.live_drawn |= !lines.is_empty();
+        self.pending_commit.extend(lines);
         self.live_cut = cut;
         self.live_spaced = spaced;
+        self.scheduler.request();
     }
 
     /// Incident: live and commit each rendered the slice and only the commit put a blank
@@ -258,14 +497,13 @@ impl App {
     ) -> (Vec<Line<'static>>, Option<crate::highlight::Lang>) {
         let (rendered, lang) = crate::transcript::paint_slice(self, slice);
         let mut lines = Vec::with_capacity(rendered.len().saturating_add(1));
-        if !rendered.is_empty() && self.live_spaced && self.live_reopen.is_none() {
+        // The first slice to draw opens on its history cell's blank, unless the row above is one.
+        let opens = !self.live_drawn && !self.last_commit_blank;
+        let spaced = self.live_drawn && self.live_spaced && self.live_reopen.is_none();
+        if !rendered.is_empty() && (opens || spaced) {
             lines.push(Line::default());
         }
-        lines.extend(crate::cell::gutter(
-            rendered,
-            self.live_cut == 0,
-            &self.theme,
-        ));
+        lines.extend(crate::cell::gutter(rendered, !self.live_drawn, &self.theme));
         (lines, lang)
     }
 
@@ -291,20 +529,50 @@ impl App {
             _ => {}
         }
         fold(&mut self.streaming, event);
-        if let Some(AgentMessage::Assistant { content, .. }) = &self.streaming {
-            self.live_markdown = crate::transcript::text_of(content);
-            self.live_thought = crate::transcript::thinking_of(content);
-            self.arrive();
+        let streaming = self.streaming.take();
+        if let Some(AgentMessage::Assistant { content, .. }) = &streaming {
+            self.arrive(content);
         }
+        self.streaming = streaming;
     }
 
     /// A snapshot of the message so far: the arrival feeds the rate, the cursors move on
     /// their own clock, and nothing commits before the reader has seen it.
-    fn arrive(&mut self) {
+    fn arrive(&mut self, content: &[Content]) {
         let now = Instant::now();
+        self.close_segments(content);
+        let open = content.get(self.segment..).unwrap_or_default();
+        self.live_markdown = crate::transcript::prose_of(open);
+        self.live_thought = crate::transcript::thinking_of(open);
         self.pacing.prose.on_arrival(self.live_markdown.len(), now);
         self.pacing.thought.on_arrival(self.live_thought.len(), now);
         self.step_reveal(now);
+    }
+
+    /// Incident: a thought after prose drew above prose the reader had already seen; what came
+    /// before the thought commits whole above it.
+    pub(crate) fn close_segments(&mut self, content: &[Content]) {
+        loop {
+            let open = content.get(self.segment..).unwrap_or_default();
+            let mut spoke = false;
+            let Some(split) = open.iter().position(|block| {
+                let thought = matches!(block, Content::Thinking { .. });
+                let beat = spoke && thought;
+                spoke |= matches!(block, Content::Text { text, .. } if !text.is_empty());
+                beat
+            }) else {
+                return;
+            };
+            let head = open.get(..split).unwrap_or_default();
+            self.live_thought = crate::transcript::thinking_of(head);
+            self.flush_thought();
+            self.live_markdown = crate::transcript::prose_of(head);
+            self.pacing.prose.snap(self.live_markdown.len());
+            self.commit_prose(self.live_markdown.len(), true);
+            self.clear_live();
+            self.history.seal();
+            self.segment += split;
+        }
     }
 
     /// Moves both cursors by the time since the last tick; true when a frame is owed.
@@ -325,9 +593,11 @@ impl App {
             || self.pacing.thought.behind(self.live_thought.len())
     }
 
-    /// The next wake while text is still unrevealed, `Duration::MAX` once it is all shown.
     pub(crate) fn reveal_wake(&self) -> Duration {
-        if self.reveal_behind() {
+        let moving = |reveal: &Reveal, len: usize| reveal.behind(len) && !reveal.waiting();
+        if moving(&self.pacing.prose, self.live_markdown.len())
+            || moving(&self.pacing.thought, self.live_thought.len())
+        {
             FRAME
         } else {
             Duration::MAX
@@ -428,6 +698,24 @@ impl App {
         self.settle_tool(cell, &text, is_error, result.details.clone());
         self.commit_finished_tasks();
         self.intent = None;
+    }
+
+    fn count_kind(&mut self, name: &str) {
+        let verb = match name {
+            "read" | "ls" | "document" | "get_context" => "read",
+            "grep" | "glob" | "find" => "searched",
+            "web_search" | "fetch" => "fetched",
+            "edit" | "write" => "edited",
+            "bash" => "ran",
+            "ipython" => "computed",
+            "todo" | "plan" => return,
+            _ => "used",
+        };
+        self.turn_tools = self.turn_tools.saturating_add(1);
+        match self.turn_kinds.iter_mut().find(|(kind, _)| *kind == verb) {
+            Some((_, count)) => *count = count.saturating_add(1),
+            None => self.turn_kinds.push((verb, 1)),
+        }
     }
 
     pub(crate) fn settle_tool(

@@ -26,18 +26,20 @@ fn flat(line: &Line<'_>) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
+/// A URL that fits a row moves to it whole; one wider than the row splits at the width, since
+/// ratatui clips an overflowing row and the terminal would see it cut short anyway.
 #[test]
-fn wrap_never_splits_a_url_token() -> TestResult {
-    let line = Line::from(Span::raw(
-        "see https://example.com/a/very/long/path/that/exceeds/the/width here",
-    ));
-    let wrapped = wrap_line(&line, 20, "");
-    let joined: Vec<String> = wrapped.iter().map(flat).collect();
+fn wrap_keeps_a_url_whole_when_it_fits_and_splits_it_at_the_width() -> TestResult {
+    let line = Line::from(Span::raw("see https://example.com/a/b here"));
+    let joined: Vec<String> = wrap_line(&line, 24, "").iter().map(flat).collect();
+    let trimmed: Vec<&str> = joined.iter().map(|l| l.trim_end()).collect();
+    assert_eq!(trimmed, ["see", "https://example.com/a/b", "here"]);
+    let url = "https://example.com/a/very/long/path/that/exceeds/the/width";
+    let line = Line::from(Span::raw(format!("see {url} here")));
+    let joined: Vec<String> = wrap_line(&line, 20, "").iter().map(flat).collect();
     assert!(
-        joined
-            .iter()
-            .any(|l| l.contains("https://example.com/a/very/long/path/that/exceeds/the/width")),
-        "URL must stay one intact token even past the width: {joined:?}"
+        joined.iter().all(|l| l.chars().count() <= 20) && joined.concat().contains(url),
+        "no row passes the width and nothing is lost: {joined:?}"
     );
     Ok(())
 }
@@ -755,6 +757,10 @@ fn stable_stream_stops_at_blank_lines_outside_fences() -> TestResult {
     assert_eq!(stream.cut, "para one\n\n".len());
     assert!(stream.reopen.is_none());
     assert_eq!(stable_stream("no boundary yet").cut, 0);
+    // The blank is a cut only once the next line proves to start at column 0: an indented
+    // one continues the item above it.
+    assert_eq!(stable_stream("para one\n\n").cut, 0);
+    assert_eq!(stable_stream("- item\n\n  more of it").cut, 0);
     Ok(())
 }
 
@@ -772,9 +778,11 @@ fn stable_stream_commits_fence_interiors_line_by_line() -> TestResult {
     let stream = stable_stream(closed);
     assert_eq!(stream.cut, closed.len());
     assert!(stream.reopen.is_none());
-    // An indented fence (list item) stays opaque: no cut inside it.
+    // A fence in a list item commits line by line too, reopening under a stub of the item.
     let listed = "- item\n  ```\n  code\n";
-    assert_eq!(stable_stream(listed).cut, 0);
+    let stream = stable_stream(listed);
+    assert_eq!(stream.cut, listed.len());
+    assert_eq!(stream.reopen.as_deref(), Some("- x\n  ```"));
     Ok(())
 }
 
@@ -867,7 +875,7 @@ fn stable_stream_matches_fence_markers_exactly() -> TestResult {
     use yi_tui::markdown::stable_stream;
     let tilde = "~~~\ncode\n~~~\nafter\n\n";
     let stream = stable_stream(tilde);
-    assert_eq!(stream.cut, tilde.len());
+    assert_eq!(stream.cut, "~~~\ncode\n~~~\n".len());
     let nested = "````md\n```\ninner\n```\n";
     let stream = stable_stream(nested);
     assert_eq!(stream.cut, nested.len());

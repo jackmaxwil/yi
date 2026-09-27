@@ -117,22 +117,21 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
             .live_thought
             .get(app.live_thought_cut..app.pacing.thought.shown())
             .unwrap_or_default();
-        let rendered = crate::cell::thought_lines(
-            tail,
-            content_width,
-            theme,
-            app.mode,
-            app.live_thought_cut == 0,
-        );
-        live_lines.extend(live_tail(rendered, app.rows));
+        let tail = crate::transcript::fence_tail(tail, live_tail_rows(app.rows));
+        let tail = crate::transcript::close_spans(&tail);
+        live_lines.extend(live_tail(app.thought_block(&tail), app.rows));
     }
     if !app.live_markdown.is_empty() {
         let tail = app
             .live_markdown
             .get(app.live_cut..app.pacing.prose.shown())
             .unwrap_or_default();
+        let tail = match app.live_reopen {
+            Some(_) => std::borrow::Cow::Borrowed(tail),
+            None => crate::transcript::close_spans(tail),
+        };
         let _span = yi_types::trace::span("tui.live_tail");
-        live_lines.extend(app.prose_block(tail).0);
+        live_lines.extend(app.prose_block(&tail).0);
     }
     if let Some(pen) = &app.pen {
         live_lines.extend(Cell::Tool(pen.card()).lines(content_width, theme, app.mode, spinner));
