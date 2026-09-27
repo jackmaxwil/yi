@@ -70,6 +70,18 @@ The kernel imports the `memory` package at startup (§9). Each function is a hos
   `total`; a cut list carries `[5 of N notes · limit 5 · memory.search("…", limit=N) for all]`.
 - `memory.forget(name, scope=None)`: deletes the note, its index line and its usage entry.
 
+## Past sessions
+
+`history.search(query, limit=8, offset=0)` (kernel `compact.search`) ranks user messages, assistant
+text turns and compaction summaries by the same BM25, across every root session whose directory
+under the sessions dir ran in this repository: the header's `cwd` resolves to the same canonical
+repository (the git common dir), or sits inside it once its checkout is gone. Tool calls, their
+arguments and their results are never indexed. A hit carries `session`, `entryId`, `type`, a
+160-character `snippet` and `url`, `history://<session>/<entry>`, which `fetch` resolves across
+lanes. A cut page names the call for the next one; a directory whose checkout is gone and whose
+repository is therefore unknown is counted in a second notice line, never searched. The parsed
+units are cached per file and re-read when a file's length changes. Root session only.
+
 ## Start block
 
 `MemoryExt` is a built-in extension interested in `SessionStart` (§6). On every start, fresh or
@@ -98,4 +110,4 @@ restores every note the journal holds and has not forgotten, recounts `usage.jso
 journal, names a file that differs from its journal head and a version with no object, and
 exits 1 on a missing object or a broken chain.
 
-Settled by: D169, D277, D278.
+Settled by: D169, D277, D278, D279.

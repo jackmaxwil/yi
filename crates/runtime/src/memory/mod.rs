@@ -1,7 +1,7 @@
 mod doc;
 mod ext;
 mod journal;
-mod rank;
+pub(crate) mod rank;
 mod store;
 
 use std::path::PathBuf;
