@@ -606,6 +606,9 @@ impl AgentSession {
         if let Ok(mut slot) = self.shared.store.lock() {
             *slot = Some(store);
         }
+        if let Some(todos) = self.todos() {
+            todos.rehydrate();
+        }
         if let (Some(telemetry), Some((file, id))) = (self.telemetry(), sidecar) {
             telemetry.bind(&file, &id);
         }
@@ -656,6 +659,13 @@ impl AgentSession {
             .lock()
             .map(|model| model.clone())
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
+    pub fn summarizer(&self) -> Model {
+        self.compactor
+            .as_ref()
+            .and_then(|compactor| compactor.summarizer.clone())
+            .unwrap_or_else(|| self.model())
     }
 
     /// Re-clamps the effort onto the new ladder without recording a level change of its own;

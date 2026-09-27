@@ -1,5 +1,4 @@
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -138,6 +137,7 @@ fn service(session_dir: &std::path::Path, notices: &Arc<Mutex<Vec<String>>>) -> 
                 queue.push(restore_notice_text(restore));
             }
         })),
+        on_boot: None,
         sandbox: None,
         snapshot_key: None,
         per_session_state: false,

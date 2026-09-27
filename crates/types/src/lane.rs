@@ -122,3 +122,12 @@ pub struct LanesConfig {
     /// built-in push-and-open; a repo whose landing has its own verbs names them here.
     pub land: Option<Vec<String>>,
 }
+
+/// What a lane's branch would land: the diff against its merge base with main.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchDiff {
+    pub base: String,
+    pub files: Vec<(String, u64, u64)>,
+    pub patch: String,
+    pub untracked: usize,
+}

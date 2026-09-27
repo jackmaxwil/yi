@@ -583,8 +583,11 @@ A worktree todo needs a contract; it is Done only via acceptance or as `Accepted
 - The `todo` tool keeps a session list of `custom{todo}` entries. With a plan open at depth 0 the
   list is the plan's view, re-projected by `Mirror` after each op; `todo start|done` on a plan item
   is the owner's plan op, any other change to one is `TodoError::Mirrored`.
+- A done todo's evidence is held against the ledger for display only: it is observed when a span
+  it quotes in backticks appears verbatim in a recorded call's arguments or output, and claimed
+  otherwise (`todo::claims`). Nothing is refused (D255); the HUD marks claimed rows.
 - Owner: [`schedule.rs`](../crates/runtime/src/plan/schedule.rs). Settled by: D224, D225, D226,
-  D229.
+  D229, D275.
 
 ## 14. Lane
 A lane is a git worktree slot, leased from a per-repository pool and handed back by move.
@@ -698,7 +701,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 |---|---|---|
 | `initialize`, `session/new`, `session/resume{replayFrom?}`, `session/list` | both | The daemon routes new/resume by cwd and lists from its ledger without a cwd |
 | `session/prompt`, `session/cancel`, `session/close`, `session/delete`, `session/set_config_option` | worker | A busy session queues a prompt as a follow-up (§4.3); config ids `mode`, `model`, `thought_level` |
-| `_yi/kernel_execute`, `_yi/kernel_cancel`, `_yi/tracked`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); a session slash verb |
+| `_yi/kernel_execute`, `_yi/kernel_cancel`, `_yi/tracked`, `_yi/branch_diff`, `_yi/tape`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); the lane's diff against its base; the session's ledger over time; a session slash verb |
 | `_yi/heartbeat`, `_yi/goal`, `_yi/steer`, `_yi/rewind`, `_yi/todo`, `_yi/plan`, `_yi/child_answer`, `_yi/child_replay`, `_yi/child_abort` | worker | Solo verbs over the wire (§4, §11, §13, §15) |
 | `_yi/shutdown`, `_yi/seen` | daemon | Stop; clear a session's unseen count |
 | `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once` |
@@ -707,7 +710,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 `tool_call_update`, `state_update`, `usage_update`, `terminal_update`), passes unknown kinds through
 as `Extension`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
 `_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, 512 entries per frame),
-`_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
+`_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/name`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
 `_yi/subagent_update`, `_yi/heartbeat_changed`, `_yi/compaction` (replay only), `_yi/<custom_type>`.
 
 `yi serve` is a supervisor on `~/.yi/daemon.sock` (mode 0600): one `yi acp --cwd <root>` worker
@@ -739,6 +742,8 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 - Bottom stack: live tail, working line or orb, HUD (goal, plan progress, numbered todo block
   `Todos done/total`; `ctrl+t` hides it), composer or bottom view, status row (model, effort,
   lane row, landing, cost, `used / window`, session name).
+- The working line names an open wait (`AgentEvent::Wait`: a provider retry, a compaction, a
+  kernel boot) with its cause and a countdown, and a tool call draws while its arguments stream.
 - The palette is fixed: tier from `COLORTERM`/`TERM`, light or dark from `COLORFGBG` (default
   dark). The orb is [`yi-orb`](../crates/orb/src/lib.rs) over kitty graphics: the `Yi` mark at rest and one
   exact loop per agent state, left only at its exit points by a least-travel morph.
@@ -748,7 +753,7 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 - State: `Cell { User, Assistant, Thought, Tool, Explored, Task, Advisory, Notice, Footer, Rule,
   Divider }`.
 - Owner: [`app.rs`](../crates/tui/src/app.rs), [`drive.rs`](../crates/tui/src/drive.rs)
-- Settled by: D45, D47, D48, D73, D107, D126, D131, D136, D198, D199, D202, D204, D208, D256
+- Settled by: D45, D47, D48, D73, D107, D126, D131, D136, D198, D199, D202, D204, D208, D256, D261
 
 ### 17.4 Console
 `yi-console` is the workspace shell: an ACP client of the daemon (§17.2) on the alternate screen
@@ -758,11 +763,27 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
 - A session pane runs `yi-tui`'s chat reducer, fed from `_yi/event` through a port.
 - A drag copies the words under it, without Yi's rails and gutters, over OSC 52.
 - A status change notifies over OSC 9 or kitty OSC 99 once it holds for 1 s.
+- The full sidebar is an inbox: sessions ranked blocked, done and unseen, working, idle, under
+  those sections, two lines a row (name; what it needs or is doing, its list, its age). A done
+  session stays under "needs you" until focused; a poll never clears it. A working or blocked
+  session's avatar plays its state loop at 15 fps in place of its identicon.
+- A session is titled once by the summarizer after its first turn (`_yi/name`); the first
+  prompt stays its name until then, and the daemon's ledger keeps the title.
+- ⌘G opens Review beside a session: its scope is the lane's branch against its merge base with
+  main (`_yi/branch_diff`, run by the worker), the last turn, or the session (`s` cycles; a
+  session with no git base shows its own edits). Each file names the todo that was running when
+  it changed, reads that changed nothing are counted, the header carries the claims and the
+  landing, and `l` runs `/land` under the session's title.
+- ⌘Y opens the Tape beside a session: its ledger over wall time (`_yi/tape`, folded by the
+  worker), as model and tool tracks with each one's share, the user's turns, checkpoints,
+  failures and compactions. ←/→ walks the marks; Enter on a turn the user typed rewinds the
+  conversation to it, a fork that leaves the old branch in the ledger. Files stay; `/undo`
+  restores a turn's.
 - State: `PaneContent{Session, Markdown, Diff, Notebook, SessionDiff, Editor}`,
   `SessionStatus{Blocked, Working, DoneUnseen, Idle, Unknown}`, `SidebarMode{Rail, Full}`,
   `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Keys}`
 - Owner: [`lib.rs`](../crates/console/src/lib.rs), [`model.rs`](../crates/console/src/model.rs)
-- Settled by: D95, D96, D112, D113, D141, D201
+- Settled by: D95, D96, D112, D113, D141, D201, D276, D264, D267
 
 ## 18. Dependencies and size
 
@@ -787,7 +808,7 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
 `release` is cargo's default (no `[profile.release]`), unwinding intact. `dist` ships and is
 what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 `package."*"`), `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = "symbols"`,
-`debug = false`, `incremental = false`. `scripts/build_dist.sh` builds it.
+`debug = false`, `incremental = false`; on macOS the `yi` binary of a release-derived profile links with `-no_function_starts` (`crates/cli/build.rs`). `scripts/build_dist.sh` builds it.
 
 ### 18.3 Allowed dependencies
 | Crate | Features | Used by | Reason | Alternative considered |
@@ -801,18 +822,18 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `sha2` | — | types, oauth, permission, runtime, kernel | message signing, permission digests, PKCE, plan digests | — |
 | `xxhash-rust` | `xxh32` | tools | hashline tags | — |
 | `globset` | — | permission, tools, runtime | permission patterns, file tools | `glob`: no brace sets |
-| `regex` | `std`, `perf`, `unicode-case` | tools | the `grep` tool; full Unicode tables stay out | — |
+| `regex` | `std`, `perf`, `unicode-case`, `unicode-script` | tools | the `grep` tool; the Age and break-property tables stay out | — |
 | `lexopt` | — | cli | argument parsing | `clap`: size and startup |
 | `thiserror` | `std` | types, oauth, session, permission, tools, mcp-cli, kernel, runtime | typed errors at crate boundaries (§19) | `anyhow` (banned) |
 | `miniz_oxide` | `with-alloc` | orb, ai, kernel, tui | zlib for the kitty orb's `o=z` frames; inflates the build-time-packed model catalog, Python runtime and logos, and the uv archive | `flate2`: wraps this crate or `libz-sys`; `t=t` temp-file transmission |
 | `ratatui` | `crossterm`, `scrolling-regions` | tui, console | terminal rendering | — |
 | `tui-textarea` | `crossterm` | tui, console | the composer | — |
 | `pulldown-cmark` | — | tui | Markdown rendering | — |
-| `syntect` | `parsing`, `default-syntaxes`, `regex-fancy` | tui | syntax highlighting on the pure-Rust regex engine | `onig` (C engine, banned) |
+| `syntect` | `parsing`, `regex-fancy`, `dump-load` | tui | syntax highlighting on the pure-Rust regex engine, over bat's grammars cut at build time; `vendor/syntect` patches its manifest to four Unicode tables | `onig` (C engine, banned) |
 | `unicode-width` | — | tui | terminal cell width | — |
 
 Dev: `vt100`, `insta` (tui), `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
-`macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets.
+`macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets; `two-face`, `syntect` with `dump-create` and `serde_json` (tui) cut bat's grammar set.
 
 ### 18.4 Features
 Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep:yi-console"]`.

@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-pub use yi_orb::kitty;
+pub use yi_orb::{Orb, OrbState, kitty};
 
 /// 60 fps: dots move half a pixel a frame; 120 would double pty bytes and CPU, unseen.
 pub const FRAME: Duration = Duration::from_millis(16);

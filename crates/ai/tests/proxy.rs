@@ -128,6 +128,7 @@ fn a_provider_request_reaches_the_configured_proxy() -> Res {
         &[],
         &json!({"model": "probe"}),
         Some(&config),
+        &|_| {},
     );
 
     let error = sent.err().ok_or("the 400 reply was reported as success")?;
@@ -186,7 +187,7 @@ fn back_to_back_requests_share_one_connection() -> Res {
         }
     });
     for _ in 0..3 {
-        let response = send_with_retry(&url, &[], &json!({"model": "probe"}), None)?;
+        let response = send_with_retry(&url, &[], &json!({"model": "probe"}), None, &|_| {})?;
         assert_eq!(response.into_string()?, "ok");
     }
     assert_eq!(
@@ -194,5 +195,117 @@ fn back_to_back_requests_share_one_connection() -> Res {
         1,
         "a connection per request"
     );
+    Ok(())
+}
+
+/// Dies with the retry slept out in silence: a 429 held the turn for its whole backoff while
+/// the screen said only that the model was being waited on.
+#[test]
+fn a_retried_request_says_which_attempt_and_how_long_it_waits() -> Res {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = std::thread::spawn(move || -> std::io::Result<()> {
+        for reply in [
+            "HTTP/1.1 429 Too Many Requests\r\nretry-after-ms: 10\r\ncontent-length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}",
+        ] {
+            let (stream, _) = listener.accept()?;
+            let mut reader = BufReader::new(stream);
+            let mut length = 0usize;
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = header.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0u8; length];
+            reader.read_exact(&mut body)?;
+            reader.into_inner().write_all(reply.as_bytes())?;
+        }
+        Ok(())
+    });
+    let seen = std::sync::Mutex::new(Vec::new());
+    let sent = send_with_retry(
+        &format!("http://127.0.0.1:{port}/v1/messages"),
+        &[],
+        &json!({"model": "probe"}),
+        None,
+        &|wait| seen.lock().map(|mut seen| seen.push(wait)).unwrap_or(()),
+    );
+    assert!(
+        sent.is_ok(),
+        "the second attempt succeeds: {:?}",
+        sent.err()
+    );
+    server.join().map_err(|_| "server thread panicked")??;
+    let seen = seen.lock().map_err(|_| "poisoned")?.clone();
+    assert_eq!(
+        seen,
+        vec![yi_types::event::Wait::Retry {
+            attempt: 1,
+            of: 3,
+            delay_ms: 10,
+            cause: "HTTP 429".to_owned(),
+        }]
+    );
+    Ok(())
+}
+
+/// Dies with the reason cut off: ureq writes the URL before the error, and an 80-char cut of
+/// a long endpoint left the row saying where it failed but never why.
+#[test]
+fn a_dropped_connection_retry_names_the_reason_not_the_url() -> Res {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = std::thread::spawn(move || -> std::io::Result<()> {
+        drop(listener.accept()?);
+        let (stream, _) = listener.accept()?;
+        let mut reader = BufReader::new(stream);
+        let mut length = 0usize;
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
+                break;
+            }
+            if let Some((name, value)) = header.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap_or(0);
+            }
+        }
+        let mut body = vec![0u8; length];
+        reader.read_exact(&mut body)?;
+        reader
+            .into_inner()
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")?;
+        Ok(())
+    });
+    let seen = std::sync::Mutex::new(Vec::new());
+    let sent = send_with_retry(
+        &format!(
+            "http://127.0.0.1:{port}/api/v1/openai-compatible/chat/completions/with/a/long/deployment/path"
+        ),
+        &[],
+        &json!({"model": "probe"}),
+        None,
+        &|wait| seen.lock().map(|mut seen| seen.push(wait)).unwrap_or(()),
+    );
+    assert!(
+        sent.is_ok(),
+        "the second attempt succeeds: {:?}",
+        sent.err()
+    );
+    server.join().map_err(|_| "server thread panicked")??;
+    let seen = seen.lock().map_err(|_| "poisoned")?.clone();
+    let [yi_types::event::Wait::Retry { cause, .. }] = seen.as_slice() else {
+        return Err(format!("one retry expected: {seen:?}").into());
+    };
+    assert!(!cause.contains("127.0.0.1"), "{cause}");
+    assert!(!cause.starts_with("http") && !cause.is_empty(), "{cause}");
     Ok(())
 }

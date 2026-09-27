@@ -234,19 +234,25 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
         let notify = Arc::clone(&shared);
         let hook = on_compacted.clone();
         let unsaved = parts.clone();
+        let announce = Arc::clone(&shared);
         config.maybe_compact = Some(crate::compaction::loop_hook(
             compactor,
             Arc::clone(&provider),
             model.clone(),
             Arc::clone(&system_prompt),
             Arc::new(move || store_of(&stores)),
-            Arc::new(move || {
-                dispatch_ext(&notify, &crate::ext::Event::Compacted);
-                if let Some(hook) = &hook {
-                    hook();
-                }
-            }),
-            Arc::new(move |error| unsaved_compaction(&unsaved, error)),
+            crate::compaction::CompactReports {
+                waiting: Arc::new(move |wait| {
+                    let _ = announce.events.send(AgentEvent::Wait { wait });
+                }),
+                compacted: Arc::new(move || {
+                    dispatch_ext(&notify, &crate::ext::Event::Compacted);
+                    if let Some(hook) = &hook {
+                        hook();
+                    }
+                }),
+                unsaved: Arc::new(move |error| unsaved_compaction(&unsaved, error)),
+            },
         ));
     }
     wire_queues_and_coupling(&mut config, &shared, &prompt);

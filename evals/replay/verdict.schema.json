@@ -1,0 +1,57 @@
+{
+ "type": "object",
+ "required": [
+  "verdict",
+  "objections",
+  "p_objection"
+ ],
+ "properties": {
+  "verdict": {
+   "type": "string",
+   "enum": [
+    "accept",
+    "revise",
+    "escalate"
+   ]
+  },
+  "objections": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "text",
+     "citations"
+    ],
+    "properties": {
+     "text": {
+      "type": "string"
+     },
+     "citations": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "required": [
+        "msg",
+        "quote"
+       ],
+       "properties": {
+        "msg": {
+         "type": "string"
+        },
+        "quote": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false
+      }
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  "p_objection": {
+   "type": "number"
+  }
+ },
+ "additionalProperties": false
+}
