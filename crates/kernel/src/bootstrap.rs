@@ -1128,6 +1128,7 @@ mod tests {
         assert_eq!(root, home.join(".yi").join("python"));
         assert!(root.join("yi_runtime").join("src").join("rlm").is_dir());
         assert!(root.join("skills").is_dir());
+        assert!(!root.join("yi_runtime").join("tests").exists());
         assert_ne!(
             root, fallback,
             "the compile-time path never serves an installed binary"
