@@ -536,28 +536,25 @@ impl App {
             self.pending_prompt_mark = true;
         }
         // Incident: a console replay rendered every cell for scrollback the pane drops (1.3 s).
-        if self.pane {
-            self.retain(cell.clone());
-            self.scheduler.request();
-            return;
+        if !self.pane {
+            let spinner = self.spinner_phase();
+            let width = self.content_width();
+            let rendering = yi_types::trace::span("tui.cell_lines");
+            let mut lines = cell.lines(width, &self.theme, self.mode, spinner);
+            drop(rendering);
+            let blank = crate::history::is_blank;
+            // A blank separates blocks, never a run of one-line calls, measured
+            // from what the previous cell rendered — all an append path knows.
+            if crate::history::separated(self.last_commit_rows, self.last_commit_blank, &lines) {
+                self.pending_commit.push(Line::default());
+            }
+            if lines.first().is_some_and(blank) && self.last_commit_blank {
+                lines.remove(0);
+            }
+            self.last_commit_rows = lines.len();
+            self.last_commit_blank = lines.last().is_some_and(blank);
+            self.pending_commit.extend(lines);
         }
-        let spinner = self.spinner_phase();
-        let width = self.content_width();
-        let rendering = yi_types::trace::span("tui.cell_lines");
-        let mut lines = cell.lines(width, &self.theme, self.mode, spinner);
-        drop(rendering);
-        let blank = crate::history::is_blank;
-        // A blank separates blocks, never a run of one-line calls, measured
-        // from what the previous cell rendered — all an append path knows.
-        if crate::history::separated(self.last_commit_rows, self.last_commit_blank, &lines) {
-            self.pending_commit.push(Line::default());
-        }
-        if lines.first().is_some_and(blank) && self.last_commit_blank {
-            lines.remove(0);
-        }
-        self.last_commit_rows = lines.len();
-        self.last_commit_blank = lines.last().is_some_and(blank);
-        self.pending_commit.extend(lines);
         self.retain(cell.clone());
         // Only a streamed message's own slices merge; the next one opens its cell afresh.
         self.history.seal();

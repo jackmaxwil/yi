@@ -185,10 +185,13 @@ pub(crate) fn escaped(slice: &str, mid: bool) -> std::borrow::Cow<'_, str> {
     };
     let lead = slice.len() - slice.trim_start_matches([' ', '\t']).len();
     let (indent, rest) = slice.split_at(lead);
-    // A backslash escapes only punctuation; before a letter it prints.
+    // A backslash escapes only punctuation; before a letter it prints. An ordered marker's
+    // mark is its delimiter, after the digits (`2024\. `).
     if !matches!(block, Tag::Table(_)) {
-        return match rest.starts_with(|ch: char| ch.is_ascii_punctuation()) {
-            true => std::borrow::Cow::Owned(format!("{indent}\\{rest}")),
+        let mark = rest.trim_start_matches(|ch: char| ch.is_ascii_digit());
+        let number = rest.get(..rest.len() - mark.len()).unwrap_or_default();
+        return match mark.starts_with(|ch: char| ch.is_ascii_punctuation()) {
+            true => std::borrow::Cow::Owned(format!("{indent}{number}\\{mark}")),
             false => std::borrow::Cow::Borrowed(slice),
         };
     }
@@ -263,13 +266,16 @@ pub(crate) fn close_spans(tail: &str) -> std::borrow::Cow<'_, str> {
     if open.is_empty() && code.is_none() {
         return std::borrow::Cow::Borrowed(tail);
     }
-    let mut closed = tail.to_owned();
+    // A closer after whitespace is not right-flanking and would print, so it goes before it.
+    let body = tail.trim_end();
+    let mut closed = body.to_owned();
     if let Some(length) = code {
         closed.push_str(&"`".repeat(length));
     }
     for (ch, run) in open.iter().rev() {
         closed.extend(std::iter::repeat_n(*ch, *run));
     }
+    closed.push_str(tail.get(body.len()..).unwrap_or_default());
     std::borrow::Cow::Owned(closed)
 }
 
