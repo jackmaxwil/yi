@@ -157,6 +157,7 @@ impl Sandbox {
 
     /// `sandbox-exec -p <policy> -DKEY=value ... -- <program> <args>`.
     pub fn wrap(&self, program: &str, args: &[&str]) -> (String, Vec<String>) {
+        let _span = yi_types::trace::span("sandbox.wrap");
         let mut wrapped = vec!["-p".to_owned(), self.policy()];
         for (key, value) in self.params() {
             wrapped.push(format!("-D{key}={}", value.to_string_lossy()));

@@ -2,8 +2,11 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use yi_types::plan::canonical::{ArtifactRef, Digest};
+
+use super::journal::{Fs, RealFs};
 
 pub const ARTIFACTS_DIR: &str = "artifacts";
 
@@ -27,16 +30,31 @@ fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> ArtifactError + '_ {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Artifacts {
     dir: PathBuf,
+    fs: Arc<dyn Fs>,
+}
+
+impl std::fmt::Debug for Artifacts {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Artifacts")
+            .field("dir", &self.dir)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Artifacts {
     pub fn under(plan_dir: &Path) -> Self {
         Self {
             dir: plan_dir.join(ARTIFACTS_DIR),
+            fs: Arc::new(RealFs),
         }
+    }
+
+    pub fn with_fs(self, fs: Arc<dyn Fs>) -> Self {
+        Self { fs, ..self }
     }
 
     pub fn path(&self, digest: &Digest) -> PathBuf {
@@ -70,9 +88,9 @@ impl Artifacts {
             .map_err(io_at(&tmp))?;
         let written = file
             .write_all(bytes)
-            .and_then(|()| file.sync_all())
+            .and_then(|()| self.fs.sync_all(&file))
             .and_then(|()| std::fs::rename(&tmp, &target))
-            .and_then(|()| std::fs::File::open(&self.dir)?.sync_all());
+            .and_then(|()| self.fs.sync_all(&std::fs::File::open(&self.dir)?));
         if let Err(source) = written {
             let _removed_best_effort = std::fs::remove_file(&tmp);
             return Err(ArtifactError::Io {

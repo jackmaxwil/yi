@@ -1,8 +1,7 @@
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::own::own;
+use crate::scratch;
+use crate::support;
 use scratch::Scratch;
-#[path = "support/family.rs"]
-mod support;
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -1133,6 +1132,72 @@ async fn a_woken_childs_turn_is_a_run_the_parent_can_wait_on() -> TestResult {
     Ok(())
 }
 
+/// Dies with the 100 ms poll back in the family wait: a child's end was seen a poll late, so
+/// five spawn-and-wait rounds took half a second or more.
+#[tokio::test]
+async fn a_family_wait_wakes_on_the_move_not_on_a_poll() -> TestResult {
+    let harness = harness(0, 1, "done")?;
+    let started = std::time::Instant::now();
+    for round in 0..5 {
+        let name = format!("c{round}");
+        harness
+            .host
+            .spawn(format!("work {round}"), kwargs(&[("name", &name)]))?;
+        let mut cursor = 0;
+        loop {
+            let reply = harness.host.wait(5_000, Some(cursor)).await?;
+            if reply["state"] == "settled" {
+                break;
+            }
+            cursor = reply["cursor"].as_u64().ok_or("cursor")?;
+        }
+    }
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(250),
+        "five rounds took {took:?}"
+    );
+    Ok(())
+}
+
+/// Dies with the 100 ms poll back in `rlm.receive`: mail sent just after the wait began sat a
+/// poll in the queue, so five sends took half a second or more.
+#[tokio::test]
+async fn a_receive_wakes_on_the_mail_not_on_a_poll() -> TestResult {
+    use yi_kernel::client::HostHandlers as _;
+    let harness = harness(0, 1, "done")?;
+    finished(&harness, "beta").await?;
+    let beta = harness
+        .receivers
+        .lock()
+        .map_err(|_| "poisoned")?
+        .remove("beta");
+    let beta = beta.ok_or("beta was built without its receive")?;
+    let payload = json!({"timeout_ms": 5_000});
+    let payload = payload.as_object().cloned().ok_or("payload")?;
+    let started = std::time::Instant::now();
+    for round in 0..5 {
+        let waiting = beta.dispatch("rlm.receive", payload.clone());
+        let waiting = tokio::spawn(waiting.ok_or("rlm.receive is not registered")?);
+        tokio::task::yield_now().await;
+        harness
+            .host
+            .route("parent", "beta", &format!("note {round}"), false)?;
+        let got = waiting.await??;
+        assert_eq!(
+            got["envelopes"].as_array().map(Vec::len),
+            Some(1),
+            "{got:?}"
+        );
+    }
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(250),
+        "five receives took {took:?}"
+    );
+    Ok(())
+}
+
 /// A family whose one child asks its parent a question with `ask_user`, then answers; the
 /// parent's mail rides its own queue, as the root's does.
 type AskingFamily = (Scratch, Arc<SubagentHost>, yi_session::SharedSession);
@@ -2022,6 +2087,7 @@ async fn a_service_whose_kernel_dies_respawns_with_its_pending_mail() -> TestRes
                 family_dir: None,
                 host: Arc::new(registry),
                 on_restore: None,
+                on_boot: None,
                 sandbox: None,
                 snapshot_key: None,
                 per_session_state: false,
@@ -2543,6 +2609,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
+        on_boot: None,
         sandbox: None,
         snapshot_key: None,
         per_session_state: false,
@@ -3055,6 +3122,7 @@ async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> Test
         cwd: Some(cwd.to_path_buf()),
         wake_parent: None,
     })?;
+    own(&harness.store, "adjudication")?;
     harness
         .host
         .spawn(
@@ -3116,6 +3184,7 @@ async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResul
         cwd: Some(cwd.to_path_buf()),
         wake_parent: None,
     })?;
+    own(&harness.store, "adjudication")?;
     yi_session::lock_session(&harness.store).set_goal(yi_types::goal::Goal {
         objective: "ship the retry fix".to_owned(),
         status: yi_types::goal::GoalStatus::Active,
@@ -3796,6 +3865,7 @@ async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
         family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
+        on_boot: None,
         sandbox: None,
         snapshot_key: None,
         per_session_state: false,

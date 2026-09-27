@@ -21,7 +21,7 @@ LANES = ("args", "result", "error", "text")
 
 def load_events(path: Path) -> list[dict]:
     events = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text().split("\n"):
         if line.strip():
             events.append(json.loads(line))
     return events

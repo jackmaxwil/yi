@@ -89,6 +89,7 @@ pub fn normalize_openai_tool_call_id(id: &str) -> String {
 }
 
 fn convert_messages(model: &Model, context: &LlmContext) -> Vec<Value> {
+    let _span = yi_types::trace::span("ai.convert_messages");
     let transformed = transform_messages(
         &context.messages,
         model,
@@ -309,6 +310,9 @@ pub(crate) fn prompt_cache_retention(model: &Model) -> Option<&'static str> {
 }
 
 pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Value {
+    let _span = yi_types::trace::span("ai.build_params")
+        .arg("api", "openai")
+        .arg("messages", context.messages.len());
     let mut params = json!({
         "model": model.id,
         "messages": convert_messages(model, context),
@@ -684,7 +688,10 @@ impl ChunkMapper {
                         id: id.to_owned(),
                         partial_args: String::new(),
                     });
-                    events.push(AssistantMessageEvent::ToolCallStart { content_index });
+                    events.push(AssistantMessageEvent::ToolCallStart {
+                        content_index,
+                        name: (!name.is_empty()).then(|| name.to_owned()),
+                    });
                     self.tools.len().saturating_sub(1)
                 });
             let (content_index, parsed, delta_text) = {
@@ -820,9 +827,10 @@ fn run_request(
     let url = format!("{}/chat/completions", model.base_url);
     let mut mapper = ChunkMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
+    let retried = crate::request::waiting(sender);
     let pumped = crate::request::pump_sse_with_resend(
         stop,
-        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy, extra),
+        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy, extra, &retried),
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);

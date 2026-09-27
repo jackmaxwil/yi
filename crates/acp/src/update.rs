@@ -42,6 +42,33 @@ pub fn gap_update(seq: u64, dropped: u64, child: Option<&ChildId>) -> AcpSession
     extension("_yi/event_gap", fields)
 }
 
+/// Built by moving values into maps: `json!` of a struct re-serializes every nested
+/// `Value`, which deep-copied a replay's entries twice per frame.
+pub fn update_notification(session_id: &str, update: AcpSessionUpdate) -> Value {
+    let update = match update {
+        AcpSessionUpdate::Extension(extension) => {
+            let kind = ("sessionUpdate".to_owned(), extension.session_update.into());
+            Value::Object(std::iter::once(kind).chain(extension.fields).collect())
+        }
+        other => serde_json::to_value(other).unwrap_or(Value::Null),
+    };
+    let params = object([("sessionId", session_id.into()), ("update", update)]);
+    object([
+        ("jsonrpc", "2.0".into()),
+        ("method", "session/update".into()),
+        ("params", params),
+    ])
+}
+
+fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
+    Value::Object(
+        pairs
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
+}
+
 pub struct ReplayFrame<'a> {
     pub entries: &'a [Entry],
     pub from: u64,
@@ -333,13 +360,13 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
         },
         AgentEvent::MessageEnd { message } => {
             ids.current_message = None;
-            match message {
-                AgentMessage::Assistant { usage, .. } => vec![AcpSessionUpdate::UsageUpdate {
-                    used: u64::try_from(usage.total_tokens).unwrap_or(0),
+            yi_runtime::reply_tokens(message)
+                .map(|used| AcpSessionUpdate::UsageUpdate {
+                    used: used.0,
                     size: ids.context_window,
-                }],
-                _ => Vec::new(),
-            }
+                })
+                .into_iter()
+                .collect()
         }
         AgentEvent::ToolExecutionStart {
             tool_call_id,
@@ -425,6 +452,7 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
         AgentEvent::LandingState { landing } => {
             object_extension("_yi/landing", serde_json::to_value(landing))
         }
+        AgentEvent::Wait { .. } => Vec::new(),
     }
 }
 

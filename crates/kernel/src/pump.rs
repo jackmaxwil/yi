@@ -1,12 +1,11 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 use yi_types::kernel::{ConnectionInfo, JupyterMessage};
 use zeromq::{Socket, SocketRecv, SocketSend};
 
-use crate::AGENT_MESSAGE_DISPLAY_MIME;
-use crate::HOST_COMM_TARGET;
 use crate::client::{
     ExecuteError, Inner, Lifecycle, dispatch_late_agent_message, frames_of, now_iso, trim_tail,
     zmq_message,
@@ -14,6 +13,9 @@ use crate::client::{
 use crate::framing::{decode, encode};
 use crate::journal::record_orphan_process_state;
 use crate::reduce::{Reduction, StreamChunk, parent_msg_id, reduce};
+use crate::{
+    AGENT_MESSAGE_DISPLAY_MIME, HOST_COMM_TARGET, IOPUB_PROBE_RESEND_MS, READY_TIMEOUT_MS,
+};
 
 pub(crate) struct ChildTasks {
     pub(crate) kill_tx: mpsc::UnboundedSender<()>,
@@ -100,6 +102,7 @@ pub(crate) async fn connect_sockets(
     ),
     String,
 > {
+    let _span = yi_types::trace::span("kernel.connect");
     let endpoint = |port: u32| format!("{}://{}:{port}", info.transport, info.ip);
     let mut shell = zeromq::DealerSocket::new();
     let mut iopub = zeromq::SubSocket::new();
@@ -121,6 +124,68 @@ pub(crate) async fn connect_sockets(
         .await
         .map_err(|error| format!("iopub subscribe: {error}"))?;
     Ok((shell, iopub, control))
+}
+
+/// Ready once shell answers `kernel_info` and iopub has carried a message: a SUB socket hears
+/// nothing until its subscription reaches the kernel, so the first cell cannot lose output.
+pub(crate) async fn probe_ready(
+    inner: &Arc<Inner>,
+    (shell, iopub): (&mut zeromq::DealerSocket, &mut zeromq::SubSocket),
+    info: &ConnectionInfo,
+    closed: &(dyn Fn(&str) -> String + Sync),
+) -> Result<(), String> {
+    let _span = yi_types::trace::span("kernel.probe_ready");
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(READY_TIMEOUT_MS);
+    let mut pace = yi_types::backoff::backoff(Duration::from_millis(IOPUB_PROBE_RESEND_MS));
+    let mut request_id = String::new();
+    let (mut resend, mut replied, mut published) = (true, false, false);
+    while !(replied && published) {
+        if inner.state() == Lifecycle::Shutdown || inner.exited.lock().is_ok_and(|exited| *exited) {
+            let tail = inner.stderr_tail();
+            return Err(format!("Kernel exited during startup. stderr:\n{tail}"));
+        }
+        if std::mem::take(&mut resend) {
+            let message = inner.build("kernel_info_request", Map::new())?;
+            request_id.clone_from(&message.header.msg_id);
+            let frames = zmq_message(encode(&message, &info.key)).ok_or("empty kernel_info")?;
+            shell
+                .send(frames)
+                .await
+                .map_err(|error| closed(&error.to_string()))?;
+        }
+        let wait = if replied { pace() } else { Duration::ZERO };
+        tokio::select! {
+            () = tokio::time::sleep_until(deadline) => return Err(format!(
+                "Kernel did not respond to kernel_info_request within {READY_TIMEOUT_MS}ms. stderr tail:\n{}",
+                inner.stderr_tail()
+            )),
+            incoming = shell.recv() => {
+                let frames = incoming.map_err(|error| closed(&error.to_string()))?;
+                replied |= decode(&frames_of(frames)).is_some_and(|reply| {
+                    reply.header.msg_type == "kernel_info_reply"
+                        && parent_msg_id(&reply) == Some(request_id.as_str())
+                });
+            }
+            incoming = iopub.recv() => {
+                let frames = incoming.map_err(|error| closed(&error.to_string()))?;
+                published = true;
+                if let Some(decoded) = decode(&frames_of(frames)) {
+                    dispatch_iopub(inner, &decoded);
+                }
+            }
+            () = tokio::time::sleep(wait), if replied => resend = true,
+        }
+    }
+    Ok(())
+}
+
+fn dispatch_iopub(inner: &Arc<Inner>, decoded: &JupyterMessage) {
+    // Comms dispatch before the parent-header filter: a detached task's host request
+    // must dispatch with no active execution (design §9.2).
+    match decoded.header.msg_type.as_str() {
+        "comm_open" | "comm_msg" | "comm_close" => handle_comm(inner, decoded),
+        _ => handle_execution_message(inner, decoded),
+    }
 }
 
 pub(crate) fn spawn_control_task(
@@ -180,14 +245,8 @@ pub(crate) fn spawn_iopub_task(
                 }
                 break;
             };
-            let Some(decoded) = decode(&frames_of(message)) else {
-                continue;
-            };
-            // Comms dispatch before the parent-header filter: a detached task's host request
-            // must dispatch with no active execution (design §9.2).
-            match decoded.header.msg_type.as_str() {
-                "comm_open" | "comm_msg" | "comm_close" => handle_comm(&inner, &decoded),
-                _ => handle_execution_message(&inner, &decoded),
+            if let Some(decoded) = decode(&frames_of(message)) {
+                dispatch_iopub(&inner, &decoded);
             }
         }
     })

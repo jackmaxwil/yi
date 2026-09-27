@@ -49,8 +49,7 @@
 //! `ops.jsonl`), and `fixtures/plans/format1/large-section.md`, whose one body
 //! section is 6,144 bytes and must land as an artifact reference.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;

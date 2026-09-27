@@ -1,5 +1,6 @@
 use serde_json::Value;
 use tokio::sync::mpsc::{Receiver, Sender};
+use yi_types::event::{AssistantMessageEvent, Wait};
 use yi_types::message::{AgentMessage, StopReason, Usage};
 use yi_types::model::Model;
 
@@ -128,21 +129,59 @@ pub fn get_json(
     serde_json::from_slice(&body).map_err(|error| format!("{url}: {error}"))
 }
 
+pub fn waiting(sender: &Sender<AssistantMessageEvent>) -> impl Fn(Wait) + '_ {
+    move |wait| {
+        let _ = sender.blocking_send(AssistantMessageEvent::Waiting { wait });
+    }
+}
+
+/// Past this a pooled connection is not trusted: a NAT may have dropped it without a FIN.
+const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(30);
+
+static POOLED: std::sync::Mutex<Option<(ureq::Agent, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
+
+// ponytail: a proxied request pools nothing; key the pool by proxy if that path matters.
+fn stream_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
+    let builder = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(30))
+        .timeout_read(std::time::Duration::from_secs(60));
+    if let Some(proxy) = proxy {
+        return builder.proxy(proxy.clone()).build();
+    }
+    let Ok(mut pooled) = POOLED.lock() else {
+        return builder.build();
+    };
+    let agent = match pooled.take() {
+        Some((agent, idle_since)) if idle_since.elapsed() < KEEP_ALIVE => agent,
+        _ => builder.build(),
+    };
+    *pooled = Some((agent.clone(), std::time::Instant::now()));
+    agent
+}
+
+fn pooled_idle_from_now() {
+    if let Ok(mut pooled) = POOLED.lock()
+        && let Some((_, idle_since)) = pooled.as_mut()
+    {
+        *idle_since = std::time::Instant::now();
+    }
+}
+
 pub fn send_with_retry(
     url: &str,
     headers: &[(String, String)],
     body: &Value,
     proxy: Option<&ProxyConfig>,
+    on_retry: &dyn Fn(Wait),
 ) -> Result<ureq::Response, String> {
     let policy = RetryPolicy::default();
     let started = std::time::Instant::now();
-    let mut builder = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(30))
-        .timeout_read(std::time::Duration::from_secs(60));
-    if let Some(proxy) = proxy.and_then(|config| config.proxy_for(host_of(url))) {
-        builder = builder.proxy(proxy.clone());
-    }
-    let agent = builder.build();
+    let agent = stream_agent(proxy.and_then(|config| config.proxy_for(host_of(url))));
+    let body = {
+        let _span = yi_types::trace::span("ai.serialize");
+        body.to_string()
+    };
     let mut attempt: u32 = 0;
     loop {
         let mut request = agent
@@ -152,7 +191,12 @@ pub fn send_with_retry(
         for (name, value) in headers {
             request = request.set(name, value);
         }
-        match request.send_string(&body.to_string()) {
+        let sending = yi_types::trace::span("ai.http_send")
+            .arg("attempt", attempt)
+            .arg("bytes", body.len());
+        let sent = request.send_string(&body);
+        drop(sending);
+        match sent {
             Ok(response) => return Ok(response),
             Err(ureq::Error::Status(status, response)) => {
                 let retryable = is_retryable_status(status)
@@ -168,23 +212,54 @@ pub fn send_with_retry(
                 let retry_after = response
                     .header("retry-after")
                     .and_then(|value| value.parse::<f64>().ok());
-                if let Some(delay) = retry_delay(attempt, retry_after_ms, retry_after, &policy) {
+                let delay = retry_delay(attempt, retry_after_ms, retry_after, &policy);
+                attempt = attempt.saturating_add(1);
+                announce(on_retry, attempt, &policy, delay, format!("HTTP {status}"));
+                if let Some(delay) = delay {
                     std::thread::sleep(delay);
                 }
-                attempt = attempt.saturating_add(1);
             }
             Err(error) => {
                 if attempt < policy.max_attempts && started.elapsed() < policy.max_total_wall {
-                    if let Some(delay) = retry_delay(attempt, None, None, &policy) {
+                    let delay = retry_delay(attempt, None, None, &policy);
+                    attempt = attempt.saturating_add(1);
+                    // Incident: ureq writes the URL first, so an 80-char cut kept it and lost why.
+                    let text = error.to_string();
+                    let url = match &error {
+                        ureq::Error::Transport(transport) => {
+                            transport.url().map(|url| format!("{url}: "))
+                        }
+                        ureq::Error::Status(..) => None,
+                    };
+                    let reason = url.and_then(|url| text.strip_prefix(&url)).unwrap_or(&text);
+                    let cause: String = reason.chars().take(80).collect();
+                    announce(on_retry, attempt, &policy, delay, cause);
+                    if let Some(delay) = delay {
                         std::thread::sleep(delay);
                     }
-                    attempt = attempt.saturating_add(1);
                     continue;
                 }
                 return Err(error.to_string());
             }
         }
     }
+}
+
+fn announce(
+    on_retry: &dyn Fn(Wait),
+    attempt: u32,
+    policy: &RetryPolicy,
+    delay: Option<std::time::Duration>,
+    cause: String,
+) {
+    on_retry(Wait::Retry {
+        attempt,
+        of: policy.max_attempts,
+        delay_ms: delay.map_or(0, |delay| {
+            u64::try_from(delay.as_millis()).unwrap_or(u64::MAX)
+        }),
+        cause,
+    });
 }
 
 pub fn pump_sse(
@@ -235,14 +310,22 @@ pub fn pump_sse_with_resend(
 ) -> Result<Option<String>, String> {
     let mut first_error: Option<String> = None;
     loop {
+        let sent_us = yi_types::trace::now_us();
         let response = send()?;
         let mut delivered = false;
         let pumped = pump_sse(response, stop, |event| {
+            if !delivered {
+                yi_types::trace::complete("ai.first_sse_event", sent_us, serde_json::Map::new());
+            }
             delivered = true;
+            let _span = yi_types::trace::span("ai.sse_event");
             on_event(event)
         });
         match pumped {
-            Ok(()) => return Ok(first_error),
+            Ok(()) => {
+                pooled_idle_from_now();
+                return Ok(first_error);
+            }
             // Incident: `Bad address (os error 14)` killed a trial's third request
             // before any byte arrived (ledger 0017, issue #256).
             Err(text) if resend_dead_stream(delivered, first_error.is_some()) => {
@@ -391,9 +474,16 @@ pub fn openai_bearer_post(
     body: &Value,
     proxy: Option<&ProxyConfig>,
     extra: &[(String, String)],
+    on_retry: &dyn Fn(Wait),
 ) -> Result<ureq::Response, String> {
     let headers = headers_for(model, vec![("authorization", format!("Bearer {api_key}"))]);
-    send_with_retry(url, &merge_headers(headers, extra.to_vec()), body, proxy)
+    send_with_retry(
+        url,
+        &merge_headers(headers, extra.to_vec()),
+        body,
+        proxy,
+        on_retry,
+    )
 }
 
 /// What one request needs beside its body: the key, the proxy, and the loop's cut flag.

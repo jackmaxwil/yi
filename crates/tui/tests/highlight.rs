@@ -106,6 +106,113 @@ fn the_language_names_fences_actually_carry_all_resolve() -> TestResult {
     Ok(())
 }
 
+/// The shipped set is cut to the languages a coding agent quotes (build.rs), so each of those has
+/// to survive the cut, grammars it embeds included, and one outside it has to render plain.
+#[test]
+fn the_cut_grammar_set_keeps_every_named_language() -> TestResult {
+    for name in [
+        "go",
+        "java",
+        "kt",
+        "c",
+        "cpp",
+        "cs",
+        "scala",
+        "groovy",
+        "m",
+        "rb",
+        "php",
+        "yaml",
+        "md",
+        "html",
+        "css",
+        "sql",
+        "makefile",
+        "diff",
+        "lua",
+        "zig",
+        "xml",
+        "ini",
+        "proto",
+        "graphql",
+        "nix",
+        "cmake",
+        "tf",
+        "hs",
+        "ex",
+        "dart",
+        ".env",
+        ".gitignore",
+        ".gitconfig",
+    ] {
+        assert!(lang_for(name).is_some(), "{name} renders plain");
+    }
+    let mut html = lang_for("html").ok_or("html missing")?;
+    let embedded = tokens("<script>let n = 42;</script>", &mut html);
+    assert!(
+        embedded.iter().any(|run| run.2 == Token::Number),
+        "{embedded:?}"
+    );
+    assert!(lang_for("jl").is_none(), "julia is outside the shipped set");
+    Ok(())
+}
+
+/// A pattern needing a Unicode table vendor/syntect dropped aborts the process when its fence
+/// renders; `just test` reruns this under yi-tui's own features, as the workspace links them all.
+#[test]
+fn every_shipped_grammar_pattern_compiles_on_the_linked_tables() -> TestResult {
+    use syntect::parsing::syntax_definition::Pattern;
+    let dump: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grammars.packdump"));
+    let set: syntect::parsing::SyntaxSet = syntect::dumps::from_reader(dump)?;
+    let mut compiled = 0;
+    for grammar in set.into_builder().syntaxes() {
+        for pattern in grammar
+            .contexts
+            .values()
+            .flat_map(|context| &context.patterns)
+        {
+            let Pattern::Match(pattern) = pattern else {
+                continue;
+            };
+            let source = pattern.regex.regex_str();
+            let source = if pattern.has_captures {
+                with_captures_filled(source)
+            } else {
+                source.to_owned()
+            };
+            if let Some(error) = syntect::parsing::Regex::try_compile(&source) {
+                return Err(format!("{}: {source}: {error}", grammar.name).into());
+            }
+            compiled += 1;
+        }
+    }
+    assert!(compiled > 5_000, "{compiled} patterns");
+    Ok(())
+}
+
+/// Invariant: syntect fills each `\N` with the escaped text of capture N before it compiles the
+/// pattern, by this same walk; any literal stands in for that text.
+fn with_captures_filled(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut escaped = false;
+    for c in source.chars() {
+        match (escaped, c) {
+            (true, digit) if digit.is_ascii_digit() => out.push('x'),
+            (true, other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            (false, '\\') => {}
+            (false, other) => out.push(other),
+        }
+        escaped = c == '\\' && !escaped;
+    }
+    if escaped {
+        out.push('\\');
+    }
+    out
+}
+
 /// An unknown fence language must render, not vanish or panic.
 #[test]
 fn an_unknown_language_is_declined_rather_than_guessed() -> TestResult {

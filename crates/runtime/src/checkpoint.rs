@@ -11,23 +11,38 @@ pub fn checkpoint_root(home: &Path) -> PathBuf {
     home.join(".yi/checkpoints")
 }
 
+struct Shadow {
+    root: PathBuf,
+    cwd: PathBuf,
+    opened: std::sync::OnceLock<Option<Checkpoints>>,
+}
+
+impl Shadow {
+    fn get(&self) -> Option<&Checkpoints> {
+        self.opened
+            .get_or_init(|| Checkpoints::open(&self.root, &self.cwd).ok())
+            .as_ref()
+    }
+}
+
 /// Best-effort: without git there is no shadow gitdir and no capture, and nothing else changes.
 pub fn wire_turn_checkpoints(session: &AgentSession, home: &Path, cwd: &Path) {
-    let Ok(checkpoints) = Checkpoints::open(&checkpoint_root(home), cwd) else {
-        return;
-    };
-    let checkpoints = Arc::new(checkpoints);
+    let shadow = Arc::new(Shadow {
+        root: checkpoint_root(home),
+        cwd: cwd.to_path_buf(),
+        opened: std::sync::OnceLock::new(),
+    });
     session.set_turn_start_hook(capture_hook(
         session,
-        Arc::clone(&checkpoints),
+        Arc::clone(&shadow),
         CheckpointAt::TurnStart,
     ));
-    session.set_turn_end_hook(capture_hook(session, checkpoints, CheckpointAt::TurnEnd));
+    session.set_turn_end_hook(capture_hook(session, shadow, CheckpointAt::TurnEnd));
 }
 
 fn capture_hook(
     session: &AgentSession,
-    checkpoints: Arc<Checkpoints>,
+    shadow: Arc<Shadow>,
     at: CheckpointAt,
 ) -> Arc<crate::session::TurnHook> {
     let store = session.store_handle();
@@ -35,7 +50,10 @@ fn capture_hook(
         let Some(store) = store() else {
             return;
         };
-        let Ok(tree) = checkpoints.capture() else {
+        let span = yi_types::trace::span("checkpoint.capture").arg("at", format!("{at:?}"));
+        let captured = shadow.get().map(Checkpoints::capture);
+        drop(span);
+        let Some(Ok(tree)) = captured else {
             return;
         };
         let _capture_failure_never_fails_a_turn =
