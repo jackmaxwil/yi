@@ -54,7 +54,51 @@ const INFERRED: [&str; 15] = [
 /// bat's set, since syntect's has no TOML or TypeScript; decompressed on first use, off startup.
 fn syntaxes() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(two_face::syntax::extra_newlines)
+    SET.get_or_init(|| {
+        let _span = yi_types::trace::span("tui.load_syntaxes");
+        two_face::syntax::extra_newlines()
+    })
+}
+
+/// Loads common grammars off-thread: syntect's first line of one cost 55-370 ms in a frame.
+pub fn prewarm() {
+    let _ = std::thread::Builder::new()
+        .name("yi-highlight-warm".to_owned())
+        .spawn(|| {
+            let _span = yi_types::trace::span("tui.highlight_prewarm");
+            for (name, sample) in [
+                (
+                    "rs",
+                    "//! d\n#[derive(Debug)]\npub struct S<'a> { x: &'a str }\n\
+                     impl<T: Clone> Tr for S<T> where T: Send {\n    /// d\n\
+                     pub async fn f(&mut self) -> Result<u8, E> {\n\
+                     let v = vec![1_u8, 0x2]; /* b */ // c\n\
+                     match v.get(0) { Some(n) if *n > 1 => Ok(*n), _ => Err(\"e\".into()) }\n\
+                     let c = |a: u8| -> u8 { a as u8 };\n    }\n}\n\
+                     use std::io::{self, Write};\nconst X: &str = r#\"raw\"#;\n\
+                     macro_rules! m { ($e:expr) => { $e }; }",
+                ),
+                ("py", "def f(x):\n    return f\"{x}\"  # c"),
+                ("ts", "const x: number = f(`a${b}`); // c"),
+                ("js", "export const x = () => ({ a: 1 });"),
+                ("sh", "for f in *; do echo \"$f\"; done # c"),
+                ("json", "{\"a\": [1, true, null]}"),
+                ("toml", "[a]\nb = \"c\" # d"),
+                ("yaml", "a:\n  - b: 'c' # d"),
+                (
+                    "md",
+                    "# h\n- `x` **y** _z_ [l](u)\n> q\n\n| a | b |\n|---|---|\n\
+                     1. i\n```rust\nlet x = 1;\n```",
+                ),
+                ("diff", "@@ -1 +1 @@\n-a\n+b"),
+            ] {
+                if let Some(mut lang) = lang_for(name) {
+                    for line in sample.lines() {
+                        let _ = tokens(line, &mut lang);
+                    }
+                }
+            }
+        });
 }
 
 /// Scope prefixes, most specific first. `storage.type.numeric` is a literal's suffix and
@@ -178,7 +222,10 @@ pub fn tokens(line: &str, lang: &mut Lang) -> Vec<(usize, usize, Token)> {
         return Vec::new();
     }
     let owned = format!("{line}\n");
-    let Ok(ops) = lang.state.parse_line(&owned, syntaxes()) else {
+    let parsing = yi_types::trace::span("tui.highlight_line");
+    let parsed = lang.state.parse_line(&owned, syntaxes());
+    drop(parsing);
+    let Ok(ops) = parsed else {
         lang.poisoned = true;
         return Vec::new();
     };
