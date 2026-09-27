@@ -4,8 +4,10 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
+use yi_types::plan::canonical::Digest;
 
 use super::doc::{Memory, MemoryName, Note, read_note};
+use super::journal::{self, Journal};
 
 const INDEX: &str = "MEMORY.md";
 const USAGE: &str = "usage.json";
@@ -23,6 +25,8 @@ pub enum StoreError {
         #[source]
         source: std::io::Error,
     },
+    #[error("ops.jsonl: a record did not serialize: {detail}")]
+    Journal { detail: String },
 }
 
 fn io(file: &str) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
@@ -169,14 +173,56 @@ pub struct Imported {
     pub skipped: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Saved {
+    pub updated: bool,
+    pub hash: Digest,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Rebuilt {
+    pub live: usize,
+    pub restored: usize,
+    pub forgotten: usize,
+    pub differ: Vec<String>,
+    pub missing: Vec<String>,
+    pub broken: Option<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Store {
     dir: PathBuf,
+    session: Option<String>,
 }
 
 impl Store {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self { dir, session: None }
+    }
+
+    pub fn with_session(mut self, session: Option<String>) -> Self {
+        self.session = session;
+        self
+    }
+
+    fn journal(&self) -> Journal<'_> {
+        Journal::new(&self.dir)
+    }
+
+    #[cfg(test)]
+    pub fn journal_sessions(&self) -> Vec<Option<String>> {
+        let replay = self.journal().replay().unwrap_or_default();
+        replay
+            .records
+            .into_iter()
+            .map(|record| record.session)
+            .collect()
+    }
+
+    fn append(&self, op: &str, name: &MemoryName, hash: Digest) -> Result<(), StoreError> {
+        self.journal()
+            .append(op, name.as_str(), hash, self.session.as_deref(), Map::new())
+            .map(|_record| ())
     }
 
     pub fn dir(&self) -> &Path {
@@ -289,6 +335,48 @@ impl Store {
             return Ok(Vec::new());
         }
         let _lock = self.lock()?;
+        self.sync_journal()?;
+        self.reconcile_index()
+    }
+
+    fn sync_journal(&self) -> Result<(), StoreError> {
+        let journal = self.journal();
+        let replay = journal.replay()?;
+        let heads = replay.heads();
+        let notes = self.notes();
+        for note in &notes {
+            let Some(text) = self.read_text(&note.name.file())? else {
+                continue;
+            };
+            let hash = Digest::of(text.as_bytes());
+            let op = match heads.get(note.name.as_str()) {
+                Some(head) if head.op == journal::FORGET => journal::ADOPT,
+                Some(head) if head.hash == hash => continue,
+                Some(_) => journal::EDIT,
+                None => journal::ADOPT,
+            };
+            journal.put_object(&text)?;
+            self.append(op, &note.name, hash)?;
+        }
+        for (name, head) in &heads {
+            if head.op == journal::FORGET || notes.iter().any(|note| note.name.as_str() == *name) {
+                continue;
+            }
+            journal.drop_objects(&replay, name)?;
+            let mut by = Map::new();
+            by.insert("by".to_owned(), Value::from("hand"));
+            journal.append(
+                journal::FORGET,
+                name,
+                head.hash,
+                self.session.as_deref(),
+                by,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn reconcile_index(&self) -> Result<Vec<IndexLine>, StoreError> {
         let lines = self.index()?;
         let notes = self.notes();
         let mut seen: Vec<MemoryName> = Vec::new();
@@ -319,7 +407,7 @@ impl Store {
         Ok(kept)
     }
 
-    pub fn save(&self, mut memory: Memory) -> Result<bool, StoreError> {
+    pub fn save(&self, mut memory: Memory) -> Result<Saved, StoreError> {
         let _lock = self.lock()?;
         let mut usage = self.usage_strict()?;
         let mut lines = self.index()?;
@@ -327,7 +415,9 @@ impl Store {
         if let Some(old) = &old {
             memory.carry(old);
         }
-        self.replace(&memory.name.file(), &memory.render())?;
+        let text = memory.render();
+        let hash = self.journal().put_object(&text)?;
+        self.replace(&memory.name.file(), &text)?;
         let line = IndexLine::Note {
             name: memory.name.clone(),
             text: memory.index_line(),
@@ -343,13 +433,27 @@ impl Store {
         entry.saves = entry.saves.saturating_add(1);
         entry.last = now();
         self.replace(USAGE, &render_usage(&usage))?;
-        Ok(old.is_some())
+        self.append(journal::SAVE, &memory.name, hash)?;
+        Ok(Saved {
+            updated: old.is_some(),
+            hash,
+        })
     }
 
-    pub fn forget(&self, name: &MemoryName) -> Result<(), StoreError> {
+    pub fn forget(&self, name: &MemoryName) -> Result<Digest, StoreError> {
         let _lock = self.lock()?;
         let mut usage = self.usage_strict()?;
         let mut lines = self.index()?;
+        let journal = self.journal();
+        let replay = journal.replay()?;
+        let hash = match self.read_text(&name.file())? {
+            Some(text) => Digest::of(text.as_bytes()),
+            None => replay
+                .heads()
+                .get(name.as_str())
+                .map_or_else(|| Digest::of(b""), |head| head.hash),
+        };
+        journal.drop_objects(&replay, name.as_str())?;
         match fs::remove_file(self.dir.join(name.file())) {
             Ok(()) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => {}
@@ -360,7 +464,70 @@ impl Store {
         if usage.notes.remove(name.as_str()).is_some() {
             self.replace(USAGE, &render_usage(&usage))?;
         }
-        Ok(())
+        self.append(journal::FORGET, name, hash)?;
+        Ok(hash)
+    }
+
+    pub fn mark_read(&self, name: &MemoryName) -> Result<Digest, StoreError> {
+        let _lock = self.lock()?;
+        let hash = Digest::of(self.read_text(&name.file())?.unwrap_or_default().as_bytes());
+        let mut usage = self.usage_strict()?;
+        let entry = usage.notes.entry(name.to_string()).or_default();
+        entry.reads = entry.reads.saturating_add(1);
+        entry.last = now();
+        self.replace(USAGE, &render_usage(&usage))?;
+        self.append(journal::READ, name, hash)?;
+        Ok(hash)
+    }
+
+    pub fn rebuild(&self) -> Result<Rebuilt, StoreError> {
+        let mut report = Rebuilt::default();
+        if !self.dir.is_dir() {
+            return Ok(report);
+        }
+        let _lock = self.lock()?;
+        let journal = self.journal();
+        let replay = journal.replay()?;
+        report.broken = replay.broken;
+        let mut usage = Usage {
+            sessions: self.usage().sessions,
+            ..Usage::default()
+        };
+        for record in &replay.records {
+            let entry = usage.notes.entry(record.name.clone()).or_default();
+            match record.op.as_str() {
+                journal::SAVE => entry.saves = entry.saves.saturating_add(1),
+                journal::READ => entry.reads = entry.reads.saturating_add(1),
+                _ => continue,
+            }
+            entry.last = entry.last.max(record.at);
+        }
+        for (name, head) in replay.heads() {
+            if head.op == journal::FORGET {
+                usage.notes.remove(name);
+                report.forgotten = report.forgotten.saturating_add(1);
+                continue;
+            }
+            report.live = report.live.saturating_add(1);
+            let Some(file) = MemoryName::from_stem(name).map(|name| name.file()) else {
+                continue;
+            };
+            match (self.read_text(&file)?, journal.object(&head.hash)) {
+                (Some(text), _) if Digest::of(text.as_bytes()) == head.hash => {}
+                (Some(_), _) => report.differ.push(name.to_owned()),
+                (None, Some(text)) => {
+                    self.replace(&file, &text)?;
+                    report.restored = report.restored.saturating_add(1);
+                }
+                (None, None) => report.missing.push(name.to_owned()),
+            }
+        }
+        usage
+            .notes
+            .retain(|name, _| MemoryName::from_stem(name).is_some());
+        self.replace(USAGE, &render_usage(&usage))?;
+        self.reconcile_index()?;
+        Ok(report)
     }
 
     pub fn record(&self, change: impl FnOnce(&mut Usage)) -> Result<(), StoreError> {
@@ -467,9 +634,9 @@ mod tests {
     fn save_update_forget_keep_the_index_in_step() {
         let dir = temp("cycle");
         let store = Store::new(dir.join("store"));
-        assert!(!store.save(note("alpha", "first hook")).unwrap());
-        assert!(!store.save(note("beta", "second hook")).unwrap());
-        assert!(store.save(note("alpha", "revised hook")).unwrap());
+        assert!(!store.save(note("alpha", "first hook")).unwrap().updated);
+        assert!(!store.save(note("beta", "second hook")).unwrap().updated);
+        assert!(store.save(note("alpha", "revised hook")).unwrap().updated);
         let index = fs::read_to_string(store.dir().join(INDEX)).unwrap();
         assert_eq!(
             index,
@@ -482,6 +649,180 @@ mod tests {
         let index = fs::read_to_string(store.dir().join(INDEX)).unwrap();
         assert_eq!(index, "- [beta](beta.md) — second hook\n");
         assert!(!store.dir().join("alpha.md").exists());
+    }
+
+    fn files_holding(dir: &Path, needle: &str) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(at) = stack.pop() {
+            for entry in fs::read_dir(&at).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if String::from_utf8_lossy(&fs::read(&path).unwrap()).contains(needle) {
+                    found.push(path);
+                }
+            }
+        }
+        found
+    }
+
+    fn ops(store: &Store) -> Vec<(String, String)> {
+        let replay = store.journal().replay().unwrap();
+        assert_eq!(replay.broken, None);
+        replay
+            .records
+            .iter()
+            .map(|record| (record.op.clone(), record.name.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_forget_leaves_no_copy_of_any_version_in_the_store() {
+        let dir = temp("forget");
+        let store = Store::new(dir.join("store"));
+        let secret = "the probe HOME sat under /tmp — 48 GB tmpfs, ✗ never again";
+        let body = |extra: &str| {
+            format!(
+                "---\nname: tmp\ndescription: tmp is RAM\ntype: feedback\n---\n{secret}{extra}\n"
+            )
+        };
+        store.save(draft(&body(""), &[]).unwrap().memory).unwrap();
+        store
+            .save(draft(&body(" (twice)"), &[]).unwrap().memory)
+            .unwrap();
+        store.save(note("keep", "kept hook")).unwrap();
+        assert_eq!(
+            files_holding(store.dir(), secret).len(),
+            3,
+            "two objects and the file"
+        );
+        store
+            .forget(&MemoryName::from_stem("tmp").unwrap())
+            .unwrap();
+        assert_eq!(files_holding(store.dir(), secret), Vec::<PathBuf>::new());
+        let report = store.rebuild().unwrap();
+        assert_eq!((report.live, report.forgotten), (1, 1));
+        assert!(!store.dir().join("tmp.md").exists());
+        assert!(store.dir().join("keep.md").exists());
+    }
+
+    #[test]
+    fn rebuild_restores_every_note_the_journal_holds() {
+        let dir = temp("rebuild");
+        let store = Store::new(dir.join("store"));
+        store.save(note("alpha", "first hook")).unwrap();
+        store.save(note("alpha", "revised hook")).unwrap();
+        store.save(note("beta", "second hook")).unwrap();
+        store
+            .mark_read(&MemoryName::from_stem("beta").unwrap())
+            .unwrap();
+        let alpha = fs::read(store.dir().join("alpha.md")).unwrap();
+        for file in ["alpha.md", "beta.md", INDEX, USAGE] {
+            fs::remove_file(store.dir().join(file)).unwrap();
+        }
+        let report = store.rebuild().unwrap();
+        assert_eq!((report.live, report.restored, report.forgotten), (2, 2, 0));
+        assert_eq!(fs::read(store.dir().join("alpha.md")).unwrap(), alpha);
+        let index = fs::read_to_string(store.dir().join(INDEX)).unwrap();
+        assert_eq!(
+            index,
+            "- [alpha](alpha.md) — revised hook\n- [beta](beta.md) — second hook\n"
+        );
+        let usage = store.usage();
+        assert_eq!(
+            usage.notes.get("alpha").map(|u| (u.saves, u.reads)),
+            Some((2, 0))
+        );
+        assert_eq!(
+            usage.notes.get("beta").map(|u| (u.saves, u.reads)),
+            Some((1, 1))
+        );
+    }
+
+    #[test]
+    fn rebuild_keeps_a_hand_edit_and_names_a_lost_object() {
+        let dir = temp("differ");
+        let store = Store::new(dir.join("store"));
+        store.save(note("alpha", "hook")).unwrap();
+        let hash = store.save(note("beta", "hook")).unwrap().hash;
+        fs::write(store.dir().join("alpha.md"), "hand edit\n").unwrap();
+        fs::remove_file(store.dir().join("beta.md")).unwrap();
+        fs::remove_file(store.dir().join("objects").join(hash.hex())).unwrap();
+        let report = store.rebuild().unwrap();
+        assert_eq!(report.differ, vec!["alpha".to_owned()]);
+        assert_eq!(report.missing, vec!["beta".to_owned()]);
+        assert_eq!(
+            fs::read_to_string(store.dir().join("alpha.md")).unwrap(),
+            "hand edit\n"
+        );
+    }
+
+    #[test]
+    fn reconcile_journals_adopts_hand_edits_and_hand_deletions() {
+        let dir = temp("adopt");
+        let store = Store::new(dir.join("store"));
+        fs::create_dir_all(store.dir()).unwrap();
+        let old =
+            "---\nname: old\ndescription: written before the journal\ntype: user\n---\nbody\n";
+        fs::write(store.dir().join("old.md"), old).unwrap();
+        store.reconcile().unwrap();
+        store.reconcile().unwrap();
+        assert_eq!(ops(&store), vec![("adopt".to_owned(), "old".to_owned())]);
+        fs::write(store.dir().join("old.md"), format!("{old}more\n")).unwrap();
+        store.reconcile().unwrap();
+        fs::remove_file(store.dir().join("old.md")).unwrap();
+        store.reconcile().unwrap();
+        let replay = store.journal().replay().unwrap();
+        let tail: Vec<&str> = replay
+            .records
+            .iter()
+            .map(|record| record.op.as_str())
+            .collect();
+        assert_eq!(tail, vec!["adopt", "edit", "forget"]);
+        let by = replay
+            .records
+            .last()
+            .and_then(|record| record.extra.get("by"));
+        assert_eq!(by, Some(&Value::from("hand")));
+        assert_eq!(
+            files_holding(store.dir(), "written before the journal"),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    #[test]
+    fn two_lanes_saving_at_once_keep_one_verified_chain() {
+        let dir = temp("lanes");
+        let lanes = [Store::new(dir.join("store")), Store::new(dir.join("store"))];
+        std::thread::scope(|scope| {
+            for i in 0..16 {
+                let lane = &lanes[i % 2];
+                scope.spawn(move || lane.save(note(&format!("n{i}"), "hook")).unwrap());
+            }
+        });
+        let saves = ops(&lanes[0]);
+        assert_eq!(saves.len(), 16);
+        assert!(saves.iter().all(|(op, _)| op == "save"));
+    }
+
+    #[test]
+    fn a_torn_last_line_is_cut_before_the_next_append() {
+        let dir = temp("torn");
+        let store = Store::new(dir.join("store"));
+        store.save(note("alpha", "hook")).unwrap();
+        let journal = store.dir().join("ops.jsonl");
+        let mut text = fs::read_to_string(&journal).unwrap();
+        text.push_str("{\"at\":1,\"na");
+        fs::write(&journal, &text).unwrap();
+        store.save(note("beta", "hook")).unwrap();
+        assert_eq!(
+            ops(&store),
+            vec![
+                ("save".to_owned(), "alpha".to_owned()),
+                ("save".to_owned(), "beta".to_owned())
+            ]
+        );
     }
 
     #[test]
