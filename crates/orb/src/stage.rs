@@ -185,7 +185,7 @@ pub fn render(points: &[Point]) -> OrbFrame {
             }
         })
         .collect();
-    finalize_frame(dots, Vec::new(), 0.3)
+    finalize_frame(dots, 0.3)
 }
 
 pub fn blend(from: &[Point], target: &[Point], perm: &[usize], f: f64) -> Vec<Point> {
