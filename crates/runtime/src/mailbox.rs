@@ -8,6 +8,7 @@ use yi_types::message::{AgentMessage, UserContent};
 use yi_types::subagent::{ChildResult, Discovery};
 
 use crate::family::Cause;
+pub use crate::mail::register_receive;
 use crate::mail::{Desk, Draft};
 use crate::subagent::{
     ChildExit, ChildRecord, INTERRUPTED, PARENT_NAME, Step, SubagentHost, last_assistant_text,
@@ -16,6 +17,8 @@ use crate::subagent::{
 pub(crate) const WAIT_MIN_MS: u64 = 1_000;
 pub(crate) const WAIT_MAX_MS: u64 = 300_000;
 const WAIT_POLL_MS: u64 = 100;
+/// Stuck is a function of time, so a family wait re-derives it on this cadence.
+const STUCK_CHECK_MS: u64 = 1_000;
 
 pub(crate) const CONTEXT_MAX_KEYS: usize = 8;
 pub(crate) const CONTEXT_VALUE_CAP: usize = 4_096;
@@ -86,11 +89,15 @@ fn receipt(target: &str, state: &str) -> Value {
     json!({"target": target, "state": state})
 }
 
-pub(crate) fn timeout_of(payload: &Map<String, Value>) -> u64 {
-    payload
-        .get("timeout_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(WAIT_MAX_MS)
+/// Invariant: a timeout the caller sent is refused or honoured, never replaced; only an absent
+/// one takes the cap, so `clamped` always compares against what was sent.
+pub(crate) fn timeout_of(payload: &Map<String, Value>) -> Result<u64, String> {
+    match payload.get("timeout_ms") {
+        None => Ok(WAIT_MAX_MS),
+        Some(sent) => sent.as_u64().ok_or_else(|| {
+            format!("timeout_ms {sent} is refused: a wait takes a whole number of milliseconds, 0 or more")
+        }),
+    }
 }
 
 /// The child half of §12 routing: a name is looked for locally, then in the family.
@@ -123,6 +130,7 @@ pub fn register_child_messaging(
         let own = Arc::clone(&own);
         Box::pin(async move {
             let (target, draft) = parsed?;
+            let timeout = timeout?;
             // A name this child holds is its own child; any other is the family's to find.
             if target != "parent" && own.holds(&target) {
                 return own
@@ -137,35 +145,6 @@ pub fn register_child_messaging(
     registry.register("agent_message.list_agents", move |_payload| {
         let reply = link.roster();
         Box::pin(async move { Ok(reply) })
-    });
-}
-
-pub fn register_receive(
-    session: &crate::session::AgentSession,
-    host: &Arc<SubagentHost>,
-    registry: &mut crate::kernel::HostRegistry,
-) {
-    let (take, host) = (session.mail_hook(), Arc::clone(host));
-    registry.register("rlm.receive", move |payload| {
-        let asked = timeout_of(&payload);
-        let clamped = asked.clamp(WAIT_MIN_MS, WAIT_MAX_MS);
-        let (take, host) = (Arc::clone(&take), Arc::clone(&host));
-        Box::pin(async move {
-            let started = std::time::Instant::now();
-            let deadline = std::time::Duration::from_millis(clamped);
-            loop {
-                let envelopes = take();
-                if !envelopes.is_empty() || started.elapsed() >= deadline {
-                    host.waited_on(!envelopes.is_empty());
-                    let mut reply = Map::new();
-                    reply.insert("envelopes".to_owned(), Value::Array(envelopes));
-                    reply.insert("timeout_ms".to_owned(), Value::from(clamped));
-                    reply.insert("clamped".to_owned(), Value::Bool(clamped != asked));
-                    return Ok(reply);
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(WAIT_POLL_MS)).await;
-            }
-        })
     });
 }
 
@@ -489,12 +468,20 @@ impl SubagentHost {
             .checked_add(std::time::Duration::from_millis(clamped))
             .unwrap_or_else(std::time::Instant::now);
         let since = cursor.unwrap_or(0);
-        let mut polls = 0_u32;
+        let stirred = self
+            .children
+            .lock()
+            .map(|children| Arc::clone(&children.stirred));
+        let stirred = stirred.map_err(|_| "family state poisoned")?;
+        let mut span = yi_types::trace::span("wait.family");
+        let mut stuck_check = std::time::Instant::now();
         loop {
-            if polls.is_multiple_of(10) {
+            let mut stir = std::pin::pin!(stirred.notified());
+            stir.as_mut().enable();
+            if stuck_check <= std::time::Instant::now() {
                 self.mark_stuck();
+                stuck_check += std::time::Duration::from_millis(STUCK_CHECK_MS);
             }
-            polls = polls.wrapping_add(1);
             let (epoch, moved, live) = self.changed_since(since);
             let quiet = bare && moved.is_empty() && live;
             let moved_on = epoch > since && !quiet;
@@ -509,9 +496,11 @@ impl SubagentHost {
                     self.waited_on(false);
                 }
                 let state = at_once.unwrap_or(if moved_on { "moved" } else { "timeout" });
+                span.set("state", state);
                 return Ok(self.wait_reply(state, epoch, &moved, clamped != timeout_ms, clamped));
             }
-            tokio::time::sleep(std::time::Duration::from_millis(WAIT_POLL_MS)).await;
+            let wake = tokio::time::Instant::from_std(stuck_check.min(deadline));
+            let _ = tokio::time::timeout_at(wake, stir).await;
         }
     }
 

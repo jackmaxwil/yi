@@ -15,6 +15,7 @@ pub mod host;
 pub mod kernel;
 mod kernel_bootstrap;
 mod kernel_doctor;
+mod kernel_state;
 mod kernel_variables;
 pub mod lane;
 pub mod lease;
@@ -42,7 +43,10 @@ pub mod tools;
 pub mod wall;
 pub mod wiring;
 
-pub use checkpoint::{RecordedCheckpoint, UndoOutcome, recorded, undo, wire_turn_checkpoints};
+pub use checkpoint::{
+    RecordedCheckpoint, UndoOutcome, describe_undo, recorded, undo, undo_notes,
+    wire_turn_checkpoints,
+};
 pub use compaction::{CompactStatus, Compactor};
 pub use ext::{ExtOptions, Host as ExtensionHost, Trust, TrustGate};
 pub use kernel::{
@@ -75,10 +79,9 @@ pub use yi_kernel::bootstrap::{python_root, unpack_embedded_python};
 pub fn workspace_sandbox(
     cwd: &std::path::Path,
     home: &std::path::Path,
-    session_dir: &std::path::Path,
+    session_dir: Option<&std::path::Path>,
 ) -> Option<yi_tools::Sandbox> {
-    yi_tools::Sandbox::available()
-        .then(|| yi_tools::Sandbox::for_workspace(cwd, home, Some(session_dir)))
+    yi_tools::Sandbox::available().then(|| yi_tools::Sandbox::for_workspace(cwd, home, session_dir))
 }
 
 pub fn identity_fragment() -> &'static str {

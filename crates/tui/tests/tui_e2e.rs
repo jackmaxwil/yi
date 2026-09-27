@@ -589,33 +589,64 @@ fn resizing_the_window_leaves_one_composer_border() -> TestResult {
 }
 
 #[test]
-fn a_running_turn_aims_the_mark_at_the_orb() -> TestResult {
-    let backend = VT100Backend::with_scrollback(80, 24, 200);
-    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+fn each_kind_of_work_puts_its_own_state_on_the_orb() -> TestResult {
+    use yi_orb::OrbState;
     let mut app = app();
-    app.set_kitty(true);
-
-    yi_tui::render::draw(&mut app, &mut terminal, None);
-    assert_eq!(
-        app.logo_target(),
-        0.0,
-        "at rest the mark holds the wordmark"
-    );
-
+    assert_eq!(app.orb_state(), None, "at rest the orb is the wordmark");
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
-    yi_tui::render::draw(&mut app, &mut terminal, None);
     assert_eq!(
-        app.logo_target(),
-        1.0,
-        "a running turn aims the morph at the orb"
+        app.orb_state(),
+        Some(OrbState::Awaiting),
+        "a turn that has produced nothing yet is waiting on the model"
     );
-
-    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
-    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let cases = [
+        ("read", OrbState::Reading),
+        ("grep", OrbState::Searching),
+        ("fetch", OrbState::Browsing),
+        ("edit", OrbState::Editing),
+        ("bash", OrbState::Executing),
+        ("ipython", OrbState::Computing),
+        ("todo", OrbState::Planning { done: 0, total: 0 }),
+        ("advisor", OrbState::Working),
+    ];
+    for (tool, state) in cases {
+        let mut working = self::app();
+        working.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+        working.reduce_agent(yi_types::event::AgentEvent::ToolExecutionStart {
+            tool_call_id: format!("call-{tool}"),
+            tool_name: tool.to_owned(),
+            args: serde_json::json!({}),
+        });
+        assert_eq!(working.orb_state(), Some(state), "a running {tool} call");
+    }
+    // A read ends in milliseconds; the orb keeps reading until the model streams again.
+    app.reduce_agent(yi_types::event::AgentEvent::ToolExecutionStart {
+        tool_call_id: "call-read".to_owned(),
+        tool_name: "read".to_owned(),
+        args: serde_json::json!({}),
+    });
+    app.reduce_agent(yi_types::event::AgentEvent::ToolExecutionEnd {
+        tool_call_id: "call-read".to_owned(),
+        tool_name: "read".to_owned(),
+        result: yi_types::event::ToolResult {
+            content: vec![],
+            details: serde_json::Value::Null,
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+        is_error: false,
+    });
     assert_eq!(
-        app.logo_target(),
-        0.0,
-        "the turn ending aims it back at the wordmark"
+        app.orb_state(),
+        Some(OrbState::Reading),
+        "a finished read holds the orb until the model streams again"
+    );
+    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
+    assert_eq!(
+        app.orb_state(),
+        None,
+        "the turn ending returns the orb to the wordmark"
     );
     Ok(())
 }

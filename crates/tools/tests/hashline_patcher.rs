@@ -695,14 +695,115 @@ fn an_anchor_past_the_end_is_not_called_unseen() -> TestResult {
     Ok(())
 }
 
-/// A bare body row `REM.` in a batch file is one mark from `REM`, which deletes the file.
+/// A bare body row `REM.` in a batch file is one mark from `REM`, which deletes the file:
+/// the refusal names the `+` form and never reads the row as an op.
 #[test]
 fn a_near_miss_never_reads_as_a_file_op() -> TestResult {
     let fixture = Fixture::new("near-miss-rem")?;
     fixture.write("run.bat", "@echo off\nexit\n")?;
     let tag = fixture.tag_of("run.bat")?;
-    let edit = fixture.edit(&format!("[run.bat#{tag}]\nPUT 1:\n@echo off\nREM.\n"));
-    assert!(!edit.is_error, "{}", output_text(&edit));
-    assert_eq!(fixture.content("run.bat")?, "@echo off\nREM.\nexit\n");
+    let edit = fixture.edit(&format!("[run.bat#{tag}]\nPUT 1:\n+@echo off\nREM.\n"));
+    let text = output_text(&edit);
+    assert!(edit.is_error, "{text}");
+    assert!(
+        text.contains("line 3:") && text.contains("`+TEXT`"),
+        "{text}"
+    );
+    assert_eq!(fixture.content("run.bat")?, "@echo off\nexit\n");
+    Ok(())
+}
+
+/// `PUT >N*:` on a bare inner line landed after that line with a warning; the docs call it
+/// WRONG. The closer case lowers to the form the docs call RIGHT and keeps its warning.
+#[test]
+fn an_insert_after_block_on_a_non_opener_is_refused() -> TestResult {
+    let fixture = Fixture::new("after-block-non-opener")?;
+    fixture.write("a.rs", "fn a() {\n    1\n}\nfn b() {\n    2\n}\n")?;
+    let tag = fixture.tag_of("a.rs")?;
+    let inner = fixture.edit(&format!("[a.rs#{tag}]\nPUT >2*:\n+// x\n"));
+    let text = output_text(&inner);
+    assert!(inner.is_error, "{text}");
+    assert!(text.contains("OPENS"), "{text}");
+    assert_eq!(
+        fixture.content("a.rs")?,
+        "fn a() {\n    1\n}\nfn b() {\n    2\n}\n"
+    );
+
+    let closer = fixture.edit(&format!("[a.rs#{tag}]\nPUT >3*:\n+// x\n"));
+    let text = output_text(&closer);
+    assert!(!closer.is_error, "{text}");
+    assert!(text.contains("applied as plain `PUT >3:`"), "{text}");
+    assert_eq!(
+        fixture.content("a.rs")?,
+        "fn a() {\n    1\n}\n// x\nfn b() {\n    2\n}\n"
+    );
+    Ok(())
+}
+
+fn ten_lines() -> String {
+    (1..=10).map(|n| format!("line {n}\n")).collect()
+}
+
+/// An unknown-tag rejection displayed lines 1-3 and recorded the live file with no seen set,
+/// so the next untagged edit could change line 7 blind.
+#[test]
+fn an_unknown_tag_rejection_displays_only_its_anchored_lines() -> TestResult {
+    let fixture = Fixture::new("mismatch-seen")?;
+    fixture.write("a.txt", &ten_lines())?;
+    let rejected = fixture.edit("[a.txt#0000]\nPUT 1.=1:\n+one\n");
+    assert!(rejected.is_error, "{}", output_text(&rejected));
+
+    let blind = fixture.edit("[a.txt]\nPUT 7.=7:\n+seven\n");
+    let text = output_text(&blind);
+    assert!(blind.is_error, "{text}");
+    assert!(text.contains("never displayed"), "{text}");
+    assert!(text.contains("7:line 7"), "{text}");
+    assert_eq!(fixture.content("a.txt")?, ten_lines());
+    Ok(())
+}
+
+/// A read that shows no rows recorded an empty seen set, which the guard read as unrestricted.
+#[test]
+fn a_read_that_shows_no_rows_displays_nothing() -> TestResult {
+    let fixture = Fixture::new("empty-view-seen")?;
+    fixture.write("a.txt", &ten_lines())?;
+    let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
+        args(&[("path", json!("a.txt")), ("limit", json!(0))]),
+        &fixture.context,
+    );
+    assert!(!read.is_error, "{}", output_text(&read));
+
+    let blind = fixture.edit("[a.txt]\nPUT 7.=7:\n+seven\n");
+    let text = output_text(&blind);
+    assert!(blind.is_error, "{text}");
+    assert!(text.contains("never displayed"), "{text}");
+    assert_eq!(fixture.content("a.txt")?, ten_lines());
+    Ok(())
+}
+
+/// A grep replace with `apply` shows a diff of the changed lines, yet marked every line seen.
+#[test]
+fn a_grep_apply_displays_only_the_lines_its_diff_shows() -> TestResult {
+    let fixture = Fixture::new("grep-apply-seen")?;
+    fixture.write("a.txt", &ten_lines())?;
+    let applied = yi_tools::GrepTool {
+        hashline: Some(std::sync::Arc::clone(&fixture.state)),
+    }
+    .execute(
+        args(&[
+            ("pattern", json!("line 2")),
+            ("replace", json!("LINE 2")),
+            ("apply", json!(true)),
+        ]),
+        &fixture.context,
+    );
+    assert!(!applied.is_error, "{}", output_text(&applied));
+
+    let near = fixture.edit("[a.txt]\nPUT 4.=4:\n+four\n");
+    assert!(!near.is_error, "{}", output_text(&near));
+    let blind = fixture.edit("[a.txt]\nPUT 9.=9:\n+nine\n");
+    let text = output_text(&blind);
+    assert!(blind.is_error, "{text}");
+    assert!(text.contains("never displayed"), "{text}");
     Ok(())
 }

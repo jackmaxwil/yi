@@ -10,6 +10,3 @@ workspace = true
 
 [dependencies]
 miniz_oxide = { workspace = true }
-
-[dev-dependencies]
-serde_json = { workspace = true }

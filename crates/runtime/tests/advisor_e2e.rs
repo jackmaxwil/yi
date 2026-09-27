@@ -126,7 +126,7 @@ async fn a_failure_streak_reaches_the_primary_through_nothing() -> TestResult {
     for _ in 0..3 {
         assert!(
             advisor.observe(&tool_result("bash", true), 0).is_none(),
-            "no cadence is set, so nothing may trigger a review"
+            "no review is forced, so nothing may trigger a review"
         );
     }
     let stats = advisor.stats();

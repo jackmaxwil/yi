@@ -12,7 +12,7 @@ const GAP_INITIAL_MS: f64 = 400.0;
 const GAP_WEIGHT: f64 = 0.3;
 /// The most one tick may spend: a late tick after a stall would otherwise reveal a screenful.
 const MAX_STEP_MS: f64 = 50.0;
-pub const FRAME: Duration = Duration::from_millis(16);
+pub const FRAME: Duration = crate::frame::MIN_FRAME_INTERVAL;
 
 /// The cursor between arrived text and painted text for one stream.
 #[derive(Debug, Clone)]

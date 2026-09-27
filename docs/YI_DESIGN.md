@@ -326,11 +326,13 @@ The kernel shells out: `rlm.mcp.list_tools|call_tool|reload|close` run `$YI_BIN 
 
 ### 7.7 Checkpoints
 A shadow gitdir `~/.yi/checkpoints/<xxh32 of project>/`, the project as work tree, one lock per
-gitdir. `capture` = `add --all` + `write-tree`. `restore` checks out every path changed since the
-tree and deletes paths created since, whoever wrote them. Turn start and end capture into
+gitdir. `capture` = `add --all` + `write-tree`. `restore` moves only the paths in the turn's
+start-to-end tree diff (`--no-renames`); a path changed after the turn is kept and named; a start
+with no paired end restores unscoped and says so. Turn start and end capture into
 `custom{checkpoint}`; `/undo` and `yi undo` restore the last turn start. Without git, a no-op.
 
 - Owner: [`tools`](../crates/tools/src/checkpoint.rs), [`types`](../crates/types/src/checkpoint.rs).
+  Settled by: D248.
 
 ### 7.8 Skills
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
@@ -738,14 +740,15 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
   `Todos done/total`; `ctrl+t` hides it), composer or bottom view, status row (model, effort,
   lane row, landing, cost, `used / window`, session name).
 - The palette is fixed: tier from `COLORTERM`/`TERM`, light or dark from `COLORFGBG` (default
-  dark). The orb is [`yi-orb`](../crates/orb/src/lib.rs), painted over kitty graphics.
+  dark). The orb is [`yi-orb`](../crates/orb/src/lib.rs) over kitty graphics: the `Yi` mark at rest and one
+  exact loop per agent state, left only at its exit points by a least-travel morph.
 - `yi tui --headless --keys <script> --frames <dir> [--record] [--snap]` drives the real loop on
   an in-memory screen (steps `key`, `type`, `type-ms`, `wait`, `wait-idle`, `wait-frame`, `quit`);
   it implies `--here` unless `--lanes`, and the drive flags are refused without `--headless`.
 - State: `Cell { User, Assistant, Thought, Tool, Explored, Task, Advisory, Notice, Footer, Rule,
   Divider }`.
 - Owner: [`app.rs`](../crates/tui/src/app.rs), [`drive.rs`](../crates/tui/src/drive.rs)
-- Settled by: D45, D47, D48, D73, D107, D126, D131, D136, D198, D199, D202, D204, D208
+- Settled by: D45, D47, D48, D73, D107, D126, D131, D136, D198, D199, D202, D204, D208, D256
 
 ### 17.4 Console
 `yi-console` is the workspace shell: an ACP client of the daemon (§17.2) on the alternate screen

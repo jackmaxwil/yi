@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 pub struct CheckpointData {
     pub tree: String,
     pub at: CheckpointAt,
+    /// On `Undo` only: the tree the restore left, so a redo moves only what the undo moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
 }
 
 /// `Undo` marks the state a restore replaced, which is what makes `yi undo`
