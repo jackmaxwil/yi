@@ -26,6 +26,7 @@ judge_replay.py              stage 0 judge replay over recorded sessions, read-o
 rule_fires.py                labelled haystack lanes against what the rule matcher can see
 journeys/ab.py               journey prompts under one prompt ref, scored by the session-mining extractor
 drivers/                     harbor sweep drivers, spend and wall caps (drivers/README.md)
+improve/                     one round's proposer half: a development-only corpus, a history-free snapshot, S0 (round.py, brief.md)
 trials/                      the trial store: one row per paid harbor trial, and the weekly budget it sums (trials/README.md)
 arc/yi_arc.py                ARC-AGI-3 bridge: one `yi ask --json --yolo` per action (arc/README.md)
 fixtures/                    recorded transcripts, v4 session files, runner tasks, live and surface scenarios
