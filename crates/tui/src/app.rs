@@ -149,18 +149,24 @@ pub struct App {
     /// Syntax parse state at `live_cut`: a string or comment that spans the cut
     /// keeps one colour instead of being re-lexed from the reopened fence.
     pub(crate) live_lang: Option<crate::highlight::Lang>,
+    pub(crate) live_seam: stream::Seam,
+    pub(crate) live_drawn: bool,
     pub(crate) live_thought: String,
     pub(crate) live_cut: usize,
     pub(crate) live_spaced: bool,
     /// The byte of `live_thought` already committed to scrollback, the mirror of
     /// `live_cut` for reasoning.
     pub(crate) live_thought_cut: usize,
+    pub(crate) live_thought_spaced: bool,
+    pub(crate) live_thought_seam: stream::Seam,
+    /// The content block the live stream starts at: a thought after prose opens a new one.
+    pub(crate) segment: usize,
     pub(crate) pacing: stream::Pacing,
     pub(crate) live_tools: Vec<ToolCell>,
     /// Finished read-only calls waiting to commit as one `Explored` cell.
     pub(crate) explored: Vec<ToolCell>,
-    last_commit_rows: usize,
-    last_commit_blank: bool,
+    pub(crate) last_commit_rows: usize,
+    pub(crate) last_commit_blank: bool,
     tool_started: HashMap<String, Instant>,
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
@@ -204,11 +210,20 @@ pub struct App {
     turn_started: Instant,
     turn_tools: u64,
     pub(crate) last_tool: Option<String>,
+    pub(crate) wait: Option<(yi_types::event::Wait, Instant)>,
+    pub(crate) claims: Vec<yi_types::todo::Claim>,
+    claims_before: Vec<String>,
+    turn_kinds: Vec<(&'static str, u32)>,
+    model_ms: u64,
+    model_since: Option<Instant>,
+    pub(crate) pen: Option<crate::pen::Pen>,
     turn_tokens: crate::status::TurnTokens,
     turn_cost: f64,
     pub(crate) width: usize,
     pub(crate) rows: usize,
     pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
+    /// The last pane paint's top row and each transcript row's cell, `None` on the live turn.
+    pub(crate) pane_rows: (u16, Vec<Option<usize>>),
 }
 
 pub use crate::frame::next_spinner_wake;
@@ -259,10 +274,15 @@ impl App {
             live_markdown: String::new(),
             live_reopen: None,
             live_lang: None,
+            live_seam: stream::Seam::default(),
+            live_drawn: false,
             live_spaced: true,
             live_thought: String::new(),
             live_cut: 0,
             live_thought_cut: 0,
+            live_thought_spaced: false,
+            live_thought_seam: stream::Seam::default(),
+            segment: 0,
             pacing: stream::Pacing::new(options.pace),
             live_tools: Vec::new(),
             explored: Vec::new(),
@@ -305,11 +325,19 @@ impl App {
             turn_started: Instant::now(),
             turn_tools: 0,
             last_tool: None,
+            wait: None,
+            claims: Vec::new(),
+            claims_before: Vec::new(),
+            turn_kinds: Vec::new(),
+            model_ms: 0,
+            model_since: None,
+            pen: None,
             turn_tokens: crate::status::TurnTokens::default(),
             turn_cost: 0.0,
             width,
             rows: 24,
             pane_hold: None,
+            pane_rows: (0, Vec::new()),
         };
         app.branch = crate::port::git_branch(&app.options.cwd);
         app.scheduler.request();
@@ -382,12 +410,22 @@ impl App {
     }
 
     fn reset_live(&mut self) {
+        self.clear_live();
+        self.segment = 0;
+        self.history.seal();
+    }
+
+    pub(crate) fn clear_live(&mut self) {
         self.live_markdown.clear();
         self.live_thought.clear();
         self.live_cut = 0;
         self.live_thought_cut = 0;
+        self.live_thought_spaced = false;
         self.live_reopen = None;
         self.live_lang = None;
+        self.live_seam = stream::Seam::default();
+        self.live_drawn = false;
+        self.live_thought_seam = stream::Seam::default();
         self.live_spaced = true;
         self.pacing.reset();
     }
@@ -413,10 +451,29 @@ impl App {
     }
 
     fn note_context(&mut self, message: &AgentMessage) {
-        if let AgentMessage::Assistant { usage, .. } = message {
-            self.context_used = u64::try_from(usage.total_tokens).unwrap_or(0);
+        if let AgentMessage::Assistant { .. } = message {
+            if let Some(tokens) = yi_runtime::reply_tokens(message) {
+                self.context_used = tokens.0;
+            }
             self.branch = crate::port::git_branch(&self.options.cwd);
         }
+    }
+
+    pub(crate) fn seed_context(&mut self, entries: &[yi_types::entry::Entry]) {
+        let last = entries.iter().rev().find_map(|entry| match entry {
+            yi_types::entry::Entry::Message { message, .. } => yi_runtime::reply_tokens(message),
+            _ => None,
+        });
+        if let Some(tokens) = last {
+            self.context_used = tokens.0;
+        }
+    }
+
+    pub(crate) fn open_user_turn(&mut self) {
+        if self.user_turns > 0 {
+            self.commit_cell(&Cell::Divider);
+        }
+        self.user_turns += 1;
     }
 
     pub fn take_pending_clear(&mut self) -> bool {
@@ -444,7 +501,11 @@ impl App {
     /// paints through `paint_pane`, which never saw the port, so its HUD stayed empty.
     pub fn sync_port(&mut self, port: Option<&dyn SessionPort>) {
         self.plan_progress = port.and_then(|port| port.plan_progress());
-        self.todos = port.and_then(|port| port.todo_list());
+        let todos = port.and_then(|port| port.todo_list());
+        if let Some(claims) = port.and_then(|port| port.claims(todos != self.todos)) {
+            self.claims = claims;
+        }
+        self.todos = todos;
         // ponytail: an idle console pane folds its list on the next event, not at the deadline.
         self.todo_clock.observe(self.todos.as_ref(), Instant::now());
     }
@@ -508,30 +569,30 @@ impl App {
             self.pending_prompt_mark = true;
         }
         // Incident: a console replay rendered every cell for scrollback the pane drops (1.3 s).
-        if self.pane {
-            self.retain(cell.clone());
-            self.scheduler.request();
-            return;
+        if !self.pane {
+            let spinner = self.spinner_phase();
+            let width = self.content_width();
+            let rendering = yi_types::trace::span("tui.cell_lines");
+            let mut lines = cell.lines(width, &self.theme, self.mode, spinner);
+            drop(rendering);
+            let blank = crate::history::is_blank;
+            // A blank separates blocks, never a run of one-line calls, measured
+            // from what the previous cell rendered — all an append path knows.
+            if crate::history::separated(self.last_commit_rows, self.last_commit_blank, &lines) {
+                self.pending_commit.push(Line::default());
+            }
+            if lines.first().is_some_and(blank) && self.last_commit_blank {
+                lines.remove(0);
+            }
+            self.last_commit_rows = lines.len();
+            self.last_commit_blank = lines.last().is_some_and(blank);
+            self.pending_commit.extend(lines);
         }
-        let spinner = self.spinner_phase();
-        let width = self.content_width();
-        let rendering = yi_types::trace::span("tui.cell_lines");
-        let mut lines = cell.lines(width, &self.theme, self.mode, spinner);
-        drop(rendering);
-        let blank = |line: &Line<'_>| line.spans.iter().all(|s| s.content.trim().is_empty());
-        // A blank separates blocks, never a run of one-line calls, measured
-        // from what the previous cell rendered — all an append path knows.
-        let leads_blank = lines.first().is_some_and(blank);
-        if leads_blank && self.last_commit_blank {
-            lines.remove(0);
-        }
-        if self.last_commit_rows > 1 && lines.len() > 1 && !leads_blank && !self.last_commit_blank {
-            self.pending_commit.push(Line::default());
-        }
-        self.last_commit_rows = lines.len();
-        self.last_commit_blank = lines.last().is_some_and(blank);
-        self.pending_commit.extend(lines);
         self.retain(cell.clone());
+        // Only a streamed message's own slices merge; the next one opens its cell afresh.
+        self.history.seal();
+        self.live_drawn = false;
+        self.live_thought_spaced = true;
         self.scheduler.request();
     }
 
@@ -539,9 +600,16 @@ impl App {
         self.history.retain(cell);
     }
 
+    pub fn pane_row(&self, y: u16) -> Option<Option<(usize, Option<&str>)>> {
+        let (top, rows) = &self.pane_rows;
+        let owner = *rows.get(usize::from(y.checked_sub(*top)?))?;
+        Some(owner.map(|index| (index, self.history.source(index))))
+    }
+
     pub fn reflowed(&self, rows: usize) -> Vec<Line<'static>> {
         self.history
             .lines(self.content_width(), &self.theme, self.mode, rows)
+            .0
     }
 
     pub(crate) fn reset_transcript(&mut self) {
@@ -549,10 +617,31 @@ impl App {
         self.pending_commit.clear();
         self.reset_live();
         self.live_tools.clear();
+        self.user_turns = 0;
     }
 
     pub fn take_title(&mut self) -> Option<String> {
         self.pending_title.take()
+    }
+
+    pub fn cwd(&self) -> &str {
+        &self.options.cwd
+    }
+
+    pub fn working_label(&self) -> Option<String> {
+        let state = self.orb_state()?;
+        let waiting = self
+            .wait
+            .as_ref()
+            .filter(|_| self.running)
+            .map(|(wait, since)| {
+                crate::pen::wait_label(wait, *since, &self.selection.model.provider)
+            });
+        Some(
+            waiting
+                .or_else(|| self.intent.clone())
+                .unwrap_or_else(|| state.label().to_owned()),
+        )
     }
 
     pub fn orb_state(&self) -> Option<OrbState> {
@@ -562,6 +651,12 @@ impl App {
         if !self.running {
             return None;
         }
+        match self.wait.as_ref().map(|(wait, _)| wait) {
+            Some(yi_types::event::Wait::Retry { .. }) => return Some(OrbState::Stalled),
+            Some(yi_types::event::Wait::Compaction { .. }) => return Some(OrbState::Condensing),
+            Some(yi_types::event::Wait::KernelBoot { .. }) => return Some(OrbState::KernelBoot),
+            None => {}
+        }
         if let Some(tool) = self
             .live_tools
             .iter()
@@ -569,6 +664,9 @@ impl App {
             .find(|t| t.status == ToolStatus::Running)
         {
             return Some(self.tool_state(&tool.name));
+        }
+        if let Some(pen) = &self.pen {
+            return Some(self.tool_state(&pen.name));
         }
         let children = self
             .tasks
@@ -633,6 +731,8 @@ impl App {
             AgentEvent::AgentEnd { .. } => {
                 self.running = false;
                 self.intent = None;
+                self.wait = None;
+                self.pen = None;
                 self.esc_armed_at = None;
                 self.steering.clear();
                 self.live_tools.clear();
@@ -643,6 +743,8 @@ impl App {
             }
             AgentEvent::MessageStart { message } => {
                 if let AgentMessage::Assistant { .. } = &message {
+                    self.model_since = Some(Instant::now());
+                    self.segment = 0;
                     return self.streaming = Some(message);
                 }
                 let attribution = message.attribution();
@@ -662,10 +764,7 @@ impl App {
                         }
                     }
                     Attribution::User => {
-                        if self.user_turns > 0 {
-                            self.commit_cell(&Cell::Divider);
-                        }
-                        self.user_turns += 1;
+                        self.open_user_turn();
                         let mut focus = text.split_whitespace().collect::<Vec<_>>().join(" ");
                         if focus.chars().count() > 40 {
                             focus = focus.chars().take(39).collect::<String>() + "…";
@@ -679,9 +778,28 @@ impl App {
             }
             AgentEvent::MessageUpdate {
                 assistant_message_event,
-            } => self.fold_stream(&assistant_message_event),
+            } => {
+                if matches!(self.wait, Some((yi_types::event::Wait::Retry { .. }, _))) {
+                    self.wait = None;
+                }
+                self.fold_stream(&assistant_message_event);
+            }
+            AgentEvent::Wait { wait } => {
+                if let Some(warning) = wait.as_ref().and_then(yi_types::event::Wait::warning) {
+                    self.notice(warning);
+                }
+                self.wait = wait.map(|wait| (wait, Instant::now()));
+                self.scheduler.request();
+            }
             AgentEvent::MessageEnd { message } => {
                 self.streaming = None;
+                self.pen = None;
+                if let Some(since) = self.model_since.take() {
+                    self.model_ms = self.model_ms.saturating_add(elapsed_ms(since));
+                }
+                if matches!(self.wait, Some((yi_types::event::Wait::Retry { .. }, _))) {
+                    self.wait = None;
+                }
                 self.note_context(&message);
                 self.reduce_message_end(&message);
             }
@@ -747,16 +865,28 @@ impl App {
                 self.cost_unknown |= usage.unknown;
                 self.turn_tokens.record(usage);
                 self.turn_cost += usage.cost.total.as_f64().unwrap_or(0.0);
-                self.live_thought = thinking_of(content);
+                self.close_segments(content);
+                let open = content.get(self.segment..).unwrap_or_default();
+                // Incident: an error end carries no content and erased text the reader saw, so the end
+                // replaces what streamed only when it extends it.
+                let thought = thinking_of(open);
+                if thought.starts_with(self.live_thought.as_str()) {
+                    self.live_thought = thought;
+                }
                 self.flush_thought();
-                self.live_markdown = text_of(content);
+                let prose = crate::transcript::prose_of(open);
+                if prose.starts_with(self.live_markdown.as_str()) {
+                    self.live_markdown = prose;
+                }
                 self.commit_prose(self.live_markdown.len(), true);
                 self.scheduler.request();
                 self.reset_live();
-                if *stop_reason == StopReason::Error {
-                    let text = error_message
-                        .clone()
-                        .unwrap_or_else(|| "provider error".to_owned());
+                // A retried stream fails with the same words twice; one line says it.
+                let text = error_message
+                    .clone()
+                    .unwrap_or_else(|| "provider error".to_owned());
+                let repeated = matches!(self.history.last(), Some(Cell::Notice { text: last }) if *last == text);
+                if *stop_reason == StopReason::Error && !repeated {
                     self.commit_cell(&Cell::Notice { text });
                 }
             }
@@ -849,6 +979,14 @@ impl App {
         self.esc_armed_at = None;
         self.turn_started = Instant::now();
         self.turn_tools = 0;
+        self.turn_kinds.clear();
+        self.claims_before = self
+            .claims
+            .iter()
+            .map(|claim| claim.label.clone())
+            .collect();
+        self.model_ms = 0;
+        self.model_since = None;
         self.last_tool = None;
         self.turn_tokens = crate::status::TurnTokens::default();
         self.turn_cost = 0.0;
@@ -866,18 +1004,41 @@ impl App {
             return;
         }
         let tools = usize::try_from(self.turn_tools).unwrap_or(usize::MAX);
-        let mut text = format!(
-            "{} · {} · {} in / {} out",
-            crate::cell::count_label(tools, "tool"),
-            crate::cell::elapsed_label(elapsed_ms(self.turn_started)),
+        let kinds: Vec<String> = self
+            .turn_kinds
+            .iter()
+            .map(|(verb, count)| format!("{verb} {count}"))
+            .collect();
+        let head = if kinds.is_empty() {
+            crate::cell::count_label(tools, "tool")
+        } else {
+            kinds.join(" · ")
+        };
+        let elapsed = elapsed_ms(self.turn_started);
+        let mut text = format!("{head} · {}", crate::cell::elapsed_label(elapsed));
+        if self.model_ms > 0 && elapsed > 0 {
+            text.push_str(&format!(" · model {}%", self.model_ms * 100 / elapsed));
+        }
+        text.push_str(&format!(
+            " · {} in / {} out",
             crate::status::fmt_tokens(input),
             crate::status::fmt_tokens(output),
-        );
+        ));
         if cached > 0 {
             text.push_str(&format!(" · {}% cached", cached * 100 / input.max(1)));
         }
         if self.turn_cost > 0.0 {
             text.push_str(&format!(" · ${:.3}", self.turn_cost));
+        }
+        let closed: Vec<_> = self
+            .claims
+            .iter()
+            .filter(|claim| !self.claims_before.contains(&claim.label))
+            .collect();
+        let observed = closed.iter().filter(|c| c.observed.is_some()).count();
+        if closed.len() > observed {
+            let claimed = closed.len() - observed;
+            text.push_str(&format!(" · done {observed} observed, {claimed} claimed"));
         }
         self.commit_cell(&Cell::Footer { text });
     }

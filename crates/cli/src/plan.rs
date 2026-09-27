@@ -63,6 +63,7 @@ fn apply(line: &str, options: &Options) -> i32 {
         let resolver =
             Resolver::new(options.cwd.clone(), Wall::default()).with_plans_dir(plans.clone());
         let mut engine = PlanEngine::new(store, Arc::new(Unhosted))
+            .unhosted()
             .with_cwd(options.cwd.clone())
             .with_output_resolve(Arc::new(resolver));
         // The same snapshot the session mints (plan section 6.5): a contracted `done` from the

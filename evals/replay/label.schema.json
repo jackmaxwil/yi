@@ -1,0 +1,54 @@
+{
+ "type": "object",
+ "required": [
+  "label",
+  "kind",
+  "objection",
+  "quote",
+  "rests_on"
+ ],
+ "properties": {
+  "label": {
+   "type": "string",
+   "enum": [
+    "objected",
+    "check_revealed",
+    "accepted"
+   ]
+  },
+  "kind": {
+   "type": "string",
+   "enum": [
+    "intent_loss",
+    "new_info",
+    ""
+   ]
+  },
+  "objection": {
+   "type": "string"
+  },
+  "quote": {
+   "type": "string"
+  },
+  "rests_on": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "msg",
+     "quote"
+    ],
+    "properties": {
+     "msg": {
+      "type": "string"
+     },
+     "quote": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
+  }
+ },
+ "additionalProperties": false
+}

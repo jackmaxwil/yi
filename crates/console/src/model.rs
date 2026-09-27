@@ -37,6 +37,24 @@ impl SessionStatus {
         }
     }
 
+    pub fn need(self) -> usize {
+        match self {
+            Self::Blocked => 0,
+            Self::DoneUnseen => 1,
+            Self::Working => 2,
+            Self::Idle => 3,
+            Self::Unknown => 4,
+        }
+    }
+
+    pub fn section(self) -> &'static str {
+        match self {
+            Self::Blocked | Self::DoneUnseen => "needs you",
+            Self::Working => "working",
+            Self::Idle | Self::Unknown => "idle",
+        }
+    }
+
     pub fn from_state(state: &AcpState, seen: bool) -> Self {
         match state {
             AcpState::Running => Self::Working,
@@ -186,6 +204,13 @@ pub enum PaneContent {
     },
     SessionDiff {
         session: SessionId,
+        scope: ReviewScope,
+    },
+    Tape {
+        session: SessionId,
+        tape: Option<yi_types::tape::Tape>,
+        cursor: usize,
+        armed: bool,
     },
     Editor(Editor),
 }
@@ -237,11 +262,49 @@ pub struct FileDiff {
     pub added: u64,
     pub removed: u64,
     pub tracked: bool,
+    pub serving: Option<String>,
+    pub turn: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReviewScope {
+    #[default]
+    Branch,
+    Turn,
+    Session,
+}
+
+impl ReviewScope {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Branch => Self::Turn,
+            Self::Turn => Self::Session,
+            Self::Session => Self::Branch,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Branch => "branch",
+            Self::Turn => "turn",
+            Self::Session => "session",
+        }
+    }
 }
 
 #[derive(Default)]
 pub struct SessionDiff {
     pub files: Vec<(String, FileDiff)>,
+    pub turn: u64,
+    pub reads: BTreeMap<String, u32>,
+    pub branch: Option<yi_types::lane::BranchDiff>,
+    pub branch_due: bool,
+    pub tape_due: bool,
+    pub selected: usize,
+    pub why: BTreeMap<String, Vec<String>>,
+    pub why_due: Option<(String, Vec<u32>)>,
+    /// The title a second `l` lands under; any other key clears it.
+    pub land_armed: Option<String>,
 }
 
 const MAX_DIFF_FILES: usize = 512;
@@ -307,6 +370,7 @@ impl Pane {
             PaneContent::Markdown { .. }
             | PaneContent::Diff { .. }
             | PaneContent::SessionDiff { .. }
+            | PaneContent::Tape { .. }
             | PaneContent::Editor(_) => None,
         }
     }
@@ -419,7 +483,31 @@ impl ConsoleState {
         self.panes.values().any(|pane| pane.session() == Some(id))
     }
 
+    /// Invariant: a red gate is known only from a chat's landing stream, so a session no pane
+    /// or parked chat holds ranks by its status alone.
+    pub fn need_of(&self, row: &SessionRow) -> usize {
+        let red = self.chat(&row.id).is_some_and(|chat| chat.app.gate_red());
+        match row.status.need() {
+            need @ (0 | 1) => need,
+            _ if red => 2,
+            need => need.saturating_add(1),
+        }
+    }
+
     /// Every chat showing the session, across every tab.
+    pub fn chat(&self, id: &SessionId) -> Option<&Chat> {
+        self.panes
+            .values()
+            .find_map(|pane| match &pane.content {
+                PaneContent::Session {
+                    session: Some(bound),
+                    chat: Some(chat),
+                } if bound == id => Some(chat.as_ref()),
+                _ => None,
+            })
+            .or_else(|| self.parked.get(id).map(Box::as_ref))
+    }
+
     pub fn chats_mut(&mut self, id: &SessionId) -> Vec<&mut Chat> {
         let parked = self.parked.get_mut(id).map(Box::as_mut);
         self.panes
@@ -451,7 +539,12 @@ impl ConsoleState {
         match self.sessions.get_mut(&row.id) {
             Some(existing) => {
                 existing.root = row.root;
-                existing.status = row.status;
+                // Invariant: done stays loud until a focus clears it; no poll can.
+                if !(existing.status == SessionStatus::DoneUnseen
+                    && row.status == SessionStatus::Idle)
+                {
+                    existing.status = row.status;
+                }
                 existing.attached = row.attached;
                 existing.name = row.name.or(existing.name.take());
                 existing.created_ms = existing.created_ms.max(row.created_ms);
@@ -493,13 +586,12 @@ impl ConsoleState {
             })
             .map(|(index, _)| index)
             .collect();
-        let roots = self.roots();
         rows.sort_by_key(|index| {
             let row = self.order.get(*index).and_then(|id| self.sessions.get(id));
-            let rank = row
-                .and_then(|row| roots.iter().position(|root| *root == row.root))
-                .unwrap_or(usize::MAX);
-            (rank, std::cmp::Reverse(row.map_or(0, SessionRow::recency)))
+            (
+                row.map_or(usize::MAX, |row| self.need_of(row)),
+                std::cmp::Reverse(row.map_or(0, SessionRow::recency)),
+            )
         });
         rows
     }

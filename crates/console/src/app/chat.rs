@@ -141,9 +141,9 @@ impl App {
             {
                 // Incident: resetting the scroll here pinned every reader to the bottom mid-turn.
                 let _ = chat.events.0.send(make());
+                self.dirty = true;
             }
         }
-        self.dirty = true;
     }
 
     pub(super) fn drop_frame(&mut self) {
@@ -155,7 +155,7 @@ impl App {
         &mut self,
         outbound: &Outbound,
         id: &SessionId,
-        extension: &AcpExtensionUpdate,
+        extension: AcpExtensionUpdate,
     ) {
         let Ok(decoded) = decode(extension) else {
             return self.drop_frame();
@@ -195,7 +195,33 @@ impl App {
                 }
                 self.dirty = true;
             }
-            Decoded::Config(config) => self.apply_config(id, &config, true),
+            Decoded::Name(name) => {
+                if let Some(row) = self.state.sessions.get_mut(id) {
+                    row.name = Some(name.clone());
+                }
+                for chat in self.state.chats_mut(id) {
+                    chat.app.set_session_name(name.clone());
+                }
+                self.dirty = true;
+            }
+            Decoded::Claims(claims) => {
+                for chat in self.state.chats_mut(id) {
+                    chat.port.set_claims(claims.clone());
+                }
+                self.dirty = true;
+            }
+            Decoded::Plan(plan) => {
+                for chat in self.state.chats_mut(id) {
+                    chat.port.set_plan(plan.clone());
+                }
+                self.dirty = true;
+            }
+            Decoded::Config(config) => {
+                // A pick's two requests each echo a frame before their answers; only the last announces.
+                let own = RequestKind::SetConfig(id.clone());
+                let in_flight = self.pending.values().filter(|p| p.kind == own).count();
+                self.apply_config(id, &config, in_flight <= 1);
+            }
             Decoded::Child(child) => {
                 keep_child_row(self.state.children.entry(id.clone()).or_default(), &child);
                 self.fan_out(id, || UiEvent::ChildUpdates(vec![child.clone()]));
@@ -496,11 +522,13 @@ impl App {
                 "sessionId": session.0,
                 "cwd": root,
                 "replayFrom": offset.unwrap_or(0),
+                "replayUpdates": false,
             }),
         );
     }
 
     pub(super) fn pump_chats(&mut self, outbound: &Outbound) {
+        self.ask_branches(outbound);
         let ids: Vec<PaneId> = self.state.panes.keys().copied().collect();
         for pane_id in ids {
             let Some(session) = self
@@ -644,6 +672,12 @@ impl App {
                 "_yi/rewind",
                 json!({"sessionId": id, "entryId": entry_id}),
             ),
+            PortRequest::RewindFiles(entry_id) => self.send_request(
+                outbound,
+                RequestKind::Rewind(session.clone()),
+                "_yi/rewind",
+                json!({"sessionId": id, "entryId": entry_id, "files": true}),
+            ),
             PortRequest::Undo => self.send_request(
                 outbound,
                 RequestKind::Slash(session.clone()),
@@ -661,13 +695,13 @@ impl App {
                 drop(model);
                 self.send_request(
                     outbound,
-                    RequestKind::SetConfig,
+                    RequestKind::SetConfig(session.clone()),
                     "session/set_config_option",
                     json!({"sessionId": id, "configId": "model", "value": value}),
                 );
                 self.send_request(
                     outbound,
-                    RequestKind::SetConfig,
+                    RequestKind::SetConfig(session.clone()),
                     "session/set_config_option",
                     json!({"sessionId": id, "configId": "thought_level", "value": effort.to_string()}),
                 );
@@ -711,6 +745,177 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_file_restore_from_the_tape_waits_for_a_second_press() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use yi_types::tape::{Mark, MarkKind, Tape};
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        let session = SessionId("s-a".to_owned());
+        let pane = app.state.focused_pane_id().expect("a pane");
+        let chat = app.make_chat(pane, &session);
+        app.state.parked.insert(session.clone(), chat);
+        if let Some(focused) = app.state.focused_pane_mut() {
+            focused.content = PaneContent::Tape {
+                session: session.clone(),
+                tape: Some(Tape {
+                    start: 0,
+                    end: 10,
+                    marks: vec![Mark {
+                        at: 0,
+                        kind: MarkKind::User,
+                        entry: "u1".to_owned(),
+                        label: "first".to_owned(),
+                    }],
+                    ..Tape::default()
+                }),
+                cursor: 0,
+                armed: false,
+            };
+        }
+        let press = |app: &mut App| {
+            app.tape_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        };
+        let queued = |app: &mut App| {
+            app.state
+                .chats_mut(&session)
+                .into_iter()
+                .map(|chat| chat.port.queue.len())
+                .sum::<usize>()
+        };
+        press(&mut app);
+        assert_eq!(queued(&mut app), 0, "the first press only arms");
+        press(&mut app);
+        assert!(matches!(
+            app.state.chats_mut(&session).into_iter().next().and_then(|chat| chat.port.queue.first()),
+            Some(super::super::port::PortRequest::RewindFiles(entry)) if entry == "u1"
+        ));
+    }
+
+    /// Dies with `w` doing nothing after ↓ ran past the last file or a scope switch shortened
+    /// the list, while the `▸` still sat on a file; then with every blame error read as uncommitted.
+    #[test]
+    fn why_asks_for_the_marked_file_and_its_rows_say_why_a_chain_is_missing() {
+        use crate::model::{FileDiff, ReviewScope};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        let session = SessionId("s-a".to_owned());
+        if let Some(focused) = app.state.focused_pane_mut() {
+            focused.content = PaneContent::SessionDiff {
+                session: session.clone(),
+                scope: ReviewScope::Session,
+            };
+        }
+        let diff = app.state.diffs.entry(session.clone()).or_default();
+        for path in ["src/a.rs", "src/b.rs"] {
+            let patch = format!("--- a/{path}\n+++ b/{path}\n@@ -1 +1,2 @@\n line\n+added\n");
+            let file = FileDiff {
+                patch,
+                added: 1,
+                removed: 0,
+                tracked: true,
+                serving: None,
+                turn: 0,
+            };
+            diff.files.push((path.to_owned(), file));
+        }
+        let key = |app: &mut App, code: KeyCode| {
+            app.review_key(KeyEvent::new(code, KeyModifiers::NONE));
+        };
+        let asked = |app: &mut App| {
+            app.state
+                .diffs
+                .get_mut(&session)
+                .and_then(|diff| diff.why_due.take())
+                .map(|(path, _)| path)
+        };
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Down);
+        }
+        key(&mut app, KeyCode::Char('w'));
+        assert_eq!(asked(&mut app).as_deref(), Some("src/b.rs"), "past the end");
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Char('s'));
+        }
+        key(&mut app, KeyCode::Char('w'));
+        assert_eq!(
+            asked(&mut app).as_deref(),
+            Some("src/a.rs"),
+            "a scope switch"
+        );
+
+        let mut answers = vec![
+            serde_json::json!({"line": 2, "uncommitted": true}),
+            serde_json::json!({"line": 40, "error": "git blame failed: fatal: file src/a.rs has only 3 lines"}),
+        ];
+        answers.extend((3..9).map(
+            |n| serde_json::json!({"line": n * 10, "commit": "1a2b3c4d5e6f", "subject": "Add a"}),
+        ));
+        let reply = serde_json::json!({"path": "src/a.rs", "cap": 8, "unasked": [90, 120], "answers": answers});
+        app.absorb_why(&session, &reply);
+        let (_, lines) = crate::render::review_view(
+            app.state.diffs.get(&session),
+            ReviewScope::Session,
+            "",
+            200,
+            &theme,
+        );
+        let rows: Vec<String> = lines.iter().map(ToString::to_string).collect();
+        for row in [
+            "  ↳ L2 not committed yet, so no chain",
+            "  ↳ L40 no chain: git blame failed: fatal: file src/a.rs has only 3 lines",
+            "  […] 8 of 10 hunks asked (_yi/why answers 8 a call); the next: yi why src/a.rs:90",
+        ] {
+            assert!(rows.iter().any(|drawn| drawn == row), "{row}\n{rows:#?}");
+        }
+    }
+
+    #[test]
+    fn a_red_gate_ranks_between_done_and_working() {
+        use crate::model::{SessionRow, SessionStatus};
+        use yi_types::lane::{JobState, Landing, LandingJob, PrNumber};
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        for (id, status, last_ms) in [
+            ("s-work", SessionStatus::Working, 30),
+            ("s-red", SessionStatus::Working, 10),
+            ("s-done", SessionStatus::DoneUnseen, 5),
+        ] {
+            app.state.upsert_row(SessionRow {
+                id: SessionId(id.to_owned()),
+                root: "/r".to_owned(),
+                status,
+                attached: true,
+                name: Some(id.to_owned()),
+                created_ms: 0,
+                last_ms,
+            });
+        }
+        let red = SessionId("s-red".to_owned());
+        let pane = app.state.focused_pane_id().expect("a pane");
+        let mut chat = app.make_chat(pane, &red);
+        chat.app
+            .reduce_agent(yi_types::event::AgentEvent::LandingState {
+                landing: Landing::Open {
+                    pr: PrNumber(612),
+                    jobs: vec![LandingJob {
+                        name: "gate (test)".to_owned(),
+                        state: JobState::Red,
+                    }],
+                    behind: 0,
+                },
+            });
+        app.state.parked.insert(red, chat);
+        let order: Vec<String> = app
+            .state
+            .visible_rows()
+            .into_iter()
+            .filter_map(|index| app.state.order.get(index).map(|id| id.0.clone()))
+            .collect();
+        assert_eq!(order, ["s-done", "s-red", "s-work"]);
+    }
     use super::*;
     use yi_types::subagent::{ChildActivity, ChildId};
 

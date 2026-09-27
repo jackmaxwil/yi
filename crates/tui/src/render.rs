@@ -117,21 +117,24 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
             .live_thought
             .get(app.live_thought_cut..app.pacing.thought.shown())
             .unwrap_or_default();
-        let rendered = crate::cell::thought_lines(
-            tail,
-            content_width,
-            theme,
-            app.mode,
-            app.live_thought_cut == 0,
-        );
-        live_lines.extend(live_tail(rendered, app.rows));
+        let tail = crate::transcript::fence_tail(tail, live_tail_rows(app.rows));
+        let tail = crate::transcript::close_spans(&tail);
+        live_lines.extend(live_tail(app.thought_block(&tail), app.rows));
     }
     if !app.live_markdown.is_empty() {
         let tail = app
             .live_markdown
             .get(app.live_cut..app.pacing.prose.shown())
             .unwrap_or_default();
-        live_lines.extend(app.prose_block(tail).0);
+        let tail = match app.live_reopen {
+            Some(_) => std::borrow::Cow::Borrowed(tail),
+            None => crate::transcript::close_spans(tail),
+        };
+        let _span = yi_types::trace::span("tui.live_tail");
+        live_lines.extend(app.prose_block(&tail).0);
+    }
+    if let Some(pen) = &app.pen {
+        live_lines.extend(Cell::Tool(pen.card()).lines(content_width, theme, app.mode, spinner));
     }
     for tool in &app.live_tools {
         live_lines.extend(tool.lines(content_width, theme, app.mode, spinner));
@@ -236,14 +239,13 @@ pub fn layout_chat(
     let orb_state = app.orb_state();
     // On kitty the mark is always on screen, spelling `Yi` at rest and rearranging into
     // the orb for the turn. Elsewhere the plain spinner line appears only while a turn runs.
+    let esc_armed = app
+        .esc_armed_at
+        .is_some_and(|at| at.elapsed() < crate::input::ESC_WINDOW);
     let working: Vec<Line<'static>> = if app.kitty {
         let mut rows: Vec<Line<'static>> = (0..ORB_ROWS).map(|_| Line::default()).collect();
-        if let (Some(mid), Some(state)) = (rows.get_mut(1), orb_state) {
-            let label = app
-                .intent
-                .clone()
-                .unwrap_or_else(|| state.label().to_owned());
-            let hint = if app.esc_armed_at.is_some() {
+        if let (Some(mid), Some(label)) = (rows.get_mut(1), app.working_label()) {
+            let hint = if esc_armed {
                 "esc again to interrupt"
             } else {
                 "[esc] interrupt"
@@ -257,9 +259,9 @@ pub fn layout_chat(
         rows
     } else if orb_state.is_some() {
         vec![working_line(
-            app.intent.as_deref(),
+            app.working_label().as_deref(),
             spinner,
-            app.esc_armed_at.is_some(),
+            esc_armed,
             &theme,
         )]
     } else {
@@ -381,6 +383,7 @@ pub fn paint_pane(
     area: Rect,
     scroll: &mut usize,
 ) -> Option<(usize, usize)> {
+    let _span = yi_types::trace::span("tui.paint_pane");
     // A pane never scrolls anything off: `History` keeps every cell, so the
     // terminal-bound commits and the clear are drained here and dropped.
     let _ = app.take_commits();
@@ -396,19 +399,26 @@ pub fn paint_pane(
     let floor = layout.floor.min(area.height);
     let above = usize::from(area.height.saturating_sub(floor));
     let (width, theme, mode) = (app.content_width(), app.theme, app.mode);
-    let (shown, thumb) = if *scroll == 0 {
+    let (shown, owners, thumb) = if *scroll == 0 {
         app.pane_hold = None;
-        let mut column = app.reflowed(above.saturating_sub(live.len()).max(1));
+        let history = yi_types::trace::span("tui.history_rows");
+        let want = above.saturating_sub(live.len()).max(1);
+        let (mut column, mut owners) = app.history.lines(width, &theme, mode, want);
+        drop(history);
         column.extend(live);
         let start = column.len().saturating_sub(above);
-        (column.split_off(start), None)
+        (
+            column.split_off(start),
+            owners.split_off(start.min(owners.len())),
+            None,
+        )
     } else {
         // Incident: counting committed rows drifted a held view; now rows below a pinned cell.
         let hold = app
             .pane_hold
             .filter(|&(w, m, _, _)| (w, m) == (width, mode));
         if let Some((_, _, pinned, extent)) = hold {
-            let (at, now) = app.history.tail(width, &theme, mode, 0, pinned);
+            let (at, now, _) = app.history.tail(width, &theme, mode, 0, pinned);
             if at == pinned {
                 let grown = now.len().saturating_add(live.len()).saturating_sub(above);
                 *scroll = scroll.saturating_add(grown).saturating_sub(extent);
@@ -416,7 +426,7 @@ pub fn paint_pane(
         }
         let need = above.saturating_add(*scroll).saturating_sub(live.len());
         let at_most = hold.map_or(usize::MAX, |(_, _, pinned, _)| pinned);
-        let (from, mut column) = app.history.tail(width, &theme, mode, need, at_most);
+        let (from, mut column, owners) = app.history.tail(width, &theme, mode, need, at_most);
         let history_rows = column.len();
         column.extend(live);
         *scroll = (*scroll).min(column.len().saturating_sub(above));
@@ -424,6 +434,10 @@ pub fn paint_pane(
         let end = column.len().saturating_sub(*scroll);
         let start = end.saturating_sub(above);
         let shown = column.get(start..end).unwrap_or_default().to_vec();
+        let owners = owners
+            .get(start..end.min(history_rows))
+            .unwrap_or_default()
+            .to_vec();
         let cells = app.history.len().saturating_sub(from).max(1);
         let before = from.saturating_mul(history_rows) / cells;
         let total = before
@@ -431,8 +445,11 @@ pub fn paint_pane(
             .saturating_add(usize::from(floor));
         let thumb =
             (total > usize::from(area.height)).then_some((total, before.saturating_add(start)));
-        (shown, thumb)
+        (shown, owners, thumb)
     };
+    let mut owned: Vec<Option<usize>> = owners.into_iter().map(Some).collect();
+    owned.resize(shown.len(), None);
+    app.pane_rows = (area.top(), owned);
     let rows = u16::try_from(shown.len()).unwrap_or(0);
     if rows > 0 {
         let rect = Rect::new(area.left(), area.top(), area.width, rows);

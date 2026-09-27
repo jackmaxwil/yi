@@ -37,14 +37,16 @@ pub mod session;
 pub mod skills;
 pub mod slash;
 pub mod subagent;
+pub mod tape;
 pub mod telemetry;
+pub mod title;
 pub mod todo;
 pub mod tools;
 pub mod wall;
 pub mod wiring;
 
 pub use checkpoint::{
-    RecordedCheckpoint, UndoOutcome, describe_undo, recorded, undo, undo_notes,
+    RecordedCheckpoint, UndoOutcome, describe_undo, recorded, undo, undo_notes, undo_to,
     wire_turn_checkpoints,
 };
 pub use compaction::{CompactStatus, Compactor};
@@ -93,7 +95,7 @@ pub fn doctrine_fragment() -> &'static str {
     include_str!("prompts/doctrine.md")
 }
 pub use yi_ai::faux;
-pub use yi_context::{Bytes, SourceBudgets, Truncated};
+pub use yi_context::{Bytes, SourceBudgets, Truncated, reply_tokens};
 pub use yi_loop::ExecutionMode;
 pub use yi_permission::{
     Class, ConfigRule, ConfigRuleAction, Decision, Grant, PermissionMode, Verdict, mode_fragment,

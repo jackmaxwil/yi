@@ -2,7 +2,7 @@
 //! needs (plan section 7.6): the two shares are disjoint, so each holder counts only its own.
 
 use std::fmt;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// Lane slots held back from workers for one acceptance. Its candidate check and its staging
@@ -12,7 +12,6 @@ pub const VERIFICATION_RESERVE: u8 = 1;
 /// How long a reservation waits for the reserve before it refuses: two candidates verified
 /// at once take turns rather than one of them failing (plan section 6.3, bounded backoff).
 pub const RESERVE_WAIT: Duration = Duration::from_secs(30);
-const RESERVE_POLL: Duration = Duration::from_millis(100);
 
 /// What a reservation is for. Charging verification against the worker share is exactly how
 /// retained workers come to occupy every slot their own verification needs.
@@ -71,6 +70,7 @@ pub struct Capacity {
     worker_cap: u8,
     verification_cap: u8,
     held: Mutex<Held>,
+    released: Condvar,
 }
 
 impl Capacity {
@@ -81,6 +81,7 @@ impl Capacity {
             worker_cap: slots.saturating_sub(VERIFICATION_RESERVE).max(1),
             verification_cap: VERIFICATION_RESERVE,
             held: Mutex::new(Held::default()),
+            released: Condvar::new(),
         })
     }
 
@@ -127,11 +128,19 @@ impl Capacity {
         purpose: Purpose,
         until: Instant,
     ) -> Result<Permit, Exhausted> {
+        let _span = yi_types::trace::span("wait.capacity").arg("purpose", purpose.name());
         loop {
             match self.reserve(purpose) {
                 Ok(permit) => return Ok(permit),
-                Err(_full) if Instant::now() < until => std::thread::sleep(RESERVE_POLL),
-                Err(exhausted) => return Err(exhausted),
+                Err(exhausted) => {
+                    let left = until.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Err(exhausted);
+                    }
+                    let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+                    let full = |held: &mut Held| *held.of(purpose) >= self.cap(purpose);
+                    let _woken = self.released.wait_timeout_while(held, left, full);
+                }
             }
         }
     }
@@ -140,6 +149,7 @@ impl Capacity {
         let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
         let count = held.of(purpose);
         *count = count.saturating_sub(1);
+        self.released.notify_all();
     }
 }
 
@@ -256,6 +266,30 @@ mod tests {
         let capacity = Capacity::for_slots(1);
         assert_eq!(capacity.cap(Purpose::Worker), 1);
         assert_eq!(capacity.cap(Purpose::Verification), 1);
+    }
+
+    /// Dies with the 100 ms poll back: each reservation waited out a poll after the release,
+    /// so ten handoffs took a second or more.
+    #[test]
+    fn a_waiting_reservation_takes_the_slot_as_it_is_released() -> TestResult {
+        let capacity = Capacity::for_slots(1);
+        let started = Instant::now();
+        for _ in 0..10 {
+            let held = capacity.reserve(Purpose::Verification)?;
+            let waiter = Arc::clone(&capacity);
+            let until = Instant::now() + RESERVE_WAIT;
+            let taken =
+                std::thread::spawn(move || waiter.reserve_within(Purpose::Verification, until));
+            std::thread::sleep(Duration::from_millis(5));
+            drop(held);
+            drop(taken.join().map_err(|_| "waiter panicked")??);
+        }
+        let took = started.elapsed();
+        assert!(
+            took < Duration::from_millis(500),
+            "ten handoffs took {took:?}"
+        );
+        Ok(())
     }
 
     struct NoChildren;

@@ -54,7 +54,7 @@ pub struct ViewState {
     pub framed: bool,
 }
 
-fn pane_margin(framed: bool) -> ratatui::layout::Margin {
+pub(crate) fn pane_margin(framed: bool) -> ratatui::layout::Margin {
     ratatui::layout::Margin::new(1, u16::from(framed))
 }
 
@@ -139,12 +139,32 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     let close_hint = if app.cmd_hints { "⌘J" } else { "⌥⇧J" };
     let mut panes = Vec::new();
     let mut editor_cursor = None;
+    let notes: std::collections::BTreeMap<SessionId, String> = app
+        .state
+        .panes
+        .values()
+        .filter_map(|pane| match &pane.content {
+            PaneContent::SessionDiff { session, .. } => Some(session.clone()),
+            _ => None,
+        })
+        .map(|session| {
+            let note = review_note(&app.state, &session);
+            (session, note)
+        })
+        .collect();
     for pane_rect in pane_rects {
         let inner = pane_rect.rect.inner(pane_margin(framed));
         let diffs = &app.state.diffs;
         let sessions = &app.state.sessions;
         let (title, lines, scroll) = match app.state.panes.get_mut(&pane_rect.id) {
-            Some(pane) => pane_view_content(pane, diffs, sessions, inner, theme, close_hint),
+            Some(pane) => {
+                let view = PaneData {
+                    diffs,
+                    sessions,
+                    notes: &notes,
+                };
+                pane_view_content(pane, &view, inner, theme, close_hint)
+            }
             None => ("empty".to_owned(), Vec::new(), None),
         };
         let chat =
@@ -258,14 +278,45 @@ pub(crate) fn label_of(
         .collect()
 }
 
+struct PaneData<'a> {
+    diffs: &'a std::collections::BTreeMap<SessionId, crate::model::SessionDiff>,
+    sessions: &'a std::collections::BTreeMap<SessionId, SessionRow>,
+    notes: &'a std::collections::BTreeMap<SessionId, String>,
+}
+
+fn review_note(state: &crate::model::ConsoleState, session: &SessionId) -> String {
+    use yi_tui::port::SessionPort;
+    let Some(chat) = state.chat(session) else {
+        return String::new();
+    };
+    let mut note = String::new();
+    let claims = chat.port.claims(false).unwrap_or_default();
+    let observed = claims
+        .iter()
+        .filter(|claim| claim.observed.is_some())
+        .count();
+    if !claims.is_empty() {
+        note.push_str(&format!(" · {observed} observed"));
+    }
+    if claims.len() > observed {
+        note.push_str(&format!(" · {} claimed", claims.len() - observed));
+    }
+    if let Some(landing) = chat.app.landing_line() {
+        note.push_str(&format!(" · {landing}"));
+    }
+    note
+}
+
+pub use crate::panes::{hunk_lines, review_files, review_view, tape_view};
+
 fn pane_view_content(
     pane: &mut crate::model::Pane,
-    diffs: &std::collections::BTreeMap<SessionId, crate::model::SessionDiff>,
-    sessions: &std::collections::BTreeMap<SessionId, SessionRow>,
+    view: &PaneData<'_>,
     inner: Rect,
     theme: &Theme,
     close_hint: &str,
 ) -> (String, Vec<Line<'static>>, Option<(usize, usize)>) {
+    let (diffs, sessions) = (view.diffs, view.sessions);
     let visible = usize::from(inner.height);
     match &mut pane.content {
         PaneContent::Session { session, .. } => {
@@ -286,40 +337,19 @@ fn pane_view_content(
             (format!("Δ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Editor(editor) => editor_view(editor, inner, theme),
-        PaneContent::SessionDiff { session } => {
-            let short: String = session.0.chars().take(8).collect();
-            let (title, all) = match diffs.get(session).filter(|diff| !diff.files.is_empty()) {
-                Some(diff) => {
-                    let (added, removed) = diff.totals();
-                    let joined = diff
-                        .files
-                        .iter()
-                        .map(|(_, file)| file.patch.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let files = diff.files.len();
-                    let noun = if files == 1 { "file" } else { "files" };
-                    let loose = diff.files.iter().filter(|(_, file)| !file.tracked).count();
-                    let loose = if loose == 0 {
-                        String::new()
-                    } else {
-                        format!(" · {loose} untracked")
-                    };
-                    (
-                        format!("Δ {short} · {files} {noun} · +{added} −{removed}{loose}"),
-                        diffview::render(
-                            &joined,
-                            usize::from(inner.width),
-                            theme,
-                            DiffBudget::FULL,
-                        ),
-                    )
-                }
-                None => (
-                    format!("Δ {short}"),
-                    vec![Line::styled("no edits yet this session", theme.dim_style())],
-                ),
-            };
+        PaneContent::Tape { tape, cursor, .. } => {
+            let (title, all) = tape_view(tape.as_ref(), *cursor, usize::from(inner.width), theme);
+            (title, all, None)
+        }
+        PaneContent::SessionDiff { session, scope } => {
+            let note = view.notes.get(session).map_or("", String::as_str);
+            let (title, all) = review_view(
+                diffs.get(session),
+                *scope,
+                note,
+                usize::from(inner.width),
+                theme,
+            );
             let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
             (title, lines, scroll)
         }
@@ -758,6 +788,7 @@ fn title_tile(app: &mut App, id: &str, seed: &str, hue: usize, x: u16, y: u16) -
             key: format!("{id}#{x},{y}"),
             seed: id.to_owned(),
             accent: yi_tui::colors::accent_rgb(hue),
+            state: None,
         });
     }
     Span::raw(" ".repeat(text.chars().count()))

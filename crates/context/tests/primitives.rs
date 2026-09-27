@@ -160,6 +160,21 @@ fn aborted_and_error_assistants_carry_no_authoritative_usage() -> TestResult {
 }
 
 #[test]
+fn a_reply_without_usage_leaves_the_last_known_context_standing() -> TestResult {
+    let unknown = Usage {
+        unknown: true,
+        ..usage(0, 0, 0)
+    };
+    let messages = vec![
+        assistant("ok", usage(100, 50, 103_212), StopReason::Stop),
+        assistant("no usage object", unknown, StopReason::Stop),
+    ];
+    assert_eq!(estimate_context(&messages).usage_tokens, Tokens(103_212));
+    assert_eq!(yi_context::reply_tokens(&messages[1]), None);
+    Ok(())
+}
+
+#[test]
 fn context_tokens_falls_back_to_component_sum() -> TestResult {
     assert_eq!(context_tokens(&usage(100, 50, 0)), Tokens(150));
     assert_eq!(context_tokens(&usage(100, 50, 4000)), Tokens(4000));

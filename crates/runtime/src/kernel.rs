@@ -9,7 +9,9 @@ use yi_kernel::client::{
 use yi_tools::ToolOutput;
 use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome};
 
-pub use crate::kernel_bootstrap::{RLM_BOOTSTRAP_CODE, restore_notice_text, rlm_bootstrap_code};
+pub use crate::kernel_bootstrap::{
+    BootFn, RLM_BOOTSTRAP_CODE, restore_notice_text, rlm_bootstrap_code,
+};
 use crate::kernel_variables::{dump_variable_code, parse_variable_reply, read_variable_code};
 
 pub type HostHandlerFn = dyn Fn(Map<String, Value>) -> HostFuture + Send + Sync;
@@ -182,6 +184,7 @@ pub struct KernelServiceOptions {
     pub family_dir: Option<PathBuf>,
     pub host: Arc<dyn HostHandlers>,
     pub on_restore: Option<Arc<RestoreNoticeFn>>,
+    pub on_boot: Option<Arc<BootFn>>,
     pub sandbox: Option<yi_tools::Sandbox>,
     pub snapshot_key: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     /// A cell's wall clock, past which it is interrupted as a cancel would; `None` is
@@ -218,7 +221,6 @@ pub(crate) fn kernel_profile(
     let mut profile = sandbox.clone();
     // Only what the kernel side writes under ~/.yi; the venv stays read-only.
     let yi = home.join(".yi");
-    profile.writable.push(yi.join("harness"));
     profile.writable.push(yi.join("mcp"));
     // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling.
     profile
@@ -362,6 +364,7 @@ impl KernelService {
                 .to_string_lossy()
                 .into_owned(),
         ));
+        env.push(("RLM_GLOBAL_HARNESS_HOST".to_owned(), "1".to_owned()));
         // Set but never read by Python; the host-side depth check is
         // authoritative (design §9).
         env.push(("RLM_DEPTH".to_owned(), "0".to_owned()));
@@ -384,6 +387,7 @@ impl KernelService {
     }
 
     async fn ensure_inner(&self) -> Result<Arc<KernelManager>, String> {
+        let _span = yi_types::trace::span("kernel.ensure");
         // Only an on-disk session is revivable (§9). Incident: `/new`, `switch_session` and
         // `fork` swap the store under a live kernel, which kept writing under the old id.
         let key = self.options.snapshot_key.as_ref().and_then(|key| key());
@@ -426,6 +430,7 @@ impl KernelService {
         let snapshot_existed = snapshot
             .as_ref()
             .is_some_and(|config| config.path.is_file());
+        let booting = crate::kernel_bootstrap::Booting::new(self.options.on_boot.clone());
         let manager = Arc::new(KernelManager::new(KernelOptions {
             python: None,
             cwd: Some(self.options.cwd.clone()),
@@ -434,7 +439,7 @@ impl KernelService {
             home: self.options.home.clone(),
             runtime_source_dir: yi_kernel::bootstrap::default_runtime_source_dir(),
             host: Some(Arc::clone(&self.options.host)),
-            on_progress: Some(Arc::new(|message: &str| eprintln!("{message}"))),
+            on_progress: Some(booting.progress()),
             snapshot,
             wrap,
         })?);
@@ -450,10 +455,12 @@ impl KernelService {
             .iter()
             .map(|(import_name, _)| *import_name)
             .collect();
+        let booting = yi_types::trace::span("kernel.bootstrap_cell");
         let bootstrap = manager
             .execute(&rlm_bootstrap_code(&imports), ExecuteOptions::default())
             .await
             .map_err(|error| error.to_string())?;
+        drop(booting);
         if bootstrap.status != yi_types::kernel::ExecuteStatus::Ok {
             let mut details = bootstrap.stderr;
             if let Some(error) = bootstrap.error {
@@ -1124,6 +1131,7 @@ mod tests {
             family_dir: None,
             host: registry,
             on_restore: None,
+            on_boot: None,
             sandbox: None,
             snapshot_key: None,
             per_session_state: false,
@@ -1149,6 +1157,7 @@ mod tests {
             family_dir: None,
             host: Arc::new(registry),
             on_restore: None,
+            on_boot: None,
             sandbox: None,
             snapshot_key: None,
             per_session_state: false,

@@ -3,6 +3,7 @@
 
 pub mod acp;
 pub mod advisor;
+pub mod backoff;
 pub mod checkpoint;
 pub mod compaction;
 pub mod config;
@@ -12,6 +13,7 @@ pub mod fetch;
 pub mod goal;
 pub mod graph;
 pub mod harness;
+pub mod json_salvage;
 pub mod kernel;
 pub mod lane;
 pub mod lease;
@@ -25,6 +27,7 @@ pub mod plan;
 pub mod record;
 pub mod schedule;
 pub mod subagent;
+pub mod tape;
 pub mod telemetry;
 pub mod todo;
 pub mod trace;

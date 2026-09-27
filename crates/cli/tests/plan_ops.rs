@@ -188,6 +188,70 @@ fn the_import_commands_the_store_prints_run_as_printed() -> TestResult {
     Ok(())
 }
 
+/// The store tells a session's model to run `yi plan import` in its shell. That import is the
+/// session's plan: its unnamed ops resolve it and its `init` is refused rather than opening a
+/// second Active root, and once it applies an op another session no longer sees it.
+#[test]
+fn a_shell_import_is_adopted_by_the_session_that_ran_it() -> TestResult {
+    use yi_runtime::plan::ledger::Owned;
+    use yi_runtime::plan::ops::PlanOpError;
+    let root = Scratch::new("yi-plan-cli-import-owned")?;
+    let plans = root.join("project/.yi/plans");
+    std::fs::create_dir_all(&plans)?;
+    root.home()?;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../runtime/tests/fixtures/plans/format1/large-section.md");
+    let id = "vendor-the-zstd-backend";
+    std::fs::copy(&fixture, plans.join(format!("{id}.md")))?;
+    let imported = yi_plan(&root, &["import", id])?;
+    assert_eq!(imported.status.code(), Some(0), "{}", streams(&imported));
+
+    let session = |name: &'static str| -> Result<PlanEngine, Box<dyn Error>> {
+        Ok(PlanEngine::new(
+            PlanStore::open(plans.clone())?,
+            Arc::new(yi_runtime::plan::authority::Unhosted),
+        )
+        .with_owned(Arc::new(move || Owned {
+            sessions: vec![name.to_owned()],
+            roots: Vec::new(),
+        })))
+    };
+    let owner = |op: Op| OpRequest {
+        plan: None,
+        actor: Actor::Owner,
+        op,
+        request_id: None,
+        expected_revision: None,
+    };
+    let spec = |label: &str| -> Result<Vec<TodoSpec>, Box<dyn Error>> {
+        Ok(vec![TodoSpec {
+            label: TodoLabel::new(label)?,
+            after: Vec::new(),
+            delegation: None,
+            contract: None,
+            children: Vec::new(),
+        }])
+    };
+    let mine = session("importer")?;
+    let viewed = mine.apply(owner(Op::View { full: false }))?;
+    assert_eq!(viewed.plan.id.as_str(), id);
+    let init = Op::Init {
+        goal: GoalText::new("a second plan")?,
+        todos: spec("cut")?,
+    };
+    match mine.apply(owner(init)) {
+        Err(PlanOpError::PlanExists { id: open }) => assert_eq!(open.as_str(), id),
+        other => return Err(format!("a second root opened: {other:?}").into()),
+    }
+    mine.apply(owner(Op::Append {
+        todos: spec("adopted")?,
+    }))?;
+    match session("other")?.apply(owner(Op::View { full: false })) {
+        Err(PlanOpError::NoPlan) => Ok(()),
+        other => Err(format!("another session saw the adopted plan: {other:?}").into()),
+    }
+}
+
 /// A session whose engine starts a delegated todo: the child is a name, nothing runs.
 struct Hosted;
 

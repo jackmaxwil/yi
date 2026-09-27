@@ -94,6 +94,7 @@ pub(super) fn enqueue(parts: &RunParts, entry: Queued) -> Delivery {
     if let Ok(mut queue) = parts.shared.steer.lock() {
         push(&mut queue, entry);
     }
+    parts.shared.mail.notify_waiters();
     if *status == Status::Running {
         return Delivery::Queued;
     }
@@ -208,17 +209,13 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
         compactor,
         on_compacted,
     } = parts.clone();
-    let hook = shared
-        .on_turn_start
-        .lock()
-        .ok()
-        .and_then(|slot| slot.clone());
-    if let Some(hook) = hook {
-        // Snapshotting shells out to git; the turn waits for it, the runtime thread does not.
-        let _hook_failure_never_fails_a_turn = tokio::task::spawn_blocking(move || hook()).await;
-    }
+    let capture = start_capture(&shared);
+    let assembling = yi_types::trace::span("turn.context");
     let mut context = LoopContext {
-        system_prompt: system_prompt(),
+        system_prompt: {
+            let _span = yi_types::trace::span("turn.system_prompt");
+            system_prompt()
+        },
         messages: shared
             .messages
             .lock()
@@ -226,6 +223,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
             .unwrap_or_default(),
         tools: shared.tools.lock().as_deref().cloned().unwrap_or_default(),
     };
+    drop(assembling);
     let (model, effort) = hooks::settings_of(&shared);
     let mut config = LoopConfig::new(model.clone());
     config.effort = effort;
@@ -236,23 +234,31 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
         let notify = Arc::clone(&shared);
         let hook = on_compacted.clone();
         let unsaved = parts.clone();
+        let announce = Arc::clone(&shared);
         config.maybe_compact = Some(crate::compaction::loop_hook(
             compactor,
             Arc::clone(&provider),
             model.clone(),
             Arc::clone(&system_prompt),
             Arc::new(move || store_of(&stores)),
-            Arc::new(move || {
-                dispatch_ext(&notify, &crate::ext::Event::Compacted);
-                if let Some(hook) = &hook {
-                    hook();
-                }
-            }),
-            Arc::new(move |error| unsaved_compaction(&unsaved, error)),
+            crate::compaction::CompactReports {
+                waiting: Arc::new(move |wait| {
+                    let _ = announce.events.send(AgentEvent::Wait { wait });
+                }),
+                compacted: Arc::new(move || {
+                    dispatch_ext(&notify, &crate::ext::Event::Compacted);
+                    if let Some(hook) = &hook {
+                        hook();
+                    }
+                }),
+                unsaved: Arc::new(move |error| unsaved_compaction(&unsaved, error)),
+            },
         ));
     }
     wire_queues_and_coupling(&mut config, &shared, &prompt);
     wire_environment(&mut config, &shared);
+    let gate = Arc::clone(&capture);
+    config.side_work = Some(Box::new(move || Box::pin(settled(Arc::clone(&gate)))));
     // Not the interrupt: the turn in flight ends and settles, and no request follows.
     let stop = Arc::clone(&shared);
     config.should_stop_after_turn = Some(Box::new(move |_| {
@@ -288,6 +294,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
                     },
                 );
             }
+            let _span = yi_types::trace::span("turn.persist");
             persist_message(&emit_shared, message);
         }
         if let Some(telemetry) = emit_shared
@@ -310,6 +317,8 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
         provider.as_ref(),
     )
     .await;
+    // The end capture must follow the start capture, or undo pairs the wrong trees.
+    settled(capture).await;
     if let Ok(mut messages) = shared.messages.lock() {
         *messages = context.messages;
     }
@@ -321,6 +330,31 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     }
 }
 
+type Capture = Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>;
+
+fn start_capture(shared: &Shared) -> Capture {
+    let hook = shared
+        .on_turn_start
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone());
+    let handle = hook.map(|hook| {
+        tokio::task::spawn_blocking(move || {
+            let _span = yi_types::trace::span("turn.start_hook");
+            hook();
+        })
+    });
+    Arc::new(tokio::sync::Mutex::new(handle))
+}
+
+async fn settled(capture: Capture) {
+    let handle = capture.lock().await.take();
+    if let Some(handle) = handle {
+        let _span = yi_types::trace::span("turn.start_hook_wait");
+        let _hook_failure_never_fails_a_turn = handle.await;
+    }
+}
+
 fn wire_environment(config: &mut LoopConfig, shared: &Arc<Shared>) {
     let hook = shared.environment.lock().ok().and_then(|slot| slot.clone());
     let Some(hook) = hook else {
@@ -328,8 +362,12 @@ fn wire_environment(config: &mut LoopConfig, shared: &Arc<Shared>) {
     };
     // Incident: one block per prompt froze `files:`, `deadline:` and `todos:` for an hour of
     // tool calls, so the model read its own files as deleted; the facts are read per request.
-    config.transform_context = Some(Box::new(move |messages| {
-        hook().map(|block| crate::environment::append(messages, &block))
+    config.request_tail = Some(Box::new(move || {
+        let _span = yi_types::trace::span("env.block");
+        hook()
+            .map(crate::environment::message)
+            .into_iter()
+            .collect()
     }));
 }
 
