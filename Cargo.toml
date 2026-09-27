@@ -118,6 +118,11 @@ opt-level = 3
 [profile.dev.package.miniz_oxide]
 opt-level = 3
 
+# A resume moves megabytes of JSON through three processes; unoptimized, serde_json added
+# ~30 ms to a debug chat switch into a 1.4 MB transcript.
+[profile.dev.package.serde_json]
+opt-level = 3
+
 [profile.dist]
 inherits = "release"
 opt-level = "z"
