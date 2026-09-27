@@ -756,11 +756,14 @@ fn the_daemon_delivers_the_workdir_the_worker_named_at_attach() -> TestResult {
     let (mut daemon, socket) = spawn_daemon_in(&dir, Some(&home))?;
     let mut client = DaemonClient::connect(&socket)?;
     client.request("1", "initialize", json!({"protocolVersion": 2}))?;
-    let frames = client.request_with_notifications(
+    client.request_with_notifications(
         "2",
         "session/new",
         json!({"cwd": root.display().to_string()}),
     )?;
+    // The lane is claimed after `session/new` answers, so the update follows the response.
+    let frames =
+        client.read_until(|frame| frame["params"]["update"]["sessionUpdate"] == "_yi/workdir")?;
     let workdir = frames
         .iter()
         .filter(|frame| frame["method"] == "session/update")
