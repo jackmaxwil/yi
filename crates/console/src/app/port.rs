@@ -16,6 +16,7 @@ use yi_types::todo::TodoList;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PortRequest {
+    RewindFiles(String),
     Rewind(String),
     New,
     Undo,

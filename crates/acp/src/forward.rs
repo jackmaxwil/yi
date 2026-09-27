@@ -140,7 +140,8 @@ impl Parent {
     }
 
     fn title(&mut self) {
-        if std::mem::replace(&mut self.titled, true) {
+        let scripted = self.session.summarizer().provider == yi_runtime::faux::FAUX_PROVIDER;
+        if std::mem::replace(&mut self.titled, true) || scripted {
             return;
         }
         let (session, forward) = (Arc::clone(&self.session), self.forward.clone());
