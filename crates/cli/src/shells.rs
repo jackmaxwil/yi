@@ -181,6 +181,7 @@ pub fn serve_flags(args: &Args) -> Vec<String> {
 }
 
 fn ensure_daemon(args: &Args, socket: &std::path::Path) {
+    let _span = yi_types::trace::span("console.ensure_daemon");
     if std::os::unix::net::UnixStream::connect(socket).is_ok() {
         return;
     }
@@ -188,11 +189,11 @@ fn ensure_daemon(args: &Args, socket: &std::path::Path) {
         eprintln!("yi: could not start the daemon: {error}");
         return;
     }
-    for _ in 0..60 {
+    for _ in 0..600 {
         if std::os::unix::net::UnixStream::connect(socket).is_ok() {
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     eprintln!("yi: the daemon did not answer within 3 s; the console will keep retrying");
 }

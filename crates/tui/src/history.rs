@@ -75,9 +75,24 @@ impl History {
                 rows: VecDeque::new(),
             };
         }
+        // Appended cells render newest-first up to the cap, never a whole replay chunk.
         let done = rendered.start.saturating_add(rendered.rows.len());
-        for cell in self.cells.iter().skip(done) {
-            rendered.rows.push_back(cell.lines(width, theme, mode, 0));
+        let mut fresh = VecDeque::new();
+        let (mut index, mut held) = (self.cells.len(), 0_usize);
+        while index > done && held <= cap {
+            index -= 1;
+            let Some(cell) = self.cells.get(index) else {
+                break;
+            };
+            let rows = cell.lines(width, theme, mode, 0);
+            held = held.saturating_add(rows.len());
+            fresh.push_front(rows);
+        }
+        if index > done {
+            rendered.start = index;
+            rendered.rows = fresh;
+        } else {
+            rendered.rows.extend(fresh);
         }
         let mut held: usize = rendered.rows.iter().map(Vec::len).sum();
         while (held <= cap || rendered.start > back_to) && rendered.start > 0 {

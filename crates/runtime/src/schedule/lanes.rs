@@ -63,22 +63,20 @@ fn spawn_claimed(
         let store = Arc::clone(store);
         let deliver = Arc::clone(deliver);
         let handle = lanes.spawn_blocking(move || {
-            // Invariant: a panicked DeliverFn leaves that lane's claims until
-            // the next Scheduler::start recovery.
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                for dispatch in &lane {
-                    let outcome = deliver(&dispatch.job);
-                    store.mutate(|state| {
-                        record_dispatch_result_in_state(
-                            state,
-                            &dispatch.id,
-                            outcome,
-                            None,
-                            yi_session::now_ms(),
-                        );
-                    });
-                }
-            }));
+            // Invariant: a panicked DeliverFn reaps as a JoinError reap_lane logs (dist
+            // aborts the process instead); either way Scheduler::start recovers its claims next.
+            for dispatch in &lane {
+                let outcome = deliver(&dispatch.job);
+                store.mutate(|state| {
+                    record_dispatch_result_in_state(
+                        state,
+                        &dispatch.id,
+                        outcome,
+                        None,
+                        yi_session::now_ms(),
+                    );
+                });
+            }
         });
         owners.insert(handle.id(), session);
     }

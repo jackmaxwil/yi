@@ -339,6 +339,9 @@ impl TodoStore {
                         .label()
                         .is_none_or(|label| locate(&own, label.as_str()).is_err())
                 {
+                    if let Some(label) = op.label() {
+                        locate(&before, label.as_str())?;
+                    }
                     return Err(TodoError::Mirrored { plan: plan.clone() });
                 }
                 own
@@ -805,9 +808,13 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
                     });
                 }
             }
+            let named = matches!(target, Target::Label(_));
             each_target(list, &target, |item| {
-                if matches!(item.state, TodoStateName::Other(_)) {
+                if matches!(item.state, TodoStateName::Other(_)) || (named && item.is_closed()) {
                     return Err(illegal("done", item));
+                }
+                if item.is_closed() {
+                    return Ok(());
                 }
                 if evidence.is_none() {
                     return Err(TodoError::NoEvidence {

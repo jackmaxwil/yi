@@ -361,6 +361,7 @@ pub(crate) mod tests {
     use std::num::NonZeroUsize;
     use std::sync::Mutex;
     use yi_loop::ExecutionMode;
+    use yi_types::backoff::backoff;
     use yi_types::message::StopReason;
     use yi_types::model::{Model, ModelCost};
     use yi_types::plan::doc::{GoalText, SpawnSpec, TodoState};
@@ -559,6 +560,7 @@ pub(crate) mod tests {
     }
 
     async fn wait_done(host: &Arc<SubagentHost>) -> bool {
+        let mut pace = backoff(std::time::Duration::from_millis(25));
         for _ in 0..400 {
             let done = host
                 .children_view()
@@ -567,7 +569,7 @@ pub(crate) mod tests {
             if done {
                 return true;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            tokio::time::sleep(pace()).await;
         }
         false
     }
@@ -698,13 +700,14 @@ pub(crate) mod tests {
         label: &str,
     ) -> Result<yi_types::plan::doc::Todo, Box<dyn std::error::Error>> {
         let label = TodoLabel::new(label)?;
+        let mut pace = backoff(std::time::Duration::from_millis(25));
         for _ in 0..400 {
             let read = rig.engine.store().read(plan)?;
             let todo = read.todo(&label).ok_or("todo missing")?;
             if !texts(&rig.said).is_empty() && !matches!(todo.state, TodoState::Running { .. }) {
                 return Ok(todo.clone());
             }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            tokio::time::sleep(pace()).await;
         }
         Err(format!("{label:?} never left running").into())
     }
@@ -862,6 +865,7 @@ pub(crate) mod tests {
     }
 
     async fn wait_notice(rig: &Rig, needle: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let mut pace = backoff(std::time::Duration::from_millis(25));
         for _ in 0..400 {
             let found = rig
                 .notices
@@ -873,7 +877,7 @@ pub(crate) mod tests {
             if let Some(notice) = found {
                 return Ok(notice);
             }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            tokio::time::sleep(pace()).await;
         }
         Err(format!("no notice with {needle:?}").into())
     }
@@ -970,6 +974,7 @@ pub(crate) mod tests {
             todos: vec![delegated("cut the seam")?],
         }))?;
         let label = TodoLabel::new("cut the seam")?;
+        let mut pace = backoff(std::time::Duration::from_millis(5));
         for _ in 0..400 {
             let busy = rig.host.busy();
             let read = rig.engine.store().read(&out.plan.id)?;
@@ -981,7 +986,7 @@ pub(crate) mod tests {
             if !busy {
                 return Ok(());
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(pace()).await;
         }
         Err("the host never went idle".into())
     }
@@ -1099,6 +1104,7 @@ pub(crate) mod tests {
         host.spawn("answer once".to_owned(), kwargs)
             .map_err(|error| error.to_string())?;
         let mut woke = false;
+        let mut pace = backoff(std::time::Duration::from_millis(25));
         for _ in 0..400 {
             let notified = owner_session.messages().iter().any(|message| {
                 matches!(
@@ -1115,7 +1121,7 @@ pub(crate) mod tests {
                 woke = true;
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            tokio::time::sleep(pace()).await;
         }
         assert!(
             woke,

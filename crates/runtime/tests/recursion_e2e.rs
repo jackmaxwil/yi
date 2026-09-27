@@ -1133,6 +1133,72 @@ async fn a_woken_childs_turn_is_a_run_the_parent_can_wait_on() -> TestResult {
     Ok(())
 }
 
+/// Dies with the 100 ms poll back in the family wait: a child's end was seen a poll late, so
+/// five spawn-and-wait rounds took half a second or more.
+#[tokio::test]
+async fn a_family_wait_wakes_on_the_move_not_on_a_poll() -> TestResult {
+    let harness = harness(0, 1, "done")?;
+    let started = std::time::Instant::now();
+    for round in 0..5 {
+        let name = format!("c{round}");
+        harness
+            .host
+            .spawn(format!("work {round}"), kwargs(&[("name", &name)]))?;
+        let mut cursor = 0;
+        loop {
+            let reply = harness.host.wait(5_000, Some(cursor)).await?;
+            if reply["state"] == "settled" {
+                break;
+            }
+            cursor = reply["cursor"].as_u64().ok_or("cursor")?;
+        }
+    }
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(250),
+        "five rounds took {took:?}"
+    );
+    Ok(())
+}
+
+/// Dies with the 100 ms poll back in `rlm.receive`: mail sent just after the wait began sat a
+/// poll in the queue, so five sends took half a second or more.
+#[tokio::test]
+async fn a_receive_wakes_on_the_mail_not_on_a_poll() -> TestResult {
+    use yi_kernel::client::HostHandlers as _;
+    let harness = harness(0, 1, "done")?;
+    finished(&harness, "beta").await?;
+    let beta = harness
+        .receivers
+        .lock()
+        .map_err(|_| "poisoned")?
+        .remove("beta");
+    let beta = beta.ok_or("beta was built without its receive")?;
+    let payload = json!({"timeout_ms": 5_000});
+    let payload = payload.as_object().cloned().ok_or("payload")?;
+    let started = std::time::Instant::now();
+    for round in 0..5 {
+        let waiting = beta.dispatch("rlm.receive", payload.clone());
+        let waiting = tokio::spawn(waiting.ok_or("rlm.receive is not registered")?);
+        tokio::task::yield_now().await;
+        harness
+            .host
+            .route("parent", "beta", &format!("note {round}"), false)?;
+        let got = waiting.await??;
+        assert_eq!(
+            got["envelopes"].as_array().map(Vec::len),
+            Some(1),
+            "{got:?}"
+        );
+    }
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(250),
+        "five receives took {took:?}"
+    );
+    Ok(())
+}
+
 /// A family whose one child asks its parent a question with `ask_user`, then answers; the
 /// parent's mail rides its own queue, as the root's does.
 type AskingFamily = (Scratch, Arc<SubagentHost>, yi_session::SharedSession);
@@ -2024,6 +2090,7 @@ async fn a_service_whose_kernel_dies_respawns_with_its_pending_mail() -> TestRes
                 on_restore: None,
                 sandbox: None,
                 snapshot_key: None,
+                per_session_state: false,
                 cell_ceiling: None,
             }));
             child.use_tools(
@@ -2544,6 +2611,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        per_session_state: false,
         cell_ceiling: None,
     }));
 
@@ -3796,6 +3864,7 @@ async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        per_session_state: false,
         cell_ceiling: None,
     }));
     let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
