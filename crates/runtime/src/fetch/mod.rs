@@ -887,6 +887,7 @@ mod tests {
                 on_restore: None,
                 sandbox: None,
                 snapshot_key: None,
+                per_session_state: false,
                 cell_ceiling: None,
             },
         ));

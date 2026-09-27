@@ -140,6 +140,7 @@ fn service(session_dir: &std::path::Path, notices: &Arc<Mutex<Vec<String>>>) -> 
         })),
         sandbox: None,
         snapshot_key: None,
+        per_session_state: false,
         cell_ceiling: None,
     }))
 }
@@ -201,10 +202,12 @@ async fn the_snapshot_dir_is_the_sessions_dir_not_the_process_dir() -> TestResul
     let outcome = cell(&kernel, "answer = 42").await?;
     assert_eq!(outcome.result.status, yi_types::kernel::ExecuteStatus::Ok);
     kernel.dispose().await;
-    let (snapshot, _) = yi_runtime::kernel::snapshot_paths(&root.join("sessions"), Some(ID));
+    let state = root.join("sessions").join("kernels").join(ID);
+    let (snapshot, _) = yi_runtime::kernel::snapshot_paths(&state, Some(ID));
     assert!(
         snapshot.is_file(),
-        "the root's snapshot sits flat in the sessions dir, not under rlm-<pid>: {}",
+        "the root's snapshot sits in its own kernels/<id> under the sessions dir, not under \
+         rlm-<pid> and not flat in the corpus (#580): {}",
         snapshot.display()
     );
 
@@ -239,7 +242,8 @@ async fn a_store_switch_rekeys_the_live_kernel() -> TestResult {
         outcome.result.stderr
     );
     kernel.dispose().await;
-    let (snapshot, _) = yi_runtime::kernel::snapshot_paths(&root.join("sessions"), Some("snap-b"));
+    let state = root.join("sessions").join("kernels").join("snap-b");
+    let (snapshot, _) = yi_runtime::kernel::snapshot_paths(&state, Some("snap-b"));
     assert!(
         snapshot.is_file(),
         "keyed by the new id: {}",

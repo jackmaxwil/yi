@@ -55,6 +55,7 @@ fn service(
         on_restore: None,
         sandbox: Some(sandbox),
         snapshot_key: None,
+        per_session_state: false,
         cell_ceiling: None,
     }))
 }
@@ -178,6 +179,94 @@ async fn a_profile_change_restarts_the_kernel() -> TestResult {
     Ok(())
 }
 
+/// A root session wired the way `yi` wires one, with `sessions_dir` as its session corpus.
+fn root_session(
+    project: &std::path::Path,
+    home: &std::path::Path,
+    rlm_dir: &std::path::Path,
+    sessions_dir: Option<PathBuf>,
+) -> yi_runtime::AgentSession {
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+    let mut session = yi_runtime::AgentSession::new(
+        yi_runtime::SessionConfig {
+            system_prompt: String::new(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: String::new(),
+            tool_execution: yi_loop::ExecutionMode::Sequential,
+            cwd: project.to_path_buf(),
+            home: home.to_path_buf(),
+            lane_slots: 1,
+            broker: None,
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: rlm_dir.to_path_buf(),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(rlm_dir.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    session
+}
+
+/// Incident (#580): the root kernel's writable root was the whole session corpus, where every
+/// session's dill snapshot sits flat and is loaded, code and all, at that session's next boot;
+/// a cell or its `bash()` could plant one for another session.
+#[tokio::test]
+async fn a_root_kernel_cannot_write_another_sessions_state() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, home, _session) = workspace("corpus")?;
+    let bare = Sandbox::for_workspace(&project, &home, None);
+    // Under a tmp root the corpus would be writable anyway and the test would prove nothing.
+    let probe = uncovered(&bare, &home).ok_or("no directory outside the sandbox")?;
+    let corpus = probe.join(format!("yi-corpus-{}", std::process::id()));
+    std::fs::create_dir_all(&corpus)?;
+    let session = root_session(&project, &home, &root.join("rlm"), Some(corpus.clone()));
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let planted = corpus.join("01other.kernel-state.dill");
+    let by_job = corpus.join("01other.by-bash.txt");
+    let code = format!(
+        "try:\n    open(r'{}','wb').write(b'x')\nexcept OSError as e:\n    print(e)\nprint(await bash(\"touch '{}'\"))",
+        planted.display(),
+        by_job.display()
+    );
+    let ran = cell(&kernel, code).await;
+    kernel.dispose().await;
+    let (cell_wrote, job_wrote) = (planted.is_file(), by_job.is_file());
+    let _ = std::fs::remove_dir_all(&corpus);
+    let ran = ran?;
+    assert!(
+        !cell_wrote && !job_wrote,
+        "the root kernel wrote into the session corpus (cell {cell_wrote}, bash {job_wrote}): {}",
+        ran.result.stdout
+    );
+    Ok(())
+}
+
 fn faux_model() -> yi_types::model::Model {
     let zero = || serde_json::Number::from(0u64);
     yi_types::model::Model {
@@ -212,46 +301,7 @@ async fn the_kernels_bash_is_contained_like_the_kernel() -> TestResult {
         return Ok(());
     }
     let (root, project, home, _session) = workspace("bash")?;
-    let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
-    let mut session = yi_runtime::AgentSession::new(
-        yi_runtime::SessionConfig {
-            system_prompt: String::new(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: yi_loop::ExecutionMode::Sequential,
-        },
-        Arc::clone(&provider),
-    );
-    yi_runtime::attach_runtime(
-        &mut session,
-        yi_runtime::RuntimeWiring {
-            provider,
-            system_prompt: String::new(),
-            tool_execution: yi_loop::ExecutionMode::Sequential,
-            cwd: project.clone(),
-            home: home.clone(),
-            lane_slots: 1,
-            broker: None,
-            tools: Arc::new(yi_tools::builtin_tools),
-            depth: 0,
-            max_depth: 1,
-            rlm_dir: root.join("rlm"),
-            family_dir: None,
-            summarizer: None,
-            advisor: None,
-            auto_review: None,
-            plan_stale_turns: None,
-            plans_dir: Some(root.join("plans")),
-            parent_link: None,
-            wall: yi_runtime::Wall::default(),
-            auto_background: None,
-            deadline: None,
-            kernel_prewarm: false,
-            mcp_read: None,
-            sessions_dir: None,
-            kernels: yi_runtime::fetch::KernelServiceMap::new(),
-        },
-    );
+    let session = root_session(&project, &home, &root.join("rlm"), None);
     let kernel = session
         .kernel_service()
         .ok_or("the wiring installs a kernel")?;
