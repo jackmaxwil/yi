@@ -38,12 +38,12 @@ def boundary(texts):
 NEEDLE = re.compile(r"(?:assistant text|command|description|file_path|typed|result at line) \d+\b")
 
 
-def needled(scratch):
+def needled(scratch, pad=""):
     """The Claude fixtures copied under `scratch` with each tool result renamed after its line."""
     for source in jr.corpus_files(CLAUDE):
         copy = pathlib.Path(scratch) / source.relative_to(CLAUDE)
         copy.parent.mkdir(parents=True, exist_ok=True)
-        copy.write_text("\n".join(line.replace('"scrubbed result"', f'"result at line {i}"')
+        copy.write_text("\n".join(line.replace('"scrubbed result"', f'"result at line {i}{pad}"')
                                   for i, line in enumerate(source.read_text().split("\n"))))
     return pathlib.Path(scratch)
 
@@ -240,23 +240,64 @@ class Prefix(unittest.TestCase):
             owners = [l for l in lines if l.startswith("[u")]
             results = [l for l in lines if l.startswith("result at line")]
             agent = sum(1 for l in lines if l.startswith(("[agent]", "[call ")))
+            at = max(i for i, l in enumerate(lines) if l.startswith("[u"))
+            turn = sum(1 for l in lines[at:] if l.startswith("result at line"))
+            said = [l for l in lines[at:] if l.startswith(("[agent]", "[call "))]
             self.assertEqual(jr.prefix(row, nodes, prefix_chars=limit), whole)
             cut = jr.prefix(row, nodes, prefix_chars=limit - 1)
             self.assertLessEqual(len(cut), limit - 1)
             kept = [l for l in cut.split("\n") if l.startswith("result at line")]
             self.assertEqual(kept, results[len(results) - len(kept):], "a newer result went before an older one")
             self.assertEqual(cut.split("\n")[0], f"[… prefix_chars={limit - 1} kept {len(kept)} of {len(results)} tool "
-                             f'results, {agent} of {agent} agent texts and calls; each "[… n cut: prefix_chars]" row is a gap]')
+                             f"results ({turn} of {turn} in the last turn), {agent} of {agent} agent texts and calls; "
+                             'each "[… n cut: prefix_chars]" row is a gap]')
             gaps = [int(l.split()[1]) for l in cut.split("\n") if re.fullmatch(r"\[… \d+ cut: prefix_chars\]", l)]
             self.assertEqual(sum(gaps), len(results) - len(kept), "a cut left no row where it was")
             deep = jr.prefix(row, nodes, prefix_chars=len("\n".join(owners)) + 1).split("\n")
             self.assertEqual([l for l in deep if l.startswith("[u")], owners, "an owner's message was cut")
+            self.assertEqual([l for l in deep if l.startswith(("[agent]", "[call "))], said,
+                             "the last turn's agent text went, or an older one stayed")
             self.assertTrue(deep[0].startswith(f"[… prefix_chars={len(chr(10).join(owners)) + 1} kept 0 of {len(results)} "
-                                               f"tool results, 0 of {agent} agent texts and calls;"), deep[0])
+                                               f"tool results (0 of {turn} in the last turn), {len(said)} of {agent} "
+                                               "agent texts and calls;"), deep[0])
             alone = jr.prefix(row, nodes, prefix_chars=10, intent_chars=len(owners[-1]) + 1).split("\n")
             self.assertEqual([l for l in alone if l.startswith("[u")], owners[-1:])
             self.assertIn(f"[… kept the newest 1 of {len(owners)} messages; intent_chars={len(owners[-1]) + 1} "
                           f"cut u1..u{len(owners) - 1}]", alone)
+
+    def test_the_prefix_cap_reaches_the_last_turns_results_last_oldest_first(self):
+        # 228 of 666 capped real prefixes lost every result of the judged turn while older agent
+        # text stayed. Results padded to a real size, so a gap row is cheap beside each one.
+        with tempfile.TemporaryDirectory() as scratch:
+            row, nodes = next((r, n) for r, n in fixture_rows(needled(scratch, " " + "x" * 400))
+                              if r["next"]["text"].startswith("typed 339:"))
+            items = jr.conversation(row, nodes, jr.TOOL_CHARS)
+            whole = jr.prefix(row, nodes, prefix_chars=10**9)
+            last = max(i for i, (kind, _) in enumerate(items) if kind == jr.OWNER)
+            tiers = {}
+            for i, (kind, lines) in enumerate(items):
+                if kind != jr.OWNER:
+                    text = "\n".join(lines)
+                    tiers.setdefault((kind, i < last), []).append((NEEDLE.search(text).group(), len(text) + 1))
+            size = lambda tier: sum(n for _, n in tiers[tier])
+            old_results, old_agent, results, said = (jr.RESULT, True), (jr.AGENT, True), (jr.RESULT, False), (jr.AGENT, False)
+            for cap, partial in ((len(whole) - size(old_results) - size(old_agent) // 2, old_agent),
+                                 (len(whole) - size(old_results) - size(old_agent) - size(results) // 2, results)):
+                cut = jr.prefix(row, nodes, prefix_chars=cap)
+                names = {tier: [n for n, _ in tiers[tier]] for tier in tiers}
+                kept = {tier: [n for n in names[tier] if re.search(re.escape(n) + r"(?!\d)", cut)] for tier in tiers}
+                for tier in (old_results, results):
+                    self.assertEqual(kept[tier], names[tier][len(names[tier]) - len(kept[tier]):], f"{tier} not oldest first")
+                for earlier, later in ((old_results, old_agent), (old_agent, results)):
+                    if kept[later] != names[later]:
+                        self.assertEqual(kept[earlier], [], f"{later} was cut while {earlier} stayed")
+                self.assertEqual(kept[said], names[said], "the last turn's agent text or a call was cut")
+                self.assertTrue(0 < len(kept[partial]) < len(names[partial]), (cap, partial, len(kept[partial])))
+                self.assertLessEqual(len(cut), cap)
+                count = lambda kind: [sum(len(t[tier]) for tier in tiers if tier[0] == kind) for t in (kept, names)]
+                self.assertEqual(cut.split("\n")[0], "[… prefix_chars={} kept {} of {} tool results ({} of {} in the last turn), "
+                                 "{} of {} agent texts and calls; each \"[… n cut: prefix_chars]\" row is a gap]".format(
+                                     cap, *count(jr.RESULT), len(kept[results]), len(names[results]), *count(jr.AGENT)))
 
     def test_quotes_resolve_to_utf8_bytes_and_paraphrases_do_not(self):
         text = "naïve café — ok\n  then   more"
@@ -273,6 +314,14 @@ class Prefix(unittest.TestCase):
         self.assertEqual(jr.owner_rows(boundary(["a" * 11, "b" * 20])["intent"], cap=limit),
                          [f"[… kept the newest 1 of 2 messages; intent_chars={limit} cut u1..u1]", "[u2] " + "b" * 20])
         self.assertIn("\n[u1] the words\n", jr.render_label(boundary(["the words"])))
+        # 51 real boundaries held more than 60k chars of owner text; the label reads 240k of it.
+        old, cap = "[u1] the old words", jr.LABEL_INTENT_CHARS
+        fill = cap - (len(old) + 1) - len("[u2] ") - 1
+        at = jr.render_label(boundary(["the old words", "b" * fill])).split("\n")
+        self.assertEqual(at[1], old, "an owner's message inside the label cap was cut")
+        over = jr.render_label(boundary(["the old words", "b" * (fill + 1)])).split("\n")
+        self.assertEqual(over[1], f"[… kept the newest 1 of 2 messages; intent_chars={cap} cut u1..u1]")
+        self.assertNotIn(old, over)
 
 
 class Arms(unittest.TestCase):

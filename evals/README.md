@@ -239,8 +239,10 @@ whose owner messages on the path no longer match the intent record is an error r
 Two caps speak where they cut. `tool_chars=2000` keeps the head of each call argument and each
 result, a `[…]` row naming kept of total. `prefix_chars=240000`, about 60k tokens at four chars a
 token (the smallest target context is Opus 5.5's 1M), drops whole tool results oldest first,
-then agent text and calls oldest first, never an owner's message: one row on top names kept of
-total per kind and the cap, and a `[… n cut: prefix_chars]` row marks each gap. A cut that saves
+then agent text and calls oldest first, both from before the last turn (the one being judged),
+then that turn's own results oldest first; never an owner's message and never the last turn's
+text or calls. One row on top names kept of total per kind, the last turn's results separately,
+and the cap, and a `[… n cut: prefix_chars]` row marks each gap. A cut that saves
 less than its row waits for a neighbour to go. When the owner's messages alone pass
 `prefix_chars`, the oldest go first under v1's rule, `intent_chars=60000`, with its own row; on
 the 2026-09-26 corpus they peaked at 216,798 chars.
@@ -316,8 +318,9 @@ times at most. A row records the model, the provider's model id, `input` (cached
 included, the provider's convention), `output`, `cached`, `costUsd` and `latencyMs`. Cost is the
 provider's own `usage.cost` (E14): a reply without it, or a 401, 402, 403 or 404, which every
 later call would repeat, stops the phase. A call in flight when `--cap-usd` trips still lands,
-so a phase overshoots by at most `--jobs` - 1 calls. The labeller's intent record keeps v1's
-`intent_chars=60000` cap, its row naming the newest messages kept of the total.
+so a phase overshoots by at most `--jobs` - 1 calls. The labeller's intent record has its own
+240,000-char cap (`LABEL_INTENT_CHARS`), so an objection resting on an old message is not
+demoted for want of it; its row names the newest messages kept of the total.
 
 The first call path was `yi ask --schema` under Seatbelt. The first paid label pass stopped at
 99 of 1,241 calls ($0.37): 66 returned no label, because Yi's loop pushed a model that had
