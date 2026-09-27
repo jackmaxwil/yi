@@ -701,7 +701,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 |---|---|---|
 | `initialize`, `session/new`, `session/resume{replayFrom?}`, `session/list` | both | The daemon routes new/resume by cwd and lists from its ledger without a cwd |
 | `session/prompt`, `session/cancel`, `session/close`, `session/delete`, `session/set_config_option` | worker | A busy session queues a prompt as a follow-up (§4.3); config ids `mode`, `model`, `thought_level` |
-| `_yi/kernel_execute`, `_yi/kernel_cancel`, `_yi/tracked`, `_yi/branch_diff`, `_yi/tape`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); the lane's diff against its base; the session's ledger over time; a session slash verb |
+| `_yi/kernel_execute`, `_yi/kernel_cancel`, `_yi/tracked`, `_yi/branch_diff`, `_yi/tape`, `_yi/why`, `_yi/slash` | worker | Kernel code (§9); tracked paths (≤ 64); the lane's diff against its base; the session's ledger over time; a hunk's blame chain; a session slash verb |
 | `_yi/heartbeat`, `_yi/goal`, `_yi/steer`, `_yi/rewind`, `_yi/todo`, `_yi/plan`, `_yi/child_answer`, `_yi/child_replay`, `_yi/child_abort` | worker | Solo verbs over the wire (§4, §11, §13, §15) |
 | `_yi/shutdown`, `_yi/seen` | daemon | Stop; clear a session's unseen count |
 | `session/request_permission` | worker → client | Options `allow_once`, `allow_always`, `reject_once` |
@@ -763,7 +763,7 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
 - A session pane runs `yi-tui`'s chat reducer, fed from `_yi/event` through a port.
 - A drag copies the words under it, without Yi's rails and gutters, over OSC 52.
 - A status change notifies over OSC 9 or kitty OSC 99 once it holds for 1 s.
-- The full sidebar is an inbox: sessions ranked blocked, done and unseen, working, idle, under
+- The full sidebar is an inbox: sessions ranked blocked, done and unseen, a red gate (heard by an open or parked chat), working, idle, under
   those sections, two lines a row (name; what it needs or is doing, its list, its age). A done
   session stays under "needs you" until focused; a poll never clears it. A working or blocked
   session's avatar plays its state loop at 15 fps in place of its identicon.
@@ -773,17 +773,19 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   main (`_yi/branch_diff`, run by the worker), the last turn, or the session (`s` cycles; a
   session with no git base shows its own edits). Each file names the todo that was running when
   it changed, reads that changed nothing are counted, the header carries the claims and the
-  landing, and `l` runs `/land` under the session's title.
+  landing, and `l` runs `/land` under the session's title. ↑/↓ selects a file and `w` asks the
+  worker (`_yi/why`) for each hunk's `yi why` chain: blame, commit, todo, goal.
 - ⌘Y opens the Tape beside a session: its ledger over wall time (`_yi/tape`, folded by the
   worker), as model and tool tracks with each one's share, the user's turns, checkpoints,
   failures and compactions. ←/→ walks the marks; Enter on a turn the user typed rewinds the
-  conversation to it, a fork that leaves the old branch in the ledger. Files stay; `/undo`
-  restores a turn's.
+  conversation to it, a fork that leaves the old branch in the ledger. `u` twice also restores
+  files to before that turn by /undo's rule (D248, `undo_to`): what the agent moved goes back, a
+  path the user changed after the last turn is kept and named; a steer has no checkpoint.
 - State: `PaneContent{Session, Markdown, Diff, Notebook, SessionDiff, Editor}`,
   `SessionStatus{Blocked, Working, DoneUnseen, Idle, Unknown}`, `SidebarMode{Rail, Full}`,
   `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Keys}`
 - Owner: [`lib.rs`](../crates/console/src/lib.rs), [`model.rs`](../crates/console/src/model.rs)
-- Settled by: D95, D96, D112, D113, D141, D201, D276, D264, D267
+- Settled by: D95, D96, D112, D113, D141, D201, D276, D264, D267, D271
 
 ## 18. Dependencies and size
 
