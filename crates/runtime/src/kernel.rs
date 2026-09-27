@@ -218,7 +218,6 @@ pub(crate) fn kernel_profile(
     let mut profile = sandbox.clone();
     // Only what the kernel side writes under ~/.yi; the venv stays read-only.
     let yi = home.join(".yi");
-    profile.writable.push(yi.join("harness"));
     profile.writable.push(yi.join("mcp"));
     // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling.
     profile
@@ -362,6 +361,7 @@ impl KernelService {
                 .to_string_lossy()
                 .into_owned(),
         ));
+        env.push(("RLM_GLOBAL_HARNESS_HOST".to_owned(), "1".to_owned()));
         // Set but never read by Python; the host-side depth check is
         // authoritative (design §9).
         env.push(("RLM_DEPTH".to_owned(), "0".to_owned()));

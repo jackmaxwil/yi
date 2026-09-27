@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import pathlib
+import threading
 import time
 import re
 import types
@@ -468,6 +469,36 @@ async def host_request(request_type: str, payload: dict[str, Any] | None = None)
         if not future.done():
             future.cancel()
         comm.close()
+
+
+def _host_request_blocking(
+    request_type: str, payload: dict[str, Any] | None = None, timeout: float = 600.0
+) -> dict[str, Any]:
+    """``host_request`` for synchronous callers; the reply lands on the control thread."""
+    if Comm is None:
+        raise RuntimeError("Jupyter comm support is unavailable in this kernel")
+    _install_control_comm_handlers()
+    done = threading.Event()
+    reply: dict[str, Any] = {}
+
+    def _on_msg(msg: dict[str, Any]) -> None:
+        content = msg.get("content", {})
+        data = content.get("data", {}) if isinstance(content, dict) else {}
+        if isinstance(data, dict) and not done.is_set():
+            reply.update(data)
+            done.set()
+
+    comm = Comm(target_name=HOST_COMM_TARGET, primary=False)
+    comm.on_msg(_on_msg)
+    comm.open(data={**(payload or {}), "type": request_type})
+    try:
+        if not done.wait(timeout):
+            raise RuntimeError(f"host request {request_type} timed out after {timeout:.0f}s")
+    finally:
+        comm.close()
+    if reply.get("status") == "ok":
+        return {key: value for key, value in reply.items() if key != "status"}
+    raise RuntimeError(str(reply.get("error") or f"host request {request_type} failed"))
 
 
 # The host's per-value cap; the kernel sends one char past it so the host's clamp, the one
