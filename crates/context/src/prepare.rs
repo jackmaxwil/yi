@@ -40,6 +40,7 @@ fn previous_compaction(branch: &[Entry]) -> (Option<String>, Option<CompactionDe
 /// Projects the branch, picks the cut, splits into summarize/prefix/kept, seeds file ops from
 /// the prior compaction, pulls the retention floor out. None when there is nothing to do.
 pub fn prepare_compaction(branch: &[Entry], settings: &Settings) -> Option<Preparation> {
+    let _span = yi_types::trace::span("context.prepare_compaction").arg("entries", branch.len());
     if matches!(branch.last(), Some(Entry::Compaction { .. })) {
         return None;
     }

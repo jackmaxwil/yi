@@ -581,13 +581,18 @@ async fn stream_assistant_response<S: StreamFn>(
         tool_choice,
         watch,
     } = turn;
+    let preparing =
+        yi_types::trace::span("loop.prepare_request").arg("messages", context.messages.len());
     let mut messages = context.messages.clone();
     if let Some(transform) = &config.transform_context
         && let Some(transformed) = transform(&messages)
     {
         messages = transformed;
     }
-    let llm_messages = (config.convert_to_llm)(&messages);
+    let llm_messages = {
+        let _span = yi_types::trace::span("loop.convert_to_llm");
+        (config.convert_to_llm)(&messages)
+    };
     let tool_defs: Vec<ToolDef> = context.tools.iter().map(|tool| tool.definition()).collect();
     let llm_context = LlmContext {
         system_prompt: context.system_prompt.clone(),
@@ -599,13 +604,19 @@ async fn stream_assistant_response<S: StreamFn>(
         },
         tool_choice,
     };
+    drop(preparing);
 
     signal.clear_cut();
+    let requested_us = yi_types::trace::now_us();
     let mut receiver = if signal.is_fired() {
         tokio::sync::mpsc::channel(1).1
     } else {
+        let _span = yi_types::trace::span("loop.stream_open");
         stream.stream(model, &llm_context, effort, signal)
     };
+    drop(llm_context);
+    let mut first_event = true;
+    let mut first_token = true;
     let mut added_partial = false;
     let mut final_message: Option<AgentMessage> = None;
     let mut budget = ReasoningBudget::default();
@@ -627,6 +638,10 @@ async fn stream_assistant_response<S: StreamFn>(
         let Some(event) = event else {
             break;
         };
+        if std::mem::take(&mut first_event) && yi_types::trace::enabled() {
+            yi_types::trace::complete("loop.first_event", requested_us, Map::new());
+        }
+        let _dispatch = yi_types::trace::span("loop.dispatch");
         match &event {
             AssistantMessageEvent::Start { partial } => {
                 context.messages.push(partial.clone());
@@ -644,6 +659,17 @@ async fn stream_assistant_response<S: StreamFn>(
                 break;
             }
             other => {
+                if first_token
+                    && matches!(
+                        other,
+                        AssistantMessageEvent::TextDelta { .. }
+                            | AssistantMessageEvent::ThinkingDelta { .. }
+                            | AssistantMessageEvent::ToolCallDelta { .. }
+                    )
+                {
+                    first_token = false;
+                    yi_types::trace::complete("loop.first_token", requested_us, Map::new());
+                }
                 match other {
                     AssistantMessageEvent::ThinkingDelta { delta, .. } => cut = budget.push(delta),
                     AssistantMessageEvent::TextStart { .. }
@@ -761,12 +787,14 @@ pub async fn run_loop<S: StreamFn>(
                 collected.push(message);
             }
 
+            let compacting = yi_types::trace::span("loop.maybe_compact");
             if !signal.is_fired()
                 && let Some(compact) = &config.maybe_compact
                 && let Some(compacted) = compact(&context.messages).await
             {
                 context.messages = compacted;
             }
+            drop(compacting);
             let (message, cut, timed_out) = stream_assistant_response(
                 context,
                 config,

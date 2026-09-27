@@ -439,6 +439,7 @@ pub struct Pool {
 
 /// Invariant: a lane is itself a worktree, so lanes and memory key off the common git dir.
 pub fn canonical_repo(cwd: &Path) -> Option<PathBuf> {
+    let _span = yi_types::trace::span("lane.canonical_repo");
     let common = git(
         cwd,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -601,6 +602,7 @@ impl Pool {
     }
 
     fn fetch_if_stale(&self) {
+        let _span = yi_types::trace::span("lane.fetch_if_stale");
         let fetch_head = self.repo.join(".git/FETCH_HEAD");
         let fresh = std::fs::metadata(&fetch_head)
             .and_then(|meta| meta.modified())
@@ -642,6 +644,7 @@ impl Pool {
     }
 
     pub fn claim(&self, session: &str, base: ClaimBase) -> Result<Lane, LaneError> {
+        let _span = yi_types::trace::span("lane.claim");
         let _pool = self.lock()?;
         let (mut held, mut orphans) = (0_u8, 0_u8);
         let mut free = None;
@@ -904,6 +907,7 @@ impl Lane {
 
     /// Invariant: the branch carries the session id, or a resume cannot find it.
     pub fn bind_session(&mut self, session: &str) -> Result<(), LaneError> {
+        let _span = yi_types::trace::span("lane.bind_session");
         let branch = BranchName::for_session(session)?;
         if branch != self.branch {
             git(&self.path, &["branch", "-q", "-m", branch.as_str()])?;
