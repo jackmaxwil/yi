@@ -22,7 +22,6 @@ pub(crate) use record::Step;
 use record::preview;
 pub(crate) use service::Standing;
 
-pub const DEFAULT_MAX_DEPTH: u8 = 1;
 // A completed child holds its slot until closed: the cap forces the parent to
 // reap with rlm.delete_subagent instead of leaking children (design §11).
 pub const DEFAULT_MAX_CHILDREN: usize = 8;
@@ -84,6 +83,8 @@ pub(crate) struct Children {
     /// Removed names at their reap's epoch: a cursor from before the reap reads them as moved.
     removed: std::collections::VecDeque<(String, u64)>,
     forgotten: u64,
+    /// Wakes a family wait on every epoch move and every published update.
+    pub(crate) stirred: Arc<tokio::sync::Notify>,
 }
 
 const REMOVED_KEPT: usize = 64;
@@ -106,6 +107,7 @@ impl Children {
 
     pub(crate) fn touch(&mut self, key: &str, cause: crate::family::Cause) -> u64 {
         self.epoch = self.epoch.saturating_add(1);
+        self.stirred.notify_waiters();
         let epoch = self.epoch;
         if let Some(record) = self.records.get_mut(key) {
             record.changed_at_epoch = epoch;
@@ -541,11 +543,10 @@ impl SubagentHost {
     }
 
     pub(crate) fn publish(&self, child_id: &str) {
-        let update = self
-            .children
-            .lock()
-            .ok()
-            .and_then(|children| children.get(child_id).map(|record| record.update(child_id)));
+        let update = self.children.lock().ok().and_then(|children| {
+            children.stirred.notify_waiters();
+            children.get(child_id).map(|record| record.update(child_id))
+        });
         if let Some(update) = update {
             let views = self.member_states(Some(&update.name));
             let update = crate::family::flagged(update, &views);
@@ -918,7 +919,18 @@ impl SubagentHost {
         named.sort_unstable_by_key(|(_, name)| *name);
         match named.as_slice() {
             [(id, _)] => Ok((*id).clone()),
-            [] => Err(format!("No RLM child matches \"{target}\"")),
+            [] => {
+                let mut known: Vec<&str> =
+                    children.values().map(|r| r.session_name.as_str()).collect();
+                known.sort_unstable();
+                if known.is_empty() {
+                    known.push("none");
+                }
+                let known = known.join(", ");
+                Err(format!(
+                    "No RLM child matches \"{target}\"; the children are: {known}"
+                ))
+            }
             many => {
                 let names: Vec<&str> = many.iter().map(|(_, name)| *name).collect();
                 Err(format!("\"{target}\" {AMBIGUOUS} {}", names.join(", ")))
@@ -987,7 +999,7 @@ impl SubagentHost {
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let (target, draft) = Draft::from_payload(&payload)?;
-                let timeout = timeout_of(&payload);
+                let timeout = timeout_of(&payload)?;
                 host.request(PARENT_NAME, &target, &draft.text, timeout)
                     .await
             })
@@ -1006,7 +1018,7 @@ impl SubagentHost {
             let cursor = given.or((kept > 0).then_some(kept));
             let (host, seen) = (Arc::clone(&host), Arc::clone(&seen));
             Box::pin(async move {
-                let reply = host.wait_for(timeout, cursor, given.is_none()).await?;
+                let reply = host.wait_for(timeout?, cursor, given.is_none()).await?;
                 let epoch = reply.get("cursor").and_then(Value::as_u64).unwrap_or(0);
                 if given.is_none() {
                     seen.fetch_max(epoch, std::sync::atomic::Ordering::Relaxed);

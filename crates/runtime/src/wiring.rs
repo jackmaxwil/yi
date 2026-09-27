@@ -161,9 +161,34 @@ impl RuntimeWiring {
 
     /// The kernel's own profile, which its `bash()` jobs run under too (D241).
     fn exec_sandbox(&self) -> Option<yi_tools::Sandbox> {
-        crate::workspace_sandbox(&self.cwd, &self.home, &self.kernel_dir()).map(|sandbox| {
+        self.session_sandbox().map(|sandbox| {
             crate::kernel::kernel_profile(&sandbox, &self.home, Some(&self.family_dir()))
         })
+    }
+
+    fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {
+        let private = (self.depth > 0 || self.sessions_dir.is_none()).then(|| self.kernel_dir());
+        crate::workspace_sandbox(&self.cwd, &self.home, private.as_deref())
+    }
+
+    fn kernel_options(
+        &self,
+        host: Arc<dyn yi_kernel::client::HostHandlers>,
+        on_restore: Arc<crate::kernel::RestoreNoticeFn>,
+        snapshot_key: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    ) -> crate::kernel::KernelServiceOptions {
+        crate::kernel::KernelServiceOptions {
+            cwd: self.cwd.clone(),
+            home: self.home.clone(),
+            session_dir: Some(self.kernel_dir()),
+            family_dir: Some(self.family_dir()),
+            host,
+            on_restore: Some(on_restore),
+            sandbox: self.session_sandbox(),
+            snapshot_key: Some(snapshot_key),
+            per_session_state: self.depth == 0 && self.sessions_dir.is_some(),
+            cell_ceiling: None,
+        }
     }
 
     /// The kernel's snapshot, `RLM_SESSION_DIR` and writable root. Incident: the root's was
@@ -576,8 +601,10 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
 fn wire_job_completions(session: &AgentSession) {
     let follow_up = session.follow_up_hook();
     tokio::spawn(async move {
+        let settled = job_settled();
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let mut next = std::pin::pin!(settled.notified());
+            next.as_mut().enable();
             for report in yi_tools::jobs::registry().take_finished() {
                 follow_up(&format!(
                     "<async_result job=\"{}\" exit=\"{}\">{}\n{}</async_result>",
@@ -587,8 +614,28 @@ fn wire_job_completions(session: &AgentSession) {
                     report.output
                 ));
             }
+            next.await;
         }
     });
+}
+
+/// One thread turns the job registry's settles into a wake the per-session loops can await.
+fn job_settled() -> &'static tokio::sync::Notify {
+    static SETTLED: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    static BRIDGE: std::sync::Once = std::sync::Once::new();
+    BRIDGE.call_once(|| {
+        let bridge = std::thread::Builder::new().name("yi-job-settles".to_owned());
+        let _spawned = bridge.spawn(|| {
+            let mut seen = 0;
+            loop {
+                seen = yi_tools::jobs::registry().wait_settle(seen);
+                SETTLED
+                    .get_or_init(tokio::sync::Notify::new)
+                    .notify_waiters();
+            }
+        });
+    });
+    SETTLED.get_or_init(tokio::sync::Notify::new)
 }
 
 pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> Arc<SubagentHost> {
@@ -678,21 +725,11 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         Arc::clone(&resolver),
     );
     let restore_notice = session.notice_hook();
-    let service = Arc::new(crate::kernel::KernelService::new(
-        crate::kernel::KernelServiceOptions {
-            cwd: wiring.cwd.clone(),
-            home: wiring.home.clone(),
-            session_dir: Some(wiring.kernel_dir()),
-            family_dir: Some(wiring.family_dir()),
-            host: Arc::new(registry),
-            on_restore: Some(Arc::new(move |restore| {
-                restore_notice(&crate::kernel::restore_notice_text(restore));
-            })),
-            sandbox: crate::workspace_sandbox(&wiring.cwd, &wiring.home, &wiring.kernel_dir()),
-            snapshot_key: Some(session.store_id_hook()),
-            cell_ceiling: None,
-        },
-    ));
+    let service = Arc::new(crate::kernel::KernelService::new(wiring.kernel_options(
+        Arc::new(registry),
+        Arc::new(move |restore| restore_notice(&crate::kernel::restore_notice_text(restore))),
+        session.store_id_hook(),
+    )));
     wire_advisor(session, &wiring);
     if wiring.kernel_prewarm {
         let warm = Arc::clone(&service);

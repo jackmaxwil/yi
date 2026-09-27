@@ -87,7 +87,7 @@ levers! {
     todo_ladder_top: u8 = "todo.ladder_top", todo_gate::LADDER_TOP, 1..=3, false;
     family_max_children: usize = "family.max_children", subagent::DEFAULT_MAX_CHILDREN, 2..=16, true;
     family_cap: usize = "family.cap", subagent::FAMILY_CAP, 4..=32, true;
-    family_depth: u8 = "family.depth", subagent::DEFAULT_MAX_DEPTH, 1..=3, false;
+    family_depth: u8 = "family.depth", yi_types::config::DEFAULT_MAX_DEPTH, 1..=3, false;
     family_stuck_idle_s: u64 = "family.stuck_idle_s", family::STUCK_IDLE_MS / 1000, 60..=1800, true;
     mail_wait_min_ms: u64 = "mail.wait_min_ms", mailbox::WAIT_MIN_MS, 100..=10000, false;
     mail_wait_max_ms: u64 = "mail.wait_max_ms", mailbox::WAIT_MAX_MS, 10000..=3600000, false;
@@ -106,7 +106,6 @@ levers! {
     loop_repeat_stop_at: u32 = "loop.repeat_stop_at", yi_loop::REPEAT_STOP_AT, 2..=12, false;
     loop_reasoning_cap: usize = "loop.reasoning_cap", yi_loop::REASONING_CHAR_CAP, 8000..=200000, false;
     tools_reduce_floor: usize = "tools.reduce_floor", yi_tools::reduce::REDUCE_FLOOR, 2048..=32768, false;
-    advisor_cadence: u64 = "advisor.cadence", crate::advisor::DEFAULT_CADENCE, 5..=100, false;
     review_timeout_s: u64 = "review.timeout_s", auto_review::REVIEW_TIMEOUT.as_secs(), 10..=120, true;
     graph_next_lines: usize = "graph.next_lines", crate::todo::text::NEXT_LINES, 1..=5, true;
 }

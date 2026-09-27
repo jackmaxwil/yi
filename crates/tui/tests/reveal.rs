@@ -230,8 +230,10 @@ fn settled(text: &str, draining: bool) -> usize {
     if draining {
         reveal.drain();
     }
-    for frame in 0..=60 {
-        reveal.advance(text, t0 + FRAME * frame, PACE);
+    let mut now = t0;
+    while now <= t0 + Duration::from_secs(1) {
+        reveal.advance(text, now, PACE);
+        now += FRAME;
     }
     reveal.shown()
 }

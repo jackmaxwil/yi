@@ -180,6 +180,9 @@ fn sessions_listing(session_dir: &str, cwd: &str) -> String {
 }
 
 fn undo_text(session: &AgentSession, cwd: &str) -> String {
+    if session.status() == yi_runtime::Status::Running {
+        return "/undo: the current turn is still running (Esc Esc to stop it)".to_owned();
+    }
     let Some(store) = session.store() else {
         return "/undo: this session has no store to read checkpoints from".to_owned();
     };
@@ -187,21 +190,8 @@ fn undo_text(session: &AgentSession, cwd: &str) -> String {
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
     match yi_runtime::undo(&store, std::path::Path::new(cwd), &home) {
-        yi_runtime::UndoOutcome::Restored(changes) if changes.is_empty() => {
-            "/undo: nothing to restore — no file changed since the checkpoint".to_owned()
-        }
-        yi_runtime::UndoOutcome::Restored(changes) => {
-            let mut names: Vec<String> = changes
-                .iter()
-                .map(|change| change.path.display().to_string())
-                .collect();
-            names.sort();
-            names.dedup();
-            format!(
-                "/undo: restored {} — {}",
-                crate::cell::count_label(names.len(), "file"),
-                names.join(", ")
-            )
+        yi_runtime::UndoOutcome::Restored { changes, scoped } => {
+            format!("/undo: {}", yi_runtime::describe_undo(&changes, scoped))
         }
         // Scoped to this session on purpose: undoing a turn the reader never saw is not what
         // the word means. An earlier session's turns stay reachable, just not from here.
@@ -331,6 +321,7 @@ pub(crate) fn user_cell(text: String, typed: bool) -> Cell {
 impl App {
     /// The model's context and the screen must agree about what was said.
     pub fn replay_entries(&mut self, entries: &[Entry]) {
+        let _span = yi_types::trace::span("tui.replay_entries").arg("entries", entries.len());
         let cells: Vec<Cell> = entries
             .iter()
             .filter_map(|entry| match entry {
@@ -583,12 +574,16 @@ impl App {
         self.status_name_hidden = !shown;
     }
 
+    pub fn set_pane(&mut self) {
+        self.pane = true;
+    }
+
     pub fn take_pending_editor(&mut self) -> bool {
         std::mem::take(&mut self.pending_editor)
     }
 
     pub fn orb_animating(&self) -> bool {
-        self.logo_phase != self.logo_target || self.logo_target > 0.0
+        self.kitty && self.orb_placement.is_some() && !self.orb.at_rest(self.orb_state())
     }
 }
 

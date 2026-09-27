@@ -2,7 +2,7 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
@@ -228,6 +228,35 @@ fn sessions_rm_removes_the_session() -> TestResult {
     Ok(())
 }
 
+/// `list` scans the raw file for a name fact; `show` replays it through `SessionStore`,
+/// which must carry the same name through (a session named after creation still shows it).
+#[test]
+fn show_json_carries_the_name_a_session_file_sets() -> TestResult {
+    let workspace = Workspace::new("show-name")?;
+    let cwd = workspace.project().display().to_string();
+    let session_dir = workspace
+        .0
+        .join("home/sessions")
+        .join(yi_runtime::session_store::session_directory_name(&cwd));
+    std::fs::create_dir_all(&session_dir)?;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../types/tests/fixtures/v4-golden.jsonl");
+    std::fs::copy(fixture, session_dir.join("1_fixture-a.jsonl"))?;
+
+    let shown: Value = serde_json::from_str(&stdout(&workspace.yi(&[
+        "sessions",
+        "--json",
+        "show",
+        "fixture-a",
+    ])?))?;
+    assert_eq!(
+        shown["session"]["name"].as_str(),
+        Some("Golden Fixture v4"),
+        "{shown}"
+    );
+    Ok(())
+}
+
 #[test]
 fn schema_validates_the_answer() -> TestResult {
     let workspace = Workspace::new("schema")?;
@@ -270,11 +299,18 @@ fn schema_validates_the_answer() -> TestResult {
 fn undo_restores_the_files_a_turn_changed() -> TestResult {
     let workspace = Workspace::new("undo")?;
     let kept = workspace.project().join("kept.txt");
+    let created = workspace.project().join("created.txt");
     std::fs::write(&kept, "before\n")?;
-    ask(&workspace, "start a turn", &[])?;
-
-    std::fs::write(&kept, "after\n")?;
-    std::fs::write(workspace.project().join("created.txt"), "new\n")?;
+    let script = tool_script(
+        &workspace,
+        &[
+            ("write", json!({"path": "kept.txt", "content": "after\n"})),
+            ("write", json!({"path": "created.txt", "content": "new\n"})),
+        ],
+        Some("written"),
+    )?;
+    ask(&workspace, "start a turn", &["--faux", &script])?;
+    assert_eq!(std::fs::read_to_string(&kept)?, "after\n");
 
     let undone = workspace.yi(&["undo"])?;
     if git_missing(&undone) {
@@ -282,10 +318,98 @@ fn undo_restores_the_files_a_turn_changed() -> TestResult {
     }
     assert_eq!(undone.status.code(), Some(0), "{}", stdout(&undone));
     assert_eq!(std::fs::read_to_string(&kept)?, "before\n");
-    assert!(!workspace.project().join("created.txt").exists());
+    assert!(!created.exists());
 
     workspace.yi(&["undo"])?;
     assert_eq!(std::fs::read_to_string(&kept)?, "after\n");
+    assert_eq!(std::fs::read_to_string(&created)?, "new\n");
+    Ok(())
+}
+
+/// A hand edit after the turn is out of scope (b, c) or, on a path the turn wrote, kept and
+/// named (d): `yi undo` moves only what the turn changed.
+#[test]
+fn undo_moves_only_what_the_turn_wrote() -> TestResult {
+    let workspace = Workspace::new("undo-scope")?;
+    let project = workspace.project();
+    std::fs::write(project.join("b.txt"), "before\n")?;
+    let script = tool_script(
+        &workspace,
+        &[
+            ("write", json!({"path": "a.txt", "content": "turn\n"})),
+            ("write", json!({"path": "d.txt", "content": "turn\n"})),
+        ],
+        Some("written"),
+    )?;
+    ask(&workspace, "write two files", &["--faux", &script])?;
+    assert_eq!(std::fs::read_to_string(project.join("a.txt"))?, "turn\n");
+
+    std::fs::write(project.join("b.txt"), "hand\n")?;
+    std::fs::write(project.join("c.txt"), "mine\n")?;
+    std::fs::write(project.join("d.txt"), "hand\n")?;
+
+    let undone = workspace.yi(&["undo"])?;
+    if git_missing(&undone) {
+        return Ok(());
+    }
+    let said = stdout(&undone);
+    assert_eq!(undone.status.code(), Some(0), "{said}");
+    assert!(!project.join("a.txt").exists(), "{said}");
+    assert_eq!(std::fs::read_to_string(project.join("b.txt"))?, "hand\n");
+    assert_eq!(std::fs::read_to_string(project.join("c.txt"))?, "mine\n");
+    assert_eq!(std::fs::read_to_string(project.join("d.txt"))?, "hand\n");
+    assert!(
+        said.contains("[kept 1 of 2") && said.contains("d.txt") && !said.contains("b.txt"),
+        "{said}"
+    );
+    Ok(())
+}
+
+/// A process that dies mid-turn leaves a turn start with no turn end: undo says so and
+/// restores every path changed since, the hand edit on b.txt included.
+#[test]
+fn undo_without_a_turn_end_restores_unscoped_and_says_so() -> TestResult {
+    let workspace = Workspace::new("undo-unscoped")?;
+    let project = workspace.project();
+    std::fs::write(project.join("b.txt"), "before\n")?;
+    let script = tool_script(
+        &workspace,
+        &[("write", json!({"path": "a.txt", "content": "turn\n"}))],
+        Some("written"),
+    )?;
+    ask(&workspace, "write a file", &["--faux", &script])?;
+    std::fs::write(project.join("b.txt"), "hand\n")?;
+
+    let sessions = workspace.0.join("home/sessions");
+    // `family/` and `kernels/` (#580) sit beside the transcript's directory.
+    let file = std::fs::read_dir(&sessions)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| std::fs::read_dir(entry.path()).ok())
+        .flat_map(|files| files.filter_map(Result::ok))
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .ok_or("no session file")?;
+    let log = std::fs::read_to_string(&file)?;
+    let (kept, last) = log.trim_end().rsplit_once('\n').ok_or("one-line session")?;
+    assert!(last.contains(r#""at":"turnEnd""#), "{last}");
+    std::fs::write(&file, format!("{kept}\n"))?;
+
+    let undone = workspace.yi(&["undo"])?;
+    if git_missing(&undone) {
+        return Ok(());
+    }
+    let said = stdout(&undone);
+    assert_eq!(undone.status.code(), Some(0), "{said}");
+    assert!(
+        said.contains(
+            "[unscoped — no turn-end checkpoint pairs with this one, so every path changed \
+             since it moved]"
+        ),
+        "{said}"
+    );
+    assert!(!project.join("a.txt").exists(), "{said}");
+    assert_eq!(std::fs::read_to_string(project.join("b.txt"))?, "before\n");
     Ok(())
 }
 
@@ -1149,12 +1273,27 @@ fn bash_script(
     command: &str,
     after: Option<&str>,
 ) -> Result<String, Box<dyn Error>> {
+    tool_script(workspace, &[("bash", json!({"command": command}))], after)
+}
+
+/// A `--faux` script: one assistant message carrying every `(tool, args)` call, then `after`.
+fn tool_script(
+    workspace: &Workspace,
+    calls: &[(&str, Value)],
+    after: Option<&str>,
+) -> Result<String, Box<dyn Error>> {
     use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
     use yi_types::message::StopReason;
-    let args = serde_json::json!({"command": command});
-    let call = faux_tool_call("c1", "bash", args.as_object().cloned().unwrap_or_default());
+    let calls = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (tool, args))| {
+            let id = format!("c{index}");
+            faux_tool_call(&id, tool, args.as_object().cloned().unwrap_or_default())
+        })
+        .collect();
     let mut lines = vec![serde_json::to_string(&faux_assistant_message(
-        vec![call],
+        calls,
         StopReason::ToolUse,
     ))?];
     if let Some(text) = after {
@@ -1213,6 +1352,60 @@ fn a_run_with_no_text_exits_one_except_under_eval() -> TestResult {
         stdout(&eval).contains(r#""type":"no_answer""#),
         "{}",
         stdout(&eval)
+    );
+    Ok(())
+}
+
+/// Incident (#580): the contained bash tool's writable roots held the whole session corpus,
+/// where every session's kernel snapshot sits and is loaded at that session's next boot.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_contained_bash_call_cannot_write_the_session_corpus() -> TestResult {
+    if !std::path::Path::new("/usr/bin/sandbox-exec").is_file() {
+        return Ok(());
+    }
+    let workspace = Workspace::new("corpus")?;
+    // Outside every temp root, which the sandbox grants whole, or the test proves nothing.
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let corpus = home.join(format!("yi-cli-corpus-{}", std::process::id()));
+    std::fs::create_dir_all(&corpus)?;
+    let planted = corpus.join("01other.kernel-state.dill");
+    let script = tool_script(
+        &workspace,
+        &[(
+            "bash",
+            json!({"command": format!("touch '{}'", planted.display())}),
+        )],
+        Some("done"),
+    )?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the spawned binary's session dir must sit outside tmp, unlike Workspace::yi's"
+    )]
+    let ran = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "ask",
+            "--model",
+            "faux/faux-1",
+            "--faux",
+            &script,
+            "plant it",
+        ])
+        .arg("--session-dir")
+        .arg(&corpus)
+        .arg("--cwd")
+        .arg(workspace.project())
+        .env("HOME", workspace.0.join("home"))
+        .current_dir(workspace.project())
+        .output();
+    let wrote = planted.is_file();
+    let _ = std::fs::remove_dir_all(&corpus);
+    let said = stdout(&ran?);
+    assert!(
+        !wrote,
+        "a contained bash call wrote into the session corpus: {said}"
     );
     Ok(())
 }

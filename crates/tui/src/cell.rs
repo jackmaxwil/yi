@@ -884,6 +884,23 @@ impl Cell {
         mode: TranscriptMode,
         spinner_phase: usize,
     ) -> Vec<Line<'static>> {
+        let mut span = yi_types::trace::span("tui.cell_render");
+        if yi_types::trace::enabled() {
+            let (kind, bytes) = match self {
+                Cell::User { text } => ("user", text.len()),
+                Cell::Assistant { markdown } => ("assistant", markdown.len()),
+                Cell::Thought { markdown } => ("thought", markdown.len()),
+                Cell::Tool(tool) => ("tool", tool.digest.as_ref().map_or(0, String::len)),
+                Cell::Explored(rows) => ("explored", rows.len()),
+                Cell::Task(_) => ("task", 0),
+                Cell::Advisory { text, .. } => ("advisory", text.len()),
+                Cell::Notice { text } => ("notice", text.len()),
+                Cell::Footer { text } => ("footer", text.len()),
+                Cell::Rule { .. } | Cell::Divider => ("rule", 0),
+            };
+            span.set("kind", kind);
+            span.set("bytes", bytes);
+        }
         match self {
             Cell::User { text } => {
                 let mut out = vec![Line::default()];
