@@ -84,6 +84,9 @@ pub trait SessionPort {
     fn memory(&self) -> Option<Arc<yi_runtime::memory::Activity>> {
         None
     }
+    fn claims(&self, _list_changed: bool) -> Option<Vec<yi_types::todo::Claim>> {
+        None
+    }
 }
 
 /// The status row's branch, from the runtime's HEAD reader: a file read, never a git process.
@@ -292,6 +295,10 @@ impl SessionPort for Arc<AgentSession> {
 
     fn todo_list(&self) -> Option<yi_types::todo::TodoList> {
         AgentSession::todos(self.as_ref()).map(|store| store.list())
+    }
+
+    fn claims(&self, list_changed: bool) -> Option<Vec<yi_types::todo::Claim>> {
+        list_changed.then(|| yi_runtime::todo::claims::session_claims(self))
     }
 
     fn memory(&self) -> Option<Arc<yi_runtime::memory::Activity>> {

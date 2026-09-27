@@ -17,6 +17,7 @@ pub struct HudInput {
     pub todos: Option<TodoList>,
     pub todo_full: bool,
     pub live: bool,
+    pub claims: Vec<yi_types::todo::Claim>,
     pub steering: Vec<String>,
     pub follow_up: Vec<String>,
     pub memory: Option<String>,
@@ -87,6 +88,7 @@ pub fn todo_rows(
     list: Option<&TodoList>,
     full: bool,
     live: bool,
+    claims: &[yi_types::todo::Claim],
     theme: &Theme,
 ) -> Option<(String, Vec<Line<'static>>)> {
     let list = list?;
@@ -97,6 +99,16 @@ pub fn todo_rows(
     let mut title = format!("Todos {}/{}", progress.done, progress.total);
     if progress.blocked > 0 {
         title.push_str(&format!(" · {} blocked", progress.blocked));
+    }
+    let observed = claims
+        .iter()
+        .filter(|claim| claim.observed.is_some())
+        .count();
+    if !claims.is_empty() {
+        title.push_str(&format!(" · {observed} observed"));
+    }
+    if claims.len() > observed {
+        title.push_str(&format!(" · {} claimed", claims.len() - observed));
     }
     let current = list
         .items()
@@ -133,7 +145,15 @@ pub fn todo_rows(
                 .chain(item.children.iter().map(|child| (child, nested)))
             {
                 if shown.contains(&number) {
-                    rows.push(todo_row(row, number.saturating_add(1), indent, live, theme));
+                    let mut line = todo_row(row, number.saturating_add(1), indent, live, theme);
+                    let claimed = claims
+                        .iter()
+                        .any(|claim| claim.observed.is_none() && claim.label == row.label.as_str());
+                    if claimed {
+                        line.spans
+                            .push(Span::styled("  claimed", theme.muted_style()));
+                    }
+                    rows.push(line);
                 }
                 number = number.saturating_add(1);
             }
@@ -183,6 +203,7 @@ pub(crate) fn input(
         todos: app.todos.clone(),
         todo_full: app.todo_clock.full(Instant::now()),
         live: app.running,
+        claims: app.claims.clone(),
         steering: app.steering.clone(),
         follow_up: Vec::new(),
         memory,
@@ -220,7 +241,13 @@ pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
     };
     let header = match (
         header,
-        todo_rows(input.todos.as_ref(), input.todo_full, input.live, theme),
+        todo_rows(
+            input.todos.as_ref(),
+            input.todo_full,
+            input.live,
+            &input.claims,
+            theme,
+        ),
     ) {
         (header, None) => header,
         (None, Some((title, rows))) => {

@@ -195,6 +195,18 @@ impl App {
                 }
                 self.dirty = true;
             }
+            Decoded::Claims(claims) => {
+                for chat in self.state.chats_mut(id) {
+                    chat.port.set_claims(claims.clone());
+                }
+                self.dirty = true;
+            }
+            Decoded::Plan(plan) => {
+                for chat in self.state.chats_mut(id) {
+                    chat.port.set_plan(plan.clone());
+                }
+                self.dirty = true;
+            }
             Decoded::Config(config) => self.apply_config(id, &config, true),
             Decoded::Child(child) => {
                 keep_child_row(self.state.children.entry(id.clone()).or_default(), &child);
