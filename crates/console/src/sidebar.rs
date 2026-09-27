@@ -68,6 +68,9 @@ fn detail(app: &App, id: &SessionId, row: &SessionRow, now: u64) -> String {
         SessionStatus::Idle | SessionStatus::Unknown => "idle".to_owned(),
     };
     let mut parts = vec![doing];
+    if chat.is_some_and(|chat| chat.app.gate_red()) {
+        parts.insert(0, "gate red".to_owned());
+    }
     if let Some(todos) = chat.and_then(|chat| chat.port.todo_list()) {
         let progress = todos.progress();
         if progress.total > 0 {
@@ -169,16 +172,22 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
         let Some(row) = app.state.sessions.get(id) else {
             continue;
         };
-        if !rail && current_section != Some(row.status.section()) {
-            current_section = Some(row.status.section());
-            let style = if row.status.need() < 2 {
+        let need = app.state.need_of(row);
+        let section = if need <= 2 {
+            "needs you"
+        } else {
+            row.status.section()
+        };
+        if !rail && current_section != Some(section) {
+            current_section = Some(section);
+            let style = if need <= 2 {
                 status_style(theme, SessionStatus::Blocked).add_modifier(Modifier::BOLD)
             } else {
                 theme.dim_style()
             };
             rows.push(SidebarRow::plain(
                 None,
-                Line::styled(format!("  {}", row.status.section()), style),
+                Line::styled(format!("  {section}"), style),
             ));
         }
         let is_focused = focused.as_ref() == Some(id);

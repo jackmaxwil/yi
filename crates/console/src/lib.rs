@@ -13,6 +13,7 @@ pub mod layout;
 pub mod model;
 pub mod notify;
 pub mod palette;
+pub mod panes;
 pub mod render;
 pub mod select;
 pub mod sidebar;

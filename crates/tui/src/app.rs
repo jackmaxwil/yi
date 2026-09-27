@@ -595,6 +595,11 @@ impl App {
         &self.options.cwd
     }
 
+    pub fn gate_red(&self) -> bool {
+        matches!(&self.landing, Some(yi_types::lane::Landing::Open { jobs, .. })
+            if jobs.iter().any(|job| job.state == yi_types::lane::JobState::Red))
+    }
+
     pub fn landing_line(&self) -> Option<String> {
         self.landing.as_ref().map(yi_runtime::slash::landing_line)
     }

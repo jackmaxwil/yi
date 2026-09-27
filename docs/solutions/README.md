@@ -240,5 +240,6 @@ edited by hand.
 - [D263](adr/d263.md) - the console's full sidebar is an inbox
 - [D264](adr/d264.md) - the console's session diff pane becomes Review, keeping ⌘G
 - [D265](adr/d265.md) - the console's Tape shows a session's ledger over wall time
+- [D266](adr/d266.md) - the stack's four gaps close
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
