@@ -3031,6 +3031,7 @@ fn write_canonical_plan(cwd: &std::path::Path, todos: &[(&str, &str)]) -> TestRe
                 contract_hash: None,
                 extra: Map::new(),
                 cites: Default::default(),
+                ask: None,
             })
         })
         .collect::<Result<Vec<_>, yi_types::plan::doc::DocError>>()?;

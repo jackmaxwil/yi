@@ -93,3 +93,20 @@ fn trailing_user_addresses_on_a_row_are_its_intent() -> TestResult {
     assert!(plain.intent.is_empty());
     Ok(())
 }
+
+/// Dies with the ask dropped, renamed or reordered on a session's list: the record the engine
+/// wrote when a todo asked reads back with its options and re-serializes to the same bytes.
+#[test]
+fn a_record_carrying_an_ask_round_trips_byte_for_byte() -> TestResult {
+    let raw = include_str!("fixtures/todo-record-ask-v1.json");
+    let record: TodoRecord = serde_json::from_str(raw)?;
+    let asked = record
+        .list
+        .items()
+        .find_map(|item| item.ask.as_ref())
+        .ok_or("no ask")?;
+    assert_eq!(asked.to_string(), "1. Calm · 2. Bold · 3. Dense");
+    assert!(asked.answer.is_none());
+    assert_eq!(serde_json::to_string(&record)?, raw);
+    Ok(())
+}

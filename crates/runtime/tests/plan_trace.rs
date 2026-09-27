@@ -228,3 +228,83 @@ fn the_trace_cap_names_its_cut_only_past_the_cap() -> TestResult {
     );
     Ok(())
 }
+
+fn call(id: &str, args: serde_json::Value) -> AgentMessage {
+    let args = args.as_object().cloned().unwrap_or_default();
+    faux_assistant_message(vec![faux_tool_call(id, "plan", args)], StopReason::ToolUse)
+}
+
+/// Dies with the pick unread: the user's "2" leaves no answer, the unblock names no exemplar and
+/// the reply's address never joins the intent; or with an unblock before any reply let through.
+#[tokio::test]
+async fn a_todo_asking_three_options_takes_the_users_pick_by_number() -> TestResult {
+    let root = Scratch::new("yi-plan-ask")?;
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let option = |id: &str, label: &str| json!({"id": id, "label": label, "preview": format!("hero: {label}")});
+    let asked = |options: Vec<serde_json::Value>| {
+        json!({"op": "block", "label": "hero style", "on": {"user": null},
+            "note": "which hero?", "options": options})
+    };
+    let three = vec![
+        option("a", "Calm"),
+        option("b", "Bold"),
+        option("c", "Dense"),
+    ];
+    provider.queue_faux(vec![
+        call(
+            "c1",
+            json!({"op": "init", "goal": "land the page", "todos": [{"label": "hero style"}]}),
+        ),
+        call("c2", asked(three[..2].to_vec())),
+        call("c3", asked(three)),
+        call("c4", json!({"op": "unblock", "label": "hero style"})),
+        faux_assistant_message(vec![faux_text("which hero?")], StopReason::Stop),
+        call("c5", json!({"op": "unblock", "label": "hero style"})),
+        faux_assistant_message(vec![faux_text("bold it is")], StopReason::Stop),
+    ]);
+    let mut session = session(Arc::clone(&provider));
+    let store = memory_store();
+    session.attach_store(Arc::clone(&store))?;
+    wired(&mut session, &root, provider);
+    for prompt in ["draft the landing page hero", "2"] {
+        session.prompt_message(yi_runtime::session::user_input(prompt))?;
+        session.wait_idle().await;
+    }
+
+    let two = tool_text(&store, "c2")?;
+    assert!(two.contains("offers 3 to 5 options, not 2"), "{two}");
+    let block = tool_text(&store, "c3")?;
+    assert!(
+        block.contains("options 1. Calm · 2. Bold · 3. Dense;")
+            && block.contains("unattended it stays blocked: nothing picks for the user"),
+        "{block}"
+    );
+    let early = tool_text(&store, "c4")?;
+    assert!(
+        early.contains("no user message came after it asked"),
+        "an unblock with no reply since the ask is refused: {early}"
+    );
+    let picked = tool_text(&store, "c5")?;
+    assert!(
+        picked.contains("picked b Bold by user://2, the exemplar; rejected a, c"),
+        "{picked}"
+    );
+    let plan = PlanStore::open(root.join("plans"))?.read(&PlanId::new("land-the-page")?)?;
+    let todo = plan.todo(&TodoLabel::new("hero style")?).ok_or("no todo")?;
+    assert_eq!(todo.state, TodoState::Pending);
+    let ask = todo
+        .ask
+        .as_ref()
+        .ok_or("the ask is kept past the unblock")?;
+    let answer = ask.answer.as_ref().ok_or("no answer recorded")?;
+    assert_eq!(answer.address.to_string(), "user://2");
+    assert_eq!(answer.option.as_ref().map(|id| id.as_str()), Some("b"));
+    assert_eq!(
+        ask.options.len(),
+        3,
+        "the rejected options stay on the record"
+    );
+    let intent: Vec<String> = todo.cites.intent.iter().map(ToString::to_string).collect();
+    assert_eq!(intent, ["user://1", "user://2"]);
+    Ok(())
+}

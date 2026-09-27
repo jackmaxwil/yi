@@ -1025,6 +1025,7 @@ mod tests {
                 contract_hash: None,
                 cites: Default::default(),
                 extra: Map::new(),
+                ask: None,
             }],
         );
         store.write(&plan)?;

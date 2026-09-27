@@ -268,7 +268,8 @@ pub(super) fn validate_plan(plan: &Plan) -> Result<(), PlanOpError> {
         Some(
             issue @ (PlanIssue::UnresolvedEdge { .. }
             | PlanIssue::Cycle { .. }
-            | PlanIssue::Contract { .. }),
+            | PlanIssue::Contract { .. }
+            | PlanIssue::Unanswered { .. }),
         ) => Err(PlanOpError::Invalid { issue }),
     }
 }
@@ -346,6 +347,7 @@ pub(super) fn new_todo(spec: TodoSpec) -> Todo {
         contract: spec.contract,
         contract_hash: None,
         cites: spec.cites,
+        ask: None,
         extra: Map::new(),
     }
 }

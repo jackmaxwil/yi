@@ -54,6 +54,7 @@ pub enum Op {
         label: TodoLabel,
         on: BlockedOn,
         note: String,
+        ask: Option<Box<yi_types::plan::ask::Ask>>,
     },
     Unblock {
         label: TodoLabel,
@@ -646,6 +647,24 @@ fn legal_moves(state: &TodoStateName) -> &'static str {
     }
 }
 
+fn block(
+    list: &mut TodoList,
+    label: &TodoLabel,
+    on: BlockedOn,
+    note: String,
+    ask: Option<Box<yi_types::plan::ask::Ask>>,
+) -> Result<(), TodoError> {
+    let item = resolve(list, label)?;
+    if item.is_closed() {
+        return Err(illegal("block", item));
+    }
+    item.state = TodoStateName::Blocked;
+    item.on = Some(on);
+    item.note = Some(note);
+    item.ask = ask.map(|ask| *ask);
+    Ok(())
+}
+
 fn illegal(op: &'static str, item: &TodoItem) -> TodoError {
     TodoError::Illegal {
         op,
@@ -835,16 +854,12 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             close(item, TodoStateName::Abandoned, Some(reason.clone()), None);
             Ok(())
         }),
-        Op::Block { label, on, note } => {
-            let item = resolve(list, &label)?;
-            if item.is_closed() {
-                return Err(illegal("block", item));
-            }
-            item.state = TodoStateName::Blocked;
-            item.on = Some(on);
-            item.note = Some(note);
-            Ok(())
-        }
+        Op::Block {
+            label,
+            on,
+            note,
+            ask,
+        } => block(list, &label, on, note, ask),
         Op::Unblock { label } => {
             let item = resolve(list, &label)?;
             if item.state != TodoStateName::Blocked {

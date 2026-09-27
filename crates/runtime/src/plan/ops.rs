@@ -543,6 +543,7 @@ impl PlanEngine {
         } = request;
         check_actor(&actor, &op)?;
         let op = self.cite_default(op, plan.as_ref());
+        let op = self.ask_default(op, plan.as_ref())?;
         if let Op::View { full } = op {
             return self.view(plan, full);
         }
