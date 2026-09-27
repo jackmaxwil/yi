@@ -27,6 +27,14 @@ pub struct CompactReports {
     pub unsaved: Arc<dyn Fn(&yi_session::SessionError) + Send + Sync>,
 }
 
+struct Closing(Arc<WaitFn>);
+
+impl Drop for Closing {
+    fn drop(&mut self) {
+        (self.0)(None);
+    }
+}
+
 pub fn loop_hook(
     compactor: Arc<Compactor>,
     provider: Arc<ProviderStream>,
@@ -50,10 +58,11 @@ pub fn loop_hook(
         Box::pin(async move {
             let signal = InterruptSignal::default();
             let due = compactor.settings.enabled && compactor.due(&messages, &model);
-            if due {
+            let closing = due.then(|| {
                 let tokens = estimate_context(&messages).tokens.0;
                 waiting(Some(yi_types::event::Wait::Compaction { tokens }));
-            }
+                Closing(Arc::clone(&waiting))
+            });
             let replaced = compactor
                 .maybe_compact(
                     &messages,
@@ -64,9 +73,7 @@ pub fn loop_hook(
                     &signal,
                 )
                 .await;
-            if due {
-                waiting(None);
-            }
+            drop(closing);
             match replaced {
                 Ok(replaced) => {
                     if replaced.is_some() {
