@@ -19,6 +19,11 @@ impl App {
         let Some(session) = self.on_review() else {
             return;
         };
+        let armed = self
+            .state
+            .diffs
+            .get_mut(&session)
+            .and_then(|diff| diff.land_armed.take());
         match key.code {
             KeyCode::Char('s') => {
                 if let Some(PaneContent::SessionDiff { scope, .. }) =
@@ -28,20 +33,36 @@ impl App {
                 }
                 self.refresh_branch(&session);
             }
-            KeyCode::Char('l') => {
-                let title = self
+            KeyCode::Char('l') => match armed {
+                Some(title) => {
+                    let chat = self.state.chats_mut(&session).into_iter().next();
+                    let sent = chat.map(|chat| {
+                        chat.port
+                            .queue
+                            .push(super::port::PortRequest::Slash(format!("land {title}")));
+                    });
+                    self.note(if sent.is_some() {
+                        "landing: the gate's jobs show in the status row as they run"
+                    } else {
+                        "no chat holds this session, so nothing was sent to land"
+                    });
+                }
+                None => match self
                     .state
                     .sessions
                     .get(&session)
-                    .map(crate::model::SessionRow::label)
-                    .unwrap_or_default();
-                if let Some(chat) = self.state.chats_mut(&session).into_iter().next() {
-                    chat.port
-                        .queue
-                        .push(super::port::PortRequest::Slash(format!("land {title}")));
-                }
-                self.note("landing: the gate's jobs show in the status row as they run");
-            }
+                    .and_then(|row| row.name.clone())
+                {
+                    Some(title) => {
+                        self.state
+                            .diffs
+                            .entry(session.clone())
+                            .or_default()
+                            .land_armed = Some(title);
+                    }
+                    None => self.note("this session has no title yet: /land <title> in its chat"),
+                },
+            },
             _ => {}
         }
         self.dirty = true;

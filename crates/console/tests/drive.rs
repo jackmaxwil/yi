@@ -1347,6 +1347,70 @@ fn untracked_edit_accumulates_without_opening() -> TestResult {
     )
 }
 
+/// Dies with one stray `l` in Review landing the branch: the first press shows what a second
+/// would run, another key cancels it, and only the second press sends it.
+#[test]
+fn landing_from_review_asks_for_a_second_press() -> TestResult {
+    run(
+        "review-land",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-g\n\
+         wait-frame 3000 Review · session\n\
+         key alt-right\n\
+         key l\n\
+         wait-frame 3000 │l again to /land s-alpha · any other\n\
+         key x\n\
+         wait-frame 3000 !l again to /land\n\
+         key l\n\
+         key l\n\
+         wait-frame 3000 landing: the gate's jobs\n\
+         quit\n",
+    )
+}
+
+fn unnamed_list(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"sessions": [{"sessionId": "s-alpha", "attached": false}]}),
+    )]
+}
+
+/// Dies with a pull request titled "untitled": a session with no title lands nothing from
+/// Review and says how to name the landing.
+#[test]
+fn an_untitled_session_does_not_land_from_review() -> TestResult {
+    run(
+        "review-untitled",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", unnamed_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 untitled\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-g\n\
+         wait-frame 3000 Review · session\n\
+         key alt-right\n\
+         key l\n\
+         key l\n\
+         wait-frame 3000 this session has no title yet: /land <title> in its chat\n\
+         wait-frame 1000 !landing: the gate's jobs\n\
+         quit\n",
+    )
+}
+
 /// The first kernel cell opens the notebook pane, and that spends the session's one
 /// automatic side pane: a later tracked edit no longer opens the diff.
 #[test]

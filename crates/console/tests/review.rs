@@ -49,10 +49,47 @@ fn a_review_scopes_edits_by_turn_and_names_the_todo_each_served() {
         "{all:#?}"
     );
     assert!(
-        all.iter().any(|line| line == "○ 1 files read only"),
+        all.iter().any(|line| line == "○ 1 file read only"),
         "{all:#?}"
     );
     assert!(text(&lines).iter().all(|line| !line.contains("src/a.rs")));
+}
+
+/// Dies with every branch file bare of its todo: an edit's patch names its file absolutely and
+/// git's numstat from the repository root, so the lookup never matched; a relative read of an
+/// edited file was counted as read only too.
+#[test]
+fn a_branch_review_names_the_todo_of_a_file_its_edit_named_absolutely() {
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let mut diff = SessionDiff::default();
+    diff.files
+        .push(edit("/repo/lane/src/a.rs", 0, Some("write the parser")));
+    diff.reads.insert("src/a.rs".to_owned(), 2);
+    diff.branch = Some(yi_types::lane::BranchDiff {
+        base: "abc12345".to_owned(),
+        files: vec![("src/a.rs".to_owned(), 1, 0)],
+        patch: String::new(),
+        untracked: 0,
+    });
+    let (_, lines) =
+        yi_console::render::review_view(Some(&diff), ReviewScope::Branch, "", 80, &theme);
+    let all = text(&lines);
+    assert!(
+        all.iter()
+            .any(|line| line == "● src/a.rs  +1 −0  · write the parser"),
+        "{all:#?}"
+    );
+    assert!(
+        all.iter().all(|line| !line.contains("read only")),
+        "{all:#?}"
+    );
+    let (_, lines) =
+        yi_console::render::review_view(Some(&diff), ReviewScope::Session, "", 80, &theme);
+    let all = text(&lines);
+    assert!(
+        all.iter().all(|line| !line.contains("read only")),
+        "{all:#?}"
+    );
 }
 
 /// Dies with no picture of the time: where a session's minutes went, and its turns,
