@@ -234,6 +234,9 @@ edited by hand.
 - [D257](adr/d257.md) - the orb's TypeScript-parity modes are deleted (revises D256 and D73)
 - [D258](adr/d258.md) - a sandboxed process writes only its own session's state
 - [D255](adr/d255.md) - todo evidence stays the agent's claim, not a checked fact
+- [D260](adr/d260.md) - a session's build runs off the worker's request loop
+- [D265](adr/d265.md) - a wait wakes on the event it waits for, not on a timer
+- [D266](adr/d266.md) - a resume and the session list stop paying for what nobody reads
 - [D259](adr/d259.md) - judge replay is stage 0's falsification test
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
