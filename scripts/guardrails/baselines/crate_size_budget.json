@@ -1,5 +1,5 @@
 {
-  "acp": 2882,
+  "acp": 2941,
   "ai": 4947,
   "cli": 5313,
   "console": 7864,
@@ -11,7 +11,7 @@
   "orb": 1242,
   "permission": 1766,
   "runtime": 46211,
-  "session": 1728,
+  "session": 1910,
   "tools": 12559,
   "tui": 13036,
   "types": 8153
