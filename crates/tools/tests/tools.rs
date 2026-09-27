@@ -1386,6 +1386,111 @@ fn a_directory_reads_as_a_listing_with_skeletons() -> TestResult {
     Ok(())
 }
 
+/// A read of a build or dataset directory listed every entry with no cap and no count.
+#[test]
+fn a_large_directory_listing_names_its_cut() -> TestResult {
+    let dir = temp_dir("read-dir-cap")?;
+    fs::create_dir_all(dir.join("big/sub"))?;
+    for index in 0..250 {
+        fs::write(dir.join(format!("big/f{index:03}.bin")), "x")?;
+    }
+    let context = ToolContext::new(dir.to_path_buf());
+    let text = output_text(&read_tool().execute(args(&[("path", json!("big"))]), &context));
+    let rows: Vec<&str> = text.lines().collect();
+    assert_eq!(rows.get(1), Some(&"sub/"), "{text}");
+    assert_eq!(rows.get(200), Some(&"f198.bin  1 B"), "{text}");
+    assert_eq!(
+        rows.get(201),
+        Some(&"[showing 200 of 251 entries — read a narrower path]"),
+        "{text}"
+    );
+    assert!(!text.contains("f199.bin"), "{text}");
+    Ok(())
+}
+
+/// The clip hint named only the first clipped line and left the path unquoted, so a path with a
+/// space or an apostrophe broke the command it suggested.
+#[test]
+fn every_clipped_line_is_named_in_one_runnable_sed() -> TestResult {
+    let dir = temp_dir("read-clip-all")?;
+    let wide = "x".repeat(5_000);
+    fs::write(
+        dir.join("it's notes.txt"),
+        format!("short\n{wide}\nmid\n{wide}\n{wide}\nend\n"),
+    )?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let text =
+        output_text(&read_tool().execute(args(&[("path", json!("it's notes.txt"))]), &context));
+    let command = r"sed -n '2p;4,5p' 'it'\''s notes.txt'";
+    assert!(text.contains(command), "{text}");
+    let shown =
+        output_text(&BashTool::default().execute(args(&[("command", json!(command))]), &context));
+    assert_eq!(shown.matches(&wide).count(), 3, "{shown}");
+    Ok(())
+}
+
+/// An edit between two grep pages moved the next offset onto different matches with no notice.
+#[test]
+fn a_grep_page_after_the_matches_changed_says_so() -> TestResult {
+    let dir = temp_dir("grep-sweep")?;
+    let hits = |count: usize| -> String { (0..count).map(|n| format!("hit {n}\n")).collect() };
+    fs::write(dir.join("a.txt"), hits(5))?;
+    fs::write(dir.join("b.txt"), hits(300))?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let grep = GrepTool {
+        hashline: Some(yi_tools::hashline::tool::shared_hashline_state()),
+    };
+    let page = |offset: usize| {
+        output_text(&grep.execute(
+            args(&[("pattern", json!("hit")), ("offset", json!(offset))]),
+            &context,
+        ))
+    };
+    let first = page(0);
+    assert!(first.contains("continue with offset=200"), "{first}");
+    let steady = page(200);
+    assert!(!steady.contains("matches changed"), "{steady}");
+    page(0);
+    fs::write(dir.join("a.txt"), hits(1))?;
+    let moved = page(200);
+    assert!(
+        moved
+            .contains("[matches changed since the last page; offsets now count the current sweep]"),
+        "{moved}"
+    );
+    Ok(())
+}
+
+/// Grep listed files in the filesystem's order, which differs between machines and after a rename.
+#[test]
+fn grep_lists_files_in_name_order() -> TestResult {
+    let dir = temp_dir("grep-order")?;
+    let names = [
+        "q.txt", "c.txt", "x.txt", "a.txt", "m.txt", "b.txt", "z.txt", "k.txt",
+    ];
+    for name in names {
+        fs::write(dir.join(name), "needle\n")?;
+    }
+    let context = ToolContext::new(dir.to_path_buf());
+    let text = output_text(&GrepTool::default().execute(
+        args(&[
+            ("pattern", json!("needle")),
+            ("files_with_matches", json!(true)),
+        ]),
+        &context,
+    ));
+    let listed: Vec<&str> = names
+        .iter()
+        .filter_map(|name| text.find(name).map(|at| (at, *name)))
+        .collect::<std::collections::BTreeMap<_, _>>()
+        .into_values()
+        .collect();
+    let mut sorted = names.to_vec();
+    sorted.sort_unstable();
+    assert_eq!(listed, sorted, "{text}");
+    Ok(())
+}
+
 #[test]
 fn find_shows_the_block_and_the_references_in_one_read() -> TestResult {
     let dir = temp_dir("read-find")?;
