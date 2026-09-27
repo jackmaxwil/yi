@@ -23,10 +23,121 @@ impl super::ops::OpSink for SessionOpSink {
     }
 }
 
+/// Invariant: the journal key naming the session that applied a record; `null` means the `yi
+/// plan` CLI applied it, and a key absent predates the stamp or came from a seed write.
+pub const SESSION_KEY: &str = "session";
+
+/// What a hosted engine may name: its own session first (the stamp), then its host's.
+pub struct Owned {
+    pub sessions: Vec<String>,
+    pub roots: Vec<PlanId>,
+}
+
+pub type OwnedFn = dyn Fn() -> Owned + Send + Sync;
+
+impl Owned {
+    pub fn of(sessions: &[yi_session::SharedSession]) -> Self {
+        let mut owned = Self {
+            sessions: Vec::new(),
+            roots: Vec::new(),
+        };
+        for session in sessions {
+            owned
+                .sessions
+                .push(yi_session::lock_session(session).metadata().id.clone());
+            owned.roots.extend(owned_roots(session));
+        }
+        owned
+    }
+
+    /// Invariant: a root is this session's when its ledger or a journal stamp names it, or when
+    /// only the CLI ever wrote it: a shell import is nobody's until a session applies an op.
+    pub fn claims(&self, store: &super::store::PlanStore, root: &PlanId) -> bool {
+        if self.roots.contains(root) {
+            return true;
+        }
+        let Ok(reading) = store.journal(root).read() else {
+            return false;
+        };
+        let stamp = |record: &yi_types::plan::ledger::JournalRecord| {
+            record.record.extra.get(SESSION_KEY).cloned()
+        };
+        let mine = reading.records.iter().any(|record| {
+            matches!(stamp(record), Some(serde_json::Value::String(id)) if self.sessions.contains(&id))
+        });
+        mine || (!reading.records.is_empty()
+            && reading
+                .records
+                .iter()
+                .all(|record| stamp(record) == Some(serde_json::Value::Null)))
+    }
+}
+
+/// Who applies an engine's ops: a session, the `yi plan` CLI, or nobody (a bare test engine).
+pub enum Host {
+    Bare,
+    Cli,
+    Session(std::sync::Arc<OwnedFn>),
+}
+
+impl super::ops::PlanEngine {
+    pub fn with_owned(self, owned: std::sync::Arc<OwnedFn>) -> Self {
+        Self {
+            host: Host::Session(owned),
+            ..self
+        }
+    }
+
+    /// The `yi plan` CLI: its records carry a null session, so a session may adopt its plans.
+    pub fn unhosted(self) -> Self {
+        Self {
+            host: Host::Cli,
+            ..self
+        }
+    }
+
+    /// Every journal record carries the session that applied it, in the same line as the op.
+    pub(super) fn stamped(
+        &self,
+        mut record: yi_types::plan::ledger::JournalRecord,
+    ) -> yi_types::plan::ledger::JournalRecord {
+        let stamp = match &self.host {
+            Host::Session(owned) => owned()
+                .sessions
+                .into_iter()
+                .next()
+                .map(serde_json::Value::String),
+            Host::Cli => Some(serde_json::Value::Null),
+            Host::Bare => None,
+        };
+        if let Some(stamp) = stamp {
+            record.record.extra.insert(SESSION_KEY.to_owned(), stamp);
+        }
+        record
+    }
+
+    /// Invariant: the plans directory is shared by every session in the workspace, so an
+    /// unnamed op resolves, lists and conflicts only over the roots [`Owned::claims`] grants;
+    /// another session's Active root is neither inherited nor in the way. Without an owner
+    /// (the CLI, a bare engine) every root is in scope.
+    pub(super) fn roots(&self) -> Result<Vec<PlanId>, super::store::StoreError> {
+        let roots = self.store.roots()?;
+        let Host::Session(owned) = &self.host else {
+            return Ok(roots);
+        };
+        let owned = owned();
+        Ok(roots
+            .into_iter()
+            .filter(|id| owned.claims(&self.store, id))
+            .collect())
+    }
+}
+
 /// Every `custom{plan_op}` entry this session recorded, oldest first.
 pub fn records(session: &yi_session::SharedSession) -> Vec<PlanOpRecord> {
     let entries = yi_session::lock_session(session)
         .find_entries(&yi_session::EntryQuery {
+            custom_type: Some(PLAN_OP_ENTRY_TYPE.to_owned()),
             order: yi_session::EntryOrder::OldestFirst,
             ..yi_session::EntryQuery::default()
         })

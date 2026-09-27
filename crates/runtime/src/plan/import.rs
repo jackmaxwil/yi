@@ -329,7 +329,7 @@ impl PlanEngine {
         let id = read.plan.id.clone();
         let root = root_of(&id)?;
         if read.plan.state == PlanState::Active
-            && let Some(open) = self.store.roots()?.into_iter().find(|other| {
+            && let Some(open) = self.roots()?.into_iter().find(|other| {
                 *other != root
                     && self
                         .store

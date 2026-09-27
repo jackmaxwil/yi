@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+# One test binary, not one per file: tests/integration.rs names the modules.
+autotests = false
 
 [lints]
 workspace = true
@@ -16,15 +18,21 @@ yi-orb = { workspace = true }
 ratatui = { workspace = true }
 tui-textarea = { workspace = true }
 pulldown-cmark = { workspace = true }
-syntect = { workspace = true }
-two-face = { workspace = true }
+syntect = { workspace = true, features = ["dump-load"] }
 unicode-width = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [build-dependencies]
 miniz_oxide = { workspace = true }
+serde_json = { workspace = true }
+syntect = { workspace = true, features = ["dump-create"] }
+two-face = { workspace = true }
 
 [dev-dependencies]
 vt100 = { workspace = true }
 insta = { workspace = true }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

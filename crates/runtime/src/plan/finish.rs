@@ -77,7 +77,7 @@ impl PlanEngine {
     fn locate(&self, agent: &str) -> Option<Held> {
         let roots = match agent.split_once('/') {
             Some((plan, _)) => vec![root_of(&PlanId::new(plan).ok()?).ok()?],
-            None => self.store.roots().ok()?,
+            None => self.roots().ok()?,
         };
         for root in roots {
             let Ok(reading) = self.store.journal(&root).read() else {
@@ -471,8 +471,12 @@ impl Settling {
 }
 
 impl Drop for Settling {
+    /// The last release is when `busy` can fall, so a family wait reads it without a timer.
     fn drop(&mut self) {
         self.0.settling.fetch_sub(1, Ordering::SeqCst);
+        if let Ok(children) = self.0.children.lock() {
+            children.stirred.notify_waiters();
+        }
     }
 }
 
@@ -547,7 +551,9 @@ fn holds(view: &crate::family::MemberView, in_tool: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::dispatch::tests::{delegated, hooked, owner, reply, settled, texts};
+    use super::super::dispatch::tests::{
+        delegated, hooked, owner, reply, settled, stirred_until, texts,
+    };
     use super::super::ops::Op;
     use super::super::ops::PlanEngine;
     use super::install;
@@ -874,26 +880,24 @@ mod tests {
         let completed = crate::subagent::ChildStatus::Completed;
         let epoch = || rig.host.children.lock().map(|children| children.epoch);
         let mut ended = None;
-        for _ in 0..400 {
-            if rig
+        stirred_until(&rig.host, || {
+            let done = rig
                 .host
                 .children_view()
                 .iter()
-                .any(|child| child.update.status == completed)
-            {
+                .any(|child| child.update.status == completed);
+            if done {
                 ended = Some(epoch().map_err(|_| "poisoned")?);
-                break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+            Ok(done)
+        })
+        .await?;
         drop(lease);
         let ended = ended.ok_or("the child never ended")?;
-        for _ in 0..400 {
-            if !texts(&rig.said).is_empty() && !rig.host.busy() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+        stirred_until(&rig.host, || {
+            Ok(!texts(&rig.said).is_empty() && !rig.host.busy())
+        })
+        .await?;
         let said = texts(&rig.said);
         assert!(
             said.iter().any(|line| line.contains("not accepted")),

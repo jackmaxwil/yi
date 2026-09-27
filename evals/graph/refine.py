@@ -282,7 +282,7 @@ def main(argv=None):
     if args.write and any(v["verdict"] == "promoted" for v in verdicts):
         GRAPH.write_text(dump(graph))
         # The Rust goldens pin the bytes today's graph renders; a promotion is a prompt change.
-        print(f"wrote {GRAPH.relative_to(ROOT)}: run `cargo test -p yi-runtime --test affordance`"
+        print(f"wrote {GRAPH.relative_to(ROOT)}: run `cargo test -p yi-runtime --test integration affordance::`"
               " and re-pin the goldens deliberately before committing", file=sys.stderr)
     return 0
 

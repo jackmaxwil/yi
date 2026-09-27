@@ -150,7 +150,7 @@ class YiRunner:
 
 def last_assistant_text(path):
     text = ""
-    for line in Path(path).read_text(errors="replace").splitlines():
+    for line in Path(path).read_text(errors="replace").split("\n"):
         line = line.strip()
         if not line:
             continue

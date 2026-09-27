@@ -147,6 +147,34 @@ fn grep_returns_path_line_hits_and_respects_case_flag() -> TestResult {
     Ok(())
 }
 
+/// Script classes are how a search finds CJK or Greek text; the dist build links only some Unicode
+/// tables (vendor/syntect), so a property it lacks has to say so rather than read as a typo.
+#[test]
+fn grep_unicode_classes_match_on_the_linked_tables() -> TestResult {
+    let dir = temp_dir("grep-unicode")?;
+    fs::write(
+        dir.join("i18n.txt"),
+        "plain ascii\n\u{4f60}\u{597d}\n\u{3b1}\u{3b2}\u{3b3}\n",
+    )?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let grep = GrepTool::default();
+    for (pattern, line) in [
+        (r"\p{Han}+", "i18n.txt:2:"),
+        (r"\p{Greek}+", "i18n.txt:3:"),
+        (r"^\p{Script=Latin}+ ", "i18n.txt:1:"),
+        (r"\p{L}\p{L}$", "i18n.txt:2:"),
+    ] {
+        let hit = grep.execute(args(&[("pattern", json!(pattern))]), &context);
+        let text = output_text(&hit);
+        assert!(text.contains(line), "{pattern}: {text}");
+    }
+    let unknown = grep.execute(args(&[("pattern", json!(r"\p{Klingon}"))]), &context);
+    let text = output_text(&unknown);
+    assert!(unknown.is_error, "{text}");
+    assert!(text.contains("Age and the grapheme"), "{text}");
+    Ok(())
+}
+
 #[test]
 fn bash_reports_output_exit_code_and_stderr() -> TestResult {
     let dir = temp_dir("bash")?;

@@ -25,6 +25,11 @@ impl Clock for SystemClock {
 pub trait Fs: Send + Sync {
     fn write_all(&self, file: &mut std::fs::File, bytes: &[u8]) -> std::io::Result<()>;
     fn sync_data(&self, file: &std::fs::File) -> std::io::Result<()>;
+
+    /// The whole-file sync behind a checkpoint or an artifact and the directory naming it.
+    fn sync_all(&self, file: &std::fs::File) -> std::io::Result<()> {
+        file.sync_all()
+    }
 }
 
 pub struct RealFs;

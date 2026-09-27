@@ -21,6 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "adapters"))
+sys.path.insert(0, str(ROOT / "arc"))
 sys.path.insert(0, str(ROOT / "drivers"))
 sys.path.insert(0, str(ROOT / "graph"))
 sys.path.insert(0, str(ROOT / "tests"))
@@ -31,11 +32,14 @@ import rule_fires  # noqa: E402
 import record  # noqa: E402
 import tb21_cost  # noqa: E402
 import atif  # noqa: E402
+import run  # noqa: E402
+import yi_arc  # noqa: E402
 import surface  # noqa: E402
 import axes  # noqa: E402
 import yi_usage  # noqa: E402
 import test_refine  # noqa: E402
 import test_levers  # noqa: E402
+import test_judge_replay  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 EVENTS = FIXTURES / "ask_events.jsonl"
@@ -355,6 +359,36 @@ def check_atif():
     assert "total_cost_usd" not in atif.convert(unknown)["final_metrics"], "an unknown-usage turn must not price the trajectory"
 
 
+def check_line_separator_in_a_string():
+    """A raw U+2028 inside a JSON string is one JSONL line; a reader that splits it there drops
+    or refuses the entry (#618). serde_json writes U+2028 unescaped, so Yi's files carry it."""
+    typed = "run the bash tool twice\u2028and report both exit codes"
+    source = (RECORDED / "tool-turn.jsonl").read_text()
+    with tempfile.TemporaryDirectory() as directory:
+        session = Path(directory) / "sessions" / "tool-turn.jsonl"
+        session.parent.mkdir()
+        session.write_text(source.replace("run the bash tool twice and report both exit codes", typed))
+        try:
+            cassette, _ = record.record(session, "t", "d")
+            scrubbed = record.scrub_only(session)
+        except (ValueError, record.Unrepresentable) as error:
+            raise AssertionError(f"record refused the session: {error}") from error
+        assert cassette["turns"][0]["user"] == typed, cassette["turns"][0]["user"]
+        assert len(scrubbed.split("\n")) == len(source.split("\n")), "scrub_only changed the line count"
+        out = Path(directory) / "trajectory.json"
+        assert atif.main([str(session), "--out", str(out)]) == 0
+        assert json.loads(out.read_text())["steps"][0]["message"] == typed, "atif dropped the user entry"
+        run.write_trajectory(session.parent, out, None)
+        assert json.loads(out.read_text())["steps"][0]["message"] == typed, "run dropped the user entry"
+        events = Path(directory) / "events.jsonl"
+        message = {"role": "assistant", "content": [{"type": "text", "text": typed}]}
+        events.write_text(json.dumps({"type": "message_end", "message": message}, ensure_ascii=False) + "\n")
+        assert yi_arc.last_assistant_text(events) == typed, "yi_arc dropped the final answer"
+        lanes = Path(directory) / "lanes.jsonl"
+        lanes.write_text(json.dumps({"lane": "text", "haystack": typed, "label": "should-not"}, ensure_ascii=False) + "\n")
+        assert rule_fires.load_events(lanes)[0]["haystack"] == typed, "rule_fires cut the event"
+
+
 def check_driver_ceiling():
     """Both v4 drivers refuse a multiplier past one hour before they need anything installed."""
     for name in ("tbv4_baseline.sh", "tbv4_sweep.sh"):
@@ -571,8 +605,18 @@ def check_levers():
     assert yi_usage.levers_label({}) == "" and len(yi_usage.levers_label(environ)) == len("+levers") + 12
 
 
+def check_judge_replay():
+    """D259: the readers on recorded transcripts, blindness, the direct call, quote bytes, the caps
+    and the metrics."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_judge_replay)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 20 and result.wasSuccessful(), report.getvalue()
+
+
 CHECKS = (
     check_surface,
+    check_judge_replay,
     check_graph_refiner,
     check_levers,
     check_cost_cap,
@@ -593,6 +637,7 @@ CHECKS = (
     check_watch_stops,
     check_axes,
     check_atif,
+    check_line_separator_in_a_string,
     check_record,
     check_record_redacts,
     check_record_refuses,

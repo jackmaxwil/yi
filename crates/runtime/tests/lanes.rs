@@ -33,11 +33,9 @@
 //! disposition through `fail` or `drop` as any other non-accept exit does. Writing it from
 //! the repossession needs a road from the host into the engine's journal, which F3a owns.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
+use crate::support;
 use scratch::Scratch;
-#[path = "support/family.rs"]
-mod support;
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -2288,5 +2286,78 @@ async fn a_repossessed_worktree_keeps_its_work_on_its_branch() -> TestResult {
         git(&rig.repo, &["show", &format!("{branch}:draft.txt")])?,
         "unsaved"
     );
+    Ok(())
+}
+
+/// Incident: `yi ask` claims under its session id, then binds that same id, which unlocked
+/// and relocked the worktree: two gits before the first request, for a lock already right.
+#[test]
+fn binding_the_claimed_id_again_leaves_the_lock_alone() -> TestResult {
+    let rig = Rig::new("rebind")?;
+    let mut lane = rig.pool(1)?.claim("s-same", ClaimBase::Main)?;
+    let admin = PathBuf::from(git(lane.path(), &["rev-parse", "--absolute-git-dir"])?);
+    let locked = admin.join("locked");
+    assert_eq!(std::fs::read_to_string(&locked)?.trim(), "session:s-same");
+    std::fs::write(&locked, "marker")?;
+    lane.bind_session("s-same")?;
+    assert_eq!(std::fs::read_to_string(&locked)?, "marker", "relocked");
+    lane.bind_session("s-other")?;
+    assert_eq!(std::fs::read_to_string(&locked)?.trim(), "session:s-other");
+    Ok(())
+}
+
+/// A start asked git for the repository root three times, 10-40 ms each: once for the
+/// checkout and again for the lane it claimed, whose root the claim already knew.
+#[test]
+fn the_repository_root_is_found_once_per_directory() -> TestResult {
+    let rig = Rig::new("canonical")?;
+    let found = yi_runtime::lane::canonical_repo(&rig.repo).ok_or("not a repo")?;
+    let lane = rig.pool(1)?.claim("s-root", ClaimBase::Main)?;
+    let moved = rig.root.join("moved.git");
+    std::fs::rename(rig.repo.join(".git"), &moved)?;
+    for dir in [&rig.repo, &lane.path().to_path_buf()] {
+        let again = yi_runtime::lane::canonical_repo(dir);
+        assert_eq!(
+            again.as_ref(),
+            Some(&found),
+            "git asked for {}",
+            dir.display()
+        );
+    }
+    std::fs::rename(&moved, rig.repo.join(".git"))?;
+    drop(lane);
+    Ok(())
+}
+
+/// Incident: a claim ran `git fetch origin main` whenever the last fetch was a minute old,
+/// seconds against a forge; it now starts from the known `origin/main` and fetches beside.
+#[test]
+fn a_stale_fetch_does_not_hold_the_claim() -> TestResult {
+    let rig = Rig::new("fetch-aside")?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let url = format!(
+        "http://127.0.0.1:{}/repo.git",
+        listener.local_addr()?.port()
+    );
+    std::thread::spawn(move || {
+        let _held = listener.accept();
+        std::thread::sleep(std::time::Duration::from_secs(20));
+    });
+    git(&rig.repo, &["remote", "add", "origin", &url])?;
+    git(
+        &rig.repo,
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    )?;
+    let started = std::time::Instant::now();
+    let lane = rig.pool(1)?.claim("s-fetch", ClaimBase::Main)?;
+    let took = started.elapsed();
+    assert!(took < std::time::Duration::from_secs(10), "held {took:?}");
+    assert_eq!(
+        lane.base().as_deref(),
+        Some(git(&rig.repo, &["rev-parse", "HEAD"])?.as_str())
+    );
+    let local = rig.repo.to_string_lossy().into_owned();
+    git(&rig.repo, &["remote", "set-url", "origin", &local])?;
+    drop(lane);
     Ok(())
 }
