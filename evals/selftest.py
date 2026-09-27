@@ -41,6 +41,7 @@ import yi_usage  # noqa: E402
 import test_refine  # noqa: E402
 import test_levers  # noqa: E402
 import test_judge_replay  # noqa: E402
+import test_improve  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 EVENTS = FIXTURES / "ask_events.jsonl"
@@ -699,6 +700,13 @@ def check_graph_refiner():
     assert result.testsRun >= 5 and result.wasSuccessful(), report.getvalue()
 
 
+def check_improve():
+    """The round's proposer half: a development-only corpus, a history-free snapshot, S0."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_improve)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 4 and result.wasSuccessful(), report.getvalue()
+
 def check_levers():
     """D220: the manifest, the shared default fixture and the floors agree, and the gates hold."""
     report = io.StringIO()
@@ -723,6 +731,7 @@ CHECKS = (
     check_judge_replay,
     check_graph_refiner,
     check_levers,
+    check_improve,
     check_trials,
     check_watch_prune,
     check_cost_cap,
