@@ -19,8 +19,8 @@ pub mod uv_install;
 // boots return in under a second, but a cold boot may need tens of seconds of imports.
 pub const PORTS_RESOLVE_TIMEOUT_MS: u64 = 30_000;
 pub const READY_TIMEOUT_MS: u64 = 30_000;
-// Loopback PUB/SUB subscription propagation is usually sub-ms, but keep a small guard before first execute.
-pub const IOPUB_SUBSCRIBE_DELAY_MS: u64 = 50;
+// Readiness resends kernel_info at most this far apart until iopub carries a message (slow joiner).
+pub const IOPUB_PROBE_RESEND_MS: u64 = 50;
 pub const DEFAULT_MAX_OUTPUT_CHARS: usize = 65_536;
 pub const HOST_REQUEST_DISPOSE_TIMEOUT_MS: u64 = 5_000;
 pub const KERNEL_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;

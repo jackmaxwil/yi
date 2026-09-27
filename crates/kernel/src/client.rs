@@ -10,18 +10,18 @@ use tokio::sync::{Notify, mpsc, oneshot};
 use yi_types::kernel::{
     ConnectionInfo, ExecuteResult, ExecuteStatus, JupyterMessage, KernelSentAgentMessage,
 };
-use zeromq::{SocketRecv, SocketSend, ZmqMessage};
+use zeromq::ZmqMessage;
 
 use crate::bootstrap::{BootstrapOptions, ProgressFn, ensure_kernel_python};
 use crate::connection::{has_resolved_ports, make_connection, random_hex, read_connection_info};
-use crate::framing::{build_message, decode, encode};
+use crate::framing::{build_message, encode};
 use crate::journal::record_orphan_process_state;
-use crate::reduce::{CellState, parent_msg_id, parse_sent_agent_message};
+use crate::reduce::{CellState, parse_sent_agent_message};
 use crate::{
-    DEFAULT_MAX_OUTPUT_CHARS, HOST_REQUEST_DISPOSE_TIMEOUT_MS, IOPUB_SUBSCRIBE_DELAY_MS,
-    KERNEL_ABORT_GRACE_MS, KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE, KERNEL_BUSY_INTERRUPT_INTERVAL_MS,
+    DEFAULT_MAX_OUTPUT_CHARS, HOST_REQUEST_DISPOSE_TIMEOUT_MS, KERNEL_ABORT_GRACE_MS,
+    KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE, KERNEL_BUSY_INTERRUPT_INTERVAL_MS,
     KERNEL_BUSY_REUSE_WAIT_MS, KERNEL_SHUTDOWN_TIMEOUT_MS, MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS,
-    PORTS_RESOLVE_TIMEOUT_MS, READY_TIMEOUT_MS, SNAPSHOT_DISPOSE_TIMEOUT_MS,
+    PORTS_RESOLVE_TIMEOUT_MS, SNAPSHOT_DISPOSE_TIMEOUT_MS,
 };
 
 const STDERR_TAIL_CAP: usize = 16_384;
@@ -326,7 +326,7 @@ impl Inner {
         }
     }
 
-    fn stderr_tail(&self) -> String {
+    pub(crate) fn stderr_tail(&self) -> String {
         let tail = self
             .kernel_stderr
             .lock()
@@ -684,7 +684,7 @@ impl KernelManager {
             *slot = Some(info.clone());
         }
 
-        let (mut shell, iopub, control) = match crate::pump::connect_sockets(&info).await {
+        let (mut shell, mut iopub, control) = match crate::pump::connect_sockets(&info).await {
             Ok(sockets) => sockets,
             Err(error) => {
                 if inner.stale(generation) {
@@ -697,15 +697,9 @@ impl KernelManager {
         let (control_tx, control_rx) = mpsc::unbounded_channel::<Vec<Vec<u8>>>();
         tasks.push(crate::pump::spawn_control_task(inner, control, control_rx));
 
-        // ZMQ PUB/SUB slow-joiner: give the subscription a brief chance to
-        // reach the kernel before first execute.
-        tokio::time::sleep(std::time::Duration::from_millis(IOPUB_SUBSCRIBE_DELAY_MS)).await;
-        if inner.stale(generation) {
-            return Err("Kernel start superseded".to_owned());
-        }
-        tasks.push(crate::pump::spawn_iopub_task(inner, iopub));
-
-        if let Err(error) = self.probe_ready(&mut shell, &info).await {
+        let closed = |error: &str| self.translate_socket_closure(error);
+        let probed = crate::pump::probe_ready(inner, (&mut shell, &mut iopub), &info, &closed);
+        if let Err(error) = probed.await {
             if inner.stale(generation) {
                 return Err(error);
             }
@@ -714,6 +708,7 @@ impl KernelManager {
         if inner.stale(generation) {
             return Err("Kernel start superseded".to_owned());
         }
+        tasks.push(crate::pump::spawn_iopub_task(inner, iopub));
 
         tasks.push(crate::pump::spawn_shell_task(shell, shell_rx));
         if let Ok(mut slot) = inner.channels.lock() {
@@ -759,6 +754,8 @@ impl KernelManager {
         let _span = yi_types::trace::span("kernel.ports");
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_millis(PORTS_RESOLVE_TIMEOUT_MS);
+        let _span = yi_types::trace::span("kernel.wait_ports");
+        let mut pace = yi_types::backoff::backoff(std::time::Duration::from_millis(25));
         while tokio::time::Instant::now() < deadline {
             if self.inner.state() == Lifecycle::Shutdown
                 || self
@@ -778,56 +775,10 @@ impl KernelManager {
             {
                 return Ok(info);
             }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            tokio::time::sleep(pace()).await;
         }
         Err(format!(
             "Kernel did not resolve connection ports within {PORTS_RESOLVE_TIMEOUT_MS}ms. stderr tail:\n{}",
-            self.inner.stderr_tail()
-        ))
-    }
-
-    async fn probe_ready(
-        &self,
-        shell: &mut zeromq::DealerSocket,
-        info: &ConnectionInfo,
-    ) -> Result<(), String> {
-        let _span = yi_types::trace::span("kernel.kernel_info");
-        let message = self.inner.build("kernel_info_request", Map::new())?;
-        let request_id = message.header.msg_id.clone();
-        let frames = zmq_message(encode(&message, &info.key)).ok_or("empty kernel_info_request")?;
-        shell
-            .send(frames)
-            .await
-            .map_err(|error| self.translate_socket_closure(&error.to_string()))?;
-        let deadline =
-            tokio::time::Instant::now() + std::time::Duration::from_millis(READY_TIMEOUT_MS);
-        while tokio::time::Instant::now() < deadline {
-            if self.inner.state() == Lifecycle::Shutdown
-                || self
-                    .inner
-                    .exited
-                    .lock()
-                    .map(|exited| *exited)
-                    .unwrap_or(false)
-            {
-                return Err(format!(
-                    "Kernel exited during startup. stderr:\n{}",
-                    self.inner.stderr_tail()
-                ));
-            }
-            let incoming = tokio::time::timeout_at(deadline, shell.recv()).await;
-            let Ok(incoming) = incoming else { break };
-            let frames =
-                incoming.map_err(|error| self.translate_socket_closure(&error.to_string()))?;
-            if let Some(decoded) = decode(&frames_of(frames))
-                && decoded.header.msg_type == "kernel_info_reply"
-                && parent_msg_id(&decoded) == Some(request_id.as_str())
-            {
-                return Ok(());
-            }
-        }
-        Err(format!(
-            "Kernel did not respond to kernel_info_request within {READY_TIMEOUT_MS}ms. stderr tail:\n{}",
             self.inner.stderr_tail()
         ))
     }
