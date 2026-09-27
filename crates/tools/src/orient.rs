@@ -79,16 +79,23 @@ impl Tool for GetContextTool {
 
 fn packet(symbol: Option<&str>, context: &ToolContext) -> String {
     let root = context.cwd.as_path();
-    let heat_span = yi_types::trace::span("context.heat");
-    let heat = change_heat(context);
-    drop(heat_span);
-    let grid_span = yi_types::trace::span("context.grid");
-    let roots = grid(context, &["roots"]);
-    let near = neighborhood(symbol, context);
-    drop(grid_span);
-    let skeleton_span = yi_types::trace::span("context.skeletons");
-    let skeleton = skeletons(root, symbol, heat.as_ref().ok(), context);
-    drop(skeleton_span);
+    // The grid calls wait on another process, so they run beside the heat and the walk.
+    let (roots, near, heat, skeleton) = std::thread::scope(|scope| {
+        let roots = scope.spawn(|| {
+            let _span = yi_types::trace::span("context.grid");
+            grid(context, &["roots"])
+        });
+        let near = scope.spawn(|| {
+            let _span = yi_types::trace::span("context.grid");
+            neighborhood(symbol, context)
+        });
+        let heat_span = yi_types::trace::span("context.heat");
+        let heat = change_heat(context);
+        drop(heat_span);
+        let _span = yi_types::trace::span("context.skeletons");
+        let skeleton = skeletons(root, symbol, heat.as_ref().ok(), context);
+        (joined(roots), joined(near), heat, skeleton)
+    });
     let layers: [(&str, LayerBody); 6] = [
         // Invariant: this tool only reads. `grid survey` charts the worktree,
         // so the packet takes a slice of an existing chart instead.
@@ -116,6 +123,12 @@ fn packet(symbol: Option<&str>, context: &ToolContext) -> String {
         out.push('\n');
     }
     out
+}
+
+fn joined(layer: std::thread::ScopedJoinHandle<'_, LayerBody>) -> LayerBody {
+    layer
+        .join()
+        .unwrap_or_else(|_| Err("the layer's thread panicked".to_owned()))
 }
 
 fn clamp(name: &str, mut body: String) -> String {
