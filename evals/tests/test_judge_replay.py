@@ -1,9 +1,11 @@
 """Judge replay on recorded transcripts: no model, no network, no paid run.
 
-The Yi fixture is one real faux session driven over `yi acp` (prompt, prompt, `_yi/rewind` to
-the second prompt, prompt), so its third prompt sits after the abandoned reply in the file. The
-Claude Code fixtures are three real transcripts and one subagent file with every text replaced
-and the structure kept; the entries read as typed by hand carry `typed <line>: ...`.
+The first Yi fixture is one real faux session driven over `yi acp` (prompt, prompt, `_yi/rewind`
+to the second prompt, prompt), so its third prompt sits after the abandoned reply in the file.
+The second is two real `yi ask --confirm` runs, the second `--continue`d, whose refused edit
+before any read made Yi's router write its plan nudge; its prompt slots and cwd are scrubbed.
+The Claude Code fixtures are three real transcripts and one subagent file with every text
+replaced and the structure kept; the entries read as typed by hand carry `typed <line>: ...`.
 """
 import json, pathlib, re, shutil, sys, tempfile, threading, types, unittest
 
@@ -11,7 +13,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import judge_replay as jr  # noqa: E402
 
 YI = jr.FIXTURES["yi"] / "1790469866572_01a0e052-044b-7923-bfb3-8e04284fa653.jsonl"
+NUDGED = jr.FIXTURES["yi"] / "1790472350067_01a0e077-e929-7cf4-b1e3-58550db33230.jsonl"
 CLAUDE = jr.FIXTURES["claude"]
+RESUMED = CLAUDE / "-work-yi" / "76e146c7-2b99-4d7a-bbaf-e4f129f0328b.jsonl"
 REMINDER = "<system-reminder>\nscrubbed reminder\n</system-reminder>\n"
 
 
@@ -36,6 +40,44 @@ class Readers(unittest.TestCase):
             child.parent.mkdir(parents=True)
             shutil.copy(YI, child)
             self.assertEqual(jr.extract_corpora([("yi", scratch)]), [])
+
+    def test_a_host_nudge_is_not_the_owner(self):
+        rows = jr.boundaries("yi", NUDGED, jr.read_yi(NUDGED))
+        self.assertEqual([[m["text"] for m in r["intent"] + [r["next"]]] for r in rows],
+                         [["fix the typo in notes.txt", "no: read it first"]], "the nudge read as the owner")
+        self.assertEqual(rows[0]["turn"]["calls"], [{"name": "edit", "head": "notes.txt"}],
+                         "the nudge mid-turn cut the edit out of the turn")
+
+    def test_a_line_separator_inside_a_message_keeps_the_entry(self):
+        # Claude Code and serde_json both write U+2028 raw inside a string; 13 typed messages in
+        # the real corpus carried one, and `splitlines` cut each of those entries in two.
+        for kind, source, words in (("yi", YI, "write the parser"), ("claude", RESUMED, "typed 65: the owner's words")):
+            with self.subTest(kind), tempfile.TemporaryDirectory() as scratch:
+                pasted = words.replace(" ", "\u2028", 1)
+                (pathlib.Path(scratch) / source.name).write_text(source.read_text().replace(words, pasted))
+                rows = jr.extract_corpora([(kind, scratch)])
+                self.assertIn(pasted, {m["text"] for r in rows for m in r["intent"] + [r["next"]]})
+
+    def test_a_resumed_transcript_is_one_conversation(self):
+        # Claude Code resumes into a new file that rewrites the old entries under the new
+        # sessionId and goes on (a real pair did: 9db2cd1e, copied into 7d9b1258).
+        entries = [json.loads(line) for line in RESUMED.read_text().split("\n") if line.strip()]
+        end = next(e for e in entries if e.get("uuid", "").startswith("bff7057e"))
+        typed = next(e for e in entries if e.get("uuid", "").startswith("7950055d"))
+        name = next(f"{n:08x}-resumed.jsonl" for n in range(99)
+                    if jr.split_of("claude", f"{n:08x}-resumed.jsonl") != jr.split_of("claude", RESUMED.name))
+        leaf = next(e["uuid"] for e in reversed(entries) if e.get("uuid"))
+        reply = {**end, "uuid": "resumed-reply", "parentUuid": leaf,
+                 "message": {**end["message"], "id": "resumed", "content": [{"type": "text", "text": "resumed text"}]}}
+        again = {**typed, "uuid": "resumed-typed", "parentUuid": "resumed-reply",
+                 "message": {**typed["message"], "content": "typed resumed: go on"}}
+        copy = [{**e, "sessionId": name[:-6]} if "sessionId" in e else e for e in entries] + [reply, again]
+        with tempfile.TemporaryDirectory() as scratch:
+            shutil.copy(RESUMED, scratch)
+            (pathlib.Path(scratch) / name).write_text("".join(json.dumps(e) + "\n" for e in copy))
+            rows = jr.extract_corpora([("claude", scratch)])
+        self.assertEqual(sorted(r["next"]["text"] for r in rows), ["typed 65: the owner's words", "typed resumed: go on"])
+        self.assertEqual(len({r["split"] for r in rows}), 1, "one conversation landed on both sides")
 
     def test_only_typed_messages_count_in_claude_transcripts(self):
         typed = {m for p in jr.corpus_files(CLAUDE) if "subagents" not in p.parts
@@ -147,10 +189,11 @@ class Metrics(unittest.TestCase):
         self.assertIsNone(jr.bootstrap({"s1": [(True, True)]}))
 
     def test_the_gate_line_at_its_thresholds(self):
-        self.assertTrue(jr.gate_line({"resolution": 0.95, "interval": (0.501, 0.9)}).startswith("gate: PASS"))
-        self.assertTrue(jr.gate_line({"resolution": 0.95, "interval": (0.5, 0.9)}).startswith("gate: FAIL"))
-        self.assertTrue(jr.gate_line({"resolution": 0.949, "interval": (0.7, 0.9)}).startswith("gate: FAIL"))
-        self.assertTrue(jr.gate_line({"resolution": None, "interval": None}).startswith("gate: FAIL"))
+        held = {"resolution": 0.95, "interval": (0.501, 0.9), "tooled": 0, "missing": 0}
+        self.assertTrue(jr.gate_line(held).startswith("gate: PASS"))
+        for change in ({"interval": (0.5, 0.9)}, {"resolution": 0.949}, {"resolution": None, "interval": None},
+                       {"tooled": 1}, {"missing": 1}):
+            self.assertTrue(jr.gate_line({**held, **change}).startswith("gate: FAIL"), change)
 
     def test_a_session_never_lands_on_both_sides(self):
         rows = jr.extract_corpora([("yi", jr.FIXTURES["yi"]), ("claude", CLAUDE)])

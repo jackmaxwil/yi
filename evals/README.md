@@ -213,23 +213,29 @@ words by address, and nothing after the boundary, predict the owner's first obje
 boundary is a human message whose nearest message ancestor on the session tree is an assistant
 turn end. `extract` (free) writes `boundaries.jsonl`: the intent record (file, entry id and text
 of every earlier human message on that tree path), the turn (final text, one line per tool
-call), the next message and the agent's reply to it. Sessions split 70/30 into `fit` and
-`held-out` by the hash of the file name. `label` writes `labels.jsonl` (`objected`,
+call), the next message and the agent's reply to it. Conversations split 70/30 into `fit` and
+`held-out` by the hash of a file name: Claude Code rewrites a resumed transcript into a new file
+under the same entry ids, so files that share or bridge to an entry are one conversation and a
+boundary found in several counts once. Extract once per `--out`: a grown corpus can move a
+conversation whose new resumed file sorts first. `label` writes `labels.jsonl` (`objected`,
 `check_revealed`, `accepted`), `mark` writes the owner's overrides to `marks.jsonl`, which win.
 `judge` writes `verdicts/<model>-<prompt sha256>.jsonl`, `--limit` taking up to half positives,
 and resolves every quote to a UTF-8 byte range of the named message. `match` asks, for each
 positive the judge flagged, whether an objection names the owner's. `report` prints, per corpus
 and split, n, positive rate, citation resolution, recall, specificity, balanced accuracy with a
-session bootstrap 95% interval, catch rate and cost; the two no-judge baselines (0.5 by
-construction); the gate line, PASS iff held-out resolution >= 0.95 and the interval's lower
-bound > 0.5; and every judge run that has touched held-out, so tuning on it shows. Tune on `fit`.
+conversation bootstrap 95% interval, catch rate and cost; the two no-judge baselines (0.5 by
+construction); the gate line, PASS iff held-out resolution >= 0.95, the interval's lower bound
+> 0.5, no held-out verdict ran a tool and no held-out call went unanswered; and every judge run
+that has touched held-out, so tuning on it shows. Tune on `fit`.
 
 What counts as the owner, surveyed on 2026-09-26 over 437 Yi files and 225 top-level Claude
 Code transcripts:
 
-- Yi: a `user` message, except in a child session (a `parentSessionId` header, or a file under
-  `sub-*`: the corpus's `rlm-*/sub-*` children carry no header link) and except the runtime's
-  own user-role notices: `[subagent …]`, `<ipython_state_restored>` and `[host] request`.
+- Yi: a `user` message with `attribution: user`, Yi's own rule (D25) since 2026-09-01; before
+  it, a `user` message but the runtime's notices `[subagent …]`, `<ipython_state_restored>` and
+  `[host] request`. The rule matters: six later plan nudges carry no attribution and no known
+  prefix, and read as the owner they sat in 16 of 72 boundaries. A child session (a `parentSessionId` header,
+  or a file under `sub-*`: the corpus's `rlm-*/sub-*` children carry no header link) is skipped.
 - Claude Code: 49,617 of 54,166 `user` entries are tool results. Skipped besides: `isMeta`
   (skill bodies, command caveats, image notes), `isCompactSummary`, an `origin` other than
   `human` (1,699 `<task-notification>` entries), slash commands (`<command-name>`,
@@ -238,18 +244,27 @@ Code transcripts:
   block (38 messages) is cut and the typed rest kept, its byte offset recorded. A prompt typed
   mid-turn is an `attachment` of type `queued_command` with `commandMode` `prompt` (163): the
   owner's words, in the intent record. Files under `subagents/` are skipped; `isSidechain`
-  appears only there.
+  appears only there. Lines split at `\n` only: 13 typed messages carry a raw U+2028, where
+  `splitlines` would cut the entry.
+- A turn runs back from its end to the owner, or to a command, notice or summary right after a
+  turn end; a notice mid-turn (a skill body, a finished task, a plan nudge) does not cut it.
 
-The corpus that day: 72 Yi boundaries in 35 sessions (17 held-out), 1,403 Claude Code
-boundaries in 177 sessions (485 held-out).
+The corpus that day: 71 Yi boundaries in 34 conversations (17 held-out), 1,168 Claude Code
+boundaries in 125 conversations over 173 files (458 held-out). 13 Claude Code boundaries have
+no earlier owner message on their path (a session opened from a compaction summary).
 
 Each call is `yi ask --json --confirm --here --schema replay/<phase>.schema.json` in an empty
 temporary cwd under a temporary HOME (kernel prewarm off), its session under
-`--out/sessions/<phase>`; `yi ask` runs in-process and never reaches the serve daemon, so no
-`--solo`. With no terminal `--confirm` refuses every tool that is not read-only, but `read`,
-`grep` and `glob` still run anywhere outside the credential stores, so a judge could read a
-transcript past its boundary: the prompt forbids tools, each row counts the calls its model
-made, and the report names the verdicts that ran one. Keys come from the environment only,
+`--out/sessions/<phase>/<boundary>`; `yi ask` runs in-process and never reaches the serve
+daemon, so no `--solo`. With no terminal `--confirm` refuses every tool that is not read-only,
+but `read`, `grep` and `get_context` still run, and a root `yi ask` takes no wall or deny rule
+from config (`UserConfig` has none; the CLI passes an empty `Wall` and no config rules). So the
+host walls the process with Seatbelt, the `sandbox-exec` Yi contains commands with: no read or
+write under a corpus or the real `~/.yi` and `~/.claude`, and no read of `--out` or another
+call's scratch but its own, since those hold the next messages. A real run refuses where
+`/usr/bin/sandbox-exec` is absent. The wall stops the corpus, not every path that quotes the
+owner (a plan in the repo does), so the prompt forbids tools, each row counts the calls its
+model made, and a held-out verdict that ran one fails the gate. Keys come from the environment only,
 since the HOME is temporary; a refusal before any request (exit 2 or 4) stops the phase. Two
 caps speak where they cut: `intent_chars=60000` drops the oldest messages, `digest_head=120`
 shortens a tool-call head. The prompt rides argv, so an input over `argv_bytes=512000` is not
@@ -258,10 +273,13 @@ when `--cap-usd` trips still lands, so a phase overshoots by at most `--jobs` - 
 
 A real run is the owner's: capped, and ledgered in `docs/eval-ledger.md` with the model, the
 prompt hash and the gate line before any claim cites it. `--dry` is faux only, answers with
-host-built JSON, and checks that no file under the corpus changed; it rides
+host-built JSON, checks that no file under the corpus changed and, where Seatbelt exists, that
+scripted `read` calls of a corpus file and of `boundaries.jsonl` come back refused; it rides
 `just postmerge-evals`. `fixtures/replay/yi/` is one real faux session driven over `yi acp`
 (prompt, prompt, `_yi/rewind` to the second, prompt; its `ext_state` entry omitted and its cwd
-replaced); `fixtures/replay/claude/` is three real transcripts and one subagent file with every
+replaced) and two real `yi ask --confirm` runs, the second `--continue`d, whose refused edit
+before any read made the router write its plan nudge (prompt slots and cwd scrubbed);
+`fixtures/replay/claude/` is three real transcripts and one subagent file with every
 text replaced and the structure kept, the entries read as typed by hand marked `typed <line>:`.
 `selftest.py::check_judge_replay` runs `tests/test_judge_replay.py`.
 
