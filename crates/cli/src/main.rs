@@ -3,6 +3,7 @@
 
 mod ask;
 mod catalog;
+mod debug;
 mod doctor;
 mod fetch;
 mod lanes;
@@ -139,6 +140,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             _ => return Err(argument.unexpected()),
         }
     }
+    yi_types::trace::init(debug::process_label(&command));
     // A drive is a harness: it claims no lane unless the scenario is about lanes.
     let here = here || (headless && !lanes);
     // Drive-only flags are silently inert outside the headless loop, which
@@ -388,6 +390,7 @@ fn build_session(
 ) -> Result<(AgentSession, std::sync::Arc<yi_runtime::SubagentHost>), Refused> {
     // Invariant: the first statement here, so no lever is read on both sides of the
     // override and a refused file stops the run before the session, and any model call.
+    let _build = yi_types::trace::span("build_session");
     yi_runtime::levers::init(args.eval).map_err(|reason| Refused {
         code: 1,
         reason,
@@ -430,7 +433,9 @@ fn build_session(
     };
     // Resolved through the session's proxy so an OAuth refresh can reach the token
     // endpoint from behind the same wall the stream rides through.
+    let auth = yi_types::trace::span("build_session.auth");
     let resolved = yi_runtime::auth::resolve_with_proxy(&model.provider, proxy.as_ref());
+    drop(auth);
     if resolved.is_none() && !faux {
         return Err(login::no_credential(&model.provider));
     }
@@ -477,8 +482,10 @@ fn build_session(
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
-    let session_dir = default_session_dir(args);
-    let (lane, pool) = match claim_lane(args, &home, session_id) {
+    let claiming = yi_types::trace::span("build_session.claim_lane");
+    let claimed = claim_lane(args, &home, session_id);
+    drop(claiming);
+    let (lane, pool) = match claimed {
         Ok(claimed) => claimed,
         Err(message) => {
             return Err(Refused {
@@ -499,20 +506,23 @@ fn build_session(
             asker,
             session.events_sender(),
         )
-        .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, &session_dir)),
+        .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, None)),
     );
     let tools_home = home.clone();
+    let extensions = yi_types::trace::span("build_session.install_extensions");
     session.install_extensions(shells::session_extensions(
         args,
         &work,
         session.model().context_window,
     ));
+    drop(extensions);
     let provider = std::sync::Arc::clone(session_provider(&session));
     let freeform_grammar = config()
         .edit
         .as_ref()
         .and_then(|edit| edit.freeform_grammar)
         .unwrap_or(false);
+    let wiring = yi_types::trace::span("build_session.attach_runtime");
     let host = yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {
@@ -558,6 +568,7 @@ fn build_session(
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
+    drop(wiring);
     session.set_lane(yi_runtime::lane::land::LaneHandle::new(
         lane,
         pool,
@@ -833,8 +844,8 @@ fn run_undo(args: &Args) -> i32 {
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
     match yi_runtime::undo(&store, &cwd, &home) {
-        yi_runtime::UndoOutcome::Restored(changes) => {
-            report_undo(&changes, args.json);
+        yi_runtime::UndoOutcome::Restored { changes, scoped } => {
+            report_undo(&changes, scoped, args.json);
             0
         }
         yi_runtime::UndoOutcome::NoCheckpoint => {
@@ -886,7 +897,7 @@ fn list_checkpoints(store: &yi_runtime::session_store::SharedSession, json: bool
     0
 }
 
-fn report_undo(changes: &[yi_runtime::Change], json: bool) {
+fn report_undo(changes: &[yi_runtime::Change], scoped: bool, json: bool) {
     let described: Vec<serde_json::Value> = changes
         .iter()
         .map(|change| {
@@ -895,17 +906,20 @@ fn report_undo(changes: &[yi_runtime::Change], json: bool) {
                 "action": match change.kind {
                     yi_runtime::ChangeKind::Restored => "restored",
                     yi_runtime::ChangeKind::Deleted => "deleted",
+                    yi_runtime::ChangeKind::Kept => "kept",
                 },
             })
         })
         .collect();
     if json {
-        if let Ok(line) = serde_json::to_string(&serde_json::json!({ "reverted": described })) {
+        let line = serde_json::json!({ "reverted": described, "scoped": scoped });
+        if let Ok(line) = serde_json::to_string(&line) {
             println!("{line}");
         }
         return;
     }
-    if changes.is_empty() {
+    let notes = yi_runtime::undo_notes(changes, scoped);
+    if changes.is_empty() && notes.is_empty() {
         println!("nothing to revert");
         return;
     }
@@ -913,8 +927,12 @@ fn report_undo(changes: &[yi_runtime::Change], json: bool) {
         let action = match change.kind {
             yi_runtime::ChangeKind::Restored => "restored",
             yi_runtime::ChangeKind::Deleted => "deleted ",
+            yi_runtime::ChangeKind::Kept => continue,
         };
         println!("{action}  {}", change.path.display());
+    }
+    for note in notes {
+        println!("{note}");
     }
 }
 
@@ -1050,6 +1068,11 @@ fn main() {
                 cwd: effective_cwd(&args),
                 build,
                 agent_version: version.to_owned(),
+                defaults: resolve(&args.model).map(|model| yi_acp::SessionDefaults {
+                    model,
+                    effort: args.thinking.unwrap_or_default(),
+                    mode: args.mode,
+                }),
             };
             std::process::exit(yi_acp::run_acp(options, runtime));
         }
@@ -1060,6 +1083,7 @@ fn main() {
         "fetch" => std::process::exit(fetch::run(&args)),
         "catalog" => std::process::exit(catalog::run(&args)),
         "doctor" => std::process::exit(doctor::run(&args)),
+        "debug" => std::process::exit(debug::run(&args)),
         "why" => std::process::exit(run_why(&args)),
         "plan" => std::process::exit(run_plan(&args)),
         "todo" => std::process::exit(todo::run(&args)),
@@ -1095,7 +1119,7 @@ fn main() {
                 std::process::exit(run_console_command(&args));
             }
             println!(
-                "yi {version} (yi [prompt], yi ask, yi sessions, yi stats, yi plan, yi why, yi trust, yi gate, yi fetch, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
+                "yi {version}: not a terminal; `yi ask <prompt>` answers once; `yi serve` / `yi rpc` / `yi acp` serve a program"
             );
         }
         other => {

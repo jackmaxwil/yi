@@ -5,8 +5,9 @@ here. The steps between the two are where sessions fail, so they are verbs, not 
 `just ratchet`, `just commit`, `just push`, `just pr open`, `just pr status`, `just pr merge`,
 or `just land` for the last three at once. The yi-forge skill is the procedure; this is the law.
 
-- Baselines move in their own `Ratchet: …` commit, before the code commit. `just ratchet` makes
-  that commit; `just commit` refuses to bury one.
+- Baselines move in their own `Ratchet: …` commit, never beside the code commit: a raised
+  ceiling moves first (040) — `just commit` refuses a code commit while a ratchet is red — a
+  shrunk one moves after. `just ratchet` makes that commit; `just commit` refuses to bury one.
 - A subject is at most 72 characters, imperative, no trailing period. `just commit` and
   `just pr open` judge it with the gate's own function before anything is written.
 - A push is the pre-push lane. It takes minutes and it is not optional: run `just push` in the

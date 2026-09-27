@@ -138,6 +138,7 @@ pub struct Chat {
     pub app: yi_tui::app::App,
     pub port: RemotePort,
     pub orb: yi_tui::orb::Tick,
+    pub phase: usize,
     pub logos: yi_tui::logos::Tick,
     pub ask: Option<PendingAsk>,
     pub events: (Sender<UiEvent>, Receiver<UiEvent>),
@@ -347,6 +348,7 @@ pub struct ConsoleState {
     pub auto_side: bool,
     pub root_filter: Option<String>,
     pub children: BTreeMap<SessionId, Vec<yi_types::subagent::ChildUpdate>>,
+    pub parked: BTreeMap<SessionId, Box<Chat>>,
 }
 
 impl ConsoleState {
@@ -381,6 +383,7 @@ impl ConsoleState {
             auto_side: true,
             root_filter: None,
             children: BTreeMap::new(),
+            parked: BTreeMap::new(),
             quit: false,
         }
     }
@@ -418,6 +421,7 @@ impl ConsoleState {
 
     /// Every chat showing the session, across every tab.
     pub fn chats_mut(&mut self, id: &SessionId) -> Vec<&mut Chat> {
+        let parked = self.parked.get_mut(id).map(Box::as_mut);
         self.panes
             .values_mut()
             .filter_map(|pane| match &mut pane.content {
@@ -427,7 +431,16 @@ impl ConsoleState {
                 } if bound == id => Some(chat.as_mut()),
                 _ => None,
             })
+            .chain(parked)
             .collect()
+    }
+
+    /// ponytail: evicts the lowest session id, not the least recent; order it if 8 is tight.
+    pub fn park(&mut self, id: SessionId, chat: Box<Chat>) {
+        if !self.parked.contains_key(&id) && self.parked.len() >= 8 {
+            self.parked.pop_first();
+        }
+        self.parked.insert(id, chat);
     }
 
     pub fn selected_id(&self) -> Option<&SessionId> {

@@ -54,6 +54,7 @@ struct Shared {
     effort: Mutex<Effort>,
     messages: Mutex<Vec<AgentMessage>>,
     steer: Mutex<VecDeque<Queued>>,
+    mail: Arc<tokio::sync::Notify>,
     follow_up: Mutex<Vec<AgentMessage>>,
     tools: Mutex<Vec<Arc<dyn yi_loop::AgentTool>>>,
     status: Mutex<Status>,
@@ -105,8 +106,13 @@ fn persist_message(shared: &Shared, message: &AgentMessage) {
         .unwrap_or_default();
     if let Some(store) = store
         && let Err(error) = yi_session::lock_session(&store).append_message("main", message.clone())
-        && let Ok(mut slot) = shared.store_error.lock()
     {
+        record_store_error(shared, &error);
+    }
+}
+
+fn record_store_error(shared: &Shared, error: &yi_session::SessionError) {
+    if let Ok(mut slot) = shared.store_error.lock() {
         *slot = Some(error.to_string());
     }
 }
@@ -156,6 +162,7 @@ impl AgentSession {
                 ),
                 messages: Mutex::new(Vec::new()),
                 steer: Mutex::new(VecDeque::new()),
+                mail: Arc::default(),
                 follow_up: Mutex::new(Vec::new()),
                 tools: Mutex::new(Vec::new()),
                 status: Mutex::new(Status::Idle),
@@ -721,10 +728,8 @@ impl AgentSession {
             }
             _ => return,
         }
-        if let Err(error) = session.append_entry(entry, "main")
-            && let Ok(mut slot) = self.shared.store_error.lock()
-        {
-            *slot = Some(error.to_string());
+        if let Err(error) = session.append_entry(entry, "main") {
+            record_store_error(&self.shared, &error);
         }
     }
 
@@ -800,6 +805,7 @@ impl AgentSession {
             taken
                 .into_iter()
                 .for_each(|entry| run::push(&mut queue, entry));
+            self.shared.mail.notify_waiters();
         }
         let follow_ups = dead
             .shared
@@ -877,7 +883,7 @@ impl AgentSession {
             )
             .await;
         match replaced {
-            Some(new_messages) => {
+            Ok(Some(new_messages)) => {
                 if let Ok(mut slot) = self.shared.messages.lock() {
                     *slot = new_messages;
                 }
@@ -889,7 +895,11 @@ impl AgentSession {
                 }
                 true
             }
-            None => false,
+            Ok(None) => false,
+            Err(error) => {
+                run::unsaved_compaction(&self.parts(), &error);
+                false
+            }
         }
     }
 
@@ -1021,7 +1031,7 @@ fn attribute_to_shared(shared: &Arc<Shared>, child: &Usage) {
     if let Some(store) = store {
         let mut session = yi_session::lock_session(&store);
         let id = session.next_id();
-        let _ = session.append_record(yi_types::record::LaneRecord::Usage {
+        let recorded = session.append_record(yi_types::record::LaneRecord::Usage {
             id,
             lane: "main".to_owned(),
             usage: child.clone(),
@@ -1035,5 +1045,8 @@ fn attribute_to_shared(shared: &Arc<Shared>, child: &Usage) {
             seq: 0,
             timestamp: 0,
         });
+        if let Err(error) = recorded {
+            record_store_error(shared, &error);
+        }
     }
 }

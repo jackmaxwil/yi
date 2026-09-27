@@ -460,6 +460,69 @@ fn a_list_whose_plan_another_engine_finished_is_released() -> TestResult {
     Ok(())
 }
 
+/// Dies with a released plan's rows dropped in silence: a probe session's `todo set` answered
+/// `Todos 1/5` after replacing nineteen rows of a finished plan.
+#[test]
+fn a_set_over_a_released_plan_names_the_rows_it_replaced() -> TestResult {
+    use yi_tools::{Tool, ToolContext};
+    let dir = Scratch::new("yi-todo-mirror-replaced")?;
+    let (_session, todos, _engine) = mirrored(&dir)?;
+    let plan = plan_of(&todos.list()).ok_or("no plan")?.to_owned();
+    let cli = PlanEngine::new(PlanStore::open(dir.to_path_buf())?, Arc::new(Child));
+    let label = TodoLabel::new("gate")?;
+    cli.apply(owner(Op::Drop {
+        label,
+        disposition: None,
+    }))?;
+    let label = TodoLabel::new("delegated job")?;
+    let cause = "closed from the command line".to_owned();
+    cli.apply(owner(Op::Fail {
+        label,
+        cause,
+        disposition: None,
+    }))?;
+    let tool = yi_runtime::todo::tool::TodoTool::new(Arc::clone(&todos));
+    let args = json!({"op": "set", "list": "- [ ] after"});
+    let output = tool.execute(
+        args.as_object().cloned().unwrap_or_default(),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    let text: String = output
+        .result
+        .content
+        .iter()
+        .map(|content| match content {
+            yi_types::message::Content::Text { text, .. } => text.clone(),
+            _ => String::new(),
+        })
+        .collect();
+    assert!(!output.is_error, "{text}");
+    assert!(
+        text.contains(&format!("replaced plan {plan}'s 2 rows")),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// Dies with `Mirrored` for any label off the owner's rows: `todo start t999` was told the
+/// plan tool changes an item that exists nowhere.
+#[test]
+fn an_unknown_label_on_a_mirrored_list_is_not_found() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-unknown")?;
+    let (_session, todos, _engine) = mirrored(&dir)?;
+    let refused = todos.apply(
+        TodoOp::Start {
+            label: TodoLabel::new("t999")?,
+        },
+        None,
+    );
+    let Err(error) = refused else {
+        return Err("start on a label that exists nowhere must be refused".into());
+    };
+    assert!(matches!(error, TodoError::NoSuchLabel { .. }), "{error}");
+    Ok(())
+}
+
 // Dies with an id looked up by label across the whole list: `cli > tests` takes the id of
 // `api > tests` on the next projection, and two items answer to one id.
 #[test]

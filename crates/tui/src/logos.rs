@@ -96,7 +96,7 @@ pub fn tick(app: &App, out: &mut impl std::io::Write, state: &mut Tick) {
         let index = usize::try_from(id.saturating_sub(IMAGE_ID_BASE)).unwrap_or(usize::MAX);
         let Some(mask) = mask(index) else { continue };
         if !state.placed.iter().any(|placed| placed.0 == id) {
-            let _ = kitty::transmit(out, id, &rgba(mask, kitty::INK_RGB), PX);
+            let _ = kitty::transmit(out, id, &rgba(mask, kitty::INK_RGB), (PX, PX));
         }
         let placement = u32::try_from(placement.saturating_add(1)).unwrap_or(u32::MAX);
         if kitty::place_nth(out, id, placement, col, row, COLS, 1).is_ok() {

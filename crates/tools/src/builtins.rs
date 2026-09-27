@@ -504,7 +504,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. cwd persists between calls; shell state does not. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 8,192 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. wait is clamped 5-300 s; a longer command becomes a job you check by calling bash with no command. A command is killed at timeout_secs (default 300 s, ceiling 600 s); raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
+        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 8,192 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. wait is clamped 5-300 s; a longer command becomes a job you check by calling bash with no command. A command is killed at timeout_secs (default 300 s, ceiling 600 s); raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
     }
 
     fn schema(&self) -> Value {
@@ -561,6 +561,7 @@ impl Tool for BashTool {
                 crate::jobs::MAX_TIMEOUT_SECS
             ));
         }
+        let running = yi_types::trace::span("bash.run");
         let (capture, timed_out) = match crate::jobs::run_or_background(
             command,
             &context.cwd,
@@ -581,6 +582,8 @@ impl Tool for BashTool {
             }
             Err(message) => return error_output(message),
         };
+        drop(running);
+        let _format = yi_types::trace::span("bash.format");
         let exit_code_for_reduce = capture.exit_code.unwrap_or(-1);
         let nudge = self.ceiling_nudge(command, timed_out, exit_code_for_reduce, started.elapsed());
         let max_lines = input
@@ -698,6 +701,7 @@ fn poll_job(input: &Map<String, Value>) -> ToolOutput {
         .and_then(Value::as_u64)
         .map(crate::jobs::clamp_wait);
     let started = std::time::Instant::now();
+    let _span = yi_types::trace::span("wait.job");
     loop {
         let report = match requested {
             Some(id) => crate::jobs::registry().report(id),
@@ -718,7 +722,8 @@ fn poll_job(input: &Map<String, Value>) -> ToolOutput {
         }
         match deadline {
             Some(limit) if started.elapsed() < limit => {
-                std::thread::sleep(std::time::Duration::from_millis(200));
+                crate::jobs::registry()
+                    .wait_settled(requested, limit.saturating_sub(started.elapsed()));
             }
             _ => {
                 let mut output = text_output(format!(

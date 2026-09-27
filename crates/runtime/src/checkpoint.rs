@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use yi_tools::{Change, Checkpoints};
+use yi_tools::{Change, ChangeKind, Checkpoints, TreeId};
 use yi_types::checkpoint::{CHECKPOINT_ENTRY_TYPE, CheckpointAt, CheckpointData};
 use yi_types::entry::Entry;
 
@@ -11,8 +11,7 @@ pub fn checkpoint_root(home: &Path) -> PathBuf {
     home.join(".yi/checkpoints")
 }
 
-/// Best-effort: without git there is no shadow gitdir and no turn-start
-/// capture, and every other surface is unaffected.
+/// Best-effort: without git there is no shadow gitdir and no capture, and nothing else changes.
 pub fn wire_turn_checkpoints(session: &AgentSession, home: &Path, cwd: &Path) {
     let Ok(checkpoints) = Checkpoints::open(&checkpoint_root(home), cwd) else {
         return;
@@ -36,21 +35,27 @@ fn capture_hook(
         let Some(store) = store() else {
             return;
         };
-        let Ok(tree) = checkpoints.capture() else {
+        let span = yi_types::trace::span("checkpoint.capture").arg("at", format!("{at:?}"));
+        let captured = checkpoints.capture();
+        drop(span);
+        let Ok(tree) = captured else {
             return;
         };
-        let _capture_failure_never_fails_a_turn = append_checkpoint(&store, &tree, at.clone());
+        let _capture_failure_never_fails_a_turn =
+            append_checkpoint(&store, &tree, at.clone(), None);
     })
 }
 
 fn append_checkpoint(
     store: &yi_session::SharedSession,
-    tree: &yi_tools::TreeId,
+    tree: &TreeId,
     at: CheckpointAt,
+    after: Option<&TreeId>,
 ) -> Result<(), String> {
     let data = CheckpointData {
         tree: tree.as_str().to_owned(),
         at,
+        after: after.map(|tree| tree.as_str().to_owned()),
     };
     let payload = serde_json::to_value(&data).map_err(|error| error.to_string())?;
     yi_session::lock_session(store)
@@ -59,10 +64,8 @@ fn append_checkpoint(
         .map_err(|error| error.to_string())
 }
 
-/// Records the replaced state as its own checkpoint first, which is what makes
-/// undo undoable.
 pub fn undo(store: &yi_session::SharedSession, project: &Path, home: &Path) -> UndoOutcome {
-    let Some(data) = undo_target(store) else {
+    let Some((data, since)) = undo_target(store) else {
         return UndoOutcome::NoCheckpoint;
     };
     let checkpoints = match Checkpoints::open(&checkpoint_root(home), project) {
@@ -73,20 +76,72 @@ pub fn undo(store: &yi_session::SharedSession, project: &Path, home: &Path) -> U
         Ok(tree) => tree,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
-    let restored = match checkpoints.restore(&yi_tools::TreeId::new(data.tree)) {
+    let since = since.map(TreeId::new);
+    let restored = match checkpoints.restore(&TreeId::new(data.tree), since.as_ref()) {
         Ok(changes) => changes,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
-    if let Err(error) = append_checkpoint(store, &replaced, CheckpointAt::Undo) {
+    let after = match checkpoints.capture() {
+        Ok(tree) => tree,
+        Err(error) => return UndoOutcome::Failed(error.to_string()),
+    };
+    if let Err(error) = append_checkpoint(store, &replaced, CheckpointAt::Undo, Some(&after)) {
         return UndoOutcome::Failed(error);
     }
-    UndoOutcome::Restored(restored)
+    UndoOutcome::Restored {
+        changes: restored,
+        scoped: since.is_some(),
+    }
 }
 
 pub enum UndoOutcome {
-    Restored(Vec<Change>),
+    Restored { changes: Vec<Change>, scoped: bool },
     NoCheckpoint,
     Failed(String),
+}
+
+/// Every surface names each kept path: a file the restore skipped is invisible otherwise.
+pub fn undo_notes(changes: &[Change], scoped: bool) -> Vec<String> {
+    let kept = paths(changes, |kind| kind == ChangeKind::Kept);
+    let mut notes = Vec::new();
+    if !kept.is_empty() {
+        notes.push(format!(
+            "[kept {} of {} — changed since the turn ended, left as you have it: {}]",
+            kept.len(),
+            changes.len(),
+            kept.join(", ")
+        ));
+    }
+    if !scoped {
+        notes.push(
+            "[unscoped — no turn-end checkpoint pairs with this one, so every path changed \
+             since it moved]"
+                .to_owned(),
+        );
+    }
+    notes
+}
+
+pub fn describe_undo(changes: &[Change], scoped: bool) -> String {
+    let moved = paths(changes, |kind| kind != ChangeKind::Kept);
+    let mut parts = vec![match moved.len() {
+        0 => "nothing to restore — no file changed since the checkpoint".to_owned(),
+        1 => format!("restored 1 file — {}", moved.join(", ")),
+        n => format!("restored {n} files — {}", moved.join(", ")),
+    }];
+    parts.extend(undo_notes(changes, scoped));
+    parts.join("; ")
+}
+
+fn paths(changes: &[Change], wanted: impl Fn(ChangeKind) -> bool) -> Vec<String> {
+    let mut names: Vec<String> = changes
+        .iter()
+        .filter(|change| wanted(change.kind))
+        .map(|change| change.path.display().to_string())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 pub struct RecordedCheckpoint {
@@ -123,16 +178,24 @@ pub fn recorded(store: &yi_session::SharedSession) -> Vec<RecordedCheckpoint> {
         .collect()
 }
 
-/// A turn-end capture is the state undo stands in, so restoring it is a no-op; undo walks to
-/// the turn's start, or to what a previous undo replaced — which makes the second a redo.
-fn undo_target(store: &yi_session::SharedSession) -> Option<CheckpointData> {
-    recorded(store)
-        .into_iter()
-        .find(|recorded| {
-            matches!(
-                recorded.data.at,
-                CheckpointAt::TurnStart | CheckpointAt::Undo
-            )
-        })
-        .map(|recorded| recorded.data)
+/// Walks to the turn's start, or to what an undo replaced (so the second is a redo), paired
+/// with the newest turn end after it: a follow-up's start can land before this turn's end.
+fn undo_target(store: &yi_session::SharedSession) -> Option<(CheckpointData, Option<String>)> {
+    let recorded = recorded(store);
+    let index = recorded.iter().position(|recorded| {
+        matches!(
+            recorded.data.at,
+            CheckpointAt::TurnStart | CheckpointAt::Undo
+        )
+    })?;
+    let target = recorded.get(index)?.data.clone();
+    let since = match target.at {
+        CheckpointAt::Undo => target.after.clone(),
+        _ => recorded
+            .iter()
+            .take(index)
+            .find(|recorded| recorded.data.at == CheckpointAt::TurnEnd)
+            .map(|recorded| recorded.data.tree.clone()),
+    };
+    Some((target, since))
 }
