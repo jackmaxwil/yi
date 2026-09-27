@@ -70,6 +70,7 @@ pub fn tape_view(
             MarkKind::Checkpoint => marks[col] = '◆',
             MarkKind::Failed => marks[col] = '✗',
             MarkKind::Compaction => marks[col] = '⌇',
+            MarkKind::Other(_) => marks[col] = '·',
         }
     }
     let track = |name: &str, body: String| {
@@ -103,6 +104,13 @@ pub fn tape_view(
         span_of(total)
     );
     (title, lines)
+}
+
+/// An edit's patch names its file absolutely, while git and a model's read may name it from
+/// the repository root: one file either way.
+fn same_file(one: &str, other: &str) -> bool {
+    let (one, other) = (std::path::Path::new(one), std::path::Path::new(other));
+    one.ends_with(other) || other.ends_with(one)
 }
 
 pub fn review_files(
@@ -182,7 +190,7 @@ pub fn review_view(
     let unbased = scope == ReviewScope::Branch && diff.is_none_or(|diff| diff.branch.is_none());
     let scope = if unbased { ReviewScope::Session } else { scope };
     let serving = |path: &str| {
-        diff.and_then(|diff| diff.files.iter().find(|(known, _)| known == path))
+        diff.and_then(|diff| diff.files.iter().find(|(known, _)| same_file(known, path)))
             .and_then(|(_, file)| file.serving.clone())
     };
     let (files, patch, base): (Vec<(String, u64, u64)>, String, String) = match (scope, diff) {
@@ -238,6 +246,12 @@ pub fn review_view(
         (false, ReviewScope::Session) => format!("this session's edits{base}"),
     };
     let mut lines: Vec<Line<'static>> = vec![Line::styled(base, theme.dim_style())];
+    if let Some(title) = diff.and_then(|diff| diff.land_armed.as_deref()) {
+        lines.push(Line::styled(
+            format!("l again to /land {title} · any other key cancels"),
+            theme.accent_style(),
+        ));
+    }
     let selected = diff.map_or(0, |diff| diff.selected.min(files.len().saturating_sub(1)));
     for (index, (path, add, rem)) in files.iter().enumerate() {
         let todo = serving(path).map_or_else(String::new, |label| format!("  · {label}"));
@@ -257,16 +271,13 @@ pub fn review_view(
     let read_only = diff.map_or(0, |diff| {
         diff.reads
             .keys()
-            .filter(|path| {
-                !files
-                    .iter()
-                    .any(|(changed, _, _)| std::path::Path::new(path).ends_with(changed))
-            })
+            .filter(|path| !files.iter().any(|(changed, _, _)| same_file(path, changed)))
             .count()
     });
     if read_only > 0 {
+        let noun = if read_only == 1 { "file" } else { "files" };
         lines.push(Line::styled(
-            format!("○ {read_only} files read only"),
+            format!("○ {read_only} {noun} read only"),
             theme.dim_style(),
         ));
     }

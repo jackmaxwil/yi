@@ -47,7 +47,7 @@ fn claims_and_plan_progress_reach_a_pane() -> Result<(), String> {
         "claims",
         serde_json::json!([{"label": "run the suite", "observed": "c1"}, {"label": "write"}]),
     );
-    match decode(&claims).map_err(|_| "malformed claims")? {
+    match decode(claims).map_err(|_| "malformed claims")? {
         Decoded::Claims(claims) => assert_eq!(
             claims
                 .iter()
@@ -62,7 +62,7 @@ fn claims_and_plan_progress_reach_a_pane() -> Result<(), String> {
         "plan",
         serde_json::json!({"done": 19, "total": 19, "running": null}),
     );
-    match decode(&plan).map_err(|_| "malformed plan")? {
+    match decode(plan).map_err(|_| "malformed plan")? {
         Decoded::Plan(Some(plan)) => assert_eq!(plan.line(true), "Plan 19/19"),
         _ => return Err("plan decoded as something else".to_owned()),
     }
@@ -122,7 +122,7 @@ fn a_titled_session_name_reaches_a_pane() -> Result<(), String> {
         ))
         .collect(),
     };
-    match decode(&update).map_err(|_| "malformed name")? {
+    match decode(update).map_err(|_| "malformed name")? {
         Decoded::Name(name) => assert_eq!(name, "Fix the context gauge"),
         _ => return Err("name decoded as something else".to_owned()),
     }

@@ -303,6 +303,8 @@ pub struct SessionDiff {
     pub selected: usize,
     pub why: BTreeMap<String, Vec<String>>,
     pub why_due: Option<(String, Vec<u32>)>,
+    /// The title a second `l` lands under; any other key clears it.
+    pub land_armed: Option<String>,
 }
 
 const MAX_DIFF_FILES: usize = 512;

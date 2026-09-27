@@ -1,9 +1,11 @@
 use std::error::Error;
 
 use serde_json::{Map, Value, json};
-use yi_acp::update::{IdMap, base64, replay_updates, to_updates};
+use yi_acp::update::{IdMap, base64, extension, replay_updates, to_updates, update_notification};
 use yi_acp::{VERSION_MISMATCH_ERROR, negotiate};
-use yi_types::acp::{AcpSessionUpdate, AcpState, AcpStopReason, AcpToolCallStatus};
+use yi_types::acp::{
+    AcpNotification, AcpSessionUpdate, AcpState, AcpStopReason, AcpToolCallStatus, AcpUpdateParams,
+};
 use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
@@ -269,6 +271,30 @@ fn child_updates_become_a_subagent_update_notification() -> TestResult {
         json.get("answerPreview").is_none(),
         "an absent preview stays absent on the wire: {json}"
     );
+    Ok(())
+}
+
+/// The hand-built frame is the wire the serde types spell, for extensions and standard kinds.
+#[test]
+fn update_notifications_match_the_serde_wire_shape() -> TestResult {
+    let updates = [
+        extension(
+            "_yi/replay",
+            [("entries", json!([{"a": 1}])), ("from", json!(0))],
+        ),
+        AcpSessionUpdate::StateUpdate(AcpState::Running),
+    ];
+    for update in updates {
+        let expected = serde_json::to_value(AcpNotification {
+            jsonrpc: "2.0".to_owned(),
+            method: "session/update".to_owned(),
+            params: serde_json::to_value(AcpUpdateParams {
+                session_id: "s1".to_owned(),
+                update: update.clone(),
+            })?,
+        })?;
+        assert_eq!(update_notification("s1", update), expected);
+    }
     Ok(())
 }
 

@@ -806,6 +806,50 @@ fn resume_replays_the_branch_verbatim_and_rewind_reloads_it() -> TestResult {
     client.finish()
 }
 
+/// `replayUpdates: false` drops the standard updates a yi client would decode twice; the
+/// default resume keeps them for generic ACP clients.
+#[test]
+fn resume_can_opt_out_of_the_standard_replay_updates() -> TestResult {
+    let dir = temp_dir("replay-opt-out")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    prompt_until_idle(&mut client, "3", &session_id, "just the extension")?;
+
+    let lean = client.request(
+        "4",
+        "session/resume",
+        json!({"sessionId": session_id, "replayFrom": 0, "replayUpdates": false}),
+    )?;
+    let standard = ["user_message", "agent_message"];
+    assert!(
+        standard
+            .iter()
+            .all(|kind| updates_of(&lean, kind).is_empty()),
+        "no standard replay updates when opted out: {lean:?}"
+    );
+    let replays = updates_of(&lean, "_yi/replay");
+    assert_eq!(replays.len(), 1, "the extension still replays: {lean:?}");
+    let entries = replays[0]["params"]["update"]["entries"]
+        .as_array()
+        .map_or(0, Vec::len);
+    assert!(entries > 0, "the replay carries the branch");
+    let response = lean.last().ok_or("no resume response")?;
+    assert_eq!(response["result"]["replayedTo"], entries);
+
+    let full = client.request(
+        "5",
+        "session/resume",
+        json!({"sessionId": session_id, "replayFrom": 0}),
+    )?;
+    assert!(
+        standard
+            .iter()
+            .all(|kind| !updates_of(&full, kind).is_empty()),
+        "the default resume still sends the standard updates: {full:?}"
+    );
+    client.finish()
+}
+
 fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
     #[expect(
         clippy::disallowed_methods,
@@ -927,4 +971,27 @@ fn attach_names_the_lane_path_not_the_launch_root() -> Result<(), Box<dyn Error>
     );
     client.finish()?;
     Ok(())
+}
+
+/// Dies with the Tape pane empty forever: the worker had a `_yi/tape` handler its request
+/// dispatch never reached, so every ask came back as an unknown method.
+#[test]
+fn a_tape_request_reaches_the_worker_and_marks_the_typed_turn() -> TestResult {
+    let dir = temp_dir("tape")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    prompt_until_idle(&mut client, "3", &session_id, "time me")?;
+    let frames = client.request("4", "_yi/tape", json!({"sessionId": session_id}))?;
+    let response = frames.last().ok_or("no tape response")?;
+    assert!(response["error"].is_null(), "{response}");
+    let marks = response["result"]["marks"]
+        .as_array()
+        .ok_or("no marks in the tape")?;
+    assert!(
+        marks
+            .iter()
+            .any(|mark| mark["kind"] == "user" && mark["label"] == "time me"),
+        "{response}"
+    );
+    client.finish()
 }

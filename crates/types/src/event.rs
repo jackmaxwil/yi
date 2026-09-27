@@ -312,3 +312,14 @@ pub enum Wait {
     /// The Python kernel is starting; `step` is its latest progress line.
     KernelBoot { step: String },
 }
+
+impl Wait {
+    /// A boot line a person must act on (a skill or package that failed to install): it
+    /// outlives the wait that carried it, so a surface keeps it where the wait row is gone.
+    pub fn warning(&self) -> Option<&str> {
+        match self {
+            Self::KernelBoot { step } if step.starts_with("Warning:") => Some(step),
+            Self::Retry { .. } | Self::Compaction { .. } | Self::KernelBoot { .. } => None,
+        }
+    }
+}

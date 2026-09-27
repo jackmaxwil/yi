@@ -3,6 +3,7 @@
 
 pub mod acp;
 pub mod advisor;
+pub mod backoff;
 pub mod checkpoint;
 pub mod compaction;
 pub mod config;

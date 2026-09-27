@@ -1347,6 +1347,70 @@ fn untracked_edit_accumulates_without_opening() -> TestResult {
     )
 }
 
+/// Dies with one stray `l` in Review landing the branch: the first press shows what a second
+/// would run, another key cancels it, and only the second press sends it.
+#[test]
+fn landing_from_review_asks_for_a_second_press() -> TestResult {
+    run(
+        "review-land",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-g\n\
+         wait-frame 3000 Review · session\n\
+         key alt-right\n\
+         key l\n\
+         wait-frame 3000 │l again to /land s-alpha · any other\n\
+         key x\n\
+         wait-frame 3000 !l again to /land\n\
+         key l\n\
+         key l\n\
+         wait-frame 3000 landing: the gate's jobs\n\
+         quit\n",
+    )
+}
+
+fn unnamed_list(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"sessions": [{"sessionId": "s-alpha", "attached": false}]}),
+    )]
+}
+
+/// Dies with a pull request titled "untitled": a session with no title lands nothing from
+/// Review and says how to name the landing.
+#[test]
+fn an_untitled_session_does_not_land_from_review() -> TestResult {
+    run(
+        "review-untitled",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", unnamed_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 untitled\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-g\n\
+         wait-frame 3000 Review · session\n\
+         key alt-right\n\
+         key l\n\
+         key l\n\
+         wait-frame 3000 this session has no title yet: /land <title> in its chat\n\
+         wait-frame 1000 !landing: the gate's jobs\n\
+         quit\n",
+    )
+}
+
 /// The first kernel cell opens the notebook pane, and that spends the session's one
 /// automatic side pane: a later tracked edit no longer opens the diff.
 #[test]
@@ -1878,7 +1942,8 @@ fn two_root_ledger(frame: &Value) -> Vec<Value> {
 }
 
 /// Dies with rows grouped by workspace: the inbox ranks every root's sessions by what they
-/// need, so the idle session of the other root outranks two the ledger never placed.
+/// need, so the idle session of the other root outranks two the ledger never placed. A row
+/// opens with a quote in the frame, so the section needle cannot match an `idle · 5m` line.
 #[test]
 fn the_inbox_ranks_rows_by_need_across_workspaces() -> TestResult {
     run(
@@ -1891,7 +1956,7 @@ fn the_inbox_ranks_rows_by_need_across_workspaces() -> TestResult {
         "wait-frame 5000 1 SG   s-gamma\n\
          wait-frame 3000 2 RE   release notes\n\
          wait-frame 3000 3 FI   fix login bug\n\
-         wait-frame 3000   idle\n\
+         wait-frame 3000 \"  idle\n\
          quit\n",
     )
 }
@@ -2194,6 +2259,98 @@ fn a_working_session_shows_the_working_line() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 3000 [esc] interrupt\n\
+         quit\n",
+    )
+}
+
+fn tape_reply(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"start": 0, "end": 60_000, "model": [[0, 30_000]], "tools": [],
+            "marks": [{"at": 0, "kind": "user", "entry": "e0", "label": "hello agent"}]}),
+    )]
+}
+
+/// Dies with a rewind sent into a running turn from the Tape: the pane says to wait for the
+/// turn to end, and sends nothing.
+#[test]
+fn the_tape_refuses_a_rewind_while_a_turn_runs() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(running_push));
+    fixture.push(Step::Expect("_yi/tape", tape_reply));
+    run(
+        "tape-running",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 [esc] interrupt\n\
+         cmd-y\n\
+         wait-frame 3000 +0s · hello agent\n\
+         key alt-right\n\
+         key enter\n\
+         wait-frame 3000 a turn is running: rewind once it ends\n\
+         quit\n",
+    )
+}
+
+fn tape_of(frame: &Value, labels: &[&str]) -> Vec<Value> {
+    let marks: Vec<Value> = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| {
+            json!({"at": index * 60_000, "kind": "user", "entry": format!("e{index}"), "label": label})
+        })
+        .collect();
+    let end = labels.len() * 60_000;
+    vec![ok(
+        frame,
+        json!({"start": 0, "end": end, "model": [], "tools": [], "marks": marks}),
+    )]
+}
+
+fn prompt_then_idle(frame: &Value) -> Vec<Value> {
+    vec![
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "state_update", "state": "running"}),
+        ),
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "state_update", "state": "idle"}),
+        ),
+        ok(frame, json!({"stopReason": "end_turn"})),
+    ]
+}
+
+/// Dies with the chosen mark jumping to the newest on every idle refresh: a user who picked
+/// an older turn loses it as soon as a turn ends.
+#[test]
+fn a_tape_refresh_keeps_the_chosen_mark() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("_yi/tape", |frame| {
+        tape_of(frame, &["first turn", "second turn"])
+    }));
+    fixture.push(Step::Expect("session/prompt", prompt_then_idle));
+    fixture.push(Step::Expect("_yi/tape", |frame| {
+        tape_of(frame, &["first turn", "second turn", "third turn"])
+    }));
+    run(
+        "tape-cursor",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-y\n\
+         wait-frame 3000 +1m · second turn\n\
+         key alt-right\n\
+         key left\n\
+         wait-frame 3000 +0s · first turn\n\
+         key alt-left\n\
+         type third turn\n\
+         key enter\n\
+         wait-frame 5000 Tape · 3m\n\
+         wait-frame 1000 +0s · first turn\n\
          quit\n",
     )
 }

@@ -18,7 +18,7 @@ fn entry(seq: u64, message: serde_json::Value) -> Result<Entry, Box<dyn Error>> 
 }
 
 /// Dies with evidence taken on its word: the circular "t2 closed before the report existed"
-/// read exactly like a command whose output the ledger holds.
+/// read like a command the ledger holds, and the todo call quoting it observed itself.
 #[test]
 fn a_quoted_span_found_in_a_recorded_call_is_observed_and_anything_else_is_claimed()
 -> Result<(), Box<dyn Error>> {
@@ -38,12 +38,26 @@ fn a_quoted_span_found_in_a_recorded_call_is_observed_and_anything_else_is_claim
             "isError": false, "timestamp": 2,
             "content": [{"type": "text", "text": "test result: ok. 9 passed; 0 failed"}]}),
         )?,
+        entry(
+            3,
+            json!({"role": "assistant", "api": "faux", "provider": "faux", "model": "faux-1",
+            "stopReason": "toolUse", "timestamp": 3, "usage": usage,
+            "content": [{"type": "toolCall", "id": "c2", "name": "todo",
+                "arguments": {"op": "done", "label": "lint", "evidence": "`cargo clippy` clean"}}]}),
+        )?,
+        entry(
+            4,
+            json!({"role": "toolResult", "toolCallId": "c2", "toolName": "todo",
+            "isError": false, "timestamp": 4,
+            "content": [{"type": "text", "text": "done: lint (`cargo clippy` clean)"}]}),
+        )?,
     ];
     let list: TodoList = serde_json::from_value(json!({"phases": [{"name": "Tasks", "items": [
         {"label": "run the suite", "state": "done", "evidence": "`cargo test -p yi-tui` is green"},
         {"label": "check the count", "state": "done", "evidence": "`test result: ok. 9 passed`"},
         {"label": "write the report", "state": "done", "evidence": "the report is written"},
         {"label": "lint", "state": "done", "evidence": "`cargo clippy` clean"},
+        {"label": "ship", "state": "done"},
         {"label": "land it", "state": "running"}
     ]}]}))?;
     let observed = |label: &str, call: Option<&str>| Claim {
@@ -57,6 +71,7 @@ fn a_quoted_span_found_in_a_recorded_call_is_observed_and_anything_else_is_claim
             observed("check the count", Some("c1")),
             observed("write the report", None),
             observed("lint", None),
+            observed("ship", None),
         ]
     );
     Ok(())

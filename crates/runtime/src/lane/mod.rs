@@ -231,6 +231,16 @@ pub(crate) fn capture(
     args: &[&str],
     deadline: std::time::Duration,
 ) -> Result<String, String> {
+    capture_capped(cwd, program, args, deadline, 30_000).map(|capture| capture.stdout)
+}
+
+pub(crate) fn capture_capped(
+    cwd: &Path,
+    program: &str,
+    args: &[&str],
+    deadline: std::time::Duration,
+    cap: usize,
+) -> Result<yi_tools::CommandCapture, String> {
     let _span = yi_types::trace::span("lane.capture").arg("program", program);
     let mut command = yi_tools::command(program);
     command.current_dir(cwd).args(args);
@@ -238,10 +248,10 @@ pub(crate) fn capture(
         .checked_add(deadline)
         .unwrap_or_else(std::time::Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
-    let capture = yi_tools::run_captured(command, None, &cancelled, 30_000)
+    let capture = yi_tools::run_captured(command, None, &cancelled, cap)
         .map_err(|error| format!("{program} {}: {error}", args.join(" ")))?;
     if capture.exit_code == Some(0) {
-        return Ok(capture.stdout);
+        return Ok(capture);
     }
     Err(format!(
         "{program} {} failed:\n{}{}",
@@ -754,6 +764,8 @@ impl Pool {
         let _the_poll_below_sees_a_failed_term =
             capture(&self.dir, "/bin/sh", &term, probe_deadline());
         let started = std::time::Instant::now();
+        let _span = yi_types::trace::span("lane.warmer_exit");
+        let mut pace = yi_types::backoff::backoff(std::time::Duration::from_millis(200));
         while running()? {
             if started.elapsed().as_millis() >= u128::from(WARMER_EXIT_WAIT_MS) {
                 return Err(LaneError::WarmerStuck {
@@ -762,7 +774,7 @@ impl Pool {
                     waited_ms: WARMER_EXIT_WAIT_MS,
                 });
             }
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(pace());
         }
         if let Some(warm) = state.warm.as_mut() {
             warm.pid = None;

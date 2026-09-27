@@ -18,7 +18,7 @@ pub struct Mark {
     pub label: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MarkKind {
     /// A turn the user typed; rewinding to it forks the conversation there.
@@ -26,4 +26,6 @@ pub enum MarkKind {
     Checkpoint,
     Failed,
     Compaction,
+    #[serde(untagged)]
+    Other(String),
 }
