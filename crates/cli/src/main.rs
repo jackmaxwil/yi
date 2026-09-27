@@ -477,7 +477,6 @@ fn build_session(
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
-    let session_dir = default_session_dir(args);
     let (lane, pool) = match claim_lane(args, &home, session_id) {
         Ok(claimed) => claimed,
         Err(message) => {
@@ -499,7 +498,7 @@ fn build_session(
             asker,
             session.events_sender(),
         )
-        .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, &session_dir)),
+        .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, None)),
     );
     let tools_home = home.clone();
     session.install_extensions(shells::session_extensions(
