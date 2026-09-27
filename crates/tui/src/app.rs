@@ -551,6 +551,7 @@ impl App {
     pub fn reflowed(&self, rows: usize) -> Vec<Line<'static>> {
         self.history
             .lines(self.content_width(), &self.theme, self.mode, rows)
+            .0
     }
 
     pub(crate) fn reset_transcript(&mut self) {

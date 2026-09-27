@@ -60,7 +60,7 @@ def scrub_only(path):
     """The session file itself as a replay fixture: same lines, same order,
     same keys, every string value through the §10 redaction."""
     out = []
-    for line in path.read_text(errors="replace").splitlines():
+    for line in path.read_text(errors="replace").split("\n"):
         if line.strip():
             masked = scrub_values(json.loads(line))
             out.append(json.dumps(masked, separators=(",", ":"), ensure_ascii=False))
@@ -113,7 +113,7 @@ def response_spec(message, notes):
 
 def load_entries(path):
     entries = []
-    for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+    for number, line in enumerate(path.read_text(errors="replace").split("\n"), 1):
         line = line.strip()
         if not line:
             continue

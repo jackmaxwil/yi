@@ -1,5 +1,5 @@
 //! A child's question, stall and second run as the human sees them, and the reply box.
-mod common;
+use crate::common;
 
 use std::error::Error;
 use std::sync::Arc;
@@ -14,8 +14,7 @@ use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::subagent::{ChildActivity, ChildFlag, ChildId, ChildStatus, ChildUpdate};
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;

@@ -1,10 +1,8 @@
 //! Stage M4 of the mailbox: every open request is answered or chased, a wait never blocks on
 //! a family that cannot move without its caller, and a receipt says when it is presented.
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
+use crate::support;
 use scratch::Scratch;
-#[path = "support/family.rs"]
-mod support;
 
 use std::error::Error;
 use std::sync::Arc;

@@ -102,6 +102,7 @@ pub(crate) async fn connect_sockets(
     ),
     String,
 > {
+    let _span = yi_types::trace::span("kernel.connect");
     let endpoint = |port: u32| format!("{}://{}:{port}", info.transport, info.ip);
     let mut shell = zeromq::DealerSocket::new();
     let mut iopub = zeromq::SubSocket::new();

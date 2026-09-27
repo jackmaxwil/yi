@@ -191,7 +191,7 @@ def write_trajectory(sessions, target, model):
     lines = []
     for path in sorted(Path(sessions).rglob("*.jsonl")):
         if not path.name.endswith(".telemetry.jsonl"):
-            lines.extend(path.read_text(errors="replace").splitlines())
+            lines.extend(path.read_text(errors="replace").split("\n"))
     if lines:
         target.write_text(json.dumps(atif.convert(lines, model=model), indent=2) + "\n")
 

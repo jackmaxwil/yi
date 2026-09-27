@@ -391,11 +391,13 @@ fn build_session(
     // Invariant: the first statement here, so no lever is read on both sides of the
     // override and a refused file stops the run before the session, and any model call.
     let _build = yi_types::trace::span("build_session");
+    let levers = yi_types::trace::span("build_session.levers");
     yi_runtime::levers::init(args.eval).map_err(|reason| Refused {
         code: 1,
         reason,
         class: yi_types::telemetry::ErrorClass::RefusalConfig,
     })?;
+    drop(levers);
     if args.model.is_empty() {
         return Err(Refused {
             code: 2,
@@ -440,6 +442,7 @@ fn build_session(
         return Err(login::no_credential(&model.provider));
     }
     if !faux {
+        let _span = yi_types::trace::span("build_session.catalog_refresh");
         catalog::spawn_refresh(
             &model.provider,
             resolved.as_ref().map(|f| &f.secret),
@@ -795,15 +798,19 @@ fn attach_store(
     }
     .map_err(|error| error.to_string())?;
     let id = lock_session(&store).metadata().id.clone();
+    let attaching = yi_types::trace::span("attach_store.session");
     session
         .attach_store(store)
         .map_err(|error| error.to_string())?;
+    drop(attaching);
     if let Some(lane) = session.lane() {
+        let _span = yi_types::trace::span("attach_store.bind_lane");
         if let Err(error) = lane.bind_session(&id) {
             eprintln!("warning: lane: {error}");
         }
         lane.reattach();
     }
+    let _span = yi_types::trace::span("attach_store.repin");
     repin(args, session);
     Ok(id)
 }

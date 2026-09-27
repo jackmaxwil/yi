@@ -153,7 +153,8 @@ def redact_line(line):
 
 
 def redact(text):
-    kept = [redact_line(l) for l in str(text).splitlines()]
+    # Incident: `splitlines` also splits at U+2028, so a recorded prompt replayed a newline.
+    kept = [redact_line(l) for l in str(text).split("\n")]
     return "\n".join(l for l in kept if l is not None)
 
 
@@ -185,7 +186,8 @@ def session_dir_for_cwd(cwd):
 
 def read_session(path):
     header, entries, corrupt = None, [], 0
-    for line in path.read_text(errors="replace").splitlines():
+    # Incident: `splitlines` also splits at U+2028, which a raw JSON string may carry.
+    for line in path.read_text(errors="replace").split("\n"):
         line = line.strip()
         if not line:
             continue

@@ -1,8 +1,7 @@
 //! E2 (§16 `CompactionCheck`): a compaction replaces the primary's view, and the
 //! advisor is the only thing that can say what the replacement dropped.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
