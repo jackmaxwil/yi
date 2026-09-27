@@ -963,7 +963,7 @@ impl std::fmt::Display for PlanIssue {
             }
             Self::Unanswered { label, options } => write!(
                 formatter,
-                "todo {:?} waits on the user's pick of its {options} options, and no user message came after it asked; end your turn: unattended it stays blocked, and nothing picks for the user",
+                "todo {:?} waits on the user's pick of its {options} options: only an unblock after their reply moves it, and records the reply; with none since it asked, end your turn: unattended it stays blocked, and nothing picks for the user",
                 label.as_str()
             ),
         }

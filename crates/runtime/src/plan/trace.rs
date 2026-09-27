@@ -89,18 +89,9 @@ impl PlanEngine {
 
     fn owner_messages(&self) -> Option<Vec<bool>> {
         let store = (self.owner_words.as_ref()?)()?;
-        let typed = crate::fetch::user_entries(&store).ok()?;
-        let query = yi_session::EntryQuery {
-            order: yi_session::EntryOrder::OldestFirst,
-            ..yi_session::EntryQuery::default()
-        };
-        let branch = yi_session::lock_session(&store)
-            .find_entries_on_branch("main", &query, &yi_session::BranchBounds::default())
-            .ok()?;
-        let live: HashSet<&str> = branch.iter().map(yi_types::entry::Entry::id).collect();
-        let asked: Vec<bool> = typed
+        let asked: Vec<bool> = super::ask::said(&store)
             .iter()
-            .map(|(id, _)| live.contains(id.as_str()))
+            .map(Option::is_some)
             .collect();
         asked.contains(&true).then_some(asked)
     }

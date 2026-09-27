@@ -1182,3 +1182,43 @@ fn a_done_naming_no_item_lands_on_the_running_one() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with the session list, the common case with no plan open, unblocking an ask nobody has
+/// answered, or leaving the user's pick unrecorded once they reply.
+#[test]
+fn a_session_todos_ask_waits_for_the_reply_and_records_the_pick() -> TestResult {
+    let (_root, session) = session("asked")?;
+    let typed = |text: &str| {
+        yi_types::message::AgentMessage::user_input(
+            yi_types::message::UserContent::Text(text.to_owned()),
+            0,
+        )
+    };
+    yi_session::lock_session(&session).append_message("main", typed("name the crate"))?;
+    let tool = TodoTool::new(store_for(&session));
+    call(&tool, json!({"op": "init", "items": ["pick a name"]}));
+    let option = |id: &str| json!({"id": id, "label": format!("name {id}")});
+    let options = vec![option("a"), option("b"), option("c")];
+    let block =
+        json!({"op": "block", "id": "t1", "on": "user", "note": "which?", "options": options});
+    let (is_error, text) = call(&tool, block);
+    assert!(!is_error, "{text}");
+    let unblock = json!({"op": "unblock", "id": "t1"});
+    let (is_error, text) = call(&tool, unblock.clone());
+    assert!(
+        is_error && text.contains("waits on the user's pick"),
+        "{text}"
+    );
+    yi_session::lock_session(&session).append_message("main", typed("2"))?;
+    let (is_error, text) = call(&tool, unblock);
+    assert!(!is_error, "{text}");
+    let list = latest_record(&session).ok_or("no record")?.list;
+    let item = list.items().next().ok_or("no item")?;
+    let answer = item.ask.as_ref().and_then(|ask| ask.answer.as_ref());
+    assert_eq!(
+        answer.map(|answer| (answer.address.to_string(), answer.option.clone())),
+        Some(("user://2".to_owned(), Some("b".to_owned().try_into()?)))
+    );
+    assert!(item.intent.iter().any(|url| url.to_string() == "user://2"));
+    Ok(())
+}

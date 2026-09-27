@@ -171,11 +171,14 @@ fn options(item: &TodoItem, indent: &str, theme: &Theme) -> Vec<Line<'static>> {
         return Vec::new();
     }
     let rows = ask.options.iter().zip(1_usize..).map(|(option, number)| {
-        let preview = option
-            .preview
-            .as_deref()
-            .and_then(|text| text.lines().next());
-        let preview = preview.map(|line| format!(" · {line}")).unwrap_or_default();
+        let preview = option.preview.as_deref().map(|text| {
+            let first = text.lines().next().unwrap_or_default();
+            match text.lines().count().saturating_sub(1) {
+                0 => format!(" · {first}"),
+                more => format!(" · {first} (+{more} lines)"),
+            }
+        });
+        let preview = preview.unwrap_or_default();
         let text = format!("{indent}     {number}. {}{preview}", option.label);
         Line::from(Span::styled(text, theme.muted_style()))
     });
