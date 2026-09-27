@@ -185,7 +185,7 @@ fn drain_capped(mut reader: impl Read, cap: usize, live: Option<&LiveOutput>) ->
 /// Incident: waiting under the guard parked the cancel watchdog on the same lock, so an early
 /// pipe-closer could not be killed. Released between polls; a reap sets `done` under it.
 fn wait_polled(child: &Mutex<Child>, done: &AtomicBool) -> Result<Option<i32>, String> {
-    let mut interval = Duration::from_millis(1);
+    let mut pace = yi_types::backoff::backoff(Duration::from_millis(20));
     loop {
         let mut guard = child.lock().map_err(|_| "child lock poisoned".to_owned())?;
         let polled = guard
@@ -196,8 +196,7 @@ fn wait_polled(child: &Mutex<Child>, done: &AtomicBool) -> Result<Option<i32>, S
             return Ok(status.code());
         }
         drop(guard);
-        std::thread::sleep(interval);
-        interval = interval.saturating_mul(2).min(Duration::from_millis(20));
+        std::thread::sleep(pace());
     }
 }
 
@@ -232,9 +231,13 @@ pub(crate) fn run_captured_live(
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
+    let program = command.get_program().to_string_lossy().into_owned();
+    let spawned = yi_types::trace::span("proc.spawn").arg("program", program.clone());
     let mut child = command
         .spawn()
         .map_err(|error| format!("failed to spawn: {error}"))?;
+    drop(spawned);
+    let _running = yi_types::trace::span("proc.run").arg("program", program);
 
     let stdin_writer = match (stdin, child.stdin.take()) {
         (Some(bytes), Some(mut pipe)) => Some(std::thread::spawn(move || {

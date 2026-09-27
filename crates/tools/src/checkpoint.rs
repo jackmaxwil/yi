@@ -208,6 +208,8 @@ impl Checkpoints {
     }
 
     fn git(&self, args: &[&str]) -> Result<String, CheckpointError> {
+        let verb = args.first().copied().unwrap_or_default();
+        let _span = yi_types::trace::span("checkpoint.git").arg("verb", verb);
         let _serialized = self
             .serial
             .lock()

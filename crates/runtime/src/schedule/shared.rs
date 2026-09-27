@@ -121,9 +121,11 @@ mod tests {
         let hub = Arc::new(DeliveryHub::new());
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let a_gate = Arc::clone(&gate);
+        let (entered, delivering) = std::sync::mpsc::channel();
         hub.register(
             "a".to_owned(),
             Arc::new(move |_| {
+                let _ = entered.send(());
                 let (lock, cvar) = &*a_gate;
                 let mut go = lock
                     .lock()
@@ -140,7 +142,7 @@ mod tests {
 
         let hub_a = Arc::clone(&hub);
         let thread = std::thread::spawn(move || hub_a.dispatch(&job("a")));
-        std::thread::sleep(Duration::from_millis(50));
+        delivering.recv()?;
         let started = Instant::now();
         assert_eq!(hub.dispatch(&job("b")), RunOutcome::Ran);
         assert!(
