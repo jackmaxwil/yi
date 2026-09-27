@@ -228,6 +228,35 @@ fn sessions_rm_removes_the_session() -> TestResult {
     Ok(())
 }
 
+/// `list` scans the raw file for a name fact; `show` replays it through `SessionStore`,
+/// which must carry the same name through (a session named after creation still shows it).
+#[test]
+fn show_json_carries_the_name_a_session_file_sets() -> TestResult {
+    let workspace = Workspace::new("show-name")?;
+    let cwd = workspace.project().display().to_string();
+    let session_dir = workspace
+        .0
+        .join("home/sessions")
+        .join(yi_runtime::session_store::session_directory_name(&cwd));
+    std::fs::create_dir_all(&session_dir)?;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../types/tests/fixtures/v4-golden.jsonl");
+    std::fs::copy(fixture, session_dir.join("1_fixture-a.jsonl"))?;
+
+    let shown: Value = serde_json::from_str(&stdout(&workspace.yi(&[
+        "sessions",
+        "--json",
+        "show",
+        "fixture-a",
+    ])?))?;
+    assert_eq!(
+        shown["session"]["name"].as_str(),
+        Some("Golden Fixture v4"),
+        "{shown}"
+    );
+    Ok(())
+}
+
 #[test]
 fn schema_validates_the_answer() -> TestResult {
     let workspace = Workspace::new("schema")?;
@@ -352,12 +381,12 @@ fn undo_without_a_turn_end_restores_unscoped_and_says_so() -> TestResult {
     std::fs::write(project.join("b.txt"), "hand\n")?;
 
     let sessions = workspace.0.join("home/sessions");
-    let dir = std::fs::read_dir(&sessions)?
+    // `family/` and `kernels/` (#580) sit beside the transcript's directory.
+    let file = std::fs::read_dir(&sessions)?
         .filter_map(Result::ok)
-        .find(|entry| entry.path().is_dir())
-        .ok_or("no session directory")?;
-    let file = std::fs::read_dir(dir.path())?
-        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| std::fs::read_dir(entry.path()).ok())
+        .flat_map(|files| files.filter_map(Result::ok))
         .map(|entry| entry.path())
         .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
         .ok_or("no session file")?;
@@ -1323,6 +1352,60 @@ fn a_run_with_no_text_exits_one_except_under_eval() -> TestResult {
         stdout(&eval).contains(r#""type":"no_answer""#),
         "{}",
         stdout(&eval)
+    );
+    Ok(())
+}
+
+/// Incident (#580): the contained bash tool's writable roots held the whole session corpus,
+/// where every session's kernel snapshot sits and is loaded at that session's next boot.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_contained_bash_call_cannot_write_the_session_corpus() -> TestResult {
+    if !std::path::Path::new("/usr/bin/sandbox-exec").is_file() {
+        return Ok(());
+    }
+    let workspace = Workspace::new("corpus")?;
+    // Outside every temp root, which the sandbox grants whole, or the test proves nothing.
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let corpus = home.join(format!("yi-cli-corpus-{}", std::process::id()));
+    std::fs::create_dir_all(&corpus)?;
+    let planted = corpus.join("01other.kernel-state.dill");
+    let script = tool_script(
+        &workspace,
+        &[(
+            "bash",
+            json!({"command": format!("touch '{}'", planted.display())}),
+        )],
+        Some("done"),
+    )?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the spawned binary's session dir must sit outside tmp, unlike Workspace::yi's"
+    )]
+    let ran = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "ask",
+            "--model",
+            "faux/faux-1",
+            "--faux",
+            &script,
+            "plant it",
+        ])
+        .arg("--session-dir")
+        .arg(&corpus)
+        .arg("--cwd")
+        .arg(workspace.project())
+        .env("HOME", workspace.0.join("home"))
+        .current_dir(workspace.project())
+        .output();
+    let wrote = planted.is_file();
+    let _ = std::fs::remove_dir_all(&corpus);
+    let said = stdout(&ran?);
+    assert!(
+        !wrote,
+        "a contained bash call wrote into the session corpus: {said}"
     );
     Ok(())
 }

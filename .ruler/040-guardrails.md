@@ -4,8 +4,10 @@ Run `just check` (fmt-check + clippy -D warnings + scripts/guardrails/check_guar
 before claiming any task done; quote failures verbatim, do not paraphrase them.
 
 - Ratchets only shrink. Intentional growth is `--update`, in its own commit; a baseline edit in
-  the same commit as a code edit fails the build (check_commit_style refuses the mix per commit at the PR range). No aggregate fix, ever. Order is fixed: land
-  the code commit red on the baselines, then `--update` and commit the baselines alone.
+  the same commit as a code edit fails the build (check_commit_style refuses the mix per commit at the PR range). No aggregate fix, ever. Order follows direction (097): a raised
+  ceiling's `--update` commit lands before the code, since guardrails --fast runs on every
+  commit and refuses one against a ceiling it would exceed; a shrunk ceiling's `--update`
+  commit lands after, since a shrink-only check is never red.
 - A guardrail can fail on a file that is not yours: `blob_size` fires on any untracked blob in
   the tree. Report it, do not allowlist or delete another session's artifact.
 - Budgets start at zero — measure the dimension the mess will move to next: glob re-exports 0,
