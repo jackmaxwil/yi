@@ -47,19 +47,6 @@ pub fn paint_rgba(frame: &OrbFrame, canvas: f64, width: usize, height: usize) ->
         slot[3] = src_a + slot[3] * (1.0 - src_a);
     };
 
-    for line in &frame.lines {
-        let ink = 1.0 - line.white.clamp(0.0, 1.0);
-        let (x1, y1) = (origin_x + line.x1 * scale, origin_y + line.y1 * scale);
-        let (x2, y2) = (origin_x + line.x2 * scale, origin_y + line.y2 * scale);
-        let w = (line.w * scale).max(1.0);
-        let steps = ((x2 - x1).abs().max((y2 - y1).abs()).ceil() as usize).max(1);
-        for step in 0..=steps {
-            let f = step as f64 / steps as f64;
-            let cx = x1 + (x2 - x1) * f;
-            let cy = y1 + (y2 - y1) * f;
-            stamp(&mut blend, (sw, sh), cx, cy, w / 2.0, ink, line.a);
-        }
-    }
     for dot in &frame.dots {
         let ink = 1.0 - dot.white.clamp(0.0, 1.0);
         stamp(
