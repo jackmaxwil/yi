@@ -63,6 +63,7 @@ pub enum RequestKind {
 struct Pending {
     kind: RequestKind,
     deadline: Instant,
+    sent_us: u64,
 }
 
 pub struct App {
@@ -106,6 +107,15 @@ pub struct App {
     /// Auto-opened notebook panes by their last kernel activity; an idle one closes itself.
     pub(crate) auto_notebooks: HashMap<PaneId, Instant>,
     pub window_title: String,
+}
+
+fn trace_answered(pending: &Pending) {
+    if yi_types::trace::enabled() {
+        let kind = format!("{:?}", pending.kind);
+        let label = kind.split('(').next().unwrap_or_default();
+        let name = format!("rpc {label}");
+        yi_types::trace::complete(&name, pending.sent_us, serde_json::Map::new());
+    }
 }
 
 fn frame(id: Option<u64>, method: &str, params: Value) -> Value {
@@ -166,6 +176,7 @@ impl App {
                 Pending {
                     kind,
                     deadline: Instant::now() + REQUEST_DEADLINE,
+                    sent_us: yi_types::trace::now_us(),
                 },
             );
         } else {
@@ -348,15 +359,27 @@ impl App {
                 self.dirty = true;
             }
             ClientEvent::Frame(value) => self.reduce_frame(outbound, value),
+            ClientEvent::Input(event) => {
+                let _span = yi_types::trace::span("console.input");
+                self.handle_event(outbound, event);
+            }
+            ClientEvent::InputClosed(_) => self.state.quit = true,
         }
     }
 
-    fn reduce_frame(&mut self, outbound: &Outbound, value: Value) {
+    fn reduce_frame(&mut self, outbound: &Outbound, mut value: Value) {
+        let _span = yi_types::trace::enabled().then(|| {
+            let kind = value
+                .pointer("/params/update/sessionUpdate")
+                .and_then(Value::as_str)
+                .unwrap_or("frame");
+            yi_types::trace::span(format!("console.reduce {kind}"))
+        });
         let method = value.get("method").and_then(Value::as_str);
         match method {
             None => self.reduce_response(outbound, &value),
             Some("session/update") => {
-                if let Some(params) = value.get("params").cloned()
+                if let Some(params) = value.get_mut("params").map(Value::take)
                     && let Ok(update) = serde_json::from_value::<AcpUpdateParams>(params)
                 {
                     self.reduce_update(outbound, update);
@@ -399,6 +422,8 @@ impl App {
         let Some(pending) = self.pending.remove(&RequestId(id)) else {
             return;
         };
+        trace_answered(&pending);
+        let _span = yi_types::trace::span("console.reduce_response");
         if pending.kind == RequestKind::Shutdown {
             self.state.quit = true;
             return;
@@ -414,6 +439,9 @@ impl App {
         let result = value.get("result").cloned().unwrap_or(Value::Null);
         match pending.kind {
             RequestKind::Initialize => {
+                if std::mem::take(&mut self.autostart) {
+                    self.autostart_session(outbound);
+                }
                 let root = self.state.root.clone();
                 self.send_request(
                     outbound,
@@ -446,9 +474,7 @@ impl App {
             RequestKind::ListWorker => {
                 self.merge_worker_list(&result);
                 self.sync_chat_names();
-                if std::mem::take(&mut self.autostart) {
-                    self.autostart_session(outbound);
-                } else if self.state.order.is_empty() {
+                if self.state.order.is_empty() {
                     self.note("no sessions for this root — alt+n starts one");
                 }
             }
@@ -536,32 +562,6 @@ impl App {
         self.dirty = true;
     }
 
-    /// A chat already on the session keeps its draft; the replay that follows resets the
-    /// transcript. Any other content gives way to a fresh chat.
-    fn bind_pane(&mut self, pane_id: PaneId, session: &SessionId) {
-        let keep = matches!(
-            self.state.panes.get(&pane_id).map(|pane| &pane.content),
-            Some(PaneContent::Session { session: Some(bound), chat: Some(_) }) if bound == session
-        );
-        let fresh = (!keep).then(|| self.make_chat(pane_id, session));
-        let Some(pane) = self.state.panes.get_mut(&pane_id) else {
-            return;
-        };
-        match (&mut pane.content, fresh) {
-            (PaneContent::Notebook { session: slot, .. }, _) => *slot = Some(session.clone()),
-            (_, Some(chat)) => {
-                pane.content = PaneContent::Session {
-                    session: Some(session.clone()),
-                    chat: Some(chat),
-                };
-            }
-            (_, None) => {}
-        }
-        pane.scroll_from_bottom = 0;
-        self.state.banner = None;
-        self.deliver_orphan_asks(session);
-    }
-
     fn merge_worker_list(&mut self, result: &Value) {
         let Some(sessions) = result.get("sessions").and_then(Value::as_array) else {
             return;
@@ -646,7 +646,10 @@ impl App {
 
     fn reduce_update(&mut self, outbound: &Outbound, update: AcpUpdateParams) {
         let id = SessionId(update.session_id.clone());
-        self.resume_offsets.remove(&id);
+        if port::writes_transcript(&update.update) {
+            self.resume_offsets.remove(&id);
+            self.state.parked.remove(&id);
+        }
         if let AcpSessionUpdate::Extension(extension) = &update.update {
             self.reduce_extension(outbound, &id, extension);
         }
@@ -696,48 +699,6 @@ impl App {
                 }
             }
         }
-    }
-
-    fn resume_into(&mut self, outbound: &Outbound, pane_id: PaneId, session: &SessionId) {
-        // Invariant: replay streams ahead of the resume response, so wipe and bind happen at
-        // send time; a stored offset skips the wipe only if this pane shows the session.
-        let continuous = self
-            .state
-            .panes
-            .get(&pane_id)
-            .is_some_and(|pane| pane.session() == Some(session));
-        let offset = if continuous {
-            self.resume_offsets.get(session).copied()
-        } else {
-            None
-        };
-        if offset.is_none() {
-            let bound: Vec<PaneId> = self
-                .state
-                .panes
-                .iter()
-                .filter(|(id, pane)| **id == pane_id || pane.session() == Some(session))
-                .map(|(id, _)| *id)
-                .collect();
-            for id in bound {
-                self.bind_pane(id, session);
-            }
-        }
-        let root = self
-            .state
-            .sessions
-            .get(session)
-            .map_or_else(|| self.state.root.clone(), |row| row.root.clone());
-        self.send_request(
-            outbound,
-            RequestKind::Resume(session.clone()),
-            "session/resume",
-            json!({
-                "sessionId": session.0,
-                "cwd": root,
-                "replayFrom": offset.unwrap_or(0),
-            }),
-        );
     }
 
     fn mark_seen(&mut self, outbound: &Outbound, session: &SessionId) {
