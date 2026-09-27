@@ -160,13 +160,8 @@ pub fn render(lines: &[String]) -> String {
     format!("{ENVIRONMENT_TAG}\n{}\n</environment>", lines.join("\n"))
 }
 
-pub fn append(messages: &[AgentMessage], block: &str) -> Vec<AgentMessage> {
-    let mut out = messages.to_vec();
-    out.push(AgentMessage::host_user(
-        UserContent::Text(block.to_owned()),
-        0,
-    ));
-    out
+pub fn message(block: String) -> AgentMessage {
+    AgentMessage::host_user(UserContent::Text(block), 0)
 }
 
 /// What the turn says about the machine: os, arch, shell, and where yi runs (D209).
@@ -197,9 +192,12 @@ pub fn hook(
     let clock = Mutex::new(None);
     Arc::new(move || {
         let mut lines = Vec::new();
-        let git = git_summary(&cwd)
-            .map(|(branch, modified, untracked)| git_line(&branch, modified, untracked))
-            .unwrap_or_default();
+        let git = {
+            let _span = yi_types::trace::span("env.git_summary");
+            git_summary(&cwd)
+        }
+        .map(|(branch, modified, untracked)| git_line(&branch, modified, untracked))
+        .unwrap_or_default();
         lines.push(format!("cwd: {}{git}", cwd.display()));
         if let Some(files) = files_line(&cwd) {
             lines.push(files);
@@ -246,7 +244,10 @@ pub fn hook(
         lines.push(format!("model: {} · effort {effort}{mode}", model.id));
         let mut budget = context
             .as_ref()
-            .map(|status| status())
+            .map(|status| {
+                let _span = yi_types::trace::span("env.compact_status");
+                status()
+            })
             .map(|s| format!("{} of {} used", tokens(s.tokens), tokens(s.context_window)));
         if let Some(last) = usage() {
             let read = last
