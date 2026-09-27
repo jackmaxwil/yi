@@ -87,30 +87,55 @@ pub fn words(rows: &[String]) -> String {
     text.trim_matches('\n').to_owned()
 }
 
-const MARKUP: &str = "*_`~#>|\\-+[]()‣◦▪•│┃▌─━—┌┐└┘├┤┬┴┼";
+const MARKUP: &str = "*_`~#>|\\-+[]()";
+const GLYPHS: &str = "‣◦▪•│┃▌─━—┌┐└┘├┤┬┴┼";
 const WRAPS: &str = "*_`~";
 
 fn markup(ch: char) -> bool {
-    ch.is_whitespace() || MARKUP.contains(ch)
+    ch.is_whitespace() || MARKUP.contains(ch) || GLYPHS.contains(ch)
 }
 
-/// The source behind a drag's words, grown over markup; `None` when the render differs.
+/// Where `wanted` spells out from source char `from`: source markup may sit between its chars,
+/// but every char the render showed, a `-` or `+` included, must be the source's own.
+fn span_at(chars: &[(usize, char)], wanted: &[char], from: usize) -> Option<(usize, usize)> {
+    let (start, _) = *chars.get(from)?;
+    let mut want = wanted.iter().peekable();
+    for &(offset, ch) in chars.get(from..)? {
+        match want.peek() {
+            Some(&&next) if next == ch => {
+                want.next();
+                if want.peek().is_none() {
+                    return Some((start, offset.saturating_add(ch.len_utf8())));
+                }
+            }
+            Some(_) if markup(ch) => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// The source behind a drag's words, grown over markup; `None` when the render differs or the
+/// words spell out in more than one place, since nothing here says which one was dragged.
 pub fn source_span(source: &str, shown: &str) -> Option<String> {
-    let wanted: String = shown.chars().filter(|&ch| !markup(ch)).collect();
-    if wanted.is_empty() {
+    let wanted: Vec<char> = shown
+        .chars()
+        .filter(|&ch| !ch.is_whitespace() && !GLYPHS.contains(ch))
+        .collect();
+    let head = *wanted.first()?;
+    let chars: Vec<(usize, char)> = source
+        .char_indices()
+        .filter(|(_, ch)| !ch.is_whitespace())
+        .collect();
+    let mut found = chars
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, ch))| *ch == head)
+        .filter_map(|(from, _)| span_at(&chars, &wanted, from));
+    let (mut start, mut end) = found.next()?;
+    if found.next().is_some() {
         return None;
     }
-    let (mut key, mut at) = (String::new(), Vec::new());
-    for (offset, ch) in source.char_indices().filter(|&(_, ch)| !markup(ch)) {
-        key.push(ch);
-        at.push((offset, offset.saturating_add(ch.len_utf8())));
-    }
-    let first = key.get(..key.find(&wanted)?)?.chars().count();
-    let last = first
-        .saturating_add(wanted.chars().count())
-        .checked_sub(1)?;
-    let (mut start, _) = *at.get(first)?;
-    let (_, mut end) = *at.get(last)?;
 
     let before = source.get(..start)?;
     let opened = before.trim_end_matches(|ch| WRAPS.contains(ch));

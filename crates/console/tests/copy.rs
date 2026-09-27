@@ -159,6 +159,21 @@ fn a_span_hugs_its_delimiters_but_not_a_words_insides() {
     assert_eq!(source_span("text", "nowhere"), None);
 }
 
+/// The clipboard gets the place that was dragged or the words as shown, never another place:
+/// matching past a shown `-` or `(` took `a+b` or `fxhash`, and a repeat took the first copy.
+#[test]
+fn a_drag_copies_the_place_it_covered_or_its_words() {
+    let dragged =
+        |source: &str, shown: &str| copy(&[(0, shown.to_owned())], |_| (Some(0), Some(source)));
+    assert_eq!(dragged("x = a+b; y = a-b", "a-b"), "a-b");
+    assert_eq!(dragged("use fxhash, then call f(x)", "f(x)"), "f(x)");
+    assert_eq!(
+        dragged("**same words** then _same words_", "same words"),
+        "same words"
+    );
+    assert_eq!(dragged("one **bold** word", "bold"), "**bold**");
+}
+
 #[test]
 fn a_cell_without_source_copies_its_words_without_chrome() {
     let rows = vec![
