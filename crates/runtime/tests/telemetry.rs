@@ -1,8 +1,7 @@
 //! The spans a run is judged by, driven by a faux session: a request's timings and usage, a
 //! turn, and a tool call's duration — each on disk beside the session file.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
