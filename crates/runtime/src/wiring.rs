@@ -601,8 +601,10 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
 fn wire_job_completions(session: &AgentSession) {
     let follow_up = session.follow_up_hook();
     tokio::spawn(async move {
+        let settled = job_settled();
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let mut next = std::pin::pin!(settled.notified());
+            next.as_mut().enable();
             for report in yi_tools::jobs::registry().take_finished() {
                 follow_up(&format!(
                     "<async_result job=\"{}\" exit=\"{}\">{}\n{}</async_result>",
@@ -612,8 +614,28 @@ fn wire_job_completions(session: &AgentSession) {
                     report.output
                 ));
             }
+            next.await;
         }
     });
+}
+
+/// One thread turns the job registry's settles into a wake the per-session loops can await.
+fn job_settled() -> &'static tokio::sync::Notify {
+    static SETTLED: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    static BRIDGE: std::sync::Once = std::sync::Once::new();
+    BRIDGE.call_once(|| {
+        let bridge = std::thread::Builder::new().name("yi-job-settles".to_owned());
+        let _spawned = bridge.spawn(|| {
+            let mut seen = 0;
+            loop {
+                seen = yi_tools::jobs::registry().wait_settle(seen);
+                SETTLED
+                    .get_or_init(tokio::sync::Notify::new)
+                    .notify_waiters();
+            }
+        });
+    });
+    SETTLED.get_or_init(tokio::sync::Notify::new)
 }
 
 pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> Arc<SubagentHost> {
