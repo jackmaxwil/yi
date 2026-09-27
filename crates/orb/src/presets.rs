@@ -5,7 +5,6 @@ use crate::{Mode, Opts};
 
 pub struct Resolved {
     pub mode: Mode,
-    pub speed: f64,
     pub opts: &'static [(&'static str, f64)],
 }
 
@@ -35,7 +34,6 @@ pub fn resolve(state: &str, size: u32) -> Option<&'static Resolved> {
 
 static WORKING_64: Resolved = Resolved {
     mode: Mode::Orbits,
-    speed: 1.885_f64,
     opts: &[
         ("orbitN", 12.0_f64),
         ("ghostN", 40.0_f64),
@@ -50,7 +48,6 @@ static WORKING_64: Resolved = Resolved {
 };
 static WORKING_20: Resolved = Resolved {
     mode: Mode::Orbits,
-    speed: 3.9_f64,
     opts: &[
         ("orbitN", 3.0_f64),
         ("ghostN", 10.0_f64),
@@ -66,7 +63,6 @@ static WORKING_20: Resolved = Resolved {
 };
 static SEARCHING_64: Resolved = Resolved {
     mode: Mode::Globe,
-    speed: 2.015_f64,
     opts: &[
         ("latRings", 11.0_f64),
         ("lonDensity", 29.0_f64),
@@ -84,7 +80,6 @@ static SEARCHING_64: Resolved = Resolved {
 };
 static SEARCHING_20: Resolved = Resolved {
     mode: Mode::Globe,
-    speed: 2.665_f64,
     opts: &[
         ("latRings", 6.0_f64),
         ("lonDensity", 14.0_f64),
@@ -102,7 +97,6 @@ static SEARCHING_20: Resolved = Resolved {
 };
 static SOLVING_64: Resolved = Resolved {
     mode: Mode::Rubik,
-    speed: 1.82_f64,
     opts: &[
         ("latRings", 9.0_f64),
         ("lonDensity", 24.0_f64),
@@ -119,7 +113,6 @@ static SOLVING_64: Resolved = Resolved {
 };
 static SOLVING_20: Resolved = Resolved {
     mode: Mode::Rubik,
-    speed: 1.95_f64,
     opts: &[
         ("latRings", 4.0_f64),
         ("lonDensity", 12.0_f64),
@@ -136,7 +129,6 @@ static SOLVING_20: Resolved = Resolved {
 };
 static LISTENING_64: Resolved = Resolved {
     mode: Mode::Wave,
-    speed: 4.388_f64,
     opts: &[
         ("rings", 9.0_f64),
         ("lonDensity", 23.0_f64),
@@ -148,7 +140,6 @@ static LISTENING_64: Resolved = Resolved {
 };
 static LISTENING_20: Resolved = Resolved {
     mode: Mode::Wave,
-    speed: 3.998_f64,
     opts: &[
         ("rings", 5.0_f64),
         ("lonDensity", 13.0_f64),
@@ -161,7 +152,6 @@ static LISTENING_20: Resolved = Resolved {
 };
 static CONNECTING_64: Resolved = Resolved {
     mode: Mode::Web,
-    speed: 3.315_f64,
     opts: &[
         ("nodeN", 41.0_f64),
         ("thr", 0.72_f64),
@@ -176,7 +166,6 @@ static CONNECTING_64: Resolved = Resolved {
 };
 static CONNECTING_20: Resolved = Resolved {
     mode: Mode::Web,
-    speed: 6.63_f64,
     opts: &[
         ("nodeN", 8.0_f64),
         ("thr", 0.72_f64),
@@ -191,7 +180,6 @@ static CONNECTING_20: Resolved = Resolved {
 };
 static WEAVING_64: Resolved = Resolved {
     mode: Mode::Braid,
-    speed: 1.625_f64,
     opts: &[
         ("strandN", 26.0_f64),
         ("turns", 3.0_f64),
@@ -204,7 +192,6 @@ static WEAVING_64: Resolved = Resolved {
 };
 static WEAVING_20: Resolved = Resolved {
     mode: Mode::Braid,
-    speed: 2.75_f64,
     opts: &[
         ("strandN", 6.0_f64),
         ("turns", 3.0_f64),
@@ -218,7 +205,6 @@ static WEAVING_20: Resolved = Resolved {
 };
 static COMPOSING_64: Resolved = Resolved {
     mode: Mode::Ribbon,
-    speed: 2.34_f64,
     opts: &[
         ("lanes", 3.0_f64),
         ("segs", 44.0_f64),
@@ -235,7 +221,6 @@ static COMPOSING_64: Resolved = Resolved {
 };
 static COMPOSING_20: Resolved = Resolved {
     mode: Mode::Ribbon,
-    speed: 3.12_f64,
     opts: &[
         ("lanes", 2.0_f64),
         ("segs", 20.0_f64),
@@ -252,7 +237,6 @@ static COMPOSING_20: Resolved = Resolved {
 };
 static BREATHING_64: Resolved = Resolved {
     mode: Mode::Ring,
-    speed: 3.24_f64,
     opts: &[
         ("lanes", 3.0_f64),
         ("segs", 44.0_f64),
@@ -270,7 +254,6 @@ static BREATHING_64: Resolved = Resolved {
 };
 static BREATHING_20: Resolved = Resolved {
     mode: Mode::Ring,
-    speed: 3.78_f64,
     opts: &[
         ("lanes", 2.0_f64),
         ("segs", 15.0_f64),
@@ -288,7 +271,6 @@ static BREATHING_20: Resolved = Resolved {
 };
 static SHAPING_64: Resolved = Resolved {
     mode: Mode::Morph,
-    speed: 2.405_f64,
     opts: &[
         ("rDot", 0.008295_f64),
         ("iconD", 0.702_f64),
@@ -299,7 +281,6 @@ static SHAPING_64: Resolved = Resolved {
 };
 static SHAPING_20: Resolved = Resolved {
     mode: Mode::Morph,
-    speed: 2.08_f64,
     opts: &[
         ("rDot", 0.021231_f64),
         ("iconD", 0.53_f64),
