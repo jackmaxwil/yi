@@ -32,6 +32,7 @@ pub enum Action {
     ToggleSidebar,
     ToggleNotebook,
     ToggleDiff,
+    ToggleTape,
     OpenEditor,
     Find,
     Save,
@@ -83,6 +84,7 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('q') => Some(Action::Quit),
         KeyCode::Char('b') => Some(Action::ToggleSidebar),
         KeyCode::Char('g') => Some(Action::ToggleDiff),
+        KeyCode::Char('y') => Some(Action::ToggleTape),
         KeyCode::Char('e') => Some(Action::OpenEditor),
         KeyCode::Char('?') => Some(Action::Keys),
         KeyCode::Char(digit @ '1'..='9') => {
@@ -108,6 +110,7 @@ fn super_chord(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('b') => Some(Action::ToggleSidebar),
         KeyCode::Char('j') => Some(Action::ToggleNotebook),
         KeyCode::Char('g') => Some(Action::ToggleDiff),
+        KeyCode::Char('y') => Some(Action::ToggleTape),
         KeyCode::Char('e') => Some(Action::OpenEditor),
         KeyCode::Char('f') => Some(Action::Find),
         KeyCode::Char('s') => Some(Action::Save),
@@ -171,7 +174,7 @@ const fn chord(
     }
 }
 
-pub const CHORDS: [Chord; 19] = [
+pub const CHORDS: [Chord; 20] = [
     chord("command palette", "⌥/", "⌘P", "g", Some(Action::Navigator)),
     chord("new session", "⌥n", "⌘⇧N", "o", Some(Action::NewSession)),
     chord("jump to rail slot 1..9", "⌥1..9", "⌘1..9", "", None),
@@ -187,7 +190,14 @@ pub const CHORDS: [Chord; 19] = [
         "",
         Some(Action::ToggleNotebook),
     ),
-    chord("diff pane", "⌥g", "⌘G", "", Some(Action::ToggleDiff)),
+    chord("review pane", "⌥g", "⌘G", "", Some(Action::ToggleDiff)),
+    chord(
+        "tape: where the time went",
+        "⌥y",
+        "⌘Y",
+        "",
+        Some(Action::ToggleTape),
+    ),
     chord(
         "open a file in a pane",
         "⌥e",

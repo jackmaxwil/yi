@@ -37,6 +37,7 @@ pub mod session;
 pub mod skills;
 pub mod slash;
 pub mod subagent;
+pub mod tape;
 pub mod telemetry;
 pub mod title;
 pub mod todo;

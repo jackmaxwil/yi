@@ -55,7 +55,93 @@ impl App {
             .branch_due = true;
     }
 
+    pub(super) fn refresh_tape(&mut self, session: &SessionId) {
+        self.state
+            .diffs
+            .entry(session.clone())
+            .or_default()
+            .tape_due = true;
+    }
+
+    pub(super) fn on_tape(&self) -> bool {
+        self.state
+            .focused_pane()
+            .is_some_and(|pane| matches!(pane.content, PaneContent::Tape { .. }))
+    }
+
+    pub(super) fn tape_key(&mut self, key: KeyEvent) {
+        let Some(PaneContent::Tape {
+            session,
+            tape,
+            cursor,
+        }) = self.state.focused_pane_mut().map(|pane| &mut pane.content)
+        else {
+            return;
+        };
+        let marks = tape.as_ref().map_or(0, |tape| tape.marks.len());
+        match key.code {
+            KeyCode::Left => *cursor = cursor.saturating_sub(1),
+            KeyCode::Right => *cursor = (*cursor + 1).min(marks.saturating_sub(1)),
+            KeyCode::Enter => {
+                let chosen = tape
+                    .as_ref()
+                    .and_then(|tape| tape.marks.get(*cursor))
+                    .cloned();
+                let session = session.clone();
+                match chosen {
+                    Some(mark) if mark.kind == yi_types::tape::MarkKind::User => {
+                        if let Some(chat) = self.state.chats_mut(&session).into_iter().next() {
+                            chat.port
+                                .queue
+                                .push(super::port::PortRequest::Rewind(mark.entry.clone()));
+                        }
+                        self.note(
+                            "rewound to that turn: a fork, the old branch stays in the ledger",
+                        );
+                    }
+                    Some(_) => self.note("only a turn you typed is a place to rewind to"),
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+        self.dirty = true;
+    }
+
+    pub(super) fn absorb_tape(&mut self, session: &SessionId, result: &Value) {
+        let fresh: Option<yi_types::tape::Tape> = serde_json::from_value(result.clone()).ok();
+        for pane in self.state.panes.values_mut() {
+            if let PaneContent::Tape {
+                session: bound,
+                tape,
+                cursor,
+            } = &mut pane.content
+                && bound == session
+            {
+                *cursor = fresh
+                    .as_ref()
+                    .map_or(0, |tape| tape.marks.len().saturating_sub(1));
+                tape.clone_from(&fresh);
+            }
+        }
+        self.dirty = true;
+    }
+
     pub(super) fn ask_branches(&mut self, outbound: &crate::client::Outbound) {
+        let tapes: Vec<SessionId> = self
+            .state
+            .diffs
+            .iter_mut()
+            .filter_map(|(id, diff)| std::mem::take(&mut diff.tape_due).then(|| id.clone()))
+            .collect();
+        for session in tapes {
+            self.send_request(
+                outbound,
+                super::RequestKind::Tape(session.clone()),
+                "_yi/tape",
+                serde_json::json!({"sessionId": session.0}),
+            );
+        }
         let due: Vec<SessionId> = self
             .state
             .diffs
@@ -90,6 +176,12 @@ impl App {
                 });
                 if reviewing {
                     self.refresh_branch(session);
+                }
+                let taping = self.state.panes.values().any(|pane| {
+                    matches!(&pane.content, PaneContent::Tape { session: bound, .. } if bound == session)
+                });
+                if taping {
+                    self.refresh_tape(session);
                 }
             }
             AcpSessionUpdate::ToolCallUpdate {

@@ -813,6 +813,10 @@ impl AcpState {
                 let root = std::path::Path::new(text("root"));
                 Ok(json!({"tracked": yi_runtime::environment::tracked(root, &paths)}))
             }
+            "_yi/tape" => Ok(
+                serde_json::to_value(yi_runtime::tape::session_tape(&handle.session))
+                    .unwrap_or(Value::Null),
+            ),
             "_yi/branch_diff" => {
                 let root = handle
                     .session
