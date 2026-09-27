@@ -1,8 +1,8 @@
 # Yi: a PR lifecycle as a plan on the forge channel
 
 ```
-status:  PROPOSAL, 2026-09-26. Read against origin/main @ 3503ed74 (#564, 0.341.0, last
-         decision row D254). Stage issues: #667, #668, #669, #670.
+status:  PROPOSAL, 2026-09-26. Re-read against origin/main @ e0da990e (#658, 0.375.0)
+         on 2026-09-27. Stage issues: #667, #668, #669, #670, #679, #680.
 depends: docs/plans/2026-09-24-seven-primitives.md, built first (owner decision below).
          Stages 0-3 here run as the prompt-triggered case and need none of it.
 marks:   ✓ exists on main · ✚ new here · ◇ new in seven-primitives, not yet built
@@ -22,8 +22,8 @@ seven-primitives plan already builds:
 | piece | composed from | status |
 | --- | --- | --- |
 | the lifecycle | a plan definition `pr-lifecycle`, `Plan.create(request_id="pr/<n>")` | ✓ plan engine, ✚ definition |
-| trigger | subscription on `channel://forge/apex/yi?event=opened` via the forge adapter | ◇ stage 5 adapters |
-| same, before channels | `just pr review <n>` runs the same definition by prompt (§5.1 trigger axis) | ✓ |
+| trigger | subscription on `channel://forge/apex/yi?event=opened` via the forge adapter | ◇ stage 6 adapters |
+| same, before channels | `just pr review <n>` runs the same definition by prompt (§5.1 trigger axis) | ✚ verb |
 | intake | `run=` todos: template check, duplicate check, existing gates. Zero tokens | ✓ parts, ✚ two checks |
 | review round | `review_pod` readers, one brief per lens | ✓ recipe, ✚ briefs |
 | refute | one refuter per finding; the host verifies a quote or a command (§7.3) | ✓ `verify_quotes`, ◇ command repro |
@@ -67,8 +67,9 @@ all closed unmerged. No check ever compares an open PR with another PR.
 
 In the last 80 merged bodies, every heading is present (one body lacks "Schema changes", one lacks "LOC and justification"), yet **30 still contain `<!-- -->`
 placeholders**. The size-report comment on #549 and #560 shows `<!-- why this area was
-touched -->` left in "Files edited". `check_pr_metadata.section_table_ok`
-(`scripts/guardrails/check_pr_metadata.py:158`) is the only structural check.
+touched -->` left in "Files edited". No check reads the template's headings:
+`check_pr_metadata.section_table_ok` (`scripts/guardrails/check_pr_metadata.py:158`) only
+checks that one named section holds a table, and only `surface_problems` calls it.
 
 ### 1.5 Two collisions in today's code
 
@@ -91,8 +92,9 @@ touched -->` left in "Files edited". `check_pr_metadata.section_table_ok`
 4. **A finding counts only with evidence the host can check**: a quote that
    `verify_quotes` finds, or a command that reproduces. Unverified findings are dropped
    before the fixer sees them.
-5. **Never relax linters.** The fixer's wall denies writes to guardrail baselines,
-   `scripts/guardrails/`, and `.forgejo/`. A red lint is fixed in the code.
+5. **Never relax linters.** The fixer's wall denies hand edits to guardrail baselines,
+   `scripts/guardrails/`, and `.forgejo/`. A red lint is fixed in the code. The one
+   baseline writer it may run is `just ratchet`, in its own commit (§3.6).
 6. **No assistant attribution.** Fixer commits pass `check_commit_style` like any other:
    imperative subject, no co-author trailer.
 7. **Judges route** (the seven-primitives amendment). A confirmed high finding routes the PR
@@ -169,7 +171,7 @@ kept on two of three. That matches the workflow that produced the 20-of-32 resul
 
 | check | how | on failure |
 | --- | --- | --- |
-| template present and filled | every required `##` section exists, is non-empty, and contains no `<!--` left from the template. Extends `section_table_ok` | high, `lens=template` |
+| template present and filled | every required `##` section exists, is non-empty, and contains no `<!--` left from the template. New: no template-heading check exists | high, `lens=template` |
 | duplicate | (a) another open PR cites the same `Closes #N`; (b) the set of definitions this PR touches (`grid diff`) overlaps another open or recently closed PR above a threshold; (c) windowed hashes of added lines (`check_duplication.py`'s normalized windows) match another PR's diff | high, `lens=duplicate`, names the other PR |
 | existing gates | the required contexts on main (`gate (lint/guardrails/test)`, `size-report`, `title`) | the round waits; a red gate is a finding, `lens=gate` |
 
@@ -182,9 +184,13 @@ The review_pod arbiter is already a Writer in its own worktree whose verdict is 
 command. The fixer is that arbiter, seated fresh every time (owner: "Fresh fixer always").
 It reads only the confirmed findings, the diff and the intent record, and never the authoring
 session. It commits on the PR branch through the normal hooks and pushes (owner: "Auto-push
-to PR branch"). Its accept is `just check`. Its wall denies writes to baselines,
-`scripts/guardrails/` and `.forgejo/`. It runs once per round, and the lifecycle caps at
-three rounds before it hands the PR to the owner.
+to PR branch"). Its accept is `just check`. Its wall denies hand edits to baselines,
+`scripts/guardrails/` and `.forgejo/`. A fix that grows a ratcheted count lands a
+`just ratchet` commit ahead of its code commit, because almost every fix adds a test and a
+fixer that could not ratchet would hand nearly every fix back; the next delta round reviews
+that commit like any other. Growth past the free band owes a priced changelog memo, so that
+fix goes to the owner. It runs once per round, and the lifecycle caps at three rounds
+before it hands the PR to the owner.
 
 ### 3.7 Stale and delta rounds
 
@@ -236,8 +242,9 @@ Claude Code finishes "Keep streamed markdown where the reader saw it" and runs
    `<!-- yi-round pr=588 n=1 sha=4f1c2e9 verdict=blocked high=2 medium=1 low=1 ... -->`.
 5. **Fixer.** A fresh Writer in the PR worktree gets two findings: the template gap and the
    anchor bug. The low naming finding is only listed. It adds the test, fixes the anchor,
-   deletes the helper, and fills "Performance" with "no hot path touched". `just check`
-   passes, and it pushes `9a0d3b1`.
+   deletes the helper, and fills "Performance" with "no hot path touched". The new test
+   grows the test-size count, so `just ratchet` lands first; then `just check` passes, and
+   it pushes `9a0d3b1`.
 6. The push lands on the channel, round 1's `synchronize` wait fires, and **round 2** runs
    as a delta over `4f1c2e9..9a0d3b1`. It comes back clean, and the comment posts with
    `verdict=clean`.
@@ -281,15 +288,17 @@ alternatives". The net change is two more headings. The prefilled halves from
 | title rule | `scripts/guardrails/check_commit_style.py:38` `SCRATCH` | ✓, amended |
 | windowed hash | `scripts/guardrails/check_duplication.py` | ✓, reused |
 | definition diff | `grid diff` (read-only, `crates/tools/src/builtins.rs:184`) | ✓ |
-| one-shot structured run | `yi ask --schema --json` (`crates/cli/src/main.rs:928`) | ✓ |
+| one-shot structured run | `yi ask --schema --json` (`emit_structured`, `crates/cli/src/main.rs:947`) | ✓ |
 | simplify standard | `skills/yi/simplify/SKILL.md` | ✓ source of the subtract brief |
 | lens briefs: subtract, naming, perf, necessity | `BRIEFS` entries | ✚ |
 | round marker and parser | about 40 lines beside `forgejo_pr_comment.py` | ✚ |
 | `pr-lifecycle` definition | one Python plan program | ✚ |
 | template v2 and filled check | `.github/PULL_REQUEST_TEMPLATE.md`, `check_pr_metadata.py` | ✚ |
 | duplicate check | one intake script | ✚ |
-| forge adapter | seven-primitives stage 5 (`github` adapter, speaking Gitea/Forgejo) | ◇ |
-| channel-blocked todos, dollar leases, intent judge | seven-primitives stages 2-3 | ◇ |
+| forge adapter | seven-primitives stage 6 (`github` adapter, speaking Gitea/Forgejo) | ◇ |
+| channel-blocked todos (`BlockedOn::Channel`) | seven-primitives stage 4 | ◇ |
+| intent judge | seven-primitives stage 2 | ◇ |
+| dollar leases | seven-primitives §3.6, not yet in a stage | ◇ |
 
 ## 7. What this deletes
 
@@ -303,19 +312,18 @@ alternatives". The net change is two more headings. The prefilled halves from
 
 ## 8. Build order
 
-Each stage has a demo and a gate. Stages 0-3 each have an issue; stages 4 and 5 get theirs
-once the seven-primitives stages they wait on are filed. Stages 0-3 need no new infrastructure and go first at
-the worst pain, unreviewed merges. They run the definition by prompt, `just pr review <n>`,
-which is the degenerate trigger.
+Each stage has a demo and a gate, and each has an issue. Stages 0-3 need no new
+infrastructure and go first at the worst pain, unreviewed merges. They run the definition
+by prompt through a new verb, `just pr review <n>` (stage 1), the degenerate trigger.
 
 | stage | scope | demo | gate |
 | --- | --- | --- | --- |
 | **0. Template and draft** (#667) | template v2; the filled check; `WIP: ` title rule; `/land` body fix | the 30 placeholder bodies go red under the check | fixtures first: those 30 bodies red, 50 clean bodies green; `WIP: Valid subject` green, `WIP` alone red |
 | **1. Rounds in shadow** (#668) | lens briefs; refuters; round marker; `pr-lifecycle` by prompt; comments with `mode=shadow` | replay on the labelled set: #334-#364 (bad), #366 (revert), the 23 closed unmerged, and 40 merged-and-kept | the known-bad set is flagged high, the kept set stays mostly clean; the thresholds are recorded as data |
 | **2. Duplicates** (#669) | the intake duplicate check | the compaction cluster and the sweep cluster each flagged against their siblings | fixture pairs, red and green |
-| **3. Fixer and delta** (#670) | arbiter fixer with walls; delta rounds; `/override` | the §4 walkthrough end to end on a planted bug | the fixer's wall refuses a baseline edit; a delta round catches a planted regression pushed after clean |
-| **4. On the channel** | after seven-primitives stages 3 and 5: the subscription, the adapter's outward writes (comment, title), self-authored rounds from the channel | a PR opened from Claude Code is reviewed with no verb run | the poll loops in §7 are gone and the line count falls |
-| **5. Blocking** | flip `mode=shadow` to `blocking` once stage 1's criteria hold on the live PRs too (owner: "Shadow, then block") | a merge refused until round 2 is clean | the calibration query reports precision on the labelled set |
+| **3. Fixer and delta** (#670) | arbiter fixer with walls; delta rounds; `/override` | the §4 walkthrough end to end on a planted bug | the fixer's wall refuses a hand edit to a baseline; a delta round catches a planted regression pushed after clean |
+| **4. On the channel** (#679) | after seven-primitives stages 4 and 6: the subscription, the adapter's outward writes (comment, title), self-authored rounds from the channel | a PR opened from Claude Code is reviewed with no verb run | the poll loops in §7 are gone and the line count falls |
+| **5. Blocking** (#680) | flip `mode=shadow` to `blocking` once stage 1's criteria hold on the live PRs too (owner: "Shadow, then block") | a merge refused until round 2 is clean | the calibration query reports precision on the labelled set |
 
 ## 9. Decisions log (owner, 2026-09-26, verbatim)
 
@@ -343,7 +351,7 @@ regressions, performance drains, etc"
 
 1. Forgejo Actions' default `pull_request` types are `opened`, `synchronize` and `reopened`.
    Does stripping `WIP:` fire `edited`, and does the `title` job need `types:` to
-   include it? Memory #377: a body edit left the title run stale.
+   include it? PR #377: a body edit left the title run stale.
 2. Does Forgejo 15 refuse a merge of a `WIP:` PR through the API, or only in the UI?
    If only the UI refuses it, `just pr merge` needs the same refusal.
 3. The duplicate thresholds: `grid diff` overlap and window-hash matches. Set them from
@@ -351,7 +359,7 @@ regressions, performance drains, etc"
 4. Stacked PRs have a base other than main. A delta round and a duplicate check should
    compare against the base branch, and the stack's successor should not flag its
    predecessor as a duplicate.
-5. Madmaxme's PRs. Seven-primitives says "the task's owner wins". Is the PR author the
+5. A collaborator's PRs. Seven-primitives says "the task's owner wins". Is the PR author the
    owner of `/override` on their own PR, or only you?
 6. The reviewer model. The rule is the cheapest that passes calibration, and the reader
    family must differ from the author's. Claude Code PRs come from Anthropic models, so the
@@ -359,14 +367,15 @@ regressions, performance drains, etc"
 
 ## 11. D-rows owed
 
-Numbered at landing from the next free row after D254; check open PRs for collisions.
+Numbered at landing from the next free row on main; check open PRs for collisions.
 
 - The PR lifecycle: rounds as todos pinned to a head sha, the marker format, and
   self-authored rounds from allowed accounts.
 - The `WIP: ` title amendment to `check_commit_style`.
 - Severity tiers and the one routing verdict (a high finding blocks ready); this depends on
   the seven-primitives "judges may route" row.
-- Fixer authority: auto-push to the PR branch under the stated walls, capped at three rounds.
+- Fixer authority: auto-push to the PR branch under the stated walls, a `just ratchet`
+  commit ahead of a growing fix, capped at three rounds.
 - Template v2 and the filled check.
 - The duplicate check.
 - Shadow-to-blocking promotion criteria.
