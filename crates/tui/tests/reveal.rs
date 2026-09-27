@@ -221,3 +221,74 @@ fn the_end_of_a_message_commits_the_whole_text() -> TestResult {
     );
     Ok(())
 }
+
+/// Where the cursor rests once `text` has had a second to reveal.
+fn settled(text: &str, draining: bool) -> usize {
+    let t0 = Instant::now();
+    let mut reveal = Reveal::default();
+    reveal.on_arrival(text.len(), t0);
+    if draining {
+        reveal.drain();
+    }
+    let mut now = t0;
+    while now <= t0 + Duration::from_secs(1) {
+        reveal.advance(text, now, PACE);
+        now += FRAME;
+    }
+    reveal.shown()
+}
+
+/// Incident: `2` drew at the end of the row above until `. t` arrived, then jumped to its own
+/// row; a line's marker waits for the first character it governs.
+#[test]
+fn a_line_marker_shows_with_its_first_word() {
+    for (text, rests) in [
+        ("1. one\n2", "1. one\n"),
+        ("1. one\n2. ", "1. one\n"),
+        ("para\n-", "para\n"),
+        ("para\n\n##", "para\n\n"),
+        ("code\n```", "code\n"),
+        ("| a | b |\n", ""),
+        ("| a | b |\n|---|---|\n| 1", "| a | b |\n|---|---|\n"),
+    ] {
+        assert_eq!(settled(text, false), rests.len(), "{text:?}");
+    }
+    let next = "1. one\n2. two";
+    assert_eq!(settled(next, false), next.len());
+    assert_eq!(
+        settled("para\n-", true),
+        "para\n-".len(),
+        "the end of the message releases a hold"
+    );
+}
+
+/// An opening `**` shows with the letter it styles, and at the arrival edge a run waits.
+#[test]
+fn a_delimiter_run_waits_for_what_it_styles() {
+    assert_eq!(settled("text **", false), "text ".len());
+    assert_eq!(settled("text **b", false), "text **b".len());
+    assert_eq!(settled("text **", true), "text **".len());
+}
+
+/// A wait at the arrival edge banks no time: the text after it reveals at the rate, not in
+/// one frame.
+#[test]
+fn a_hold_banks_no_budget() {
+    let t0 = Instant::now();
+    let mut reveal = Reveal::default();
+    let held = "text **";
+    reveal.on_arrival(held.len(), t0);
+    for frame in 0..=120 {
+        reveal.advance(held, t0 + FRAME * frame, PACE);
+    }
+    let full = format!("text **bold** {}", "word ".repeat(40));
+    let later = t0 + FRAME * 121;
+    reveal.on_arrival(full.len(), later);
+    reveal.advance(&full, later, PACE);
+    assert!(
+        reveal.shown() < 40,
+        "revealed {} of {} in one frame",
+        reveal.shown(),
+        full.len()
+    );
+}

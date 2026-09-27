@@ -195,7 +195,12 @@ impl App {
                 }
                 self.dirty = true;
             }
-            Decoded::Config(config) => self.apply_config(id, &config, true),
+            Decoded::Config(config) => {
+                // A pick's two requests each echo a frame before their answers; only the last announces.
+                let own = RequestKind::SetConfig(id.clone());
+                let in_flight = self.pending.values().filter(|p| p.kind == own).count();
+                self.apply_config(id, &config, in_flight <= 1);
+            }
             Decoded::Child(child) => {
                 keep_child_row(self.state.children.entry(id.clone()).or_default(), &child);
                 self.fan_out(id, || UiEvent::ChildUpdates(vec![child.clone()]));
@@ -662,13 +667,13 @@ impl App {
                 drop(model);
                 self.send_request(
                     outbound,
-                    RequestKind::SetConfig,
+                    RequestKind::SetConfig(session.clone()),
                     "session/set_config_option",
                     json!({"sessionId": id, "configId": "model", "value": value}),
                 );
                 self.send_request(
                     outbound,
-                    RequestKind::SetConfig,
+                    RequestKind::SetConfig(session.clone()),
                     "session/set_config_option",
                     json!({"sessionId": id, "configId": "thought_level", "value": effort.to_string()}),
                 );
