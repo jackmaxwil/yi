@@ -6,6 +6,7 @@ use yi_tui::hud::GoalView;
 use yi_tui::{Answer, AskChoice, Reply, SessionPort};
 use yi_types::acp::{
     AcpConfigOption, AcpExtensionUpdate, AcpPermissionOption, AcpPermissionOptionKind,
+    AcpSessionUpdate, AcpUpdateParams,
 };
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
@@ -157,15 +158,15 @@ pub enum Decoded {
 
 pub struct Malformed;
 
-fn string(fields: &Value, key: &str) -> Option<String> {
-    fields.get(key).and_then(Value::as_str).map(str::to_owned)
+fn string(value: Option<&Value>) -> Option<String> {
+    value.and_then(Value::as_str).map(str::to_owned)
 }
 
 pub fn goal_view(value: &Value) -> Option<GoalView> {
-    let objective = string(value, "objective")?;
+    let objective = string(value.get("objective"))?;
     Some(GoalView {
         objective,
-        status: string(value, "status").unwrap_or_default(),
+        status: string(value.get("status")).unwrap_or_default(),
         tokens_used: value
             .get("tokens_used")
             .and_then(Value::as_u64)
@@ -191,69 +192,95 @@ pub fn config_of(options: &[AcpConfigOption]) -> Config {
     config
 }
 
-pub fn decode(extension: &AcpExtensionUpdate) -> Result<Decoded, Malformed> {
-    let fields = Value::Object(
-        extension
-            .fields
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect(),
-    );
+/// `session/update` params; a `_`-prefixed kind is an extension, moved into its fields
+/// directly rather than through the untagged enum, which buffers and copies the whole frame.
+pub fn update_params(mut params: Value) -> Option<AcpUpdateParams> {
+    let kind = params
+        .pointer("/update/sessionUpdate")
+        .and_then(Value::as_str);
+    if !kind.is_some_and(|kind| kind.starts_with('_')) {
+        return serde_json::from_value(params).ok();
+    }
+    let id = params.get_mut("sessionId")?.take();
+    let update = params.get_mut("update")?.take();
+    let (Value::String(session_id), Value::Object(mut fields)) = (id, update) else {
+        return None;
+    };
+    let Value::String(session_update) = fields.remove("sessionUpdate")? else {
+        return None;
+    };
+    Some(AcpUpdateParams {
+        session_id,
+        update: AcpSessionUpdate::Extension(AcpExtensionUpdate {
+            session_update,
+            fields: fields.into_iter().collect(),
+        }),
+    })
+}
+
+pub fn decode(extension: AcpExtensionUpdate) -> Result<Decoded, Malformed> {
+    let mut fields = extension.fields;
     match extension.session_update.as_str() {
         "_yi/event" => {
             let seq = fields.get("seq").and_then(Value::as_u64).ok_or(Malformed)?;
-            let event = fields.get("event").cloned().ok_or(Malformed)?;
+            let event = fields.remove("event").ok_or(Malformed)?;
             let event = serde_json::from_value::<AgentEvent>(event).map_err(|_| Malformed)?;
             Ok(Decoded::Event {
                 seq: EventSeq(seq),
-                child: string(&fields, "childId"),
+                child: string(fields.get("childId")),
                 event: Box::new(event),
             })
         }
         "_yi/event_gap" => Ok(Decoded::Gap),
         "_yi/replay" => {
-            let entries = fields.get("entries").cloned().ok_or(Malformed)?;
+            let entries = fields.remove("entries").ok_or(Malformed)?;
             let entries = serde_json::from_value::<Vec<Entry>>(entries).map_err(|_| Malformed)?;
             let replay = Replay {
                 from: fields.get("from").and_then(Value::as_u64).unwrap_or(0),
-                leaf: string(&fields, "leafId"),
-                name: string(&fields, "name"),
+                leaf: string(fields.get("leafId")),
+                name: string(fields.get("name")),
                 goal: fields.get("goal").and_then(goal_view),
                 todos: fields
-                    .get("todos")
-                    .and_then(|value| serde_json::from_value::<TodoList>(value.clone()).ok()),
+                    .remove("todos")
+                    .and_then(|value| serde_json::from_value::<TodoList>(value).ok()),
                 context_window: fields.get("contextWindow").and_then(Value::as_u64),
-                child: string(&fields, "childId"),
+                child: string(fields.get("childId")),
             };
             Ok(Decoded::Replay(Box::new(replay), entries))
         }
         "_yi/workdir" => Ok(Decoded::Workdir {
-            cwd: string(&fields, "cwd").ok_or(Malformed)?,
-            lane: string(&fields, "lane"),
+            cwd: string(fields.get("cwd")).ok_or(Malformed)?,
+            lane: string(fields.get("lane")),
         }),
         "_yi/goal" => Ok(Decoded::Goal(fields.get("goal").and_then(goal_view))),
-        "_yi/todo" => Ok(Decoded::Todo(fields.get("list").and_then(|value| {
-            serde_json::from_value::<TodoList>(value.clone()).ok()
-        }))),
+        "_yi/todo" => {
+            Ok(Decoded::Todo(fields.remove("list").and_then(|value| {
+                serde_json::from_value::<TodoList>(value).ok()
+            })))
+        }
         "_yi/config" => {
-            let options = fields.get("configOptions").cloned().unwrap_or(Value::Null);
-            let options =
-                serde_json::from_value::<Vec<AcpConfigOption>>(options).unwrap_or_default();
+            let options = fields
+                .remove("configOptions")
+                .and_then(|value| serde_json::from_value::<Vec<AcpConfigOption>>(value).ok())
+                .unwrap_or_default();
             let mut config = config_of(&options);
             config.context_window = fields.get("contextWindow").and_then(Value::as_u64);
             Ok(Decoded::Config(config))
         }
-        "_yi/notice" => Ok(Decoded::Notice(string(&fields, "text").ok_or(Malformed)?)),
-        "_yi/subagent_update" => serde_json::from_value::<ChildUpdate>(fields)
-            .map(Decoded::Child)
-            .map_err(|_| Malformed),
+        "_yi/notice" => Ok(Decoded::Notice(
+            string(fields.get("text")).ok_or(Malformed)?,
+        )),
+        "_yi/subagent_update" => {
+            serde_json::from_value::<ChildUpdate>(Value::Object(fields.into_iter().collect()))
+                .map(Decoded::Child)
+                .map_err(|_| Malformed)
+        }
         _ => Ok(Decoded::Other),
     }
 }
 
 /// Only a transcript write spends a replay offset; config, workdir, goal and todo notes do not.
-pub fn writes_transcript(update: &yi_types::acp::AcpSessionUpdate) -> bool {
-    use yi_types::acp::AcpSessionUpdate;
+pub fn writes_transcript(update: &AcpSessionUpdate) -> bool {
     match update {
         AcpSessionUpdate::StateUpdate(_) | AcpSessionUpdate::UsageUpdate { .. } => false,
         AcpSessionUpdate::Extension(extension) => !matches!(
@@ -306,7 +333,7 @@ mod todo_tests {
             session_update: "_yi/todo".to_owned(),
             fields: std::iter::once(("list".to_owned(), list)).collect(),
         };
-        match decode(&update).map_err(|_| "malformed".to_owned())? {
+        match decode(update).map_err(|_| "malformed".to_owned())? {
             Decoded::Todo(Some(list)) => assert_eq!(list.progress().open, 1),
             _ => return Err("not a todo update".to_owned()),
         }
@@ -315,9 +342,38 @@ mod todo_tests {
             fields: std::iter::once(("list".to_owned(), Value::Null)).collect(),
         };
         assert!(matches!(
-            decode(&cleared).map_err(|_| "malformed".to_owned())?,
+            decode(cleared).map_err(|_| "malformed".to_owned())?,
             Decoded::Todo(None)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn extension_params_move_into_fields_and_standard_kinds_still_parse() -> Result<(), String> {
+        use serde_json::json;
+        let replay = json!({"sessionId": "s1", "update": {
+            "sessionUpdate": "_yi/replay", "entries": [], "from": 3, "leafId": "e9",
+        }});
+        let params = update_params(replay).ok_or("replay params")?;
+        assert_eq!(params.session_id, "s1");
+        let AcpSessionUpdate::Extension(extension) = params.update else {
+            return Err("not an extension".to_owned());
+        };
+        match decode(extension).map_err(|_| "malformed".to_owned())? {
+            Decoded::Replay(replay, entries) => {
+                assert_eq!((replay.from, replay.leaf.as_deref()), (3, Some("e9")));
+                assert!(entries.is_empty());
+            }
+            _ => return Err("not a replay".to_owned()),
+        }
+        let state = json!({"sessionId": "s1", "update": {"sessionUpdate": "state_update", "state": "running"}});
+        let params = update_params(state).ok_or("state params")?;
+        assert!(matches!(params.update, AcpSessionUpdate::StateUpdate(_)));
+        assert!(
+            update_params(json!({"sessionId": "s1", "update": {"sessionUpdate": "_yi/x"}}))
+                .is_some()
+        );
+        assert!(update_params(json!({"update": {"sessionUpdate": "_yi/x"}})).is_none());
         Ok(())
     }
 }
@@ -349,7 +405,7 @@ mod ask_tests {
             .into_iter()
             .collect(),
         };
-        let decoded = decode(&update);
+        let decoded = decode(update);
         let named = matches!(
             decoded,
             Ok(Decoded::Workdir { ref cwd, ref lane })
