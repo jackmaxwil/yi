@@ -555,3 +555,121 @@ async fn a_follow_up_to_an_idle_session_starts_its_turn() -> Result<(), Box<dyn 
     assert!(said.contains("taken"), "{said}");
     Ok(())
 }
+
+type Log = Arc<std::sync::Mutex<Vec<&'static str>>>;
+
+fn note(log: &Log, what: &'static str) {
+    if let Ok(mut log) = log.lock() {
+        log.push(what);
+    }
+}
+
+/// A session whose start capture takes 300 ms and then writes `captured` into `fact.txt`;
+/// the log records each request, the capture's end and the end capture.
+fn capture_session(dir: &Scratch, replies: Vec<AgentMessage>) -> (AgentSession, Log) {
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(replies);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), None);
+    let log: Log = Arc::default();
+    let (start, request, end) = (Arc::clone(&log), Arc::clone(&log), Arc::clone(&log));
+    let fact = dir.join("fact.txt");
+    session.set_turn_start_hook(Arc::new(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = std::fs::write(&fact, "captured");
+        note(&start, "captured");
+    }));
+    session.set_environment(Arc::new(move || {
+        note(&request, "request");
+        None
+    }));
+    session.set_turn_end_hook(Arc::new(move || note(&end, "end")));
+    (session, log)
+}
+
+async fn settled_log(session: &AgentSession, log: &Log, entries: usize) -> Vec<&'static str> {
+    session.wait_idle().await;
+    for _ in 0..100 {
+        if log.lock().map(|log| log.len()).unwrap_or(0) >= entries {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    log.lock().map(|log| log.clone()).unwrap_or_default()
+}
+
+/// Incident: the turn-start snapshot (1.2 s on a large tree's first capture) ran before the
+/// first request. It now runs beside it, and no tool runs before it ends.
+#[tokio::test]
+async fn the_start_capture_overlaps_the_request_and_gates_the_tools() -> Result<(), Box<dyn Error>>
+{
+    let dir = Scratch::new("yi-runtime-capture")?;
+    std::fs::write(dir.join("fact.txt"), "before")?;
+    let mut call_args = serde_json::Map::new();
+    call_args.insert("path".to_owned(), serde_json::json!("fact.txt"));
+    let (session, log) = capture_session(
+        &dir,
+        vec![
+            faux_assistant_message(
+                vec![faux_tool_call("call-1", "read", call_args)],
+                StopReason::ToolUse,
+            ),
+            faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+        ],
+    );
+    let mut events = session.subscribe();
+    session.prompt("read the fact")?;
+    let seen = settled_log(&session, &log, 4).await;
+    assert_eq!(seen, ["request", "captured", "request", "end"]);
+    let mut read = String::new();
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::ToolExecutionEnd { result, .. } = event {
+            read.push_str(&serde_json::to_string(&result.content)?);
+        }
+    }
+    assert!(
+        read.contains("captured"),
+        "the tool overtook the capture: {read}"
+    );
+    Ok(())
+}
+
+/// A first open of the shadow gitdir is a `git init` (40-200 ms) that sat on the start of
+/// every first session in a project; the first capture, beside the turn, opens it now.
+#[tokio::test]
+async fn wiring_checkpoints_leaves_the_shadow_gitdir_to_the_first_capture()
+-> Result<(), Box<dyn Error>> {
+    let dir = Scratch::new("yi-runtime-shadow")?;
+    let home = dir.join("home");
+    let session = session_with_reply("x");
+    yi_runtime::wire_turn_checkpoints(&session, &home, &dir.join("project"));
+    assert!(!yi_runtime::checkpoint::checkpoint_root(&home).exists());
+    Ok(())
+}
+
+/// A reply with no tool call ends the run before the start capture does; the end capture
+/// still lands after it, or undo pairs the wrong trees.
+#[tokio::test]
+async fn the_end_capture_follows_a_slow_start_capture() -> Result<(), Box<dyn Error>> {
+    let dir = Scratch::new("yi-runtime-capture-end")?;
+    let reply = faux_assistant_message(vec![faux_text("quick")], StopReason::Stop);
+    let (session, log) = capture_session(&dir, vec![reply]);
+    let mut events = session.subscribe();
+    session.prompt("answer")?;
+    // Incident: a surface reads `AgentEnd` as idle; a capture still running then refused its
+    // next prompt as busy, and the TUI drive waited for a turn that never started.
+    while !matches!(events.recv().await?, AgentEvent::AgentEnd { .. }) {}
+    let at_end = log.lock().map(|log| log.clone()).unwrap_or_default();
+    assert!(at_end.contains(&"captured"), "{at_end:?}");
+    let seen = settled_log(&session, &log, 3).await;
+    assert_eq!(seen, ["request", "captured", "end"]);
+    Ok(())
+}
