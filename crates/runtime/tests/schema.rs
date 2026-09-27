@@ -11,8 +11,7 @@
 //! |---|---|---|---|
 //! | `unsupported_schema_assertion_is_refused` | T0 | A criterion schema carrying an assertion keyword the subset does not implement (`minimum`, `maximum`, `pattern`, `additionalProperties`, `minItems`, `oneOf`, `$ref`, and the rest) is refused at `start`, when the contract is frozen, naming the JSON path of the offending keyword. Descriptive keywords (`description`, `title`, `examples`) are allowed by an explicit list, not by falling through. | The allowlist being a list of what is allowed rather than a list of what is refused. Make it a denylist and the next keyword anyone writes is silently ignored again, which is the failure mode being fixed; move the refusal from `start` to `done` and a frozen contract can name a criterion that was never checkable. The refusal is on the criterion path only: a schema handed to a model as an instruction keeps ignoring what it does not implement, because there it costs nothing. |
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;

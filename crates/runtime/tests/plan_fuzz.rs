@@ -4,8 +4,7 @@
 //! every insert-check invariant after every op. A failing property shrinks to
 //! the shortest breaking sequence, which then becomes a walkthrough fixture.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::collections::HashMap;

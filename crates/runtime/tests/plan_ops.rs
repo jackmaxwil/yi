@@ -54,8 +54,7 @@
 //! | `full_worker_capacity_does_not_deadlock_verification` | T0 | `Capacity::for_slots` over `DEFAULT_MAX_CHILDREN` lanes | Every worker a parent may retain asks for a checkout of its own, at the product's constants: the worker share of the lane pool runs out before the parent's child cap does, the lanes it refuses are the verification reserve, and with the share full a verification still reserves. Both counters end at zero. The live half, a worktree todo accepted while the engine's own worker share is held to its cap, is `lanes::full_worker_capacity_does_not_deadlock_verification` (T1). | Verification capacity being reserved separately from worker slots (section 7.6). Charge verification against the worker share and the workers a parent retains occupy every lane their own verification needs, so the plan stops with every todo running and nothing able to finish. |
 //! | `a_worktree_child_cannot_be_marked_done_before_acceptance` | T0 | `rig`, `planned`, `cmd_contract`, `contracted` with `Isolation::Worktree`, `start`, `done`, `refused`, `todo_of`, `kinds` | `done` before the candidate is submitted is refused and the todo stays `Running`; `done` after `candidate_verified` but before `integration_verified` is refused the same way and journals no `accepted`; `fail` is legal at every one of those points and takes the disposition path. The refusal names the phase that is missing. | `done` being legal only at the accept phase, tested from the records rather than from whether a lane is held. Test the lane and a todo whose lane was already taken looks acceptable, which is exactly the state a merge-less reap leaves behind. |
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;

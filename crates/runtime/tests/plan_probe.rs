@@ -14,8 +14,7 @@
 //! |---|---|---|---|---|
 //! | `an_earlier_due_time_wakes_the_loop` | T0 | `rig`, `open`, `arm`, the rig's `ran` and `wakes` counters, `ProbeLadder::tick` | A due time registered while the loop is parked on a long sleep runs at its own time and not at the end of that sleep; a due time later than the current wake changes nothing; a `notify_one` that arrives before the loop parks still wakes it, so the wake cannot be lost to the order of two threads; and a parked loop on a frozen clock takes no wake of its own. | The `Notify` being awaited alongside the sleep rather than checked before it, and the tick never notifying the loop when it ends. Poll for the due time instead and the cancel grace is bounded below by the ladder's tick, which is the false latency bound R9 named; let the tick notify and its stored permit runs the next tick at once, a spin that reads every plan on every iteration. |
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;

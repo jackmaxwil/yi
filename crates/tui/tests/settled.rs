@@ -13,7 +13,7 @@ use yi_tui::markdown::{Settled, StableScan, render, stable_stream, work};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::StopReason;
 
-mod common;
+use crate::common;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
