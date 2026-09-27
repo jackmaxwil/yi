@@ -787,7 +787,7 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
 `release` is cargo's default (no `[profile.release]`), unwinding intact. `dist` ships and is
 what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 `package."*"`), `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = "symbols"`,
-`debug = false`, `incremental = false`. `scripts/build_dist.sh` builds it.
+`debug = false`, `incremental = false`; on macOS the `yi` binary of a release-derived profile links with `-no_function_starts` (`crates/cli/build.rs`). `scripts/build_dist.sh` builds it.
 
 ### 18.3 Allowed dependencies
 | Crate | Features | Used by | Reason | Alternative considered |
