@@ -20,7 +20,7 @@ pub struct NextTurn {
 }
 
 type ConvertFn = dyn Fn(&[AgentMessage]) -> Vec<AgentMessage> + Send + Sync;
-type TransformFn = dyn Fn(&[AgentMessage]) -> Option<Vec<AgentMessage>> + Send + Sync;
+type TailFn = dyn Fn() -> Vec<AgentMessage> + Send + Sync;
 type StopFn = dyn Fn(&TurnSnapshot) -> bool + Send + Sync;
 type WaitingFn = dyn Fn() -> u64 + Send + Sync;
 type PrepareFn = dyn Fn(&TurnSnapshot) -> Option<NextTurn> + Send + Sync;
@@ -29,13 +29,16 @@ type InterceptFn = dyn Fn(&TurnSnapshot) -> Option<AgentMessage> + Send + Sync;
 type CompactFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<AgentMessage>>> + Send>>;
 type CompactFn = dyn Fn(&[AgentMessage]) -> CompactFuture + Send + Sync;
+pub type GateFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+type GateFn = dyn Fn() -> GateFuture + Send + Sync;
 
 pub struct LoopConfig {
     pub model: Model,
     pub effort: Effort,
     pub tool_execution: ExecutionMode,
     pub convert_to_llm: Box<ConvertFn>,
-    pub transform_context: Option<Box<TransformFn>>,
+    /// Read per request and appended after the history, never to it; converted on its own.
+    pub request_tail: Option<Box<TailFn>>,
     pub should_stop_after_turn: Option<Box<StopFn>>,
     pub prepare_next_turn: Option<Box<PrepareFn>>,
     pub get_steering_messages: Option<Box<QueueFn>>,
@@ -52,6 +55,8 @@ pub struct LoopConfig {
     pub last_word: Option<Box<InterceptFn>>,
     /// Polled while a request streams: true aborts it, and the last word follows.
     pub last_word_due: Option<Box<dyn Fn() -> bool + Send + Sync>>,
+    /// Work started beside the request: awaited before each tool batch and before `AgentEnd`.
+    pub side_work: Option<Box<GateFn>>,
 }
 
 impl LoopConfig {
@@ -61,7 +66,7 @@ impl LoopConfig {
             model,
             tool_execution: ExecutionMode::default(),
             convert_to_llm: Box::new(|messages| messages.to_vec()),
-            transform_context: None,
+            request_tail: None,
             should_stop_after_turn: None,
             prepare_next_turn: None,
             get_steering_messages: None,
@@ -72,6 +77,7 @@ impl LoopConfig {
             waiting: None,
             last_word: None,
             last_word_due: None,
+            side_work: None,
         }
     }
 }
