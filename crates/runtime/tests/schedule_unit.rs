@@ -104,8 +104,9 @@ fn defer_table_matches_the_reference_rules() {
         is_compacting: true,
         ..SessionActivity::default()
     };
-    let pending_actions = SessionActivity {
-        unfinished_action_count: 1,
+    let queued_behind_a_turn = SessionActivity {
+        is_streaming: true,
+        has_pending_session_work: true,
         ..SessionActivity::default()
     };
     assert!(!should_defer(&heartbeat, &idle));
@@ -118,7 +119,7 @@ fn defer_table_matches_the_reference_rules() {
         "follow-up waits for the turn to finish"
     );
     assert!(should_defer(&heartbeat, &compacting));
-    assert!(should_defer(&heartbeat, &pending_actions));
+    assert!(should_defer(&heartbeat, &queued_behind_a_turn));
     assert!(
         !should_defer(&cron, &compacting),
         "non-heartbeat jobs never defer"

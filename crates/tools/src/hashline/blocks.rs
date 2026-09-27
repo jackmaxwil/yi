@@ -1,8 +1,8 @@
 use super::messages::{
     AbsoluteRangeOp, BLOCK_RESOLVER_UNAVAILABLE, BlockDiagnosticSuggestions,
     block_single_line_message, block_unresolved_message, insert_after_block_closer_lowered_warning,
-    insert_after_block_unresolved_lowered_warning, paste_after_block_closer_lowered_warning,
-    paste_after_block_unresolved_lowered_warning,
+    insert_after_block_unresolved_message, paste_after_block_closer_lowered_warning,
+    paste_after_block_unresolved_message,
 };
 use super::types::{
     Anchor, BlockMode, BlockResolution, BlockResolver, BlockSpan, Cursor, Edit, ParsedRange,
@@ -260,15 +260,18 @@ pub fn resolve_block_edits(
                             _ => insert_after_block_closer_lowered_warning(anchor.line),
                         }),
                     ),
-                    None => (
-                        anchor.line,
-                        Some(match mode {
+                    None if resolver.is_none() => {
+                        return Err(format!("line {line_num}: {BLOCK_RESOLVER_UNAVAILABLE}"));
+                    }
+                    None => {
+                        let message = match mode {
                             BlockMode::PasteAfter => {
-                                paste_after_block_unresolved_lowered_warning(anchor.line)
+                                paste_after_block_unresolved_message(anchor.line)
                             }
-                            _ => insert_after_block_unresolved_lowered_warning(anchor.line),
-                        }),
-                    ),
+                            _ => insert_after_block_unresolved_message(anchor.line),
+                        };
+                        return Err(format!("line {line_num}: {message}"));
+                    }
                 };
                 if let Some(warning) = warning {
                     warnings.push(warning);

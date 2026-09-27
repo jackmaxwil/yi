@@ -19,7 +19,6 @@ pub type CompactFuture =
 pub type CompactHook = Box<dyn Fn(&[AgentMessage]) -> CompactFuture + Send + Sync>;
 pub type StoreOf = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
 
-/// Adapts the [`Compactor`] to the loop's mid-run compaction slot.
 pub fn loop_hook(
     compactor: Arc<Compactor>,
     provider: Arc<ProviderStream>,
@@ -27,6 +26,7 @@ pub fn loop_hook(
     system_prompt: Arc<dyn Fn() -> String + Send + Sync>,
     store: StoreOf,
     compacted: Arc<dyn Fn() + Send + Sync>,
+    unsaved: Arc<dyn Fn(&yi_session::SessionError) + Send + Sync>,
 ) -> CompactHook {
     Box::new(move |messages: &[AgentMessage]| {
         let compactor = Arc::clone(&compactor);
@@ -35,6 +35,7 @@ pub fn loop_hook(
         let assembled = system_prompt();
         let store = store();
         let compacted = Arc::clone(&compacted);
+        let unsaved = Arc::clone(&unsaved);
         let messages = messages.to_vec();
         Box::pin(async move {
             let signal = InterruptSignal::default();
@@ -48,10 +49,18 @@ pub fn loop_hook(
                     &signal,
                 )
                 .await;
-            if replaced.is_some() {
-                compacted();
+            match replaced {
+                Ok(replaced) => {
+                    if replaced.is_some() {
+                        compacted();
+                    }
+                    replaced
+                }
+                Err(error) => {
+                    unsaved(&error);
+                    None
+                }
             }
-            replaced
         })
     })
 }
@@ -72,8 +81,26 @@ pub struct Compactor {
     scope: Scope,
     window: Mutex<Window>,
     pending: AtomicBool,
+    running: AtomicBool,
+    /// Invariant: set while the last entry failed to write; only `/compact` spends the summarizer.
+    unsaved: AtomicBool,
     instructions: Mutex<Option<String>>,
     standing: Mutex<Option<Standing>>,
+}
+
+struct Raised<'a>(&'a AtomicBool);
+
+impl<'a> Raised<'a> {
+    fn new(flag: &'a AtomicBool) -> Self {
+        flag.store(true, Ordering::Relaxed);
+        Self(flag)
+    }
+}
+
+impl Drop for Raised<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
 }
 
 /// Read at every compaction rather than stored, so a directive derived from
@@ -177,6 +204,8 @@ impl Compactor {
             scope: Scope::BodyAfterPrefix,
             window: Mutex::new(Window::new_initial(initial_window_id)),
             pending: AtomicBool::new(false),
+            running: AtomicBool::new(false),
+            unsaved: AtomicBool::new(false),
             instructions: Mutex::new(None),
             standing: Mutex::new(None),
         }
@@ -223,6 +252,10 @@ impl Compactor {
         self.pending.load(Ordering::Relaxed)
     }
 
+    pub fn compacting(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
     /// Input-side tokens only: the reply is body, not prefix.
     pub fn on_usage(&self, usage: &Usage) {
         // Invariant: a `ServerObserved` prefill latches for the whole window, so an unreported
@@ -261,6 +294,9 @@ impl Compactor {
         if self.pending.load(Ordering::Relaxed) {
             return true;
         }
+        if self.unsaved.load(Ordering::Relaxed) {
+            return false;
+        }
         let estimate = estimate_context(messages);
         let prefill = lock_window(&self.window).prefill_tokens();
         let scoped = yi_context::account::scoped_tokens(estimate.tokens, self.scope, prefill);
@@ -277,18 +313,19 @@ impl Compactor {
         provider: &ProviderStream,
         store: Option<&yi_session::SharedSession>,
         signal: &InterruptSignal,
-    ) -> Option<Vec<AgentMessage>> {
+    ) -> Result<Option<Vec<AgentMessage>>, yi_session::SessionError> {
         if !self.settings.enabled || !self.due(messages, model) {
-            return None;
+            return Ok(None);
         }
         self.pending.store(false, Ordering::Relaxed);
+        let _running = Raised::new(&self.running);
         let once = self
             .instructions
             .lock()
             .ok()
             .and_then(|mut slot| slot.take());
         let instructions = merge(self.standing_directive(), once);
-        let entries: Vec<Entry> = match store {
+        let entries: Option<Vec<Entry>> = match store {
             Some(store) => yi_session::lock_session(store)
                 .find_entries_on_branch(
                     "main",
@@ -298,10 +335,13 @@ impl Compactor {
                     },
                     &yi_session::BranchBounds::default(),
                 )
-                .ok()?,
-            None => synthesize_entries(messages),
+                .ok(),
+            None => Some(synthesize_entries(messages)),
         };
-        let prepared = prepare_compaction(&entries, &self.settings)?;
+        let prepared = entries.and_then(|entries| prepare_compaction(&entries, &self.settings));
+        let Some(prepared) = prepared else {
+            return Ok(None);
+        };
         let request = |window_messages: &[AgentMessage]| LlmContext {
             system_prompt: system_prompt.to_owned(),
             messages: {
@@ -330,18 +370,22 @@ impl Compactor {
             Some(store) => yi_session::lock_session(store).next_id(),
             None => format!("win-{}", yi_session::now_ms()),
         };
-        details.window = Some(lock_window(&self.window).advance(new_window_id));
+        let mut next = lock_window(&self.window).clone();
+        details.window = Some(next.advance(new_window_id));
         let timestamp = yi_session::now_ms();
         if let Some(store) = store {
             let details_value = serde_json::to_value(&details).ok();
-            let _ = yi_session::lock_session(store).append_compaction(
+            let saved = yi_session::lock_session(store).append_compaction(
                 "main",
                 composed.clone(),
                 retained_tail.clone(),
                 prepared.tokens_before.0,
                 details_value,
             );
+            self.unsaved.store(saved.is_err(), Ordering::Relaxed);
+            saved?;
         }
+        *lock_window(&self.window) = next;
         let mut replacement = Vec::with_capacity(retained_tail.len().saturating_add(1));
         replacement.push(AgentMessage::CompactionSummary {
             summary: composed,
@@ -349,6 +393,6 @@ impl Compactor {
             timestamp,
         });
         replacement.extend(retained_tail);
-        Some(replacement)
+        Ok(Some(replacement))
     }
 }
