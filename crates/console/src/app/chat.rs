@@ -50,6 +50,17 @@ fn orb_ids(pane: PaneId) -> [u32; 2] {
 }
 
 impl App {
+    pub(super) fn chat_for(&mut self, pane_id: PaneId, session: &SessionId) -> Box<Chat> {
+        match self.state.parked.remove(session) {
+            Some(mut chat) => {
+                chat.orb = yi_tui::orb::Tick::with_ids(orb_ids(pane_id));
+                chat.logos = yi_tui::logos::Tick::default();
+                chat
+            }
+            None => self.make_chat(pane_id, session),
+        }
+    }
+
     pub(super) fn make_chat(&self, pane_id: PaneId, session: &SessionId) -> Box<Chat> {
         let row = self.state.sessions.get(session);
         let options = TuiOptions {
@@ -67,6 +78,7 @@ impl App {
             yi_tui::app::App::new(options, self.theme, yi_tui::keymap::default_keymap(), 80);
         let _ = app.take_title();
         app.set_status_name_shown(false);
+        app.set_pane();
         Box::new(Chat {
             app,
             port: RemotePort::default(),
@@ -116,6 +128,9 @@ impl App {
     }
 
     pub(super) fn fan_out(&mut self, session: &SessionId, make: impl Fn() -> UiEvent) {
+        if let Some(chat) = self.state.parked.get_mut(session) {
+            let _ = chat.events.0.send(make());
+        }
         for pane in self.state.panes.values_mut() {
             if let PaneContent::Session {
                 session: Some(bound),
@@ -184,6 +199,9 @@ impl App {
                 keep_child_row(self.state.children.entry(id.clone()).or_default(), &child);
                 self.fan_out(id, || UiEvent::ChildUpdates(vec![child.clone()]));
             }
+            Decoded::Notice(text) => {
+                self.fan_out(id, || UiEvent::Reply(Reply::Notice(text.clone())))
+            }
             Decoded::Other => {}
         }
     }
@@ -203,6 +221,15 @@ impl App {
     }
 
     fn absorb_replay(&mut self, id: &SessionId, replay: &Replay, entries: Vec<Entry>) {
+        if replay.leaf.is_some() && yi_types::trace::enabled() {
+            let mut args = serde_json::Map::new();
+            args.insert("session".to_owned(), json!(id.0));
+            args.insert(
+                "entries".to_owned(),
+                json!(replay.from.saturating_add(entries.len() as u64)),
+            );
+            yi_types::trace::instant("console.replayed", args);
+        }
         self.seq.insert(id.clone(), None);
         self.replayed.insert(id.clone());
         if let (Some(name), Some(row)) = (&replay.name, self.state.sessions.get_mut(id)) {
@@ -244,6 +271,13 @@ impl App {
         };
         let model = yi_tui::model::model_or_stub(provider, model_id);
         let effort = config.effort.unwrap_or_default();
+        let changed = self.state.chats_mut(id).iter().any(|chat| {
+            let shown = &chat.app.selection;
+            !shown.model.provider.is_empty()
+                && ((&shown.model.provider, &shown.model.id) != (provider, model_id)
+                    || shown.effort != effort)
+        });
+        let announce = announce && changed;
         for chat in self.state.chats_mut(id) {
             if let Some(window) = config.context_window {
                 chat.app.set_context_window(window);
@@ -370,6 +404,101 @@ impl App {
         self.dirty = true;
     }
 
+    /// A chat already on the session keeps its draft; the replay that follows resets the
+    /// transcript. Any other content gives way to a fresh chat.
+    pub(super) fn bind_pane(&mut self, pane_id: PaneId, session: &SessionId) {
+        let keep = matches!(
+            self.state.panes.get(&pane_id).map(|pane| &pane.content),
+            Some(PaneContent::Session { session: Some(bound), chat: Some(_) }) if bound == session
+        );
+        let fresh = (!keep).then(|| self.chat_for(pane_id, session));
+        let Some(pane) = self.state.panes.get_mut(&pane_id) else {
+            return;
+        };
+        let mut left = None;
+        match (&mut pane.content, fresh) {
+            (PaneContent::Notebook { session: slot, .. }, _) => *slot = Some(session.clone()),
+            (_, Some(chat)) => {
+                left = Some(std::mem::replace(
+                    &mut pane.content,
+                    PaneContent::Session {
+                        session: Some(session.clone()),
+                        chat: Some(chat),
+                    },
+                ));
+            }
+            (_, None) => {}
+        }
+        pane.scroll_from_bottom = 0;
+        if let Some(PaneContent::Session {
+            session: Some(old),
+            chat: Some(chat),
+        }) = left
+            && old != *session
+            && !self.state.session_visible(&old)
+        {
+            self.state.park(old, chat);
+        }
+        self.state.banner = None;
+        self.deliver_orphan_asks(session);
+    }
+
+    pub(super) fn resume_into(
+        &mut self,
+        outbound: &Outbound,
+        pane_id: PaneId,
+        session: &SessionId,
+    ) {
+        if yi_types::trace::enabled() {
+            let mut args = serde_json::Map::new();
+            args.insert("session".to_owned(), json!(session.0));
+            yi_types::trace::instant("console.switch", args);
+        }
+        // Invariant: replay streams ahead of the resume response, so wipe and bind happen at
+        // send time; an offset skips the wipe only for this pane's session or its parked chat.
+        let continuous = self
+            .state
+            .panes
+            .get(&pane_id)
+            .is_some_and(|pane| pane.session() == Some(session));
+        let parked = self.state.parked.contains_key(session);
+        let offset = if continuous || parked {
+            self.resume_offsets.get(session).copied()
+        } else {
+            None
+        };
+        if parked && offset.is_some() {
+            self.bind_pane(pane_id, session);
+        }
+        if offset.is_none() {
+            let bound: Vec<PaneId> = self
+                .state
+                .panes
+                .iter()
+                .filter(|(id, pane)| **id == pane_id || pane.session() == Some(session))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in bound {
+                self.bind_pane(id, session);
+            }
+        }
+        let root = self
+            .state
+            .sessions
+            .get(session)
+            .map_or_else(|| self.state.root.clone(), |row| row.root.clone());
+        self.send_request(
+            outbound,
+            RequestKind::Resume(session.clone()),
+            "session/resume",
+            json!({
+                "sessionId": session.0,
+                "cwd": root,
+                "replayFrom": offset.unwrap_or(0),
+            }),
+        );
+    }
+
     pub(super) fn pump_chats(&mut self, outbound: &Outbound) {
         let ids: Vec<PaneId> = self.state.panes.keys().copied().collect();
         for pane_id in ids {
@@ -391,6 +520,7 @@ impl App {
             else {
                 continue;
             };
+            let _span = yi_types::trace::span("console.chat_tick");
             yi_tui::tick(
                 &mut chat.app,
                 &mut chat.port,
