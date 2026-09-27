@@ -1347,6 +1347,54 @@ fn untracked_edit_accumulates_without_opening() -> TestResult {
     )
 }
 
+fn why_reply(frame: &Value) -> Vec<Value> {
+    let path = frame["params"]["path"].clone();
+    let mut answers = vec![
+        json!({"line": 2, "uncommitted": true}),
+        json!({"line": 40, "error": "git blame failed: fatal: no such path"}),
+    ];
+    answers.extend(
+        (3..9).map(|n| json!({"line": n * 10, "commit": "1a2b3c4d5e6f", "subject": "Add a"})),
+    );
+    vec![ok(
+        frame,
+        json!({"path": path, "cap": 8, "unasked": [90, 120], "answers": answers}),
+    )]
+}
+
+/// Dies with `w` asking nothing once ↓ ran past the last file, though the `▸` still marked
+/// one; then with a missing chain read as uncommitted and the hunks past the cap unnamed.
+#[test]
+fn why_from_review_asks_for_the_marked_file_and_names_what_it_could_not_answer() -> TestResult {
+    let last = run_frames(
+        "review-why",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(edit_push),
+            Step::Expect("_yi/tracked", tracked_yes),
+            Step::Expect("_yi/why", why_reply),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 Review · session · 1 file +1 −0\n\
+         key alt-right\n\
+         key down\n\
+         key down\n\
+         key w\n\
+         wait-frame 3000 L2 not committed yet\n\
+         quit\n",
+    )?;
+    for needle in ["L40 no chain: git blame failed", "[…] 8 of 10 hunks asked"] {
+        assert!(last.contains(needle), "{needle}\n{last}");
+    }
+    Ok(())
+}
+
 /// Dies with one stray `l` in Review landing the branch: the first press shows what a second
 /// would run, another key cancels it, and only the second press sends it.
 #[test]

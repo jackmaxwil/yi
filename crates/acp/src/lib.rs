@@ -5,6 +5,7 @@ mod attach;
 pub mod cells;
 pub mod daemon;
 mod forward;
+pub mod review;
 pub mod update;
 
 use std::collections::{HashMap, HashSet};
@@ -220,25 +221,6 @@ struct AcpState {
     agent_version: String,
     initialized: bool,
     cwd: PathBuf,
-}
-
-fn undo_text(session: &AgentSession, cwd: &std::path::Path) -> String {
-    if session.status() == yi_runtime::Status::Running {
-        return "/undo: the current turn is still running (esc stops it)".to_owned();
-    }
-    let Some(store) = session.store() else {
-        return "/undo: this session has no store to read checkpoints from".to_owned();
-    };
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_default();
-    match yi_runtime::undo(&store, cwd, &home) {
-        yi_runtime::UndoOutcome::Restored { changes, scoped } => {
-            format!("/undo: {}", yi_runtime::describe_undo(&changes, scoped))
-        }
-        yi_runtime::UndoOutcome::NoCheckpoint => "/undo: no checkpoint to restore".to_owned(),
-        yi_runtime::UndoOutcome::Failed(error) => format!("/undo: {error}"),
-    }
 }
 
 fn mode_value(mode: Option<yi_runtime::PermissionMode>) -> &'static str {
@@ -710,8 +692,16 @@ impl AcpState {
                 Ok(json!({}))
             }
             "_yi/rewind" => {
-                let rewound = yi_runtime::rewind_to(&handle.session, text("entryId"))
-                    .map_err(|error| (INVALID_PARAMS, error))?;
+                let files = params.get("files").and_then(Value::as_bool) == Some(true);
+                let (rewound, restored) = if files {
+                    let (rewound, restored) =
+                        crate::review::restore_before(&handle.session, text("entryId"), &self.cwd)?;
+                    (rewound, Some(restored))
+                } else {
+                    let rewound = yi_runtime::rewind_to(&handle.session, text("entryId"))
+                        .map_err(|error| (INVALID_PARAMS, error))?;
+                    (rewound, None)
+                };
                 let summarizing = rewound.abandoned.is_some();
                 if let Some(stub) = rewound.abandoned {
                     let session = Arc::clone(&handle.session);
@@ -724,6 +714,7 @@ impl AcpState {
                     "leafId": rewound.leaf,
                     "unsent": rewound.unsent,
                     "summarizing": summarizing,
+                    "restored": restored,
                 }))
             }
             "_yi/todo" => {
@@ -814,12 +805,12 @@ impl AcpState {
                 let root = std::path::Path::new(text("root"));
                 Ok(json!({"tracked": yi_runtime::environment::tracked(root, &paths)}))
             }
+            "_yi/why" => Ok(crate::review::why(&handle.session, &self.cwd, params)),
             "_yi/tape" | "_yi/branch_diff" => {
                 let value = if method == "_yi/tape" {
                     serde_json::to_value(yi_runtime::tape::session_tape(&handle.session))
                 } else {
-                    let lane = handle.session.lane().and_then(|lane| lane.path());
-                    let root = lane.unwrap_or_else(|| self.cwd.clone());
+                    let root = crate::review::root(&handle.session, &self.cwd);
                     serde_json::to_value(yi_runtime::environment::branch_diff(&root))
                 };
                 Ok(value.unwrap_or(Value::Null))
@@ -832,7 +823,7 @@ impl AcpState {
                 let before = (handle.session.model().id, handle.session.effort());
                 let reply = match command {
                     "sessions" => self.sessions_text()?,
-                    "undo" => undo_text(&handle.session, &self.cwd),
+                    "undo" => crate::review::undo_text(&handle.session, &self.cwd),
                     // Routed through `_yi/heartbeat`, not `slash::run`, so the client keeps `_yi/heartbeat_changed` (C9).
                     "heartbeat" => {
                         return self.handle_extension(
