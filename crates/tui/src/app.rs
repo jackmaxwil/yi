@@ -215,6 +215,8 @@ pub struct App {
     pub(crate) width: usize,
     pub(crate) rows: usize,
     pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
+    /// The last pane paint's top row and each transcript row's cell, `None` on the live turn.
+    pub(crate) pane_rows: (u16, Vec<Option<usize>>),
 }
 
 pub use crate::frame::next_spinner_wake;
@@ -321,6 +323,7 @@ impl App {
             width,
             rows: 24,
             pane_hold: None,
+            pane_rows: (0, Vec::new()),
         };
         app.branch = crate::port::git_branch(&app.options.cwd);
         app.scheduler.request();
@@ -560,9 +563,16 @@ impl App {
         self.history.retain(cell);
     }
 
+    pub fn pane_row(&self, y: u16) -> Option<Option<(usize, Option<&str>)>> {
+        let (top, rows) = &self.pane_rows;
+        let owner = *rows.get(usize::from(y.checked_sub(*top)?))?;
+        Some(owner.map(|index| (index, self.history.source(index))))
+    }
+
     pub fn reflowed(&self, rows: usize) -> Vec<Line<'static>> {
         self.history
             .lines(self.content_width(), &self.theme, self.mode, rows)
+            .0
     }
 
     pub(crate) fn reset_transcript(&mut self) {
