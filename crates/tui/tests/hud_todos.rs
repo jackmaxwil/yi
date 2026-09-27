@@ -56,7 +56,8 @@ fn text(line: &ratatui::text::Line<'_>) -> String {
 }
 
 fn rows(list: &TodoList, full: bool) -> Result<(String, Vec<String>), Box<dyn Error>> {
-    let (title, rows) = todo_rows(Some(list), full, &theme()).ok_or("open work must render")?;
+    let (title, rows) =
+        todo_rows(Some(list), full, true, &theme()).ok_or("open work must render")?;
     Ok((title, rows.iter().map(text).collect()))
 }
 
@@ -85,10 +86,10 @@ fn the_block_numbers_open_work_and_hides_a_finished_list() -> TestResult {
     );
     let finished = list(vec![item("read", TodoStateName::Done)?])?;
     assert!(
-        todo_rows(Some(&finished), true, &theme()).is_none(),
+        todo_rows(Some(&finished), true, true, &theme()).is_none(),
         "a finished list leaves the HUD alone"
     );
-    assert!(todo_rows(None, true, &theme()).is_none());
+    assert!(todo_rows(None, true, true, &theme()).is_none());
     Ok(())
 }
 
@@ -235,5 +236,22 @@ fn under_a_goal_the_items_sit_beneath_their_title() -> TestResult {
     let title = indent("Todos 0/10").ok_or(format!("{lines:?}"))?;
     let first = indent("item 1").ok_or(format!("{lines:?}"))?;
     assert_eq!(first, title + 2, "{lines:#?}");
+    Ok(())
+}
+
+/// Dies with the stored state drawn as live: after the turn ended the idle screen still said
+/// `▶` on the step and `now:` on the plan, as though work were under way.
+#[test]
+fn a_step_left_running_reads_as_paused_once_the_turn_ends() -> TestResult {
+    let (_, idle) = todo_rows(Some(&ten(0)?), true, false, &theme()).ok_or("open work")?;
+    let first = idle.first().map(text).ok_or("no rows")?;
+    assert_eq!(first, "1. ▷ item 1");
+    let plan = yi_tui::hud::PlanProgress {
+        done: 1,
+        total: 3,
+        running: Some("rebase".to_owned()),
+    };
+    assert_eq!(plan.line(false), "Plan 1/3 · paused: rebase");
+    assert_eq!(plan.line(true), "Plan 1/3 · now: rebase");
     Ok(())
 }

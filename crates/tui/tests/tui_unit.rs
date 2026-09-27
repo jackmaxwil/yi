@@ -247,6 +247,7 @@ fn hud_shows_the_checklist_count_without_a_goal() -> TestResult {
             total: 3,
             running: Some("rebase".to_owned()),
         }),
+        live: true,
         ..yi_tui::hud::HudInput::default()
     };
     let lines = yi_tui::hud::render(&input, &theme());

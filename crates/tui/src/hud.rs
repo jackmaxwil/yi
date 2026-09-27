@@ -16,6 +16,7 @@ pub struct HudInput {
     pub plan: Option<PlanProgress>,
     pub todos: Option<TodoList>,
     pub todo_full: bool,
+    pub live: bool,
     pub steering: Vec<String>,
     pub follow_up: Vec<String>,
     pub memory: Option<String>,
@@ -29,10 +30,11 @@ pub struct PlanProgress {
 }
 
 impl PlanProgress {
-    pub fn line(&self) -> String {
+    pub fn line(&self, live: bool) -> String {
         let mut line = format!("Plan {}/{}", self.done, self.total);
         if let Some(running) = &self.running {
-            line.push_str(&format!(" · now: {running}"));
+            let at = if live { "now" } else { "paused" };
+            line.push_str(&format!(" · {at}: {running}"));
         }
         line
     }
@@ -84,6 +86,7 @@ impl TodoClock {
 pub fn todo_rows(
     list: Option<&TodoList>,
     full: bool,
+    live: bool,
     theme: &Theme,
 ) -> Option<(String, Vec<Line<'static>>)> {
     let list = list?;
@@ -130,7 +133,7 @@ pub fn todo_rows(
                 .chain(item.children.iter().map(|child| (child, nested)))
             {
                 if shown.contains(&number) {
-                    rows.push(todo_row(row, number.saturating_add(1), indent, theme));
+                    rows.push(todo_row(row, number.saturating_add(1), indent, live, theme));
                 }
                 number = number.saturating_add(1);
             }
@@ -139,11 +142,18 @@ pub fn todo_rows(
     Some((title, rows))
 }
 
-fn todo_row(item: &TodoItem, number: usize, indent: &str, theme: &Theme) -> Line<'static> {
+fn todo_row(
+    item: &TodoItem,
+    number: usize,
+    indent: &str,
+    live: bool,
+    theme: &Theme,
+) -> Line<'static> {
     let plain = Style::default().fg(theme.text);
     let (glyph, style) = match item.state {
         TodoStateName::Done => ("✓", theme.dim_style()),
-        TodoStateName::Running => ("▶", theme.accent_style().add_modifier(Modifier::BOLD)),
+        TodoStateName::Running if live => ("▶", theme.accent_style().add_modifier(Modifier::BOLD)),
+        TodoStateName::Running => ("▷", theme.muted_style()),
         TodoStateName::Blocked => ("!", Style::default().fg(theme.warning)),
         TodoStateName::Abandoned | TodoStateName::Failed => {
             ("−", theme.dim_style().add_modifier(Modifier::CROSSED_OUT))
@@ -172,6 +182,7 @@ pub(crate) fn input(
         plan: app.plan_progress.clone(),
         todos: app.todos.clone(),
         todo_full: app.todo_clock.full(Instant::now()),
+        live: app.running,
         steering: app.steering.clone(),
         follow_up: Vec::new(),
         memory,
@@ -197,16 +208,19 @@ pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
         None => None,
     };
     let header = match (header, &input.plan) {
-        (None, Some(plan)) => Some(plan.line()),
+        (None, Some(plan)) => Some(plan.line(input.live)),
         (Some(header), Some(plan)) => {
-            content.push(Line::from(Span::styled(plan.line(), theme.muted_style())));
+            content.push(Line::from(Span::styled(
+                plan.line(input.live),
+                theme.muted_style(),
+            )));
             Some(header)
         }
         (header, None) => header,
     };
     let header = match (
         header,
-        todo_rows(input.todos.as_ref(), input.todo_full, theme),
+        todo_rows(input.todos.as_ref(), input.todo_full, input.live, theme),
     ) {
         (header, None) => header,
         (None, Some((title, rows))) => {

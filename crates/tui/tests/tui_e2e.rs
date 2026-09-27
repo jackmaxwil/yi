@@ -2001,7 +2001,7 @@ fn the_hud_shows_open_todos_in_a_headless_frame() -> TestResult {
     let last = std::fs::read_to_string(frames.last().ok_or("no frames dumped")?)?;
     for needle in [
         "Todos 0/3",
-        "1. ▶ read the code",
+        "1. ▷ read the code",
         "2. ○ write the fix",
         "  3. ○ parser",
     ] {

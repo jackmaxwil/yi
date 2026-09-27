@@ -79,11 +79,18 @@ pub fn context_tokens(usage: &Usage) -> Tokens {
     Tokens(clamped(sum))
 }
 
+pub fn reply_tokens(message: &AgentMessage) -> Option<Tokens> {
+    assistant_usage(message).map(context_tokens)
+}
+
+/// Incident: a usage-less OpenRouter reply read as an empty context (0 / 1M at 103K).
 fn assistant_usage(message: &AgentMessage) -> Option<&Usage> {
     match message {
         AgentMessage::Assistant {
             usage, stop_reason, ..
-        } if !matches!(stop_reason, StopReason::Aborted | StopReason::Error) => Some(usage),
+        } if !usage.unknown && !matches!(stop_reason, StopReason::Aborted | StopReason::Error) => {
+            Some(usage)
+        }
         _ => None,
     }
 }

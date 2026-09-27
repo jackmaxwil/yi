@@ -238,6 +238,9 @@ pub fn layout_chat(
     let orb_state = app.orb_state();
     // On kitty the mark is always on screen, spelling `Yi` at rest and rearranging into
     // the orb for the turn. Elsewhere the plain spinner line appears only while a turn runs.
+    let esc_armed = app
+        .esc_armed_at
+        .is_some_and(|at| at.elapsed() < crate::input::ESC_WINDOW);
     let working: Vec<Line<'static>> = if app.kitty {
         let mut rows: Vec<Line<'static>> = (0..ORB_ROWS).map(|_| Line::default()).collect();
         if let (Some(mid), Some(state)) = (rows.get_mut(1), orb_state) {
@@ -245,7 +248,7 @@ pub fn layout_chat(
                 .intent
                 .clone()
                 .unwrap_or_else(|| state.label().to_owned());
-            let hint = if app.esc_armed_at.is_some() {
+            let hint = if esc_armed {
                 "esc again to interrupt"
             } else {
                 "[esc] interrupt"
@@ -261,7 +264,7 @@ pub fn layout_chat(
         vec![working_line(
             app.intent.as_deref(),
             spinner,
-            app.esc_armed_at.is_some(),
+            esc_armed,
             &theme,
         )]
     } else {

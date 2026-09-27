@@ -416,10 +416,29 @@ impl App {
     }
 
     fn note_context(&mut self, message: &AgentMessage) {
-        if let AgentMessage::Assistant { usage, .. } = message {
-            self.context_used = u64::try_from(usage.total_tokens).unwrap_or(0);
+        if let AgentMessage::Assistant { .. } = message {
+            if let Some(tokens) = yi_runtime::reply_tokens(message) {
+                self.context_used = tokens.0;
+            }
             self.branch = crate::port::git_branch(&self.options.cwd);
         }
+    }
+
+    pub(crate) fn seed_context(&mut self, entries: &[yi_types::entry::Entry]) {
+        let last = entries.iter().rev().find_map(|entry| match entry {
+            yi_types::entry::Entry::Message { message, .. } => yi_runtime::reply_tokens(message),
+            _ => None,
+        });
+        if let Some(tokens) = last {
+            self.context_used = tokens.0;
+        }
+    }
+
+    pub(crate) fn open_user_turn(&mut self) {
+        if self.user_turns > 0 {
+            self.commit_cell(&Cell::Divider);
+        }
+        self.user_turns += 1;
     }
 
     pub fn take_pending_clear(&mut self) -> bool {
@@ -544,6 +563,7 @@ impl App {
         self.pending_commit.clear();
         self.reset_live();
         self.live_tools.clear();
+        self.user_turns = 0;
     }
 
     pub fn take_title(&mut self) -> Option<String> {
@@ -621,10 +641,7 @@ impl App {
                         }
                     }
                     Attribution::User => {
-                        if self.user_turns > 0 {
-                            self.commit_cell(&Cell::Divider);
-                        }
-                        self.user_turns += 1;
+                        self.open_user_turn();
                         let mut focus = text.split_whitespace().collect::<Vec<_>>().join(" ");
                         if focus.chars().count() > 40 {
                             focus = focus.chars().take(39).collect::<String>() + "…";
