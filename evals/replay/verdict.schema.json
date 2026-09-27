@@ -2,7 +2,8 @@
  "type": "object",
  "required": [
   "verdict",
-  "objections"
+  "objections",
+  "p_objection"
  ],
  "properties": {
   "verdict": {
@@ -47,6 +48,9 @@
     },
     "additionalProperties": false
    }
+  },
+  "p_objection": {
+   "type": "number"
   }
  },
  "additionalProperties": false

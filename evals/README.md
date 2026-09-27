@@ -201,32 +201,80 @@ python3 evals/judge_replay.py all --dry --model faux/faux-1
 python3 evals/judge_replay.py extract --corpus yi:$HOME/.yi/sessions \
     --corpus claude:$HOME/.claude/projects --out runs/replay
 python3 evals/judge_replay.py label --out runs/replay --model openrouter/<id> --cap-usd 3 --jobs 4
-python3 evals/judge_replay.py judge --out runs/replay --model openrouter/<id> --split fit \
-    --limit 200 --cap-usd 3 --jobs 4
-python3 evals/judge_replay.py match --out runs/replay --model openrouter/<id> --cap-usd 1
+python3 evals/judge_replay.py judge --out runs/replay --model openrouter/<id> --arm self \
+    --split fit --limit 200 --cap-usd 3 --jobs 4
+python3 evals/judge_replay.py judge --out runs/replay --model openrouter/<id> --arm judge \
+    --split fit --limit 200 --cap-usd 3 --jobs 4
 python3 evals/judge_replay.py report --out runs/replay
-python3 evals/judge_replay.py mark --out runs/replay <boundary-id> objected
+python3 evals/judge_replay.py mark --out runs/replay <boundary-id> intent_loss
 ```
 
-Stage 0 of `docs/plans/2026-09-24-seven-primitives.md`: does a judge that reads the owner's
-words by address, and nothing after the boundary, predict the owner's first objection? A
-boundary is a human message whose nearest message ancestor on the session tree is an assistant
-turn end. `extract` (free) writes `boundaries.jsonl`: the intent record (file, entry id and text
-of every earlier human message on that tree path), the turn (final text, one line per tool
-call), the next message and the agent's reply to it. Conversations split 70/30 into `fit` and
-`held-out` by the hash of a file name: Claude Code rewrites a resumed transcript into a new file
-under the same entry ids, so files that share or bridge to an entry are one conversation and a
-boundary found in several counts once. Extract once per `--out`: a grown corpus can move a
-conversation whose new resumed file sorts first. `label` writes `labels.jsonl` (`objected`,
-`check_revealed`, `accepted`), `mark` writes the owner's overrides to `marks.jsonl`, which win.
-`judge` writes `verdicts/<model>-<prompt sha256>.jsonl`, `--limit` taking up to half positives,
-and resolves every quote to a UTF-8 byte range of the named message. `match` asks, for each
-positive the judge flagged, whether an objection names the owner's. `report` prints, per corpus
-and split, n, positive rate, citation resolution, recall, specificity, balanced accuracy with a
-conversation bootstrap 95% interval, catch rate and cost; the two no-judge baselines (0.5 by
-construction); the gate line, PASS iff held-out resolution >= 0.95, the interval's lower bound
-> 0.5 and no held-out call went unanswered; and every judge run that has touched held-out, so
-tuning on it shows. Tune on `fit`.
+Stage 0 of `docs/plans/2026-09-24-seven-primitives.md`: asked at a boundary, with the session so
+far and nothing after it, does a model predict the owner's first objection? The owner's evidence
+(plan section 1.3) is about the working agent: "i ask ai if the plan is done and everything was
+done correctly", then "immediately ai can recognize things were not done correctly". A boundary
+is a human message whose nearest message ancestor on the session tree is an assistant turn end.
+`extract` (free) writes `boundaries.jsonl`: the intent record (file, entry id and text of every
+earlier human message on that tree path), the turn's final text, the next message and the
+agent's reply to it. Conversations split 70/30 into `fit` and `held-out` by the hash of a file
+name: Claude Code rewrites a resumed transcript into a new file under the same entry ids, so
+files that share or bridge to an entry are one conversation and a boundary found in several
+counts once. Extract once per `--out`: a grown corpus can move a conversation whose new resumed
+file sorts first.
+
+v1 scored near chance: balanced accuracy 0.54 and 0.50 for glm-5.3-flash on two prompts and 0.52
+for glm-5.3 at high effort, each on 200 fit boundaries, and 0.67 for Opus 5.5 on 61 with 9
+positives. Its judge read a summary (the owner's messages, the final text, one line per tool
+call), its positives mixed lost intent with new requirements, and its ground truth was what the
+owner noticed, so a judge that found an unnoticed flaw scored wrong. v2 changes the input, adds
+the self arm, narrows the positives and scores a probability.
+
+`judge` renders each prefix at call time, re-reading the source file with the same reader: the
+conversation on the boundary's ancestor path up to the turn end, oldest first, the owner's
+messages as `[u1]`..`[uN]`, the agent's text as `[agent]`, each call as `[call <name>]` with its
+arguments, each result as `[result <name>]`. Claude Code hangs parallel calls and their results
+off the path, so the prefix also holds every block of an assistant message on the path and the
+result of every call shown; nothing at or after the boundary in file order is read. A source
+whose owner messages on the path no longer match the intent record is an error row, not a call.
+Two caps speak where they cut. `tool_chars=2000` keeps the head of each call argument and each
+result, a `[…]` row naming kept of total. `prefix_chars=240000`, about 60k tokens at four chars a
+token (the smallest target context is Opus 5.5's 1M), drops whole tool results oldest first,
+then agent text and calls oldest first, never an owner's message: one row on top names kept of
+total per kind and the cap, and a `[… n cut: prefix_chars]` row marks each gap. A cut that saves
+less than its row waits for a neighbour to go. When the owner's messages alone pass
+`prefix_chars`, the oldest go first under v1's rule, `intent_chars=60000`, with its own row; on
+the 2026-09-26 corpus they peaked at 216,798 chars.
+
+`--arm` picks the framing over the same prefix. `self` (`replay/self.md`) tells the model the
+session is its own and ends on the owner's check as the last user turn (`replay/check.md`, in the
+owner's words); `judge` (`replay/judge.md`) is the outside intent judge. Both answer the schema
+in `replay/answer.md`: a verdict, objections citing the owner's words, and `p_objection`, the
+probability that the owner's next message objects. A run writes
+`verdicts/<model>-<arm>-<sha256 of the system prompt and the check>[-<effort>].jsonl`, each row
+carrying its arm, and resolves every quote to a UTF-8 byte range of the named message. A verdict
+without a `p_objection` in [0, 1] is a call without a verdict.
+
+`label` writes `labels-v2.jsonl` and never v1's `labels.jsonl`: `objected`, `check_revealed` or
+`accepted`, read from the intent record, the turn's final text, the next message and the reply.
+An `objected` row names its `kind`: `intent_loss` when it rests on words the owner already said,
+cited as `rests_on` quotes resolved like the judge's, or `new_info` for a new requirement,
+opinion or taste. An `intent_loss` whose `rests_on` resolves to no owner message is demoted to
+`new_info`. `mark` writes the owner's overrides (`intent_loss`, `new_info`, `check_revealed`,
+`accepted`) to `marks.jsonl`, which win. Positives are `intent_loss` and `check_revealed`;
+`new_info` is unpredictable by construction, counted and never scored. `judge` takes positives
+and negatives interleaved p, n, p, n in id order, so a cut by `--limit` or `--cap-usd` stays
+balanced; v1's sample, sorted by id, front-loaded negatives.
+
+`report` prints, per run, corpus and split: n, positive rate, the `new_info` count, citation
+resolution, recall, specificity, balanced accuracy with a conversation bootstrap 95% interval,
+AUROC of `p_objection` (Mann-Whitney by mean rank, ties counting half) with its own conversation
+bootstrap interval, catch, check recall and cost; then both arms side by side and every run that
+has touched held-out, so tuning on it shows. Catch is mechanical: an `intent_loss` positive is
+caught when the verdict flags it and the owner messages its resolved citations name meet the
+label's resolved `rests_on`; a `check_revealed` positive reports recall only. The gate line
+reads PASS iff held-out citation resolution >= 0.95, the AUROC interval's lower bound > 0.5 and
+no held-out call went unanswered. A v1 run on disk (no arm, no `p_objection`, `labels.jsonl`)
+still reports, its AUROC and catch `n/a`. Tune on `fit`.
 
 What counts as the owner, surveyed on 2026-09-26 over 437 Yi files and 225 top-level Claude
 Code transcripts:
@@ -254,8 +302,9 @@ boundaries in 125 conversations over 173 files (458 held-out). 13 Claude Code bo
 no earlier owner message on their path (a session opened from a compaction summary).
 
 Each call is one `POST https://openrouter.ai/api/v1/chat/completions`, stdlib `urllib`, with
-no tools: the phase's prompt under `replay/` (or `judge --prompt`) as the system message and
-the rendered input as the one user message, `temperature` 0, `response_format` the phase's
+no tools: the phase's prompt under `replay/` as the system message (for `judge`, the arm's
+prompt or `--prompt`, then `answer.md`), the rendered input as a user message and the self arm's
+check as a second, `temperature` 0, `response_format` the phase's
 schema under `replay/` as a strict `json_schema`, and `usage: {include: true}`. The model receives nothing but that input,
 so blindness holds by construction. `--model` is `openrouter/<id>` and the key is
 `OPENROUTER_API_KEY` from the environment, sent in a header and never on argv or in a row; a
@@ -266,14 +315,14 @@ times at most. A row records the model, the provider's model id, `input` (cached
 included, the provider's convention), `output`, `cached`, `costUsd` and `latencyMs`. Cost is the
 provider's own `usage.cost` (E14): a reply without it, or a 401, 402, 403 or 404, which every
 later call would repeat, stops the phase. A call in flight when `--cap-usd` trips still lands,
-so a phase overshoots by at most `--jobs` - 1 calls. Two caps speak where they cut:
-`intent_chars=60000` drops the oldest messages, `digest_head=120` shortens a tool-call head.
+so a phase overshoots by at most `--jobs` - 1 calls. The labeller's intent record keeps v1's
+`intent_chars=60000` cap, its row naming the newest messages kept of the total.
 
 The first call path was `yi ask --schema` under Seatbelt. The first paid label pass stopped at
 99 of 1,241 calls ($0.37): 66 returned no label, because Yi's loop pushed a model that had
 already answered the JSON on into tool calls (0 to 65 per label) and it ended on prose, and
 Yi's system prompt and tool schemas rode every call, 29k input plus 77k cached on average.
-An agent is the wrong instrument for a label, a verdict or a match.
+An agent is the wrong instrument for a label or a verdict.
 
 A real run is the owner's: capped, and ledgered in `docs/eval-ledger.md` with the model, the
 prompt hash and the gate line before any claim cites it. `--dry` is faux only and makes no

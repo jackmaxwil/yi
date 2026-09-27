@@ -2,8 +2,10 @@
  "type": "object",
  "required": [
   "label",
+  "kind",
   "objection",
-  "quote"
+  "quote",
+  "rests_on"
  ],
  "properties": {
   "label": {
@@ -14,11 +16,38 @@
     "accepted"
    ]
   },
+  "kind": {
+   "type": "string",
+   "enum": [
+    "intent_loss",
+    "new_info",
+    ""
+   ]
+  },
   "objection": {
    "type": "string"
   },
   "quote": {
    "type": "string"
+  },
+  "rests_on": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "msg",
+     "quote"
+    ],
+    "properties": {
+     "msg": {
+      "type": "string"
+     },
+     "quote": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
   }
  },
  "additionalProperties": false
