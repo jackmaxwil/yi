@@ -1878,7 +1878,8 @@ fn two_root_ledger(frame: &Value) -> Vec<Value> {
 }
 
 /// Dies with rows grouped by workspace: the inbox ranks every root's sessions by what they
-/// need, so the idle session of the other root outranks two the ledger never placed.
+/// need, so the idle session of the other root outranks two the ledger never placed. A row
+/// opens with a quote in the frame, so the section needle cannot match an `idle · 5m` line.
 #[test]
 fn the_inbox_ranks_rows_by_need_across_workspaces() -> TestResult {
     run(
@@ -1891,7 +1892,7 @@ fn the_inbox_ranks_rows_by_need_across_workspaces() -> TestResult {
         "wait-frame 5000 1 SG   s-gamma\n\
          wait-frame 3000 2 RE   release notes\n\
          wait-frame 3000 3 FI   fix login bug\n\
-         wait-frame 3000   idle\n\
+         wait-frame 3000 \"  idle\n\
          quit\n",
     )
 }
