@@ -210,6 +210,7 @@ pub enum PaneContent {
         session: SessionId,
         tape: Option<yi_types::tape::Tape>,
         cursor: usize,
+        armed: bool,
     },
     Editor(Editor),
 }
@@ -299,6 +300,9 @@ pub struct SessionDiff {
     pub branch: Option<yi_types::lane::BranchDiff>,
     pub branch_due: bool,
     pub tape_due: bool,
+    pub selected: usize,
+    pub why: BTreeMap<String, Vec<String>>,
+    pub why_due: Option<(String, Vec<u32>)>,
 }
 
 const MAX_DIFF_FILES: usize = 512;
@@ -478,6 +482,15 @@ impl ConsoleState {
     }
 
     /// Every chat showing the session, across every tab.
+    pub fn need_of(&self, row: &SessionRow) -> usize {
+        let red = self.chat(&row.id).is_some_and(|chat| chat.app.gate_red());
+        match row.status.need() {
+            need @ (0 | 1) => need,
+            _ if red => 2,
+            need => need.saturating_add(1),
+        }
+    }
+
     pub fn chat(&self, id: &SessionId) -> Option<&Chat> {
         self.panes
             .values()
@@ -572,7 +585,7 @@ impl ConsoleState {
         rows.sort_by_key(|index| {
             let row = self.order.get(*index).and_then(|id| self.sessions.get(id));
             (
-                row.map_or(usize::MAX, |row| row.status.need()),
+                row.map_or(usize::MAX, |row| self.need_of(row)),
                 std::cmp::Reverse(row.map_or(0, SessionRow::recency)),
             )
         });

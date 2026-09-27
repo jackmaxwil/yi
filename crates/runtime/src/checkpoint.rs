@@ -65,6 +65,58 @@ pub fn undo(store: &yi_session::SharedSession, project: &Path, home: &Path) -> U
     let Some((data, since)) = undo_target(store) else {
         return UndoOutcome::NoCheckpoint;
     };
+    restore_tree(store, project, home, &data, since)
+}
+
+pub fn undo_to(
+    store: &yi_session::SharedSession,
+    entry_id: &str,
+    project: &Path,
+    home: &Path,
+) -> UndoOutcome {
+    let entries = yi_session::lock_session(store)
+        .find_entries_on_branch(
+            "main",
+            &yi_session::EntryQuery {
+                order: yi_session::EntryOrder::OldestFirst,
+                ..yi_session::EntryQuery::default()
+            },
+            &yi_session::BranchBounds::default(),
+        )
+        .unwrap_or_default();
+    let before = entries
+        .iter()
+        .position(|entry| entry.id() == entry_id)
+        .and_then(|at| at.checked_sub(1))
+        .and_then(|at| entries.get(at));
+    let Some(Entry::Custom {
+        custom_type,
+        data: Some(data),
+        ..
+    }) = before
+    else {
+        return UndoOutcome::NoCheckpoint;
+    };
+    let start = serde_json::from_value::<CheckpointData>(data.clone()).ok();
+    let Some(start) = start.filter(|start| {
+        custom_type == CHECKPOINT_ENTRY_TYPE && start.at == CheckpointAt::TurnStart
+    }) else {
+        return UndoOutcome::NoCheckpoint;
+    };
+    let since = recorded(store)
+        .into_iter()
+        .find(|recorded| recorded.data.at == CheckpointAt::TurnEnd)
+        .map(|recorded| recorded.data.tree);
+    restore_tree(store, project, home, &start, since)
+}
+
+fn restore_tree(
+    store: &yi_session::SharedSession,
+    project: &Path,
+    home: &Path,
+    data: &CheckpointData,
+    since: Option<String>,
+) -> UndoOutcome {
     let checkpoints = match Checkpoints::open(&checkpoint_root(home), project) {
         Ok(checkpoints) => checkpoints,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
@@ -74,7 +126,7 @@ pub fn undo(store: &yi_session::SharedSession, project: &Path, home: &Path) -> U
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
     let since = since.map(TreeId::new);
-    let restored = match checkpoints.restore(&TreeId::new(data.tree), since.as_ref()) {
+    let restored = match checkpoints.restore(&TreeId::new(data.tree.clone()), since.as_ref()) {
         Ok(changes) => changes,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
