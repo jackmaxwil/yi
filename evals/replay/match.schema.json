@@ -1,0 +1,15 @@
+{
+ "type": "object",
+ "required": [
+  "match",
+  "index"
+ ],
+ "properties": {
+  "match": {
+   "type": "boolean"
+  },
+  "index": {
+   "type": "integer"
+  }
+ }
+}

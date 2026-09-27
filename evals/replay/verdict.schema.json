@@ -1,0 +1,50 @@
+{
+ "type": "object",
+ "required": [
+  "verdict",
+  "objections"
+ ],
+ "properties": {
+  "verdict": {
+   "type": "string",
+   "enum": [
+    "accept",
+    "revise",
+    "escalate"
+   ]
+  },
+  "objections": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "text",
+     "citations"
+    ],
+    "properties": {
+     "text": {
+      "type": "string"
+     },
+     "citations": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "required": [
+        "msg",
+        "quote"
+       ],
+       "properties": {
+        "msg": {
+         "type": "string"
+        },
+        "quote": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}
