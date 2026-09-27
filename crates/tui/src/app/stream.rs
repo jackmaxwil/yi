@@ -12,16 +12,19 @@ use yi_types::message::{AgentMessage, Content};
 
 use super::{App, TaskState, UiEvent};
 use crate::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
+use crate::markdown::StableScan;
 use crate::motion::elapsed_ms;
 use crate::reveal::{FRAME, Reveal};
 use crate::transcript::{preview_lines, text_of, todo_finished};
 
-/// Both reveal cursors, their speed, and the events waiting behind them.
+/// Both reveal cursors, their speed, the events waiting behind them, and their cut scans.
 pub(crate) struct Pacing {
     pub(crate) prose: Reveal,
     pub(crate) thought: Reveal,
     pace: u16,
     pub(crate) held: VecDeque<UiEvent>,
+    prose_scan: StableScan,
+    thought_scan: StableScan,
 }
 
 impl Pacing {
@@ -31,12 +34,16 @@ impl Pacing {
             thought: Reveal::default(),
             pace,
             held: VecDeque::new(),
+            prose_scan: StableScan::default(),
+            thought_scan: StableScan::default(),
         }
     }
 
     pub(crate) fn reset(&mut self) {
         self.prose.reset();
         self.thought.reset();
+        self.prose_scan = StableScan::default();
+        self.thought_scan = StableScan::default();
     }
 
     pub(crate) fn drain(&mut self) {
@@ -322,13 +329,12 @@ impl App {
         }
         // A cut inside a fence is prose's business: thought has no reopen to
         // carry, so a fenced block commits whole or not at all.
-        let (shown, base) = (self.pacing.thought.shown(), self.live_thought_base);
+        let shown = self.pacing.thought.shown();
         let stream =
-            crate::markdown::stable_stream(self.live_thought.get(base..shown).unwrap_or_default());
-        if stream.reopen.is_none() && base + stream.cut > self.live_thought_cut {
-            self.commit_thought_to(base + stream.cut, true);
+            (self.pacing.thought_scan).scan(self.live_thought.get(..shown).unwrap_or_default());
+        if stream.reopen.is_none() && stream.cut > self.live_thought_cut {
+            self.commit_thought_to(stream.cut, true);
             self.live_thought_seam = Seam::default();
-            self.live_thought_base = base + stream.block;
         }
         let (width, theme) = (self.content_width(), self.theme);
         let tail = self
@@ -420,14 +426,15 @@ impl App {
     /// Each newly stable slice renders standalone against a byte cursor. Re-rendering
     /// the whole prefix let trailing-blank trimming duplicate list items mid-stream.
     pub(super) fn commit_stable_prefix(&mut self) {
-        let (shown, base) = (self.pacing.prose.shown(), self.live_base);
+        let shown = self.pacing.prose.shown();
+        let scanning = yi_types::trace::span("tui.stable_stream");
         let stream =
-            crate::markdown::stable_stream(self.live_markdown.get(base..shown).unwrap_or_default());
-        if base + stream.cut > self.live_cut {
-            self.commit_prose(base + stream.cut, true);
+            (self.pacing.prose_scan).scan(self.live_markdown.get(..shown).unwrap_or_default());
+        drop(scanning);
+        if stream.cut > self.live_cut {
+            self.commit_prose(stream.cut, true);
             self.live_reopen = stream.reopen;
             self.live_seam = Seam::default();
-            self.live_base = base + stream.block;
         }
         if self.live_reopen.is_some() {
             return;
@@ -439,6 +446,7 @@ impl App {
             .get(self.live_cut..shown)
             .unwrap_or_default();
         let context = context(&self.live_seam, tail);
+        let cutting = yi_types::trace::span("tui.overflow_cut");
         let cut = overflow_cut(
             &context,
             tail,
@@ -446,6 +454,7 @@ impl App {
             width,
             |text| crate::markdown::render(text, inner, &theme).len(),
         );
+        drop(cutting);
         if let Some(cut) = cut {
             self.commit_prose(self.live_cut + cut.at, cut.spaced);
             self.live_seam = Seam::after(&cut);
@@ -465,16 +474,14 @@ impl App {
             .get(self.live_cut..cut)
             .unwrap_or_default()
             .to_owned();
+        let rendering = yi_types::trace::span("tui.commit_prose");
         let (lines, lang) = self.prose_block(&slice);
+        drop(rendering);
         self.live_lang = lang;
-        let continues = self.live_drawn;
-        self.note_commit(&lines, continues);
-        // Incident: the slice holding only a fence's close renders no row, and dropping it
-        // left the history's copy of the message inside the fence.
-        let width = self.content_width();
-        let rows = continues.then_some((width, lines.as_slice()));
-        self.history
-            .retain_slice(Cell::Assistant { markdown: slice }, rows);
+        self.note_commit(&lines, self.live_drawn);
+        // Incident: a lone closing fence renders no rows; dropped here, it left the
+        // rest of the message rendering as code on every replay.
+        self.retain(Cell::Assistant { markdown: slice });
         self.live_drawn |= !lines.is_empty();
         self.pending_commit.extend(lines);
         self.live_cut = cut;
@@ -503,16 +510,18 @@ impl App {
     /// D145: a whole message (`Start`, `Done`, `Error`) opens or settles the stream;
     /// a delta grows the message `MessageStart` opened.
     pub(super) fn fold_stream(&mut self, event: &AssistantMessageEvent) {
+        let _span = yi_types::trace::span("tui.stream_delta");
         fold(&mut self.streaming, event);
-        if let Some(AgentMessage::Assistant { content, .. }) = &self.streaming {
-            let content = content.clone();
-            self.arrive(&content);
+        let streaming = self.streaming.take();
+        if let Some(AgentMessage::Assistant { content, .. }) = &streaming {
+            self.arrive(content);
         }
+        self.streaming = streaming;
     }
 
     /// A snapshot of the message so far: the arrival feeds the rate, the cursors move on
     /// their own clock, and nothing commits before the reader has seen it.
-    pub(super) fn arrive(&mut self, content: &[Content]) {
+    fn arrive(&mut self, content: &[Content]) {
         let now = Instant::now();
         self.close_segments(content);
         let open = content.get(self.segment..).unwrap_or_default();

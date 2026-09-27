@@ -23,8 +23,7 @@
 //! the engine, and `contract::validate_enforces_the_floors_and_a_judge_never_stands_alone` pins
 //! the floor for a live judge decider.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::collections::VecDeque;

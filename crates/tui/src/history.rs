@@ -22,6 +22,62 @@ struct Rendered {
     key: Option<(usize, TranscriptMode, ColorTier, bool)>,
     start: usize,
     rows: VecDeque<Vec<Line<'static>>>,
+    growing: Option<Growing>,
+}
+
+/// Incident: every slice merged into a streaming answer re-rendered and re-highlighted
+/// the whole answer, 40-90 ms a commit. Its rows now grow past the settled prefix.
+struct Growing {
+    index: usize,
+    settled: crate::markdown::Settled,
+    stash: Vec<Line<'static>>,
+    kept: usize,
+    marked: bool,
+}
+
+impl Rendered {
+    fn cell_rows(
+        &mut self,
+        (cells, index): (&VecDeque<Cell>, usize),
+        width: usize,
+        theme: &Theme,
+        mode: TranscriptMode,
+    ) -> Vec<Line<'static>> {
+        let Some(cell) = cells.get(index) else {
+            return Vec::new();
+        };
+        let (Cell::Assistant { markdown }, true) = (cell, index + 1 == cells.len()) else {
+            return cell.lines(width, theme, mode, 0);
+        };
+        let _span = yi_types::trace::span("tui.cell_grow").arg("bytes", markdown.len());
+        let grow = match self.growing.take() {
+            Some(grow) if grow.index == index && !grow.stash.is_empty() => {
+                self.growing.insert(grow)
+            }
+            _ => self.growing.insert(Growing {
+                index,
+                settled: crate::markdown::Settled::default(),
+                stash: Vec::new(),
+                kept: 0,
+                marked: true,
+            }),
+        };
+        let inner = width.saturating_sub(crate::cell::gutter_cols());
+        let Some((settled, tail)) = grow.settled.advance(markdown, inner, theme) else {
+            self.growing = None;
+            return cell.lines(width, theme, mode, 0);
+        };
+        let mut rows = std::mem::take(&mut grow.stash);
+        rows.truncate(grow.kept.max(1));
+        if rows.is_empty() {
+            rows.push(Line::default());
+        }
+        let marked = grow.marked && settled.iter().all(is_blank);
+        rows.extend(crate::cell::gutter(settled, grow.marked, theme));
+        (grow.kept, grow.marked) = (rows.len(), marked);
+        rows.extend(crate::cell::gutter(tail, marked, theme));
+        rows
+    }
 }
 
 pub(crate) fn is_blank(line: &Line<'_>) -> bool {
@@ -34,32 +90,26 @@ pub(crate) fn separated(rows_above: usize, blank_above: bool, next: &[Line<'_>])
 }
 
 /// Incident: a rebuild dropped every separator row scrollback had, so a resize moved rows.
-fn join(cells: &[Vec<Line<'static>>]) -> Vec<Line<'static>> {
-    let mut out: Vec<Line<'static>> = Vec::new();
+/// One blank row separates, wherever the padding came from; only the last `keep` are cloned.
+fn join(cells: &[Vec<Line<'static>>], keep: usize) -> Vec<Line<'static>> {
+    let blank = Line::default();
+    let mut out: Vec<&Line<'static>> = Vec::new();
     let mut above: Option<&Vec<Line<'static>>> = None;
     for rows in cells.iter().filter(|rows| !rows.is_empty()) {
         if let Some(above) = above
             && separated(above.len(), above.last().is_some_and(is_blank), rows)
         {
-            out.push(Line::default());
+            out.push(&blank);
         }
-        out.extend(rows.iter().cloned());
+        for line in rows {
+            if !(is_blank(line) && out.last().is_some_and(|last| is_blank(last))) {
+                out.push(line);
+            }
+        }
         above = Some(rows);
     }
-    squeeze_blanks(out)
-}
-
-/// Every cell pads its own seam, so two blocks met across two or three empty rows; one
-/// blank row is the separator, wherever the padding came from.
-pub fn squeeze_blanks(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    let mut out: Vec<Line<'static>> = Vec::with_capacity(lines.len());
-    for line in lines {
-        if is_blank(&line) && out.last().is_some_and(is_blank) {
-            continue;
-        }
-        out.push(line);
-    }
-    out
+    let skip = out.len().saturating_sub(keep);
+    out.into_iter().skip(skip).cloned().collect()
 }
 
 impl History {
@@ -81,11 +131,16 @@ impl History {
             return;
         }
         let width = rendered.key.map(|key| key.0);
-        match (rows, rendered.rows.back_mut()) {
-            (Some((at, rows)), Some(last)) if Some(at) == width => last.extend_from_slice(rows),
-            _ => {
-                rendered.rows.pop_back();
-            }
+        if let (Some((at, rows)), Some(last)) = (rows, rendered.rows.back_mut())
+            && Some(at) == width
+        {
+            return last.extend_from_slice(rows);
+        }
+        if let Some(rows) = rendered.rows.pop_back()
+            && let Some(grow) = &mut rendered.growing
+            && grow.index + 1 == self.cells.len()
+        {
+            grow.stash = rows;
         }
     }
 
@@ -107,7 +162,7 @@ impl History {
             *rendered = Rendered {
                 key,
                 start: self.cells.len(),
-                rows: VecDeque::new(),
+                ..Rendered::default()
             };
         }
         // Appended cells render newest-first up to the cap, never a whole replay chunk.
@@ -116,10 +171,7 @@ impl History {
         let (mut index, mut held) = (self.cells.len(), 0_usize);
         while index > done && held <= cap {
             index -= 1;
-            let Some(cell) = self.cells.get(index) else {
-                break;
-            };
-            let rows = cell.lines(width, theme, mode, 0);
+            let rows = rendered.cell_rows((&self.cells, index), width, theme, mode);
             held = held.saturating_add(rows.len());
             fresh.push_front(rows);
         }
@@ -132,10 +184,8 @@ impl History {
         let mut held: usize = rendered.rows.iter().map(Vec::len).sum();
         while (held <= cap || rendered.start > back_to) && rendered.start > 0 {
             rendered.start -= 1;
-            let Some(cell) = self.cells.get(rendered.start) else {
-                break;
-            };
-            let rows = cell.lines(width, theme, mode, 0);
+            let start = rendered.start;
+            let rows = rendered.cell_rows((&self.cells, start), width, theme, mode);
             held = held.saturating_add(rows.len());
             rendered.rows.push_front(rows);
         }
@@ -156,7 +206,7 @@ impl History {
     }
 
     /// Consecutive slices merge back into their message: alone, each took a fresh bullet gutter.
-    /// `rows` extend the cached rows, so a pane does not re-render the message per slice.
+    /// A thought's `rows` extend its cached rows; an answer's grow past its settled prefix.
     pub fn retain_slice(&mut self, cell: Cell, rows: Option<(usize, &[Line<'static>])>) {
         let open = self.cells.len() > self.sealed;
         if let Cell::Assistant { markdown } = &cell
@@ -203,6 +253,17 @@ impl History {
         mode: TranscriptMode,
         cap: usize,
     ) -> Vec<Line<'static>> {
+        self.replay_last(width, theme, mode, cap, usize::MAX)
+    }
+
+    fn replay_last(
+        &self,
+        width: usize,
+        theme: &Theme,
+        mode: TranscriptMode,
+        cap: usize,
+        keep: usize,
+    ) -> Vec<Line<'static>> {
         self.rendered(width, theme, mode, (cap, usize::MAX), |_, cells| {
             let mut rows = 0usize;
             let mut from = cells.len();
@@ -214,7 +275,7 @@ impl History {
                 }
             }
             let tail = cells.get(from..).unwrap_or_default();
-            join(tail)
+            join(tail, keep)
         })
     }
 
@@ -241,7 +302,7 @@ impl History {
                 }
             }
             let tail = cells.get(from.saturating_sub(start)..).unwrap_or_default();
-            (from, join(tail))
+            (from, join(tail, usize::MAX))
         })
     }
 
@@ -252,8 +313,6 @@ impl History {
         mode: TranscriptMode,
         rows: usize,
     ) -> Vec<Line<'static>> {
-        let mut lines = self.replay(width, theme, mode, rows.max(1));
-        let skip = lines.len().saturating_sub(rows);
-        lines.split_off(skip)
+        self.replay_last(width, theme, mode, rows.max(1), rows)
     }
 }

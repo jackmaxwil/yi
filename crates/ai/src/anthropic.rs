@@ -110,6 +110,7 @@ fn content_blocks(content: &[Content]) -> Value {
 }
 
 fn convert_messages(messages: &[AgentMessage], cache: bool) -> Vec<Value> {
+    let _span = yi_types::trace::span("ai.convert_messages");
     let mut params: Vec<Value> = Vec::new();
     let mut index = 0;
     while index < messages.len() {
@@ -289,6 +290,9 @@ fn convert_tool_choice(choice: &ToolChoice) -> Value {
 }
 
 pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOptions) -> Value {
+    let _span = yi_types::trace::span("ai.build_params")
+        .arg("api", "anthropic")
+        .arg("messages", context.messages.len());
     let transformed = transform_messages(
         &context.messages,
         model,

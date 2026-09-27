@@ -574,6 +574,29 @@ pub(crate) mod tests {
         false
     }
 
+    /// `until` re-read at every stir of the family (epoch, update, settle) until it holds.
+    pub(in crate::plan) async fn stirred_until(
+        host: &SubagentHost,
+        mut until: impl FnMut() -> Result<bool, Box<dyn std::error::Error>>,
+    ) -> TestResult {
+        let stirred = host
+            .children
+            .lock()
+            .map(|children| Arc::clone(&children.stirred))
+            .map_err(|_| "family state poisoned")?;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let mut stir = std::pin::pin!(stirred.notified());
+            stir.as_mut().enable();
+            if until()? {
+                return Ok(());
+            }
+            tokio::time::timeout_at(deadline, stir)
+                .await
+                .map_err(|_| "the family never reached the awaited state")?;
+        }
+    }
+
     pub(in crate::plan) fn texts(messages: &Arc<Mutex<Vec<AgentMessage>>>) -> Vec<String> {
         messages
             .lock()
@@ -974,8 +997,7 @@ pub(crate) mod tests {
             todos: vec![delegated("cut the seam")?],
         }))?;
         let label = TodoLabel::new("cut the seam")?;
-        let mut pace = backoff(std::time::Duration::from_millis(5));
-        for _ in 0..400 {
+        stirred_until(&rig.host, || {
             let busy = rig.host.busy();
             let read = rig.engine.store().read(&out.plan.id)?;
             let running = matches!(
@@ -983,12 +1005,9 @@ pub(crate) mod tests {
                 Some(TodoState::Running { .. })
             );
             assert!(busy || !running, "idle while the todo is still running");
-            if !busy {
-                return Ok(());
-            }
-            tokio::time::sleep(pace()).await;
-        }
-        Err("the host never went idle".into())
+            Ok(!busy)
+        })
+        .await
     }
 
     /// Dies with the cursor dropped: a wait with none read epoch 0 and reported the finished
