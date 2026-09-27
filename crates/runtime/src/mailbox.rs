@@ -973,6 +973,13 @@ mod tests {
             discoveries: Vec::new(),
             extra: Map::new(),
         })?;
+        // The owner opened the plan `write_canonical_plan` writes; nobody else's plan adjudicates.
+        let opened = serde_json::json!({"plan": "adjudication", "op": "open", "actor": "owner", "at": 0, "todos": 1});
+        yi_session::lock_session(&store).append_custom(
+            "main",
+            yi_types::plan::ledger::PLAN_OP_ENTRY_TYPE,
+            Some(opened),
+        )?;
         Ok(store)
     }
 

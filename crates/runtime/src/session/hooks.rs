@@ -256,13 +256,9 @@ impl AgentSession {
         let compactor = self.compactor.clone()?;
         let shared = Arc::clone(&self.shared);
         let model = self.model();
-        Some(Arc::new(move || {
-            let messages = shared
-                .messages
-                .lock()
-                .map(|messages| messages.clone())
-                .unwrap_or_default();
-            compactor.status(&messages, &model)
+        Some(Arc::new(move || match shared.messages.lock() {
+            Ok(messages) => compactor.status(&messages, &model),
+            Err(_) => compactor.status(&[], &model),
         }))
     }
 

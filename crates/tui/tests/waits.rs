@@ -1,5 +1,5 @@
 //! What the turn is held up by, and the call the model is still writing, drawn as they happen.
-mod common;
+use crate::common;
 
 use std::error::Error;
 

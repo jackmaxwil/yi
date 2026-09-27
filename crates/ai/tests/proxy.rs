@@ -144,6 +144,60 @@ fn a_provider_request_reaches_the_configured_proxy() -> Res {
     Ok(())
 }
 
+fn serve_ok_until_closed(stream: std::net::TcpStream) -> std::io::Result<()> {
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut writer = stream;
+    let mut line = String::new();
+    while reader.read_line(&mut line)? > 0 {
+        let mut length = 0usize;
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
+                break;
+            }
+            if let Some((name, value)) = header.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap_or(0);
+            }
+        }
+        reader.read_exact(&mut vec![0u8; length])?;
+        writer.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")?;
+        line.clear();
+    }
+    Ok(())
+}
+
+/// Incident: every turn built a new agent, so every request paid a connect and, against a
+/// provider, a TLS handshake; back-to-back requests now ride one pooled connection.
+#[test]
+fn back_to_back_requests_share_one_connection() -> Res {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let url = format!(
+        "http://127.0.0.1:{}/v1/messages",
+        listener.local_addr()?.port()
+    );
+    let accepted = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&accepted);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            counter.fetch_add(1, Ordering::SeqCst);
+            std::thread::spawn(move || serve_ok_until_closed(stream));
+        }
+    });
+    for _ in 0..3 {
+        let response = send_with_retry(&url, &[], &json!({"model": "probe"}), None, &|_| {})?;
+        assert_eq!(response.into_string()?, "ok");
+    }
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        1,
+        "a connection per request"
+    );
+    Ok(())
+}
+
 /// Dies with the retry slept out in silence: a 429 held the turn for its whole backoff while
 /// the screen said only that the model was being waited on.
 #[test]

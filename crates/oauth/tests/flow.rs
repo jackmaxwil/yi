@@ -69,8 +69,28 @@ fn serve_tokens(body: String, hits: usize) -> Res<(u16, Arc<AtomicUsize>)> {
                     Ok(n) => request.extend_from_slice(&buf[..n]),
                 }
             }
-            // A form body follows the headers; give it a moment and drain it.
-            let _ = stream.read(&mut buf);
+            // A form body follows the headers; drain it to its content-length. A bare read
+            // here sat out the whole 5 s timeout whenever the body came with the headers.
+            let head = request
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map_or(request.len(), |i| i + 4);
+            let body_len = String::from_utf8_lossy(&request[..head])
+                .lines()
+                .find_map(|line| {
+                    let line = line.to_ascii_lowercase();
+                    line.strip_prefix("content-length:")?
+                        .trim()
+                        .parse::<usize>()
+                        .ok()
+                })
+                .unwrap_or(0);
+            while request.len() < head + body_len {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
             let _ = stream.write_all(
                 format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",

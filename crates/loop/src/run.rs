@@ -582,13 +582,19 @@ async fn stream_assistant_response<S: StreamFn>(
         tool_choice,
         watch,
     } = turn;
-    let mut messages = context.messages.clone();
-    if let Some(transform) = &config.transform_context
-        && let Some(transformed) = transform(&messages)
-    {
-        messages = transformed;
-    }
-    let llm_messages = (config.convert_to_llm)(&messages);
+    let preparing =
+        yi_types::trace::span("loop.prepare_request").arg("messages", context.messages.len());
+    let tail = config
+        .request_tail
+        .as_ref()
+        .map(|tail| tail())
+        .unwrap_or_default();
+    let llm_messages = {
+        let _span = yi_types::trace::span("loop.convert_to_llm");
+        let mut converted = (config.convert_to_llm)(&context.messages);
+        converted.extend((config.convert_to_llm)(&tail));
+        converted
+    };
     let tool_defs: Vec<ToolDef> = context.tools.iter().map(|tool| tool.definition()).collect();
     let llm_context = LlmContext {
         system_prompt: context.system_prompt.clone(),
@@ -600,13 +606,19 @@ async fn stream_assistant_response<S: StreamFn>(
         },
         tool_choice,
     };
+    drop(preparing);
 
     signal.clear_cut();
+    let requested_us = yi_types::trace::now_us();
     let mut receiver = if signal.is_fired() {
         tokio::sync::mpsc::channel(1).1
     } else {
+        let _span = yi_types::trace::span("loop.stream_open");
         stream.stream(model, &llm_context, effort, signal)
     };
+    drop(llm_context);
+    let mut first_event = true;
+    let mut first_token = true;
     let mut added_partial = false;
     let mut final_message: Option<AgentMessage> = None;
     let mut budget = ReasoningBudget::default();
@@ -628,6 +640,10 @@ async fn stream_assistant_response<S: StreamFn>(
         let Some(event) = event else {
             break;
         };
+        if std::mem::take(&mut first_event) && yi_types::trace::enabled() {
+            yi_types::trace::complete("loop.first_event", requested_us, Map::new());
+        }
+        let _dispatch = yi_types::trace::span("loop.dispatch");
         match &event {
             AssistantMessageEvent::Start { partial } => {
                 context.messages.push(partial.clone());
@@ -648,6 +664,17 @@ async fn stream_assistant_response<S: StreamFn>(
                 wait: Some(wait.clone()),
             }),
             other => {
+                if first_token
+                    && matches!(
+                        other,
+                        AssistantMessageEvent::TextDelta { .. }
+                            | AssistantMessageEvent::ThinkingDelta { .. }
+                            | AssistantMessageEvent::ToolCallDelta { .. }
+                    )
+                {
+                    first_token = false;
+                    yi_types::trace::complete("loop.first_token", requested_us, Map::new());
+                }
                 match other {
                     AssistantMessageEvent::ThinkingDelta { delta, .. } => cut = budget.push(delta),
                     AssistantMessageEvent::TextStart { .. }
@@ -708,6 +735,24 @@ async fn stream_assistant_response<S: StreamFn>(
     (final_message, cut, timed_out)
 }
 
+async fn side_work(config: &LoopConfig) {
+    if let Some(gate) = &config.side_work {
+        gate().await;
+    }
+}
+
+async fn end(
+    config: &LoopConfig,
+    emit: &mut (dyn FnMut(AgentEvent) + Send),
+    collected: Vec<AgentMessage>,
+) -> Vec<AgentMessage> {
+    side_work(config).await;
+    emit(AgentEvent::AgentEnd {
+        messages: collected.clone(),
+    });
+    collected
+}
+
 pub async fn run_loop<S: StreamFn>(
     context: &mut LoopContext,
     new_messages: Vec<AgentMessage>,
@@ -765,12 +810,14 @@ pub async fn run_loop<S: StreamFn>(
                 collected.push(message);
             }
 
+            let compacting = yi_types::trace::span("loop.maybe_compact");
             if !signal.is_fired()
                 && let Some(compact) = &config.maybe_compact
                 && let Some(compacted) = compact(&context.messages).await
             {
                 context.messages = compacted;
             }
+            drop(compacting);
             let (message, cut, timed_out) = stream_assistant_response(
                 context,
                 config,
@@ -805,10 +852,7 @@ pub async fn run_loop<S: StreamFn>(
                     has_more_tool_calls = false;
                     continue;
                 }
-                emit(AgentEvent::AgentEnd {
-                    messages: collected.clone(),
-                });
-                return collected;
+                return end(config, emit, collected).await;
             }
             if reason == StopReason::Error
                 && stream_retries < STREAM_RETRY_AT
@@ -831,10 +875,7 @@ pub async fn run_loop<S: StreamFn>(
                     message,
                     tool_results: Vec::new(),
                 });
-                emit(AgentEvent::AgentEnd {
-                    messages: collected.clone(),
-                });
-                return collected;
+                return end(config, emit, collected).await;
             }
             // a clean turn ends the error streak: the next error gets its own retry
             stream_retries = 0;
@@ -849,6 +890,7 @@ pub async fn run_loop<S: StreamFn>(
                     (fail_truncated_calls(calls, emit), false)
                 } else {
                     length_stops = 0;
+                    side_work(config).await;
                     let (finalized, terminate) =
                         execute_tool_calls(context, calls, config.tool_execution, signal, emit)
                             .await;
@@ -922,19 +964,13 @@ pub async fn run_loop<S: StreamFn>(
                     pending = vec![word];
                     continue;
                 }
-                emit(AgentEvent::AgentEnd {
-                    messages: collected.clone(),
-                });
-                return collected;
+                return end(config, emit, collected).await;
             }
             if repeats >= REPEAT_STOP_AT
                 || length_stops >= LENGTH_STOP_AT
                 || cut_stops >= CUT_STOP_AT
             {
-                emit(AgentEvent::AgentEnd {
-                    messages: collected.clone(),
-                });
-                return collected;
+                return end(config, emit, collected).await;
             }
             pending = config
                 .get_steering_messages
@@ -974,8 +1010,5 @@ pub async fn run_loop<S: StreamFn>(
         pending = follow_ups;
     }
 
-    emit(AgentEvent::AgentEnd {
-        messages: collected.clone(),
-    });
-    collected
+    end(config, emit, collected).await
 }

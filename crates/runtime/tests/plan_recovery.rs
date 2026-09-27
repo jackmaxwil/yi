@@ -22,8 +22,7 @@
 //! Fixtures this file reads: `fixtures/plans/journal/damaged-middle.jsonl`. The torn
 //! and clean journals are made by the engine, so their records reduce.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
