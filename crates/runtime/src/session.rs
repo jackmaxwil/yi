@@ -656,6 +656,13 @@ impl AgentSession {
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
     }
 
+    pub fn summarizer(&self) -> Model {
+        self.compactor
+            .as_ref()
+            .and_then(|compactor| compactor.summarizer.clone())
+            .unwrap_or_else(|| self.model())
+    }
+
     /// Re-clamps the effort onto the new ladder without recording a level change of its own;
     /// a caller wanting a specific level calls [`AgentSession::set_effort`] after.
     pub fn set_model(&self, model: Model) {

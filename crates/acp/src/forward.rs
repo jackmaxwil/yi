@@ -18,6 +18,7 @@ use yi_types::subagent::ChildId;
 use crate::update::{IdMap, event_update, extension, gap_update, to_updates};
 use crate::{LineSink, update_notification};
 
+#[derive(Clone)]
 pub(crate) struct Forward {
     pub(crate) session_id: String,
     pub(crate) child: Option<ChildId>,
@@ -72,6 +73,7 @@ pub(crate) struct Parent {
     pub(crate) last_workdir: Value,
     pub(crate) last_claims: Value,
     pub(crate) last_plan: Value,
+    pub(crate) titled: bool,
     pub(crate) launch_cwd: std::path::PathBuf,
 }
 
@@ -136,6 +138,24 @@ impl Parent {
         }
     }
 
+    fn title(&mut self) {
+        if std::mem::replace(&mut self.titled, true) {
+            return;
+        }
+        let (session, forward) = (Arc::clone(&self.session), self.forward.clone());
+        tokio::spawn(async move {
+            let update = match yi_runtime::title::title_session(&session).await {
+                Ok(Some(name)) => extension("_yi/name", [("name", Value::String(name))]),
+                Ok(None) => return,
+                Err(error) => extension(
+                    "_yi/notice",
+                    [("text", Value::String(format!("session title: {error}")))],
+                ),
+            };
+            forward.emit(update);
+        });
+    }
+
     pub(crate) fn watch_workdir(&mut self) {
         // A released lane hands the session back: say so, or the row names a lane that is gone.
         let workdir = match self.session.lane().and_then(|lane| lane.row()) {
@@ -170,6 +190,9 @@ impl Parent {
                 if matches!(event, AgentEvent::ToolExecutionEnd { tool_name, .. } if tool_name == "todo")
                 {
                     self.watch_claims();
+                }
+                if matches!(event, AgentEvent::AgentEnd { .. }) {
+                    self.title();
                 }
             }
             _ => {}

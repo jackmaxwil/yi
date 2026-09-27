@@ -1877,10 +1877,10 @@ fn two_root_ledger(frame: &Value) -> Vec<Value> {
     )]
 }
 
-/// Rows sit under their workspace, the console's own first, newest first inside each:
-/// the newest session of all is slot 3 because it belongs to the other root.
+/// Dies with rows grouped by workspace: the inbox ranks every root's sessions by what they
+/// need, so the idle session of the other root outranks two the ledger never placed.
 #[test]
-fn the_sidebar_groups_rows_by_workspace() -> TestResult {
+fn the_inbox_ranks_rows_by_need_across_workspaces() -> TestResult {
     run(
         "root-groups",
         vec![
@@ -1888,9 +1888,10 @@ fn the_sidebar_groups_rows_by_workspace() -> TestResult {
             Step::Expect("session/list", named_list),
             Step::Expect("session/list", two_root_ledger),
         ],
-        "wait-frame 5000 1 RE release notes\n\
-         wait-frame 3000 2 FI fix login bug\n\
-         wait-frame 3000 3 SG s-gamma\n\
+        "wait-frame 5000 1 SG   s-gamma\n\
+         wait-frame 3000 2 RE   release notes\n\
+         wait-frame 3000 3 FI   fix login bug\n\
+         wait-frame 3000   idle\n\
          quit\n",
     )
 }
@@ -1923,13 +1924,13 @@ fn a_state_transition_moves_the_row_to_the_top() -> TestResult {
             Step::Expect("session/resume", resume_then_run),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 1 RE release notes\n\
-         wait-frame 3000 2 FI fix login bug\n\
+        "wait-frame 5000 1 RE   release notes\n\
+         wait-frame 3000 2 FI   fix login bug\n\
          key down\n\
          key enter\n\
          wait-frame 5000 resumed s-alpha\n\
-         wait-frame 3000 1 FI fix login bug\n\
-         wait-frame 3000 2 RE release notes\n\
+         wait-frame 3000 1 FI   fix login bug\n\
+         wait-frame 3000 2 RE   release notes\n\
          quit\n",
     )
 }
@@ -1982,10 +1983,10 @@ fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
             Step::Expect("session/resume", resume_named),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 1 RE release notes\n\
-         wait-frame 3000 2 FI fix login bug\n\
-         wait-frame 3000 this hour\n\
-         wait-frame 3000 today\n\
+        "wait-frame 5000 1 RE   release notes\n\
+         wait-frame 3000 2 FI   fix login bug\n\
+         wait-frame 3000 idle · 5m\n\
+         wait-frame 3000 idle · 3h\n\
          key down\n\
          key up\n\
          key enter\n\
@@ -2042,7 +2043,7 @@ fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
          wait-frame 3000 !s-alpha\n\
          wait-frame 3000 !workspaces\n\
          cmd-b\n\
-         wait-frame 3000 2 SA s-alpha\n\
+         wait-frame 3000 2 SA   s-alpha\n\
          wait-frame 3000 workspaces\n\
          cmd-b\n\
          wait-frame 3000 1 SB   ●│\n\
@@ -2267,7 +2268,7 @@ fn alt_digit_resumes_the_rail_slot() -> TestResult {
             Step::Expect("session/resume", resume_named),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 2 FI fix login bug\n\
+        "wait-frame 5000 2 FI   fix login bug\n\
          key alt-2\n\
          wait-frame 5000 resumed s-alpha\n\
          wait-frame 3000 FI · fix login\n\

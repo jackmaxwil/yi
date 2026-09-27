@@ -591,6 +591,22 @@ impl App {
         self.pending_title.take()
     }
 
+    pub fn working_label(&self) -> Option<String> {
+        let state = self.orb_state()?;
+        let waiting = self
+            .wait
+            .as_ref()
+            .filter(|_| self.running)
+            .map(|(wait, since)| {
+                crate::pen::wait_label(wait, *since, &self.selection.model.provider)
+            });
+        Some(
+            waiting
+                .or_else(|| self.intent.clone())
+                .unwrap_or_else(|| state.label().to_owned()),
+        )
+    }
+
     pub fn orb_state(&self) -> Option<OrbState> {
         if matches!(self.bottom, Some(Bottom::Approval(..))) {
             return Some(OrbState::Listening);

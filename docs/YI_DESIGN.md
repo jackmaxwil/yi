@@ -710,7 +710,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 `tool_call_update`, `state_update`, `usage_update`, `terminal_update`), passes unknown kinds through
 as `Extension`, and adds: `_yi/event` (every `AgentEvent` verbatim, per-session `seq`),
 `_yi/event_gap` (a broadcast lag), `_yi/replay` (a branch verbatim, 512 entries per frame),
-`_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
+`_yi/config`, `_yi/goal`, `_yi/todo`, `_yi/claims`, `_yi/plan_progress`, `_yi/name`, `_yi/workdir{cwd,lane}`, `_yi/landing`,
 `_yi/subagent_update`, `_yi/heartbeat_changed`, `_yi/compaction` (replay only), `_yi/<custom_type>`.
 
 `yi serve` is a supervisor on `~/.yi/daemon.sock` (mode 0600): one `yi acp --cwd <root>` worker
@@ -763,11 +763,17 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
 - A session pane runs `yi-tui`'s chat reducer, fed from `_yi/event` through a port.
 - A drag copies the words under it, without Yi's rails and gutters, over OSC 52.
 - A status change notifies over OSC 9 or kitty OSC 99 once it holds for 1 s.
+- The full sidebar is an inbox: sessions ranked blocked, done and unseen, working, idle, under
+  those sections, two lines a row (name; what it needs or is doing, its list, its age). A done
+  session stays under "needs you" until focused; a poll never clears it. A working or blocked
+  session's avatar plays its state loop at 15 fps in place of its identicon.
+- A session is titled once by the summarizer after its first turn (`_yi/name`); the first
+  prompt stays its name until then, and the daemon's ledger keeps the title.
 - State: `PaneContent{Session, Markdown, Diff, Notebook, SessionDiff, Editor}`,
   `SessionStatus{Blocked, Working, DoneUnseen, Idle, Unknown}`, `SidebarMode{Rail, Full}`,
   `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Keys}`
 - Owner: [`lib.rs`](../crates/console/src/lib.rs), [`model.rs`](../crates/console/src/model.rs)
-- Settled by: D95, D96, D112, D113, D141, D201
+- Settled by: D95, D96, D112, D113, D141, D201, D263
 
 ## 18. Dependencies and size
 

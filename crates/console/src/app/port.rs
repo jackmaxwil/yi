@@ -164,6 +164,7 @@ pub enum Decoded {
     Goal(Option<GoalView>),
     Todo(Option<TodoList>),
     Claims(Vec<yi_types::todo::Claim>),
+    Name(String),
     Plan(Option<yi_tui::hud::PlanProgress>),
     Config(Config),
     Child(ChildUpdate),
@@ -255,6 +256,7 @@ pub fn decode(extension: &AcpExtensionUpdate) -> Result<Decoded, Malformed> {
         "_yi/todo" => Ok(Decoded::Todo(fields.get("list").and_then(|value| {
             serde_json::from_value::<TodoList>(value.clone()).ok()
         }))),
+        "_yi/name" => Ok(Decoded::Name(string(&fields, "name").ok_or(Malformed)?)),
         "_yi/claims" => Ok(Decoded::Claims(
             fields
                 .get("claims")
@@ -301,6 +303,7 @@ pub fn writes_transcript(update: &yi_types::acp::AcpSessionUpdate) -> bool {
                 | "_yi/notice"
                 | "_yi/claims"
                 | "_yi/plan_progress"
+                | "_yi/name"
         ),
         _ => true,
     }

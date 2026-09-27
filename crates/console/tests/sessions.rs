@@ -68,3 +68,63 @@ fn claims_and_plan_progress_reach_a_pane() -> Result<(), String> {
     }
     Ok(())
 }
+
+fn transmits(bytes: &[u8]) -> usize {
+    String::from_utf8_lossy(bytes).matches("a=t").count()
+}
+
+/// Dies with identity only: a working session's avatar stayed its identicon, so the inbox
+/// could not show which sessions were doing what; one back at rest shows its identicon again.
+#[test]
+fn a_working_avatar_plays_its_loop_and_rests_as_its_identicon() {
+    use yi_console::avatar::{Avatars, Placement};
+    use yi_tui::orb::OrbState;
+    let place = |state: Option<OrbState>| Placement {
+        col: 2,
+        row: 0,
+        cols: 4,
+        rows: 2,
+        key: "s1".to_owned(),
+        seed: "s1".to_owned(),
+        accent: (200, 211, 245),
+        state,
+    };
+    let mut avatars = Avatars::default();
+    let mut out = Vec::new();
+    avatars.sync(&mut out, &[place(Some(OrbState::Reading))]);
+    assert_eq!(transmits(&out), 1, "the identicon goes out first");
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    out.clear();
+    avatars.animate(&mut out);
+    assert_eq!(
+        transmits(&out),
+        1,
+        "a frame of the loop replaces it in place"
+    );
+    assert!(
+        avatars.wake().is_some(),
+        "a playing avatar asks for the next frame"
+    );
+    out.clear();
+    avatars.sync(&mut out, &[place(None)]);
+    assert_eq!(transmits(&out), 1, "back at rest, the identicon returns");
+    assert!(avatars.wake().is_none());
+}
+
+#[test]
+fn a_titled_session_name_reaches_a_pane() -> Result<(), String> {
+    use yi_console::app::port::{Decoded, decode};
+    let update = yi_types::acp::AcpExtensionUpdate {
+        session_update: "_yi/name".to_owned(),
+        fields: std::iter::once((
+            "name".to_owned(),
+            serde_json::json!("Fix the context gauge"),
+        ))
+        .collect(),
+    };
+    match decode(&update).map_err(|_| "malformed name")? {
+        Decoded::Name(name) => assert_eq!(name, "Fix the context gauge"),
+        _ => return Err("name decoded as something else".to_owned()),
+    }
+    Ok(())
+}
