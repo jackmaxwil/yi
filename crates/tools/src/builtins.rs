@@ -561,6 +561,7 @@ impl Tool for BashTool {
                 crate::jobs::MAX_TIMEOUT_SECS
             ));
         }
+        let running = yi_types::trace::span("bash.run");
         let (capture, timed_out) = match crate::jobs::run_or_background(
             command,
             &context.cwd,
@@ -581,6 +582,8 @@ impl Tool for BashTool {
             }
             Err(message) => return error_output(message),
         };
+        drop(running);
+        let _format = yi_types::trace::span("bash.format");
         let exit_code_for_reduce = capture.exit_code.unwrap_or(-1);
         let nudge = self.ceiling_nudge(command, timed_out, exit_code_for_reduce, started.elapsed());
         let max_lines = input
