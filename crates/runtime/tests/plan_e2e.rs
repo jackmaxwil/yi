@@ -1,3 +1,4 @@
+use crate::own::own;
 use crate::scratch;
 use scratch::Scratch;
 
@@ -19,10 +20,13 @@ use yi_types::plan::doc::{
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+/// Each store is its own session: a plan's journal names the session that applied it.
 fn memory_store() -> yi_session::SharedSession {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
         yi_session::SessionMetadata {
-            id: "plan-view-test".to_owned(),
+            id: format!("plan-view-test-{n}"),
             created_at: 0,
             parent_session_id: None,
             name: None,
@@ -142,15 +146,33 @@ fn the_doc_pointer_resolves_to_the_canonical_file() -> TestResult {
 }
 
 #[test]
-fn without_a_pointer_the_active_root_is_the_plan() -> TestResult {
+fn without_a_pointer_the_active_root_this_session_opened_is_the_plan() -> TestResult {
     let dir = Scratch::new("yi-plan-view-fallback")?;
     let store = memory_store();
     write_plan(
         &dir,
         doc_plan("only-root", 2, vec![todo("cut", TodoState::Pending)?])?,
     )?;
+    own(&store, "only-root")?;
     let (service, _delivered) = harness(&dir, &store, 12);
     assert_eq!(service.read_plan()?.id.as_str(), "only-root");
+    Ok(())
+}
+
+#[test]
+fn a_fresh_session_never_inherits_another_sessions_active_plan() -> TestResult {
+    let dir = Scratch::new("yi-plan-view-foreign")?;
+    let opener = memory_store();
+    write_plan(
+        &dir,
+        doc_plan("theirs", 2, vec![todo("cut", TodoState::Pending)?])?,
+    )?;
+    own(&opener, "theirs")?;
+    let (fresh, _delivered) = harness(&dir, &memory_store(), 12);
+    match fresh.read_plan() {
+        Err(CanonicalPlanError::NoPlanOpen { dir: named }) => assert_eq!(named, *dir),
+        other => return Err(format!("expected no-plan, got {other:?}").into()),
+    }
     Ok(())
 }
 
@@ -217,6 +239,7 @@ fn stale_plan_reminds_once_then_latches_until_touched_moves() -> TestResult {
         &dir,
         doc_plan("goes-stale", 1, vec![todo("cut", TodoState::Pending)?])?,
     )?;
+    own(&store, "goes-stale")?;
     let (service, delivered) = harness(&dir, &store, 2);
     for _ in 0..6 {
         service.observe(&assistant_turn_end());
@@ -250,6 +273,7 @@ fn a_touched_move_pokes_the_change_hook_with_the_new_document() -> TestResult {
         &dir,
         doc_plan("watched", 1, vec![todo("cut", TodoState::Pending)?])?,
     )?;
+    own(&store, "watched")?;
     let (service, _delivered) = harness(&dir, &store, 12);
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
@@ -298,6 +322,7 @@ fn plan_get_serializes_the_document_with_ready_and_finished() -> TestResult {
             ],
         )?,
     )?;
+    own(&store, "served")?;
     let (service, _delivered) = harness(&dir, &store, 12);
     let value = service.get().map_err(|error| error.to_string())?;
     assert_eq!(value["plan"], serde_json::json!("served"));
@@ -866,5 +891,110 @@ async fn a_shape_cannot_retry_a_done_or_drop_a_running_todo() -> TestResult {
     };
     assert!(matches!(state("finished")?, TodoState::Done { .. }));
     assert!(matches!(state("busy")?, TodoState::Running { .. }));
+    Ok(())
+}
+
+/// Two sessions in one workspace share `.yi/plans`; each engine names only the roots its own
+/// ledger touched, so a fresh session neither views nor is refused over the other's plan.
+#[test]
+fn an_engine_never_resolves_or_conflicts_over_another_sessions_plan() -> TestResult {
+    use yi_runtime::plan::ops::{Op, OpRequest, PlanOpError};
+    let dir = Scratch::new("yi-plan-engine-scoped")?;
+    let session = |store: &yi_session::SharedSession| -> Result<PlanEngine, Box<dyn Error>> {
+        let (sink, scope) = (store.clone(), store.clone());
+        Ok(
+            PlanEngine::new(PlanStore::open(dir.to_path_buf())?, Arc::new(NoChildren))
+                .with_op_sink(Arc::new(yi_runtime::plan::ledger::SessionOpSink(Arc::new(
+                    move || Some(sink.clone()),
+                ))))
+                .with_owned(Arc::new(move || {
+                    yi_runtime::plan::ledger::Owned::of(std::slice::from_ref(&scope))
+                })),
+        )
+    };
+    let owner = |op: Op| OpRequest {
+        plan: None,
+        actor: Actor::Owner,
+        op,
+        request_id: None,
+        expected_revision: None,
+    };
+    let init = |goal: &str| -> Result<Op, Box<dyn Error>> {
+        Ok(Op::Init {
+            goal: GoalText::new(goal)?,
+            todos: vec![yi_runtime::plan::ops::TodoSpec {
+                label: TodoLabel::new("cut")?,
+                after: Vec::new(),
+                delegation: None,
+                contract: None,
+                children: Vec::new(),
+            }],
+        })
+    };
+    let (first, second) = (memory_store(), memory_store());
+    let (theirs, mine) = (session(&first)?, session(&second)?);
+    let opened = theirs.apply(owner(init("their plan")?))?.plan.id;
+    match mine.apply(owner(Op::View { full: false })) {
+        Err(PlanOpError::NoPlan) => {}
+        other => return Err(format!("a fresh session viewed {other:?}").into()),
+    }
+    let own = mine.apply(owner(init("my plan")?))?.plan.id;
+    assert_ne!(own, opened, "the fresh session opened its own plan");
+    assert_eq!(
+        theirs.apply(owner(Op::View { full: false }))?.plan.id,
+        opened
+    );
+    assert_eq!(mine.apply(owner(Op::View { full: false }))?.plan.id, own);
+    Ok(())
+}
+
+struct LostLedger;
+
+impl yi_runtime::plan::ops::OpSink for LostLedger {
+    fn record(&self, _record: yi_types::plan::ledger::PlanOpRecord) -> Result<(), String> {
+        Err("session file unwritable".to_owned())
+    }
+}
+
+/// The ledger entry is telemetry and may be lost; the session still owns the plan it opened, so
+/// its next unnamed op finds it and a second `init` is refused instead of opening a duplicate.
+#[test]
+fn a_lost_ledger_write_does_not_orphan_the_plan_it_opened() -> TestResult {
+    use yi_runtime::plan::ops::{Op, OpRequest, PlanOpError};
+    let dir = Scratch::new("yi-plan-lost-ledger")?;
+    let store = memory_store();
+    let engine = PlanEngine::new(PlanStore::open(dir.to_path_buf())?, Arc::new(NoChildren))
+        .with_op_sink(Arc::new(LostLedger))
+        .with_owned(Arc::new(move || {
+            yi_runtime::plan::ledger::Owned::of(std::slice::from_ref(&store))
+        }));
+    let owner = |op: Op| OpRequest {
+        plan: None,
+        actor: Actor::Owner,
+        op,
+        request_id: None,
+        expected_revision: None,
+    };
+    let init = || -> Result<Op, Box<dyn Error>> {
+        Ok(Op::Init {
+            goal: GoalText::new("ship it")?,
+            todos: vec![yi_runtime::plan::ops::TodoSpec {
+                label: TodoLabel::new("cut")?,
+                after: Vec::new(),
+                delegation: None,
+                contract: None,
+                children: Vec::new(),
+            }],
+        })
+    };
+    let opened = engine.apply(owner(init()?))?.plan.id;
+    assert_eq!(
+        engine.apply(owner(Op::View { full: false }))?.plan.id,
+        opened
+    );
+    match engine.apply(owner(init()?)) {
+        Err(PlanOpError::PlanExists { id }) => assert_eq!(id, opened),
+        other => return Err(format!("a duplicate root opened: {other:?}").into()),
+    }
     Ok(())
 }
