@@ -94,12 +94,13 @@ fn responds_per_command_streams_events_and_persists_v4() -> TestResult {
         .count();
     assert!(message_ends >= 2, "user + assistant message_end expected");
 
-    let sessions_dir = std::fs::read_dir(dir.join("sessions"))?
+    // The corpus also holds `family/` and `kernels/` (#580); the transcript's directory is
+    // the one holding a `.jsonl`.
+    let session_file = std::fs::read_dir(dir.join("sessions"))?
         .filter_map(Result::ok)
-        .find(|entry| entry.path().is_dir())
-        .ok_or("no cwd session directory")?;
-    let session_file = std::fs::read_dir(sessions_dir.path())?
-        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| std::fs::read_dir(entry.path()).ok())
+        .flat_map(|files| files.filter_map(Result::ok))
         .find(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
         .ok_or("no session file")?;
     let content = std::fs::read_to_string(session_file.path())?;

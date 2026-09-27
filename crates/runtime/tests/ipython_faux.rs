@@ -84,6 +84,7 @@ async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Bo
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        per_session_state: false,
         cell_ceiling: None,
     }));
     let mut tools = yi_tools::builtin_tools();
@@ -165,6 +166,7 @@ async fn an_unawaited_spawn_runs_once_after_the_cell_and_says_so() -> Result<(),
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        per_session_state: false,
         cell_ceiling: None,
     }));
     let mut tools = yi_tools::builtin_tools();
@@ -240,6 +242,7 @@ async fn a_cell_that_never_returns_is_aborted_at_the_ceiling() -> Result<(), Box
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        per_session_state: false,
         cell_ceiling: Some(std::time::Duration::from_secs(1)),
     }));
     // The boot (and a cold venv build) stays off the clock under test.
