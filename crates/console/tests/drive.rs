@@ -2263,6 +2263,98 @@ fn a_working_session_shows_the_working_line() -> TestResult {
     )
 }
 
+fn tape_reply(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"start": 0, "end": 60_000, "model": [[0, 30_000]], "tools": [],
+            "marks": [{"at": 0, "kind": "user", "entry": "e0", "label": "hello agent"}]}),
+    )]
+}
+
+/// Dies with a rewind sent into a running turn from the Tape: the pane says to wait for the
+/// turn to end, and sends nothing.
+#[test]
+fn the_tape_refuses_a_rewind_while_a_turn_runs() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(running_push));
+    fixture.push(Step::Expect("_yi/tape", tape_reply));
+    run(
+        "tape-running",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 [esc] interrupt\n\
+         cmd-y\n\
+         wait-frame 3000 +0s · hello agent\n\
+         key alt-right\n\
+         key enter\n\
+         wait-frame 3000 a turn is running: rewind once it ends\n\
+         quit\n",
+    )
+}
+
+fn tape_of(frame: &Value, labels: &[&str]) -> Vec<Value> {
+    let marks: Vec<Value> = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| {
+            json!({"at": index * 60_000, "kind": "user", "entry": format!("e{index}"), "label": label})
+        })
+        .collect();
+    let end = labels.len() * 60_000;
+    vec![ok(
+        frame,
+        json!({"start": 0, "end": end, "model": [], "tools": [], "marks": marks}),
+    )]
+}
+
+fn prompt_then_idle(frame: &Value) -> Vec<Value> {
+    vec![
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "state_update", "state": "running"}),
+        ),
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "state_update", "state": "idle"}),
+        ),
+        ok(frame, json!({"stopReason": "end_turn"})),
+    ]
+}
+
+/// Dies with the chosen mark jumping to the newest on every idle refresh: a user who picked
+/// an older turn loses it as soon as a turn ends.
+#[test]
+fn a_tape_refresh_keeps_the_chosen_mark() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("_yi/tape", |frame| {
+        tape_of(frame, &["first turn", "second turn"])
+    }));
+    fixture.push(Step::Expect("session/prompt", prompt_then_idle));
+    fixture.push(Step::Expect("_yi/tape", |frame| {
+        tape_of(frame, &["first turn", "second turn", "third turn"])
+    }));
+    run(
+        "tape-cursor",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-y\n\
+         wait-frame 3000 +1m · second turn\n\
+         key alt-right\n\
+         key left\n\
+         wait-frame 3000 +0s · first turn\n\
+         key alt-left\n\
+         type third turn\n\
+         key enter\n\
+         wait-frame 5000 Tape · 3m\n\
+         wait-frame 1000 +0s · first turn\n\
+         quit\n",
+    )
+}
+
 /// Two panes on one session both reduce the same events; each keeps its own composer.
 #[test]
 fn two_panes_one_session_both_render_events() -> TestResult {

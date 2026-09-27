@@ -972,3 +972,26 @@ fn attach_names_the_lane_path_not_the_launch_root() -> Result<(), Box<dyn Error>
     client.finish()?;
     Ok(())
 }
+
+/// Dies with the Tape pane empty forever: the worker had a `_yi/tape` handler its request
+/// dispatch never reached, so every ask came back as an unknown method.
+#[test]
+fn a_tape_request_reaches_the_worker_and_marks_the_typed_turn() -> TestResult {
+    let dir = temp_dir("tape")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    let session_id = new_faux_session(&mut client, &dir)?;
+    prompt_until_idle(&mut client, "3", &session_id, "time me")?;
+    let frames = client.request("4", "_yi/tape", json!({"sessionId": session_id}))?;
+    let response = frames.last().ok_or("no tape response")?;
+    assert!(response["error"].is_null(), "{response}");
+    let marks = response["result"]["marks"]
+        .as_array()
+        .ok_or("no marks in the tape")?;
+    assert!(
+        marks
+            .iter()
+            .any(|mark| mark["kind"] == "user" && mark["label"] == "time me"),
+        "{response}"
+    );
+    client.finish()
+}

@@ -690,7 +690,7 @@ impl AcpState {
                 Ok(json!({}))
             }
             "session/set_config_option" => self.set_config_option(params),
-            "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/branch_diff"
+            "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/branch_diff" | "_yi/tape"
             | "_yi/kernel_execute" | "_yi/kernel_cancel" | "_yi/slash" => {
                 self.handle_extension(method, params)
             }

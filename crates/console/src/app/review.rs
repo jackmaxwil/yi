@@ -2,8 +2,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;
 use yi_tui::port::SessionPort;
 use yi_types::acp::AcpSessionUpdate;
+use yi_types::tape::MarkKind;
 
-use crate::model::{PaneContent, SessionId};
+use crate::model::{PaneContent, SessionId, SessionStatus};
 
 use super::App;
 
@@ -109,8 +110,15 @@ impl App {
                     .and_then(|tape| tape.marks.get(*cursor))
                     .cloned();
                 let session = session.clone();
+                let busy = self.state.sessions.get(&session).is_some_and(|row| {
+                    matches!(row.status, SessionStatus::Working | SessionStatus::Blocked)
+                });
                 match chosen {
-                    Some(mark) if mark.kind == yi_types::tape::MarkKind::User => {
+                    // Invariant: a rewind re-attaches the history a running turn is writing.
+                    Some(mark) if mark.kind == MarkKind::User && busy => {
+                        self.note("a turn is running: rewind once it ends");
+                    }
+                    Some(mark) if mark.kind == MarkKind::User => {
                         if let Some(chat) = self.state.chats_mut(&session).into_iter().next() {
                             chat.port
                                 .queue
@@ -139,9 +147,22 @@ impl App {
             } = &mut pane.content
                 && bound == session
             {
-                *cursor = fresh
+                let marks = tape.as_ref().map_or(&[][..], |tape| tape.marks.as_slice());
+                let chosen = marks
+                    .get(*cursor)
+                    .filter(|_| cursor.saturating_add(1) < marks.len());
+                let last = fresh
                     .as_ref()
                     .map_or(0, |tape| tape.marks.len().saturating_sub(1));
+                *cursor = chosen
+                    .and_then(|mark| {
+                        fresh
+                            .as_ref()?
+                            .marks
+                            .iter()
+                            .position(|kept| kept.entry == mark.entry)
+                    })
+                    .unwrap_or(last);
                 tape.clone_from(&fresh);
             }
         }
