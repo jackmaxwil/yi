@@ -643,6 +643,9 @@ async fn stream_assistant_response<S: StreamFn>(
                 final_message = Some(error.clone());
                 break;
             }
+            AssistantMessageEvent::Waiting { wait } => emit(AgentEvent::Wait {
+                wait: Some(wait.clone()),
+            }),
             other => {
                 match other {
                     AssistantMessageEvent::ThinkingDelta { delta, .. } => cut = budget.push(delta),

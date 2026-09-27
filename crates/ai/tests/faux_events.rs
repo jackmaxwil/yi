@@ -20,6 +20,7 @@ fn kinds(events: &[AssistantMessageEvent]) -> Vec<&'static str> {
             AssistantMessageEvent::ToolCallEnd { .. } => "toolcall_end",
             AssistantMessageEvent::Done { .. } => "done",
             AssistantMessageEvent::Error { .. } => "error",
+            AssistantMessageEvent::Waiting { .. } => "waiting",
         })
         .collect()
 }

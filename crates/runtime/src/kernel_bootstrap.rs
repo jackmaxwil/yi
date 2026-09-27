@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 /// Binds `rlm` and `mcp` in the namespace, or a loud placeholder when the
 /// runtime package is missing. [`rlm_bootstrap_code`] appends bundled skills.
 pub const RLM_BOOTSTRAP_CODE: &str = r#"
@@ -206,5 +208,34 @@ pub fn restart_note(lost: Option<&[String]>) -> String {
             names.len(),
             names.join(", ")
         ),
+    }
+}
+
+pub type BootFn = dyn Fn(Option<&str>) + Send + Sync;
+
+pub(crate) struct Booting(Option<Arc<BootFn>>);
+
+impl Booting {
+    pub(crate) fn new(report: Option<Arc<BootFn>>) -> Self {
+        if let Some(report) = &report {
+            report(Some("starting the kernel"));
+        }
+        Self(report)
+    }
+
+    pub(crate) fn progress(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
+        let report = self.0.clone();
+        Arc::new(move |message: &str| match &report {
+            Some(report) => report(Some(message)),
+            None => eprintln!("{message}"),
+        })
+    }
+}
+
+impl Drop for Booting {
+    fn drop(&mut self) {
+        if let Some(report) = &self.0 {
+            report(None);
+        }
     }
 }

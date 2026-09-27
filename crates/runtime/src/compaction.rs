@@ -18,6 +18,14 @@ pub type CompactFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<AgentMessage>>> + Send>>;
 pub type CompactHook = Box<dyn Fn(&[AgentMessage]) -> CompactFuture + Send + Sync>;
 pub type StoreOf = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
+pub type WaitFn = dyn Fn(Option<yi_types::event::Wait>) + Send + Sync;
+
+#[derive(Clone)]
+pub struct CompactReports {
+    pub waiting: Arc<WaitFn>,
+    pub compacted: Arc<dyn Fn() + Send + Sync>,
+    pub unsaved: Arc<dyn Fn(&yi_session::SessionError) + Send + Sync>,
+}
 
 pub fn loop_hook(
     compactor: Arc<Compactor>,
@@ -25,8 +33,7 @@ pub fn loop_hook(
     model: Model,
     system_prompt: Arc<dyn Fn() -> String + Send + Sync>,
     store: StoreOf,
-    compacted: Arc<dyn Fn() + Send + Sync>,
-    unsaved: Arc<dyn Fn(&yi_session::SessionError) + Send + Sync>,
+    reports: CompactReports,
 ) -> CompactHook {
     Box::new(move |messages: &[AgentMessage]| {
         let compactor = Arc::clone(&compactor);
@@ -34,11 +41,19 @@ pub fn loop_hook(
         let model = model.clone();
         let assembled = system_prompt();
         let store = store();
-        let compacted = Arc::clone(&compacted);
-        let unsaved = Arc::clone(&unsaved);
+        let CompactReports {
+            waiting,
+            compacted,
+            unsaved,
+        } = reports.clone();
         let messages = messages.to_vec();
         Box::pin(async move {
             let signal = InterruptSignal::default();
+            let due = compactor.settings.enabled && compactor.due(&messages, &model);
+            if due {
+                let tokens = estimate_context(&messages).tokens.0;
+                waiting(Some(yi_types::event::Wait::Compaction { tokens }));
+            }
             let replaced = compactor
                 .maybe_compact(
                     &messages,
@@ -49,6 +64,9 @@ pub fn loop_hook(
                     &signal,
                 )
                 .await;
+            if due {
+                waiting(None);
+            }
             match replaced {
                 Ok(replaced) => {
                     if replaced.is_some() {

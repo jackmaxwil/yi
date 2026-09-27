@@ -601,7 +601,10 @@ impl EventMapper {
             partial_args: String::new(),
             freeform: false,
         });
-        events.push(AssistantMessageEvent::ToolCallStart { content_index });
+        events.push(AssistantMessageEvent::ToolCallStart {
+            content_index,
+            name: (!name.is_empty()).then(|| name.to_owned()),
+        });
         Some(self.tools.len().saturating_sub(1))
     }
 
@@ -959,6 +962,7 @@ fn run_request(
     let url = format!("{}/responses", model.base_url);
     let mut mapper = EventMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
+    let retried = crate::request::waiting(sender);
     let resent = crate::request::pump_sse_with_resend(
         wire.stop,
         || {
@@ -969,6 +973,7 @@ fn run_request(
                 body,
                 wire.proxy,
                 wire.extra,
+                &retried,
             )
         },
         |sse| {

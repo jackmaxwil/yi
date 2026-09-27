@@ -176,6 +176,7 @@ impl RuntimeWiring {
         host: Arc<dyn yi_kernel::client::HostHandlers>,
         on_restore: Arc<crate::kernel::RestoreNoticeFn>,
         snapshot_key: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+        on_boot: Arc<crate::kernel::BootFn>,
     ) -> crate::kernel::KernelServiceOptions {
         crate::kernel::KernelServiceOptions {
             cwd: self.cwd.clone(),
@@ -184,6 +185,7 @@ impl RuntimeWiring {
             family_dir: Some(self.family_dir()),
             host,
             on_restore: Some(on_restore),
+            on_boot: Some(on_boot),
             sandbox: self.session_sandbox(),
             snapshot_key: Some(snapshot_key),
             per_session_state: self.depth == 0 && self.sessions_dir.is_some(),
@@ -703,10 +705,16 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         Arc::clone(&resolver),
     );
     let restore_notice = session.notice_hook();
+    let waits = session.wait_hook();
     let service = Arc::new(crate::kernel::KernelService::new(wiring.kernel_options(
         Arc::new(registry),
         Arc::new(move |restore| restore_notice(&crate::kernel::restore_notice_text(restore))),
         session.store_id_hook(),
+        Arc::new(move |step: Option<&str>| {
+            waits(step.map(|step| yi_types::event::Wait::KernelBoot {
+                step: step.to_owned(),
+            }));
+        }),
     )));
     wire_advisor(session, &wiring);
     if wiring.kernel_prewarm {
