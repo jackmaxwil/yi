@@ -190,8 +190,10 @@ def read_claude(path):
         if not isinstance(entry, dict) or not entry.get("uuid"):
             continue
         uuid = entry["uuid"]
+        # Incident: Claude Code rewrote a block under the same uuids further down; ordered by the copy,
+        # 29 boundaries lost earlier owner messages from the prefix. An entry's place is its first line.
         node = {"id": uuid, "parent": entry.get("parentUuid") or entry.get("logicalParentUuid"),
-                "order": order, "kind": "skip"}
+                "order": nodes[uuid]["order"] if uuid in nodes else order, "kind": "skip"}
         message = entry.get("message") or {}
         human = claude_human(entry) if entry.get("type") in ("user", "attachment") else None
         if human:

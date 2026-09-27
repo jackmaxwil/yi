@@ -150,7 +150,19 @@ class Prefix(unittest.TestCase):
             late = {"type": "user", "uuid": "late-result", "parentUuid": parallel["uuid"],
                     "message": {"role": "user", "content": [{"type": "tool_result", "content": "LATE RESULT",
                                                              "tool_use_id": parallel["message"]["content"][0]["id"]}]}}
-            copy.write_text(copy.read_text() + json.dumps(late) + "\n")
+            # A rewound branch off the turn end, earlier in the file than the boundary: the owner's
+            # abandoned message, the call it drew and that call's result.
+            end = next(e for e in entries if e.get("uuid", "").startswith("bff7057e"))
+            rewound = [{"type": "user", "uuid": "gone-typed", "parentUuid": end["uuid"],
+                        "message": {"role": "user", "content": "typed gone: REWOUND WORDS"}},
+                       {"type": "assistant", "uuid": "gone-call", "parentUuid": "gone-typed", "message": {
+                           "id": "gone", "role": "assistant", "stop_reason": "tool_use", "content": [
+                               {"type": "tool_use", "id": "toolu_gone", "name": "Bash", "input": {"command": "REWOUND CALL"}}]}},
+                       {"type": "user", "uuid": "gone-result", "parentUuid": "gone-call", "message": {"role": "user", "content": [
+                           {"type": "tool_result", "tool_use_id": "toolu_gone", "content": "REWOUND RESULT"}]}}]
+            lines = copy.read_text().split("\n")
+            at = next(i for i, line in enumerate(lines) if f'"uuid": "{end["uuid"]}"' in line) + 1
+            copy.write_text("\n".join(lines[:at] + [json.dumps(e) for e in rewound] + lines[at:]) + json.dumps(late) + "\n")
             checked, shown_by_next = 0, {}
             for row, nodes in fixture_rows(root):
                 shown = jr.prefix(row, nodes)
@@ -164,11 +176,47 @@ class Prefix(unittest.TestCase):
                     self.assertIsNone(re.search(re.escape(later) + r"(?!\d)", shown), f"{later!r} leaked before its boundary")
         self.assertGreater(checked, 100)
         self.assertNotIn("LATE RESULT", shown_by_next["typed 65: the owner's words"])
+        for rewound in ("REWOUND WORDS", "REWOUND CALL", "REWOUND RESULT"):
+            self.assertNotIn(rewound, shown_by_next["typed 65: the owner's words"], "the rewound branch leaked")
         for twig in ("description 51", *(f"result at line {i}" for i in range(52, 58))):
             self.assertRegex(shown_by_next["typed 65: the owner's words"], re.escape(twig) + r"(?!\d)",
                              "a parallel call or its result hanging off the path was lost")
         for abandoned in ("now add the tests", "Tests added in tests/parse.rs."):
             self.assertNotIn(abandoned, shown_by_next["no: rename the parser first"], "the abandoned branch leaked")
+
+    def test_a_block_rewritten_further_down_under_the_same_uuids_changes_no_prefix(self):
+        # Claude Code rewrote lines 6-1255 of a real transcript at 2236-3308 under the same uuids;
+        # placed by the copy, 29 later boundaries lost earlier owner messages and no row said so.
+        source = CLAUDE / "-work-yi" / "466b740d-062b-4cef-8ab7-f101e5f7b06c.jsonl"
+        lines = source.read_text().split("\n")
+        with tempfile.TemporaryDirectory() as scratch:
+            copy = pathlib.Path(scratch) / source.name
+            copy.write_text("\n".join(lines + lines[:300]))
+            prefixes = [{r["next"]["text"]: jr.prefix(r, nodes) for r in jr.boundaries("claude", path, nodes)}
+                        for path in (source, copy) for nodes in [jr.read_claude(path)]]
+        self.assertEqual(len(prefixes[0]), 6)
+        self.assertEqual(prefixes[1], prefixes[0])
+
+    def test_a_transcript_whose_path_changed_since_extract_is_an_error_row_not_a_call(self):
+        # The corpus is live: once the path's owner messages move, [uN] no longer names the message
+        # a citation resolves against, so the boundary is refused rather than asked.
+        out, corpus = tempfile.mkdtemp(), tempfile.mkdtemp()
+        for scratch in (out, corpus):
+            self.addCleanup(shutil.rmtree, scratch, True)
+        shutil.copytree(CLAUDE, corpus, dirs_exist_ok=True)
+        changed = pathlib.Path(corpus) / "-work-yi" / "466b740d-062b-4cef-8ab7-f101e5f7b06c.jsonl"
+        with contextlib.redirect_stdout(io.StringIO()):
+            jr.main(["extract", "--out", out, "--corpus", f"claude:{corpus}"])
+            jr.main(["label", "--out", out, "--model", "faux/faux-1", "--dry"])
+            changed.write_text("\n".join(json.dumps({**json.loads(line), "isMeta": True}) if "typed 6: " in line else line
+                                         for line in changed.read_text().split("\n")))
+            with mock.patch.object(jr, "request", wraps=jr.request) as request:
+                self.assertEqual(jr.main(["judge", "--out", out, "--model", "faux/faux-1", "--dry", "--arm", "judge"]), 0)
+        rows = [r for p in (pathlib.Path(out) / "verdicts").glob("*.jsonl") for r in jr.read_rows(p)]
+        stale = [r for r in rows if "changed since extract" in r.get("error", "")]
+        self.assertTrue(stale)
+        self.assertFalse([r for r in stale if "verdict" in r])
+        self.assertEqual(request.call_count, len(rows) - len(stale))
 
     def test_the_tool_cap_speaks_at_limit_plus_one(self):
         nodes = jr.read_yi(YI)
@@ -263,7 +311,8 @@ class Labels(unittest.TestCase):
             quote = owner.group(1) if owner and mode == 0 else "words the owner never wrote"
             expected.append(bool(owner) and mode == 0)
             return completion(json.dumps({"label": "objected", "kind": "intent_loss", "objection": "o", "quote": "q",
-                                          "rests_on": [{"msg": "u99" if mode == 2 else "u1", "quote": quote}]}), cost=0.001)
+                                          "rests_on": [{"msg": "u99" if mode == 2 else "u1", "quote": quote},
+                                                       {"msg": "u98", "quote": quote}]}), cost=0.001)
 
         with contextlib.redirect_stdout(io.StringIO()), mock.patch.dict(os.environ, {jr.KEY: "k"}), \
                 mock.patch.object(jr, "post", side_effect=reply):
@@ -344,6 +393,28 @@ class Call(unittest.TestCase):
                 done = jr.run_calls(self.args(jobs=1, cap_usd=cap), "label", items, sink,
                                     lambda item: ("s", "p", None, dict(item)), lambda row: row)
                 self.assertEqual((done, post.call_count, len(jr.read_rows(sink))), (exit, sent, sent))
+
+    def test_a_p_objection_outside_zero_to_one_is_a_call_without_a_verdict(self):
+        # A model answering in percent would outrank every answer on the 0-1 scale and bend the
+        # AUROC; the row is refused instead, and the gate counts it.
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, True)
+        said = iter([0.8, 80, True, None])
+
+        def reply(body):
+            chance = next(said)
+            answer = {"verdict": "revise", "objections": []} | ({} if chance is None else {"p_objection": chance})
+            return completion(json.dumps(answer), cost=0.001)
+
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.dict(os.environ, {jr.KEY: "k"}), \
+                mock.patch.object(jr, "post", side_effect=reply):
+            jr.main(["extract", "--out", out, "--corpus", f"yi:{jr.FIXTURES['yi']}", "--corpus", f"claude:{CLAUDE}"])
+            jr.main(["label", "--out", out, "--model", "faux/faux-1", "--dry"])
+            self.assertEqual(jr.main(["judge", "--out", out, "--model", self.MODEL, "--arm", "judge", "--limit", "4",
+                                      "--cap-usd", "1"]), 0)
+        rows = [r for p in (pathlib.Path(out) / "verdicts").glob("*.jsonl") for r in jr.read_rows(p)]
+        self.assertEqual([(r.get("p_objection"), r.get("error")) for r in rows],
+                         [(0.8, None)] + [(None, "no verdict with a p_objection in [0, 1]")] * 3)
 
     def test_retries_are_bounded_and_a_client_error_is_not_retried(self):
         for code, attempts in ((429, jr.RETRIES + 1), (503, jr.RETRIES + 1), (400, 1)):
