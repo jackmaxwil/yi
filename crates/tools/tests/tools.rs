@@ -792,6 +792,32 @@ fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
     Ok(())
 }
 
+/// Dies with the 200 ms poll back in the job wait: a job ending just after the wait began was
+/// seen a poll late, so five waits took a second or more.
+#[test]
+fn a_job_wait_returns_as_the_job_settles() -> TestResult {
+    let dir = temp_dir("background-settle")?;
+    let tool = BashTool::default();
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.auto_background = Some(std::time::Duration::from_millis(80));
+    let mut waited = std::time::Duration::ZERO;
+    for _ in 0..5 {
+        let started = tool.execute(args(&[("command", json!("sleep 0.1"))]), &context);
+        let job = started.result.details.get("job").and_then(Value::as_u64);
+        let job = job.ok_or("no job id")?;
+        let polling = std::time::Instant::now();
+        let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(5))]), &context);
+        waited += polling.elapsed();
+        let finished = text_of(&polled.result.content);
+        assert!(finished.contains("finished (exit 0)"), "{finished}");
+    }
+    assert!(
+        waited < std::time::Duration::from_millis(500),
+        "five waits took {waited:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn without_auto_background_a_command_holds_the_turn() -> TestResult {
     let dir = temp_dir("no-background")?;
