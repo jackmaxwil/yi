@@ -14,5 +14,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|rest| rest.split_whitespace().next())
         .ok_or("docs/ARCHITECTURE.md has no `version:` line")?;
     println!("cargo::rustc-env=ARCHITECTURE_VERSION={version}");
+    // A release-derived build ships stripped, so the function-starts table only told a profiler
+    // where functions begin in a binary without symbols: 45 KB of it (D265).
+    let macos = std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos");
+    if macos && std::env::var("PROFILE").is_ok_and(|profile| profile == "release") {
+        println!("cargo::rustc-link-arg-bins=-Wl,-no_function_starts");
+    }
     Ok(())
 }
