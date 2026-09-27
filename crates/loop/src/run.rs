@@ -660,6 +660,9 @@ async fn stream_assistant_response<S: StreamFn>(
                 final_message = Some(error.clone());
                 break;
             }
+            AssistantMessageEvent::Waiting { wait } => emit(AgentEvent::Wait {
+                wait: Some(wait.clone()),
+            }),
             other => {
                 if first_token
                     && matches!(

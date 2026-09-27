@@ -195,6 +195,27 @@ impl App {
                 }
                 self.dirty = true;
             }
+            Decoded::Name(name) => {
+                if let Some(row) = self.state.sessions.get_mut(id) {
+                    row.name = Some(name.clone());
+                }
+                for chat in self.state.chats_mut(id) {
+                    chat.app.set_session_name(name.clone());
+                }
+                self.dirty = true;
+            }
+            Decoded::Claims(claims) => {
+                for chat in self.state.chats_mut(id) {
+                    chat.port.set_claims(claims.clone());
+                }
+                self.dirty = true;
+            }
+            Decoded::Plan(plan) => {
+                for chat in self.state.chats_mut(id) {
+                    chat.port.set_plan(plan.clone());
+                }
+                self.dirty = true;
+            }
             Decoded::Config(config) => {
                 // A pick's two requests each echo a frame before their answers; only the last announces.
                 let own = RequestKind::SetConfig(id.clone());
@@ -507,6 +528,7 @@ impl App {
     }
 
     pub(super) fn pump_chats(&mut self, outbound: &Outbound) {
+        self.ask_branches(outbound);
         let ids: Vec<PaneId> = self.state.panes.keys().copied().collect();
         for pane_id in ids {
             let Some(session) = self

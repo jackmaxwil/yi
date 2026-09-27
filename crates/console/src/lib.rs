@@ -241,7 +241,8 @@ fn run_interactive(
         let wake = scheduler
             .poll_timeout(Instant::now())
             .min(IDLE_POLL)
-            .min(orb_wake(app));
+            .min(orb_wake(app))
+            .min(app.avatars.wake().unwrap_or(IDLE_POLL));
         // Incident: a 50 ms input poll delayed every daemon frame; any event now wakes the loop.
         match events.recv_timeout(wake) {
             Ok(ClientEvent::InputClosed(error)) => {
@@ -285,6 +286,7 @@ fn run_interactive(
             use std::io::Write;
             let mut out = std::io::stdout();
             place_chat_orbs(app, &mut out);
+            app.avatars.animate(&mut out);
             let _ = out.flush();
         }
     }

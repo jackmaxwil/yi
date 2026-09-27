@@ -237,6 +237,11 @@ edited by hand.
 - [D260](adr/d260.md) - a session's build runs off the worker's request loop
 - [D262](adr/d262.md) - the highlighter ships bat's grammar set cut to 44 named languages and the 15...
 - [D263](adr/d263.md) - the dist binary links only the Unicode tables bat's grammars use
+- [D261](adr/d261.md) - a wait is an event
+- [D275](adr/d275.md) - a done todo's evidence is held against the session ledger for display only
+- [D276](adr/d276.md) - the console's full sidebar is an inbox
+- [D264](adr/d264.md) - the console's session diff pane becomes Review, keeping ⌘G
+- [D267](adr/d267.md) - the console's Tape shows a session's ledger over wall time
 - [D265](adr/d265.md) - a wait wakes on the event it waits for, not on a timer
 - [D266](adr/d266.md) - a resume and the session list stop paying for what nobody reads
 - [D268](adr/d268.md) - nothing between a prompt and its first request waits on work the request...

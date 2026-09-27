@@ -688,7 +688,10 @@ impl ChunkMapper {
                         id: id.to_owned(),
                         partial_args: String::new(),
                     });
-                    events.push(AssistantMessageEvent::ToolCallStart { content_index });
+                    events.push(AssistantMessageEvent::ToolCallStart {
+                        content_index,
+                        name: (!name.is_empty()).then(|| name.to_owned()),
+                    });
                     self.tools.len().saturating_sub(1)
                 });
             let (content_index, parsed, delta_text) = {
@@ -824,9 +827,10 @@ fn run_request(
     let url = format!("{}/chat/completions", model.base_url);
     let mut mapper = ChunkMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
+    let retried = crate::request::waiting(sender);
     let pumped = crate::request::pump_sse_with_resend(
         stop,
-        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy, extra),
+        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy, extra, &retried),
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);

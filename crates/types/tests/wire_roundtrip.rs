@@ -239,3 +239,17 @@ fn an_undo_checkpoint_recorded_before_after_still_round_trips_byte_identical()
     assert_eq!(serde_json::to_string(&data)?, stored.trim_end());
     Ok(())
 }
+
+/// Dies with a newer worker's tape refused whole by an older console: an unknown mark kind
+/// decodes to Other and re-emits verbatim.
+#[test]
+fn an_unknown_tape_mark_kind_survives_a_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    let line = r#"{"at":5,"kind":"deploy","entry":"e1","label":"shipped"}"#;
+    let mark: yi_types::tape::Mark = serde_json::from_str(line)?;
+    assert_eq!(
+        mark.kind,
+        yi_types::tape::MarkKind::Other("deploy".to_owned())
+    );
+    assert_eq!(serde_json::to_string(&mark)?, line);
+    Ok(())
+}

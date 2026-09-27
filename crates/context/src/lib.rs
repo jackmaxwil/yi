@@ -16,7 +16,9 @@ pub mod view;
 pub mod window;
 pub mod wrapper;
 
-pub use account::{Estimate, Scope, Tokens, context_tokens, estimate_context, estimate_message};
+pub use account::{
+    Estimate, Scope, Tokens, context_tokens, estimate_context, estimate_message, reply_tokens,
+};
 pub use attribution::{CHILD_USAGE_CAUSE, attribute_child_usage};
 pub use budget::{Bytes, SourceBudgets, Truncated, fit};
 pub use convert::convert_to_llm;

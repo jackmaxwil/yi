@@ -258,6 +258,7 @@ fn bare_service(root: &Scratch) -> Result<Arc<KernelService>, Box<dyn Error>> {
             family_dir: None,
             host: Arc::new(registry),
             on_restore: None,
+            on_boot: None,
             sandbox: None,
             snapshot_key: None,
             per_session_state: false,

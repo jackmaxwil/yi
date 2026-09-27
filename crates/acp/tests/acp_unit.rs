@@ -589,3 +589,22 @@ fn yi_event_round_trips_every_variant() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with `used` copied from the reply: a provider that sent no usage object told every
+/// client the context had emptied.
+#[test]
+fn a_reply_without_usage_reports_no_context_figure() -> TestResult {
+    let mut ids = IdMap::new(1000);
+    let mut message = assistant_partial();
+    if let AgentMessage::Assistant { usage, .. } = &mut message {
+        usage.unknown = true;
+    }
+    let updates = to_updates(&AgentEvent::MessageEnd { message }, &mut ids);
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, AcpSessionUpdate::UsageUpdate { .. })),
+        "{updates:?}"
+    );
+    Ok(())
+}

@@ -885,6 +885,7 @@ mod tests {
                 family_dir: None,
                 host: Arc::new(NoHost),
                 on_restore: None,
+                on_boot: None,
                 sandbox: None,
                 snapshot_key: None,
                 per_session_state: false,

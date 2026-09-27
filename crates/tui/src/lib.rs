@@ -25,6 +25,7 @@ pub mod markdown;
 pub mod model;
 pub mod motion;
 pub mod orb;
+pub mod pen;
 pub mod plantree;
 pub mod popup;
 pub mod port;

@@ -232,6 +232,15 @@ impl AgentSession {
         })
     }
 
+    pub fn wait_hook(&self) -> Arc<crate::compaction::WaitFn> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move |wait| {
+            let _ = shared
+                .events
+                .send(yi_types::event::AgentEvent::Wait { wait });
+        })
+    }
+
     pub fn notice_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
         let parts = self.parts();
         Arc::new(move |text: &str| {

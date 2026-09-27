@@ -511,6 +511,23 @@ impl App {
     /// a delta grows the message `MessageStart` opened.
     pub(super) fn fold_stream(&mut self, event: &AssistantMessageEvent) {
         let _span = yi_types::trace::span("tui.stream_delta");
+        match event {
+            AssistantMessageEvent::ToolCallStart {
+                content_index,
+                name,
+            } => self.pen = Some(crate::pen::Pen::new(*content_index, name.clone())),
+            AssistantMessageEvent::ToolCallDelta {
+                content_index,
+                delta,
+            } => {
+                if let Some(pen) = self.pen.as_mut().filter(|pen| pen.index == *content_index) {
+                    pen.raw.push_str(delta);
+                    self.scheduler.request();
+                }
+            }
+            AssistantMessageEvent::ToolCallEnd { .. } => self.pen = None,
+            _ => {}
+        }
         fold(&mut self.streaming, event);
         let streaming = self.streaming.take();
         if let Some(AgentMessage::Assistant { content, .. }) = &streaming {
@@ -643,7 +660,7 @@ impl App {
         result: &ToolResult,
         is_error: bool,
     ) {
-        self.turn_tools = self.turn_tools.saturating_add(1);
+        self.count_kind(&tool_name);
         self.last_tool = Some(tool_name.clone());
         let elapsed = self
             .tool_started
@@ -676,25 +693,53 @@ impl App {
                 details: Value::Null,
             },
         };
+        cell.elapsed_ms = elapsed;
+        let text = text_of(&result.content);
+        self.settle_tool(cell, &text, is_error, result.details.clone());
+        self.commit_finished_tasks();
+        self.intent = None;
+    }
+
+    fn count_kind(&mut self, name: &str) {
+        let verb = match name {
+            "read" | "ls" | "document" | "get_context" => "read",
+            "grep" | "glob" | "find" => "searched",
+            "web_search" | "fetch" => "fetched",
+            "edit" | "write" => "edited",
+            "bash" => "ran",
+            "ipython" => "computed",
+            "todo" | "plan" => return,
+            _ => "used",
+        };
+        self.turn_tools = self.turn_tools.saturating_add(1);
+        match self.turn_kinds.iter_mut().find(|(kind, _)| *kind == verb) {
+            Some((_, count)) => *count = count.saturating_add(1),
+            None => self.turn_kinds.push((verb, 1)),
+        }
+    }
+
+    pub(crate) fn settle_tool(
+        &mut self,
+        mut cell: ToolCell,
+        text: &str,
+        is_error: bool,
+        details: Value,
+    ) {
         cell.status = if is_error {
             ToolStatus::Failed
         } else {
             ToolStatus::Done
         };
-        cell.elapsed_ms = elapsed;
-        let text = text_of(&result.content);
-        cell.digest = ToolCell::digest_of(&tool_name, &text, is_error);
-        cell.preview = preview_lines(&text, 12, 6);
-        cell.details = result.details.clone();
+        cell.digest = ToolCell::digest_of(&cell.name, text, is_error);
+        cell.preview = preview_lines(text, 12, 6);
+        cell.details = details;
         // The HUD carries the list; a card per step was six cards a turn.
-        if tool_name == "todo" && !is_error {
-            if let Some(done) = todo_finished(&text) {
+        if cell.name == "todo" && !is_error {
+            if let Some(done) = todo_finished(text) {
                 self.commit_cell(&Cell::Footer { text: done });
             }
         } else {
             self.commit_cell(&Cell::Tool(cell));
         }
-        self.commit_finished_tasks();
-        self.intent = None;
     }
 }
