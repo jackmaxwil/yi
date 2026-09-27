@@ -5,7 +5,7 @@ pub mod auth;
 pub mod catalog;
 mod compat;
 pub mod faux;
-pub mod json_salvage;
+pub use yi_types::json_salvage;
 pub mod leak;
 pub mod openai;
 pub mod openai_responses;

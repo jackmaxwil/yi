@@ -50,12 +50,14 @@ pub enum RequestKind {
     Cancel,
     Seen,
     Tracked(SessionId, Vec<String>),
+    BranchDiff(SessionId),
+    Tape(SessionId),
     KernelExecute,
     KernelCancel,
     Slash(SessionId),
     Rewind(SessionId),
     Plan(SessionId),
-    SetConfig,
+    SetConfig(SessionId),
     Steer,
     Shutdown,
 }
@@ -382,11 +384,15 @@ impl App {
                 if let Some(params) = value.get_mut("params").map(Value::take)
                     && let Some(update) = port::update_params(params)
                 {
+                    // An agent event shows only through a pane's chat, which asks for its frame.
+                    let event = matches!(&update.update,
+                        AcpSessionUpdate::Extension(e) if e.session_update == "_yi/event");
                     self.reduce_update(outbound, update);
+                    self.dirty |= !event;
                 } else {
                     self.state.dropped_frames = self.state.dropped_frames.saturating_add(1);
+                    self.dirty = true;
                 }
-                self.dirty = true;
             }
             Some("session/request_permission") => {
                 let id = value.get("id").and_then(Value::as_str).map(str::to_owned);
@@ -483,9 +489,11 @@ impl App {
                 self.sync_chat_names();
             }
             RequestKind::Tracked(session, paths) => self.absorb_tracked(&session, &paths, &result),
+            RequestKind::BranchDiff(session) => self.absorb_branch(&session, &result),
+            RequestKind::Tape(session) => self.absorb_tape(&session, &result),
             RequestKind::KernelExecute
             | RequestKind::KernelCancel
-            | RequestKind::SetConfig
+            | RequestKind::SetConfig(_)
             | RequestKind::Steer
             | RequestKind::Shutdown => {}
             RequestKind::Slash(session) => {
@@ -650,6 +658,7 @@ impl App {
             self.resume_offsets.remove(&id);
             self.state.parked.remove(&id);
         }
+        self.absorb_review(&id, &update.update);
         let update = match update.update {
             AcpSessionUpdate::Extension(extension) => {
                 return self.reduce_extension(outbound, &id, extension);
@@ -914,6 +923,7 @@ impl App {
             Action::ToggleSidebar => self.state.sidebar = self.state.sidebar.next(),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
+            Action::ToggleTape => self.toggle_side(outbound, diffs::SideKind::Tape),
             Action::OpenEditor => self.open_navigator("e "),
             Action::Find => self.open_navigator("/"),
             Action::Save | Action::Undo | Action::Redo => {
@@ -1146,6 +1156,8 @@ impl App {
                     self.dirty = true;
                 }
             },
+            Zone::Panes if self.on_review().is_some() => self.review_key(key),
+            Zone::Panes if self.on_tape() => self.tape_key(key),
             Zone::Panes => self.chat_event(CtEvent::Key(key)),
         }
     }
@@ -1158,6 +1170,7 @@ mod mouse;
 mod navigator;
 mod notebook;
 pub mod port;
+mod review;
 
 pub use mouse::MouseKind;
 pub use navigator::PaletteEntry;

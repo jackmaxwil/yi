@@ -360,13 +360,13 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
         },
         AgentEvent::MessageEnd { message } => {
             ids.current_message = None;
-            match message {
-                AgentMessage::Assistant { usage, .. } => vec![AcpSessionUpdate::UsageUpdate {
-                    used: u64::try_from(usage.total_tokens).unwrap_or(0),
+            yi_runtime::reply_tokens(message)
+                .map(|used| AcpSessionUpdate::UsageUpdate {
+                    used: used.0,
                     size: ids.context_window,
-                }],
-                _ => Vec::new(),
-            }
+                })
+                .into_iter()
+                .collect()
         }
         AgentEvent::ToolExecutionStart {
             tool_call_id,
@@ -452,6 +452,7 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
         AgentEvent::LandingState { landing } => {
             object_extension("_yi/landing", serde_json::to_value(landing))
         }
+        AgentEvent::Wait { .. } => Vec::new(),
     }
 }
 

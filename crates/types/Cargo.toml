@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+# One test binary, not one per file: tests/integration.rs names the modules.
+autotests = false
 
 [lints]
 workspace = true
@@ -16,3 +18,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

@@ -1312,7 +1312,7 @@ fn edit_to_a_tracked_file_opens_the_diff_pane() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 Δ s-alpha · 1 file · +1 −0\n\
+         wait-frame 5000 Review · session · 1 file +1 −0\n\
          wait-frame 3000 brand new line\n\
          type still typing here\n\
          wait-frame 3000 still typing here\n\
@@ -1338,11 +1338,75 @@ fn untracked_edit_accumulates_without_opening() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 3000 brand new line\n\
-         wait-frame 2000 !Δ s-alpha\n\
+         wait-frame 2000 !Review ·\n\
          cmd-g\n\
-         wait-frame 3000 Δ s-alpha · 1 file · +1 −0\n\
+         wait-frame 3000 Review · session · 1 file +1 −0\n\
          cmd-g\n\
-         wait-frame 3000 !Δ s-alpha\n\
+         wait-frame 3000 !Review ·\n\
+         quit\n",
+    )
+}
+
+/// Dies with one stray `l` in Review landing the branch: the first press shows what a second
+/// would run, another key cancels it, and only the second press sends it.
+#[test]
+fn landing_from_review_asks_for_a_second_press() -> TestResult {
+    run(
+        "review-land",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-g\n\
+         wait-frame 3000 Review · session\n\
+         key alt-right\n\
+         key l\n\
+         wait-frame 3000 │l again to /land s-alpha · any other\n\
+         key x\n\
+         wait-frame 3000 !l again to /land\n\
+         key l\n\
+         key l\n\
+         wait-frame 3000 landing: the gate's jobs\n\
+         quit\n",
+    )
+}
+
+fn unnamed_list(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"sessions": [{"sessionId": "s-alpha", "attached": false}]}),
+    )]
+}
+
+/// Dies with a pull request titled "untitled": a session with no title lands nothing from
+/// Review and says how to name the landing.
+#[test]
+fn an_untitled_session_does_not_land_from_review() -> TestResult {
+    run(
+        "review-untitled",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", unnamed_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 untitled\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-g\n\
+         wait-frame 3000 Review · session\n\
+         key alt-right\n\
+         key l\n\
+         key l\n\
+         wait-frame 3000 this session has no title yet: /land <title> in its chat\n\
+         wait-frame 1000 !landing: the gate's jobs\n\
          quit\n",
     )
 }
@@ -1368,7 +1432,7 @@ fn first_kernel_cell_opens_the_notebook_and_spends_the_auto_side() -> TestResult
          wait-frame 5000 replayed world\n\
          wait-frame 5000 nb:s-alpha\n\
          wait-frame 5000 brand new line\n\
-         wait-frame 2000 !Δ s-alpha\n\
+         wait-frame 2000 !Review ·\n\
          quit\n",
     )
 }
@@ -1877,10 +1941,11 @@ fn two_root_ledger(frame: &Value) -> Vec<Value> {
     )]
 }
 
-/// Rows sit under their workspace, the console's own first, newest first inside each:
-/// the newest session of all is slot 3 because it belongs to the other root.
+/// Dies with rows grouped by workspace: the inbox ranks every root's sessions by what they
+/// need, so the idle session of the other root outranks two the ledger never placed. A row
+/// opens with a quote in the frame, so the section needle cannot match an `idle · 5m` line.
 #[test]
-fn the_sidebar_groups_rows_by_workspace() -> TestResult {
+fn the_inbox_ranks_rows_by_need_across_workspaces() -> TestResult {
     run(
         "root-groups",
         vec![
@@ -1888,9 +1953,10 @@ fn the_sidebar_groups_rows_by_workspace() -> TestResult {
             Step::Expect("session/list", named_list),
             Step::Expect("session/list", two_root_ledger),
         ],
-        "wait-frame 5000 1 RE release notes\n\
-         wait-frame 3000 2 FI fix login bug\n\
-         wait-frame 3000 3 SG s-gamma\n\
+        "wait-frame 5000 1 SG   s-gamma\n\
+         wait-frame 3000 2 RE   release notes\n\
+         wait-frame 3000 3 FI   fix login bug\n\
+         wait-frame 3000 \"  idle\n\
          quit\n",
     )
 }
@@ -1923,13 +1989,13 @@ fn a_state_transition_moves_the_row_to_the_top() -> TestResult {
             Step::Expect("session/resume", resume_then_run),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 1 RE release notes\n\
-         wait-frame 3000 2 FI fix login bug\n\
+        "wait-frame 5000 1 RE   release notes\n\
+         wait-frame 3000 2 FI   fix login bug\n\
          key down\n\
          key enter\n\
          wait-frame 5000 resumed s-alpha\n\
-         wait-frame 3000 1 FI fix login bug\n\
-         wait-frame 3000 2 RE release notes\n\
+         wait-frame 3000 1 FI   fix login bug\n\
+         wait-frame 3000 2 RE   release notes\n\
          quit\n",
     )
 }
@@ -1982,10 +2048,10 @@ fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
             Step::Expect("session/resume", resume_named),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 1 RE release notes\n\
-         wait-frame 3000 2 FI fix login bug\n\
-         wait-frame 3000 this hour\n\
-         wait-frame 3000 today\n\
+        "wait-frame 5000 1 RE   release notes\n\
+         wait-frame 3000 2 FI   fix login bug\n\
+         wait-frame 3000 idle · 5m\n\
+         wait-frame 3000 idle · 3h\n\
          key down\n\
          key up\n\
          key enter\n\
@@ -2042,7 +2108,7 @@ fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
          wait-frame 3000 !s-alpha\n\
          wait-frame 3000 !workspaces\n\
          cmd-b\n\
-         wait-frame 3000 2 SA s-alpha\n\
+         wait-frame 3000 2 SA   s-alpha\n\
          wait-frame 3000 workspaces\n\
          cmd-b\n\
          wait-frame 3000 1 SB   ●│\n\
@@ -2197,6 +2263,98 @@ fn a_working_session_shows_the_working_line() -> TestResult {
     )
 }
 
+fn tape_reply(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"start": 0, "end": 60_000, "model": [[0, 30_000]], "tools": [],
+            "marks": [{"at": 0, "kind": "user", "entry": "e0", "label": "hello agent"}]}),
+    )]
+}
+
+/// Dies with a rewind sent into a running turn from the Tape: the pane says to wait for the
+/// turn to end, and sends nothing.
+#[test]
+fn the_tape_refuses_a_rewind_while_a_turn_runs() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(running_push));
+    fixture.push(Step::Expect("_yi/tape", tape_reply));
+    run(
+        "tape-running",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 [esc] interrupt\n\
+         cmd-y\n\
+         wait-frame 3000 +0s · hello agent\n\
+         key alt-right\n\
+         key enter\n\
+         wait-frame 3000 a turn is running: rewind once it ends\n\
+         quit\n",
+    )
+}
+
+fn tape_of(frame: &Value, labels: &[&str]) -> Vec<Value> {
+    let marks: Vec<Value> = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| {
+            json!({"at": index * 60_000, "kind": "user", "entry": format!("e{index}"), "label": label})
+        })
+        .collect();
+    let end = labels.len() * 60_000;
+    vec![ok(
+        frame,
+        json!({"start": 0, "end": end, "model": [], "tools": [], "marks": marks}),
+    )]
+}
+
+fn prompt_then_idle(frame: &Value) -> Vec<Value> {
+    vec![
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "state_update", "state": "running"}),
+        ),
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "state_update", "state": "idle"}),
+        ),
+        ok(frame, json!({"stopReason": "end_turn"})),
+    ]
+}
+
+/// Dies with the chosen mark jumping to the newest on every idle refresh: a user who picked
+/// an older turn loses it as soon as a turn ends.
+#[test]
+fn a_tape_refresh_keeps_the_chosen_mark() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("_yi/tape", |frame| {
+        tape_of(frame, &["first turn", "second turn"])
+    }));
+    fixture.push(Step::Expect("session/prompt", prompt_then_idle));
+    fixture.push(Step::Expect("_yi/tape", |frame| {
+        tape_of(frame, &["first turn", "second turn", "third turn"])
+    }));
+    run(
+        "tape-cursor",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-y\n\
+         wait-frame 3000 +1m · second turn\n\
+         key alt-right\n\
+         key left\n\
+         wait-frame 3000 +0s · first turn\n\
+         key alt-left\n\
+         type third turn\n\
+         key enter\n\
+         wait-frame 5000 Tape · 3m\n\
+         wait-frame 1000 +0s · first turn\n\
+         quit\n",
+    )
+}
+
 /// Two panes on one session both reduce the same events; each keeps its own composer.
 #[test]
 fn two_panes_one_session_both_render_events() -> TestResult {
@@ -2224,6 +2382,53 @@ fn two_panes_one_session_both_render_events() -> TestResult {
         frame.matches("both see me").count(),
         2,
         "both panes render the streamed reply: {frame}"
+    );
+    Ok(())
+}
+
+fn config_frame(model: &str, effort: &str) -> Value {
+    update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/config", "configOptions": [
+            {"configId": "model", "name": "Model",
+             "kind": {"type": "select", "value": model, "options": []}},
+            {"configId": "thought_level", "name": "Thinking level",
+             "kind": {"type": "select", "value": effort, "options": []}},
+        ]}),
+    )
+}
+
+/// A pick is two set_config_option requests, model then thought_level, each echoed by a
+/// `_yi/config` frame before its answer; only the last frame is the pick.
+#[test]
+fn a_pick_is_announced_once() -> TestResult {
+    let mut fixture = session_fixture();
+    const OPUS: &str = "anthropic/claude-opus-5";
+    const SONNET: &str = "anthropic/claude-sonnet-5";
+    fixture.push(Step::Push(|| vec![config_frame(OPUS, "medium")]));
+    // The daemon answers what it holds, not what was asked: the model frame names the
+    // new model at the old effort, and would draw a line of its own.
+    fixture.push(Step::Expect("session/set_config_option", |frame| {
+        vec![config_frame(SONNET, "medium"), ok(frame, json!({}))]
+    }));
+    fixture.push(Step::Expect("session/set_config_option", |frame| {
+        vec![config_frame(SONNET, "low"), ok(frame, json!({}))]
+    }));
+    let frame = run_frames(
+        "config-pick",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 reasoning medium\n\
+         key shift-tab\n\
+         wait-frame 5000 reasoning low\n\
+         wait 300\n\
+         quit\n",
+    )?;
+    assert_eq!(
+        frame.matches("model anthropic/claude-sonnet-5").count(),
+        1,
+        "one pick, one line: {frame}"
     );
     Ok(())
 }
@@ -2267,7 +2472,7 @@ fn alt_digit_resumes_the_rail_slot() -> TestResult {
             Step::Expect("session/resume", resume_named),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 2 FI fix login bug\n\
+        "wait-frame 5000 2 FI   fix login bug\n\
          key alt-2\n\
          wait-frame 5000 resumed s-alpha\n\
          wait-frame 3000 FI · fix login\n\
@@ -2494,7 +2699,7 @@ fn a_todo_update_paints_the_block_above_the_composer() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 5000 Todos 1/2\n\
-         wait-frame 5000 2. ▶ write the plan\n\
+         wait-frame 5000 2. ▷ write the plan\n\
          quit\n",
     )
 }
@@ -2518,7 +2723,7 @@ fn a_drag_over_the_transcript_flashes_what_it_copied() -> TestResult {
          mouse down 32 2\n\
          mouse drag 60 5\n\
          mouse up 60 5\n\
-         wait-frame 3000 copied 4 lines\n\
+         wait-frame 3000 copied 3 lines\n\
          quit\n",
     )
 }

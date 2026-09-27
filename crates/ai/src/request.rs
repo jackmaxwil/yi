@@ -1,5 +1,6 @@
 use serde_json::Value;
 use tokio::sync::mpsc::{Receiver, Sender};
+use yi_types::event::{AssistantMessageEvent, Wait};
 use yi_types::message::{AgentMessage, StopReason, Usage};
 use yi_types::model::Model;
 
@@ -128,6 +129,12 @@ pub fn get_json(
     serde_json::from_slice(&body).map_err(|error| format!("{url}: {error}"))
 }
 
+pub fn waiting(sender: &Sender<AssistantMessageEvent>) -> impl Fn(Wait) + '_ {
+    move |wait| {
+        let _ = sender.blocking_send(AssistantMessageEvent::Waiting { wait });
+    }
+}
+
 /// Past this a pooled connection is not trusted: a NAT may have dropped it without a FIN.
 const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -166,6 +173,7 @@ pub fn send_with_retry(
     headers: &[(String, String)],
     body: &Value,
     proxy: Option<&ProxyConfig>,
+    on_retry: &dyn Fn(Wait),
 ) -> Result<ureq::Response, String> {
     let policy = RetryPolicy::default();
     let started = std::time::Instant::now();
@@ -204,23 +212,54 @@ pub fn send_with_retry(
                 let retry_after = response
                     .header("retry-after")
                     .and_then(|value| value.parse::<f64>().ok());
-                if let Some(delay) = retry_delay(attempt, retry_after_ms, retry_after, &policy) {
+                let delay = retry_delay(attempt, retry_after_ms, retry_after, &policy);
+                attempt = attempt.saturating_add(1);
+                announce(on_retry, attempt, &policy, delay, format!("HTTP {status}"));
+                if let Some(delay) = delay {
                     std::thread::sleep(delay);
                 }
-                attempt = attempt.saturating_add(1);
             }
             Err(error) => {
                 if attempt < policy.max_attempts && started.elapsed() < policy.max_total_wall {
-                    if let Some(delay) = retry_delay(attempt, None, None, &policy) {
+                    let delay = retry_delay(attempt, None, None, &policy);
+                    attempt = attempt.saturating_add(1);
+                    // Incident: ureq writes the URL first, so an 80-char cut kept it and lost why.
+                    let text = error.to_string();
+                    let url = match &error {
+                        ureq::Error::Transport(transport) => {
+                            transport.url().map(|url| format!("{url}: "))
+                        }
+                        ureq::Error::Status(..) => None,
+                    };
+                    let reason = url.and_then(|url| text.strip_prefix(&url)).unwrap_or(&text);
+                    let cause: String = reason.chars().take(80).collect();
+                    announce(on_retry, attempt, &policy, delay, cause);
+                    if let Some(delay) = delay {
                         std::thread::sleep(delay);
                     }
-                    attempt = attempt.saturating_add(1);
                     continue;
                 }
                 return Err(error.to_string());
             }
         }
     }
+}
+
+fn announce(
+    on_retry: &dyn Fn(Wait),
+    attempt: u32,
+    policy: &RetryPolicy,
+    delay: Option<std::time::Duration>,
+    cause: String,
+) {
+    on_retry(Wait::Retry {
+        attempt,
+        of: policy.max_attempts,
+        delay_ms: delay.map_or(0, |delay| {
+            u64::try_from(delay.as_millis()).unwrap_or(u64::MAX)
+        }),
+        cause,
+    });
 }
 
 pub fn pump_sse(
@@ -435,9 +474,16 @@ pub fn openai_bearer_post(
     body: &Value,
     proxy: Option<&ProxyConfig>,
     extra: &[(String, String)],
+    on_retry: &dyn Fn(Wait),
 ) -> Result<ureq::Response, String> {
     let headers = headers_for(model, vec![("authorization", format!("Bearer {api_key}"))]);
-    send_with_retry(url, &merge_headers(headers, extra.to_vec()), body, proxy)
+    send_with_retry(
+        url,
+        &merge_headers(headers, extra.to_vec()),
+        body,
+        proxy,
+        on_retry,
+    )
 }
 
 /// What one request needs beside its body: the key, the proxy, and the loop's cut flag.

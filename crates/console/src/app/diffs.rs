@@ -17,6 +17,7 @@ pub(crate) const NOTEBOOK_IDLE: Duration = Duration::from_secs(20);
 pub(super) enum SideKind {
     Notebook,
     Diff,
+    Tape,
 }
 
 pub(super) fn path_of_patch(patch: &str) -> Option<String> {
@@ -32,7 +33,7 @@ fn is_side(content: &PaneContent, session: &SessionId) -> bool {
             session: Some(bound),
             ..
         }
-        | PaneContent::SessionDiff { session: bound } => bound == session,
+        | PaneContent::SessionDiff { session: bound, .. } => bound == session,
         _ => false,
     }
 }
@@ -63,6 +64,8 @@ impl App {
             added: count("added"),
             removed: count("removed"),
             tracked: false,
+            serving: self.serving(session),
+            turn: self.state.diffs.get(session).map_or(0, |diff| diff.turn),
         };
         self.state
             .diffs
@@ -198,6 +201,11 @@ impl App {
         session: Option<SessionId>,
         kind: SideKind,
     ) -> Option<PaneId> {
+        match (kind, &session) {
+            (SideKind::Diff, Some(session)) => self.refresh_branch(session),
+            (SideKind::Tape, Some(session)) => self.refresh_tape(session),
+            _ => {}
+        }
         if let Some(tab) = self.state.tab_mut() {
             tab.layout.focus_pane(home);
         }
@@ -205,7 +213,15 @@ impl App {
         let opened = self.state.focused_pane_id().filter(|id| *id != home);
         if let Some(pane) = self.state.focused_pane_mut() {
             pane.content = match (kind, session) {
-                (SideKind::Diff, Some(session)) => PaneContent::SessionDiff { session },
+                (SideKind::Diff, Some(session)) => PaneContent::SessionDiff {
+                    session,
+                    scope: crate::model::ReviewScope::default(),
+                },
+                (SideKind::Tape, Some(session)) => PaneContent::Tape {
+                    session,
+                    tape: None,
+                    cursor: 0,
+                },
                 (_, session) => PaneContent::Notebook {
                     session,
                     cells: Vec::new(),
@@ -228,18 +244,20 @@ impl App {
         let on_side = self.state.panes.get(&home).is_some_and(|pane| match kind {
             SideKind::Notebook => matches!(pane.content, PaneContent::Notebook { .. }),
             SideKind::Diff => matches!(pane.content, PaneContent::SessionDiff { .. }),
+            SideKind::Tape => matches!(pane.content, PaneContent::Tape { .. }),
         });
         if on_side {
             return self.apply_action(outbound, Action::ClosePane);
         }
         let session = self.state.focused_session();
-        if kind == SideKind::Diff && session.is_none() {
+        if kind != SideKind::Notebook && session.is_none() {
             return self.note("no session in this pane");
         }
         self.open_side(home, session, kind);
         let matches_kind = |pane: &crate::model::Pane| match kind {
             SideKind::Notebook => matches!(pane.content, PaneContent::Notebook { .. }),
             SideKind::Diff => matches!(pane.content, PaneContent::SessionDiff { .. }),
+            SideKind::Tape => matches!(pane.content, PaneContent::Tape { .. }),
         };
         let side = self
             .state

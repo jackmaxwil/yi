@@ -12,6 +12,8 @@ use crate::plantree::PlanTreeResult;
 use crate::popup::{BottomView, ListPopup, PopupResult, walk_files};
 use crate::tree::TreeResult;
 
+pub(crate) const ESC_WINDOW: Duration = Duration::from_secs(1);
+
 pub fn handle_terminal_event(
     app: &mut App,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
@@ -286,7 +288,7 @@ pub(crate) fn handle_escape(app: &mut App, cmd_tx: &tokio::sync::mpsc::Unbounded
     }
     if app.running {
         match app.esc_armed_at {
-            Some(at) if now.duration_since(at) < Duration::from_secs(1) => {
+            Some(at) if now.duration_since(at) < ESC_WINDOW => {
                 let _ = cmd_tx.send(Command::Abort);
                 app.esc_armed_at = None;
             }
