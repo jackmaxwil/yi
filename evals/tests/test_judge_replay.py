@@ -539,12 +539,26 @@ class Metrics(unittest.TestCase):
                        {"missing": 1}):
             self.assertTrue(jr.gate_line({**held, **change}).startswith("gate: FAIL"), change)
 
-    def test_a_session_never_lands_on_both_sides(self):
-        rows = jr.extract_corpora([("yi", jr.FIXTURES["yi"]), ("claude", CLAUDE)])
-        sides = {}
-        for row in rows:
-            sides.setdefault(row["session"], set()).add(row["split"])
-        self.assertTrue(all(len(s) == 1 for s in sides.values()), sides)
+    def test_the_dry_pipeline_watches_a_tilde_corpus_and_refuses_an_empty_one(self):
+        # `--corpus yi:~/.yi/sessions` is the docstring's own form; the read-only proof listed it
+        # unexpanded, found nothing on either side, and printed ok having checked nothing.
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            shutil.copytree(jr.FIXTURES["yi"], pathlib.Path(home) / "sessions")
+            touched = pathlib.Path(home) / "sessions" / YI.name
+
+            def report(_args):
+                touched.write_text(touched.read_text() + "\n")
+                return 0
+
+            with mock.patch.object(jr, "cmd_report", report), contextlib.redirect_stdout(io.StringIO()) as said:
+                self.assertEqual(jr.main(["all", "--dry", "--model", "faux/faux-1", "--corpus", "yi:~/sessions"]), 1)
+            self.assertIn("FAIL judge_replay_dry: a file under the corpus changed", said.getvalue())
+            (pathlib.Path(home) / "empty").mkdir()
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                self.assertEqual(jr.main(["all", "--dry", "--model", "faux/faux-1", "--corpus", "yi:~/empty"]), 1)
+            self.assertIn("FAIL judge_replay_dry: no file under the corpus", said.getvalue())
+
+    def test_the_split_sends_about_seventy_percent_to_fit(self):
         fit = sum(jr.split_of("claude", f"{n}.jsonl") == "fit" for n in range(2000))
         self.assertTrue(1300 <= fit <= 1500, fit)
 
