@@ -225,9 +225,13 @@ pub enum Op {
         label: TodoLabel,
         on: BlockedOn,
         note: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ask: Option<Box<super::ask::Ask>>,
     },
     Unblock {
         label: TodoLabel,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answer: Option<Box<super::ask::Answer>>,
     },
     Reorder {
         labels: Vec<TodoLabel>,
@@ -319,7 +323,7 @@ impl Op {
         match self {
             Self::Drop { label, .. }
             | Self::Block { label, .. }
-            | Self::Unblock { label }
+            | Self::Unblock { label, .. }
             | Self::Start { label }
             | Self::Done { label, .. }
             | Self::Fail { label, .. }

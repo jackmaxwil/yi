@@ -129,7 +129,7 @@ pub async fn summarize_branch(session: &AgentSession, stub: BranchStub) {
     }
 }
 
-fn user_text(content: &UserContent) -> String {
+pub(crate) fn user_text(content: &UserContent) -> String {
     match content {
         UserContent::Text(text) => text.clone(),
         UserContent::Blocks(blocks) => blocks

@@ -221,12 +221,14 @@ fn parse_op(name: &str, args: &Map<String, Value>) -> Fallible<(Op, bool)> {
                 label: label("label")?,
                 on: serde_json::from_value::<BlockedOn>(require(args, "on", &what)?.clone())?,
                 note: string("note")?,
+                ask: None,
             }
         }
         "unblock" => {
             reject_unknown(args, &["label"], &what)?;
             Op::Unblock {
                 label: label("label")?,
+                answer: None,
             }
         }
         "reorder" => {

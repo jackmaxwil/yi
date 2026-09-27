@@ -132,6 +132,7 @@ fn the_list_rehydrates_from_the_session_on_a_fresh_store() -> TestResult {
             label: label("two")?,
             on: BlockedOn::User,
             note: "which branch to land on".to_owned(),
+            ask: None,
         },
         None,
     )?;
@@ -270,6 +271,7 @@ fn set_keeps_a_blocker_the_rewrite_did_not_mention() -> TestResult {
             label: label("b")?,
             on: BlockedOn::External,
             note: "CI is down".to_owned(),
+            ask: None,
         },
         None,
     )?;
@@ -716,6 +718,35 @@ fn a_long_label_is_cut_into_its_note_not_refused() -> TestResult {
         json!({"op": "done", "label": long, "evidence": "`pytest fixtures` 12 passed in 1s"}),
     );
     assert!(!is_error, "the full text still names the cut item: {text}");
+    Ok(())
+}
+
+/// Dies with the options dropped between the call and the list a parent reads, or with a two-option
+/// question let through: the child's own list is where its `needs_you` note is read from.
+#[test]
+fn a_block_on_the_user_carries_three_to_five_options() -> TestResult {
+    let (_root, session) = session("asks")?;
+    let tool = TodoTool::new(store_for(&session));
+    call(&tool, json!({"op": "init", "items": ["pick a name"]}));
+    let option = |id: &str| json!({"id": id, "label": format!("name {id}")});
+    let block = |options: Vec<Value>| json!({"op": "block", "id": "t1", "on": "user", "note": "which name?", "options": options});
+    let (is_error, text) = call(&tool, block(vec![option("a"), option("b")]));
+    assert!(
+        is_error && text.contains("offers 3 to 5 options, not 2"),
+        "{text}"
+    );
+    let (is_error, text) = call(&tool, block(vec![option("a"), option("b"), option("c")]));
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("(blocked on user: which name?) — 1. name a · 2. name b · 3. name c"),
+        "{text}"
+    );
+    let list = latest_record(&session).ok_or("no record")?.list;
+    let asked = list
+        .items()
+        .find_map(|item| item.ask.as_ref())
+        .ok_or("no ask")?;
+    assert_eq!(asked.options.len(), 3);
     Ok(())
 }
 

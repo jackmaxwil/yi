@@ -154,12 +154,32 @@ pub fn todo_rows(
                             .push(Span::styled("  claimed", theme.muted_style()));
                     }
                     rows.push(line);
+                    rows.extend(options(row, indent, theme));
                 }
                 number = number.saturating_add(1);
             }
         }
     }
     Some((title, rows))
+}
+
+fn options(item: &TodoItem, indent: &str, theme: &Theme) -> Vec<Line<'static>> {
+    let Some(ask) = item.ask.as_ref() else {
+        return Vec::new();
+    };
+    if item.state != TodoStateName::Blocked {
+        return Vec::new();
+    }
+    let rows = ask.options.iter().zip(1_usize..).map(|(option, number)| {
+        let preview = option
+            .preview
+            .as_deref()
+            .and_then(|text| text.lines().next());
+        let preview = preview.map(|line| format!(" · {line}")).unwrap_or_default();
+        let text = format!("{indent}     {number}. {}{preview}", option.label);
+        Line::from(Span::styled(text, theme.muted_style()))
+    });
+    rows.collect()
 }
 
 fn todo_row(

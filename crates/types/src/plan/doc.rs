@@ -278,6 +278,8 @@ pub struct Todo {
     /// differently is drift.
     pub contract_hash: Option<Digest>,
     pub cites: Cites,
+    /// The question this todo put to the user and the reply, kept once it unblocks.
+    pub ask: Option<super::ask::Ask>,
     pub extra: Map<String, Value>,
 }
 
@@ -298,6 +300,7 @@ impl Todo {
             contract: None,
             contract_hash: None,
             cites: Cites::default(),
+            ask: None,
             extra: Map::new(),
         }
     }
@@ -432,6 +435,8 @@ struct TodoRepr {
     resolution: Option<Resolution>,
     #[serde(flatten)]
     cites: Cites,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ask: Option<super::ask::Ask>,
     #[serde(flatten)]
     extra: Map<String, Value>,
 }
@@ -483,6 +488,7 @@ impl From<Todo> for TodoRepr {
             contract_hash: todo.contract_hash,
             resolution,
             cites: todo.cites,
+            ask: todo.ask,
             extra: todo.extra,
         }
     }
@@ -567,6 +573,7 @@ impl TryFrom<TodoRepr> for Todo {
             contract: repr.contract,
             contract_hash: repr.contract_hash,
             cites: repr.cites,
+            ask: repr.ask,
             extra: repr.extra,
         })
     }
@@ -919,6 +926,10 @@ pub enum PlanIssue {
         label: TodoLabel,
         issue: super::contract::ContractError,
     },
+    Unanswered {
+        label: TodoLabel,
+        options: usize,
+    },
 }
 
 impl std::fmt::Display for PlanIssue {
@@ -950,6 +961,11 @@ impl std::fmt::Display for PlanIssue {
             Self::Contract { label, issue } => {
                 write!(formatter, "todo {:?}: {issue}", label.as_str())
             }
+            Self::Unanswered { label, options } => write!(
+                formatter,
+                "todo {:?} waits on the user's pick of its {options} options, and no user message came after it asked; end your turn: unattended it stays blocked, and nothing picks for the user",
+                label.as_str()
+            ),
         }
     }
 }

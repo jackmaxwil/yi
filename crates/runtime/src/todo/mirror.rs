@@ -58,6 +58,7 @@ fn row(todo: &Todo, plan: &Plan, was: Option<&TodoItem>) -> TodoItem {
     item.id = was.and_then(|seen| seen.id.clone());
     item.state = TodoStateName::of(&todo.state);
     item.intent = todo.cites.intent.clone();
+    item.ask = todo.ask.clone();
     match &todo.state {
         TodoState::Blocked { on, note } => {
             item.on = Some(blocked_on(on));

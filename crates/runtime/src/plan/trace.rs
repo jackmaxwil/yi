@@ -68,14 +68,14 @@ pub fn trace(plan: &Plan, asked: &[bool]) -> Trace {
     }
 }
 
-fn ordinal(url: &Url) -> Option<usize> {
+pub(super) fn ordinal(url: &Url) -> Option<usize> {
     (url.scheme() == &Scheme::User)
         .then(|| url.path().parse::<usize>().ok())
         .flatten()
         .filter(|n| *n >= 1)
 }
 
-fn user_url(n: usize) -> Option<Url> {
+pub(super) fn user_url(n: usize) -> Option<Url> {
     format!("user://{n}").parse().ok()
 }
 

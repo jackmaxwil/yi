@@ -3,7 +3,9 @@
 use serde_json::Value;
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content};
+use yi_types::plan::doc::TodoStateName;
 use yi_types::subagent::{ChildExit, ChildFlag, ChildStatus, ChildUpdate, LoopSignal};
+use yi_types::todo::{BlockedOn, TodoRecord};
 
 /// A running member with no new record for this long is `stuck` with note `idle Ns`.
 pub const STUCK_IDLE_MS: u64 = 300_000;
@@ -148,7 +150,7 @@ fn cut(text: &str) -> String {
 /// A stuck or waiting signal in one recent record. `stuck` is the loop's typed `signal`,
 /// never a record's name: a renamed or look-alike record cannot make or hide a stuck child.
 fn signal_of(entry: &Entry) -> Option<(MemberState, String)> {
-    let (data, blocked) = match entry {
+    let (data, todo) = match entry {
         Entry::Message {
             message: AgentMessage::Custom { details, .. },
             ..
@@ -158,9 +160,17 @@ fn signal_of(entry: &Entry) -> Option<(MemberState, String)> {
         } => (data.as_ref()?, custom_type == "todo"),
         _ => return None,
     };
-    let text = |key: &str| data.get(key).and_then(Value::as_str).unwrap_or_default();
-    if blocked && text("op") == "block" && text("on") == "user" {
-        return Some((MemberState::NeedsYou, "blocked on user".to_owned()));
+    if todo {
+        let record = serde_json::from_value::<TodoRecord>(data.clone()).ok()?;
+        let asked = record.list.items().find(|item| {
+            item.state == TodoStateName::Blocked && item.on == Some(BlockedOn::User)
+        })?;
+        let (suffix, options) = (
+            crate::todo::text::suffix(asked),
+            crate::todo::text::asked(asked),
+        );
+        let note = format!("{}{suffix}{options}", asked.label);
+        return Some((MemberState::NeedsYou, note));
     }
     let signal = serde_json::from_value::<LoopSignal>(data.get("signal")?.clone()).ok()?;
     let rung = data.get("rung").and_then(Value::as_u64).unwrap_or(0);

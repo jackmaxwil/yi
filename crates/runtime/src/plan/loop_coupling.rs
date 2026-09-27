@@ -302,6 +302,7 @@ mod tests {
             contract_hash: None,
             cites: Default::default(),
             extra: serde_json::Map::new(),
+            ask: None,
         })
     }
 

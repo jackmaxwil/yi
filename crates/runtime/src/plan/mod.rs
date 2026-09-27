@@ -13,6 +13,7 @@ use crate::goal::{DeliverFn, StoreHandle};
 
 pub mod acceptance;
 pub mod artifact;
+pub(crate) mod ask;
 pub mod authority;
 mod brief;
 pub mod capacity;

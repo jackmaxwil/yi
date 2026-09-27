@@ -156,6 +156,8 @@ pub struct TodoItem {
     /// The owner messages this item serves, by address only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub intent: Vec<Url>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<crate::plan::ask::Ask>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -171,6 +173,7 @@ impl TodoItem {
             evidence: None,
             children: Vec::new(),
             intent: Vec::new(),
+            ask: None,
             extra: Map::new(),
         }
     }
