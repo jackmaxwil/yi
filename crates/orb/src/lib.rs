@@ -1,5 +1,5 @@
-//! Thought-orb engine (D41): geometry-exact, verified dot for dot against pinned golden
-//! vectors, plus the kitty painter. No terminal framework: the host owns placement.
+//! Thought-orb engine: the agent's states as exact loops with morphs between them, the modes
+//! verified dot for dot against pinned golden vectors, and the kitty painter.
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
@@ -7,9 +7,13 @@ pub mod core;
 pub mod kitty;
 pub mod modes;
 pub mod presets;
+pub mod stage;
+pub mod states;
 
 pub use core::OrbFrame;
 pub use presets::{Resolved, resolve};
+pub use stage::{Orb, render};
+pub use states::{OrbState, Point, pose};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,67 +50,4 @@ pub fn frame(mode: Mode, size: f64, t: f64, opts: &Opts) -> OrbFrame {
         Mode::Ribbon | Mode::Ring => modes::frame_ribbon(size, t, opts),
         Mode::Morph => modes::frame_morph(size, t, opts),
     }
-}
-
-/// The nine reference states; the host maps its own activity onto them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OrbState {
-    Working,
-    Searching,
-    Solving,
-    Listening,
-    Connecting,
-    Weaving,
-    Composing,
-    Breathing,
-    Shaping,
-}
-
-impl OrbState {
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Working => "working",
-            Self::Searching => "searching",
-            Self::Solving => "solving",
-            Self::Listening => "listening",
-            Self::Connecting => "connecting",
-            Self::Weaving => "weaving",
-            Self::Composing => "composing",
-            Self::Breathing => "breathing",
-            Self::Shaping => "shaping",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Working => "Working…",
-            Self::Searching => "Searching…",
-            Self::Solving => "Solving…",
-            Self::Listening => "Listening…",
-            Self::Connecting => "Connecting…",
-            Self::Weaving => "Weaving…",
-            Self::Composing => "Composing…",
-            Self::Breathing => "Breathing…",
-            Self::Shaping => "Shaping…",
-        }
-    }
-}
-
-/// Evaluate a (state, size) preset at clock time `clock` (seconds): the
-/// preset speed multiplies the shared clock, exactly as `ThinkingOrb` does.
-pub fn evaluate(state: OrbState, size: u32, clock: f64) -> Option<OrbFrame> {
-    // orbits-64's sparse particles read as noise in an ~80px cell rect and ribbon's dense
-    // band survives the downscale, so working borrows the composing geometry (D41).
-    let key = match state {
-        OrbState::Working => "composing",
-        other => other.key(),
-    };
-    let resolved = resolve(key, size)?;
-    let opts = resolved.options();
-    Some(frame(
-        resolved.mode,
-        f64::from(size),
-        clock * resolved.speed,
-        &opts,
-    ))
 }

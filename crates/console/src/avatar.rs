@@ -172,7 +172,7 @@ impl Avatars {
                         out,
                         image.raw(),
                         &rgba(&grid(&place.seed), place.accent),
-                        PX,
+                        (PX, PX),
                     );
                     self.ids.insert(place.key.clone(), image);
                     image
