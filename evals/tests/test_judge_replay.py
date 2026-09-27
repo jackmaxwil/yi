@@ -155,8 +155,8 @@ class Judge(unittest.TestCase):
 class Call(unittest.TestCase):
     MODEL = "openrouter/z-ai/glm-5.3-flash"
 
-    def args(self, **extra):
-        return types.SimpleNamespace(model=self.MODEL, dry=False, **extra)
+    def args(self, effort=None, **extra):
+        return types.SimpleNamespace(model=self.MODEL, dry=False, effort=effort, **extra)
 
     def test_the_request_is_the_prompt_and_the_input_with_no_tools(self):
         rows = jr.extract_corpora([("yi", jr.FIXTURES["yi"]), ("claude", CLAUDE)])
@@ -173,6 +173,17 @@ class Call(unittest.TestCase):
             schema = json.loads((jr.REPLAY / f"{name}.schema.json").read_text())
             self.assertEqual(jr.request(self.MODEL, phase, "s", "p")["response_format"],
                              {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}})
+        for effort in (None, "high"):
+            with self.subTest(effort=effort), mock.patch.object(jr, "post", return_value=completion("{}")) as post:
+                jr.ask(self.args(effort=effort), "judge", "s", "p")
+                sent = post.call_args.args[0]
+                if effort:
+                    self.assertEqual(sent["reasoning"]["effort"], "high")
+                else:
+                    self.assertNotIn("reasoning", sent)
+        prompt = jr.REPLAY / "judge.md"
+        self.assertEqual(jr.run_name(self.MODEL, prompt), f"openrouter_z-ai_glm-5.3-flash-{jr.sha(prompt.read_text())[:12]}")
+        self.assertEqual(jr.run_name(self.MODEL, prompt, "high"), jr.run_name(self.MODEL, prompt) + "-high")
 
     def test_a_reply_parses_strict_or_fenced_and_garbage_is_an_error_row(self):
         answer = {"label": "objected", "objection": "wrong file", "quote": "no, the other one"}

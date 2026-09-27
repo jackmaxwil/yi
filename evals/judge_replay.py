@@ -411,15 +411,18 @@ def parse_answer(text):
             return None
 
 
-def request(model, phase, system, prompt):
+def request(model, phase, system, prompt, effort=None):
     """The whole call: the phase's prompt, the rendered input as the one user message, and no
     tools, so blindness holds by construction. Cost comes back as the provider's `usage.cost`."""
     schema = json.loads((REPLAY / f"{SCHEMAS[phase]}.schema.json").read_text())
-    return {"model": model.removeprefix("openrouter/"), "temperature": 0,
+    body = {"model": model.removeprefix("openrouter/"), "temperature": 0,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
             "response_format": {"type": "json_schema",
                                 "json_schema": {"name": SCHEMAS[phase], "strict": True, "schema": schema}},
             "usage": {"include": True}}
+    if effort:
+        body["reasoning"] = {"effort": effort}
+    return body
 
 
 def post(body):
@@ -442,7 +445,7 @@ def post(body):
 def ask(args, phase, system, prompt, faux=None):
     """One call, as a row: the answer or an error, with the provider's model id, tokens, cost and
     latency. `faux` is --dry's host-built answer, handed back in the provider's shape at no cost."""
-    body, started = request(args.model, phase, system, prompt), time.monotonic()
+    body, started = request(args.model, phase, system, prompt, args.effort), time.monotonic()
     try:
         reply = post(body) if faux is None else {
             "model": args.model, "choices": [{"message": {"content": json.dumps(faux)}}],
@@ -530,8 +533,8 @@ def run_calls(args, phase, items, sink, build, keep):
     return 1 if stopped and stopped.startswith("refused:") else 0
 
 
-def run_name(model, prompt_path):
-    return f"{model.replace('/', '_')}-{sha(Path(prompt_path).read_text())[:12]}"
+def run_name(model, prompt_path, effort=None):
+    return f"{model.replace('/', '_')}-{sha(Path(prompt_path).read_text())[:12]}" + (f"-{effort}" if effort else "")
 
 
 def cmd_extract(args):
@@ -557,7 +560,8 @@ def cmd_label(args):
     system = (REPLAY / "label.md").read_text()
 
     def build(row):
-        return system, render_label(row), faux_answer("label", row), {"id": row["id"], "model": args.model}
+        return system, render_label(row), faux_answer("label", row), {"id": row["id"], "model": args.model,
+                                                                      "effort": args.effort}
 
     def keep(result):
         answer = result.pop("answer", None) or {}
@@ -569,7 +573,7 @@ def cmd_label(args):
 
 def cmd_judge(args):
     out = Path(args.out)
-    sink = out / "verdicts" / f"{run_name(args.model, args.prompt)}.jsonl"
+    sink = out / "verdicts" / f"{run_name(args.model, args.prompt, args.effort)}.jsonl"
     done = by_id(r for r in read_rows(sink) if r.get("verdict"))
     boundaries_by_id = by_id(read_rows(out / "boundaries.jsonl"))
     rows = [r for r in select(boundaries_by_id.values(), args.split, args.limit, effective_labels(out)) if r["id"] not in done]
@@ -577,7 +581,8 @@ def cmd_judge(args):
 
     def build(row):
         return system, render_judge(row), faux_answer("judge", row), {
-            "id": row["id"], "split": row["split"], "corpus": row["corpus"], "model": args.model, "prompt": prompt_hash}
+            "id": row["id"], "split": row["split"], "corpus": row["corpus"], "model": args.model, "prompt": prompt_hash,
+            "effort": args.effort}
 
     def keep(result):
         answer = result.pop("answer", None) or {}
@@ -607,7 +612,7 @@ def cmd_match(args):
             boundary = boundaries_by_id[verdict["id"]]
             label = label_rows.get(verdict["id"]) or {}
             return system, render_match(boundary, label, verdict), faux_answer("match", boundary), {
-                "id": verdict["id"], "model": args.model}
+                "id": verdict["id"], "model": args.model, "effort": args.effort}
 
         def keep(result):
             answer = result.pop("answer", None) or {}
@@ -779,6 +784,7 @@ def main(argv=None):
             sub.add_argument("--corpus", action="append", default=[], help="yi:<dir> or claude:<dir>; repeatable")
         if name in ("label", "judge", "match", "all"):
             sub.add_argument("--model", required=True)
+            sub.add_argument("--effort", choices=("low", "medium", "high"))
             sub.add_argument("--jobs", type=int, default=1)
             sub.add_argument("--cap-usd", type=float, default=None)
             sub.add_argument("--dry", action="store_true", help="faux only, host-built replies, no request")
