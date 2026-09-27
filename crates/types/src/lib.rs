@@ -3,6 +3,7 @@
 
 pub mod acp;
 pub mod advisor;
+pub mod backoff;
 pub mod checkpoint;
 pub mod compaction;
 pub mod config;
@@ -27,5 +28,6 @@ pub mod schedule;
 pub mod subagent;
 pub mod telemetry;
 pub mod todo;
+pub mod trace;
 pub mod url;
 pub mod wire;

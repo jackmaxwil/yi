@@ -96,6 +96,33 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# The highlighter runs optimized in dev builds too. Unoptimized, syntect took 55-370 ms to
+# load and compile each grammar inside the frame that first showed it, so `just dev` read a
+# chat switch as a quarter second the shipped binary spends 8 ms on. Yi's own crates stay
+# unoptimized for debugging.
+[profile.dev.package.syntect]
+opt-level = 3
+
+[profile.dev.package.fancy-regex]
+opt-level = 3
+
+[profile.dev.package.regex-automata]
+opt-level = 3
+
+[profile.dev.package.regex-syntax]
+opt-level = 3
+
+[profile.dev.package.bincode]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+# A resume moves megabytes of JSON through three processes; unoptimized, serde_json added
+# ~30 ms to a debug chat switch into a 1.4 MB transcript.
+[profile.dev.package.serde_json]
+opt-level = 3
+
 [profile.dist]
 inherits = "release"
 opt-level = "z"
