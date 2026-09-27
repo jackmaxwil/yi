@@ -63,15 +63,11 @@ impl App {
             .filter_map(|(id, diff)| std::mem::take(&mut diff.branch_due).then(|| id.clone()))
             .collect();
         for session in due {
-            let root = self
-                .state
-                .chat(&session)
-                .map_or_else(|| self.state.root.clone(), |chat| chat.app.cwd().to_owned());
             self.send_request(
                 outbound,
                 super::RequestKind::BranchDiff(session.clone()),
                 "_yi/branch_diff",
-                serde_json::json!({"sessionId": session.0, "root": root}),
+                serde_json::json!({"sessionId": session.0}),
             );
         }
     }
