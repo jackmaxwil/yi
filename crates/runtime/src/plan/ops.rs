@@ -993,7 +993,7 @@ impl PlanEngine {
                 .extra
                 .insert("prior".to_owned(), Value::from(prior));
         }
-        self.trace_into(op, plan, &mut record.record.extra);
+        self.trace_into(txn, op, plan, &mut record.record.extra);
         Ok(record)
     }
 

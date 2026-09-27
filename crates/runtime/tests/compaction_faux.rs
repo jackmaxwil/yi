@@ -571,8 +571,8 @@ async fn a_request_that_is_not_due_assembles_nothing() -> Result<(), Box<dyn Err
     Ok(())
 }
 
-/// Dies with a host-written message counted into the index: every `user://` address a produced
-/// summary names is fetched and must serve the user's own typed words.
+/// Dies with a host-written message counted into the index: every `user://` address the
+/// summarizer's key and a produced summary name is fetched and must serve the user's own words.
 #[tokio::test]
 async fn a_summarys_user_addresses_resolve_to_the_users_own_words() -> Result<(), Box<dyn Error>> {
     let root = Scratch::new("yi-compact-cites")?;
@@ -626,5 +626,41 @@ async fn a_summarys_user_addresses_resolve_to_the_users_own_words() -> Result<()
             served.text
         );
     }
+    let window = compaction_window(&store)?;
+    let key = yi_context::user_key(&window, &yi_runtime::fetch::user_inputs(&store)?);
+    let keyed: Vec<(&str, &str)> = key
+        .lines()
+        .filter_map(|row| row.split_once(": "))
+        .filter(|(address, _)| address.starts_with("user://"))
+        .collect();
+    assert_eq!(keyed.len(), asks.len(), "{key}");
+    for (address, quote) in keyed {
+        let served = resolver.fetch(&address.parse()?)?;
+        assert!(
+            served.text.contains(quote.trim_matches('"')),
+            "{address} quoted {quote} but served {:?}",
+            served.text
+        );
+    }
     Ok(())
+}
+
+fn compaction_window(
+    store: &yi_session::SharedSession,
+) -> Result<Vec<AgentMessage>, Box<dyn Error>> {
+    let entries = yi_session::lock_session(store).find_entries_on_branch(
+        "main",
+        &yi_session::EntryQuery {
+            order: yi_session::EntryOrder::OldestFirst,
+            ..yi_session::EntryQuery::default()
+        },
+        &yi_session::BranchBounds::default(),
+    )?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Entry::Message { message, .. } => Some(message),
+            _ => None,
+        })
+        .collect())
 }

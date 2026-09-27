@@ -120,6 +120,10 @@ pub fn serialize_conversation(messages: &[AgentMessage]) -> String {
 /// Characters of each message the key quotes, enough to tell one message from the next.
 pub const KEY_HEAD_CHARS: usize = 60;
 
+/// Rows the key keeps, the newest: a long session's one-line asks would otherwise spend the
+/// summarizer's reserve on the key, and a request that overflows twice summarizes nothing.
+pub const KEY_ROWS: usize = 100;
+
 /// The summarizer's key from each typed message in `window` to its `user://<n>`, `inputs[n-1]`.
 /// ponytail: matched by content in order, so of two identical messages the first address wins.
 pub fn user_key(window: &[AgentMessage], inputs: &[UserContent]) -> String {
@@ -139,14 +143,32 @@ pub fn user_key(window: &[AgentMessage], inputs: &[UserContent]) -> String {
         };
         let ordinal = from.saturating_add(at).saturating_add(1);
         from = ordinal;
-        let head: String = user_text(content).chars().take(KEY_HEAD_CHARS).collect();
-        rows.push(format!("user://{ordinal}: {head:?}"));
+        let text = user_text(content);
+        let total = text.chars().count();
+        let head: String = text.chars().take(KEY_HEAD_CHARS).collect();
+        let cut = if total > KEY_HEAD_CHARS {
+            format!(" [… {KEY_HEAD_CHARS} of {total} chars]")
+        } else {
+            String::new()
+        };
+        rows.push(format!("user://{ordinal}: {head:?}{cut}"));
     }
     if rows.is_empty() {
         return String::new();
     }
+    let older = rows.len().saturating_sub(KEY_ROWS);
+    let dropped = (older > 0).then(|| {
+        format!(
+            "[… {KEY_ROWS} of {} messages keyed, the newest (key cap {KEY_ROWS}); quote an older one verbatim from the conversation above instead of citing it]",
+            rows.len()
+        )
+    });
+    let rows: Vec<String> = dropped
+        .into_iter()
+        .chain(rows.into_iter().skip(older))
+        .collect();
     format!(
-        "<user-messages>\nThe user's own messages above, by address; each quote is its first {KEY_HEAD_CHARS} characters and the whole message is in the conversation above.\n{}\n</user-messages>\n\n",
+        "<user-messages>\nThe user's own messages above, by address; each quote is at most its first {KEY_HEAD_CHARS} characters and the whole message is in the conversation above.\n{}\n</user-messages>\n\n",
         rows.join("\n")
     )
 }

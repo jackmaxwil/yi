@@ -1,13 +1,15 @@
 //! Two-way traceability: every root todo cites a user message it serves, and every user message
 //! is cited or waived. A declaring op journals what fails either way; it never refuses.
 
-use serde_json::{Map, Value, json};
+use std::collections::HashSet;
+
+use serde_json::{Map, Value};
 use yi_types::plan::doc::{Plan, PlanId, PlanTier, Todo, TodoLabel, TodoState};
-use yi_types::plan::ledger::PlanOpRecord;
+use yi_types::plan::ledger::{JournalRecord, PlanOpRecord};
 use yi_types::plan::op::{Op, TodoSpec};
 use yi_types::url::{Scheme, Url};
 
-use super::ops::PlanEngine;
+use super::ops::{PlanEngine, Txn};
 
 pub const TRACE_KEY: &str = "trace";
 
@@ -19,16 +21,28 @@ pub struct Trace {
     pub forgotten: Vec<Url>,
 }
 
-/// Invariant: `user://<n>` counts the user's own messages from 1, the index every `user://`
-/// reader shares, so `owner` messages resolve exactly the ordinals `1..=owner`.
-pub fn trace(plan: &Plan, owner: usize) -> Trace {
-    let resolves = |url: &Url| ordinal(url).is_some_and(|n| n <= owner);
+impl Trace {
+    fn rows(&self) -> [Vec<String>; 2] {
+        [
+            self.unasked
+                .iter()
+                .map(|label| label.as_str().to_owned())
+                .collect(),
+            self.forgotten.iter().map(Url::to_string).collect(),
+        ]
+    }
+}
+
+/// Invariant: `user://<n>` is `asked[n-1]`, the index every `user://` reader shares; a message
+/// off the live branch still resolves but is never forgotten, since a rewind took it back.
+pub fn trace(plan: &Plan, asked: &[bool]) -> Trace {
+    let resolves = |url: &Url| ordinal(url).is_some_and(|n| n <= asked.len());
     let live: Vec<&Todo> = plan
         .todos
         .iter()
         .filter(|todo| !matches!(todo.state, TodoState::Abandoned))
         .collect();
-    let mut covered = vec![false; owner];
+    let mut covered: Vec<bool> = asked.iter().map(|live| !live).collect();
     let mut walk: Vec<&Todo> = live.clone();
     while let Some(todo) = walk.pop() {
         let waived = todo.cites.waived.iter().map(|waiver| &waiver.address);
@@ -73,10 +87,22 @@ impl PlanEngine {
         }
     }
 
-    fn owner_messages(&self) -> Option<usize> {
+    fn owner_messages(&self) -> Option<Vec<bool>> {
         let store = (self.owner_words.as_ref()?)()?;
-        let inputs = crate::fetch::user_inputs(&store).ok()?;
-        (!inputs.is_empty()).then_some(inputs.len())
+        let typed = crate::fetch::user_entries(&store).ok()?;
+        let query = yi_session::EntryQuery {
+            order: yi_session::EntryOrder::OldestFirst,
+            ..yi_session::EntryQuery::default()
+        };
+        let branch = yi_session::lock_session(&store)
+            .find_entries_on_branch("main", &query, &yi_session::BranchBounds::default())
+            .ok()?;
+        let live: HashSet<&str> = branch.iter().map(yi_types::entry::Entry::id).collect();
+        let asked: Vec<bool> = typed
+            .iter()
+            .map(|(id, _)| live.contains(id.as_str()))
+            .collect();
+        asked.contains(&true).then_some(asked)
     }
 
     /// A declared todo citing nothing keeps its label's old cites, else cites the latest message.
@@ -93,7 +119,8 @@ impl PlanEngine {
         let Some(latest) = (!specs.is_empty())
             .then(|| self.owner_messages())
             .flatten()
-            .and_then(user_url)
+            .and_then(|asked| asked.iter().rposition(|live| *live))
+            .and_then(|at| user_url(at.saturating_add(1)))
         else {
             return op;
         };
@@ -111,8 +138,15 @@ impl PlanEngine {
         op
     }
 
-    /// Invariant: the journal record is the flags' authority, so the notice renders from it.
-    pub(super) fn trace_into(&self, op: &Op, plan: &Plan, extra: &mut Map<String, Value>) {
+    /// Invariant: the journal record is the flags' authority, so the notice renders from it. A
+    /// flag this plan's journal raised that still held before the op is standing, not raised again.
+    pub(super) fn trace_into(
+        &self,
+        txn: &Txn,
+        op: &Op,
+        plan: &Plan,
+        extra: &mut Map<String, Value>,
+    ) {
         let declares = matches!(
             op,
             Op::Init { .. }
@@ -121,20 +155,40 @@ impl PlanEngine {
                 | Op::Supersede { .. }
                 | Op::Set { .. }
         ) && matches!(plan.tier, PlanTier::Root);
-        let Some(found) = self
-            .owner_messages()
-            .filter(|_| declares)
-            .map(|n| trace(plan, n))
-        else {
+        let Some(asked) = self.owner_messages().filter(|_| declares) else {
             return;
         };
-        if !found.unasked.is_empty() || !found.forgotten.is_empty() {
-            let labels: Vec<&str> = found.unasked.iter().map(TodoLabel::as_str).collect();
-            let urls: Vec<String> = found.forgotten.iter().map(Url::to_string).collect();
-            let flags = json!({"unasked": labels, "forgotten": urls});
-            extra.insert(TRACE_KEY.to_owned(), flags);
+        let now = trace(plan, &asked).rows();
+        let was = txn
+            .state
+            .plan(&plan.id)
+            .ok()
+            .map(|was| trace(was, &asked).rows());
+        let mut flags = Map::new();
+        for ((row, now), was) in ROWS.iter().zip(now).zip(was.unwrap_or_default()) {
+            let raised = raised(&txn.records, &plan.id, row.0);
+            let fresh: Vec<String> = now
+                .into_iter()
+                .filter(|flag| !(was.contains(flag) && raised.contains(flag.as_str())))
+                .collect();
+            if !fresh.is_empty() {
+                flags.insert(row.0.to_owned(), fresh.into());
+            }
+        }
+        if !flags.is_empty() {
+            extra.insert(TRACE_KEY.to_owned(), Value::Object(flags));
         }
     }
+}
+
+fn raised<'a>(records: &'a [JournalRecord], plan: &PlanId, key: &str) -> HashSet<&'a str> {
+    records
+        .iter()
+        .filter(|record| &record.record.plan == plan)
+        .filter_map(|record| record.record.extra.get(TRACE_KEY)?.get(key)?.as_array())
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
 }
 
 impl super::ops::Delta {
@@ -144,17 +198,19 @@ impl super::ops::Delta {
     }
 }
 
-/// What each flag says and the remedy it names, keyed as the journal records it.
-const ROWS: [(&str, &str, &str); 2] = [
+/// What each flag says, its remedy, and where a cut list's rest is, keyed as the journal has it.
+const ROWS: [(&str, &str, &str, &str); 2] = [
     (
         "unasked",
         "todo(s) cite no user message that resolves, so nobody asked for them",
         "cite one with intent: [\"user://<n>\"]",
+        "the rest are the todos whose intent cites no user message",
     ),
     (
         "forgotten",
         "user message(s) no todo cites or waives, possibly forgotten",
         "fetch one to read it, then cite it in a todo's intent or waive it with waived: [{address, reason}]",
+        "the rest are the user://<n> no todo's intent or waiver names",
     ),
 ];
 
@@ -163,7 +219,7 @@ pub fn notices(record: &PlanOpRecord) -> Vec<String> {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for (key, what, remedy) in ROWS {
+    for (key, what, remedy, rest) in ROWS {
         let items = found.get(key).and_then(Value::as_array);
         let items: Vec<&str> = items
             .into_iter()
@@ -185,7 +241,7 @@ pub fn notices(record: &PlanOpRecord) -> Vec<String> {
         ));
         if items.len() > TRACE_SHOWN {
             out.push(format!(
-                "[… {TRACE_SHOWN} of {} shown (trace cap {TRACE_SHOWN}); fetch plan://{} shows every todo's intent]",
+                "[… {TRACE_SHOWN} of {} shown (trace cap {TRACE_SHOWN}); {rest} in fetch plan://{}]",
                 items.len(),
                 record.plan
             ));
