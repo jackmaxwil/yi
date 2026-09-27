@@ -75,6 +75,7 @@ fn push_assistant(parts: &mut Vec<String>, content: &[Content]) {
 /// Design §4.4: flatten a conversation to labeled text so the summarizer reads
 /// it as material, never as a conversation to continue.
 pub fn serialize_conversation(messages: &[AgentMessage]) -> String {
+    let _span = yi_types::trace::span("context.serialize").arg("messages", messages.len());
     let mut parts: Vec<String> = Vec::new();
     for message in messages {
         match message {
