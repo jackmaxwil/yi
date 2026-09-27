@@ -136,10 +136,9 @@ pub struct App {
     pub selection: crate::model::Selection,
     pending_repaint: bool,
     pub(crate) pending_prompt_mark: bool,
-    /// §17.3: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots travel between the
-    /// two; there is one orb, never a static one beside a moving one.
-    pub(crate) logo_phase: f64,
-    pub(crate) logo_target: f64,
+    pub(crate) pane: bool,
+    /// §17.3: the `Yi` mark at rest and one looping pose per agent state; one orb, never two.
+    pub(crate) orb: yi_orb::Orb,
     pub(crate) history: crate::history::History,
     pub(crate) reflow: crate::reflow::ReflowState,
     pub(crate) streaming: Option<AgentMessage>,
@@ -204,6 +203,7 @@ pub struct App {
     pub(crate) cost_unknown: bool,
     turn_started: Instant,
     turn_tools: u64,
+    pub(crate) last_tool: Option<String>,
     turn_tokens: crate::status::TurnTokens,
     turn_cost: f64,
     pub(crate) width: usize,
@@ -251,8 +251,8 @@ impl App {
             selection: crate::model::Selection::new(options.model.clone()),
             pending_repaint: false,
             pending_prompt_mark: false,
-            logo_phase: 0.0,
-            logo_target: 0.0,
+            pane: false,
+            orb: yi_orb::Orb::default(),
             history: crate::history::History::default(),
             reflow: crate::reflow::ReflowState::default(),
             streaming: None,
@@ -304,6 +304,7 @@ impl App {
             cost_unknown: false,
             turn_started: Instant::now(),
             turn_tools: 0,
+            last_tool: None,
             turn_tokens: crate::status::TurnTokens::default(),
             turn_cost: 0.0,
             width,
@@ -329,10 +330,6 @@ impl App {
 
     pub fn set_width(&mut self, width: usize) {
         self.width = width;
-    }
-
-    pub fn logo_target(&self) -> f64 {
-        self.logo_target
     }
 
     pub fn set_kitty(&mut self, kitty: bool) {
@@ -510,9 +507,17 @@ impl App {
         if matches!(cell, Cell::User { .. }) {
             self.pending_prompt_mark = true;
         }
+        // Incident: a console replay rendered every cell for scrollback the pane drops (1.3 s).
+        if self.pane {
+            self.retain(cell.clone());
+            self.scheduler.request();
+            return;
+        }
         let spinner = self.spinner_phase();
         let width = self.content_width();
+        let rendering = yi_types::trace::span("tui.cell_lines");
         let mut lines = cell.lines(width, &self.theme, self.mode, spinner);
+        drop(rendering);
         let blank = |line: &Line<'_>| line.spans.iter().all(|s| s.content.trim().is_empty());
         // A blank separates blocks, never a run of one-line calls, measured
         // from what the previous cell rendered — all an append path knows.
@@ -563,26 +568,62 @@ impl App {
             .rev()
             .find(|t| t.status == ToolStatus::Running)
         {
-            return Some(match tool.name.as_str() {
-                "grep" | "glob" | "find" | "web_search" | "fetch" => OrbState::Searching,
-                "edit" | "write" => OrbState::Solving,
-                _ => OrbState::Working,
-            });
+            return Some(self.tool_state(&tool.name));
         }
-        if self
+        let children = self
             .tasks
             .values()
-            .any(|s| s.cell.status == TaskStatus::Running)
-        {
-            return Some(OrbState::Connecting);
+            .filter(|s| s.cell.status == TaskStatus::Running)
+            .count();
+        if children > 0 {
+            return Some(OrbState::Delegating {
+                children: u8::try_from(children).unwrap_or(u8::MAX),
+            });
         }
         if !self.live_markdown.is_empty() {
             return Some(OrbState::Composing);
         }
-        Some(OrbState::Working)
+        if !self.live_thought.is_empty() {
+            return Some(OrbState::Thinking);
+        }
+        // Incident: a read or a todo update ends in milliseconds, far inside one exit's lead, so
+        // its state never showed; the last tool holds the orb until the model streams again.
+        Some(
+            self.last_tool
+                .as_deref()
+                .map_or(OrbState::Awaiting, |name| self.tool_state(name)),
+        )
     }
 
-    pub(crate) fn spinner_phase(&self) -> usize {
+    fn tool_state(&self, name: &str) -> OrbState {
+        match name {
+            "read" | "ls" | "document" | "get_context" => OrbState::Reading,
+            "grep" | "glob" | "find" => OrbState::Searching,
+            "web_search" | "fetch" => OrbState::Browsing,
+            "edit" | "write" => OrbState::Editing,
+            "bash" => OrbState::Executing,
+            "ipython" => OrbState::Computing,
+            "todo" | "plan" => {
+                let progress = self.todos.as_ref().map(|todos| todos.progress());
+                let count = |n: usize| u8::try_from(n).unwrap_or(u8::MAX);
+                OrbState::Planning {
+                    done: progress.map_or(0, |p| count(p.done)),
+                    total: progress.map_or(0, |p| count(p.total)),
+                }
+            }
+            _ => OrbState::Working,
+        }
+    }
+
+    /// Changed, or its spinner stepped, since the last call: a host loop repaints on this.
+    pub fn take_redraw(&mut self, last_phase: &mut usize) -> bool {
+        let phase = self.spinner_phase();
+        let stepped = self.running && phase != *last_phase;
+        *last_phase = phase;
+        self.scheduler.take_request() || stepped
+    }
+
+    pub fn spinner_phase(&self) -> usize {
         usize::try_from(self.started_at.elapsed().as_millis() / SPINNER_PERIOD_MS).unwrap_or(0)
     }
 
@@ -808,6 +849,7 @@ impl App {
         self.esc_armed_at = None;
         self.turn_started = Instant::now();
         self.turn_tools = 0;
+        self.last_tool = None;
         self.turn_tokens = crate::status::TurnTokens::default();
         self.turn_cost = 0.0;
     }
@@ -853,6 +895,7 @@ pub fn run_tui(
     ask_rx: Receiver<AskRequest>,
     options: TuiOptions,
 ) -> i32 {
+    crate::highlight::prewarm();
     let (ui_rx, cmd_tx, runtime_thread) =
         spawn_runtime_bridge(runtime, &session, &host, ask_rx, Duration::from_millis(300));
     let mut port = Arc::clone(&session);
@@ -928,11 +971,10 @@ pub fn run_tui(
                 .tasks
                 .values()
                 .any(|state| state.cell.status == TaskStatus::Running);
-        let orb_moving = app.kitty
-            && app.orb_placement.is_some()
-            && (app.logo_target > 0.0 || app.logo_phase > 0.0);
+        let orb_moving =
+            app.kitty && app.orb_placement.is_some() && !app.orb.at_rest(app.orb_state());
         let mut timeout = if orb_moving {
-            timeout.min(Duration::from_millis(33))
+            timeout.min(orb_tick.wake())
         } else if animating {
             timeout.min(next_spinner_wake(app.started_at.elapsed().as_millis()))
         } else {

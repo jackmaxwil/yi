@@ -23,6 +23,8 @@ pub enum ClientEvent {
     Frame(Value),
     BadFrame,
     Disconnected { reason: String },
+    Input(ratatui::crossterm::event::Event),
+    InputClosed(String),
 }
 
 pub struct Outbound {
@@ -53,10 +55,13 @@ pub struct ClientThreads {
     pub writer: std::thread::JoinHandle<()>,
 }
 
-/// Spawn the IO threads; the bounded event receiver backpressures the
+pub fn events() -> (SyncSender<ClientEvent>, Receiver<ClientEvent>) {
+    std::sync::mpsc::sync_channel::<ClientEvent>(4096)
+}
+
+/// Spawn the IO threads; the bounded event queue backpressures the
 /// socket when the UI lags, never growing a queue.
-pub fn spawn(socket: PathBuf) -> (Receiver<ClientEvent>, Outbound, ClientThreads) {
-    let (event_tx, event_rx) = std::sync::mpsc::sync_channel::<ClientEvent>(4096);
+pub fn spawn(socket: PathBuf, event_tx: SyncSender<ClientEvent>) -> (Outbound, ClientThreads) {
     let (line_tx, line_rx) = std::sync::mpsc::sync_channel::<String>(64);
     let (stream_tx, stream_rx) = std::sync::mpsc::channel::<UnixStream>();
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -76,7 +81,28 @@ pub fn spawn(socket: PathBuf) -> (Receiver<ClientEvent>, Outbound, ClientThreads
         writer_loop(&line_rx, &stream_rx, &writer_shutdown);
     });
 
-    (event_rx, outbound, ClientThreads { reader, writer })
+    (outbound, ClientThreads { reader, writer })
+}
+
+pub fn spawn_input(
+    events: SyncSender<ClientEvent>,
+    stop: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    use ratatui::crossterm::event as ct_event;
+    std::thread::spawn(move || {
+        while !stop.load(Ordering::SeqCst) {
+            let event = match ct_event::poll(Duration::from_millis(50)) {
+                Ok(false) => continue,
+                Ok(true) => ct_event::read().map(ClientEvent::Input),
+                Err(error) => Err(error),
+            };
+            let event = event.unwrap_or_else(|error| ClientEvent::InputClosed(error.to_string()));
+            let closed = matches!(event, ClientEvent::InputClosed(_));
+            if events.send(event).is_err() || closed {
+                return;
+            }
+        }
+    })
 }
 
 fn reader_loop(
@@ -114,6 +140,7 @@ fn reader_loop(
                 continue;
             }
         };
+        yi_types::trace::instant("console.socket_connected", serde_json::Map::new());
         if streams.send(write_half).is_err() || events.send(ClientEvent::Connected).is_err() {
             return;
         }
@@ -141,6 +168,7 @@ fn read_frames(
     shutdown: &AtomicBool,
 ) -> String {
     let mut pending: Vec<u8> = Vec::new();
+    let mut scanned = 0_usize;
     let mut chunk = [0_u8; READ_CHUNK];
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -156,15 +184,20 @@ fn read_frames(
         };
         pending.extend_from_slice(bytes);
         loop {
-            let Some(newline) = pending.iter().position(|byte| *byte == b'\n') else {
+            let unread = pending.get(scanned..).unwrap_or_default();
+            let Some(offset) = unread.iter().position(|byte| *byte == b'\n') else {
+                scanned = pending.len();
                 break;
             };
+            let newline = scanned.saturating_add(offset);
+            scanned = 0;
             let line: Vec<u8> = pending.drain(..=newline).collect();
             let text = String::from_utf8_lossy(&line);
             let trimmed = text.trim();
             if trimmed.is_empty() {
                 continue;
             }
+            let _span = yi_types::trace::span("console.parse_frame").arg("bytes", trimmed.len());
             let event = match serde_json::from_str::<Value>(trimmed) {
                 Ok(value) => ClientEvent::Frame(value),
                 Err(_) => ClientEvent::BadFrame,

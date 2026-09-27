@@ -231,6 +231,7 @@ pub(crate) fn capture(
     args: &[&str],
     deadline: std::time::Duration,
 ) -> Result<String, String> {
+    let _span = yi_types::trace::span("lane.capture").arg("program", program);
     let mut command = yi_tools::command(program);
     command.current_dir(cwd).args(args);
     let deadline = std::time::Instant::now()
@@ -251,6 +252,7 @@ pub(crate) fn capture(
 }
 
 pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
+    let _span = yi_types::trace::span("lane.git").arg("args", args.join(" "));
     let mut command = yi_tools::command("git");
     command.current_dir(cwd).args(args);
     let deadline = std::time::Instant::now()
@@ -752,6 +754,8 @@ impl Pool {
         let _the_poll_below_sees_a_failed_term =
             capture(&self.dir, "/bin/sh", &term, probe_deadline());
         let started = std::time::Instant::now();
+        let _span = yi_types::trace::span("lane.warmer_exit");
+        let mut pace = yi_types::backoff::backoff(std::time::Duration::from_millis(200));
         while running()? {
             if started.elapsed().as_millis() >= u128::from(WARMER_EXIT_WAIT_MS) {
                 return Err(LaneError::WarmerStuck {
@@ -760,7 +764,7 @@ impl Pool {
                     waited_ms: WARMER_EXIT_WAIT_MS,
                 });
             }
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(pace());
         }
         if let Some(warm) = state.warm.as_mut() {
             warm.pid = None;

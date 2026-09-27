@@ -4,6 +4,7 @@
 mod error;
 mod id;
 mod jsonl;
+mod listing;
 mod query;
 mod repo;
 mod state;

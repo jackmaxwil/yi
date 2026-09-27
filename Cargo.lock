@@ -2310,7 +2310,6 @@ name = "yi-orb"
 version = "0.2.0"
 dependencies = [
  "miniz_oxide",
- "serde_json",
 ]
 
 [[package]]
@@ -2347,7 +2346,6 @@ dependencies = [
 name = "yi-session"
 version = "0.2.0"
 dependencies = [
- "serde",
  "serde_json",
  "thiserror 2.0.20",
  "yi-types",

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -21,6 +21,7 @@ impl TreeId {
 pub enum ChangeKind {
     Restored,
     Deleted,
+    Kept,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,13 +101,48 @@ impl Checkpoints {
 
     pub fn changed(&self, tree: &TreeId) -> Result<Vec<Change>, CheckpointError> {
         self.git(&["add", "--all"])?;
-        let diff = self.git(&["diff", "--name-status", "--cached", tree.as_str()])?;
+        let diff = self.git(&[
+            "diff",
+            "--no-renames",
+            "--name-status",
+            "--cached",
+            tree.as_str(),
+        ])?;
         Ok(parse_changes(&diff))
     }
 
-    /// Restores what changed or vanished, removes what the turn created.
-    pub fn restore(&self, tree: &TreeId) -> Result<Vec<Change>, CheckpointError> {
-        let changes = self.changed(tree)?;
+    /// With `since` (the tree the turn left) only the paths that moved between the two trees
+    /// move back, and one changed again since is kept; without it, every path since `tree`.
+    pub fn restore(
+        &self,
+        tree: &TreeId,
+        since: Option<&TreeId>,
+    ) -> Result<Vec<Change>, CheckpointError> {
+        let changes = match since {
+            None => self.changed(tree)?,
+            Some(since) => {
+                let drifted: HashSet<PathBuf> =
+                    self.changed(since)?.into_iter().map(|c| c.path).collect();
+                let moved = self.git(&[
+                    "diff",
+                    "--no-renames",
+                    "--name-status",
+                    tree.as_str(),
+                    since.as_str(),
+                ])?;
+                parse_changes(&moved)
+                    .into_iter()
+                    // ponytail: skip, not merge; `git merge-file` three-way if a user asks.
+                    .map(|change| match drifted.contains(&change.path) {
+                        true => Change {
+                            kind: ChangeKind::Kept,
+                            ..change
+                        },
+                        false => change,
+                    })
+                    .collect()
+            }
+        };
         for change in &changes {
             let path = change.path.to_string_lossy().into_owned();
             match change.kind {
@@ -116,6 +152,7 @@ impl Checkpoints {
                 ChangeKind::Deleted => {
                     let _absent_is_the_goal = std::fs::remove_file(self.work_tree.join(&path));
                 }
+                ChangeKind::Kept => {}
             }
         }
         self.git(&["add", "--all"])?;
@@ -171,6 +208,8 @@ impl Checkpoints {
     }
 
     fn git(&self, args: &[&str]) -> Result<String, CheckpointError> {
+        let verb = args.first().copied().unwrap_or_default();
+        let _span = yi_types::trace::span("checkpoint.git").arg("verb", verb);
         let _serialized = self
             .serial
             .lock()
@@ -196,8 +235,8 @@ impl Checkpoints {
     }
 }
 
-/// `--cached <tree>` reads "index relative to tree": `A` is a path the turn
-/// added, `D` one it removed, everything else a content change.
+/// Read relative to the earlier tree, with renames split by `--no-renames` (an `R` row named
+/// a path the tree lacks): `A` is a path the turn added, everything else one to check out.
 fn parse_changes(diff: &str) -> Vec<Change> {
     let mut changes = Vec::new();
     for line in diff.lines() {

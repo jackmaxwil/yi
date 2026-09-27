@@ -9,9 +9,8 @@ use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_kernel::client::HostHandlers;
 use yi_loop::ExecutionMode;
 use yi_runtime::schedule::{
-    DEFAULT_HEARTBEAT_DELIVERY_MODE, DeliverFn, HeartbeatCommand, HeartbeatService,
-    INTERRUPTED_ERROR, JobSpec, JobStore, RunOutcome, Scheduler, SessionActivity,
-    heartbeat_message, new_job, parse_heartbeat_command, parse_schedule, should_defer,
+    DeliverFn, HeartbeatCommand, HeartbeatService, INTERRUPTED_ERROR, JobSpec, JobStore,
+    RunOutcome, Scheduler, new_job, parse_heartbeat_command, parse_schedule,
 };
 use yi_runtime::{AgentSession, HostRegistry, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, StopReason, UserContent};
@@ -94,22 +93,7 @@ async fn due_heartbeat_wakes_an_idle_session_and_advances_the_job() -> TestResul
     let now = yi_session::now_ms();
     store.mutate(|state| state.jobs.push(heartbeat_job("hb-1", 10_000, now)));
 
-    let hook = session.heartbeat_hook();
-    let busy = session.activity_handle();
-    let deliver: Arc<DeliverFn> = Arc::new(move |job| {
-        let activity = SessionActivity {
-            is_streaming: busy(),
-            ..SessionActivity::default()
-        };
-        if should_defer(job, &activity) {
-            return RunOutcome::Skipped;
-        }
-        hook(
-            heartbeat_message(job, yi_session::now_ms()),
-            job.delivery_mode.unwrap_or(DEFAULT_HEARTBEAT_DELIVERY_MODE),
-        );
-        RunOutcome::Ran
-    });
+    let deliver = session.heartbeat_deliverer();
     let mut counter = 0_u64;
     let scheduler = Scheduler::start(Arc::clone(&store), deliver, move || {
         counter += 1;
@@ -158,6 +142,59 @@ async fn due_heartbeat_wakes_an_idle_session_and_advances_the_job() -> TestResul
         "a delivered dispatch must be resolved, not leak"
     );
     scheduler.stop();
+    Ok(())
+}
+
+/// Incident shape: `compact_now` summarizes while idle, a due steer heartbeat started a run,
+/// and the summarized history then overwrote the turn it had added.
+#[tokio::test]
+async fn a_heartbeat_due_mid_compaction_is_deferred() -> TestResult {
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        faux_assistant_message(
+            vec![faux_text(&format!("long body {}", "y".repeat(400)))],
+            StopReason::Stop,
+        ),
+        faux_assistant_message(vec![faux_text("## Goal\nIdle summary")], StopReason::Stop),
+    ]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.enable_compaction_with(yi_context::Settings {
+        enabled: true,
+        reserve_tokens: yi_context::Tokens(1_000),
+        keep_recent_tokens: yi_context::Tokens(10),
+    });
+    session.prompt("please do the thing with sufficient text here")?;
+    session.wait_idle().await;
+
+    let deliver = session.heartbeat_deliverer();
+    let compactor = session.compactor().ok_or("compaction is enabled")?;
+    let outcome = Arc::new(Mutex::new(None));
+    let seen = Arc::clone(&outcome);
+    compactor.set_standing(Arc::new(move || {
+        let job = heartbeat_job("hb-mid", 10_000, yi_session::now_ms());
+        *seen.lock().ok()? = Some(deliver(&job));
+        None
+    }));
+    let applied = session.compact_now().await;
+    let outcome = *outcome.lock().map_err(|error| error.to_string())?;
+    assert_eq!(
+        outcome,
+        Some(RunOutcome::Skipped),
+        "a heartbeat due while the summarizer runs must wait for the next tick"
+    );
+    assert!(applied, "the idle compaction still lands");
+    assert!(
+        !compactor.compacting(),
+        "the flag drops once compaction ends"
+    );
     Ok(())
 }
 

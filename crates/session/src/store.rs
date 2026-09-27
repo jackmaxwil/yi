@@ -59,7 +59,14 @@ impl SessionStore {
     }
 
     pub(crate) fn replay(&mut self, mutation: Mutation) -> Result<(), SessionError> {
-        self.state.apply_mutation(mutation)
+        self.state.apply_mutation(mutation)?;
+        self.sync_name();
+        Ok(())
+    }
+
+    /// Mirrors a replayed `Fact::Name` into the metadata snapshot every caller reads.
+    fn sync_name(&mut self) {
+        self.metadata.name = self.state.name().map(str::to_owned);
     }
 
     fn commit(&mut self, mutation: Mutation) -> Result<(), SessionError> {
@@ -81,7 +88,9 @@ impl SessionStore {
                 ))
             })?;
         }
-        self.state.apply_mutation(mutation)
+        self.state.apply_mutation(mutation)?;
+        self.sync_name();
+        Ok(())
     }
 
     pub fn append_entry(&mut self, mut entry: Entry, lane: &str) -> Result<Entry, SessionError> {
@@ -159,8 +168,7 @@ impl SessionStore {
         Ok(id)
     }
 
-    /// `from_id` is the leaf the lane left, so a reader can tell which attempt
-    /// the summary stands in for.
+    /// `from_id` is the leaf the lane left, so a reader can tell which attempt the summary stands in for.
     pub fn append_branch_summary(
         &mut self,
         lane: &str,
