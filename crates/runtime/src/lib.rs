@@ -46,7 +46,7 @@ pub mod wall;
 pub mod wiring;
 
 pub use checkpoint::{
-    RecordedCheckpoint, UndoOutcome, describe_undo, recorded, undo, undo_notes,
+    RecordedCheckpoint, UndoOutcome, describe_undo, recorded, undo, undo_notes, undo_to,
     wire_turn_checkpoints,
 };
 pub use compaction::{CompactStatus, Compactor};
