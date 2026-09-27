@@ -54,7 +54,7 @@ fn tool_text(store: &yi_session::SharedSession, call: &str) -> Result<String, Bo
 }
 
 /// Dies with the check unwired or disabled: no `trace:` row reaches the model, and the journal
-/// record carries no flags.
+/// record carries no flags; or with a revision repeating a flag that still stands.
 #[tokio::test]
 async fn a_plan_that_misses_a_message_and_invents_a_todo_is_flagged_both_ways() -> TestResult {
     let root = Scratch::new("yi-plan-trace")?;
@@ -64,6 +64,7 @@ async fn a_plan_that_misses_a_message_and_invents_a_todo_is_flagged_both_ways() 
         {"label": "wire the parser"},
         {"label": "polish the docs", "intent": ["user://9"]}
     ]});
+    let drop = json!({"op": "drop", "label": "keep the guardrails green"});
     let noted = || faux_assistant_message(vec![faux_text("noted")], StopReason::Stop);
     provider.queue_faux(vec![
         noted(),
@@ -77,6 +78,15 @@ async fn a_plan_that_misses_a_message_and_invents_a_todo_is_flagged_both_ways() 
             StopReason::ToolUse,
         ),
         faux_assistant_message(vec![faux_text("planned")], StopReason::Stop),
+        faux_assistant_message(
+            vec![faux_tool_call(
+                "c2",
+                "plan",
+                drop.as_object().cloned().unwrap_or_default(),
+            )],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("dropped")], StopReason::Stop),
     ]);
     let mut session = session(Arc::clone(&provider));
     let store = memory_store();
@@ -103,6 +113,18 @@ async fn a_plan_that_misses_a_message_and_invents_a_todo_is_flagged_both_ways() 
             "trace: 1 user message(s) no todo cites or waives, possibly forgotten: \"user://2\"; fetch one to read it, then cite it in a todo's intent or waive it with waived: [{address, reason}]",
         ],
         "{text}"
+    );
+    let revised = tool_text(&store, "c2")?;
+    let rows: Vec<&str> = revised
+        .lines()
+        .filter(|row| row.starts_with("trace:"))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "trace: 1 user message(s) no todo cites or waives, possibly forgotten: \"user://1\"; fetch one to read it, then cite it in a todo's intent or waive it with waived: [{address, reason}]"
+        ],
+        "a revision raises what it uncovered and repeats nothing standing: {revised}"
     );
     let id = PlanId::new("ship-the-parser")?;
     let plans = PlanStore::open(root.join("plans"))?;
@@ -144,8 +166,8 @@ fn todo(label: &str, intent: &[&str], waived: &[&str]) -> Result<Todo, Box<dyn E
     Ok(todo)
 }
 
-/// Dies with a waiver not counted as cover, a dropped todo still counted, or an address past the
-/// session's messages read as resolving.
+/// Dies with a waiver not counted as cover, a dropped todo still counted, an address past the
+/// session's messages read as resolving, or a message a rewind left behind called forgotten.
 #[test]
 fn a_waiver_covers_a_message_and_a_dropped_todo_does_not() -> TestResult {
     let mut dropped = todo("old path", &["user://2"], &[])?;
@@ -157,10 +179,10 @@ fn a_waiver_covers_a_message_and_a_dropped_todo_does_not() -> TestResult {
         vec![
             todo("serves one", &["user://1"], &["user://3"])?,
             dropped,
-            todo("past the end", &["user://4"], &[])?,
+            todo("past the end", &["user://5"], &[])?,
         ],
     );
-    let found = trace(&plan, 3);
+    let found = trace(&plan, &[true, true, true, false]);
     assert_eq!(found.unasked, [TodoLabel::new("past the end")?]);
     assert_eq!(found.forgotten, ["user://2".parse::<Url>()?]);
     Ok(())
@@ -194,7 +216,9 @@ fn the_trace_cap_names_its_cut_only_past_the_cap() -> TestResult {
     let past = notices(&record_with(TRACE_SHOWN + 1)?);
     assert_eq!(
         past.last().map(String::as_str),
-        Some("[… 8 of 9 shown (trace cap 8); fetch plan://capped shows every todo's intent]"),
+        Some(
+            "[… 8 of 9 shown (trace cap 8); the rest are the todos whose intent cites no user message in fetch plan://capped]"
+        ),
         "{past:?}"
     );
     assert!(
