@@ -23,10 +23,13 @@ use yi_types::plan::doc::{
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+/// Each store is its own session: a plan's journal names the session that applied it.
 fn memory_store() -> yi_session::SharedSession {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
         yi_session::SessionMetadata {
-            id: "plan-view-test".to_owned(),
+            id: format!("plan-view-test-{n}"),
             created_at: 0,
             parent_session_id: None,
             name: None,
@@ -908,7 +911,7 @@ fn an_engine_never_resolves_or_conflicts_over_another_sessions_plan() -> TestRes
                     move || Some(sink.clone()),
                 ))))
                 .with_owned(Arc::new(move || {
-                    yi_runtime::plan::ledger::owned_roots(&scope)
+                    yi_runtime::plan::ledger::Owned::of(std::slice::from_ref(&scope))
                 })),
         )
     };
@@ -945,5 +948,56 @@ fn an_engine_never_resolves_or_conflicts_over_another_sessions_plan() -> TestRes
         opened
     );
     assert_eq!(mine.apply(owner(Op::View { full: false }))?.plan.id, own);
+    Ok(())
+}
+
+struct LostLedger;
+
+impl yi_runtime::plan::ops::OpSink for LostLedger {
+    fn record(&self, _record: yi_types::plan::ledger::PlanOpRecord) -> Result<(), String> {
+        Err("session file unwritable".to_owned())
+    }
+}
+
+/// The ledger entry is telemetry and may be lost; the session still owns the plan it opened, so
+/// its next unnamed op finds it and a second `init` is refused instead of opening a duplicate.
+#[test]
+fn a_lost_ledger_write_does_not_orphan_the_plan_it_opened() -> TestResult {
+    use yi_runtime::plan::ops::{Op, OpRequest, PlanOpError};
+    let dir = Scratch::new("yi-plan-lost-ledger")?;
+    let store = memory_store();
+    let engine = PlanEngine::new(PlanStore::open(dir.to_path_buf())?, Arc::new(NoChildren))
+        .with_op_sink(Arc::new(LostLedger))
+        .with_owned(Arc::new(move || {
+            yi_runtime::plan::ledger::Owned::of(std::slice::from_ref(&store))
+        }));
+    let owner = |op: Op| OpRequest {
+        plan: None,
+        actor: Actor::Owner,
+        op,
+        request_id: None,
+        expected_revision: None,
+    };
+    let init = || -> Result<Op, Box<dyn Error>> {
+        Ok(Op::Init {
+            goal: GoalText::new("ship it")?,
+            todos: vec![yi_runtime::plan::ops::TodoSpec {
+                label: TodoLabel::new("cut")?,
+                after: Vec::new(),
+                delegation: None,
+                contract: None,
+                children: Vec::new(),
+            }],
+        })
+    };
+    let opened = engine.apply(owner(init()?))?.plan.id;
+    assert_eq!(
+        engine.apply(owner(Op::View { full: false }))?.plan.id,
+        opened
+    );
+    match engine.apply(owner(init()?)) {
+        Err(PlanOpError::PlanExists { id }) => assert_eq!(id, opened),
+        other => return Err(format!("a duplicate root opened: {other:?}").into()),
+    }
     Ok(())
 }

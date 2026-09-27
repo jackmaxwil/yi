@@ -461,7 +461,7 @@ fn wire_plan_request(
     Some((engine, actor, todos))
 }
 
-/// A child works its owner's plan, so its scope is its own ledger's roots and the host's.
+/// A child works its owner's plan, so its scope is its own session's and the host's.
 /// ponytail: one level up; a grandchild naming no plan sees its parent's roots, not the root's.
 fn owned_roots(
     session: &AgentSession,
@@ -469,14 +469,8 @@ fn owned_roots(
 ) -> Arc<crate::plan::ledger::OwnedFn> {
     let (own, owner) = (session.store_handle(), Arc::clone(&host.options.store));
     Arc::new(move || {
-        let mut roots: Vec<_> = [own(), owner()]
-            .into_iter()
-            .flatten()
-            .flat_map(|store| crate::plan::ledger::owned_roots(&store))
-            .collect();
-        roots.sort();
-        roots.dedup();
-        roots
+        let stores: Vec<_> = [own(), owner()].into_iter().flatten().collect();
+        crate::plan::ledger::Owned::of(&stores)
     })
 }
 

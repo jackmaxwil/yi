@@ -83,7 +83,7 @@ pub enum CanonicalPlanError {
 }
 
 /// The one plan the session is working: the fact's doc pointer when the host wrote one, else
-/// the Active root among those this session's ledger touched. The directory is shared by every
+/// the Active root among those this session claims. The directory is shared by every
 /// session in the workspace, so a root another session opened is never this one's plan.
 pub fn canonical_plan(store: &StoreHandle, plans_dir: &Path) -> Result<Plan, CanonicalPlanError> {
     let no_plan = || CanonicalPlanError::NoPlanOpen {
@@ -104,8 +104,12 @@ pub fn canonical_plan(store: &StoreHandle, plans_dir: &Path) -> Result<Plan, Can
             .map_err(|cause| CanonicalPlanError::Pointer { id: raw, cause })?;
         return Ok(plans.read(&id)?);
     }
-    let owned = ledger::owned_roots(&handle);
-    for id in plans.roots()?.into_iter().filter(|id| owned.contains(id)) {
+    let owned = ledger::Owned::of(std::slice::from_ref(&handle));
+    for id in plans
+        .roots()?
+        .into_iter()
+        .filter(|id| owned.claims(&plans, id))
+    {
         let plan = plans.read(&id)?;
         if plan.state == PlanState::Active {
             return Ok(plan);

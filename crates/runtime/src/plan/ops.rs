@@ -450,7 +450,7 @@ pub struct PlanEngine {
     pub(super) capacity: Arc<super::capacity::Capacity>,
     pub(super) refused: super::schedule::Refused,
     pub(super) previewed: super::covers::Previewed,
-    pub(super) owned: Option<Arc<super::ledger::OwnedFn>>,
+    pub(super) host: super::ledger::Host,
 }
 
 impl PlanEngine {
@@ -473,7 +473,7 @@ impl PlanEngine {
             capacity: super::capacity::Capacity::for_slots(crate::lane::DEFAULT_SLOTS),
             refused: super::schedule::Refused::default(),
             previewed: super::covers::Previewed::default(),
-            owned: None,
+            host: super::ledger::Host::Bare,
         }
     }
 
@@ -637,7 +637,7 @@ impl PlanEngine {
         txn: &mut Txn,
         record: JournalRecord,
     ) -> Result<JournalRecord, PlanOpError> {
-        let sealed = txn.journal.seal(record, txn.last())?;
+        let sealed = txn.journal.seal(self.stamped(record), txn.last())?;
         txn.journal.append(&sealed)?;
         state::apply(&mut txn.state, &sealed.record)?;
         txn.records.push(sealed.record.clone());
