@@ -90,26 +90,33 @@ pub(crate) fn separated(rows_above: usize, blank_above: bool, next: &[Line<'_>])
 }
 
 /// Incident: a rebuild dropped every separator row scrollback had, so a resize moved rows.
-/// One blank row separates, wherever the padding came from; only the last `keep` are cloned.
-fn join(cells: &[Vec<Line<'static>>], keep: usize) -> Vec<Line<'static>> {
+/// One blank row separates, wherever it came from; a separator is owned by the cell below it.
+fn join(
+    cells: &[Vec<Line<'static>>],
+    first: usize,
+    keep: usize,
+) -> (Vec<Line<'static>>, Vec<usize>) {
     let blank = Line::default();
-    let mut out: Vec<&Line<'static>> = Vec::new();
+    let mut out: Vec<(usize, &Line<'static>)> = Vec::new();
     let mut above: Option<&Vec<Line<'static>>> = None;
-    for rows in cells.iter().filter(|rows| !rows.is_empty()) {
+    for (owner, rows) in (first..).zip(cells).filter(|(_, rows)| !rows.is_empty()) {
         if let Some(above) = above
             && separated(above.len(), above.last().is_some_and(is_blank), rows)
         {
-            out.push(&blank);
+            out.push((owner, &blank));
         }
         for line in rows {
-            if !(is_blank(line) && out.last().is_some_and(|last| is_blank(last))) {
-                out.push(line);
+            if !(is_blank(line) && out.last().is_some_and(|(_, last)| is_blank(last))) {
+                out.push((owner, line));
             }
         }
         above = Some(rows);
     }
     let skip = out.len().saturating_sub(keep);
-    out.into_iter().skip(skip).cloned().collect()
+    out.into_iter()
+        .skip(skip)
+        .map(|(owner, line)| (line.clone(), owner))
+        .unzip()
 }
 
 impl History {
@@ -253,7 +260,7 @@ impl History {
         mode: TranscriptMode,
         cap: usize,
     ) -> Vec<Line<'static>> {
-        self.replay_last(width, theme, mode, cap, usize::MAX)
+        self.replay_last(width, theme, mode, cap, usize::MAX).0
     }
 
     fn replay_last(
@@ -263,8 +270,8 @@ impl History {
         mode: TranscriptMode,
         cap: usize,
         keep: usize,
-    ) -> Vec<Line<'static>> {
-        self.rendered(width, theme, mode, (cap, usize::MAX), |_, cells| {
+    ) -> (Vec<Line<'static>>, Vec<usize>) {
+        self.rendered(width, theme, mode, (cap, usize::MAX), |start, cells| {
             let mut rows = 0usize;
             let mut from = cells.len();
             for cell in cells.iter().rev() {
@@ -274,8 +281,8 @@ impl History {
                     break;
                 }
             }
-            let tail = cells.get(from..).unwrap_or_default();
-            join(tail, keep)
+            let first = start.saturating_add(from);
+            join(cells.get(from..).unwrap_or_default(), first, keep)
         })
     }
 
@@ -290,7 +297,7 @@ impl History {
         mode: TranscriptMode,
         rows: usize,
         at_most: usize,
-    ) -> (usize, Vec<Line<'static>>) {
+    ) -> (usize, Vec<Line<'static>>, Vec<usize>) {
         self.rendered(width, theme, mode, (rows, at_most), |start, cells| {
             let mut held = 0usize;
             let mut from = start.saturating_add(cells.len());
@@ -302,8 +309,17 @@ impl History {
                 }
             }
             let tail = cells.get(from.saturating_sub(start)..).unwrap_or_default();
-            (from, join(tail, usize::MAX))
+            let (lines, owners) = join(tail, from, usize::MAX);
+            (from, lines, owners)
         })
+    }
+
+    pub fn source(&self, index: usize) -> Option<&str> {
+        match self.cells.get(index)? {
+            Cell::User { text } => Some(text),
+            Cell::Assistant { markdown } | Cell::Thought { markdown } => Some(markdown),
+            _ => None,
+        }
     }
 
     pub fn lines(
@@ -312,7 +328,7 @@ impl History {
         theme: &Theme,
         mode: TranscriptMode,
         rows: usize,
-    ) -> Vec<Line<'static>> {
+    ) -> (Vec<Line<'static>>, Vec<usize>) {
         self.replay_last(width, theme, mode, rows.max(1), rows)
     }
 }
