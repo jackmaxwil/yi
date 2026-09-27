@@ -1,14 +1,19 @@
-//! The kitty image the session owns, and the phase walk that feeds it. The engine is
-//! [`yi_orb`]; this is the part that knows about [`crate::app::App`] and the terminal.
+//! The kitty image the session owns. What it shows is [`yi_orb::Orb`]'s: the `Yi` mark at
+//! rest and a looping pose per agent state; this is the part that knows the terminal.
+
+use std::time::{Duration, Instant};
 
 pub use yi_orb::kitty;
+
+/// 60 fps: dots move half a pixel a frame; 120 would double pty bytes and CPU, unseen.
+pub const FRAME: Duration = Duration::from_millis(16);
 
 /// The loop owns one of these for the session — one kitty image, double
 /// buffered across [`kitty::IMAGE_IDS`].
 pub struct Tick {
     pub shown: bool,
     at: Option<(u16, u16)>,
-    last: std::time::Instant,
+    last: Instant,
     front: usize,
     ids: [u32; 2],
 }
@@ -24,10 +29,16 @@ impl Tick {
         Self {
             shown: false,
             at: None,
-            last: std::time::Instant::now() - std::time::Duration::from_secs(1),
+            last: Instant::now(),
             front: 0,
             ids,
         }
+    }
+
+    pub fn wake(&self) -> Duration {
+        FRAME
+            .saturating_sub(self.last.elapsed())
+            .max(Duration::from_millis(1))
     }
 
     pub fn hide(&mut self, out: &mut impl std::io::Write) {
@@ -39,47 +50,38 @@ impl Tick {
     }
 }
 
-/// The phase walks toward its target every frame, so the dots travel between the `Yi` mark
-/// and the orb; settled it needs no repaint. Frames transmit, place, then delete the front.
+/// Paint a due frame; at rest, or only moved, re-place the image already sent.
 pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mut Tick) {
     if !app.kitty {
         return;
     }
-    let animating = app.logo_phase != app.logo_target || app.logo_target > 0.0;
-    let due = animating
-        && state.last.elapsed() >= std::time::Duration::from_millis(crate::logo::FRAME_MS);
-    if !animating {
-        state.last = std::time::Instant::now();
-    }
+    let want = app.orb_state();
+    let resting = app.orb.at_rest(want);
+    let due = !resting && state.last.elapsed() >= FRAME;
     let stale = app.take_orb_stale();
     match app.orb_placement {
         Some((col, row)) if due || stale || !state.shown => {
-            if due {
-                app.logo_phase =
-                    crate::logo::advance(app.logo_phase, app.logo_target, state.last.elapsed());
-                state.last = std::time::Instant::now();
-            }
-            let clock = app.started_at.elapsed().as_secs_f64();
-            if let Some(frame) = crate::logo::frame(app.logo_phase, clock, 64) {
-                let rgba = kitty::paint_rgba(&frame, 64.0, crate::app::ORB_PX);
-                let back = 1 - state.front;
-                let _ = kitty::transmit(out, state.ids[back], &rgba, crate::app::ORB_PX);
-                let placed = kitty::place(
-                    out,
-                    state.ids[back],
-                    col,
-                    row,
-                    crate::app::ORB_COLS,
-                    crate::app::ORB_ROWS,
-                );
-                if placed.is_ok() {
-                    if state.shown {
-                        let _ = kitty::delete_id(out, state.ids[state.front]);
-                    }
-                    state.front = back;
-                    state.shown = true;
-                    state.at = Some((col, row));
+            let frame = app.orb.frame(state.last.elapsed(), want);
+            state.last = Instant::now();
+            let (width, height) = pixel_size();
+            let rgba = kitty::paint_rgba(&frame, 64.0, width, height);
+            let back = 1 - state.front;
+            let _ = kitty::transmit(out, state.ids[back], &rgba, (width, height));
+            let placed = kitty::place(
+                out,
+                state.ids[back],
+                col,
+                row,
+                crate::app::ORB_COLS,
+                crate::app::ORB_ROWS,
+            );
+            if placed.is_ok() {
+                if state.shown {
+                    let _ = kitty::delete_id(out, state.ids[state.front]);
                 }
+                state.front = back;
+                state.shown = true;
+                state.at = Some((col, row));
             }
         }
         Some((col, row)) if state.at != Some((col, row)) => {
@@ -98,4 +100,27 @@ pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mu
         None if state.shown => state.hide(out),
         _ => {}
     }
+    if resting {
+        state.last = Instant::now();
+    }
+}
+
+const MAX_ORB_PX: usize = 384;
+
+/// The orb's rect in the terminal's own pixels (square fallback without one, 384 cap).
+fn pixel_size() -> (usize, usize) {
+    let fallback = (crate::app::ORB_PX, crate::app::ORB_PX);
+    let Ok(size) = ratatui::crossterm::terminal::window_size() else {
+        return fallback;
+    };
+    if size.columns == 0 || size.rows == 0 || size.width == 0 || size.height == 0 {
+        return fallback;
+    }
+    let side = |pixels: u16, cells: u16, span: u16| {
+        (usize::from(pixels) / usize::from(cells) * usize::from(span)).clamp(8, MAX_ORB_PX)
+    };
+    (
+        side(size.width, size.columns, crate::app::ORB_COLS),
+        side(size.height, size.rows, crate::app::ORB_ROWS),
+    )
 }

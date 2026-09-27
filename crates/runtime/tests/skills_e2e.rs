@@ -132,6 +132,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        per_session_state: false,
         cell_ceiling: None,
     }));
 
@@ -494,6 +495,7 @@ async fn save_read_forget_through_the_kernel() -> TestResult {
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        per_session_state: false,
         cell_ceiling: None,
     }));
     let out = cell(

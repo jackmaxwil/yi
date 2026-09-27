@@ -185,6 +185,7 @@ fn drain_capped(mut reader: impl Read, cap: usize, live: Option<&LiveOutput>) ->
 /// Incident: waiting under the guard parked the cancel watchdog on the same lock, so an early
 /// pipe-closer could not be killed. Released between polls; a reap sets `done` under it.
 fn wait_polled(child: &Mutex<Child>, done: &AtomicBool) -> Result<Option<i32>, String> {
+    let mut interval = Duration::from_millis(1);
     loop {
         let mut guard = child.lock().map_err(|_| "child lock poisoned".to_owned())?;
         let polled = guard
@@ -195,7 +196,8 @@ fn wait_polled(child: &Mutex<Child>, done: &AtomicBool) -> Result<Option<i32>, S
             return Ok(status.code());
         }
         drop(guard);
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(interval);
+        interval = interval.saturating_mul(2).min(Duration::from_millis(20));
     }
 }
 
@@ -247,6 +249,8 @@ pub(crate) fn run_captured_live(
     let done = Arc::new(AtomicBool::new(false));
     let was_cancelled = Arc::new(AtomicBool::new(false));
 
+    // Incident: a 50 ms watchdog sleep, joined after the reap, floored every command at 50 ms.
+    let (stop, stopped) = std::sync::mpsc::channel::<()>();
     let watchdog = {
         let child = Arc::clone(&child);
         let done = Arc::clone(&done);
@@ -263,7 +267,10 @@ pub(crate) fn run_captured_live(
                         .filter(|_| !done.load(Ordering::SeqCst))
                         .and_then(|mut child| kill_tree(&mut child).err());
                 }
-                std::thread::sleep(Duration::from_millis(50));
+                match stopped.recv_timeout(Duration::from_millis(50)) {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    _ => return None,
+                }
             }
             None
         })
@@ -284,6 +291,7 @@ pub(crate) fn run_captured_live(
 
     let waited = wait_polled(&child, &done);
     done.store(true, Ordering::SeqCst);
+    drop(stop);
     let kill_error = watchdog
         .join()
         .unwrap_or_else(|_| Some("the cancel watchdog panicked".to_owned()));
@@ -327,6 +335,23 @@ mod tests {
         // Twelve two-byte characters: the 17-byte head of a 35-byte cap ends inside the ninth.
         let text = "é".repeat(12);
         assert_eq!(drain_capped(text.as_bytes(), 35, None), (text, false));
+    }
+
+    #[test]
+    fn a_quick_command_is_not_held_by_the_watchdog() -> Fallible {
+        let never: CancelFlag = Arc::new(|| false);
+        let started = Instant::now();
+        for _ in 0..5 {
+            let capture = run_captured(command("true"), None, &never, OUTPUT_CAP)?;
+            assert_eq!(capture.exit_code, Some(0));
+        }
+        // The watchdog's 50 ms sleep used to floor each of these at 50 ms.
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "five runs took {elapsed:?}"
+        );
+        Ok(())
     }
 
     #[test]

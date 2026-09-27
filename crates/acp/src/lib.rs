@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
+mod attach;
 pub mod cells;
 pub mod daemon;
 mod forward;
@@ -55,10 +56,18 @@ pub struct AcpOptions {
     pub cwd: PathBuf,
     pub build: SessionBuilder,
     pub agent_version: String,
+    pub defaults: Option<SessionDefaults>,
+}
+
+pub struct SessionDefaults {
+    pub model: yi_types::model::Model,
+    pub effort: yi_types::model::Effort,
+    pub mode: yi_runtime::PermissionMode,
 }
 
 pub fn stdout_sink() -> LineSink {
     Arc::new(|value: &Value| {
+        let _span = yi_types::trace::span("acp.write_frame");
         let mut stdout = std::io::stdout().lock();
         if serde_json::to_writer(&mut stdout, value).is_ok() {
             let _stdout_gone_means_exit = stdout.write_all(b"\n");
@@ -196,6 +205,10 @@ struct AcpState {
     user_cells: crate::cells::UserCells,
     repo: JsonlRepo,
     sessions: HashMap<String, SessionHandle>,
+    building: HashMap<String, attach::Building>,
+    failed: HashMap<String, String>,
+    wake: tokio::sync::mpsc::WeakUnboundedSender<attach::Incoming>,
+    defaults: Option<SessionDefaults>,
     build: SessionBuilder,
     sink: LineSink,
     pending: PendingAsks,
@@ -234,8 +247,8 @@ pub(crate) fn update_notification(session_id: &str, update: AcpSessionUpdate) ->
     })
 }
 
-fn mode_value(session: &AgentSession) -> &'static str {
-    match session.permission_broker().map(|broker| broker.mode()) {
+fn mode_value(mode: Option<yi_runtime::PermissionMode>) -> &'static str {
+    match mode {
         Some(yi_runtime::PermissionMode::Yolo) => "yolo",
         Some(yi_runtime::PermissionMode::Auto) => "auto",
         _ => "ask",
@@ -243,7 +256,18 @@ fn mode_value(session: &AgentSession) -> &'static str {
 }
 
 fn config_options(session: &AgentSession) -> Vec<AcpConfigOption> {
-    let model = session.model();
+    options_for(
+        &session.model(),
+        session.effort(),
+        mode_value(session.permission_broker().map(|broker| broker.mode())),
+    )
+}
+
+fn options_for(
+    model: &yi_types::model::Model,
+    effort: yi_types::model::Effort,
+    mode: &str,
+) -> Vec<AcpConfigOption> {
     let models: Vec<Value> = available_models()
         .iter()
         .map(|candidate| {
@@ -275,7 +299,7 @@ fn config_options(session: &AgentSession) -> Vec<AcpConfigOption> {
             name: "Thinking level".to_owned(),
             kind: json!({
                 "type": "select",
-                "value": session.effort().to_string(),
+                "value": effort.to_string(),
                 "options": levels,
             }),
         },
@@ -284,7 +308,7 @@ fn config_options(session: &AgentSession) -> Vec<AcpConfigOption> {
             name: "Permission mode".to_owned(),
             kind: json!({
                 "type": "select",
-                "value": mode_value(session),
+                "value": mode,
                 "options": modes,
             }),
         },
@@ -317,7 +341,17 @@ impl AcpState {
             Arc::clone(&self.sink),
             Arc::clone(&self.pending),
         );
-        let (session, host) = (self.build)(Some(asker), Some(&session_id))?;
+        let built = {
+            let _span = yi_types::trace::span("acp.build_session");
+            (self.build)(Some(asker), Some(&session_id))
+        };
+        self.adopt(store, built)
+    }
+
+    fn adopt(&mut self, store: &SharedSession, built: attach::Built) -> Result<String, String> {
+        let session_id = lock_session(store).metadata().id.clone();
+        let (session, host) = built?;
+        let _attaching = yi_types::trace::span("acp.attach_store");
         session
             .attach_store(Arc::clone(store))
             .map_err(|error| error.to_string())?;
@@ -417,6 +451,9 @@ impl AcpState {
             .get("sessionId")
             .and_then(Value::as_str)
             .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?;
+        if let Some(error) = self.failed.get(id) {
+            return Err((INTERNAL_ERROR, error.clone()));
+        }
         self.sessions
             .get(id)
             .map(|handle| (handle, id.to_owned()))
@@ -428,8 +465,8 @@ impl AcpState {
         let options = handle
             .map(|handle| config_options(&handle.session))
             .unwrap_or_default();
-        let name = handle
-            .and_then(|handle| handle.session.store())
+        let name = self
+            .store_of(session_id)
             .and_then(|store| session_name(&store));
         json!(AcpSessionResult {
             session_id: session_id.to_owned(),
@@ -516,6 +553,12 @@ impl AcpState {
     }
 
     fn handle(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
+        if method != "session/resume"
+            && let Some(id) = params.get("sessionId").and_then(Value::as_str)
+        {
+            let id = id.to_owned();
+            self.settle(&id);
+        }
         match method {
             "initialize" => {
                 let requested = params
@@ -535,14 +578,27 @@ impl AcpState {
                 }))
             }
             "session/new" => {
+                let creating = yi_types::trace::span("acp.repo_create");
                 let store = self
                     .repo
                     .create(CreateOptions::default())
                     .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
-                let session_id = self
-                    .attach(&store)
-                    .map_err(|error| (INTERNAL_ERROR, error))?;
-                Ok(self.session_result(&session_id))
+                drop(creating);
+                let Some(defaults) = &self.defaults else {
+                    let session_id = self
+                        .attach(&store)
+                        .map_err(|error| (INTERNAL_ERROR, error))?;
+                    return Ok(self.session_result(&session_id));
+                };
+                let options = options_for(
+                    &defaults.model,
+                    defaults.model.clamp_effort(defaults.effort),
+                    mode_value(Some(defaults.mode)),
+                );
+                let session_id = self.attach_later(&store);
+                let mut result = self.session_result(&session_id);
+                result["configOptions"] = json!(options);
+                Ok(result)
             }
             "session/prompt" => {
                 let (handle, _) = self.session(params)?;
@@ -559,6 +615,7 @@ impl AcpState {
                 Ok(json!({}))
             }
             "session/list" => {
+                let _listing = yi_types::trace::span("acp.repo_list");
                 let sessions: Vec<Value> = self
                     .repo
                     .list()
@@ -567,7 +624,8 @@ impl AcpState {
                     .map(|metadata| {
                         json!({
                             "sessionId": metadata.id,
-                            "attached": self.sessions.contains_key(&metadata.id),
+                            "attached": self.sessions.contains_key(&metadata.id)
+                                || self.building.contains_key(&metadata.id),
                             "createdAt": metadata.created_at,
                             "name": metadata.name,
                         })
@@ -581,21 +639,26 @@ impl AcpState {
                     .and_then(Value::as_str)
                     .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?
                     .to_owned();
-                if !self.sessions.contains_key(&id) {
-                    let store = self
-                        .repo
-                        .open(&id)
-                        .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
-                    self.attach(&store)
-                        .map_err(|error| (INTERNAL_ERROR, error))?;
-                }
+                let store = match self.store_of(&id) {
+                    Some(store) => store,
+                    None => {
+                        let _span = yi_types::trace::span("acp.repo_open");
+                        let store = self
+                            .repo
+                            .open(&id)
+                            .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
+                        self.attach_later(&store);
+                        store
+                    }
+                };
                 let mut result = self.session_result(&id);
                 // v2 clients send `{"type": "start"}`; a bare number is the
                 // entry-offset extension. Anything non-null replays.
                 if let Some(replay_from) = params.get("replayFrom").filter(|v| !v.is_null()) {
                     let from = replay_from.as_u64().unwrap_or(0);
-                    let replayed_to = self.replay(&id, from)?;
-                    self.emit_replay(&id, from, None)?;
+                    let window = self.context_window(&id);
+                    let replayed_to = self.replay(&id, &store, from, window)?;
+                    self.emit_replay_from(&id, &store, from, window, None)?;
                     if let Some(map) = result.as_object_mut() {
                         map.insert("replayedTo".to_owned(), json!(replayed_to));
                     }
@@ -860,6 +923,18 @@ impl AcpState {
         (self.sink)(&update_notification(session_id, update));
     }
 
+    fn context_window(&self, session_id: &str) -> u64 {
+        self.sessions
+            .get(session_id)
+            .map(|handle| handle.session.model().context_window)
+            .or_else(|| {
+                self.defaults
+                    .as_ref()
+                    .map(|defaults| defaults.model.context_window)
+            })
+            .unwrap_or(0)
+    }
+
     fn emit_replay(
         &self,
         session_id: &str,
@@ -884,6 +959,7 @@ impl AcpState {
         context_window: u64,
         child: Option<&ChildId>,
     ) -> Result<(), (i64, String)> {
+        let mut span = yi_types::trace::span("acp.emit_replay");
         let (entries, leaf, goal) = {
             let session = lock_session(store);
             let entries = session
@@ -901,6 +977,7 @@ impl AcpState {
         let skip = usize::try_from(from.min(total)).unwrap_or(usize::MAX);
         let tail = entries.get(skip..).unwrap_or_default();
         let mut sent = from.min(total);
+        span.set("entries", tail.len());
         let mut chunks = tail.chunks(REPLAY_CHUNK).peekable();
         while let Some(chunk) = chunks.next() {
             let chunk_from = sent;
@@ -938,14 +1015,15 @@ impl AcpState {
 
     /// Design §17.2: the stored branch replayed as `session/update`s. `from` skips entries the
     /// client holds (valid only if it saw nothing since); returns the next `replayedTo`.
-    fn replay(&mut self, session_id: &str, from: u64) -> Result<u64, (i64, String)> {
-        let Some(handle) = self.sessions.get(session_id) else {
-            return Ok(0);
-        };
-        let Some(store) = handle.session.store() else {
-            return Ok(0);
-        };
-        let entries = lock_session(&store)
+    fn replay(
+        &self,
+        session_id: &str,
+        store: &SharedSession,
+        from: u64,
+        context_window: u64,
+    ) -> Result<u64, (i64, String)> {
+        let mut span = yi_types::trace::span("acp.replay_updates");
+        let entries = lock_session(store)
             .find_entries(&EntryQuery {
                 order: EntryOrder::OldestFirst,
                 ..EntryQuery::default()
@@ -954,10 +1032,14 @@ impl AcpState {
         let total = u64::try_from(entries.len()).unwrap_or(u64::MAX);
         let skip = usize::try_from(from.min(total)).unwrap_or(usize::MAX);
         let tail = entries.get(skip..).unwrap_or_default();
-        let mut ids = IdMap::new(handle.session.model().context_window);
+        let mut ids = IdMap::new(context_window);
+        let mut frames = 0_u64;
         for updated in replay_updates(tail, &mut ids) {
+            frames = frames.saturating_add(1);
             (self.sink)(&update_notification(session_id, updated));
         }
+        span.set("entries", tail.len());
+        span.set("frames", frames);
         Ok(total)
     }
 }
@@ -1012,10 +1094,15 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
     let repo = JsonlRepo::new(options.session_dir, options.cwd.display().to_string());
     let sink = stdout_sink();
     let pending: PendingAsks = Arc::new(Mutex::new(HashMap::new()));
+    let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<attach::Incoming>();
     let mut state = AcpState {
         user_cells: crate::cells::UserCells::default(),
         repo,
         sessions: HashMap::new(),
+        building: HashMap::new(),
+        failed: HashMap::new(),
+        wake: line_tx.downgrade(),
+        defaults: options.defaults,
         build: options.build,
         sink: Arc::clone(&sink),
         pending: Arc::clone(&pending),
@@ -1024,7 +1111,6 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
         cwd: options.cwd,
     };
     runtime.block_on(async move {
-        let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         std::thread::spawn(move || {
             use std::io::BufRead;
             let stdin = std::io::stdin();
@@ -1046,12 +1132,22 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
                         continue;
                     }
                 }
-                if line_tx.send(trimmed.to_owned()).is_err() {
+                if line_tx
+                    .send(attach::Incoming::Line(trimmed.to_owned()))
+                    .is_err()
+                {
                     break;
                 }
             }
         });
-        while let Some(line) = line_rx.recv().await {
+        while let Some(incoming) = line_rx.recv().await {
+            let line = match incoming {
+                attach::Incoming::Line(line) => line,
+                attach::Incoming::Built(session_id) => {
+                    state.settle(&session_id);
+                    continue;
+                }
+            };
             let Ok(incoming) = serde_json::from_str::<AcpFrame>(&line) else {
                 respond(
                     &sink,
@@ -1063,6 +1159,7 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
             let params = incoming.params.unwrap_or(Value::Null);
             match incoming.id {
                 Some(id) => {
+                    let _span = yi_types::trace::span(format!("acp {}", incoming.method));
                     let outcome = state.handle(&incoming.method, &params);
                     respond(&sink, id, outcome);
                 }
