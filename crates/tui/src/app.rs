@@ -149,18 +149,24 @@ pub struct App {
     /// Syntax parse state at `live_cut`: a string or comment that spans the cut
     /// keeps one colour instead of being re-lexed from the reopened fence.
     pub(crate) live_lang: Option<crate::highlight::Lang>,
+    pub(crate) live_seam: stream::Seam,
+    pub(crate) live_drawn: bool,
     pub(crate) live_thought: String,
     pub(crate) live_cut: usize,
     pub(crate) live_spaced: bool,
     /// The byte of `live_thought` already committed to scrollback, the mirror of
     /// `live_cut` for reasoning.
     pub(crate) live_thought_cut: usize,
+    pub(crate) live_thought_spaced: bool,
+    pub(crate) live_thought_seam: stream::Seam,
+    /// The content block the live stream starts at: a thought after prose opens a new one.
+    pub(crate) segment: usize,
     pub(crate) pacing: stream::Pacing,
     pub(crate) live_tools: Vec<ToolCell>,
     /// Finished read-only calls waiting to commit as one `Explored` cell.
     pub(crate) explored: Vec<ToolCell>,
-    last_commit_rows: usize,
-    last_commit_blank: bool,
+    pub(crate) last_commit_rows: usize,
+    pub(crate) last_commit_blank: bool,
     tool_started: HashMap<String, Instant>,
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
@@ -261,10 +267,15 @@ impl App {
             live_markdown: String::new(),
             live_reopen: None,
             live_lang: None,
+            live_seam: stream::Seam::default(),
+            live_drawn: false,
             live_spaced: true,
             live_thought: String::new(),
             live_cut: 0,
             live_thought_cut: 0,
+            live_thought_spaced: false,
+            live_thought_seam: stream::Seam::default(),
+            segment: 0,
             pacing: stream::Pacing::new(options.pace),
             live_tools: Vec::new(),
             explored: Vec::new(),
@@ -385,12 +396,22 @@ impl App {
     }
 
     fn reset_live(&mut self) {
+        self.clear_live();
+        self.segment = 0;
+        self.history.seal();
+    }
+
+    pub(crate) fn clear_live(&mut self) {
         self.live_markdown.clear();
         self.live_thought.clear();
         self.live_cut = 0;
         self.live_thought_cut = 0;
+        self.live_thought_spaced = false;
         self.live_reopen = None;
         self.live_lang = None;
+        self.live_seam = stream::Seam::default();
+        self.live_drawn = false;
+        self.live_thought_seam = stream::Seam::default();
         self.live_spaced = true;
         self.pacing.reset();
     }
@@ -511,30 +532,30 @@ impl App {
             self.pending_prompt_mark = true;
         }
         // Incident: a console replay rendered every cell for scrollback the pane drops (1.3 s).
-        if self.pane {
-            self.retain(cell.clone());
-            self.scheduler.request();
-            return;
+        if !self.pane {
+            let spinner = self.spinner_phase();
+            let width = self.content_width();
+            let rendering = yi_types::trace::span("tui.cell_lines");
+            let mut lines = cell.lines(width, &self.theme, self.mode, spinner);
+            drop(rendering);
+            let blank = crate::history::is_blank;
+            // A blank separates blocks, never a run of one-line calls, measured
+            // from what the previous cell rendered — all an append path knows.
+            if crate::history::separated(self.last_commit_rows, self.last_commit_blank, &lines) {
+                self.pending_commit.push(Line::default());
+            }
+            if lines.first().is_some_and(blank) && self.last_commit_blank {
+                lines.remove(0);
+            }
+            self.last_commit_rows = lines.len();
+            self.last_commit_blank = lines.last().is_some_and(blank);
+            self.pending_commit.extend(lines);
         }
-        let spinner = self.spinner_phase();
-        let width = self.content_width();
-        let rendering = yi_types::trace::span("tui.cell_lines");
-        let mut lines = cell.lines(width, &self.theme, self.mode, spinner);
-        drop(rendering);
-        let blank = |line: &Line<'_>| line.spans.iter().all(|s| s.content.trim().is_empty());
-        // A blank separates blocks, never a run of one-line calls, measured
-        // from what the previous cell rendered — all an append path knows.
-        let leads_blank = lines.first().is_some_and(blank);
-        if leads_blank && self.last_commit_blank {
-            lines.remove(0);
-        }
-        if self.last_commit_rows > 1 && lines.len() > 1 && !leads_blank && !self.last_commit_blank {
-            self.pending_commit.push(Line::default());
-        }
-        self.last_commit_rows = lines.len();
-        self.last_commit_blank = lines.last().is_some_and(blank);
-        self.pending_commit.extend(lines);
         self.retain(cell.clone());
+        // Only a streamed message's own slices merge; the next one opens its cell afresh.
+        self.history.seal();
+        self.live_drawn = false;
+        self.live_thought_spaced = true;
         self.scheduler.request();
     }
 
@@ -653,6 +674,7 @@ impl App {
             }
             AgentEvent::MessageStart { message } => {
                 if let AgentMessage::Assistant { .. } = &message {
+                    self.segment = 0;
                     return self.streaming = Some(message);
                 }
                 let attribution = message.attribution();
@@ -757,16 +779,28 @@ impl App {
                 self.cost_unknown |= usage.unknown;
                 self.turn_tokens.record(usage);
                 self.turn_cost += usage.cost.total.as_f64().unwrap_or(0.0);
-                self.live_thought = thinking_of(content);
+                self.close_segments(content);
+                let open = content.get(self.segment..).unwrap_or_default();
+                // Incident: an error end carries no content and erased text the reader saw, so the end
+                // replaces what streamed only when it extends it.
+                let thought = thinking_of(open);
+                if thought.starts_with(self.live_thought.as_str()) {
+                    self.live_thought = thought;
+                }
                 self.flush_thought();
-                self.live_markdown = text_of(content);
+                let prose = crate::transcript::prose_of(open);
+                if prose.starts_with(self.live_markdown.as_str()) {
+                    self.live_markdown = prose;
+                }
                 self.commit_prose(self.live_markdown.len(), true);
                 self.scheduler.request();
                 self.reset_live();
-                if *stop_reason == StopReason::Error {
-                    let text = error_message
-                        .clone()
-                        .unwrap_or_else(|| "provider error".to_owned());
+                // A retried stream fails with the same words twice; one line says it.
+                let text = error_message
+                    .clone()
+                    .unwrap_or_else(|| "provider error".to_owned());
+                let repeated = matches!(self.history.last(), Some(Cell::Notice { text: last }) if *last == text);
+                if *stop_reason == StopReason::Error && !repeated {
                     self.commit_cell(&Cell::Notice { text });
                 }
             }
