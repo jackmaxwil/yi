@@ -27,7 +27,7 @@ enum Input {
     Client(ClientId, mpsc::Sender<String>),
     ClientLine(ClientId, Value),
     ClientClosed(ClientId),
-    WorkerLine(String, Value),
+    WorkerLine(String, Value, String),
     WorkerReply(String, Value),
     WorkerClosed(String),
     Shutdown,
@@ -229,6 +229,7 @@ impl Supervisor {
         if self.workers.contains_key(root) {
             return Ok(());
         }
+        let _span = yi_types::trace::span("daemon.spawn_worker").arg("root", root);
         let exe = std::env::current_exe().map_err(|error| error.to_string())?;
         let mut command = tokio::process::Command::new(exe);
         command
@@ -247,9 +248,13 @@ impl Supervisor {
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                if let Ok(value) = serde_json::from_str::<Value>(&line)
+                let parsing =
+                    yi_types::trace::span("daemon.parse_worker_line").arg("bytes", line.len());
+                let parsed = serde_json::from_str::<Value>(&line);
+                drop(parsing);
+                if let Ok(value) = parsed
                     && input
-                        .send(Input::WorkerLine(worker_root.clone(), value))
+                        .send(Input::WorkerLine(worker_root.clone(), value, line))
                         .is_err()
                 {
                     break;
@@ -457,7 +462,7 @@ impl Supervisor {
         }
     }
 
-    fn handle_worker_line(&mut self, root: String, mut frame: Value) {
+    fn handle_worker_line(&mut self, root: String, mut frame: Value, line: String) {
         let method = frame
             .get("method")
             .and_then(Value::as_str)
@@ -573,7 +578,6 @@ impl Supervisor {
         }
         // Fan out to every watcher; for a worker-originated request the first answer wins
         // and the stale ids of the rest fall out of `worker_requests` with it.
-        let line = frame.to_string();
         for client in watchers {
             self.send_client(client, line.clone());
         }
@@ -721,10 +725,26 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
                     supervisor.clients.insert(client, sink);
                 }
                 Input::ClientLine(client, frame) => {
+                    let _span = yi_types::trace::span(format!(
+                        "daemon client {}",
+                        frame
+                            .get("method")
+                            .and_then(Value::as_str)
+                            .unwrap_or("response")
+                    ));
                     supervisor.handle_client_line(client, frame).await;
                 }
                 Input::ClientClosed(client) => supervisor.handle_client_closed(client),
-                Input::WorkerLine(root, frame) => supervisor.handle_worker_line(root, frame),
+                Input::WorkerLine(root, frame, line) => {
+                    let _span = yi_types::trace::span(format!(
+                        "daemon worker {}",
+                        frame
+                            .get("method")
+                            .and_then(Value::as_str)
+                            .unwrap_or("response")
+                    ));
+                    supervisor.handle_worker_line(root, frame, line);
+                }
                 Input::WorkerReply(root, frame) => {
                     supervisor.forward_response_to_worker(&root, frame).await;
                 }
