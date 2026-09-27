@@ -48,6 +48,7 @@ pub fn transform_messages(
     model: &Model,
     normalize_id: Option<fn(&str) -> String>,
 ) -> Vec<AgentMessage> {
+    let _span = yi_types::trace::span("ai.transform_messages").arg("messages", messages.len());
     let vision = is_vision(model);
     let mut id_map: HashMap<String, String> = HashMap::new();
     let mut transformed: Vec<AgentMessage> = Vec::new();

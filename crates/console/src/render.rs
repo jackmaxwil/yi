@@ -54,7 +54,7 @@ pub struct ViewState {
     pub framed: bool,
 }
 
-fn pane_margin(framed: bool) -> ratatui::layout::Margin {
+pub(crate) fn pane_margin(framed: bool) -> ratatui::layout::Margin {
     ratatui::layout::Margin::new(1, u16::from(framed))
 }
 

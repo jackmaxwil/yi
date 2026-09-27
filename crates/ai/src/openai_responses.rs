@@ -213,6 +213,7 @@ fn freeform_names(context: &LlmContext) -> std::collections::BTreeSet<String> {
 }
 
 fn convert_input(model: &Model, context: &LlmContext) -> Vec<Value> {
+    let _span = yi_types::trace::span("ai.convert_messages");
     let transformed = transform_messages(
         &context.messages,
         model,
@@ -337,6 +338,9 @@ fn apply_reasoning(model: &Model, options: &OpenAiOptions, params: &mut Value) {
 }
 
 pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Value {
+    let _span = yi_types::trace::span("ai.build_params")
+        .arg("api", "responses")
+        .arg("messages", context.messages.len());
     let mut params = json!({
         "model": model.id,
         "input": convert_input(model, context),

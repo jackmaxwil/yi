@@ -1,13 +1,14 @@
 //! `python/yi_runtime` and `python/skills` ride in the binary as one deflated stream
 //! (`u32 LE` path length, path, `u32 LE` content length, content, repeated), so a `yi`
-//! installed away from its checkout still has a runtime to unpack under `~/.yi/python`.
+//! installed away from its checkout still has a runtime to unpack under `~/.yi/python`. The
+//! test suites stay out: they run from the checkout, never from the unpacked copy.
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 type BuildResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 fn skipped(name: &str) -> bool {
-    name.starts_with('.') || name == "__pycache__" || name.ends_with(".pyc")
+    name.starts_with('.') || name == "__pycache__" || name == "tests" || name.ends_with(".pyc")
 }
 
 fn push(out: &mut Vec<u8>, bytes: &[u8]) -> BuildResult<()> {

@@ -375,7 +375,7 @@ impl App {
                             _ => {}
                         }
                     }
-                    let text = text_of(content);
+                    let text = crate::transcript::prose_of(content);
                     if !text.is_empty() {
                         self.commit_cell(&Cell::Assistant { markdown: text });
                     }

@@ -58,7 +58,7 @@ pub enum RequestKind {
     Slash(SessionId),
     Rewind(SessionId),
     Plan(SessionId),
-    SetConfig,
+    SetConfig(SessionId),
     Steer,
     Shutdown,
 }
@@ -385,11 +385,15 @@ impl App {
                 if let Some(params) = value.get_mut("params").map(Value::take)
                     && let Some(update) = port::update_params(params)
                 {
+                    // An agent event shows only through a pane's chat, which asks for its frame.
+                    let event = matches!(&update.update,
+                        AcpSessionUpdate::Extension(e) if e.session_update == "_yi/event");
                     self.reduce_update(outbound, update);
+                    self.dirty |= !event;
                 } else {
                     self.state.dropped_frames = self.state.dropped_frames.saturating_add(1);
+                    self.dirty = true;
                 }
-                self.dirty = true;
             }
             Some("session/request_permission") => {
                 let id = value.get("id").and_then(Value::as_str).map(str::to_owned);
@@ -491,7 +495,7 @@ impl App {
             RequestKind::Why(session) => self.absorb_why(&session, &result),
             RequestKind::KernelExecute
             | RequestKind::KernelCancel
-            | RequestKind::SetConfig
+            | RequestKind::SetConfig(_)
             | RequestKind::Steer
             | RequestKind::Shutdown => {}
             RequestKind::Slash(session) => {

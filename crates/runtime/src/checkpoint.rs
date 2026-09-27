@@ -11,23 +11,38 @@ pub fn checkpoint_root(home: &Path) -> PathBuf {
     home.join(".yi/checkpoints")
 }
 
+struct Shadow {
+    root: PathBuf,
+    cwd: PathBuf,
+    opened: std::sync::OnceLock<Option<Checkpoints>>,
+}
+
+impl Shadow {
+    fn get(&self) -> Option<&Checkpoints> {
+        self.opened
+            .get_or_init(|| Checkpoints::open(&self.root, &self.cwd).ok())
+            .as_ref()
+    }
+}
+
 /// Best-effort: without git there is no shadow gitdir and no capture, and nothing else changes.
 pub fn wire_turn_checkpoints(session: &AgentSession, home: &Path, cwd: &Path) {
-    let Ok(checkpoints) = Checkpoints::open(&checkpoint_root(home), cwd) else {
-        return;
-    };
-    let checkpoints = Arc::new(checkpoints);
+    let shadow = Arc::new(Shadow {
+        root: checkpoint_root(home),
+        cwd: cwd.to_path_buf(),
+        opened: std::sync::OnceLock::new(),
+    });
     session.set_turn_start_hook(capture_hook(
         session,
-        Arc::clone(&checkpoints),
+        Arc::clone(&shadow),
         CheckpointAt::TurnStart,
     ));
-    session.set_turn_end_hook(capture_hook(session, checkpoints, CheckpointAt::TurnEnd));
+    session.set_turn_end_hook(capture_hook(session, shadow, CheckpointAt::TurnEnd));
 }
 
 fn capture_hook(
     session: &AgentSession,
-    checkpoints: Arc<Checkpoints>,
+    shadow: Arc<Shadow>,
     at: CheckpointAt,
 ) -> Arc<crate::session::TurnHook> {
     let store = session.store_handle();
@@ -36,9 +51,9 @@ fn capture_hook(
             return;
         };
         let span = yi_types::trace::span("checkpoint.capture").arg("at", format!("{at:?}"));
-        let captured = checkpoints.capture();
+        let captured = shadow.get().map(Checkpoints::capture);
         drop(span);
-        let Ok(tree) = captured else {
+        let Some(Ok(tree)) = captured else {
             return;
         };
         let _capture_failure_never_fails_a_turn =
@@ -87,22 +102,41 @@ pub fn undo_to(
             &yi_session::BranchBounds::default(),
         )
         .unwrap_or_default();
-    let before = entries
-        .iter()
-        .position(|entry| entry.id() == entry_id)
-        .and_then(|at| at.checked_sub(1))
-        .and_then(|at| entries.get(at));
-    let Some(Entry::Custom {
-        custom_type,
-        data: Some(data),
-        ..
-    }) = before
-    else {
+    let Some(at) = entries.iter().position(|entry| entry.id() == entry_id) else {
         return UndoOutcome::NoCheckpoint;
     };
-    let start = serde_json::from_value::<CheckpointData>(data.clone()).ok();
-    let Some(start) = start.filter(|start| {
-        custom_type == CHECKPOINT_ENTRY_TYPE && start.at == CheckpointAt::TurnStart
+    // The turn-start capture runs beside the first request, so it may land on either side of
+    // the prompt; tools wait for it, so any one with no tool result between saw the same files.
+    let tool_result = |entry: &&Entry| {
+        matches!(
+            entry,
+            Entry::Message {
+                message: yi_types::message::AgentMessage::ToolResult { .. },
+                ..
+            }
+        )
+    };
+    let turn_start = |entry: &Entry| match entry {
+        Entry::Custom {
+            custom_type,
+            data: Some(data),
+            ..
+        } if custom_type == CHECKPOINT_ENTRY_TYPE => {
+            serde_json::from_value::<CheckpointData>(data.clone())
+                .ok()
+                .filter(|start| start.at == CheckpointAt::TurnStart)
+        }
+        _ => None,
+    };
+    let after = entries.get(at..).unwrap_or_default().iter();
+    let before = entries.get(..at).unwrap_or_default().iter().rev();
+    let found = after
+        .take_while(|entry| !tool_result(entry))
+        .find_map(turn_start);
+    let Some(start) = found.or_else(|| {
+        before
+            .take_while(|entry| !tool_result(entry))
+            .find_map(turn_start)
     }) else {
         return UndoOutcome::NoCheckpoint;
     };

@@ -1,6 +1,5 @@
 //! Files back to before a chosen turn, by /undo's rule: what the agent moved goes back.
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 
 use std::error::Error;
 use std::sync::Arc;
