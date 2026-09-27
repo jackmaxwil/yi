@@ -231,5 +231,7 @@ edited by hand.
 - [D253](adr/d253.md) - the hashline shapes the patch docs call WRONG are refused, not repaired...
 - [D254](adr/d254.md) - The plan tool keeps recording into `.yi/plans/` under the process cwd, as today
 - [D256](adr/d256.md) - the kitty orb plays one exact loop per agent state and moves between states...
+- [D258](adr/d258.md) - a sandboxed process writes only its own session's state
+- [D255](adr/d255.md) - todo evidence stays the agent's claim, not a checked fact
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

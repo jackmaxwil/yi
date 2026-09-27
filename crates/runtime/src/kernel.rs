@@ -187,10 +187,11 @@ pub struct KernelServiceOptions {
     /// A cell's wall clock, past which it is interrupted as a cancel would; `None` is
     /// bash's ceiling, [`yi_tools::MAX_TIMEOUT_SECS`].
     pub cell_ceiling: Option<std::time::Duration>,
+    /// `session_dir` is the corpus; the kernel owns only its `kernels/<id>` in it (#580).
+    pub per_session_state: bool,
 }
 
-/// A session's snapshot files, beside the root's, prefixed with its id: the sessions
-/// directory is read flat by its consumers, so no subdirectory appears in it.
+/// A session's snapshot files in `base`, prefixed with its id.
 pub fn snapshot_paths(base: &std::path::Path, key: Option<&str>) -> (PathBuf, PathBuf) {
     let (snapshot, manifest) = (
         yi_kernel::snapshot::snapshot_path_in(base),
@@ -316,11 +317,18 @@ impl KernelService {
         self.kill().await;
     }
 
-    fn kernel_wrap(&self, sandbox: Option<&yi_tools::Sandbox>) -> Option<(String, Vec<String>)> {
-        let sandbox = sandbox.filter(|_| yi_tools::Sandbox::available())?;
+    fn kernel_wrap(
+        &self,
+        sandbox: Option<&yi_tools::Sandbox>,
+        state: Option<&std::path::Path>,
+    ) -> Option<(String, Vec<String>)> {
+        let mut sandbox = sandbox.filter(|_| yi_tools::Sandbox::available())?.clone();
+        sandbox
+            .writable
+            .extend(state.map(std::path::Path::to_path_buf));
         Some(
             kernel_profile(
-                sandbox,
+                &sandbox,
                 &self.options.home,
                 self.options.family_dir.as_deref(),
             )
@@ -328,12 +336,12 @@ impl KernelService {
         )
     }
 
-    fn kernel_env(&self) -> Vec<(String, String)> {
+    fn kernel_env(&self, state: Option<&std::path::Path>) -> Vec<(String, String)> {
         let mut env = Vec::new();
         if let Ok(bin) = std::env::current_exe() {
             env.push(("YI_BIN".to_owned(), bin.to_string_lossy().into_owned()));
         }
-        if let Some(session_dir) = &self.options.session_dir {
+        if let Some(session_dir) = state {
             env.push((
                 "RLM_SESSION_DIR".to_owned(),
                 session_dir.to_string_lossy().into_owned(),
@@ -376,11 +384,14 @@ impl KernelService {
     }
 
     async fn ensure_inner(&self) -> Result<Arc<KernelManager>, String> {
-        let wrap = self.kernel_wrap(self.sandbox.lock().await.as_ref());
         // Only an on-disk session is revivable (§9). Incident: `/new`, `switch_session` and
         // `fork` swap the store under a live kernel, which kept writing under the old id.
         let key = self.options.snapshot_key.as_ref().and_then(|key| key());
-        let snapshot = self.options.session_dir.as_deref().map(|dir| {
+        let state = self.options.session_dir.as_deref().and_then(|dir| {
+            crate::kernel_state::state_dir(dir, self.options.per_session_state, key.as_deref())
+        });
+        let wrap = self.kernel_wrap(self.sandbox.lock().await.as_ref(), state.as_deref());
+        let snapshot = state.as_deref().map(|dir| {
             let (path, manifest_path) = snapshot_paths(dir, key.as_deref());
             yi_kernel::client::KernelSnapshotConfig {
                 path,
@@ -418,7 +429,7 @@ impl KernelService {
         let manager = Arc::new(KernelManager::new(KernelOptions {
             python: None,
             cwd: Some(self.options.cwd.clone()),
-            env: self.kernel_env(),
+            env: self.kernel_env(state.as_deref()),
             username: "yi".to_owned(),
             home: self.options.home.clone(),
             runtime_source_dir: yi_kernel::bootstrap::default_runtime_source_dir(),
@@ -1115,6 +1126,7 @@ mod tests {
             on_restore: None,
             sandbox: None,
             snapshot_key: None,
+            per_session_state: false,
             cell_ceiling: None,
         });
         service.dispose().await;
@@ -1139,6 +1151,7 @@ mod tests {
             on_restore: None,
             sandbox: None,
             snapshot_key: None,
+            per_session_state: false,
             cell_ceiling: None,
         })
     }
