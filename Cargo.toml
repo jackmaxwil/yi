@@ -18,6 +18,8 @@ members = [
   "crates/console",
   "crates/cli",
 ]
+# Patched upstream crates live under vendor/ and are not workspace members.
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.2.0"
@@ -135,3 +137,7 @@ opt-level = "z"
 # took 59-326 ms and the painter 0.65 ms a frame, at 3 about a fifth and a third of that.
 [profile.dist.package.yi-orb]
 opt-level = 3
+
+# syntect with its regex dependencies cut to the Unicode tables the grammars use (D263).
+[patch.crates-io]
+syntect = { path = "vendor/syntect" }

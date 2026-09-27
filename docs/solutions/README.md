@@ -236,5 +236,6 @@ edited by hand.
 - [D255](adr/d255.md) - todo evidence stays the agent's claim, not a checked fact
 - [D260](adr/d260.md) - a session's build runs off the worker's request loop
 - [D262](adr/d262.md) - the highlighter ships bat's grammar set cut to 44 named languages and the 15...
+- [D263](adr/d263.md) - the dist binary links only the Unicode tables bat's grammars use
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
