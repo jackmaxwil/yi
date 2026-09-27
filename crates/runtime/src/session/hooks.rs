@@ -107,6 +107,11 @@ impl AgentSession {
         })
     }
 
+    /// Notified whenever a message joins the steer queue, for a wait on [`Self::mail_hook`].
+    pub fn mail_arrived(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.shared.mail)
+    }
+
     pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage, Option<StillNews>) + Send + Sync> {
         let parts = self.parts();
         Arc::new(move |message, news| {
