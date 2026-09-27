@@ -8,6 +8,7 @@ use yi_types::todo::{
 
 use crate::goal::StoreHandle;
 
+pub mod claims;
 pub mod coupling;
 pub mod mirror;
 pub mod text;

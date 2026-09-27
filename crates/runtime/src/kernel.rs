@@ -9,7 +9,9 @@ use yi_kernel::client::{
 use yi_tools::ToolOutput;
 use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome};
 
-pub use crate::kernel_bootstrap::{RLM_BOOTSTRAP_CODE, restore_notice_text, rlm_bootstrap_code};
+pub use crate::kernel_bootstrap::{
+    BootFn, RLM_BOOTSTRAP_CODE, restore_notice_text, rlm_bootstrap_code,
+};
 use crate::kernel_variables::{dump_variable_code, parse_variable_reply, read_variable_code};
 
 pub type HostHandlerFn = dyn Fn(Map<String, Value>) -> HostFuture + Send + Sync;
@@ -182,6 +184,7 @@ pub struct KernelServiceOptions {
     pub family_dir: Option<PathBuf>,
     pub host: Arc<dyn HostHandlers>,
     pub on_restore: Option<Arc<RestoreNoticeFn>>,
+    pub on_boot: Option<Arc<BootFn>>,
     pub sandbox: Option<yi_tools::Sandbox>,
     pub snapshot_key: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     /// A cell's wall clock, past which it is interrupted as a cancel would; `None` is
@@ -427,6 +430,7 @@ impl KernelService {
         let snapshot_existed = snapshot
             .as_ref()
             .is_some_and(|config| config.path.is_file());
+        let booting = crate::kernel_bootstrap::Booting::new(self.options.on_boot.clone());
         let manager = Arc::new(KernelManager::new(KernelOptions {
             python: None,
             cwd: Some(self.options.cwd.clone()),
@@ -435,7 +439,7 @@ impl KernelService {
             home: self.options.home.clone(),
             runtime_source_dir: yi_kernel::bootstrap::default_runtime_source_dir(),
             host: Some(Arc::clone(&self.options.host)),
-            on_progress: Some(Arc::new(|message: &str| eprintln!("{message}"))),
+            on_progress: Some(booting.progress()),
             snapshot,
             wrap,
         })?);
@@ -1127,6 +1131,7 @@ mod tests {
             family_dir: None,
             host: registry,
             on_restore: None,
+            on_boot: None,
             sandbox: None,
             snapshot_key: None,
             per_session_state: false,
@@ -1152,6 +1157,7 @@ mod tests {
             family_dir: None,
             host: Arc::new(registry),
             on_restore: None,
+            on_boot: None,
             sandbox: None,
             snapshot_key: None,
             per_session_state: false,

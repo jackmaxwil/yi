@@ -210,6 +210,13 @@ pub struct App {
     turn_started: Instant,
     turn_tools: u64,
     pub(crate) last_tool: Option<String>,
+    pub(crate) wait: Option<(yi_types::event::Wait, Instant)>,
+    pub(crate) claims: Vec<yi_types::todo::Claim>,
+    claims_before: Vec<String>,
+    turn_kinds: Vec<(&'static str, u32)>,
+    model_ms: u64,
+    model_since: Option<Instant>,
+    pub(crate) pen: Option<crate::pen::Pen>,
     turn_tokens: crate::status::TurnTokens,
     turn_cost: f64,
     pub(crate) width: usize,
@@ -318,6 +325,13 @@ impl App {
             turn_started: Instant::now(),
             turn_tools: 0,
             last_tool: None,
+            wait: None,
+            claims: Vec::new(),
+            claims_before: Vec::new(),
+            turn_kinds: Vec::new(),
+            model_ms: 0,
+            model_since: None,
+            pen: None,
             turn_tokens: crate::status::TurnTokens::default(),
             turn_cost: 0.0,
             width,
@@ -437,10 +451,29 @@ impl App {
     }
 
     fn note_context(&mut self, message: &AgentMessage) {
-        if let AgentMessage::Assistant { usage, .. } = message {
-            self.context_used = u64::try_from(usage.total_tokens).unwrap_or(0);
+        if let AgentMessage::Assistant { .. } = message {
+            if let Some(tokens) = yi_runtime::reply_tokens(message) {
+                self.context_used = tokens.0;
+            }
             self.branch = crate::port::git_branch(&self.options.cwd);
         }
+    }
+
+    pub(crate) fn seed_context(&mut self, entries: &[yi_types::entry::Entry]) {
+        let last = entries.iter().rev().find_map(|entry| match entry {
+            yi_types::entry::Entry::Message { message, .. } => yi_runtime::reply_tokens(message),
+            _ => None,
+        });
+        if let Some(tokens) = last {
+            self.context_used = tokens.0;
+        }
+    }
+
+    pub(crate) fn open_user_turn(&mut self) {
+        if self.user_turns > 0 {
+            self.commit_cell(&Cell::Divider);
+        }
+        self.user_turns += 1;
     }
 
     pub fn take_pending_clear(&mut self) -> bool {
@@ -468,7 +501,11 @@ impl App {
     /// paints through `paint_pane`, which never saw the port, so its HUD stayed empty.
     pub fn sync_port(&mut self, port: Option<&dyn SessionPort>) {
         self.plan_progress = port.and_then(|port| port.plan_progress());
-        self.todos = port.and_then(|port| port.todo_list());
+        let todos = port.and_then(|port| port.todo_list());
+        if let Some(claims) = port.and_then(|port| port.claims(todos != self.todos)) {
+            self.claims = claims;
+        }
+        self.todos = todos;
         // ponytail: an idle console pane folds its list on the next event, not at the deadline.
         self.todo_clock.observe(self.todos.as_ref(), Instant::now());
     }
@@ -580,10 +617,35 @@ impl App {
         self.pending_commit.clear();
         self.reset_live();
         self.live_tools.clear();
+        self.user_turns = 0;
     }
 
     pub fn take_title(&mut self) -> Option<String> {
         self.pending_title.take()
+    }
+
+    pub fn cwd(&self) -> &str {
+        &self.options.cwd
+    }
+
+    pub fn landing_line(&self) -> Option<String> {
+        self.landing.as_ref().map(yi_runtime::slash::landing_line)
+    }
+
+    pub fn working_label(&self) -> Option<String> {
+        let state = self.orb_state()?;
+        let waiting = self
+            .wait
+            .as_ref()
+            .filter(|_| self.running)
+            .map(|(wait, since)| {
+                crate::pen::wait_label(wait, *since, &self.selection.model.provider)
+            });
+        Some(
+            waiting
+                .or_else(|| self.intent.clone())
+                .unwrap_or_else(|| state.label().to_owned()),
+        )
     }
 
     pub fn orb_state(&self) -> Option<OrbState> {
@@ -593,6 +655,12 @@ impl App {
         if !self.running {
             return None;
         }
+        match self.wait.as_ref().map(|(wait, _)| wait) {
+            Some(yi_types::event::Wait::Retry { .. }) => return Some(OrbState::Stalled),
+            Some(yi_types::event::Wait::Compaction { .. }) => return Some(OrbState::Condensing),
+            Some(yi_types::event::Wait::KernelBoot { .. }) => return Some(OrbState::KernelBoot),
+            None => {}
+        }
         if let Some(tool) = self
             .live_tools
             .iter()
@@ -600,6 +668,9 @@ impl App {
             .find(|t| t.status == ToolStatus::Running)
         {
             return Some(self.tool_state(&tool.name));
+        }
+        if let Some(pen) = &self.pen {
+            return Some(self.tool_state(&pen.name));
         }
         let children = self
             .tasks
@@ -664,6 +735,8 @@ impl App {
             AgentEvent::AgentEnd { .. } => {
                 self.running = false;
                 self.intent = None;
+                self.wait = None;
+                self.pen = None;
                 self.esc_armed_at = None;
                 self.steering.clear();
                 self.live_tools.clear();
@@ -674,6 +747,7 @@ impl App {
             }
             AgentEvent::MessageStart { message } => {
                 if let AgentMessage::Assistant { .. } = &message {
+                    self.model_since = Some(Instant::now());
                     self.segment = 0;
                     return self.streaming = Some(message);
                 }
@@ -694,10 +768,7 @@ impl App {
                         }
                     }
                     Attribution::User => {
-                        if self.user_turns > 0 {
-                            self.commit_cell(&Cell::Divider);
-                        }
-                        self.user_turns += 1;
+                        self.open_user_turn();
                         let mut focus = text.split_whitespace().collect::<Vec<_>>().join(" ");
                         if focus.chars().count() > 40 {
                             focus = focus.chars().take(39).collect::<String>() + "…";
@@ -711,9 +782,28 @@ impl App {
             }
             AgentEvent::MessageUpdate {
                 assistant_message_event,
-            } => self.fold_stream(&assistant_message_event),
+            } => {
+                if matches!(self.wait, Some((yi_types::event::Wait::Retry { .. }, _))) {
+                    self.wait = None;
+                }
+                self.fold_stream(&assistant_message_event);
+            }
+            AgentEvent::Wait { wait } => {
+                if let Some(warning) = wait.as_ref().and_then(yi_types::event::Wait::warning) {
+                    self.notice(warning);
+                }
+                self.wait = wait.map(|wait| (wait, Instant::now()));
+                self.scheduler.request();
+            }
             AgentEvent::MessageEnd { message } => {
                 self.streaming = None;
+                self.pen = None;
+                if let Some(since) = self.model_since.take() {
+                    self.model_ms = self.model_ms.saturating_add(elapsed_ms(since));
+                }
+                if matches!(self.wait, Some((yi_types::event::Wait::Retry { .. }, _))) {
+                    self.wait = None;
+                }
                 self.note_context(&message);
                 self.reduce_message_end(&message);
             }
@@ -893,6 +983,14 @@ impl App {
         self.esc_armed_at = None;
         self.turn_started = Instant::now();
         self.turn_tools = 0;
+        self.turn_kinds.clear();
+        self.claims_before = self
+            .claims
+            .iter()
+            .map(|claim| claim.label.clone())
+            .collect();
+        self.model_ms = 0;
+        self.model_since = None;
         self.last_tool = None;
         self.turn_tokens = crate::status::TurnTokens::default();
         self.turn_cost = 0.0;
@@ -910,18 +1008,41 @@ impl App {
             return;
         }
         let tools = usize::try_from(self.turn_tools).unwrap_or(usize::MAX);
-        let mut text = format!(
-            "{} · {} · {} in / {} out",
-            crate::cell::count_label(tools, "tool"),
-            crate::cell::elapsed_label(elapsed_ms(self.turn_started)),
+        let kinds: Vec<String> = self
+            .turn_kinds
+            .iter()
+            .map(|(verb, count)| format!("{verb} {count}"))
+            .collect();
+        let head = if kinds.is_empty() {
+            crate::cell::count_label(tools, "tool")
+        } else {
+            kinds.join(" · ")
+        };
+        let elapsed = elapsed_ms(self.turn_started);
+        let mut text = format!("{head} · {}", crate::cell::elapsed_label(elapsed));
+        if self.model_ms > 0 && elapsed > 0 {
+            text.push_str(&format!(" · model {}%", self.model_ms * 100 / elapsed));
+        }
+        text.push_str(&format!(
+            " · {} in / {} out",
             crate::status::fmt_tokens(input),
             crate::status::fmt_tokens(output),
-        );
+        ));
         if cached > 0 {
             text.push_str(&format!(" · {}% cached", cached * 100 / input.max(1)));
         }
         if self.turn_cost > 0.0 {
             text.push_str(&format!(" · ${:.3}", self.turn_cost));
+        }
+        let closed: Vec<_> = self
+            .claims
+            .iter()
+            .filter(|claim| !self.claims_before.contains(&claim.label))
+            .collect();
+        let observed = closed.iter().filter(|c| c.observed.is_some()).count();
+        if closed.len() > observed {
+            let claimed = closed.len() - observed;
+            text.push_str(&format!(" · done {observed} observed, {claimed} claimed"));
         }
         self.commit_cell(&Cell::Footer { text });
     }

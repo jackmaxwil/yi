@@ -499,6 +499,45 @@ async fn an_unknown_usage_never_pins_the_window_prefill() -> Result<(), Box<dyn 
     Ok(())
 }
 
+/// Dies with the summarizer running unannounced: the turn sat on "Waiting…" for the whole
+/// summary, with nothing to say the context was being condensed.
+#[tokio::test]
+async fn a_compaction_announces_itself_and_closes() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-wait")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-wait");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-wait".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        faux_assistant_message(vec![faux_text("## Goal\nSummary")], StopReason::Stop),
+        reply_with_usage("second answer", 50, 300),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("first requirement: keep the guardrails green")?;
+    session.wait_idle().await;
+    let mut events = session.subscribe();
+    session.prompt("second ask with enough characters to keep recent")?;
+    session.wait_idle().await;
+    let mut waits = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let yi_types::event::AgentEvent::Wait { wait } = event {
+            waits.push(wait);
+        }
+    }
+    assert!(
+        matches!(
+            waits.as_slice(),
+            [Some(yi_types::event::Wait::Compaction { tokens }), None] if *tokens > 0
+        ),
+        "{waits:?}"
+    );
+    Ok(())
+}
+
 /// Incident: the loop's hook ran before every request and copied the whole history, read
 /// the store and assembled the system prompt, only to learn compaction was not due.
 #[tokio::test]
@@ -520,8 +559,11 @@ async fn a_request_that_is_not_due_assembles_nothing() -> Result<(), Box<dyn Err
             stores.fetch_add(1, Ordering::SeqCst);
             None
         }),
-        Arc::new(|| {}),
-        Arc::new(|_| {}),
+        yi_runtime::compaction::CompactReports {
+            waiting: Arc::new(|_| {}),
+            compacted: Arc::new(|| {}),
+            unsaved: Arc::new(|_| {}),
+        },
     );
     let history = [reply_with_usage("small", 10, 20)];
     assert!(hook(&history).await.is_none());

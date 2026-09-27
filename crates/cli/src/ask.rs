@@ -275,6 +275,11 @@ async fn follow(
                     error_message.as_deref().unwrap_or("provider error")
                 );
             }
+            AgentEvent::Wait { wait: Some(wait) } => {
+                if let Some(warning) = wait.warning() {
+                    eprintln!("{warning}");
+                }
+            }
             AgentEvent::AgentStart if holding => {
                 holding = false;
                 answer.clear();

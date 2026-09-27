@@ -380,9 +380,14 @@ impl AcpState {
             seen: HashSet::new(),
             last_goal: Value::Null,
             last_workdir: Value::Null,
+            last_claims: Value::Null,
+            last_plan: Value::Null,
+            titled: lock_session(store).name().is_some(),
             launch_cwd: self.cwd.clone(),
         };
         parent.watch_workdir();
+        parent.watch_claims();
+        parent.watch_plan();
         let forwarder = tokio::spawn(forward_parent(events, parent));
         self.sessions.insert(
             session_id.clone(),
@@ -685,8 +690,10 @@ impl AcpState {
                 Ok(json!({}))
             }
             "session/set_config_option" => self.set_config_option(params),
-            "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/kernel_execute"
-            | "_yi/kernel_cancel" | "_yi/slash" => self.handle_extension(method, params),
+            "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/branch_diff" | "_yi/tape"
+            | "_yi/kernel_execute" | "_yi/kernel_cancel" | "_yi/slash" => {
+                self.handle_extension(method, params)
+            }
             "_yi/steer" | "_yi/rewind" | "_yi/plan" | "_yi/todo" | "_yi/child_replay"
             | "_yi/child_abort" | "_yi/child_answer" => self.handle_control(method, params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
@@ -806,6 +813,16 @@ impl AcpState {
                 }
                 let root = std::path::Path::new(text("root"));
                 Ok(json!({"tracked": yi_runtime::environment::tracked(root, &paths)}))
+            }
+            "_yi/tape" | "_yi/branch_diff" => {
+                let value = if method == "_yi/tape" {
+                    serde_json::to_value(yi_runtime::tape::session_tape(&handle.session))
+                } else {
+                    let lane = handle.session.lane().and_then(|lane| lane.path());
+                    let root = lane.unwrap_or_else(|| self.cwd.clone());
+                    serde_json::to_value(yi_runtime::environment::branch_diff(&root))
+                };
+                Ok(value.unwrap_or(Value::Null))
             }
             "_yi/slash" => {
                 let line = text("line").trim();

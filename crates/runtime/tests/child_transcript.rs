@@ -224,6 +224,7 @@ async fn a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land() -
         family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
+        on_boot: None,
         sandbox: None,
         snapshot_key: None,
         per_session_state: false,

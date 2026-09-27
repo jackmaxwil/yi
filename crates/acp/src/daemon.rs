@@ -563,12 +563,24 @@ impl Supervisor {
             entry.last_event_ms = now_ms();
             entry.last_state = Some(state);
         }
+        let named = frame
+            .pointer("/params/update")
+            .filter(|update| {
+                update.get("sessionUpdate").and_then(Value::as_str) == Some("_yi/name")
+            })
+            .and_then(|update| update.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let renamed = named.is_some();
+        if named.is_some() {
+            entry.name = named;
+        }
         let detached = entry.attached.is_empty();
         if transition && detached {
             entry.unseen = entry.unseen.saturating_add(1);
         }
         let watchers: Vec<ClientId> = entry.attached.iter().copied().collect();
-        if transition {
+        if transition || renamed {
             self.persist();
         }
         if detached {
