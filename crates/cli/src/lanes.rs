@@ -117,6 +117,7 @@ fn offer_left_slot(pool: &yi_runtime::lane::Pool) -> Result<(), String> {
 }
 
 pub(crate) fn release_lane(lane: Option<&yi_runtime::lane::land::LaneHandle>) {
+    let _span = yi_types::trace::span("lane.release");
     if let Some(lane) = lane
         && let Err(error) = lane.release()
     {

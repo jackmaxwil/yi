@@ -89,6 +89,7 @@ pub fn normalize_openai_tool_call_id(id: &str) -> String {
 }
 
 fn convert_messages(model: &Model, context: &LlmContext) -> Vec<Value> {
+    let _span = yi_types::trace::span("ai.convert_messages");
     let transformed = transform_messages(
         &context.messages,
         model,
@@ -309,6 +310,9 @@ pub(crate) fn prompt_cache_retention(model: &Model) -> Option<&'static str> {
 }
 
 pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Value {
+    let _span = yi_types::trace::span("ai.build_params")
+        .arg("api", "openai")
+        .arg("messages", context.messages.len());
     let mut params = json!({
         "model": model.id,
         "messages": convert_messages(model, context),
