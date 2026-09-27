@@ -3,12 +3,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde_json::error::Category;
-use yi_types::entry::Entry;
-use yi_types::message::{AgentMessage, Content, UserContent};
-use yi_types::wire::{Fact, HeaderKind, JsonlV4Header, Mutation};
+use yi_types::wire::{HeaderKind, JsonlV4Header, Mutation};
 
 use crate::error::SessionError;
-use crate::id::{IdGenerator, now_ms, session_title, validate_session_id};
+use crate::id::{IdGenerator, now_ms, validate_session_id};
 use crate::query::{CreateOptions, ForkScope, SessionMetadata};
 use crate::repo::{SessionRepo, SharedSession, lock_session};
 use crate::store::SessionStore;
@@ -43,54 +41,13 @@ fn session_file_name(created_at: u64, id: &str) -> String {
     format!("{created_at}_{id}.jsonl")
 }
 
-fn metadata_from_header(header: &JsonlV4Header) -> SessionMetadata {
+pub(crate) fn metadata_from_header(header: &JsonlV4Header) -> SessionMetadata {
     SessionMetadata {
         id: header.id.clone(),
         created_at: header.created_at,
         parent_session_id: header.parent_session_id.clone(),
         name: None,
     }
-}
-
-/// Only lines that can carry a prompt or a name fact are parsed, so listing stays cheap.
-fn scan_name(content: &str) -> Option<String> {
-    let mut fact_name = None;
-    let mut prompt_name = None;
-    for line in content.split('\n').skip(1) {
-        if line.contains(r#""fact":"name""#) {
-            if let Ok(Mutation::Fact {
-                fact: Fact::Name { name },
-                ..
-            }) = serde_json::from_str::<Mutation>(line)
-            {
-                fact_name = name;
-            }
-        } else if prompt_name.is_none()
-            && line.contains(r#""role":"user""#)
-            && let Ok(Mutation::Entry {
-                entry:
-                    Entry::Message {
-                        message: AgentMessage::User { content, .. },
-                        ..
-                    },
-                ..
-            }) = serde_json::from_str::<Mutation>(line)
-        {
-            let text = match content {
-                UserContent::Text(text) => text,
-                UserContent::Blocks(blocks) => blocks
-                    .iter()
-                    .filter_map(|block| match block {
-                        Content::Text { text, .. } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            };
-            prompt_name = session_title(&text);
-        }
-    }
-    fact_name.or(prompt_name)
 }
 
 fn encode_header(header: &JsonlV4Header) -> Result<String, SessionError> {
@@ -129,8 +86,10 @@ pub fn load_session(path: &Path) -> Result<SessionStore, SessionError> {
     };
     let header = parse_header(first, path)?;
     let mut store = SessionStore::file_backed(metadata_from_header(&header), path.to_path_buf());
-    for (index, line) in lines.iter().enumerate().skip(1) {
-        match serde_json::from_str::<Mutation>(line) {
+    let parsed = parse_lines(lines.get(1..).unwrap_or_default());
+    for (index, parsed) in parsed.into_iter().enumerate() {
+        let index = index + 1;
+        match parsed {
             Ok(mutation) => {
                 store
                     .replay(mutation)
@@ -152,6 +111,30 @@ pub fn load_session(path: &Path) -> Result<SessionStore, SessionError> {
         append_bytes(path, b"\n")?;
     }
     Ok(store)
+}
+
+fn parse_lines(lines: &[&str]) -> Vec<serde_json::Result<Mutation>> {
+    let parse = |chunk: &[&str]| -> Vec<serde_json::Result<Mutation>> {
+        chunk
+            .iter()
+            .map(|line| serde_json::from_str(line))
+            .collect()
+    };
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    let per_core = lines.len().div_ceil(cores).max(128);
+    if lines.len() <= per_core {
+        return parse(lines);
+    }
+    std::thread::scope(|scope| {
+        let chunks: Vec<_> = lines
+            .chunks(per_core)
+            .map(|chunk| (chunk, scope.spawn(move || parse(chunk))))
+            .collect();
+        chunks
+            .into_iter()
+            .flat_map(|(chunk, parsing)| parsing.join().unwrap_or_else(|_| parse(chunk)))
+            .collect()
+    })
 }
 
 fn append_bytes(path: &Path, bytes: &[u8]) -> Result<(), SessionError> {
@@ -295,44 +278,7 @@ impl SessionRepo for JsonlRepo {
     }
 
     fn list(&mut self) -> Result<Vec<SessionMetadata>, SessionError> {
-        let dir = self.session_dir();
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => {
-                return Err(storage_error(
-                    "Failed to list sessions directory",
-                    &dir,
-                    error,
-                ));
-            }
-        };
-        let mut listed = Vec::new();
-        for entry in entries {
-            let entry = entry
-                .map_err(|error| storage_error("Failed to list sessions directory", &dir, error))?;
-            let path = entry.path();
-            if path.extension().is_none_or(|ext| ext != "jsonl") {
-                continue;
-            }
-            let content = match fs::read_to_string(&path) {
-                Ok(content) => content,
-                Err(_) => continue,
-            };
-            let Some(first) = content.split('\n').next() else {
-                continue;
-            };
-            let Ok(header) = serde_json::from_str::<JsonlV4Header>(first) else {
-                continue;
-            };
-            if header.kind == HeaderKind::Header && header.version == 4 {
-                let mut metadata = metadata_from_header(&header);
-                metadata.name = scan_name(&content);
-                listed.push(metadata);
-            }
-        }
-        listed.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-        Ok(listed)
+        crate::listing::list(&self.session_dir())
     }
 
     fn delete(&mut self, id: &str) -> Result<(), SessionError> {
