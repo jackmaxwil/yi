@@ -6,6 +6,7 @@ pub mod connection;
 pub mod framing;
 pub mod journal;
 mod lock;
+mod probe;
 pub(crate) mod pump;
 pub mod reduce;
 #[cfg(test)]
