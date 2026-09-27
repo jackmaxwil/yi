@@ -235,6 +235,8 @@ edited by hand.
 - [D258](adr/d258.md) - a sandboxed process writes only its own session's state
 - [D255](adr/d255.md) - todo evidence stays the agent's claim, not a checked fact
 - [D260](adr/d260.md) - a session's build runs off the worker's request loop
-- [D264](adr/d264.md) - the global harness store is written only by the host
+- [D265](adr/d265.md) - a wait wakes on the event it waits for, not on a timer
+- [D266](adr/d266.md) - a resume and the session list stop paying for what nobody reads
+- [D267](adr/d267.md) - the global harness store is written only by the host
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

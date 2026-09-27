@@ -255,6 +255,7 @@ async fn execute_timed(
     signal: &InterruptSignal,
 ) -> Finalized {
     let started = std::time::Instant::now();
+    let _span = yi_types::trace::span("tool.call").arg("tool", call.name.as_str());
     let mut item = execute_one(tools, call, signal).await;
     let duration = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     stamp_details(&mut item, duration);
