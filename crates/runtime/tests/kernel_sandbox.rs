@@ -1,7 +1,6 @@
 #![cfg(target_os = "macos")]
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
@@ -116,7 +115,7 @@ async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult
         "the file must not exist after a contained write"
     );
 
-    // ~/.yi itself is read-only; only the harness store the kernel owns takes writes. A HOME
+    // ~/.yi itself is read-only; the harness store is written by the host (#583). A HOME
     // under tmp sits inside a granted root, where no profile can make ~/.yi read-only.
     let yi = home.join(".yi");
     if probe == home {
@@ -128,23 +127,19 @@ async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult
             !config.is_file(),
             "a cell must not write under ~/.yi itself"
         );
+        let harness = yi.join("harness");
+        std::fs::create_dir_all(&harness)?;
+        let store = harness.join(format!("yi-p7-store-{}.txt", std::process::id()));
+        let store_path = store.display().to_string();
+        let denied = cell(&kernel, format!("open(r'{store_path}','w').write('x')")).await?;
+        assert_eq!(denied.result.status, yi_types::kernel::ExecuteStatus::Error);
+        assert!(
+            !store.is_file(),
+            "a cell must not write the global harness store"
+        );
     }
-    let harness = yi.join("harness");
-    let store = harness.join(format!("yi-p7-store-{}.txt", std::process::id()));
-    let store_path = store.display().to_string();
-    let allowed = cell(
-        &kernel,
-        format!(
-            "import os\nos.makedirs(r'{}', exist_ok=True)\nopen(r'{store_path}','w').write('ok')",
-            harness.display()
-        ),
-    )
-    .await?;
-    assert_eq!(allowed.result.status, yi_types::kernel::ExecuteStatus::Ok);
-    assert_eq!(std::fs::read_to_string(&store)?, "ok");
     kernel.dispose().await;
     let _ = std::fs::remove_file(&escape);
-    let _ = std::fs::remove_file(&store);
     Ok(())
 }
 
@@ -185,6 +180,7 @@ fn root_session(
     home: &std::path::Path,
     rlm_dir: &std::path::Path,
     sessions_dir: Option<PathBuf>,
+    broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
 ) -> yi_runtime::AgentSession {
     let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
     let mut session = yi_runtime::AgentSession::new(
@@ -205,7 +201,7 @@ fn root_session(
             cwd: project.to_path_buf(),
             home: home.to_path_buf(),
             lane_slots: 1,
-            broker: None,
+            broker,
             tools: Arc::new(yi_tools::builtin_tools),
             depth: 0,
             max_depth: 1,
@@ -243,7 +239,13 @@ async fn a_root_kernel_cannot_write_another_sessions_state() -> TestResult {
     let probe = uncovered(&bare, &home).ok_or("no directory outside the sandbox")?;
     let corpus = probe.join(format!("yi-corpus-{}", std::process::id()));
     std::fs::create_dir_all(&corpus)?;
-    let session = root_session(&project, &home, &root.join("rlm"), Some(corpus.clone()));
+    let session = root_session(
+        &project,
+        &home,
+        &root.join("rlm"),
+        Some(corpus.clone()),
+        None,
+    );
     let kernel = session
         .kernel_service()
         .ok_or("the wiring installs a kernel")?;
@@ -263,6 +265,45 @@ async fn a_root_kernel_cannot_write_another_sessions_state() -> TestResult {
         !cell_wrote && !job_wrote,
         "the root kernel wrote into the session corpus (cell {cell_wrote}, bash {job_wrote}): {}",
         ran.result.stdout
+    );
+    Ok(())
+}
+
+/// Incident (#583): a global harness save went straight to disk from the kernel, so a cell in
+/// one session stored notes every later session reads, with no ask. It now asks the broker.
+#[tokio::test]
+async fn a_global_harness_save_asks_the_permission_broker() -> TestResult {
+    let (root, project, home, _session) = workspace("harness")?;
+    let asks = Arc::new(std::sync::Mutex::new(0_u32));
+    let counted = Arc::clone(&asks);
+    let asker: yi_runtime::Asker = Arc::new(move |_ask| {
+        if let Ok(mut count) = counted.lock() {
+            *count += 1;
+        }
+        yi_runtime::AskOutcome::Reject
+    });
+    let broker = Arc::new(yi_runtime::permission::PermissionBroker::new(
+        yi_runtime::PermissionMode::Auto,
+        project.clone(),
+        Vec::new(),
+        Some(asker),
+        tokio::sync::broadcast::channel(8).0,
+    ));
+    let session = root_session(&project, &home, &root.join("rlm"), None, Some(broker));
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let title = format!("yi-583-probe-{}", std::process::id());
+    let code = format!(
+        "try:\n    rlm.harness.create_memory('{title}', 'x', global_=True)\n    print('saved')\nexcept Exception as e:\n    print('refused:', e)"
+    );
+    let ran = cell(&kernel, code).await;
+    kernel.dispose().await;
+    let stdout = ran?.result.stdout;
+    let asked = asks.lock().map(|count| *count).unwrap_or_default();
+    assert!(
+        asked == 1 && stdout.contains("refused"),
+        "a global harness save must ask and honor the answer (asked {asked}): {stdout}"
     );
     Ok(())
 }
@@ -301,7 +342,7 @@ async fn the_kernels_bash_is_contained_like_the_kernel() -> TestResult {
         return Ok(());
     }
     let (root, project, home, _session) = workspace("bash")?;
-    let session = root_session(&project, &home, &root.join("rlm"), None);
+    let session = root_session(&project, &home, &root.join("rlm"), None, None);
     let kernel = session
         .kernel_service()
         .ok_or("the wiring installs a kernel")?;

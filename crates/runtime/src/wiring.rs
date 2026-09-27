@@ -671,6 +671,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
     registry.register_exec(wiring.cwd.clone(), wiring.exec_sandbox());
+    crate::kernel_state::register_harness_save(&mut registry, wiring.broker.clone(), &wiring.home);
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort
         // the turn whose cell awaits the reply (design §9.2).

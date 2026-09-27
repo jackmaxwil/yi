@@ -1,8 +1,7 @@
 //! F1a, the source record (plan sections 5.4 and 8.3): a cell's source is frozen as an
 //! artifact, journaled before the cell's first effect, exported to `program.py`, and never run.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::sync::Arc;

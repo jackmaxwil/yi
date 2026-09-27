@@ -60,6 +60,7 @@ fn entry_attributed(entry: &Entry) -> Vec<Attributed> {
 
 /// Same slice as [`project`], with the producing entry id on each message.
 pub fn project_attributed(branch: &[Entry]) -> Vec<Attributed> {
+    let _span = yi_types::trace::span("context.project").arg("entries", branch.len());
     let start = branch
         .iter()
         .rposition(|entry| matches!(entry, Entry::Compaction { .. }))
