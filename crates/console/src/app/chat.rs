@@ -155,7 +155,7 @@ impl App {
         &mut self,
         outbound: &Outbound,
         id: &SessionId,
-        extension: &AcpExtensionUpdate,
+        extension: AcpExtensionUpdate,
     ) {
         let Ok(decoded) = decode(extension) else {
             return self.drop_frame();
@@ -496,6 +496,7 @@ impl App {
                 "sessionId": session.0,
                 "cwd": root,
                 "replayFrom": offset.unwrap_or(0),
+                "replayUpdates": false,
             }),
         );
     }

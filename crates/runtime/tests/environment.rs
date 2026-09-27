@@ -7,7 +7,7 @@ use std::sync::Arc;
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
 use yi_runtime::environment::{
-    FILES_SHOWN, append, deadline_line, files_line, git_line, git_summary, render, sanitize,
+    FILES_SHOWN, deadline_line, files_line, git_line, git_summary, message, render, sanitize,
     time_per_minute,
 };
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
@@ -56,17 +56,10 @@ fn text_of(message: &AgentMessage) -> String {
 }
 
 #[test]
-fn the_environment_block_is_ephemeral_and_trails_the_user_turn() -> TestResult {
-    let history = vec![user("first"), user("second")];
-    let block = render(&["cwd: /x".to_owned()]);
-    let out = append(&history, &block);
-    assert_eq!(out.len(), 3);
-    assert!(
-        text_of(&out[2]).starts_with(ENVIRONMENT_TAG),
-        "{:?}",
-        out[2]
-    );
-    assert_eq!(history.len(), 2, "the input slice is untouched");
+fn the_environment_block_is_one_tagged_user_message() -> TestResult {
+    let out = message(render(&["cwd: /x".to_owned()]));
+    assert!(text_of(&out).starts_with(ENVIRONMENT_TAG), "{out:?}");
+    assert_eq!(out, user(&text_of(&out)));
     Ok(())
 }
 
