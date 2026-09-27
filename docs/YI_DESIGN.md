@@ -783,7 +783,7 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
   `SessionStatus{Blocked, Working, DoneUnseen, Idle, Unknown}`, `SidebarMode{Rail, Full}`,
   `Link{Connecting, Connected, Disconnected}`, `Mode{Normal, Prefix, Navigator, Keys}`
 - Owner: [`lib.rs`](../crates/console/src/lib.rs), [`model.rs`](../crates/console/src/model.rs)
-- Settled by: D95, D96, D112, D113, D141, D201, D263, D264, D265
+- Settled by: D95, D96, D112, D113, D141, D201, D263, D264, D267
 
 ## 18. Dependencies and size
 

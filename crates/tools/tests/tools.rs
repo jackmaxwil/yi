@@ -792,6 +792,32 @@ fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
     Ok(())
 }
 
+/// Dies with the 200 ms poll back in the job wait: a job ending just after the wait began was
+/// seen a poll late, so five waits took a second or more.
+#[test]
+fn a_job_wait_returns_as_the_job_settles() -> TestResult {
+    let dir = temp_dir("background-settle")?;
+    let tool = BashTool::default();
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.auto_background = Some(std::time::Duration::from_millis(80));
+    let mut waited = std::time::Duration::ZERO;
+    for _ in 0..5 {
+        let started = tool.execute(args(&[("command", json!("sleep 0.1"))]), &context);
+        let job = started.result.details.get("job").and_then(Value::as_u64);
+        let job = job.ok_or("no job id")?;
+        let polling = std::time::Instant::now();
+        let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(5))]), &context);
+        waited += polling.elapsed();
+        let finished = text_of(&polled.result.content);
+        assert!(finished.contains("finished (exit 0)"), "{finished}");
+    }
+    assert!(
+        waited < std::time::Duration::from_millis(500),
+        "five waits took {waited:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn without_auto_background_a_command_holds_the_turn() -> TestResult {
     let dir = temp_dir("no-background")?;
@@ -1914,5 +1940,115 @@ fn grep_reports_a_context_it_could_not_honour() -> TestResult {
         text.contains("[context ignored: asked -2, not a non-negative integer; 0 used]"),
         "{text}"
     );
+    Ok(())
+}
+
+/// A process-wide cache or a PATH lookup is tested in a rerun of one test whose PATH is one
+/// scratch dir; the dir's name is how the rerun knows it is one.
+fn fake_path(tag: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(std::env::var_os("PATH")?);
+    let name = path.file_name()?.to_str()?;
+    name.starts_with(&format!("yi-tools-{tag}-"))
+        .then_some(path)
+}
+
+fn rerun_on_path(test: &str, dir: &std::path::Path) -> TestResult {
+    let rerun = yi_tools::command(std::env::current_exe()?)
+        .args(["--exact", test])
+        .env("PATH", dir)
+        .output()?;
+    let stdout = String::from_utf8_lossy(&rerun.stdout);
+    assert!(
+        rerun.status.success() && stdout.contains("1 passed"),
+        "{stdout}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn script(path: &std::path::Path, body: &str) -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, format!("#!/bin/sh\n{body}"))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+/// The syntax verdict and `grid check` read the same settled file, so an edit waits for the
+/// slower of the two, not their sum: each fake takes 1 s.
+#[cfg(unix)]
+#[test]
+fn an_edit_runs_the_syntax_check_beside_the_grid_check() -> TestResult {
+    let Some(dir) = fake_path("edit-overlap") else {
+        let dir = temp_dir("edit-overlap")?;
+        script(&dir.join("grid"), "/bin/sleep 1\n")?;
+        script(&dir.join("rustfmt"), "/bin/sleep 1\n")?;
+        return rerun_on_path("an_edit_runs_the_syntax_check_beside_the_grid_check", &dir);
+    };
+    fs::write(dir.join("a.rs"), "fn a() {}\n")?;
+    let context = ToolContext::new(dir.clone());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    yi_tools::hashline::tool::HashlineReadTool::new(Arc::clone(&state))
+        .execute(args(&[("path", json!("a.rs"))]), &context);
+    let started = std::time::Instant::now();
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state,
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[("patch", json!("[a.rs]\nPUT 1.=1:\n+fn b() {}\n"))]),
+        &context,
+    );
+    let took = started.elapsed();
+    let text = output_text(&edit);
+    assert!(text.contains("syntax: ok"), "{text}");
+    assert!(text.contains("[grid check: clean]"), "{text}");
+    assert!(took < std::time::Duration::from_millis(1800), "{took:?}");
+    Ok(())
+}
+
+/// A rustup proxy re-resolved the toolchain on every syntax check; it is asked once per
+/// process and the binary it names runs directly.
+#[cfg(unix)]
+#[test]
+fn a_rustup_proxy_is_asked_once_and_its_binary_runs_directly() -> TestResult {
+    let Some(dir) = fake_path("rustup-proxy") else {
+        let dir = temp_dir("rustup-proxy")?;
+        let (log, real) = (dir.join("log"), dir.join("toolchain"));
+        fs::create_dir_all(&real)?;
+        script(
+            &dir.join("rustup"),
+            &format!(
+                "case \"$0\" in *rustfmt) echo proxy >> {log};; *) echo \"rustup $1\" >> {log}; echo {real}/rustfmt;; esac\n",
+                log = log.display(),
+                real = real.display(),
+            ),
+        )?;
+        std::os::unix::fs::symlink("rustup", dir.join("rustfmt"))?;
+        script(
+            &real.join("rustfmt"),
+            &format!("echo direct >> {}\n", log.display()),
+        )?;
+        rerun_on_path(
+            "a_rustup_proxy_is_asked_once_and_its_binary_runs_directly",
+            &dir,
+        )?;
+        assert_eq!(
+            fs::read_to_string(&log)?,
+            "rustup which\ndirect\ndirect\ndirect\n"
+        );
+        return Ok(());
+    };
+    let context = ToolContext::new(dir);
+    for index in 0..3 {
+        let written = WriteTool::default().execute(
+            args(&[
+                ("path", json!("a.rs")),
+                ("content", json!(format!("fn f{index}() {{}}\n"))),
+            ]),
+            &context,
+        );
+        let text = output_text(&written);
+        assert!(text.contains("syntax: ok"), "{text}");
+    }
     Ok(())
 }
