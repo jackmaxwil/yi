@@ -808,11 +808,11 @@ what §18.6 measures: `inherits = "release"`, `opt-level = "z"` (also for
 | `ratatui` | `crossterm`, `scrolling-regions` | tui, console | terminal rendering | — |
 | `tui-textarea` | `crossterm` | tui, console | the composer | — |
 | `pulldown-cmark` | — | tui | Markdown rendering | — |
-| `syntect` | `parsing`, `default-syntaxes`, `regex-fancy` | tui | syntax highlighting on the pure-Rust regex engine | `onig` (C engine, banned) |
+| `syntect` | `parsing`, `regex-fancy`, `dump-load` | tui | syntax highlighting on the pure-Rust regex engine, over bat's grammars cut at build time | `onig` (C engine, banned) |
 | `unicode-width` | — | tui | terminal cell width | — |
 
 Dev: `vt100`, `insta` (tui), `proptest` (types, runtime), `rmcp` with `server`, `transport-io`,
-`macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets.
+`macros` (mcp-cli's reference server). Build: `miniz_oxide` (ai, kernel, tui) packs embedded assets; `two-face`, `syntect` with `dump-create` and `serde_json` (tui) cut bat's grammar set.
 
 ### 18.4 Features
 Only `yi-cli` declares features: `default = ["tui"]`, `tui = ["dep:yi-tui", "dep:yi-console"]`.

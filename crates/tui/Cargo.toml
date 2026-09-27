@@ -16,14 +16,16 @@ yi-orb = { workspace = true }
 ratatui = { workspace = true }
 tui-textarea = { workspace = true }
 pulldown-cmark = { workspace = true }
-syntect = { workspace = true }
-two-face = { workspace = true }
+syntect = { workspace = true, features = ["dump-load"] }
 unicode-width = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [build-dependencies]
 miniz_oxide = { workspace = true }
+serde_json = { workspace = true }
+syntect = { workspace = true, features = ["dump-create"] }
+two-face = { workspace = true }
 
 [dev-dependencies]
 vt100 = { workspace = true }

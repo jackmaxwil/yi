@@ -106,6 +106,57 @@ fn the_language_names_fences_actually_carry_all_resolve() -> TestResult {
     Ok(())
 }
 
+/// The shipped set is cut to the languages a coding agent quotes (build.rs), so each of those has
+/// to survive the cut, grammars it embeds included, and one outside it has to render plain.
+#[test]
+fn the_cut_grammar_set_keeps_every_named_language() -> TestResult {
+    for name in [
+        "go",
+        "java",
+        "kt",
+        "c",
+        "cpp",
+        "cs",
+        "scala",
+        "groovy",
+        "m",
+        "rb",
+        "php",
+        "yaml",
+        "md",
+        "html",
+        "css",
+        "sql",
+        "makefile",
+        "diff",
+        "lua",
+        "zig",
+        "xml",
+        "ini",
+        "proto",
+        "graphql",
+        "nix",
+        "cmake",
+        "tf",
+        "hs",
+        "ex",
+        "dart",
+        ".env",
+        ".gitignore",
+        ".gitconfig",
+    ] {
+        assert!(lang_for(name).is_some(), "{name} renders plain");
+    }
+    let mut html = lang_for("html").ok_or("html missing")?;
+    let embedded = tokens("<script>let n = 42;</script>", &mut html);
+    assert!(
+        embedded.iter().any(|run| run.2 == Token::Number),
+        "{embedded:?}"
+    );
+    assert!(lang_for("jl").is_none(), "julia is outside the shipped set");
+    Ok(())
+}
+
 /// An unknown fence language must render, not vanish or panic.
 #[test]
 fn an_unknown_language_is_declined_rather_than_guessed() -> TestResult {
