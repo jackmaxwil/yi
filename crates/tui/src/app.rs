@@ -628,10 +628,6 @@ impl App {
         &self.options.cwd
     }
 
-    pub fn landing_line(&self) -> Option<String> {
-        self.landing.as_ref().map(yi_runtime::slash::landing_line)
-    }
-
     pub fn working_label(&self) -> Option<String> {
         let state = self.orb_state()?;
         let waiting = self

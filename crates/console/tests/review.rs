@@ -45,7 +45,7 @@ fn a_review_scopes_edits_by_turn_and_names_the_todo_each_served() {
     let all = text(&lines_all);
     assert!(
         all.iter()
-            .any(|line| line.contains("● src/a.rs  +1 −0  · write the parser")),
+            .any(|line| line.contains("src/a.rs  +1 −0  · write the parser")),
         "{all:#?}"
     );
     assert!(
@@ -76,7 +76,7 @@ fn a_branch_review_names_the_todo_of_a_file_its_edit_named_absolutely() {
     let all = text(&lines);
     assert!(
         all.iter()
-            .any(|line| line == "● src/a.rs  +1 −0  · write the parser"),
+            .any(|line| line == "▸ src/a.rs  +1 −0  · write the parser"),
         "{all:#?}"
     );
     assert!(
@@ -124,4 +124,28 @@ fn a_tape_draws_model_and_tool_time_and_points_at_the_chosen_mark() {
         rows.iter().any(|row| row == "+8s · bash failed"),
         "{rows:#?}"
     );
+}
+
+/// Dies with no provenance: a hunk showed what changed and never why, though `yi why` could
+/// walk its line to a commit, a todo and a goal.
+#[test]
+fn each_hunk_is_asked_why_at_its_first_changed_line_and_the_chain_shows_under_its_file() {
+    let patch = "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,3 +1,4 @@\n one\n+two\n three\n@@ -10,2 +11,3 @@\n ten\n-old\n+new\n+newer\n";
+    assert_eq!(yi_console::render::hunk_lines(patch), vec![2, 12]);
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let mut diff = SessionDiff::default();
+    diff.files.push(edit("src/a.rs", 0, None));
+    diff.files.push(edit("src/b.rs", 0, None));
+    diff.selected = 1;
+    diff.why.insert(
+        "src/b.rs".to_owned(),
+        vec!["  ↳ L2 1a2b3c4d5e6f Check evidence · todo t4 · goal tool ergonomics".to_owned()],
+    );
+    let (_, lines) =
+        yi_console::render::review_view(Some(&diff), ReviewScope::Session, "", 80, &theme);
+    let rows = text(&lines);
+    let at = |needle: &str| rows.iter().position(|row| row.contains(needle));
+    let (b, chain) = (at("▸ src/b.rs"), at("↳ L2 1a2b3c4d5e6f"));
+    assert!(at("● src/a.rs").is_some(), "{rows:#?}");
+    assert!(b.is_some() && chain == b.map(|b| b + 1), "{rows:#?}");
 }
