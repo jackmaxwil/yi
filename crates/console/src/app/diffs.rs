@@ -221,6 +221,7 @@ impl App {
                     session,
                     tape: None,
                     cursor: 0,
+                    armed: false,
                 },
                 (_, session) => PaneContent::Notebook {
                     session,

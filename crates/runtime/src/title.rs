@@ -14,7 +14,7 @@ pub async fn title_session(session: &AgentSession) -> Result<Option<String>, Str
         return Ok(None);
     };
     let model = session.summarizer();
-    if lock_session(&store).name().is_some() || model.provider == yi_ai::faux::FAUX_PROVIDER {
+    if lock_session(&store).name().is_some() {
         return Ok(None);
     }
     let entries = lock_session(&store)
