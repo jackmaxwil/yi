@@ -4,15 +4,15 @@
   "cli": 5313,
   "console": 7864,
   "context": 1520,
-  "kernel": 4307,
-  "loop": 1296,
+  "kernel": 4318,
+  "loop": 1297,
   "mcp-cli": 2302,
   "oauth": 1207,
   "orb": 1242,
   "permission": 1766,
-  "runtime": 46211,
+  "runtime": 46323,
   "session": 1910,
-  "tools": 12559,
+  "tools": 12720,
   "tui": 13036,
-  "types": 8153
+  "types": 8180
 }
