@@ -1,7 +1,7 @@
 //! Parse-only check of an edited file, run by the language's own tool when it is on PATH.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::process::{OUTPUT_CAP, command, run_captured};
@@ -24,9 +24,51 @@ fn checker(extension: &str) -> Option<(&'static str, &'static [&'static str])> {
     })
 }
 
-fn on_path(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+fn on_path(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|found| found.is_file())
+}
+
+fn before_deadline() -> CancelFlag {
+    let deadline = Instant::now() + TIMEOUT;
+    Arc::new(move || Instant::now() >= deadline)
+}
+
+/// A rustup proxy re-resolves the toolchain on every call (~45 ms), and a pinned toolchain it
+/// lacks is downloaded until the timeout kills it; the binary it names is asked once.
+fn rustfmt() -> Option<PathBuf> {
+    static RESOLVED: OnceLock<Option<PathBuf>> = OnceLock::new();
+    RESOLVED
+        .get_or_init(|| {
+            let found = on_path("rustfmt")?;
+            let rustup = found.with_file_name("rustup");
+            if !same_file(&found, &rustup) {
+                return Some(PathBuf::from("rustfmt"));
+            }
+            let mut which = command(&rustup);
+            which.args(["which", "rustfmt"]);
+            let capture = run_captured(which, None, &before_deadline(), OUTPUT_CAP).ok()?;
+            let named = PathBuf::from(capture.stdout.trim());
+            (capture.exit_code == Some(0) && named.is_file()).then_some(named)
+        })
+        .clone()
+}
+
+/// A proxy is a symlink or a hard link to `rustup`, so it shares the inode either way.
+#[cfg(unix)]
+fn same_file(left: &Path, right: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(left), std::fs::metadata(right)) {
+        (Ok(left), Ok(right)) => left.dev() == right.dev() && left.ino() == right.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_file(_left: &Path, _right: &Path) -> bool {
+    false
 }
 
 /// `syntax: ok`, `syntax: error line N: <message>`, or `syntax: check timed out`; None when
@@ -42,17 +84,16 @@ pub fn verdict(path: &Path) -> Option<String> {
     }
     let (program, flags) = checker(extension)?;
     let _span = yi_types::trace::span("syntax.check").arg("program", program);
-    if !on_path(program) {
-        return None;
-    }
-    let mut check = command(program);
+    let resolved = match program {
+        "rustfmt" => rustfmt()?,
+        _ => on_path(program).map(|_| PathBuf::from(program))?,
+    };
+    let mut check = command(resolved);
     check.args(flags).arg(path).env(
         "PYTHONPYCACHEPREFIX",
         std::env::temp_dir().join("yi-pycache"),
     );
-    let deadline = Instant::now() + TIMEOUT;
-    let cancelled: CancelFlag = Arc::new(move || Instant::now() >= deadline);
-    let capture = run_captured(check, None, &cancelled, OUTPUT_CAP).ok()?;
+    let capture = run_captured(check, None, &before_deadline(), OUTPUT_CAP).ok()?;
     if capture.cancelled {
         return Some("syntax: check timed out".to_owned());
     }
