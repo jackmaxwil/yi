@@ -241,3 +241,38 @@ fn skeletons_rank_hot_files_ahead_of_the_alphabet() -> TestResult {
     );
     Ok(())
 }
+
+/// The two grid layers wait on another process each, so the packet waits for one of them, not
+/// both. The rerun owns a PATH of a fake grid that takes 1 s to answer.
+#[cfg(unix)]
+#[test]
+fn the_grid_layers_are_asked_at_once() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    const NAME: &str = "the_grid_layers_are_asked_at_once";
+    let Some(dir) = std::env::var_os("YI_FAKE_GRID") else {
+        let dir = Scratch::new("yi-orient-overlap")?;
+        let grid = dir.join("grid");
+        fs::write(&grid, "#!/bin/sh\n/bin/sleep 1\necho \"$1 answered\"\n")?;
+        fs::set_permissions(&grid, fs::Permissions::from_mode(0o755))?;
+        let rerun = yi_tools::command(std::env::current_exe()?)
+            .args(["--exact", NAME])
+            .env("PATH", &*dir)
+            .env("YI_FAKE_GRID", &*dir)
+            .output()?;
+        let stdout = String::from_utf8_lossy(&rerun.stdout);
+        assert!(
+            rerun.status.success() && stdout.contains("1 passed"),
+            "{stdout}"
+        );
+        return Ok(());
+    };
+    let mut input = Map::new();
+    input.insert("symbol".to_owned(), json!("alpha"));
+    let started = std::time::Instant::now();
+    let packet = run(Path::new(&dir), input);
+    let took = started.elapsed();
+    assert!(packet.contains("roots answered"), "{packet}");
+    assert!(packet.contains("scope answered"), "{packet}");
+    assert!(took < std::time::Duration::from_millis(1800), "{took:?}");
+    Ok(())
+}
