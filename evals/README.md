@@ -188,6 +188,12 @@ is what a human reads: each refusal with its count, its text, the model's own
 words from the turn it was made in, and a blank `correct? ____`. Judging a
 refusal is a reading act; the runner never guesses what a caller meant.
 
+A tool-text candidate is judged against its base with `surface.py compare --base <surface.json>
+… --candidate <surface.json> …`, each side's runs made alternately with the other's (N6, design
+§6.6). It is refused as `refusal_rate_rose:<tool>` when a tool's refusal rate over the side's summed
+calls rises, or as `scenario_unclean:<id>` when a scenario clean on every base run is unclean on a
+candidate run; `surface.json` keeps each rollout's `exit`, `timedOut` and `missingFiles` for that.
+
 `--dry` is faux only and refuses any other provider. `selftest.py::check_surface`
 covers the scenario schema and the census with no binary and no key. A
 real-model run refuses without `OPENROUTER_API_KEY` and without `--cap-usd`,
