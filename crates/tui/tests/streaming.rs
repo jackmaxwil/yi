@@ -6,6 +6,7 @@ mod common;
 use ratatui::text::Line;
 use serde_json::json;
 use yi_tui::app::{App, TuiOptions};
+use yi_tui::cell::TranscriptMode;
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::keymap::default_keymap;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
@@ -434,23 +435,26 @@ fn live_rows(app: &mut App) -> Vec<String> {
         .collect()
 }
 
-/// Incident: `**bol` drew its asterisks until the closer arrived, then the row shifted left.
+/// Incident: `**bol` drew its asterisks until the closer arrived, then the row shifted left;
+/// a closer after the tail's trailing space closed nothing, so it flickered once per word.
 #[test]
 fn an_open_span_renders_closed_while_it_streams() {
-    let mut app = app(40);
-    app.reduce_agent(AgentEvent::MessageStart {
-        message: assistant(Vec::new(), StopReason::Stop),
-    });
-    app.reduce_agent(AgentEvent::MessageUpdate {
-        assistant_message_event: AssistantMessageEvent::Start {
-            partial: assistant(vec![text("Body text **bol and `cod")], StopReason::Stop),
-        },
-    });
-    let rows = live_rows(&mut app);
-    assert!(
-        rows.iter().any(|row| row.contains("Body text bol and cod")),
-        "{rows:?}"
-    );
+    for (partial, shown) in [
+        ("Body text **bol and `cod", "Body text bol and cod"),
+        ("Body text **bold wor ", "Body text bold wor"),
+    ] {
+        let mut app = app(40);
+        app.reduce_agent(AgentEvent::MessageStart {
+            message: assistant(Vec::new(), StopReason::Stop),
+        });
+        app.reduce_agent(AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::Start {
+                partial: assistant(vec![text(partial)], StopReason::Stop),
+            },
+        });
+        let rows = live_rows(&mut app);
+        assert!(rows.iter().any(|row| row.ends_with(shown)), "{rows:?}");
+    }
 }
 
 /// A pane reads the history every frame; the rows a slice commits extend the message's
@@ -477,6 +481,36 @@ fn a_pane_reading_every_frame_sees_the_fresh_render() {
     let mut fresh = self::app(40);
     let _ = stream(&mut fresh, source);
     assert_eq!(cached, flat(&fresh.reflowed(2_000)));
+}
+
+/// A thought sliced before the switch to `normal` renders as one count row there; a pane that
+/// read in between must not append the last slice's count as a second row.
+#[test]
+fn a_thought_sliced_then_collapsed_counts_once() {
+    let mut app = app(40);
+    app.reduce_agent(AgentEvent::MessageStart {
+        message: assistant(Vec::new(), StopReason::Stop),
+    });
+    let update = |app: &mut App, said: &str| {
+        app.reduce_agent(AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::Start {
+                partial: assistant(vec![thinking(said)], StopReason::Stop),
+            },
+        });
+    };
+    update(&mut app, "First I read the file.\n\nThen I check");
+    while app.mode() != TranscriptMode::Normal {
+        app.cycle_mode();
+    }
+    let _ = app.reflowed(2_000);
+    let whole = "First I read the file.\n\nThen I check the tests.";
+    update(&mut app, whole);
+    app.reduce_agent(AgentEvent::MessageEnd {
+        message: assistant(vec![thinking(whole), text("Done.")], StopReason::Stop),
+    });
+    let rows = flat(&app.reflowed(2_000));
+    let counts = rows.iter().filter(|row| row.contains("thought ·")).count();
+    assert_eq!(counts, 1, "{rows:?}");
 }
 
 // Round two: the refute pass over the first fixes.
@@ -591,9 +625,20 @@ fn an_empty_thought_between_texts_keeps_them_apart() {
     }
 }
 
+/// Incident: a console pane replays through the pane's retain-only path, which never sealed,
+/// so two assistant entries merged into one cell.
 #[test]
 fn a_replayed_session_keeps_messages_apart() {
+    for pane in [false, true] {
+        replayed_messages_stay_apart(pane);
+    }
+}
+
+fn replayed_messages_stay_apart(pane: bool) {
     let mut app = app(40);
+    if pane {
+        app.set_pane();
+    }
     let message = |id: &str, seq: u64, said: &str| yi_types::entry::Entry::Message {
         id: id.to_owned(),
         message: assistant(vec![text(said)], StopReason::Stop),
@@ -609,20 +654,29 @@ fn a_replayed_session_keeps_messages_apart() {
     let rows = flat(&app.reflowed(200));
     assert!(
         !rows.iter().any(|row| row.contains("work.Starting")),
-        "{rows:?}"
+        "pane {pane}: {rows:?}"
     );
 }
 
 #[test]
 fn a_forced_cut_never_opens_a_slice_on_a_block_marker() {
-    let mut app = app(12);
-    let source: String = (0..120)
-        .map(|i| format!("r{i} - "))
-        .chain(std::iter::once("end.\n".to_owned()))
-        .collect();
-    let scroll = stream(&mut app, &source);
-    let rows = agree(&app, scroll);
-    assert!(!rows.iter().any(|row| row.contains('‣')), "{rows:?}");
+    let cases = [
+        (" - ", 12, 80),
+        (" 2024. ", 6, 12),
+        (" 2024. ", 6, 20),
+        (" 3) ", 6, 12),
+    ];
+    for (piece, rows, width) in cases {
+        let mut app = app(rows);
+        app.set_width(width);
+        let source: String = (0..120)
+            .map(|i| format!("r{i}{piece}"))
+            .chain(std::iter::once("end.\n".to_owned()))
+            .collect();
+        let scroll = stream(&mut app, &source);
+        let rows = agree(&app, scroll);
+        assert!(!rows.iter().any(|row| row.contains('‣')), "{rows:?}");
+    }
 }
 
 /// Only a retried stream's repeated error folds; a notice the host says twice shows twice.

@@ -276,15 +276,16 @@ fn item_stub(source: &str, at: usize, (first, seen): (Option<u64>, u64)) -> Stri
     format!("{indent}{marker} x\n{gap}")
 }
 
-/// The tail's context (a stand-in prefix, then the head of the block a cut fell inside) and the
 /// The tail's context: the seam's stub, then the escape a mid-paragraph `- ` wears.
 fn context(seam: &Seam, tail: &str) -> String {
-    let escape = seam.mid && crate::transcript::escaped(tail, true) != tail;
-    format!(
-        "{}{}",
-        seam.stub.as_deref().unwrap_or_default(),
-        if escape { "\\" } else { "" }
-    )
+    // Invariant: the prefix parses the tail as prose and renders no column; an ordered marker's
+    // escape sits after its digits, where a prefix `\` would print.
+    let escape = match crate::transcript::escaped(tail, true) {
+        escaped if !seam.mid || escaped == tail => "",
+        escaped if escaped.starts_with('\\') => "\\",
+        _ => "\u{200b}",
+    };
+    format!("{}{escape}", seam.stub.as_deref().unwrap_or_default())
 }
 
 pub(crate) fn table_span(tail: &str) -> Option<std::ops::Range<usize>> {
@@ -366,7 +367,9 @@ impl App {
             self.flush_explored();
             let lines = self.thought_block(&slice);
             self.note_commit(&lines, self.live_thought_cut > 0);
-            let rows = (self.live_thought_cut > 0).then(|| (self.content_width(), lines.clone()));
+            // `normal` renders a merged thought as one count row; a slice's rows cannot extend it.
+            let extends = self.live_thought_cut > 0 && self.mode != TranscriptMode::Normal;
+            let rows = extends.then(|| (self.content_width(), lines.clone()));
             self.history.retain_slice(
                 Cell::Thought { markdown: slice },
                 rows.as_ref().map(|(width, rows)| (*width, rows.as_slice())),
