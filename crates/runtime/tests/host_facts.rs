@@ -1,5 +1,4 @@
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::collections::BTreeMap;

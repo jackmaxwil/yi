@@ -15,3 +15,18 @@ subprocess = { max-threads = 3 }
 [[profile.default.overrides]]
 filter = 'binary(cli_surfaces) + binary(tui_drive) + binary(mcp_oauth) + binary(acp_protocol) + binary(serve_daemon) + binary(mcp_cli) + binary(rpc_protocol) + binary(ready_check) + binary(request_budget) + binary(orient) + binary(tools) + binary(journeys)'
 test-group = 'subprocess'
+
+# Longest first: 10-45 s each, and each reached late in scheduling order. In a run whose
+# other work ended at 57 s, plan_fuzz started at 26 s and held the run open to 70 s.
+# Priority moves the start, not the test: every one still runs, under the same timeout.
+[[profile.default.overrides]]
+filter = '''
+test(random_op_sequences_hold_every_invariant)
+| test(a_last_word_that_streams_for_twenty_seconds_lands_inside_the_deadline)
+| test(telemetry_writes_spans_beside_the_session_and_stats_rolls_them_up)
+| test(the_primary_role_supplies_the_model)
+| test(user_dirty_tree_is_preserved_during_integration)
+| test(agent_messages_route_by_name_and_broadcast_with_receipts)
+| test(a_large_sheet_points_at_a_pandas_route_that_works)
+'''
+priority = 100

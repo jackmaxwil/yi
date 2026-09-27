@@ -1,8 +1,7 @@
 //! G2b: the shapes the paid G2 confirmation's parents wrote on the plan tool, and an owner's
 //! step on a todo the engine runs. Each row was red on 059ba86b.
 
-#[path = "../../types/tests/support/scratch.rs"]
-mod scratch;
+use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
