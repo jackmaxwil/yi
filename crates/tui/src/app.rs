@@ -206,6 +206,7 @@ pub struct App {
     pub(crate) last_tool: Option<String>,
     pub(crate) wait: Option<(yi_types::event::Wait, Instant)>,
     pub(crate) claims: Vec<yi_types::todo::Claim>,
+    claims_before: Vec<String>,
     turn_kinds: Vec<(&'static str, u32)>,
     model_ms: u64,
     model_since: Option<Instant>,
@@ -313,6 +314,7 @@ impl App {
             last_tool: None,
             wait: None,
             claims: Vec::new(),
+            claims_before: Vec::new(),
             turn_kinds: Vec::new(),
             model_ms: 0,
             model_since: None,
@@ -675,6 +677,7 @@ impl App {
             "todo" | "plan" => return,
             _ => "used",
         };
+        self.turn_tools = self.turn_tools.saturating_add(1);
         match self.turn_kinds.iter_mut().find(|(kind, _)| *kind == verb) {
             Some((_, count)) => *count = count.saturating_add(1),
             None => self.turn_kinds.push((verb, 1)),
@@ -955,6 +958,11 @@ impl App {
         self.turn_started = Instant::now();
         self.turn_tools = 0;
         self.turn_kinds.clear();
+        self.claims_before = self
+            .claims
+            .iter()
+            .map(|claim| claim.label.clone())
+            .collect();
         self.model_ms = 0;
         self.model_since = None;
         self.last_tool = None;
@@ -1000,9 +1008,14 @@ impl App {
         if self.turn_cost > 0.0 {
             text.push_str(&format!(" · ${:.3}", self.turn_cost));
         }
-        let observed = self.claims.iter().filter(|c| c.observed.is_some()).count();
-        if self.claims.len() > observed {
-            let claimed = self.claims.len() - observed;
+        let closed: Vec<_> = self
+            .claims
+            .iter()
+            .filter(|claim| !self.claims_before.contains(&claim.label))
+            .collect();
+        let observed = closed.iter().filter(|c| c.observed.is_some()).count();
+        if closed.len() > observed {
+            let claimed = closed.len() - observed;
             text.push_str(&format!(" · done {observed} observed, {claimed} claimed"));
         }
         self.commit_cell(&Cell::Footer { text });

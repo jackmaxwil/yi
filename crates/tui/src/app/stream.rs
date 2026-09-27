@@ -374,7 +374,6 @@ impl App {
         result: &ToolResult,
         is_error: bool,
     ) {
-        self.turn_tools = self.turn_tools.saturating_add(1);
         self.count_kind(&tool_name);
         self.last_tool = Some(tool_name.clone());
         let elapsed = self
