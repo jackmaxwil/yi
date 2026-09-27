@@ -299,6 +299,8 @@ pub struct SessionDiff {
     pub branch: Option<yi_types::lane::BranchDiff>,
     pub branch_due: bool,
     pub tape_due: bool,
+    /// The title a second `l` lands under; any other key clears it.
+    pub land_armed: Option<String>,
 }
 
 const MAX_DIFF_FILES: usize = 512;
