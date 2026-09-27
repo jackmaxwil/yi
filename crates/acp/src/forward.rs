@@ -15,8 +15,9 @@ use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Content, UserContent};
 use yi_types::subagent::ChildId;
 
+use crate::LineSink;
+use crate::update::update_notification;
 use crate::update::{IdMap, event_update, extension, gap_update, to_updates};
-use crate::{LineSink, update_notification};
 
 pub(crate) struct Forward {
     pub(crate) session_id: String,
