@@ -104,7 +104,8 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
     Ok(steps)
 }
 
-const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// Socket events do not wake the input poll, so an idle loop still drains them this often.
+const IDLE_POLL: Duration = Duration::from_millis(50);
 
 fn drain(app: &mut App, outbound: &Outbound, events: &std::sync::mpsc::Receiver<ClientEvent>) {
     while let Ok(event) = events.try_recv() {
@@ -213,12 +214,17 @@ fn run_interactive(
     // (payload length, rect) of the placed image; unchanged frames skip the
     // retransmit entirely.
     let mut placed: Option<(usize, ratatui::layout::Rect)> = None;
-    let mut last_draw = Instant::now()
-        .checked_sub(FRAME_INTERVAL)
-        .unwrap_or_else(Instant::now);
+    let mut scheduler = yi_tui::frame::FrameScheduler::default();
     while !app.state.quit {
         drain(app, outbound, events);
-        match ct_event::poll(Duration::from_millis(50)) {
+        if app.dirty {
+            scheduler.request();
+        }
+        let wake = scheduler
+            .poll_timeout(Instant::now())
+            .min(IDLE_POLL)
+            .min(orb_wake(app));
+        match ct_event::poll(wake) {
             Ok(true) => {
                 let Ok(event) = ct_event::read() else {
                     return 1;
@@ -235,8 +241,11 @@ fn run_interactive(
                 return 1;
             }
         }
-        if app.dirty && last_draw.elapsed() >= FRAME_INTERVAL {
-            last_draw = Instant::now();
+        if app.dirty {
+            scheduler.request();
+        }
+        if scheduler.should_draw(Instant::now()) {
+            let start = Instant::now();
             // The whole frame lands inside one synchronized update, so a
             // split-ratio animation step can never tear.
             let mut out = std::io::stdout();
@@ -254,11 +263,17 @@ fn run_interactive(
             }
             if kitty_ok {
                 use std::io::Write;
-                place_chat_orbs(app, &mut out);
                 place_avatars(app, &mut out);
                 place_notebook_image(app, &mut out, &mut placed);
                 let _ = out.flush();
             }
+            scheduler.mark_drawn(start, Instant::now());
+        }
+        if kitty_ok {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            place_chat_orbs(app, &mut out);
+            let _ = out.flush();
         }
     }
     0
@@ -284,6 +299,21 @@ fn place_avatars(app: &mut App, out: &mut std::io::Stdout) {
         .map(|hits| hits.avatars.clone())
         .unwrap_or_default();
     app.avatars.sync(out, &rows);
+}
+
+fn orb_wake(app: &App) -> Duration {
+    use crate::model::PaneContent;
+    app.state
+        .panes
+        .values()
+        .filter_map(|pane| match &pane.content {
+            PaneContent::Session {
+                chat: Some(chat), ..
+            } if chat.app.orb_animating() => Some(chat.orb.wake()),
+            _ => None,
+        })
+        .min()
+        .unwrap_or(IDLE_POLL)
 }
 
 /// One orb per chat pane, each on its own image ids; only the focused pane animates.

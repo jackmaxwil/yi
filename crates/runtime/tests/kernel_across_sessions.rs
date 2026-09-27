@@ -261,6 +261,7 @@ fn bare_service(root: &Scratch) -> Result<Arc<KernelService>, Box<dyn Error>> {
             on_restore: None,
             sandbox: None,
             snapshot_key: None,
+            per_session_state: false,
             cell_ceiling: None,
         },
     )))
