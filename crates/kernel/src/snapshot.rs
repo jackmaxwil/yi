@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use yi_types::kernel::{ExecuteResult, ExecuteStatus, KernelRestoreResult, KernelSnapshotResult};
 
@@ -331,7 +332,30 @@ pub fn parse_list_names(stdout: &str) -> Option<Vec<String>> {
     )
 }
 
+/// User cells run against the count the last written checkpoint had seen: a dispose whose
+/// checkpoint already holds every cell re-serialized the whole namespace for nothing.
+#[derive(Default)]
+pub(crate) struct Checkpoints {
+    cells: AtomicU64,
+    saved: AtomicU64,
+}
+
+impl Checkpoints {
+    pub(crate) fn behind(&self) -> bool {
+        self.saved.load(Ordering::SeqCst) < self.cells.load(Ordering::SeqCst)
+    }
+}
+
 impl KernelManager {
+    /// A cell that ran at all may have bound names, failed or not; a clean one checkpoints.
+    pub(crate) fn after_user_cell(&self, result: &Result<ExecuteResult, ExecuteError>) {
+        let Ok(result) = result else { return };
+        self.inner.checkpoints.cells.fetch_add(1, Ordering::SeqCst);
+        if result.status == ExecuteStatus::Ok {
+            self.schedule_snapshot();
+        }
+    }
+
     pub(crate) fn schedule_snapshot(&self) {
         let Some(config) = &self.inner.snapshot else {
             return;
@@ -372,6 +396,8 @@ impl KernelManager {
         if !self.is_running() {
             return None;
         }
+        let _span = yi_types::trace::span("kernel.snapshot").arg("prune", prune_oversized);
+        let seen = self.inner.checkpoints.cells.load(Ordering::SeqCst);
         let code = build_snapshot_code(
             &config.path,
             &config.manifest_path,
@@ -386,7 +412,14 @@ impl KernelManager {
             .await;
         match result {
             Ok(result) if result.status == ExecuteStatus::Ok => {
-                parse_snapshot_result(&result.stdout, &config.path)
+                let parsed = parse_snapshot_result(&result.stdout, &config.path);
+                if parsed.is_some() {
+                    self.inner
+                        .checkpoints
+                        .saved
+                        .fetch_max(seen, Ordering::SeqCst);
+                }
+                parsed
             }
             Ok(result) => {
                 let detail = result
@@ -415,6 +448,7 @@ impl KernelManager {
     /// which refreshes live handles over anything restored. Never fails a boot.
     pub async fn restore_state(&self) -> Option<KernelRestoreResult> {
         let config = self.inner.snapshot.clone()?;
+        let _span = yi_types::trace::span("kernel.restore");
         let code = build_restore_code(&config.path);
         match self.execute_internal(&code, None).await {
             Ok(result) if result.status == ExecuteStatus::Ok => {
@@ -443,6 +477,7 @@ impl KernelManager {
         if !self.is_running() {
             return None;
         }
+        let _span = yi_types::trace::span("kernel.list_names");
         let code = build_list_names_code();
         match self
             .execute_internal(&code, Some(crate::KERNEL_STATE_LISTING_TIMEOUT_MS))
