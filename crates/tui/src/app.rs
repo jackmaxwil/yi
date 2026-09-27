@@ -136,6 +136,7 @@ pub struct App {
     pub selection: crate::model::Selection,
     pending_repaint: bool,
     pub(crate) pending_prompt_mark: bool,
+    pub(crate) pane: bool,
     /// §17.3: the `Yi` mark at rest and one looping pose per agent state; one orb, never two.
     pub(crate) orb: yi_orb::Orb,
     pub(crate) history: crate::history::History,
@@ -250,6 +251,7 @@ impl App {
             selection: crate::model::Selection::new(options.model.clone()),
             pending_repaint: false,
             pending_prompt_mark: false,
+            pane: false,
             orb: yi_orb::Orb::default(),
             history: crate::history::History::default(),
             reflow: crate::reflow::ReflowState::default(),
@@ -505,9 +507,17 @@ impl App {
         if matches!(cell, Cell::User { .. }) {
             self.pending_prompt_mark = true;
         }
+        // Incident: a console replay rendered every cell for scrollback the pane drops (1.3 s).
+        if self.pane {
+            self.retain(cell.clone());
+            self.scheduler.request();
+            return;
+        }
         let spinner = self.spinner_phase();
         let width = self.content_width();
+        let rendering = yi_types::trace::span("tui.cell_lines");
         let mut lines = cell.lines(width, &self.theme, self.mode, spinner);
+        drop(rendering);
         let blank = |line: &Line<'_>| line.spans.iter().all(|s| s.content.trim().is_empty());
         // A blank separates blocks, never a run of one-line calls, measured
         // from what the previous cell rendered — all an append path knows.
@@ -885,6 +895,7 @@ pub fn run_tui(
     ask_rx: Receiver<AskRequest>,
     options: TuiOptions,
 ) -> i32 {
+    crate::highlight::prewarm();
     let (ui_rx, cmd_tx, runtime_thread) =
         spawn_runtime_bridge(runtime, &session, &host, ask_rx, Duration::from_millis(300));
     let mut port = Arc::clone(&session);

@@ -231,6 +231,7 @@ pub(crate) fn capture(
     args: &[&str],
     deadline: std::time::Duration,
 ) -> Result<String, String> {
+    let _span = yi_types::trace::span("lane.capture").arg("program", program);
     let mut command = yi_tools::command(program);
     command.current_dir(cwd).args(args);
     let deadline = std::time::Instant::now()
@@ -251,6 +252,7 @@ pub(crate) fn capture(
 }
 
 pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, LaneError> {
+    let _span = yi_types::trace::span("lane.git").arg("args", args.join(" "));
     let mut command = yi_tools::command("git");
     command.current_dir(cwd).args(args);
     let deadline = std::time::Instant::now()

@@ -321,6 +321,7 @@ pub(crate) fn user_cell(text: String, typed: bool) -> Cell {
 impl App {
     /// The model's context and the screen must agree about what was said.
     pub fn replay_entries(&mut self, entries: &[Entry]) {
+        let _span = yi_types::trace::span("tui.replay_entries").arg("entries", entries.len());
         let cells: Vec<Cell> = entries
             .iter()
             .filter_map(|entry| match entry {
@@ -571,6 +572,10 @@ impl App {
 
     pub fn set_status_name_shown(&mut self, shown: bool) {
         self.status_name_hidden = !shown;
+    }
+
+    pub fn set_pane(&mut self) {
+        self.pane = true;
     }
 
     pub fn take_pending_editor(&mut self) -> bool {
