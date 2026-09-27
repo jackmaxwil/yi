@@ -36,6 +36,10 @@ PER_TRIAL_USD = 1.0
 TURN_CAP = 180
 MIN_FREE_GB = 8
 MIN_PLAIN_GB = 3
+# Incident (PAID-0, 2026-09-27): freight-dispatch-shift pulls a sidecar image, then its main
+# image for minutes; the sidecar sat unused for two polls, was removed, and the trial died on
+# "No such image". An image goes after this many consecutive unused polls, not two.
+IDLE_POLLS = 10
 IMPORTANT_USAGE = ('ObjC.import("Foundation"); var r = Ref(); $.NSURL.fileURLWithPath("{}")'
                    '.getResourceValueForKeyError(r, $.NSURLVolumeAvailableCapacityForImportantUsageKey, null); r[0].js')
 
@@ -79,9 +83,11 @@ def stop_containers(trial_names):
             docker("stop", "-t", "5", name)
 
 
-def prune(unused_last):
-    """An image goes only after two polls unused: a trial pulls its image seconds before it
-    creates the container. `docker rmi` without -f refuses any image a container references."""
+def prune(idle, ripe_at=IDLE_POLLS):
+    """An image goes only after IDLE_POLLS consecutive polls unused (`idle` counts them per id):
+    a multi-image task pulls its sidecar long before it creates the container.
+    `docker rmi` without -f refuses any image a container references. Once harbor has exited,
+    nothing will create another container, so the final prune takes every unused image."""
     ids = set()
     for line in docker("images", "--format", "{{.Repository}} {{.ID}}").splitlines():
         repo, _, image_id = line.partition(" ")
@@ -89,11 +95,16 @@ def prune(unused_last):
             ids.add(image_id)
     used = {docker("inspect", "--format", "{{.Image}}", cid).strip().removeprefix("sha256:")[:12]
             for cid in docker("ps", "-aq").split()}
-    idle = ids - used
-    removed = sum(not subprocess.run(("docker", "rmi", i), capture_output=True).returncode
-                  for i in idle & unused_last)
-    unused_last.clear()
-    unused_last.update(idle)
+    unused = ids - used
+    for image in list(idle):
+        if image not in unused:
+            del idle[image]
+    for image in unused:
+        idle[image] = idle.get(image, 0) + 1
+    ripe = [image for image, polls in idle.items() if polls >= ripe_at]
+    removed = sum(not subprocess.run(("docker", "rmi", i), capture_output=True).returncode for i in ripe)
+    for image in ripe:
+        idle.pop(image, None)
     return removed
 
 
@@ -111,14 +122,14 @@ def main():
     args.runs.mkdir(parents=True, exist_ok=True)
     stopped = args.runs.parent / (args.runs.name + ".STOPPED")
     child = subprocess.Popen(command, start_new_session=True)
-    started, breached, unused_last = time.monotonic(), set(), set()
+    started, breached, unused_last = time.monotonic(), set(), {}
     while True:
         try:
             code = child.wait(timeout=args.poll)
         except subprocess.TimeoutExpired:
             code = None
         if code is not None:
-            print("child exited", code, "; final prune", prune(unused_last), flush=True)
+            print("child exited", code, "; final prune", prune(unused_last, ripe_at=0), flush=True)
             return code
         total = 0.0
         for trial, cost, turns in trials(args.runs):
