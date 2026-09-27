@@ -573,11 +573,11 @@ def check_levers():
 
 
 def check_judge_replay():
-    """D258: the readers on recorded transcripts, blindness, quote bytes, the caps and the metrics."""
+    """D259: the readers on recorded transcripts, blindness, quote bytes, the caps and the metrics."""
     report = io.StringIO()
     suite = unittest.defaultTestLoader.loadTestsFromModule(test_judge_replay)
     result = unittest.TextTestRunner(stream=report).run(suite)
-    assert result.testsRun >= 14 and result.wasSuccessful(), report.getvalue()
+    assert result.testsRun >= 17 and result.wasSuccessful(), report.getvalue()
 
 
 CHECKS = (

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Judge replay: stage 0 of the seven-primitives plan, read-only (D258, #609).
+"""Judge replay: stage 0 of the seven-primitives plan, read-only (D259, #609).
 
     python3 evals/judge_replay.py all --dry --binary target/debug/yi --model faux/faux-1
     python3 evals/judge_replay.py extract --corpus yi:~/.yi/sessions \\
@@ -14,12 +14,13 @@ The bet under test: a judge that reads the owner's words by address, and nothing
 boundary, predicts the owner's first objection. A boundary is a human message whose nearest
 message ancestor is an assistant turn end; the judge sees the owner's earlier messages on that
 tree path and the turn, and is scored against the message itself, labelled from what the owner
-said and what the agent answered. Sessions split 70/30 into fit and held-out by the hash of the
-session file name, never within a session.
+said and what the agent answered. Conversations split 70/30 into fit and held-out by the hash of
+a file name in each, never within one.
 
 Nothing is written under a corpus: every model call runs `yi ask` in an empty temporary cwd
-under a temporary HOME, with its sessions under `--out`. A real run is the owner's, capped and
-ledgered (evals/README.md); `--dry` is faux only and ships host-built replies.
+under a temporary HOME, with its sessions under `--out`, and under Seatbelt, which refuses it
+the corpus and every other call's input. A real run is the owner's, capped and ledgered
+(evals/README.md); `--dry` is faux only and ships host-built replies.
 """
 
 import argparse
@@ -28,6 +29,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import pwd
 import random
 import re
 import shutil
@@ -60,12 +62,16 @@ DIGEST_HEAD = 120
 # from argv; half of it leaves the environment room.
 ARGV_BYTES = 512_000
 CALL_TIMEOUT_SEC = 600
+SEATBELT = "/usr/bin/sandbox-exec"
+# Yi's own rule (D25, `Attribution::reads_as_typed`): from this instant a typed message carries
+# `attribution: user` and any other user-role message is the host's.
+ATTRIBUTED_SINCE_MS = 1_788_256_519_000
 BOOTSTRAP_DRAWS = 2000
 SEED = 609
 
 # Text a harness writes as a user message on the human's behalf: Yi's child notices, kernel
-# restore and mailbox chase; Claude Code's commands, notices and interrupts, surveyed over 225
-# top-level transcripts (evals/README.md, judge replay).
+# restore and mailbox chase before attribution; Claude Code's commands, notices and interrupts,
+# surveyed over 225 top-level transcripts (evals/README.md, judge replay).
 YI_INJECTED = ("[subagent ", "<ipython_state_restored>", "[host] request")
 INJECTED = (
     "<command-name>", "<command-message>", "<local-command-stdout>", "<local-command-stderr>",
@@ -82,8 +88,8 @@ def sha(text):
 
 
 def split_of(corpus, name):
-    """The session's side: its file name is the session id in both formats, so the split does
-    not move with the corpus root, and one session never lands on both sides."""
+    """A conversation's side, by the first file name in it: the name is the session id in both
+    formats, so the split does not move with the corpus root."""
     return "fit" if int(sha(f"{corpus}:{name}")[:8], 16) % 100 < FIT_PERCENT else "held-out"
 
 
@@ -104,7 +110,8 @@ def digest(name, args):
 
 def read_yi(path):
     """Pi v4: a tree over `parentId`. A child session (a `parentSessionId` header, or a file in a
-    `sub-*` directory, the layout a subagent writes) is skipped: its user is the parent agent."""
+    `sub-*` directory, the layout a subagent writes) is skipped: its user is the parent agent.
+    The host's user-role notices (plan nudges, child notices) are prompts, not the owner."""
     header, entries, _corrupt = extract.read_session(path)
     if not header or header.get("parentSessionId") or any(p.startswith("sub-") for p in path.parent.parts):
         return {}
@@ -115,10 +122,13 @@ def read_yi(path):
         message = entry.get("message") if entry.get("type") == "message" else None
         role = (message or {}).get("role")
         node = {"id": entry["id"], "parent": entry.get("parentId"), "order": order, "kind": "skip"}
-        if role == "user" and blocks_text(message.get("content")).startswith(YI_INJECTED):
-            node["kind"] = "prompt"
-        elif role == "user":
-            node.update(kind="human", text=blocks_text(message.get("content")), offset=0)
+        if role == "user":
+            text = blocks_text(message.get("content"))
+            if (entry.get("timestamp") or 0) >= ATTRIBUTED_SINCE_MS:
+                typed = message.get("attribution") == "user"
+            else:
+                typed = not text.startswith(YI_INJECTED)
+            node.update({"kind": "human", "text": text, "offset": 0} if typed else {"kind": "prompt"})
         elif role == "assistant":
             calls = [digest(b.get("name"), b.get("arguments")) for b in message.get("content") or []
                      if isinstance(b, dict) and b.get("type") == "toolCall"]
@@ -162,7 +172,8 @@ def read_claude(path):
     if "subagents" in path.parts:
         return {}
     nodes = {}
-    for order, line in enumerate(path.read_text(errors="replace").splitlines()):
+    # Incident: `splitlines` also splits at U+2028, which 13 typed messages carried raw.
+    for order, line in enumerate(path.read_text(errors="replace").split("\n")):
         try:
             entry = json.loads(line)
         except ValueError:
@@ -239,19 +250,23 @@ def boundaries(corpus, path, nodes):
         if not line or line[0]["kind"] != "assistant" or not line[0]["end"]:
             continue
         turn, end = [], line[0]
-        # From the turn end back to what started the turn: a command or a notice can sit
-        # between the end and the reply, as `/compact` does.
-        for step in chain[chain.index(end):]:
-            if step["kind"] in ("human", "prompt"):
+        # Back from the turn end to what opened the turn: the owner, or a command, notice or summary
+        # right after a turn end. A notice mid-turn (a skill body, a plan nudge) opened nothing.
+        for at in range(chain.index(end), len(chain)):
+            step = chain[at]
+            if step["kind"] == "human":
                 break
+            if step["kind"] == "prompt":
+                before = next((a for a in chain[at + 1:] if a["kind"] not in ("skip", "prompt")), None)
+                if before is None or before["kind"] == "human" or (before["kind"] == "assistant" and before["end"]):
+                    break
             turn.append(step)
         turn.reverse()
         address = lambda n: {"file": str(path), "entry": n["id"], "text": n["text"], "offset": n["offset"]}
         rows.append({
-            "id": sha(f"{corpus}:{path.name}:{node['id']}")[:16],
+            "id": sha(f"{corpus}:{node['id']}")[:16],
             "corpus": corpus,
             "session": str(path),
-            "split": split_of(corpus, path.name),
             "intent": [address(n) for n in reversed(chain) if n["kind"] == "human"],
             "turn": {"entry": end["id"], "text": final_text(turn, end),
                      "calls": [c for n in turn if n["kind"] == "assistant" for c in n["calls"]]},
@@ -266,11 +281,33 @@ def corpus_files(directory):
 
 
 def extract_corpora(specs):
-    rows = []
+    """Each boundary once, split by conversation. Claude Code rewrites a resumed transcript into
+    a new file under the same entry ids, so files that share or bridge to an entry are one
+    conversation, and a boundary found in several keeps its fullest intent record."""
+    rows, owner, root = {}, {}, {}
+
+    def find(session):
+        while root.get(session, session) != session:
+            session = root[session]
+        return session
+
     for kind, directory in specs:
         for path in corpus_files(directory):
-            rows.extend(boundaries(kind, path, READERS[kind](path)))
-    return rows
+            nodes = READERS[kind](path)
+            for key in {*nodes, *(n["parent"] for n in nodes.values() if n.get("parent"))}:
+                one, two = find(owner.setdefault((kind, key), (kind, path.name))), find((kind, path.name))
+                if one != two:
+                    root[max(one, two)] = min(one, two)
+            for row in boundaries(kind, path, nodes):
+                kept = rows.get(row["id"])
+                if kept is None or len(row["intent"]) > len(kept["intent"]):
+                    rows[row["id"]] = row
+    # ponytail: a conversation's side follows its first file name, so re-extracting a grown corpus
+    # into the same --out can move one whose new resumed file sorts first; extract once per run.
+    for row in rows.values():
+        kind, name = find((row["corpus"], Path(row["session"]).name))
+        row.update(conversation=f"{kind}:{name}", split=split_of(kind, name))
+    return list(rows.values())
 
 
 def resolve(text, quote):
@@ -390,24 +427,53 @@ def parse_answer(text):
             return None
 
 
-def ask(args, phase, system, prompt, faux=None):
-    """One `yi ask --json --confirm`: with no terminal an ask is a refusal, so only read-only
-    tools can run, in an empty cwd under a temporary HOME; its session lands under --out."""
+def faux_reply(content, stop="stop"):
+    """One scripted assistant message for `yi ask --faux`."""
+    zero = {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
+    return {"role": "assistant", "content": content, "api": "faux", "provider": "faux", "model": "faux-1",
+            "stopReason": stop, "timestamp": 0, "usage": {**zero, "totalTokens": 0, "cost": {**zero, "total": 0}}}
+
+
+def seatbelt(out, own_sessions, calls, own_call):
+    """The call's prefix under Seatbelt, the sandbox Yi contains commands with. A root `yi ask`
+    takes no wall or deny rule from config, so the host walls the process: no read or write
+    under a corpus or the real ~/.yi and ~/.claude, and no read of --out or another call's
+    scratch but its own, where the next message and later owner words sit. None off macOS."""
+    if not Path(SEATBELT).is_file():
+        return None
+    homes = {Path(os.environ.get("HOME") or "/"), Path(pwd.getpwuid(os.getuid()).pw_dir)}
+    corpora = json.loads((Path(out) / "corpora.json").read_text()) if (Path(out) / "corpora.json").is_file() else []
+    denied = [*(Path(d).expanduser() for _, d in corpora), *(h / sub for h in homes for sub in (".yi", ".claude"))]
+    params = {f"DENY_{i}": path for i, path in enumerate(denied)}
+    params.update(OUT=out, OWN_SESSIONS=own_sessions, CALLS=calls, OWN_CALL=own_call)
+    rules = " ".join(f'(subpath (param "DENY_{i}"))' for i in range(len(denied)))
+    policy = (f"(version 1)(allow default)(deny file-read* file-write* {rules})"
+              '(deny file-read* (require-all (subpath (param "OUT")) (require-not (subpath (param "OWN_SESSIONS")))))'
+              '(deny file-read* (require-all (subpath (param "CALLS")) (require-not (subpath (param "OWN_CALL")))))')
+    return [SEATBELT, "-p", policy, *(f"-D{k}={os.path.realpath(v)}" for k, v in params.items()), "--"]
+
+
+def ask(args, phase, system, prompt, faux=None, call="call"):
+    """One `yi ask --json --confirm`: with no terminal an ask is a refusal, but read-only tools
+    run, so the call runs walled by `seatbelt` in an empty cwd under a temporary HOME; its
+    session lands under --out/sessions/<phase>/<call>. `faux` is the script --dry replays."""
     if len(prompt.encode("utf-8")) + len(system.encode("utf-8")) > ARGV_BYTES:
         return {"error": f"input over argv_bytes={ARGV_BYTES}"}
-    with tempfile.TemporaryDirectory(prefix="yi-replay-") as scratch:
-        cwd, events = Path(scratch) / "cwd", Path(scratch) / "events.jsonl"
+    calls = Path(home()) / "calls"
+    calls.mkdir(exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix=f"{phase}-", dir=calls))
+    try:
+        cwd, events, sessions = scratch / "cwd", scratch / "events.jsonl", Path(args.out) / "sessions" / phase / call
         cwd.mkdir()
+        sessions.mkdir(parents=True, exist_ok=True)
         command = [args.binary, "ask", "--json", "--confirm", "--here", "--model", args.model,
                    "--system", system, "--schema", str(REPLAY / f"{SCHEMAS[phase]}.schema.json"),
-                   "--session-dir", str(Path(args.out) / "sessions" / phase), "--cwd", str(cwd)]
+                   "--session-dir", str(sessions), "--cwd", str(cwd)]
         if faux is not None:
-            script = Path(scratch) / "faux.jsonl"
-            zero = {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
-            script.write_text(json.dumps({"role": "assistant", "content": [{"type": "text", "text": json.dumps(faux)}],
-                                          "api": "faux", "provider": "faux", "model": "faux-1", "stopReason": "stop",
-                                          "timestamp": 0, "usage": {**zero, "totalTokens": 0, "cost": {**zero, "total": 0}}}))
+            script = scratch / "faux.jsonl"
+            script.write_text("".join(json.dumps(message) + "\n" for message in faux))
             command += ["--faux", str(script)]
+        command = (seatbelt(args.out, sessions, calls, scratch) or []) + command
         try:
             with events.open("w") as sink:
                 done = subprocess.run([*command, prompt], stdout=sink, stderr=subprocess.PIPE, text=True,
@@ -416,11 +482,13 @@ def ask(args, phase, system, prompt, faux=None):
         except subprocess.TimeoutExpired:
             return {"error": f"timed out after {CALL_TIMEOUT_SEC}s", "costUsd": yi_usage.parse_events(events)["costUsd"]}
         usage = {key: yi_usage.parse_events(events)[key] for key in ("costUsd", "input", "output", "cacheRead")}
-        # Read-only tools still run under --confirm, and a read can reach past the boundary.
+        # A tool call breaks the judge's premise even when the wall refused it; the gate counts it.
         usage["tools"] = sum(1 for event in yi_usage.json_lines(events)[0] if event.get("type") == "message_end"
                              for block in (event.get("message") or {}).get("content") or []
                              if isinstance(block, dict) and block.get("type") == "toolCall")
         answer = parse_answer(runner.final_answer(events))
+    finally:
+        shutil.rmtree(scratch, True)
     if done.returncode != 0 or not isinstance(answer, dict):
         return {"error": f"exit {done.returncode}: {done.stderr.strip()[-300:]}", **usage}
     return {"answer": answer, **usage}
@@ -473,7 +541,8 @@ def run_calls(args, phase, items, sink, build, keep):
                     stopped = f"cap ${args.cap_usd} reached at ${spent:.4f} with {len(queue)} {phase} calls left"
                     break
                 system, prompt, faux, extra = build(queue.pop(0))
-                pending[pool.submit(ask, args, phase, system, prompt, faux if args.dry else None)] = extra
+                script = [faux_reply([{"type": "text", "text": json.dumps(faux)}])] if args.dry else None
+                pending[pool.submit(ask, args, phase, system, prompt, script, extra["id"])] = extra
             if not pending:
                 break
             done, _ = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
@@ -500,10 +569,12 @@ def cmd_extract(args):
     out.mkdir(parents=True, exist_ok=True)
     (out / ".gitignore").write_text("*\n")
     (out / "boundaries.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    (out / "corpora.json").write_text(json.dumps([[kind, str(Path(d).expanduser().resolve())] for kind, d in specs]))
     for corpus in sorted({r["corpus"] for r in rows}):
         mine = [r for r in rows if r["corpus"] == corpus]
         held = sum(1 for r in mine if r["split"] == "held-out")
-        print(f"{corpus}: {len(mine)} boundaries in {len({r['session'] for r in mine})} sessions, {held} held-out")
+        print(f"{corpus}: {len(mine)} boundaries in {len({r['session'] for r in mine})} sessions, "
+              f"{len({r['conversation'] for r in mine})} conversations, {held} held-out")
     return 0
 
 
@@ -613,7 +684,8 @@ def resolution(verdicts):
     return (resolved / total if total else None), total
 
 
-def section(verdicts, labels, matches, sessions):
+def section(rows, labels, matches, sessions):
+    verdicts = [r for r in rows if r.get("verdict") in VERDICTS]
     scored = [v for v in verdicts if v["id"] in labels]
     pairs = {}
     for v in scored:
@@ -627,7 +699,8 @@ def section(verdicts, labels, matches, sessions):
             "resolution": rate, "cited": cited, "recall": scores[1] if scores else None,
             "specificity": scores[2] if scores else None, "balanced": scores[0] if scores else None,
             "interval": interval, "catch": caught / positives if positives else None,
-            "cost": sum(v.get("costUsd") or 0.0 for v in verdicts)}
+            "tooled": sum(1 for v in verdicts if v.get("tools")), "missing": len(rows) - len(verdicts),
+            "cost": sum(r.get("costUsd") or 0.0 for r in rows)}
 
 
 def fmt(value):
@@ -635,17 +708,21 @@ def fmt(value):
 
 
 def gate_line(held):
+    """PASS also needs every held-out call answered with no tool run: a verdict that read anything
+    broke blindness, and an unanswered boundary drops out of the score, the hard ones first."""
     rate, low = held["resolution"], (held["interval"] or (None, None))[0]
-    ok = rate is not None and rate >= 0.95 and low is not None and low > 0.5
-    return (f"gate: {'PASS' if ok else 'FAIL'}: held-out citation resolution {fmt(rate)} (>= 0.95) and "
-            f"balanced accuracy lower bound {fmt(low)} (> 0.5)")
+    ok = (rate is not None and rate >= 0.95 and low is not None and low > 0.5
+          and held["tooled"] == 0 and held["missing"] == 0)
+    return (f"gate: {'PASS' if ok else 'FAIL'}: held-out citation resolution {fmt(rate)} (>= 0.95), "
+            f"balanced accuracy lower bound {fmt(low)} (> 0.5), {held['tooled']} verdicts that ran a tool "
+            f"(0) and {held['missing']} calls without a verdict (0)")
 
 
 def cmd_report(args):
     out = Path(args.out)
     labels = effective_labels(out)
     boundaries_by_id = by_id(read_rows(out / "boundaries.jsonl"))
-    sessions = {k: v["session"] for k, v in boundaries_by_id.items()}
+    sessions = {k: v["conversation"] for k, v in boundaries_by_id.items()}
     label_cost = sum(r.get("costUsd") or 0.0 for r in read_rows(out / "labels.jsonl"))
     print(f"labels: {len(labels)} of {len(boundaries_by_id)} boundaries, ${label_cost:.4f}")
     for key in sorted({(b["corpus"], b["split"]) for b in boundaries_by_id.values()}):
@@ -663,15 +740,15 @@ def cmd_report(args):
         errors = [r.get("error") for r in rows if r.get("error") and r.get("verdict") not in VERDICTS]
         tooled = sum(1 for r in verdicts if r.get("tools"))
         print(f"\n== {path.stem}: {len(verdicts)} verdicts, {len(errors)} calls without one, {tooled} that ran a "
-              f"read-only tool and may have read past the boundary; match ${match_cost:.4f}")
+              f"tool against the judge's premise; match ${match_cost:.4f}")
         for error in sorted(set(errors))[:5]:
             print(f"   error x{errors.count(error)}: {error}")
         print(f"   {'corpus':8s}{'split':10s}{'n':>5s}{'pos':>7s}{'cite':>7s}{'recall':>8s}{'spec':>7s}"
               f"{'bal':>7s}  95% interval   {'catch':>6s}{'cost':>9s}")
         held = None
         for split in ("fit", "held-out"):
-            for corpus in sorted({v["corpus"] for v in verdicts}) + ["all"]:
-                part = [v for v in verdicts if v["split"] == split and corpus in ("all", v["corpus"])]
+            for corpus in sorted({r.get("corpus") for r in rows}) + ["all"]:
+                part = [r for r in rows if r.get("split") == split and corpus in ("all", r.get("corpus"))]
                 if not part:
                     continue
                 s = section(part, labels, matches, sessions)
@@ -684,7 +761,7 @@ def cmd_report(args):
         always_accept = balanced([(True, False), (False, False)])
         always_flag = balanced([(True, True), (False, True)])
         print(f"   baselines: always-accept {fmt(always_accept[0])}, always-flag {fmt(always_flag[0])}")
-        print("   " + gate_line(held or {"resolution": None, "interval": None}))
+        print("   " + gate_line(held or {"resolution": None, "interval": None, "tooled": 0, "missing": 0}))
     print("\njudge runs (model-prompt sha256) that have touched held-out: " + (", ".join(sorted(touched)) or "none"))
     return 0
 
@@ -721,6 +798,29 @@ def cmd_all(args):
         print("FAIL judge_replay_dry: a file under the corpus changed")
         return 1
     print("ok   judge_replay_dry (the corpus was only read)")
+    return check_wall(args, specs)
+
+
+def check_wall(args, specs):
+    """Scripted reads of a corpus file and of boundaries.jsonl, which holds every next message,
+    come back refused, never as the owner's words."""
+    if not Path(SEATBELT).is_file():
+        print(f"skip judge_replay_wall: no {SEATBELT} here, so a real run refuses on this machine")
+        return 0
+    kind, directory = specs[0]
+    target = corpus_files(directory)[0]
+    words = next(n["text"] for n in READERS[kind](target).values() if n["kind"] == "human")
+    read = faux_reply([{"type": "toolCall", "id": f"c{i}", "name": "read", "arguments": {"path": str(path)}}
+                       for i, path in enumerate((target, Path(args.out) / "boundaries.jsonl"))], "toolUse")
+    done = ask(args, "judge", "", "judge", [read, faux_reply([{"type": "text", "text": json.dumps(
+        {"verdict": "accept", "objections": []})}])], "wall")
+    shown = [block.get("text") or "" for path in (Path(args.out) / "sessions" / "judge" / "wall").rglob("*.jsonl")
+             for entry in read_rows(path) if (entry.get("message") or {}).get("role") == "toolResult"
+             for block in entry["message"].get("content") or [] if isinstance(block, dict)]
+    if done.get("tools") != 2 or len(shown) != 2 or any(words in text for text in shown):
+        print(f"FAIL judge_replay_wall: scripted reads of the corpus and --out returned {shown or done}")
+        return 1
+    print("ok   judge_replay_wall (scripted reads of the corpus and --out came back refused)")
     return 0
 
 
@@ -758,6 +858,9 @@ def main(argv=None):
             return 2
         if not args.dry and args.cap_usd is None:
             print("refused: --cap-usd is required for a real-model run (plan law 3)", file=sys.stderr)
+            return 2
+        if not args.dry and not Path(SEATBELT).is_file():
+            print(f"refused: a real run is walled off the corpus by {SEATBELT}, absent here", file=sys.stderr)
             return 2
         if not Path(args.binary).is_file():
             print(f"refused: no binary at {args.binary} (cargo build -p yi-cli)", file=sys.stderr)
