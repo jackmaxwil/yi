@@ -307,6 +307,108 @@ fn review_note(state: &crate::model::ConsoleState, session: &SessionId) -> Strin
     note
 }
 
+fn span_of(ms: u64) -> String {
+    match ms / 1000 {
+        secs @ 0..60 => format!("{secs}s"),
+        secs @ 60..3600 => format!("{}m", secs / 60),
+        secs => format!("{}h{}m", secs / 3600, secs / 60 % 60),
+    }
+}
+
+pub fn tape_view(
+    tape: Option<&yi_types::tape::Tape>,
+    cursor: usize,
+    width: usize,
+    theme: &Theme,
+) -> (String, Vec<Line<'static>>) {
+    use yi_types::tape::MarkKind;
+    let Some(tape) = tape.filter(|tape| tape.end > tape.start) else {
+        return (
+            "Tape".to_owned(),
+            vec![Line::styled(
+                "no turns on the ledger yet",
+                theme.dim_style(),
+            )],
+        );
+    };
+    let total = tape.end - tape.start;
+    let cols = width.saturating_sub(8).max(10);
+    let col_of = |at: u64| {
+        let offset = u128::from(at.saturating_sub(tape.start));
+        usize::try_from(offset * cols as u128 / u128::from(total))
+            .unwrap_or(cols)
+            .min(cols - 1)
+    };
+    let covered = |spans: &[[u64; 2]]| -> (String, u64) {
+        let mut fill = vec![0_u64; cols];
+        let mut sum = 0_u64;
+        for [from, to] in spans {
+            sum = sum.saturating_add(to.saturating_sub(*from));
+            for (col, cell) in fill.iter_mut().enumerate() {
+                let lo = tape.start + total * col as u64 / cols as u64;
+                let hi = tape.start + total * (col as u64 + 1) / cols as u64;
+                *cell += (*to).min(hi).saturating_sub((*from).max(lo));
+            }
+        }
+        let bar = fill
+            .iter()
+            .enumerate()
+            .map(|(col, ms)| {
+                let span = (total * (col as u64 + 1) / cols as u64)
+                    .saturating_sub(total * col as u64 / cols as u64)
+                    .max(1);
+                let level = usize::try_from(ms * 8 / span).unwrap_or(8).min(8);
+                [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'][level]
+            })
+            .collect();
+        (bar, sum * 100 / total)
+    };
+    let (model, model_share) = covered(&tape.model);
+    let (tools, tools_share) = covered(&tape.tools);
+    let mut you = vec![' '; cols];
+    let mut marks = vec![' '; cols];
+    for mark in &tape.marks {
+        let col = col_of(mark.at);
+        match mark.kind {
+            MarkKind::User => you[col] = '┃',
+            MarkKind::Checkpoint => marks[col] = '◆',
+            MarkKind::Failed => marks[col] = '✗',
+            MarkKind::Compaction => marks[col] = '⌇',
+        }
+    }
+    let track = |name: &str, body: String| {
+        Line::from(vec![
+            Span::styled(format!("{name:<6}▕"), theme.dim_style()),
+            Span::styled(body, Style::default().fg(theme.text)),
+            Span::styled("▏", theme.dim_style()),
+        ])
+    };
+    let mut lines = vec![
+        track("model", model),
+        track("tools", tools),
+        track("you", you.into_iter().collect()),
+        track("marks", marks.into_iter().collect()),
+    ];
+    if let Some(mark) = tape.marks.get(cursor) {
+        let pointer = format!("{}▲", " ".repeat(col_of(mark.at).saturating_add(7)));
+        lines.push(Line::styled(pointer, theme.accent_style()));
+        let then = span_of(mark.at.saturating_sub(tape.start));
+        lines.push(Line::styled(
+            format!("+{then} · {}", mark.label),
+            Style::default().fg(theme.text),
+        ));
+    }
+    lines.push(Line::styled(
+        "◆ checkpoint  ✗ failed  ⌇ compaction  ┃ you · ←/→ marks · enter rewinds to your turn",
+        theme.dim_style(),
+    ));
+    let title = format!(
+        "Tape · {} · model {model_share}% · tools {tools_share}%",
+        span_of(total)
+    );
+    (title, lines)
+}
+
 pub fn review_view(
     diff: Option<&crate::model::SessionDiff>,
     scope: crate::model::ReviewScope,
@@ -441,6 +543,10 @@ fn pane_view_content(
             (format!("Δ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Editor(editor) => editor_view(editor, inner, theme),
+        PaneContent::Tape { tape, cursor, .. } => {
+            let (title, all) = tape_view(tape.as_ref(), *cursor, usize::from(inner.width), theme);
+            (title, all, None)
+        }
         PaneContent::SessionDiff { session, scope } => {
             let note = view.notes.get(session).map_or("", String::as_str);
             let (title, all) = review_view(
