@@ -9,7 +9,7 @@ status:  PROPOSAL, revision 2 (2026-09-26). Revision 1 audited what yi can be sc
          took three more decisions (§13, round 4). Extends D140 (axes), D219 (graph
          refiner), D220 (levers) and D186 (the calibrated slice). Method: the yi-ideate
          skill.
-tree:    main @ e0da990e (0.375.0), re-read 2026-09-27. Every ✓ was re-read there.
+tree:    main @ 61ed518a (0.376.0), re-read 2026-09-27. Every ✓ was re-read there.
 marks:   ✓ exists on main · ✚ new in this proposal · ⏸ deferred
 issues:  #652 (P0) blocks #653-#657 and #681-#688; #689 follows #688; T11 is #76
 ```
