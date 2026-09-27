@@ -242,6 +242,7 @@ postmerge-evals:
     cargo build -p yi-cli
     python3 evals/run.py --dry --binary target/debug/yi --model faux/faux-1
     python3 evals/surface.py --dry --binary target/debug/yi --model faux/faux-1
+    python3 evals/judge_replay.py all --dry --model faux/faux-1
 
 # Prefill the PR narrative's counted sections from the diff against main.
 pr-body:

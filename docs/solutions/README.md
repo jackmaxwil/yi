@@ -242,5 +242,6 @@ edited by hand.
 - [D269](adr/d269.md) - a kernel venv that passed its live import check is trusted by a stamp until...
 - [D272](adr/d272.md) - a streaming answer renders past its settled prefix only
 - [D273](adr/d273.md) - a crate whose integration tests are many links them as one binary
+- [D259](adr/d259.md) - judge replay is stage 0's falsification test
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
