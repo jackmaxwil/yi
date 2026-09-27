@@ -5,7 +5,7 @@ mod attach;
 pub mod cells;
 pub mod daemon;
 mod forward;
-mod review;
+pub mod review;
 pub mod update;
 
 use std::collections::{HashMap, HashSet};
@@ -693,17 +693,15 @@ impl AcpState {
             }
             "_yi/rewind" => {
                 let files = params.get("files").and_then(Value::as_bool) == Some(true);
-                let restored = if files {
-                    Some(crate::review::restore_before(
-                        &handle.session,
-                        text("entryId"),
-                        &self.cwd,
-                    )?)
+                let (rewound, restored) = if files {
+                    let (rewound, restored) =
+                        crate::review::restore_before(&handle.session, text("entryId"), &self.cwd)?;
+                    (rewound, Some(restored))
                 } else {
-                    None
+                    let rewound = yi_runtime::rewind_to(&handle.session, text("entryId"))
+                        .map_err(|error| (INVALID_PARAMS, error))?;
+                    (rewound, None)
                 };
-                let rewound = yi_runtime::rewind_to(&handle.session, text("entryId"))
-                    .map_err(|error| (INVALID_PARAMS, error))?;
                 let summarizing = rewound.abandoned.is_some();
                 if let Some(stub) = rewound.abandoned {
                     let session = Arc::clone(&handle.session);

@@ -83,14 +83,17 @@ pub fn undo(store: &yi_session::SharedSession, project: &Path, home: &Path) -> U
     let Some((data, since)) = undo_target(store) else {
         return UndoOutcome::NoCheckpoint;
     };
-    restore_tree(store, project, home, &data, since)
+    restore_tree(store, project, home, &data, since, || Ok(()))
 }
 
+/// Invariant: the replaced tree is recorded after `rewind` moves the lane, on the branch it lands
+/// on; recorded before it, the record is off-branch and the next undo reverts the turn before.
 pub fn undo_to(
     store: &yi_session::SharedSession,
     entry_id: &str,
     project: &Path,
     home: &Path,
+    rewind: impl FnOnce() -> Result<(), String>,
 ) -> UndoOutcome {
     let entries = yi_session::lock_session(store)
         .find_entries_on_branch(
@@ -140,11 +143,19 @@ pub fn undo_to(
     }) else {
         return UndoOutcome::NoCheckpoint;
     };
-    let since = recorded(store)
+    // Incident: a conversation-only rewind leaves later turns' files on disk; paired with its
+    // branch's turn end they read as the user's edits and stayed. The session's newest wins.
+    let session = yi_session::lock_session(store)
+        .find_entries(&checkpoint_query())
+        .unwrap_or_default();
+    let since = parse(session)
         .into_iter()
-        .find(|recorded| recorded.data.at == CheckpointAt::TurnEnd)
-        .map(|recorded| recorded.data.tree);
-    restore_tree(store, project, home, &start, since)
+        .find_map(|recorded| match recorded.data.at {
+            CheckpointAt::TurnEnd => Some(recorded.data.tree),
+            CheckpointAt::Undo => recorded.data.after,
+            CheckpointAt::TurnStart | CheckpointAt::Other(_) => None,
+        });
+    restore_tree(store, project, home, &start, since, rewind)
 }
 
 fn restore_tree(
@@ -153,6 +164,7 @@ fn restore_tree(
     home: &Path,
     data: &CheckpointData,
     since: Option<String>,
+    rewind: impl FnOnce() -> Result<(), String>,
 ) -> UndoOutcome {
     let checkpoints = match Checkpoints::open(&checkpoint_root(home), project) {
         Ok(checkpoints) => checkpoints,
@@ -171,8 +183,15 @@ fn restore_tree(
         Ok(tree) => tree,
         Err(error) => return UndoOutcome::Failed(error.to_string()),
     };
+    let rewound = rewind();
     if let Err(error) = append_checkpoint(store, &replaced, CheckpointAt::Undo, Some(&after)) {
         return UndoOutcome::Failed(error);
+    }
+    if let Err(error) = rewound {
+        return UndoOutcome::Failed(format!(
+            "{}, but the conversation did not rewind: {error}",
+            describe_undo(&restored, since.is_some())
+        ));
     }
     UndoOutcome::Restored {
         changes: restored,
@@ -235,19 +254,26 @@ pub struct RecordedCheckpoint {
     pub timestamp: u64,
 }
 
+fn checkpoint_query() -> yi_session::EntryQuery {
+    yi_session::EntryQuery {
+        custom_type: Some(CHECKPOINT_ENTRY_TYPE.to_owned()),
+        order: yi_session::EntryOrder::NewestFirst,
+        ..yi_session::EntryQuery::default()
+    }
+}
+
 pub fn recorded(store: &yi_session::SharedSession) -> Vec<RecordedCheckpoint> {
-    let session = yi_session::lock_session(store);
-    let entries = session
+    let entries = yi_session::lock_session(store)
         .find_entries_on_branch(
             "main",
-            &yi_session::EntryQuery {
-                custom_type: Some(CHECKPOINT_ENTRY_TYPE.to_owned()),
-                order: yi_session::EntryOrder::NewestFirst,
-                ..yi_session::EntryQuery::default()
-            },
+            &checkpoint_query(),
             &yi_session::BranchBounds::default(),
         )
         .unwrap_or_default();
+    parse(entries)
+}
+
+fn parse(entries: Vec<Entry>) -> Vec<RecordedCheckpoint> {
     entries
         .into_iter()
         .filter_map(|entry| {
