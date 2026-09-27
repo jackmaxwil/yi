@@ -293,7 +293,8 @@ Code transcripts:
   mid-turn is an `attachment` of type `queued_command` with `commandMode` `prompt` (163): the
   owner's words, in the intent record. Files under `subagents/` are skipped; `isSidechain`
   appears only there. Lines split at `\n` only: 13 typed messages carry a raw U+2028, where
-  `splitlines` would cut the entry.
+  `splitlines` would cut the entry. Claude Code can rewrite a block further down under the same
+  uuids (16 of 175 files): an entry keeps the place of its first line.
 - A turn runs back from its end to the owner, or to a command, notice or summary right after a
   turn end; a notice mid-turn (a skill body, a finished task, a plan nudge) does not cut it.
 
