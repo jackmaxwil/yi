@@ -1,14 +1,13 @@
 # Sandbox access model: localhost egress and a grant-based passthrough
 
 ```
-status:  PROPOSAL, 2026-09-26, revised after two review passes: three refuters (security,
-         usability, minimalism), then five lenses with a refute of their merged list
-         (grounding, security, usability, minimalism, precedent). Design only; lands by the
-         owner's call. Decided in five AskUserQuestion rounds and one follow-up (§8,
-         verbatim). Method: the yi-ideate skill.
-tree:    origin/main ab8f7817 (0.329.0, last decision row D249). Open PRs claim versions up to
-         0.339.0 and rows up to D252. Draft rows start at D253; renumber at landing after
-         re-reading the header and every open PR.
+status:  ACCEPTED, 2026-09-26 (merged as #592), revised after three review passes: three
+         refuters (security, usability, minimalism); five lenses with a refute of their merged
+         list (grounding, security, usability, minimalism, precedent); and a review of the
+         merged plan against its stage issues. Decided in five AskUserQuestion rounds and two
+         follow-ups (§8, verbatim). Method: the yi-ideate skill.
+tree:    re-grounded on origin/main 3503ed74 (0.341.0, last decision row D254). D-row ids are
+         assigned when each stage lands (§10), after re-reading the header and every open PR.
 issues:  milestone "Runtime, kernel and prompts". Stage 0: #580, #583, #584, #598.
          Stage 1: #599. Stage 2: #600. Stage 3: #601. Stage 4: #602.
 marks:   ✓ exists on main · ✚ new in this plan
@@ -143,7 +142,7 @@ the wall the same way: `git worktree add -b … ../ergonomics origin/main` could
 3. **The host runs commands from a sandbox-writable MCP session store** (#584).
    `fetch("mcp://<name>/…")` is a read, so Auto mode does not ask, and it makes the unsandboxed
    host run `yi mcp --json @<name> resources-read …` (`McpOneShot`,
-   `crates/cli/src/main.rs:583-598`). `@<name>` is looked up in the session store,
+   `crates/cli/src/main.rs:583-605`). `@<name>` is looked up in the session store,
    `~/.yi/mcp/sessions.json` (`crates/mcp-cli/src/sessions.rs:24`, `:57-60`, `:129-131`), and
    the stored spec is run as is (`do_session_op`, `crates/mcp-cli/src/lib.rs:200-230`). That
    directory is a kernel writable root (`kernel.rs:221`). A cell writes a stdio spec with any
@@ -200,7 +199,15 @@ What is new:
   lease does (`crates/runtime/src/lease.rs:158`); `SessionRules::load` replays them on
   `--continue`. The refusal itself is already in the JSONL as the tool result.
 - **Flows down only** ✚: a child starts with a copy of its parent's rules and keeps its own;
-  nothing is written back. Children stop sharing the parent's rule set.
+  nothing is written back. Children stop sharing the parent's rule set. A walled child copies
+  only rules that run contained, with its wall subtracted: an escalation rule (secret read,
+  ssh) means `contained: false` (`crates/runtime/src/permission.rs:688-692`), which no wall
+  inside the profile can narrow, and the tool-seam wall does not parse `python -c` as a write
+  (`crates/runtime/src/wall.rs:181-218`).
+- **Until stage 2 lands** the broker is still shared (`..wiring.clone()`,
+  `crates/runtime/src/wiring.rs:48`), so a refusal that stage 0's secret list newly produces
+  is ask-once and never kept: an Always on it would run that program unsandboxed for the whole
+  family.
 - **Protected targets**: the host-run git paths (D205), the session corpus other than the
   holder's own state, the global harness, the MCP session store, the secret list (§5.3),
   `~/.yi/config.json`, the daemon socket. They never widen. A refusal on one asks; approved
@@ -208,7 +215,7 @@ What is new:
   program-and-verb escalation for the session (owner, round 5), so `just pr` asks once; for
   git host-run paths and the corpus, nothing is ever kept.
 - **Listing** ✚: `/permissions` today only gets and sets the mode
-  (`crates/runtime/src/slash.rs:134-150`); stage 2 adds the kept rules to its output.
+  (`crates/runtime/src/slash.rs:145-162`); stage 2 adds the kept rules to its output.
 
 ### 3.3 Enforcement points
 
@@ -318,7 +325,10 @@ it.
 - `%pip install` needs a writable site dir as well as the network: `PIP_TARGET` and
   `PYTHONPATH` point at the session's own state directory from #580 (per session, since a
   package shared across sessions is a code-injection channel between them).
-- Refusals in cells and jobs get `denial_hint`.
+- Refusals in cells and jobs get `denial_hint`, with their own sentence: the kernel keeps its
+  boot profile until it restarts, so the write belongs in `bash()` or the bash tool. The bash
+  tool's "the next call asks" (and stage 2's widen-or-escalate) is never shown for a cell,
+  which would lead the model to retry the cell.
 
 ### 5.5 Egress proxy
 
@@ -351,8 +361,9 @@ it.
   github.com, codeload.github.com, objects.githubusercontent.com,
   release-assets.githubusercontent.com, raw.githubusercontent.com. Any other domain: one
   pending ask per (holder, domain); the proxy holds a connection at most 10 s, then answers
-  403 with a body naming the domain and the open ask, and the answer applies to later
-  connections. Headless denies. `deny_url` from the wall is checked first.
+  403 naming the domain and the open ask in the reason phrase as well as the body (a cell
+  shows the client's traceback, which carries the reason, not the body), and the answer
+  applies to later connections. Headless denies. `deny_url` from the wall is checked first.
 - `--yolo` allows every domain and records it, so harbor and evals do not regress.
 - The first decision per (holder, domain) is a ledger entry.
 
@@ -370,14 +381,17 @@ non-yolo run needs one.
   `no_new_privs`, apply a Landlock ruleset, exec. Same argv-prefix seam as `sandbox-exec`. The entry lives in a new
   module (`crates/cli/src/main.rs` is at 1117 of its 1200-line cap).
 - Every crate is `#![forbid(unsafe_code)]`, so this takes the `landlock` crate. The deps
-  budget is at its ceiling (`scripts/guardrails/baselines/deps_budget.json`: 20 direct, 167
-  transitive; 19 and 167 used). In the same commit as the crate: a YI_DESIGN §18.3 row, a
+  budget is at its ceiling (`scripts/guardrails/baselines/deps_budget.json`: 19 direct, 167
+  transitive, both already used), so the raise covers both. In the same commit as the crate: a YI_DESIGN §18.3 row, a
   `deny.toml` entry where a ban or wrapper applies, the budget raise and a size-ledger row.
 - Writes: writable roots ∪ write grants. Reads: Landlock rules only add, so the wrapper allows
   named system roots plus every child of `$HOME` except the secret list, enumerated at spawn
   (281 entries on the owner's machine; negligible). The system roots are `/usr`, `/bin`,
   `/sbin`, `/lib`, `/lib64`, `/etc`, `/opt`, `/nix` and `/dev` (with write on `/dev/null`,
-  `/dev/tty`, `/dev/zero`, `/dev/urandom`), `/proc` and the toolchain homes (`CARGO_HOME`,
+  `/dev/tty`, `/dev/zero`, `/dev/urandom`), `/proc/self` and the single `/proc` nodes the
+  loader needs (never `/proc/<pid>` for another process: the parent yi's
+  `/proc/<pid>/environ` holds exported cloud keys, around the secret list, over an open
+  network; owner, round 7), and the toolchain homes (`CARGO_HOME`,
   `RUSTUP_HOME`, the kernel venv) where they sit outside `$HOME`. Never `/`, `/home` or `/root`
   unless it is `$HOME` itself: allowing a parent of `$HOME` makes the secret carve-out
   impossible.
@@ -388,12 +402,19 @@ non-yolo run needs one.
   records a hash of each git dir's `config` and `hooks/*` and checks it before every git the
   host itself runs, restoring and refusing on a mismatch, with a ledger entry. Checking before
   the host's own git, not only after a contained spawn, covers another session's contained git
-  on a shared `.git` (55 worktrees share one here; `crates/runtime/src/lane/settle.rs:125-126`
-  runs host git against it). One lock on the common dir is held across the verify and the host
-  git, so two sessions' verifications and restores cannot interleave; and every host git runs
-  with `-c core.fsmonitor=false -c core.hooksPath=<an empty host-owned dir>`, which closes the
-  two common vectors for a contained writer that races the gap between verify and exec. The
-  remaining residuals are that gap for other config keys, and the user's own terminal git.
+  on a shared `.git` (55 worktrees share one here; `candidate_of` in
+  `crates/runtime/src/lane/settle.rs:136-146` runs `git add -A` and `commit` against it). One
+  lock on the common dir is held across the verify and the host git, so two sessions'
+  verifications and restores cannot interleave. The verify covers every config key that
+  executes something, not only `core.fsmonitor` and `core.hooksPath`: `filter.*` drivers,
+  `alias.*` values starting with `!`, `diff.external`, `core.sshCommand`, `core.pager`,
+  `include.path` and `includeIf`. Host git runs against the verified snapshot of the config
+  rather than the live file, so a contained writer racing the gap between verify and exec
+  changes nothing the host reads. Every production host git goes through one wrapper
+  (`lane/settle.rs`, `lane/mod.rs:254`, `lane/land.rs:518`, `environment.rs:16`,
+  `checkpoint.rs:150`, `crates/tools/src/orient.rs:300`, `plan/why.rs:35`), and a test fails
+  when a new host `git` call appears outside it. The remaining residual is the user's own
+  terminal git.
   It runs on Linux only (owner, 2026-09-26); macOS keeps Seatbelt's deny of the same paths
   (`HOST_RUN_BY_GIT`, `sandbox.rs:28`), which stops the write before it happens.
 - Availability: the `unshare_works` probe pattern (`crates/tools/src/document.rs:663-675`)
@@ -436,13 +457,16 @@ a compromised yi binary.
 | T4 | cross-session kernel control | with loopback, a cell reads B's ZMQ key and sends signed requests to B's kernel | connection files hidden from every sandbox; own file re-allowed | 1 | none known |
 | T5 | secret exfiltration | a cell reads `~/.config/fgj` and sends it out | secret list in `deny_read`; domain policy | 0, 3 | deny list incomplete; GET paths reach allowed servers' logs; a user's loopback forward proxy bypasses the policy |
 | T6 | confused deputy on loopback | a cell drives Chrome DevTools on 9222, an unauthenticated Redis, a tokenless Jupyter | accepted with `localhost:*` (rounds 1 and 5); `yi doctor` lists listeners | 1 | the user's local services, on every address the host owns |
-| T7 | proxy grant confusion | session A's cell uses session B's proxy and rules | per-spawn token → (session, holder) | 3 | Linux `/proc` environ (network open there anyway) |
+| T7 | proxy grant confusion | session A's cell uses session B's proxy and rules | per-spawn token → (session, holder) | 3 | none known (Landlock reads allow only `/proc/self`) |
 | T8 | upward widening | a child's kept rule covers its parent | rules copied at spawn, never written back | 2 | none known |
 | T9 | self-granting by config | a cell writes a file that grants itself | kept rules only from the host's own ledger entries | 2 | none known |
 | T10 | path races and links | a granted `x/` is swapped for a link into a protected path | canonicalized when kept and again when compiled; protected canonical paths refused; Seatbelt checks the resolved path at the syscall; `resolve_aliases` refuses deep links (`sandbox.rs:171-190`) | 2 | Landlock resolves at ruleset time: a swap between compile and exec (test) |
-| T11 | host-run git config | a contained git writes `core.fsmonitor`; a host git runs it | Seatbelt deny (macOS); on Linux, host verification under one common-dir lock plus `-c` overrides on every host git | 4 | a contained writer racing verify-to-exec for other keys; the user's terminal git on Linux |
+| T11 | host-run git config | a contained git writes `core.fsmonitor`, a `filter.*` driver or a `!` alias; a host `git add -A` runs it | Seatbelt deny (macOS); on Linux, one verifying wrapper for every host git, a common-dir lock, and host git reading the verified config snapshot | 4 | the user's terminal git on Linux |
 | T12 | the proxy as a reach extender | CONNECT to a raw address, a name resolving to `169.254.169.254` or a LAN address, or fronting through an allowed CDN | IP literals refused; loopback, link-local, private and CGNAT resolutions refused on the dialed address | 3 | CDN fronting |
 | T15 | proxy absent | the proxy fails to bind and a spawn starts without its variables; on Linux clients go straight out | a contained spawn fails when the proxy is not listening | 3 | none known |
+| T16 | a walled child runs uncontained | a juror inherits its parent's Always on `python`, which runs with no sandbox; `python -c` writes the tree | a walled child copies only contained rules, wall subtracted | 2 | none known |
+| T17 | an Always widens the family before stage 2 | a child's secret read, newly refused by stage 0, is approved Always on the shared broker; the parent then runs that program unsandboxed | stage-0 secret refusals are ask-once, never kept | 0 | none known |
+| T18 | parent environ on Linux | a contained process reads the parent yi's `/proc/<pid>/environ` and sends a cloud key out over the open network | Landlock reads allow `/proc/self` only | 4 | none known |
 | T13 | silent degradation | Landlock missing in a container | ABI probe; contained means ask; `yi doctor` | 4 | none known |
 | T14 | ask fatigue | the human rubber-stamps | subtree and domain scopes, seeded registries, "always" for escalation of secrets and ssh | 2, 3 | measured from the ledger after stage 2 |
 
@@ -496,6 +520,7 @@ Each round was an AskUserQuestion; the owner's selections are quoted as chosen.
 | 5 | what "always" keeps on protected targets | "Session escalation, except git and corpus (Recommended)" |
 | 5 | harness and MCP holes | "File both now, into stage 0 (Recommended)" → #583, #584 |
 | 6 | where git-dir verification runs (after the second review) | "Linux only, then open the stage issues" → #598-#602 |
+| 7 | Linux `/proc` reads (after the third review) | "/proc/self only (Recommended)" |
 
 Changed by the refute pass without a new fork: the grant is the existing
 `SessionPermissionRule` with new identities, not a new type; ledger entries are
@@ -512,6 +537,14 @@ resolutions, sets the package managers' proxy variables and fails closed when ab
 stage 1 edits `identity.md` and `doctrine.md` as well; stage 2 rewrites the denial hint; the
 Landlock read roots are named; git-dir verification holds a lock and pins two config keys;
 `/permissions` listing is new work, not existing; stale cites fixed.
+
+Changed by the third review (of the merged plan against its issues), without a new fork
+except round 7: stage-0 secret refusals are never kept while the broker is shared; a walled
+child never inherits an uncontained rule; host git verifies every executing config key and
+reads a verified snapshot, through one wrapper; cell and job refusals get their own hint; the
+socket-bind sentences are rewritten with the network ones; `egress_identity` moves into
+stage 2 and stage 2 waits for stage 1; the proxy's ask travels in the reason phrase;
+`document.rs:764`'s `%pip` claim follows the ipython ones; draft D-row numbers are dropped.
 
 Rejected alternatives:
 
@@ -549,8 +582,10 @@ memo.
 ### Stage 0: close what is open today (four PRs, any order: #580, #583, #584, #598)
 
 - **#580**: per-session state directory; the corpus is no longer a writable root, and the bash
-  tool gets no session dir at all (`main.rs:502` stops passing `&session_dir`). Red: a contained bash run and
-  a root kernel cell each create `~/.yi/sessions/<other-id>.kernel-state.dill` (succeeds today).
+  tool gets no session dir at all (`main.rs:502` stops passing `&session_dir`). Red: a
+  contained bash run writes any file under `~/.yi/sessions`, its own session's snapshot
+  included, and a root kernel cell creates `~/.yi/sessions/<other-id>.kernel-state.dill`
+  (both succeed today).
 - **#583**: global harness writes through the host. Red: a cell creates a file under
   `~/.yi/harness/` (succeeds today) while `rlm.harness.create_memory(..., global_=True)` keeps
   working.
@@ -559,10 +594,12 @@ memo.
   `~/.yi/mcp/sessions.json` whose command creates a marker outside the tree, then
   `fetch("mcp://<entry>/x")`; the marker must not appear (it appears today, and the fetch does
   not ask).
-- **#598, secrets, wall and prompts**: the secret list; the wall's `deny_*` in every profile; the two
-  `%pip` texts stop claiming that install works (`ipython.rs:47`, `:126`); stage 3 is when it
-  does. Red: a cell reads `~/.yi/config.json`
-  (succeeds today); a walled juror's cell writes the tree (succeeds today).
+- **#598, secrets, wall and prompts**: the secret list, whose refusals are ask-once and never
+  kept (T17); the wall's `deny_*` in every profile; the `%pip` texts stop claiming that
+  install works (`ipython.rs:47`, `:126`, `crates/tools/src/document.rs:764`); stage 3 is when
+  it does. Red: a cell reads `~/.yi/config.json` (succeeds today); a walled juror's cell
+  writes the tree (succeeds today); after a child's Always on a secret read, the parent's
+  rule set is unchanged.
 
 About +40 lines each; none may grow `kernel.rs` (1178 of its 1200-line cap) before stage 1
 shrinks it. Gate: stage 1 waits for all four.
@@ -574,7 +611,9 @@ connection files hidden with the own-file re-allow; `denial_hint` on cells and k
 at any exit code, with the resolver-failure strings and the raw-socket hint; the prompt texts,
 which must all say "no non-loopback network" instead of "no network" (`decide.rs:26`,
 `builtins.rs:507`, `sandbox.rs:230`, `crates/runtime/src/prompts/identity.md:8`,
-`prompts/doctrine.md:198-199`); a `yi doctor` line listing loopback listeners.
+`prompts/doctrine.md:198-199`), and the socket sentences say localhost bind and connect are
+allowed (`decide.rs:26`, `builtins.rs:507`, `doctrine.md:201`); the cell and job refusal hint
+(§5.4); a `yi doctor` line listing loopback listeners.
 
 Red: a cell connects to a host-run loopback listener, and a contained `curl
 http://127.0.0.1:<port>`; both EPERM today. Stay refused: `1.1.1.1:443`, the daemon socket,
@@ -582,10 +621,11 @@ another kernel's `connection.json`. About +60 lines; it shrinks `kernel.rs` (117
 
 Demo: a cell queries a local Postgres or dev server.
 
-### Stage 2: grants widen (#600)
+### Stage 2: grants widen (#600, after #599)
 
 `CallOutcome.sandbox` in place of `contained`; bash write targets from the refusal text;
-`write_identity` rules compiled into the next spawn; protected targets filtered from the offers,
+`write_identity` and `egress_identity` rules in one kept set, `write_identity` compiled into
+the next spawn; walled children copy only contained rules; protected targets filtered from the offers,
 with "always" keeping the D207 escalation only for secrets and ssh; `permission_rule` entries
 and their replay; rules copied to children at spawn; jobs compile per spawn; the kept rules in
 `/permissions`; the denial hint's second sentence rewritten to widen-or-escalate.
@@ -596,18 +636,21 @@ Red:
 2. After `--continue`, a kept rule still applies. Today it is gone.
 3. A child's kept rule does not reach its parent. Today the broker is shared.
 4. A rule whose canonical path is protected, including through a link, is never offered.
-5. `git worktree add … | tail -3` in a contained run is detected as a refusal. Today exit 0
+5. With the parent's Always on `python`, a juror (`deny_write: ["."]`) still fails to write
+   the tree from a cell and from bash.
+6. `git worktree add … | tail -3` in a contained run is detected as a refusal. Today exit 0
    hides it.
 
 About +170 lines. Demo: the Yi agent's `git worktree add` into a sibling directory, asked once
 and then contained; its `.git/config` write escalates once.
 
-### Stage 3: egress proxy (#601)
+### Stage 3: egress proxy (#601, after #598 and #600)
 
 The CONNECT proxy, per-spawn tokens, the full proxy variable set, fail-closed spawns, the
 upstream-proxy dial, `sandbox.egress` seeds, one pending ask per (holder, domain) with the 10 s
 hold, IP-literal and private-resolution refusal, `deny_url`, the `--yolo` allow-all,
-first-decision ledger entries, `PIP_TARGET`.
+first-decision ledger entries, `PIP_TARGET`, the ask in the 403 reason phrase, and the `%pip`
+texts restored (`ipython.rs:47`, `:126`, `document.rs:764`).
 
 Red: a cell fetches `https://pypi.org/simple/` and `%pip install`s a small pure-Python
 package (both fail today). Refused: an unknown domain headless, with the domain named; another
@@ -622,30 +665,35 @@ Demo: `%pip install` in a cell, and a new domain asked once in a running kernel,
 ### Stage 4: Linux (#602)
 
 The Landlock wrapper, enumerated reads from the named roots, the ABI probe with its
-`yi doctor` line, and git-dir verification before host-run git, under the common-dir lock and
-with the two `-c` overrides. Probe first: Landlock works for root inside the forge
+`yi doctor` line, reads of `/proc/self` only, and one verifying wrapper for every host git,
+under the common-dir lock and reading the verified config snapshot. Probe first: Landlock works for root inside the forge
 runner's containers.
 
 Red (Linux CI): a contained write outside the roots succeeds today; a read under `~/.ssh`
-succeeds today; a contained `git config core.fsmonitor <x>` then a host git runs it today.
-After: EACCES, EACCES, and the host restores the config and refuses. About +180 lines, plus
+succeeds today; a read of the parent's `/proc/<pid>/environ` succeeds today; a contained git
+sets `core.fsmonitor`, a `filter.<x>.clean` driver and a `!` alias, and a host `git add -A`
+runs them today. After: EACCES for the three reads and writes, and the host restores the
+config and runs none of them; a new host `git` call outside the wrapper fails a test. About +180 lines, plus
 the `landlock` dependency with its §18.3 row, `deny.toml` entry, budget raise and size-ledger
 row in one commit.
 
 Demo: the forge gate runs one contained suite under Landlock.
 
-## 10. D-rows owed (drafts; renumber at landing)
+## 10. D-rows owed
 
-| row | PR | decision | amends |
-|---|---|---|---|
-| D253 | #580 | a sandboxed process writes only its own session's state; the bash tool gets no session dir | D87, D241 |
-| D254 | #583 | global harness writes go through the host; the kernel's harness root is the session's | D87 |
-| D255 | #584 | the MCP session store is outside every sandbox's writable roots; a sandboxed `connect` goes through the host; the host spawns only from sessions it created from `~/.yi/mcp.json` or a trusted, hash-pinned workspace file | (new) |
-| D256 | #598 | the wall and a secret list are compiled into every OS profile | D87, D216 |
-| D257 | #599 | every contained spawn gets loopback bind, inbound and outbound; kernel connection files are hidden from other sandboxes; `Sandbox::loopback` and `set_sandbox` are deleted | D87, D241 |
-| D258 | #600 | an approved refusal widens the holder's next spawn by the refused path; protected targets escalate, kept only for secrets and ssh; kept rules are ledger entries copied downward only | D206, D207 |
-| D259 | #601 | proxy-aware non-loopback traffic leaves through the host's egress proxy, authenticated per spawn, decided per domain, refusing private and link-local resolutions, and failing closed when absent | D87 |
-| D260 | #602 | Linux contains with Landlock filesystem rules and reads from named roots; on Linux the host verifies git dirs under a common-dir lock before its own git | D205 |
+Ids are assigned when each stage lands, from the next free number after a fresh read of
+`docs/ARCHITECTURE.md` and every open PR.
+
+| issue | decision | amends |
+|---|---|---|
+| #580 | a sandboxed process writes only its own session's state; the bash tool gets no session dir | D87, D241 |
+| #583 | global harness writes go through the host; the kernel's harness root is the session's | D87 |
+| #584 | the MCP session store is outside every sandbox's writable roots; a sandboxed `connect` goes through the host; the host spawns only from sessions it created from `~/.yi/mcp.json` or a trusted, hash-pinned workspace file | (new) |
+| #598 | the wall and a secret list are compiled into every OS profile; secret refusals are not kept while the broker is shared | D87, D216 |
+| #599 | every contained spawn gets loopback bind, inbound and outbound; kernel connection files are hidden from other sandboxes; `Sandbox::loopback` and `set_sandbox` are deleted | D87, D241 |
+| #600 | an approved refusal widens the holder's next spawn by the refused path; protected targets escalate, kept only for secrets and ssh; kept rules are ledger entries copied downward only, and a walled child copies only contained ones | D206, D207 |
+| #601 | proxy-aware non-loopback traffic leaves through the host's egress proxy, authenticated per spawn, decided per domain, refusing private and link-local resolutions, and failing closed when absent | D87 |
+| #602 | Linux contains with Landlock filesystem rules and reads from named roots and `/proc/self`; on Linux every host git goes through one wrapper that verifies every executing config key under a common-dir lock and reads the verified snapshot | D205 |
 
 ## 11. Open questions
 
