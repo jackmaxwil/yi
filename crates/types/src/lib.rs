@@ -12,6 +12,7 @@ pub mod fetch;
 pub mod goal;
 pub mod graph;
 pub mod harness;
+pub mod json_salvage;
 pub mod kernel;
 pub mod lane;
 pub mod lease;

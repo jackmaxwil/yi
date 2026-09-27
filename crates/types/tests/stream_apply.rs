@@ -79,7 +79,10 @@ fn deltas_fold_into_one_message_in_order() -> TestResult {
     );
     apply(
         &mut message,
-        &AssistantMessageEvent::ToolCallStart { content_index: 2 },
+        &AssistantMessageEvent::ToolCallStart {
+            content_index: 2,
+            name: None,
+        },
     );
     apply(
         &mut message,

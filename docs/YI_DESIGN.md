@@ -739,6 +739,8 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 - Bottom stack: live tail, working line or orb, HUD (goal, plan progress, numbered todo block
   `Todos done/total`; `ctrl+t` hides it), composer or bottom view, status row (model, effort,
   lane row, landing, cost, `used / window`, session name).
+- The working line names an open wait (`AgentEvent::Wait`: a provider retry, a compaction, a
+  kernel boot) with its cause and a countdown, and a tool call draws while its arguments stream.
 - The palette is fixed: tier from `COLORTERM`/`TERM`, light or dark from `COLORFGBG` (default
   dark). The orb is [`yi-orb`](../crates/orb/src/lib.rs) over kitty graphics: the `Yi` mark at rest and one
   exact loop per agent state, left only at its exit points by a least-travel morph.
@@ -748,7 +750,7 @@ ledger `~/.yi/daemon.ledger.json` is rewritten whole by rename and reloads with 
 - State: `Cell { User, Assistant, Thought, Tool, Explored, Task, Advisory, Notice, Footer, Rule,
   Divider }`.
 - Owner: [`app.rs`](../crates/tui/src/app.rs), [`drive.rs`](../crates/tui/src/drive.rs)
-- Settled by: D45, D47, D48, D73, D107, D126, D131, D136, D198, D199, D202, D204, D208, D256
+- Settled by: D45, D47, D48, D73, D107, D126, D131, D136, D198, D199, D202, D204, D208, D256, D261
 
 ### 17.4 Console
 `yi-console` is the workspace shell: an ACP client of the daemon (§17.2) on the alternate screen

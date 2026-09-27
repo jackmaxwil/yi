@@ -554,7 +554,11 @@ impl Mapper {
                     });
                     self.partial_json.push(Some(String::new()));
                     self.api_indices.push(api_index);
-                    events.push(AssistantMessageEvent::ToolCallStart { content_index });
+                    let name = block.get("name").and_then(Value::as_str).map(str::to_owned);
+                    events.push(AssistantMessageEvent::ToolCallStart {
+                        content_index,
+                        name,
+                    });
                 }
                 _ => {
                     self.partial_json.push(None);
@@ -792,9 +796,10 @@ fn run_request(
         crate::request::merge_headers(crate::request::headers_for(model, base), extra.to_vec());
     let mut mapper = Mapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
+    let retried = crate::request::waiting(sender);
     let resent = crate::request::pump_sse_with_resend(
         stop,
-        || crate::request::send_with_retry(&url, &headers, body, proxy),
+        || crate::request::send_with_retry(&url, &headers, body, proxy, &retried),
         |sse| {
             let kind = sse.event.as_deref().unwrap_or("");
             if kind == "error" {

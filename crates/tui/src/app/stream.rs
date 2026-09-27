@@ -256,6 +256,23 @@ impl App {
     /// D145: a whole message (`Start`, `Done`, `Error`) opens or settles the stream;
     /// a delta grows the message `MessageStart` opened.
     pub(super) fn fold_stream(&mut self, event: &AssistantMessageEvent) {
+        match event {
+            AssistantMessageEvent::ToolCallStart {
+                content_index,
+                name,
+            } => self.pen = Some(crate::pen::Pen::new(*content_index, name.clone())),
+            AssistantMessageEvent::ToolCallDelta {
+                content_index,
+                delta,
+            } => {
+                if let Some(pen) = self.pen.as_mut().filter(|pen| pen.index == *content_index) {
+                    pen.raw.push_str(delta);
+                    self.scheduler.request();
+                }
+            }
+            AssistantMessageEvent::ToolCallEnd { .. } => self.pen = None,
+            _ => {}
+        }
         fold(&mut self.streaming, event);
         if let Some(AgentMessage::Assistant { content, .. }) = &self.streaming {
             let content = content.clone();

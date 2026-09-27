@@ -425,6 +425,7 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
         AgentEvent::LandingState { landing } => {
             object_extension("_yi/landing", serde_json::to_value(landing))
         }
+        AgentEvent::Wait { .. } => Vec::new(),
     }
 }
 

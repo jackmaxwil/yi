@@ -53,6 +53,7 @@ fn service(
         family_dir,
         host: Arc::new(registry),
         on_restore: None,
+        on_boot: None,
         sandbox: Some(sandbox),
         snapshot_key: None,
         per_session_state: false,

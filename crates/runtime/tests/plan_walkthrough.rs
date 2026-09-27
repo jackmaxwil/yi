@@ -1293,6 +1293,7 @@ async fn a_program_and_its_json_fixture_reach_the_same_plan_json() -> Fallible<(
                 family_dir: None,
                 host: Arc::new(registry),
                 on_restore: None,
+                on_boot: None,
                 sandbox: None,
                 snapshot_key: None,
                 per_session_state: false,

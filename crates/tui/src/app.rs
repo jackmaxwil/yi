@@ -204,6 +204,8 @@ pub struct App {
     turn_started: Instant,
     turn_tools: u64,
     pub(crate) last_tool: Option<String>,
+    pub(crate) wait: Option<(yi_types::event::Wait, Instant)>,
+    pub(crate) pen: Option<crate::pen::Pen>,
     turn_tokens: crate::status::TurnTokens,
     turn_cost: f64,
     pub(crate) width: usize,
@@ -305,6 +307,8 @@ impl App {
             turn_started: Instant::now(),
             turn_tools: 0,
             last_tool: None,
+            wait: None,
+            pen: None,
             turn_tokens: crate::status::TurnTokens::default(),
             turn_cost: 0.0,
             width,
@@ -582,6 +586,12 @@ impl App {
         if !self.running {
             return None;
         }
+        match self.wait.as_ref().map(|(wait, _)| wait) {
+            Some(yi_types::event::Wait::Retry { .. }) => return Some(OrbState::Stalled),
+            Some(yi_types::event::Wait::Compaction { .. }) => return Some(OrbState::Condensing),
+            Some(yi_types::event::Wait::KernelBoot { .. }) => return Some(OrbState::KernelBoot),
+            None => {}
+        }
         if let Some(tool) = self
             .live_tools
             .iter()
@@ -589,6 +599,9 @@ impl App {
             .find(|t| t.status == ToolStatus::Running)
         {
             return Some(self.tool_state(&tool.name));
+        }
+        if let Some(pen) = &self.pen {
+            return Some(self.tool_state(&pen.name));
         }
         let children = self
             .tasks
@@ -653,6 +666,8 @@ impl App {
             AgentEvent::AgentEnd { .. } => {
                 self.running = false;
                 self.intent = None;
+                self.wait = None;
+                self.pen = None;
                 self.esc_armed_at = None;
                 self.steering.clear();
                 self.live_tools.clear();
@@ -696,9 +711,22 @@ impl App {
             }
             AgentEvent::MessageUpdate {
                 assistant_message_event,
-            } => self.fold_stream(&assistant_message_event),
+            } => {
+                if matches!(self.wait, Some((yi_types::event::Wait::Retry { .. }, _))) {
+                    self.wait = None;
+                }
+                self.fold_stream(&assistant_message_event);
+            }
+            AgentEvent::Wait { wait } => {
+                self.wait = wait.map(|wait| (wait, Instant::now()));
+                self.scheduler.request();
+            }
             AgentEvent::MessageEnd { message } => {
                 self.streaming = None;
+                self.pen = None;
+                if matches!(self.wait, Some((yi_types::event::Wait::Retry { .. }, _))) {
+                    self.wait = None;
+                }
                 self.note_context(&message);
                 self.reduce_message_end(&message);
             }

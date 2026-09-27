@@ -82,6 +82,7 @@ async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Bo
         family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
+        on_boot: None,
         sandbox: None,
         snapshot_key: None,
         per_session_state: false,
@@ -164,6 +165,7 @@ async fn an_unawaited_spawn_runs_once_after_the_cell_and_says_so() -> Result<(),
         family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
+        on_boot: None,
         sandbox: None,
         snapshot_key: None,
         per_session_state: false,
@@ -240,6 +242,7 @@ async fn a_cell_that_never_returns_is_aborted_at_the_ceiling() -> Result<(), Box
         family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
+        on_boot: None,
         sandbox: None,
         snapshot_key: None,
         per_session_state: false,
@@ -276,5 +279,42 @@ async fn a_cell_that_never_returns_is_aborted_at_the_ceiling() -> Result<(), Box
         *is_error && cell.contains("started") && cell.contains("[cell aborted]"),
         "a cell past its ceiling must come back aborted with its output so far: {cell}"
     );
+    Ok(())
+}
+
+/// Dies with the boot on stderr: the first cell's thirty seconds of venv and kernel start
+/// reached the terminal under the TUI's frame and nowhere a surface could draw them.
+#[tokio::test]
+async fn a_kernel_boot_reports_its_steps_then_closes() -> Result<(), Box<dyn Error>> {
+    let steps: Arc<std::sync::Mutex<Vec<Option<String>>>> = Arc::default();
+    let seen = Arc::clone(&steps);
+    let mut registry = HostRegistry::default();
+    registry.register_mcp_stubs();
+    let service = KernelService::new(KernelServiceOptions {
+        cwd: std::env::temp_dir(),
+        home: home(),
+        session_dir: None,
+        family_dir: None,
+        host: Arc::new(registry),
+        on_restore: None,
+        on_boot: Some(Arc::new(move |step: Option<&str>| {
+            if let Ok(mut steps) = seen.lock() {
+                steps.push(step.map(str::to_owned));
+            }
+        })),
+        sandbox: None,
+        snapshot_key: None,
+        per_session_state: false,
+        cell_ceiling: None,
+    });
+    service.prewarm().await;
+    service.dispose().await;
+    let steps = steps.lock().map_err(|_| "poisoned")?.clone();
+    assert_eq!(
+        steps.first(),
+        Some(&Some("starting the kernel".to_owned())),
+        "{steps:?}"
+    );
+    assert_eq!(steps.last(), Some(&None), "the boot closes: {steps:?}");
     Ok(())
 }

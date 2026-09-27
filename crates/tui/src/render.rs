@@ -133,6 +133,9 @@ fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Li
             .unwrap_or_default();
         live_lines.extend(app.prose_block(tail).0);
     }
+    if let Some(pen) = &app.pen {
+        live_lines.extend(Cell::Tool(pen.card()).lines(content_width, theme, app.mode, spinner));
+    }
     for tool in &app.live_tools {
         live_lines.extend(tool.lines(content_width, theme, app.mode, spinner));
     }
@@ -234,6 +237,11 @@ pub fn layout_chat(
     };
     let show_working = app.running || matches!(app.bottom, Some(Bottom::Approval(..)));
     let orb_state = app.orb_state();
+    let waiting = app
+        .wait
+        .as_ref()
+        .filter(|_| app.running)
+        .map(|(wait, since)| crate::pen::wait_label(wait, *since, &app.selection.model.provider));
     // On kitty the mark is always on screen, spelling `Yi` at rest and rearranging into
     // the orb for the turn. Elsewhere the plain spinner line appears only while a turn runs.
     let esc_armed = app
@@ -242,9 +250,9 @@ pub fn layout_chat(
     let working: Vec<Line<'static>> = if app.kitty {
         let mut rows: Vec<Line<'static>> = (0..ORB_ROWS).map(|_| Line::default()).collect();
         if let (Some(mid), Some(state)) = (rows.get_mut(1), orb_state) {
-            let label = app
-                .intent
+            let label = waiting
                 .clone()
+                .or_else(|| app.intent.clone())
                 .unwrap_or_else(|| state.label().to_owned());
             let hint = if esc_armed {
                 "esc again to interrupt"
@@ -260,7 +268,7 @@ pub fn layout_chat(
         rows
     } else if orb_state.is_some() {
         vec![working_line(
-            app.intent.as_deref(),
+            waiting.as_deref().or(app.intent.as_deref()),
             spinner,
             esc_armed,
             &theme,

@@ -23,6 +23,9 @@ fn every_state() -> Vec<Option<OrbState>> {
         Some(OrbState::Planning { done: 3, total: 6 }),
         Some(OrbState::Delegating { children: 3 }),
         Some(OrbState::Listening),
+        Some(OrbState::Stalled),
+        Some(OrbState::Condensing),
+        Some(OrbState::KernelBoot),
     ]
 }
 
