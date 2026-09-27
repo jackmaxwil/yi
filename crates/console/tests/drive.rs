@@ -1009,6 +1009,67 @@ fn reconnect_reuses_offset_and_skips_replay() -> TestResult {
     )
 }
 
+/// A switch parks the chat it leaves; switching back restores it and asks only for what
+/// streamed since its replay, so the transcript shows before any byte of it is resent.
+#[test]
+fn switching_back_restores_the_parked_chat_and_skips_its_replay() -> TestResult {
+    run(
+        "parked",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_with_offset),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("session/resume", |frame| {
+                vec![
+                    replay(
+                        "s-beta",
+                        &[entry("b1", None, 1, &assistant("beta transcript"))],
+                        0,
+                        None,
+                    ),
+                    session_result(frame, "s-beta", None, json!({"replayedTo": 1})),
+                ]
+            }),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("session/resume", |frame| {
+                let from = frame.pointer("/params/replayFrom").and_then(Value::as_u64);
+                let mut frames = Vec::new();
+                if from == Some(2) {
+                    frames.push(replay(
+                        "s-alpha",
+                        &[entry("e3", Some("e2"), 3, &assistant("offset honored"))],
+                        2,
+                        None,
+                    ));
+                }
+                frames.push(session_result(
+                    frame,
+                    "s-alpha",
+                    None,
+                    json!({"replayedTo": 3}),
+                ));
+                frames
+            }),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         key alt-/\n\
+         type beta\n\
+         key enter\n\
+         wait-frame 5000 beta transcript\n\
+         key alt-/\n\
+         type alpha\n\
+         key enter\n\
+         wait-frame 5000 offset honored\n\
+         wait-frame 1000 replayed world\n\
+         quit\n",
+    )
+}
+
 #[test]
 fn live_update_invalidates_offset() -> TestResult {
     run(
@@ -1133,9 +1194,9 @@ fn workspace_autostarts_a_new_session_even_when_sessions_are_listed() -> TestRes
         "auto-new-rows",
         vec![
             Step::Expect("initialize", init_reply),
+            Step::Expect("session/new", new_session_reply),
             Step::Expect("session/list", named_list),
             Step::Expect("session/list", empty_list),
-            Step::Expect("session/new", new_session_reply),
         ],
         "wait-frame 5000 s-new\n\
          quit\n",
@@ -1150,9 +1211,9 @@ fn workspace_autostarts_new_session_when_root_is_empty() -> TestResult {
         "autostart-new",
         vec![
             Step::Expect("initialize", init_reply),
-            Step::Expect("session/list", empty_list),
-            Step::Expect("session/list", empty_list),
             Step::Expect("session/new", new_session_reply),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/list", empty_list),
         ],
         "wait-frame 5000 s-new\n\
          quit\n",
