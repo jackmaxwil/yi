@@ -64,6 +64,9 @@ ARMS = ("self", "judge")
 SCHEMAS = {"judge": "verdict", "label": "label"}
 FIT_PERCENT = 70
 INTENT_CHARS = 60_000
+# The labeller reads the owner's messages beside one turn, not the prefix: 51 real boundaries
+# held more than INTENT_CHARS of them, and an intent_loss resting on the cut one was demoted.
+LABEL_INTENT_CHARS = 240_000
 # The whole prefix, about 60k tokens at four chars a token: the smallest target context is Opus
 # 5.5's 1M, and the owner's messages alone peaked at 216,798 chars on the 2026-09-26 corpus.
 PREFIX_CHARS = 240_000
@@ -370,7 +373,7 @@ def owner_cut(kept, total, cap):
     return f"[… kept the newest {kept} of {total} messages; intent_chars={cap} cut u1..u{total - kept}]"
 
 
-def owner_rows(intent, cap=INTENT_CHARS):
+def owner_rows(intent, cap):
     """The owner's messages as [u1]..[uN]; under `cap` the oldest go first, and the cut says so."""
     rows = [f"[u{i}] {m['text']}" for i, m in enumerate(intent, 1)]
     kept = newest(rows, cap)
@@ -425,35 +428,42 @@ def conversation(row, nodes, tool_chars):
 
 
 def fit(items, cap):
-    """The items joined in at most `cap` chars: whole tool results go oldest first, then agent
-    text and calls oldest first, never an owner's message. One row on top names kept of total and
-    the cap; a short row marks each gap. A cut that costs more than it saves waits for a neighbour."""
+    """The items joined in at most `cap` chars, cut oldest first in three tiers: whole tool results
+    before the owner's last message, then agent text and calls before it, and only then the results
+    of the last turn, the one after it that the boundary judges. An owner's message and the last
+    turn's agent text and calls are never cut, so only they carry the output past `cap`. One row on
+    top names kept of total, the last turn's results apart, and the cap; a short row marks each
+    gap. A cut that costs more than it saves waits for a neighbour."""
     texts = ["\n".join(lines) for _, lines in items]
     whole = "\n".join(texts)
     if len(whole) <= cap:
         return whole
-    order = [i for tier in (RESULT, AGENT) for i, (kind, _) in enumerate(items) if kind == tier]
+    last = max((i for i, (kind, _) in enumerate(items) if kind == OWNER), default=-1)
+    older = [i for tier in (RESULT, AGENT) for i, (kind, _) in enumerate(items) if kind == tier and i < last]
+    turn = [i for i, (kind, _) in enumerate(items) if kind == RESULT and i > last]
     total = {tier: sum(1 for kind, _ in items if kind == tier) for tier in (RESULT, AGENT)}
     gap = lambda n: f"[… {n} cut: prefix_chars]"
-    summary = lambda kept: (f"[… prefix_chars={cap} kept {kept[RESULT]} of {total[RESULT]} tool results, "
-                            f"{kept[AGENT]} of {total[AGENT]} agent texts and calls; each \"{gap('n')}\" row is a gap]")
+    summary = lambda kept, turned: (f"[… prefix_chars={cap} kept {kept[RESULT]} of {total[RESULT]} tool results "
+                                    f"({turned} of {len(turn)} in the last turn), {kept[AGENT]} of {total[AGENT]} "
+                                    f"agent texts and calls; each \"{gap('n')}\" row is a gap]")
     # Rows priced at their widest, so `size` bounds the rendered length from above.
     row, cut = len(gap(len(items))) + 1, set()
-    size = len(whole) + len(summary(total)) + 1
+    size = len(whole) + len(summary(total, len(turn))) + 1
 
     def saving(i):
         joined = (i - 1 in cut) + (i + 1 in cut)
         return len(texts[i]) + 1 + (row if joined == 2 else 0 if joined else -row)
 
-    for paying in (True, False):
-        for i in order:
-            if size <= cap:
-                break
-            if i not in cut and (saving(i) > 0 or not paying):
-                size -= saving(i)
-                cut.add(i)
+    for order in (older, turn):
+        for paying in (True, False):
+            for i in order:
+                if size <= cap:
+                    break
+                if i not in cut and (saving(i) > 0 or not paying):
+                    size -= saving(i)
+                    cut.add(i)
     kept = {tier: total[tier] - sum(1 for i in cut if items[i][0] == tier) for tier in total}
-    lines, run = [summary(kept)], 0
+    lines, run = [summary(kept, sum(1 for i in turn if i not in cut))], 0
     for i, text in enumerate(texts):
         if i not in cut:
             lines.append(text)
@@ -480,7 +490,7 @@ def prefix(row, nodes, tool_chars=TOOL_CHARS, prefix_chars=PREFIX_CHARS, intent_
 
 
 def render_label(boundary):
-    return "\n".join(["# The owner's earlier messages, oldest first", *owner_rows(boundary["intent"]), "",
+    return "\n".join(["# The owner's earlier messages, oldest first", *owner_rows(boundary["intent"], LABEL_INTENT_CHARS), "",
                       "# The turn the agent ended", boundary["turn"]["text"] or "(no text)", "",
                       "# The owner's next message", boundary["next"]["text"], "",
                       "# The agent's reply to it", boundary["reply"] or "(no reply recorded)"])
