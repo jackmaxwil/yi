@@ -5,7 +5,10 @@
 
 harbor bind-mounts each trial's /logs/agent, so every trial's yi.jsonl grows on the host.
 Every poll:
-  - a trial past $1 or 180 turns: stop that trial's containers only (rule 7);
+  - a trial past $1 or 180 turns: stop that trial's containers only (rule 7) and write
+    `<trial>/censored`, so the gate never reads what the stop left as the trial's own result;
+  - a trial with an unpriced turn (D79) counts $1, the per-trial cap it cannot pass, toward
+    the run's total: never $0 and never a local price table (E14);
   - the run's total past --hard, the wall past --wall, or host space under 8 GB free for
     important usage (3 GB plain):
     stop the child's whole process group and this run's trial containers, exit 2;
@@ -59,9 +62,11 @@ def docker(*args):
 
 
 def trials(runs):
+    """(trial dir, cost, turns); an unpriced trial's cost is PER_TRIAL_USD, its upper bound."""
     for path in runs.rglob("agent/yi.jsonl"):
         usage = yi_usage.parse_events(path)
-        yield path.parents[1].name, usage.get("costUsd") or 0.0, usage.get("nAssistantMessages") or 0
+        cost = PER_TRIAL_USD if usage.get("costUnknownTurns") else usage.get("costUsd") or 0.0
+        yield path.parents[1], cost, usage.get("nAssistantMessages") or 0
 
 
 def stop_containers(trial_names):
@@ -118,10 +123,12 @@ def main():
         total = 0.0
         for trial, cost, turns in trials(args.runs):
             total += cost
-            if trial not in breached and (cost > PER_TRIAL_USD or turns > TURN_CAP):
-                breached.add(trial)
-                print(f"TRIAL STOP {trial}: ${cost:.3f} at {turns} turns", flush=True)
-                stop_containers([trial])
+            if trial.name not in breached and (cost > PER_TRIAL_USD or turns > TURN_CAP):
+                breached.add(trial.name)
+                print(f"TRIAL STOP {trial.name}: ${cost:.3f} at {turns} turns", flush=True)
+                (trial / "censored").write_text(f"stopped past ${PER_TRIAL_USD:g} or {TURN_CAP} turns: "
+                                                f"${cost:.3f} at {turns} turns\n")
+                stop_containers([trial.name])
         free, plain = free_gb(args.runs)
         elapsed = time.monotonic() - started
         print(f"{time.strftime('%H:%M:%S')} total ${total:.3f} free {free:.1f} GB (plain {plain:.1f}) "

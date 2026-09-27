@@ -98,6 +98,8 @@ def harbor_context(trial):
         "testsPassed": tally.get("passed"),
         "testsTotal": tally.get("tests"),
         "partialScore": partial if isinstance(partial, (int, float)) else None,
+        # Written by drivers/watch.py when it stops a trial past its $1 or 180-turn cap.
+        "censored": (trial / "censored").is_file(),
         "wallSec": _iso_seconds(result.get("agent_execution") or {}),
     }
 
