@@ -151,6 +151,7 @@ pub enum Decoded {
         cwd: String,
         lane: Option<String>,
     },
+    Notice(String),
     Other,
 }
 
@@ -242,10 +243,24 @@ pub fn decode(extension: &AcpExtensionUpdate) -> Result<Decoded, Malformed> {
             config.context_window = fields.get("contextWindow").and_then(Value::as_u64);
             Ok(Decoded::Config(config))
         }
+        "_yi/notice" => Ok(Decoded::Notice(string(&fields, "text").ok_or(Malformed)?)),
         "_yi/subagent_update" => serde_json::from_value::<ChildUpdate>(fields)
             .map(Decoded::Child)
             .map_err(|_| Malformed),
         _ => Ok(Decoded::Other),
+    }
+}
+
+/// Only a transcript write spends a replay offset; config, workdir, goal and todo notes do not.
+pub fn writes_transcript(update: &yi_types::acp::AcpSessionUpdate) -> bool {
+    use yi_types::acp::AcpSessionUpdate;
+    match update {
+        AcpSessionUpdate::StateUpdate(_) | AcpSessionUpdate::UsageUpdate { .. } => false,
+        AcpSessionUpdate::Extension(extension) => !matches!(
+            extension.session_update.as_str(),
+            "_yi/config" | "_yi/workdir" | "_yi/goal" | "_yi/todo" | "_yi/notice"
+        ),
+        _ => true,
     }
 }
 

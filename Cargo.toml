@@ -96,6 +96,28 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# The highlighter runs optimized in dev builds too. Unoptimized, syntect took 55-370 ms to
+# load and compile each grammar inside the frame that first showed it, so `just dev` read a
+# chat switch as a quarter second the shipped binary spends 8 ms on. Yi's own crates stay
+# unoptimized for debugging.
+[profile.dev.package.syntect]
+opt-level = 3
+
+[profile.dev.package.fancy-regex]
+opt-level = 3
+
+[profile.dev.package.regex-automata]
+opt-level = 3
+
+[profile.dev.package.regex-syntax]
+opt-level = 3
+
+[profile.dev.package.bincode]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
 [profile.dist]
 inherits = "release"
 opt-level = "z"
@@ -108,3 +130,8 @@ incremental = false
 
 [profile.dist.package."*"]
 opt-level = "z"
+
+# The orb paints and pairs points every frame and on every state change; at "z" the pairing
+# took 59-326 ms and the painter 0.65 ms a frame, at 3 about a fifth and a third of that.
+[profile.dist.package.yi-orb]
+opt-level = 3

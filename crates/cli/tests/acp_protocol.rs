@@ -841,12 +841,15 @@ fn two_sessions_on_one_worker_hold_two_lanes() -> Result<(), Box<dyn Error>> {
     let mut client = AcpClient::spawn(&dir)?;
     client.request("1", "initialize", json!({"protocolVersion": 2}))?;
     let mut ids = Vec::new();
+    let is_workdir = |frame: &Value| frame["params"]["update"]["sessionUpdate"] == "_yi/workdir";
+    let mut workdirs = 0;
     for id in ["2", "3"] {
         let frames = client.request(
             id,
             "session/new",
             json!({"cwd": dir.display().to_string(), "mcpServers": []}),
         )?;
+        workdirs += frames.iter().filter(|frame| is_workdir(frame)).count();
         let last = frames.last().ok_or("no response")?;
         assert!(
             last.get("error").is_none(),
@@ -858,6 +861,11 @@ fn two_sessions_on_one_worker_hold_two_lanes() -> Result<(), Box<dyn Error>> {
                 .ok_or("no sessionId")?
                 .to_owned(),
         );
+    }
+    // Each lane is claimed after its `session/new` answers and named once it is held.
+    while workdirs < 2 {
+        client.read_until(is_workdir)?;
+        workdirs += 1;
     }
     let worktrees = git_in(&dir, &["worktree", "list", "--porcelain"])?;
     for id in &ids {
@@ -892,11 +900,14 @@ fn attach_names_the_lane_path_not_the_launch_root() -> Result<(), Box<dyn Error>
     )?;
     let mut client = AcpClient::spawn(&dir)?;
     client.request("1", "initialize", json!({"protocolVersion": 2}))?;
-    let frames = client.request(
+    // The lane is claimed after `session/new` answers, so the update follows the response.
+    client.request(
         "2",
         "session/new",
         json!({"cwd": dir.display().to_string(), "mcpServers": []}),
     )?;
+    let frames =
+        client.read_until(|frame| frame["params"]["update"]["sessionUpdate"] == "_yi/workdir")?;
     let workdir = frames
         .iter()
         .filter(|frame| frame["method"] == "session/update")

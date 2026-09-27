@@ -1032,79 +1032,6 @@ fn wrapped_paragraph_continuation_is_not_indented() {
 }
 
 #[test]
-fn logo_dots_travel_between_the_wordmark_and_the_orb() -> TestResult {
-    let rest = yi_tui::logo::frame(0.0, 0.0, 64).ok_or("no resting mark")?;
-    let working = yi_tui::logo::frame(1.0, 0.0, 64).ok_or("no working orb")?;
-    let mid = yi_tui::logo::frame(0.5, 0.0, 64).ok_or("no mid-morph frame")?;
-
-    // The mark at rest is the `Yi` strokes: every dot sits on one of the five
-    // segments, so the shape is letters and not a cloud.
-    assert!(
-        rest.dots.len() > 40,
-        "the mark has body: {}",
-        rest.dots.len()
-    );
-    // `Y` and `i` each end in a vertical stem, so the mark has two dense
-    // columns — a cloud or a ring would have none.
-    let mut columns: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
-    for dot in &rest.dots {
-        *columns.entry(dot.x.round() as i64).or_default() += 1;
-    }
-    let stems = columns.values().filter(|count| **count >= 6).count();
-    assert!(
-        stems >= 2,
-        "two stems stand in the mark: columns {columns:?}"
-    );
-
-    // Half way, the dots are in neither shape — that is the whole contract:
-    // they visibly rearrange rather than cutting between two pictures.
-    let count = mid.dots.len();
-    assert!(count > 0, "mid-morph renders dots");
-    let moved = mid
-        .dots
-        .iter()
-        .zip(&rest.dots)
-        .filter(|(m, r)| (m.x - r.x).abs() > 0.5 || (m.y - r.y).abs() > 0.5)
-        .count();
-    assert!(
-        moved * 2 > count,
-        "most dots have left the wordmark by half way: {moved}/{count}"
-    );
-    assert!(
-        !working.dots.is_empty(),
-        "the working end of the morph is the orb engine's own frame"
-    );
-    Ok(())
-}
-
-#[test]
-fn a_long_idle_stretch_does_not_consume_the_whole_morph() {
-    let frame = std::time::Duration::from_millis(yi_tui::logo::FRAME_MS);
-    let one = yi_tui::logo::advance(0.0, 1.0, frame);
-    assert!(one > 0.0 && one < 0.2, "one frame is a small step: {one}");
-
-    // The mark stops repainting once it settles, so the gap since the last
-    // paint can be minutes. Turning that into progress skipped the animation
-    // entirely and the wordmark snapped straight to the orb.
-    let after_idle = yi_tui::logo::advance(0.0, 1.0, std::time::Duration::from_secs(90));
-    assert!(
-        after_idle <= one,
-        "a long idle gap still advances by at most one frame: {after_idle}"
-    );
-
-    let mut phase = 0.0;
-    let mut frames = 0;
-    while phase < 1.0 && frames < 1000 {
-        phase = yi_tui::logo::advance(phase, 1.0, frame);
-        frames += 1;
-    }
-    assert!(
-        (10..=40).contains(&frames),
-        "the morph takes a visible number of frames, not one: {frames}"
-    );
-}
-
-#[test]
 fn tree_panel_matches_the_reference_layout() -> TestResult {
     let entries = vec![
         entry("a", None, 1, "root prompt"),
@@ -1905,6 +1832,47 @@ fn the_row_cap_is_enforced_while_rendering_from_source() -> TestResult {
     assert!(
         !text.iter().any(|line| line.contains("notice 1 ")),
         "the oldest rows fall outside the cap: {text:?}"
+    );
+    Ok(())
+}
+
+/// A replay chunk that lands after a paint renders newest-first up to the cap, never every
+/// cell in it, and a later append still extends the same window.
+#[test]
+fn an_append_after_a_paint_renders_only_the_tail() -> TestResult {
+    use yi_tui::cell::TranscriptMode;
+    use yi_tui::history::History;
+
+    let theme = theme();
+    let mut history = History::default();
+    let _ = History::replay(&history, 80, &theme, TranscriptMode::Normal, 20);
+    for n in 1..=200 {
+        history.retain(Cell::Notice {
+            text: format!("notice {n}"),
+        });
+    }
+    let shown: Vec<String> = History::replay(&history, 80, &theme, TranscriptMode::Normal, 20)
+        .iter()
+        .map(flat)
+        .collect();
+    assert!(
+        shown.iter().any(|line| line.contains("notice 200")),
+        "{shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|line| line.contains("notice 1 ")),
+        "{shown:?}"
+    );
+    history.retain(Cell::Notice {
+        text: "notice 201".to_owned(),
+    });
+    let shown: Vec<String> = History::replay(&history, 80, &theme, TranscriptMode::Normal, 20)
+        .iter()
+        .map(flat)
+        .collect();
+    assert!(
+        shown.iter().any(|line| line.contains("notice 201")),
+        "{shown:?}"
     );
     Ok(())
 }

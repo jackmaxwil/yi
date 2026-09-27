@@ -322,6 +322,7 @@ pub(crate) fn user_cell(text: String, typed: bool) -> Cell {
 impl App {
     /// Invariant: a replayed turn reads as it did live; both settle calls through `settle_tool`.
     pub fn replay_entries(&mut self, entries: &[Entry]) {
+        let _span = yi_types::trace::span("tui.replay_entries").arg("entries", entries.len());
         let mut calls: HashMap<&str, Value> = HashMap::new();
         for entry in entries {
             let Entry::Message {
@@ -593,12 +594,16 @@ impl App {
         self.status_name_hidden = !shown;
     }
 
+    pub fn set_pane(&mut self) {
+        self.pane = true;
+    }
+
     pub fn take_pending_editor(&mut self) -> bool {
         std::mem::take(&mut self.pending_editor)
     }
 
     pub fn orb_animating(&self) -> bool {
-        self.logo_phase != self.logo_target || self.logo_target > 0.0
+        self.kitty && self.orb_placement.is_some() && !self.orb.at_rest(self.orb_state())
     }
 }
 
