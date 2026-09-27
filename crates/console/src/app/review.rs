@@ -96,7 +96,7 @@ impl App {
                                 .push(super::port::PortRequest::Rewind(mark.entry.clone()));
                         }
                         self.note(
-                            "rewound to that turn: a fork, the old branch stays in the ledger",
+                            "rewound to before that turn: its prompt is back in the composer, the old branch kept",
                         );
                     }
                     Some(_) => self.note("only a turn you typed is a place to rewind to"),
