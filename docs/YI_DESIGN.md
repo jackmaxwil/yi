@@ -677,7 +677,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `sessions list\|show\|rm`, `stats [id]`, `undo` | The cwd's sessions; one session file replayed for per-tool latency, failures and tokens; restore the files the last turn changed |
 | `lanes [reap <slot>]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
-| `memory list\|show\|forget\|import\|stats\|check`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
+| `memory list\|show\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
 | `login`, `logout`, `mcp …`, `version` | Provider credentials; the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
 - The default permission mode is `auto`; `--confirm` selects `ask`, `--yolo` selects `yolo` (§8).

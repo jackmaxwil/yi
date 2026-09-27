@@ -19,6 +19,7 @@ pub mod lane;
 pub mod lease;
 pub mod mail;
 pub mod mcp;
+pub mod memory;
 pub mod message;
 pub mod model;
 pub mod oauth;
