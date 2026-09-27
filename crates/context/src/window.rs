@@ -19,7 +19,6 @@ pub struct Window {
     previous_id: Option<String>,
     id: String,
     prefill: Option<Prefill>,
-    advisory_delivered: bool,
 }
 
 impl Window {
@@ -30,7 +29,6 @@ impl Window {
             previous_id: None,
             id,
             prefill: None,
-            advisory_delivered: false,
         }
     }
 
@@ -41,7 +39,6 @@ impl Window {
             previous_id: ids.previous,
             id: ids.id,
             prefill: None,
-            advisory_delivered: false,
         }
     }
 
@@ -49,7 +46,6 @@ impl Window {
         self.number = self.number.saturating_add(1);
         self.previous_id = Some(std::mem::replace(&mut self.id, new_id));
         self.prefill = None;
-        self.advisory_delivered = false;
         self.ids()
     }
 
@@ -73,9 +69,5 @@ impl Window {
         self.prefill.map(|prefill| match prefill {
             Prefill::ServerObserved(tokens) | Prefill::Estimated(tokens) => tokens,
         })
-    }
-
-    pub fn claim_advisory(&mut self) -> bool {
-        !std::mem::replace(&mut self.advisory_delivered, true)
     }
 }

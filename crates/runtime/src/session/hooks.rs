@@ -185,6 +185,38 @@ impl AgentSession {
         })
     }
 
+    /// Invariant: an idle queue holds inboxed notices and held follow-ups waiting for another
+    /// turn, so only a queue behind a running turn is pending work that defers a heartbeat.
+    pub fn heartbeat_deliverer(&self) -> Arc<crate::schedule::DeliverFn> {
+        let shared = Arc::clone(&self.shared);
+        let compactor = self.compactor.clone();
+        let hook = self.heartbeat_hook();
+        Arc::new(move |job| {
+            let is_streaming = shared
+                .status
+                .lock()
+                .is_ok_and(|status| *status == Status::Running);
+            let queued = shared.steer.lock().is_ok_and(|queue| !queue.is_empty())
+                || shared.follow_up.lock().is_ok_and(|queue| !queue.is_empty());
+            let activity = crate::schedule::SessionActivity {
+                is_streaming,
+                is_compacting: compactor.as_ref().is_some_and(|c| c.compacting()),
+                has_pending_session_work: is_streaming && queued,
+            };
+            if crate::schedule::should_defer(job, &activity) {
+                return crate::schedule::RunOutcome::Skipped;
+            }
+            let mode = job
+                .delivery_mode
+                .unwrap_or(crate::schedule::DEFAULT_HEARTBEAT_DELIVERY_MODE);
+            hook(
+                crate::schedule::heartbeat_message(job, yi_session::now_ms()),
+                mode,
+            );
+            crate::schedule::RunOutcome::Ran
+        })
+    }
+
     /// A job's report (§4.3), taken after a running turn's answer or the next one's, never waking.
     pub fn follow_up_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
