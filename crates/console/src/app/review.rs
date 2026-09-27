@@ -20,37 +20,35 @@ impl App {
         let Some(session) = self.on_review() else {
             return;
         };
-        let armed = self
-            .state
-            .diffs
-            .get_mut(&session)
-            .and_then(|diff| diff.land_armed.take());
+        let Some(PaneContent::SessionDiff { scope, .. }) =
+            self.state.focused_pane_mut().map(|pane| &mut pane.content)
+        else {
+            return;
+        };
+        if key.code == KeyCode::Char('s') {
+            *scope = scope.next();
+        }
+        let scope = *scope;
+        let diff = self.state.diffs.entry(session.clone()).or_default();
+        let armed = diff.land_armed.take();
+        // Invariant: the list the selection indexes can shrink under it (a scope switch, a
+        // refresh), so every use clamps, as the view that draws the `▸` does.
+        let files = crate::render::review_files(diff, scope);
+        diff.selected = diff.selected.min(files.len().saturating_sub(1));
         match key.code {
             KeyCode::Char('s') => {
-                if let Some(PaneContent::SessionDiff { scope, .. }) =
-                    self.state.focused_pane_mut().map(|pane| &mut pane.content)
-                {
-                    *scope = scope.next();
-                }
+                diff.selected = 0;
                 self.refresh_branch(&session);
             }
-            KeyCode::Up | KeyCode::Down => {
-                let diff = self.state.diffs.entry(session.clone()).or_default();
-                diff.selected = match key.code {
-                    KeyCode::Up => diff.selected.saturating_sub(1),
-                    _ => diff.selected.saturating_add(1),
-                };
+            KeyCode::Up => diff.selected = diff.selected.saturating_sub(1),
+            KeyCode::Down => {
+                diff.selected = diff
+                    .selected
+                    .saturating_add(1)
+                    .min(files.len().saturating_sub(1));
             }
             KeyCode::Char('w') => {
-                let scope = match &self.state.focused_pane().map(|pane| &pane.content) {
-                    Some(PaneContent::SessionDiff { scope, .. }) => *scope,
-                    _ => return,
-                };
-                let chosen = self.state.diffs.get(&session).and_then(|diff| {
-                    crate::render::review_files(diff, scope)
-                        .into_iter()
-                        .nth(diff.selected)
-                });
+                let chosen = files.into_iter().nth(diff.selected);
                 if let Some((path, patch)) = chosen {
                     let lines = crate::render::hunk_lines(&patch);
                     self.state.diffs.entry(session.clone()).or_default().why_due =
@@ -281,16 +279,19 @@ impl App {
         let Some(path) = result.get("path").and_then(Value::as_str) else {
             return;
         };
-        let lines = result
-            .get("answers")
-            .and_then(Value::as_array)
+        let answers = result.get("answers").and_then(Value::as_array);
+        let mut lines: Vec<String> = answers
             .into_iter()
             .flatten()
             .map(|answer| {
                 let line = answer.get("line").and_then(Value::as_u64).unwrap_or(0);
                 let text = |key: &str| answer.get(key).and_then(Value::as_str).unwrap_or("");
-                if answer.get("error").is_some() {
+                if answer.get("uncommitted").is_some() {
                     return format!("  ↳ L{line} not committed yet, so no chain");
+                }
+                if let Some(error) = answer.get("error").and_then(Value::as_str) {
+                    let first = error.lines().next().unwrap_or(error);
+                    return format!("  ↳ L{line} no chain: {first}");
                 }
                 let mut row = format!("  ↳ L{line} {} {}", text("commit"), text("subject"));
                 for (label, key) in [("todo", "todo"), ("goal", "goal")] {
@@ -301,6 +302,15 @@ impl App {
                 row
             })
             .collect();
+        let unasked = result.get("unasked").and_then(Value::as_array);
+        if let Some(next) = unasked.and_then(|rest| rest.first()) {
+            let kept = answers.map_or(0, Vec::len);
+            let total = kept.saturating_add(unasked.map_or(0, Vec::len));
+            let cap = result.get("cap").and_then(Value::as_u64).unwrap_or(0);
+            lines.push(format!(
+                "  […] {kept} of {total} hunks asked (_yi/why answers {cap} a call); the next: yi why {path}:{next}"
+            ));
+        }
         self.state
             .diffs
             .entry(session.clone())

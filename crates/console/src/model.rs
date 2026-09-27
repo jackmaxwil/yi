@@ -483,7 +483,8 @@ impl ConsoleState {
         self.panes.values().any(|pane| pane.session() == Some(id))
     }
 
-    /// Every chat showing the session, across every tab.
+    /// Invariant: a red gate is known only from a chat's landing stream, so a session no pane
+    /// or parked chat holds ranks by its status alone.
     pub fn need_of(&self, row: &SessionRow) -> usize {
         let red = self.chat(&row.id).is_some_and(|chat| chat.app.gate_red());
         match row.status.need() {
@@ -493,6 +494,7 @@ impl ConsoleState {
         }
     }
 
+    /// Every chat showing the session, across every tab.
     pub fn chat(&self, id: &SessionId) -> Option<&Chat> {
         self.panes
             .values()

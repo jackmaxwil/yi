@@ -763,7 +763,7 @@ with mouse capture. It depends on `yi-types` and `yi-tui` only.
 - A session pane runs `yi-tui`'s chat reducer, fed from `_yi/event` through a port.
 - A drag copies the words under it, without Yi's rails and gutters, over OSC 52.
 - A status change notifies over OSC 9 or kitty OSC 99 once it holds for 1 s.
-- The full sidebar is an inbox: sessions ranked blocked, done and unseen, a red gate, working, idle, under
+- The full sidebar is an inbox: sessions ranked blocked, done and unseen, a red gate (heard by an open or parked chat), working, idle, under
   those sections, two lines a row (name; what it needs or is doing, its list, its age). A done
   session stays under "needs you" until focused; a poll never clears it. A working or blocked
   session's avatar plays its state loop at 15 fps in place of its identicon.

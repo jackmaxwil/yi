@@ -793,6 +793,85 @@ mod tests {
         ));
     }
 
+    /// Dies with `w` doing nothing after ↓ ran past the last file or a scope switch shortened
+    /// the list, while the `▸` still sat on a file; then with every blame error read as uncommitted.
+    #[test]
+    fn why_asks_for_the_marked_file_and_its_rows_say_why_a_chain_is_missing() {
+        use crate::model::{FileDiff, ReviewScope};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/r".to_owned(), theme);
+        let session = SessionId("s-a".to_owned());
+        if let Some(focused) = app.state.focused_pane_mut() {
+            focused.content = PaneContent::SessionDiff {
+                session: session.clone(),
+                scope: ReviewScope::Session,
+            };
+        }
+        let diff = app.state.diffs.entry(session.clone()).or_default();
+        for path in ["src/a.rs", "src/b.rs"] {
+            let patch = format!("--- a/{path}\n+++ b/{path}\n@@ -1 +1,2 @@\n line\n+added\n");
+            let file = FileDiff {
+                patch,
+                added: 1,
+                removed: 0,
+                tracked: true,
+                serving: None,
+                turn: 0,
+            };
+            diff.files.push((path.to_owned(), file));
+        }
+        let key = |app: &mut App, code: KeyCode| {
+            app.review_key(KeyEvent::new(code, KeyModifiers::NONE));
+        };
+        let asked = |app: &mut App| {
+            app.state
+                .diffs
+                .get_mut(&session)
+                .and_then(|diff| diff.why_due.take())
+                .map(|(path, _)| path)
+        };
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Down);
+        }
+        key(&mut app, KeyCode::Char('w'));
+        assert_eq!(asked(&mut app).as_deref(), Some("src/b.rs"), "past the end");
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Char('s'));
+        }
+        key(&mut app, KeyCode::Char('w'));
+        assert_eq!(
+            asked(&mut app).as_deref(),
+            Some("src/a.rs"),
+            "a scope switch"
+        );
+
+        let mut answers = vec![
+            serde_json::json!({"line": 2, "uncommitted": true}),
+            serde_json::json!({"line": 40, "error": "git blame failed: fatal: file src/a.rs has only 3 lines"}),
+        ];
+        answers.extend((3..9).map(
+            |n| serde_json::json!({"line": n * 10, "commit": "1a2b3c4d5e6f", "subject": "Add a"}),
+        ));
+        let reply = serde_json::json!({"path": "src/a.rs", "cap": 8, "unasked": [90, 120], "answers": answers});
+        app.absorb_why(&session, &reply);
+        let (_, lines) = crate::render::review_view(
+            app.state.diffs.get(&session),
+            ReviewScope::Session,
+            "",
+            200,
+            &theme,
+        );
+        let rows: Vec<String> = lines.iter().map(ToString::to_string).collect();
+        for row in [
+            "  ↳ L2 not committed yet, so no chain",
+            "  ↳ L40 no chain: git blame failed: fatal: file src/a.rs has only 3 lines",
+            "  […] 8 of 10 hunks asked (_yi/why answers 8 a call); the next: yi why src/a.rs:90",
+        ] {
+            assert!(rows.iter().any(|drawn| drawn == row), "{row}\n{rows:#?}");
+        }
+    }
+
     #[test]
     fn a_red_gate_ranks_between_done_and_working() {
         use crate::model::{SessionRow, SessionStatus};
