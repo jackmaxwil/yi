@@ -214,11 +214,16 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
         .ok()
         .and_then(|slot| slot.clone());
     if let Some(hook) = hook {
+        let _span = yi_types::trace::span("turn.start_hook");
         // Snapshotting shells out to git; the turn waits for it, the runtime thread does not.
         let _hook_failure_never_fails_a_turn = tokio::task::spawn_blocking(move || hook()).await;
     }
+    let assembling = yi_types::trace::span("turn.context");
     let mut context = LoopContext {
-        system_prompt: system_prompt(),
+        system_prompt: {
+            let _span = yi_types::trace::span("turn.system_prompt");
+            system_prompt()
+        },
         messages: shared
             .messages
             .lock()
@@ -226,6 +231,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
             .unwrap_or_default(),
         tools: shared.tools.lock().as_deref().cloned().unwrap_or_default(),
     };
+    drop(assembling);
     let (model, effort) = hooks::settings_of(&shared);
     let mut config = LoopConfig::new(model.clone());
     config.effort = effort;
@@ -288,6 +294,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
                     },
                 );
             }
+            let _span = yi_types::trace::span("turn.persist");
             persist_message(&emit_shared, message);
         }
         if let Some(telemetry) = emit_shared
@@ -329,7 +336,11 @@ fn wire_environment(config: &mut LoopConfig, shared: &Arc<Shared>) {
     // Incident: one block per prompt froze `files:`, `deadline:` and `todos:` for an hour of
     // tool calls, so the model read its own files as deleted; the facts are read per request.
     config.transform_context = Some(Box::new(move |messages| {
-        hook().map(|block| crate::environment::append(messages, &block))
+        let block = {
+            let _span = yi_types::trace::span("env.block");
+            hook()
+        };
+        block.map(|block| crate::environment::append(messages, &block))
     }));
 }
 

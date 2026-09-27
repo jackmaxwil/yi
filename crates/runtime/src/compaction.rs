@@ -29,6 +29,7 @@ pub fn loop_hook(
     unsaved: Arc<dyn Fn(&yi_session::SessionError) + Send + Sync>,
 ) -> CompactHook {
     Box::new(move |messages: &[AgentMessage]| {
+        let _span = yi_types::trace::span("compact.hook");
         let compactor = Arc::clone(&compactor);
         let provider = Arc::clone(&provider);
         let model = model.clone();

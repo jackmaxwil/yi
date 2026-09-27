@@ -143,6 +143,10 @@ pub fn send_with_retry(
         builder = builder.proxy(proxy.clone());
     }
     let agent = builder.build();
+    let body = {
+        let _span = yi_types::trace::span("ai.serialize");
+        body.to_string()
+    };
     let mut attempt: u32 = 0;
     loop {
         let mut request = agent
@@ -152,7 +156,12 @@ pub fn send_with_retry(
         for (name, value) in headers {
             request = request.set(name, value);
         }
-        match request.send_string(&body.to_string()) {
+        let sending = yi_types::trace::span("ai.http_send")
+            .arg("attempt", attempt)
+            .arg("bytes", body.len());
+        let sent = request.send_string(&body);
+        drop(sending);
+        match sent {
             Ok(response) => return Ok(response),
             Err(ureq::Error::Status(status, response)) => {
                 let retryable = is_retryable_status(status)
@@ -235,10 +244,15 @@ pub fn pump_sse_with_resend(
 ) -> Result<Option<String>, String> {
     let mut first_error: Option<String> = None;
     loop {
+        let sent_us = yi_types::trace::now_us();
         let response = send()?;
         let mut delivered = false;
         let pumped = pump_sse(response, stop, |event| {
+            if !delivered {
+                yi_types::trace::complete("ai.first_sse_event", sent_us, serde_json::Map::new());
+            }
             delivered = true;
+            let _span = yi_types::trace::span("ai.sse_event");
             on_event(event)
         });
         match pumped {
