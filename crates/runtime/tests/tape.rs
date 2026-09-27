@@ -79,7 +79,7 @@ fn a_tape_splits_model_and_tool_time_and_marks_turns_failures_and_checkpoints()
     let kinds: Vec<(MarkKind, &str)> = tape
         .marks
         .iter()
-        .map(|Mark { kind, entry, .. }| (*kind, entry.as_str()))
+        .map(|Mark { kind, entry, .. }| (kind.clone(), entry.as_str()))
         .collect();
     assert_eq!(
         kinds,
@@ -89,5 +89,49 @@ fn a_tape_splits_model_and_tool_time_and_marks_turns_failures_and_checkpoints()
             (MarkKind::Checkpoint, "k1")
         ]
     );
+    Ok(())
+}
+
+/// Dies with tools past 100 %: three calls in one reply each counted the same stretch from
+/// the ask, and the pane summed them.
+#[test]
+fn parallel_calls_from_one_reply_count_their_stretch_once() -> Result<(), Box<dyn Error>> {
+    let usage = json!({"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}});
+    let result = |id: &str, at: u64| -> Result<Entry, Box<dyn Error>> {
+        Ok(message(
+            &format!("r-{id}"),
+            at,
+            parsed(
+                json!({"role": "toolResult", "toolCallId": id, "toolName": "read",
+            "isError": false, "timestamp": 0, "content": [{"type": "text", "text": "ok"}]}),
+            )?,
+        ))
+    };
+    let entries = vec![
+        message(
+            "u1",
+            0,
+            AgentMessage::user_input(UserContent::Text("read them".to_owned()), 0),
+        ),
+        message(
+            "a1",
+            1_000,
+            parsed(
+                json!({"role": "assistant", "api": "faux", "provider": "faux",
+                "model": "faux-1", "stopReason": "toolUse", "timestamp": 0, "usage": usage,
+                "content": [
+                    {"type": "toolCall", "id": "c1", "name": "read", "arguments": {"path": "a"}},
+                    {"type": "toolCall", "id": "c2", "name": "read", "arguments": {"path": "b"}},
+                    {"type": "toolCall", "id": "c3", "name": "read", "arguments": {"path": "c"}}
+                ]}),
+            )?,
+        ),
+        result("c1", 2_000)?,
+        result("c2", 4_000)?,
+        result("c3", 3_000)?,
+    ];
+    let tape = yi_runtime::tape::tape(&entries);
+    assert_eq!(tape.tools, vec![[T + 1_000, T + 4_000]]);
     Ok(())
 }

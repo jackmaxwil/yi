@@ -44,8 +44,11 @@ pub fn tape(entries: &[Entry]) -> Tape {
                     is_error,
                     ..
                 } => {
-                    if let Some(from) = asked_at {
-                        tape.tools.push([from, at]);
+                    // Invariant: parallel calls share one ask, so their spans merge into one.
+                    match (asked_at, tape.tools.last_mut()) {
+                        (Some(from), Some(last)) if last[1] >= from => last[1] = last[1].max(at),
+                        (Some(from), _) => tape.tools.push([from, at]),
+                        (None, _) => {}
                     }
                     if *is_error {
                         tape.marks

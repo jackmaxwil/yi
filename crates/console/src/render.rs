@@ -374,6 +374,7 @@ pub fn tape_view(
             MarkKind::Checkpoint => marks[col] = '◆',
             MarkKind::Failed => marks[col] = '✗',
             MarkKind::Compaction => marks[col] = '⌇',
+            MarkKind::Other(_) => marks[col] = '·',
         }
     }
     let track = |name: &str, body: String| {
