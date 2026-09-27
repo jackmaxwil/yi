@@ -128,6 +128,16 @@ async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult
             !config.is_file(),
             "a cell must not write under ~/.yi itself"
         );
+        let harness = yi.join("harness");
+        std::fs::create_dir_all(&harness)?;
+        let store = harness.join(format!("yi-p7-store-{}.txt", std::process::id()));
+        let store_path = store.display().to_string();
+        let denied = cell(&kernel, format!("open(r'{store_path}','w').write('x')")).await?;
+        assert_eq!(denied.result.status, yi_types::kernel::ExecuteStatus::Error);
+        assert!(
+            !store.is_file(),
+            "a cell must not write the global harness store"
+        );
     }
     kernel.dispose().await;
     let _ = std::fs::remove_file(&escape);
