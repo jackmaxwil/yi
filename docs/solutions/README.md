@@ -240,5 +240,6 @@ edited by hand.
 - [D268](adr/d268.md) - nothing between a prompt and its first request waits on work the request...
 - [D270](adr/d270.md) - the global harness store is written only by the host
 - [D269](adr/d269.md) - a kernel venv that passed its live import check is trusted by a stamp until...
+- [D272](adr/d272.md) - a streaming answer renders past its settled prefix only
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
