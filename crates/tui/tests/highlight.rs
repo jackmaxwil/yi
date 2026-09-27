@@ -157,6 +157,39 @@ fn the_cut_grammar_set_keeps_every_named_language() -> TestResult {
     Ok(())
 }
 
+/// The dist binary links only the Unicode tables the shipped grammars use (vendor/syntect). A
+/// pattern needing a dropped table would fail to compile when its fence renders, so every pattern
+/// compiles here; the only refusals are back-references, which syntect fills in per match.
+#[test]
+fn every_shipped_grammar_pattern_compiles_on_the_linked_tables() -> TestResult {
+    use syntect::parsing::syntax_definition::Pattern;
+    let dump: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grammars.packdump"));
+    let set: syntect::parsing::SyntaxSet = syntect::dumps::from_reader(dump)?;
+    let mut compiled = 0;
+    for grammar in set.into_builder().syntaxes() {
+        for pattern in grammar
+            .contexts
+            .values()
+            .flat_map(|context| &context.patterns)
+        {
+            let Pattern::Match(pattern) = pattern else {
+                continue;
+            };
+            let source = pattern.regex.regex_str();
+            match syntect::parsing::Regex::try_compile(source) {
+                None => compiled += 1,
+                Some(error) => assert!(
+                    error.to_string().contains("back reference"),
+                    "{}: {source}: {error}",
+                    grammar.name
+                ),
+            }
+        }
+    }
+    assert!(compiled > 5_000, "{compiled} patterns");
+    Ok(())
+}
+
 /// An unknown fence language must render, not vanish or panic.
 #[test]
 fn an_unknown_language_is_declined_rather_than_guessed() -> TestResult {

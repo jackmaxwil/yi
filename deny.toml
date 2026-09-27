@@ -14,8 +14,9 @@ multiple-versions = "deny"
 # zeromq wrappers: the pure-Rust zmq stack pins rand/dashmap internals
 # (design §18.3 — libzmq FFI rejected by rule 4; these stay wire-internal to
 # the kernel channels and never cross into Yi code).
-# regex: unbanned 2026-08-29 for grep v2 (std+perf, no Unicode tables); its
-# engine crates were already in the lock via globset.
+# regex: unbanned 2026-08-29 for grep v2 (std+perf+unicode-case); its engine
+# crates were already in the lock via globset. The Unicode tables linked are the
+# four vendor/syntect names for the grammars (D263).
 deny = [
   "reqwest", "hyper", "openssl-sys", "native-tls",
   "git2", "libgit2-sys", "gix", "clap", "anyhow",
