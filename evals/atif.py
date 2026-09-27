@@ -135,7 +135,7 @@ def main(argv=None):
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
     try:
-        lines = args.session.read_text(errors="replace").splitlines()
+        lines = args.session.read_text(errors="replace").split("\n")
     except OSError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
