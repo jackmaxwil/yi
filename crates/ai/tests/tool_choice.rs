@@ -51,6 +51,8 @@ fn bodies(choice: Option<ToolChoice>, tools: Vec<ToolDef>) -> [Value; 3] {
             UserContent::Text("hi".to_owned()),
             0,
         )],
+        transient: Vec::new(),
+        schema: None,
         tools: Some(tools),
         tool_choice: choice,
     };
@@ -149,6 +151,8 @@ fn a_forced_tool_switches_extended_thinking_off_for_that_turn() -> TestResult {
             UserContent::Text("hi".to_owned()),
             0,
         )],
+        transient: Vec::new(),
+        schema: None,
         tools: Some(vec![tool("plan", None)]),
         tool_choice: Some(choice),
     };

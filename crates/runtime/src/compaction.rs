@@ -388,6 +388,8 @@ impl Compactor {
                 converted.push(directive_message(&prepared, instructions.as_deref(), &key));
                 converted
             },
+            transient: Vec::new(),
+            schema: None,
             tools: None,
             tool_choice: None,
         };

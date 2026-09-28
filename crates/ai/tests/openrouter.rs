@@ -48,6 +48,8 @@ fn history_context() -> LlmContext {
             },
             AgentMessage::host_user(UserContent::Text("again".to_owned()), 0),
         ],
+        transient: Vec::new(),
+        schema: None,
         tools: None,
         tool_choice: None,
     }
@@ -91,10 +93,17 @@ fn build_params_honors_the_openrouter_compat_flags() -> TestResult {
 }
 
 /// A tool-loop request as the loop sends it: a three-block system prompt, a tool round trip,
-/// and the per-request environment block last.
+/// and the per-request environment block in `transient`, rendered last.
 fn tool_loop_context() -> LlmContext {
     let mut context = history_context();
     context.system_prompt = ["identity", "mode", "yard"].join(SYSTEM_BLOCK_SEPARATOR);
+    // A loop request carries its tool table; without one the plan reads it as a one-shot.
+    context.tools = Some(vec![yi_types::model::ToolDef {
+        name: "bash".to_owned(),
+        description: "run".to_owned(),
+        parameters: json!({"type": "object", "properties": {"command": {"type": "string"}}}),
+        freeform: None,
+    }]);
     context.messages.push(AgentMessage::Assistant {
         content: vec![Content::ToolCall {
             id: "call_1".to_owned(),
@@ -130,7 +139,7 @@ fn tool_loop_context() -> LlmContext {
         is_error: false,
         timestamp: 0,
     });
-    context.messages.push(AgentMessage::host_user(
+    context.transient.push(AgentMessage::host_user(
         UserContent::Text(format!("{ENVIRONMENT_TAG}\nturn: 3\n</environment>")),
         0,
     ));
@@ -155,7 +164,9 @@ fn marks(params: &serde_json::Value) -> Vec<(usize, String)> {
 }
 
 /// Row 91 of the dogfood ledger: a Claude id newer than the bundle comes from the fetched
-/// catalog with no cache flag, and with no mark Anthropic caches nothing (#742).
+/// catalog with no cache flag, and with no mark Anthropic caches nothing (#742). The plan
+/// marks the system, the previous request's tail (the user turn ahead of the last reply)
+/// and the tail, and the environment in `transient` stays bare (#743).
 #[test]
 fn a_claude_newer_than_the_bundle_marks_its_system_and_the_block_before_the_environment()
 -> TestResult {
@@ -168,7 +179,11 @@ fn a_claude_newer_than_the_bundle_marks_its_system_and_the_block_before_the_envi
     let messages = params["messages"].as_array().ok_or("messages")?;
     assert_eq!(
         marks(&params),
-        [(0, "system".to_owned()), (5, "tool".to_owned())]
+        [
+            (0, "system".to_owned()),
+            (3, "user".to_owned()),
+            (5, "tool".to_owned())
+        ]
     );
     assert_eq!(
         messages[0]["content"][0]["text"],
@@ -184,7 +199,7 @@ fn a_claude_newer_than_the_bundle_marks_its_system_and_the_block_before_the_envi
     Ok(())
 }
 
-/// Every OpenRouter route gets the same two marks and never a root one: Anthropic and
+/// Every OpenRouter route gets the same three marks and never a root one: Anthropic and
 /// OpenAI's explicit engines need them, the automatic ones ignore them, and Gemini keeps
 /// only the system mark because it re-snapshots whatever the last mark covers.
 #[test]
@@ -215,7 +230,7 @@ fn every_openrouter_route_marks_the_stable_prefix_and_never_the_environment() ->
             "{}: {found:?}",
             model.id
         );
-        let expected = if model.id.contains("gemini") { 1 } else { 2 };
+        let expected = if model.id.contains("gemini") { 1 } else { 3 };
         assert_eq!(found.len(), expected, "{}: {found:?}", model.id);
     }
     Ok(())
