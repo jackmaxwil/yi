@@ -241,11 +241,19 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     } = parts.clone();
     let capture = start_capture(&shared);
     let assembling = yi_types::trace::span("turn.context");
+    let system = {
+        let _span = yi_types::trace::span("turn.system_prompt");
+        system_prompt()
+    };
+    // D306: the first request's bytes are the conversation's; a change here would invalidate
+    // every cache tier, so a debug build refuses it.
+    debug_assert_eq!(
+        shared.system_prompt_sent.get_or_init(|| system.clone()),
+        &system,
+        "the system prompt changed after the first request"
+    );
     let mut context = LoopContext {
-        system_prompt: {
-            let _span = yi_types::trace::span("turn.system_prompt");
-            system_prompt()
-        },
+        system_prompt: system,
         messages: shared
             .messages
             .lock()

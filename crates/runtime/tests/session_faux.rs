@@ -853,3 +853,99 @@ async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), 
     );
     Ok(())
 }
+
+/// D306: the system prompt is constant for a conversation. An orchestrate signal on the third
+/// turn leaves the bytes the first request sent, and the protocol rides the transcript once, as
+/// a `fragment` message between the prompt that raised it and the reply.
+#[tokio::test]
+async fn an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone()
+-> Result<(), Box<dyn Error>> {
+    use yi_types::message::UserContent;
+    let dir = Scratch::new("yi-faux-constant-prompt")?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        (1..=3)
+            .map(|n| {
+                faux_assistant_message(vec![faux_text(&format!("reply {n}"))], StopReason::Stop)
+            })
+            .collect(),
+    );
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.install_extensions(yi_runtime::ext::install(yi_runtime::ext::ExtOptions {
+        cwd: dir.to_path_buf(),
+        home: dir.to_path_buf(),
+        mode: yi_runtime::PermissionMode::Auto,
+        user_system: String::new(),
+        schema_instruction: None,
+        context_window: 128_000,
+        global_skills: Vec::new(),
+    }));
+    session.prompt("hi")?;
+    session.wait_idle().await;
+    let first = session.system_prompt();
+    assert!(!first.contains("# Orchestrate"), "a greeting is no program");
+    session.prompt("thanks")?;
+    session.wait_idle().await;
+    session.prompt("plan this: split the crate in two")?;
+    session.wait_idle().await;
+    assert_eq!(
+        session.system_prompt(),
+        first,
+        "the third turn must send the first request's system bytes"
+    );
+    let shape: Vec<String> = session
+        .messages()
+        .into_iter()
+        .filter_map(|message| match message {
+            AgentMessage::User { .. } => Some("user".to_owned()),
+            AgentMessage::Assistant { .. } => Some("assistant".to_owned()),
+            AgentMessage::Custom {
+                custom_type,
+                content: UserContent::Text(text),
+                ..
+            } => Some(format!(
+                "{custom_type}: {}",
+                text.lines().next().unwrap_or_default()
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+            "user",
+            "fragment: # Orchestrate",
+            "assistant",
+        ],
+        "the protocol rides once, ahead of the reply it steers"
+    );
+    let sent = yi_context::convert_to_llm(&session.messages());
+    let AgentMessage::User {
+        content: UserContent::Text(text),
+        ..
+    } = &sent[5]
+    else {
+        return Err(format!(
+            "the fragment must reach the model as a user message: {:?}",
+            sent[5]
+        )
+        .into());
+    };
+    assert!(
+        text.starts_with("<yi_internal_context source=\"fragment\">\n# Orchestrate"),
+        "{text}"
+    );
+    Ok(())
+}
