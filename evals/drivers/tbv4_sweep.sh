@@ -71,9 +71,11 @@ if [ -z "$RUNNER" ]; then
       --model "$MODEL" -k "$ATTEMPTS" -n "$CONCURRENCY" \
       --agent-timeout-multiplier "$MULT" --verifier-timeout-multiplier 1.5 -o "$RUNS_DIR"
 fi
+# A RuntimeError is harbor's compose or pull failing before the agent runs (N1: a Docker Hub
+# timeout); that is not a result, so it is retried. An agent timeout or error is never retried.
 python3 evals/drivers/watch.py --runs "$RUNS_DIR" --hard "$HARD_CAP" --wall "$WALL" -- \
     harbor run --agent yi_harbor.agent:Yi -d "$DATASET" "$@" \
-    --model "$MODEL" -k "$ATTEMPTS" -n "$CONCURRENCY" \
+    --model "$MODEL" -k "$ATTEMPTS" -n "$CONCURRENCY" --max-retries 2 --retry-include RuntimeError \
     --agent-timeout-multiplier "$MULT" --verifier-timeout-multiplier 1.5 -o "$RUNS_DIR" >&2
 code=$?
 python3 evals/drivers/trials.py rows "$RUNS_DIR" --run-id "$RUN_ID" --arm "$ARM" || exit 2
