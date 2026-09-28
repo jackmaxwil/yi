@@ -54,9 +54,12 @@ DUP_SHARED = 8
 PROBES = ROOT / "skills/yi/pr-review/probes"
 # Reviewers from the author's family share its blind spots (D216's reason for other-family jurors);
 # PRs here are written by Claude Code and yi on Anthropic models, so that family is avoided.
-AVOID_FAMILIES = tuple(os.environ.get("YI_REVIEW_AVOID", "anthropic").split(","))
+AVOID_FAMILIES = ("anthropic",)
 # The fixer pushes to someone's branch, so it runs from the sweep only when the owner turns it on.
 FIXER = os.environ.get("YI_REVIEW_FIX") == "1"
+# The bot's rounds post under its own account; its token file is written by the owner's setup
+# script (mode 600), read here and handed to curl on stdin, never argv.
+BOT, BOT_ENV = "yi-bot", pathlib.Path.home() / ".config/yi-bot/forge.env"
 
 
 def load_probes(directory=PROBES):
@@ -406,7 +409,7 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900):
     with no terminal, so every write and command that would ask is refused."""
     # Every round's calls land in one session directory, so the ledger of what each lens and
     # refuter read and answered is found in one place rather than under a temp checkout's name.
-    sessions = os.environ.get("YI_ROUND_SESSIONS") or str(pathlib.Path.home() / ".yi/sessions/pr-rounds")
+    sessions = str(pathlib.Path.home() / ".yi/sessions/pr-rounds")
     command = [yi_bin(), "ask", "--here", "--cwd", str(cwd), "--session-dir", sessions,
                "--schema", json.dumps(schema), "--deadline", str(deadline)]
     command += ["--auto"] if write else ["--confirm"]
@@ -451,7 +454,31 @@ def authors():
     if named:
         return set(named.split(","))
     me = forge_pr.fgj_api("GET", "user") or {}
-    return {me.get("login"), "forgejo-actions"} - {None}
+    return {me.get("login"), "forgejo-actions", BOT} - {None}
+
+
+def bot_token():
+    try:
+        line = next(l for l in BOT_ENV.read_text().splitlines() if l.startswith("FORGE_TOKEN="))
+    except (OSError, StopIteration):
+        return None
+    return line.split("=", 1)[1].strip() or None
+
+
+def as_bot(token):
+    """A transport shaped like forge_pr.fgj_api that writes as the bot: curl reads the token from
+    its config on stdin, so it is never an argument."""
+    def send(method, path, payload=None):
+        config = f'header = "Authorization: token {token}"\nheader = "Content-Type: application/json"\n'
+        command = ["curl", "-sS", "-K", "-", "-X", method, f"{forge_pr.WEB}/api/v1/{path.lstrip('/')}"]
+        if payload is not None:
+            config += "data = " + json.dumps(json.dumps(payload)) + "\n"
+        out = subprocess.run(command, input=config, capture_output=True, text=True, check=False)
+        try:
+            return json.loads(out.stdout)
+        except json.JSONDecodeError:
+            return {"message": (out.stdout or out.stderr).strip()}
+    return send
 
 
 @functools.lru_cache(maxsize=None)
@@ -548,8 +575,13 @@ def cmd_review(args):
             return 0
         import forgejo_pr_comment
 
-        forgejo_pr_comment.upsert(lambda m, url, p: forge_pr.fgj_api(m, url.split("/api/v1/", 1)[-1], p),
-                                  f"{forge_pr.WEB}/api/v1", repo, number, body)
+        token = bot_token()
+        post = as_bot(token) if token else forge_pr.fgj_api
+        answer = forgejo_pr_comment.upsert(lambda m, url, p: post(m, url.split("/api/v1/", 1)[-1], p),
+                                           f"{forge_pr.WEB}/api/v1", repo, number, body)
+        if not (answer or {}).get("id"):
+            print(f"#{number}: the forge refused the round: {(answer or {}).get('message')}")
+            return 1
     print(f"#{number} round {n}: {verdict(findings, None)} ({len(findings)} finding(s), {dropped} dropped)")
     return 0
 
