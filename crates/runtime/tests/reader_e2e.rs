@@ -266,3 +266,22 @@ async fn readers_stand_outside_the_worker_cap() -> TestResult {
     assert!(refused.is_err_and(|error| error.contains("child limit")));
     Ok(())
 }
+
+#[tokio::test]
+async fn held_readers_are_a_fuse_not_a_leak() -> TestResult {
+    let family = family(1, Arc::default())?;
+    let cap = yi_runtime::subagent::reader::HELD_CAP;
+    for index in 0..cap {
+        let name = format!("r{index}");
+        family.host.spawn(
+            "ask".to_owned(),
+            kwargs(json!({"name": name, "role": "reader"})),
+        )?;
+    }
+    let refused = family.host.spawn(
+        "ask".to_owned(),
+        kwargs(json!({"name": "over", "role": "reader"})),
+    );
+    assert!(refused.is_err_and(|error| error.contains("readers are held")));
+    Ok(())
+}
