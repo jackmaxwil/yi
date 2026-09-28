@@ -713,20 +713,17 @@ fn a_todo_set_or_init_under_a_plan_writes_the_owners_rows_beside_it() -> TestRes
 
 /// Dies with the batch checked against the owner's rows only: `gate` joins beside the plan's
 /// `gate`, and the next projection drops it without a word. Dies too with a refusal that does not
-/// name the plan, which leaves a model that echoed the rendered list into a `set` guessing why.
+/// name the plan, which leaves a model that echoed the rendered list into a `set` guessing why,
+/// and with the plan named for a repeat of the owner's own row or of a finished plan's leftover.
 #[test]
-fn a_plan_rows_label_in_an_append_or_a_set_is_refused_naming_the_plan() -> TestResult {
+fn a_repeat_of_an_open_plans_row_is_refused_naming_the_plan() -> TestResult {
     use yi_tools::{Tool, ToolContext};
     let dir = Scratch::new("yi-todo-mirror-dup")?;
     let (_session, todos, _engine) = mirrored(&dir)?;
     let before = todos.list();
     let plan = plan_of(&before).ok_or("the list names no plan")?.to_owned();
     let tool = yi_runtime::todo::tool::TodoTool::new(Arc::clone(&todos));
-    let echo = text::checklist(&before).join("\n");
-    for (args, label) in [
-        (json!({"op": "append", "items": ["gate"]}), "gate"),
-        (json!({"op": "set", "list": echo}), "delegated job"),
-    ] {
+    let run = |args: Value| {
         let output = tool.execute(
             args.as_object().cloned().unwrap_or_default(),
             &ToolContext::new(dir.to_path_buf()),
@@ -740,11 +737,36 @@ fn a_plan_rows_label_in_an_append_or_a_set_is_refused_naming_the_plan() -> TestR
                 _ => None,
             })
             .collect();
-        assert!(output.is_error, "a plan row's label was taken: {text}");
-        let named = format!("todo {label:?} is a row of plan {plan}");
-        assert!(text.contains(&named), "{text}");
+        (output.is_error, text)
+    };
+    let named = |label: &str| format!("todo {label:?} is a row of plan {plan}");
+    let plain = |label: &str| format!("todo {label:?} is already in the list");
+    let echo = text::checklist(&before).join("\n");
+    for (args, want) in [
+        (json!({"op": "append", "items": ["gate"]}), named("gate")),
+        (json!({"op": "set", "list": echo}), named("delegated job")),
+        (json!({"op": "append", "items": ["first"]}), plain("first")),
+    ] {
+        let (is_error, text) = run(args);
+        assert!(is_error && text.contains(&want), "{text}");
         assert_eq!(todos.list(), before);
     }
+    let cli = PlanEngine::new(PlanStore::open(dir.to_path_buf())?, Arc::new(Child));
+    let label = TodoLabel::new("gate")?;
+    cli.apply(owner(Op::Drop {
+        label,
+        disposition: None,
+    }))?;
+    let label = TodoLabel::new("delegated job")?;
+    let cause = "closed from the command line".to_owned();
+    cli.apply(owner(Op::Fail {
+        label,
+        cause,
+        disposition: None,
+    }))?;
+    let (is_error, text) = run(json!({"op": "append", "items": ["gate"]}));
+    assert!(is_error && text.contains(&plain("gate")), "{text}");
+    assert_eq!(plan_of(&todos.list()), None);
     Ok(())
 }
 

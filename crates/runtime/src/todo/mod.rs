@@ -125,7 +125,7 @@ pub enum TodoError {
     #[error(
         "todo {label:?} is a row of plan {plan}, and labels are unique; leave the plan's rows out of a set or init, and give a new todo a label of its own"
     )]
-    PlanRow { label: String, plan: String },
+    DuplicateOfPlanRow { label: String, plan: String },
     #[error("{op} is not a move for {label:?} in state {from}; legal here: {legal}")]
     Illegal {
         op: &'static str,
@@ -252,13 +252,7 @@ impl TodoStore {
             .collect();
         let target = match running.as_slice() {
             [] => Target::All,
-            // By id: a list an older binary wrote may give the running row's label to another.
-            [one] => Target::Label(
-                one.id
-                    .as_ref()
-                    .and_then(|id| TodoLabel::new(id.as_str()).ok())
-                    .unwrap_or_else(|| one.label.clone()),
-            ),
+            [one] => Target::Label(id_needle(one)),
             many => {
                 return Err(TodoError::ManyRunning {
                     running: many
@@ -476,13 +470,16 @@ impl TodoStore {
             .into_iter()
             .find(|label| rows(&list, label) > rows(&before, label))
         {
-            let plan = before
-                .items()
-                .filter(|item| item.label == *label)
-                .find_map(mirror::row_plan);
+            // A finished plan's leftover rows keep their `plan` key; only an open plan owns them.
+            let plan = mirrored.as_ref().and_then(|_| {
+                before
+                    .items()
+                    .filter(|item| item.label == *label)
+                    .find_map(mirror::row_plan)
+            });
             let label = label.to_string();
             return Err(match plan {
-                Some(plan) => TodoError::PlanRow {
+                Some(plan) => TodoError::DuplicateOfPlanRow {
                     label,
                     plan: plan.to_string(),
                 },
@@ -711,7 +708,17 @@ fn resolve<'a>(list: &'a mut TodoList, needle: &TodoLabel) -> Result<&'a mut Tod
     })
 }
 
-/// Every id-less item gets `t{next_id}`; an id a `set` row carried moves the counter past it.
+/// The needle [`locate`] resolves to this row alone: its id, which [`mint`] keeps unique, where
+/// its label may be another row's too on a list an older binary wrote.
+pub fn id_needle(item: &Todo) -> TodoLabel {
+    item.id
+        .as_ref()
+        .and_then(|id| TodoLabel::new(id.as_str()).ok())
+        .unwrap_or_else(|| item.label.clone())
+}
+
+/// Every id-less item gets `t{next_id}`, and so does a repeat of an id a `set` row copied; an
+/// id a `set` row carried moves the counter past it.
 pub fn mint(list: &mut TodoList) {
     let top = list
         .items()
@@ -719,8 +726,9 @@ pub fn mint(list: &mut TodoList) {
         .max()
         .unwrap_or(0);
     let mut next = list.next_id.max(top.saturating_add(1)).max(1);
+    let mut seen = std::collections::HashSet::new();
     list.for_each_mut(|item| {
-        if item.id.is_none() {
+        if item.id.as_ref().is_none_or(|id| !seen.insert(id.clone())) {
             item.id = Some(TodoId::minted(next));
             next = next.saturating_add(1);
         }

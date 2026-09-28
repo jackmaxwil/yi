@@ -949,6 +949,52 @@ fn an_init_that_repeats_a_label_is_refused_on_a_legacy_list() -> TestResult {
     Ok(())
 }
 
+/// Dies with `mint` filling only missing ids: a `set` that copies `t2` onto a second row keeps
+/// two rows named `t2`, and a `done` naming no item then closes the first, a pending row.
+#[test]
+fn a_set_that_repeats_an_id_gives_the_copy_a_new_one() -> TestResult {
+    let (_root, session) = session("dup-id")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(Arc::clone(&store));
+    for args in [
+        json!({"op": "init", "items": ["a", "b"]}),
+        json!({"op": "set", "list": "- [ ] t2 a\n- [>] t2 b"}),
+        json!({"op": "done", "evidence": "`make` ok"}),
+    ] {
+        let (is_error, text) = call(&tool, args);
+        assert!(!is_error, "{text}");
+    }
+    let row = |id: &str, state| (id.to_owned(), state);
+    let (running, done) = (TodoStateName::Running, TodoStateName::Done);
+    assert_eq!(
+        id_states(&store.list()),
+        [row("t2", running), row("t3", done)]
+    );
+    Ok(())
+}
+
+/// Dies with a `set` row carrying the history of the first row with its label: `t2 a` takes
+/// `t1`'s blocker and note.
+#[test]
+fn a_set_row_that_names_a_twin_by_id_keeps_that_twins_state() -> TestResult {
+    let (_root, session) = legacy_twins("dup-legacy-set")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(Arc::clone(&store));
+    for args in [
+        json!({"op": "block", "id": "t1", "on": "user", "note": "t1 note"}),
+        json!({"op": "block", "id": "t2", "on": "external", "note": "t2 note"}),
+        json!({"op": "set", "list": "- [!] t2 a"}),
+    ] {
+        let (is_error, text) = call(&tool, args);
+        assert!(!is_error, "{text}");
+    }
+    assert_eq!(
+        text::checklist(&store.list()),
+        ["- [!] t2 a (blocked on external: t2 note)"]
+    );
+    Ok(())
+}
+
 #[test]
 fn every_argument_error_ends_with_an_id_call_that_lands() -> TestResult {
     let (_root, session) = session("example")?;
