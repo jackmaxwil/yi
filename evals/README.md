@@ -26,6 +26,8 @@ judge_replay.py              stage 0 judge replay over recorded sessions, read-o
 rule_fires.py                labelled haystack lanes against what the rule matcher can see
 journeys/ab.py               journey prompts under one prompt ref, scored by the session-mining extractor
 drivers/                     harbor sweep drivers, spend and wall caps (drivers/README.md)
+improve/                     one round's proposer half: a development-only corpus, a history-free snapshot, S0 (round.py, brief.md)
+trials/                      the trial store: one row per paid harbor trial, and the weekly budget it sums (trials/README.md)
 arc/yi_arc.py                ARC-AGI-3 bridge: one `yi ask --json --yolo` per action (arc/README.md)
 fixtures/                    recorded transcripts, v4 session files, runner tasks, live and surface scenarios
 ```
@@ -49,6 +51,7 @@ names one gate everywhere in code and tests; a number absent here is not a gate.
 | E13 | the Terminal-Bench dataset is pinned by digest | `drivers/tbv4_baseline.sh` |
 | E14 | cost is the provider's self-reported `usage.cost.total`, never a local price table | `yi_usage.parse_events` |
 | E15 | the adapter uploads harbor's certifi bundle and sets `SSL_CERT_FILE`, since a task image may ship no CA roots | `yi_harbor/agent.py` |
+| E16 | with `YI_LEVERS` set on the host, the harbor adapter uploads that file to `/logs/agent/yi/levers.json`, runs `yi ask --eval` with `YI_LEVERS` naming it, and the fingerprint's mode carries `+levers<hash>`; without it the command is unchanged | `yi_usage.run_command`, `yi_harbor/agent.py` |
 
 ## Emission map
 
@@ -187,6 +190,12 @@ refusals and rate, the spend, whether a cap stopped it), and the printed report
 is what a human reads: each refusal with its count, its text, the model's own
 words from the turn it was made in, and a blank `correct? ____`. Judging a
 refusal is a reading act; the runner never guesses what a caller meant.
+
+A tool-text candidate is judged against its base with `surface.py compare --base <surface.json>
+… --candidate <surface.json> …`, each side's runs made alternately with the other's (N6, design
+§6.6). It is refused as `refusal_rate_rose:<tool>` when a tool's refusal rate over the side's summed
+calls rises, or as `scenario_unclean:<id>` when a scenario clean on every base run is unclean on a
+candidate run; `surface.json` keeps each rollout's `exit`, `timedOut` and `missingFiles` for that.
 
 `--dry` is faux only and refuses any other provider. `selftest.py::check_surface`
 covers the scenario schema and the census with no binary and no key. A
@@ -430,7 +439,7 @@ The harness's names, not the binary's. `check_env_surface.py` scans
 | `EVAL_ROUTING` | `run.py`, harbor adapter | OpenRouter provider object, see [Task runner](#task-runner) |
 | `EVAL_TIMEOUT_MULT` | harbor adapter, drivers | the trial's share of the task timeout (E12); rides the fingerprint as `+t<mult>` |
 | `EVAL_SUITE_REV` | harbor adapter, drivers | the dataset digest in the fingerprint |
-| `YI_LEVERS` | the binary, under `--eval` only | lever overrides (D220); declared in `scripts/guardrails/baselines/env_vars.json` |
+| `YI_LEVERS` | the binary, under `--eval` only; `run.py`, `surface.py` and the harbor adapter (E16) pass it on | lever overrides (D220); declared in `scripts/guardrails/baselines/env_vars.json` |
 
 Build the local musl binary with `just package-musl <version>` (target defaults
 to `x86_64-unknown-linux-musl`). It cross-compiles via `zig cc`/`zig ar` and

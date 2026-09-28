@@ -7,10 +7,10 @@ pub const SUMMARIZATION_PROMPT: &str = r#"The messages above are a conversation 
 Use this EXACT format:
 
 ## Goal
-[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
+[What is the user trying to accomplish? Can be multiple items if the session covers different tasks. Cite each by the address of the user message that asked for it, from <user-messages> (e.g. user://3), and quote the user's words verbatim in quotation marks if you quote them at all; never restate them in your own words.]
 
 ## Constraints & Preferences
-- [Any constraints, preferences, or requirements mentioned by user]
+- [Each constraint, preference, or requirement the user stated, cited by the address of the message that stated it; verbatim in quotation marks when quoted]
 - [Or "(none)" if none were mentioned]
 
 ## Progress
@@ -48,10 +48,10 @@ Update the existing structured summary with new information. RULES:
 Use this EXACT format:
 
 ## Goal
-[Preserve existing goals, add new ones if the task expanded]
+[Preserve existing goals with their user:// addresses, add new ones if the task expanded, each cited by the address of the user message that asked for it; the user's words are quoted verbatim or not at all]
 
 ## Constraints & Preferences
-- [Preserve existing, add new ones discovered]
+- [Preserve existing with their addresses, add new ones discovered, each cited by its user:// address; verbatim when quoted]
 
 ## Progress
 ### Done

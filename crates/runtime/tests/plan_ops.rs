@@ -130,6 +130,7 @@ fn spec(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
         delegation: None,
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     })
 }
 
@@ -161,6 +162,7 @@ fn delegated_spec(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
         delegation: Some(delegation()),
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     })
 }
 
@@ -381,6 +383,7 @@ fn a_blocked_todo_is_not_started() -> TestResult {
         label: label("delegated job")?,
         on: BlockedOn::User,
         note: "hold it until the design is agreed".to_owned(),
+        ask: None,
     }))?;
     engine.apply(owner(Op::Start {
         label: label("gate")?,
@@ -398,6 +401,7 @@ fn a_blocked_todo_is_not_started() -> TestResult {
     assert_eq!(stub.next.load(Ordering::SeqCst), 0);
     let out = engine.apply(owner(Op::Unblock {
         label: label("delegated job")?,
+        answer: None,
     }))?;
     assert_eq!(out.spawned.len(), 1, "the release starts it");
     let released = out
@@ -673,6 +677,7 @@ fn a_cycle_is_refused_at_insert() -> TestResult {
         delegation: None,
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     };
     let out = init(&engine, vec![spec("first job")?, second])?;
     let refused = engine.apply(owner(Op::AddEdge {
@@ -764,12 +769,14 @@ fn mutation_is_owner_gated_and_unblock_is_open_to_user_and_host() -> TestResult 
         label: label("first job")?,
         on: BlockedOn::User,
         note: "needs a decision".to_owned(),
+        ask: None,
     }))?;
     let out = engine.apply(OpRequest {
         plan: None,
         actor: Actor::User("user://3".parse::<Url>()?),
         op: Op::Unblock {
             label: label("first job")?,
+            answer: None,
         },
         request_id: None,
         expected_revision: None,
@@ -823,6 +830,7 @@ fn blocking_a_running_delegated_todo_reaps_the_child() -> TestResult {
         label: label("first job")?,
         on: BlockedOn::User,
         note: "waiting on a decision".to_owned(),
+        ask: None,
     }))?;
     assert_eq!(out.reaped.len(), 1, "the block exit from Running must reap");
     assert_eq!(stub.reaps.load(Ordering::SeqCst), 1);
@@ -1051,6 +1059,7 @@ fn start_refuses_unmet_after_edges() -> TestResult {
         delegation: Some(delegation()),
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     };
     let out = init(&engine, vec![spec("first job")?, follows])?;
     let refused = engine.apply(as_engine(Op::Start {
@@ -1278,6 +1287,7 @@ fn a_declared_output_is_validated_against_its_schema() -> TestResult {
             delegation: Some(declaring("local://schemas/report.json")?),
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         }],
     )?;
     let refused = engine.apply(owner(Op::Done {
@@ -1310,6 +1320,7 @@ fn a_declared_output_with_no_resolver_is_refused() -> TestResult {
             delegation: Some(declaring("local://schemas/report.json")?),
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         }],
     )?;
     engine.apply(owner(Op::Start {
@@ -1338,6 +1349,7 @@ fn a_product_that_satisfies_its_schema_completes() -> TestResult {
             delegation: Some(declaring("local://schemas/report.json")?),
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         }],
     )?;
     let out = engine.apply(owner(Op::Done {
@@ -1370,6 +1382,7 @@ fn a_schema_that_is_not_json_refuses_the_done_naming_the_schema() -> TestResult 
             delegation: Some(declaring("local://schemas/report.json")?),
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         }],
     )?;
     let refused = engine.apply(owner(Op::Done {
@@ -1426,6 +1439,7 @@ fn a_declared_output_must_resolve_at_done() -> TestResult {
             delegation: Some(declared),
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         }],
     )?;
     let unresolved = "local://nowhere/never-written.txt";
@@ -1461,19 +1475,7 @@ fn row(text: &str, state: TodoStateName, children: &[&str]) -> Result<SetRow, Bo
     let mut kids = Vec::new();
     for child in children {
         kids.push(Todo {
-            label: label(child)?,
-            after: Vec::new(),
-            state: TodoState::Pending,
-            delegation: None,
-            subplan: None,
-            retries: RetryCount::default(),
-            children: Vec::new(),
-            note: None,
-            attempt: yi_types::plan::doc::AttemptId::FIRST,
-            refusals: 0,
-            contract: None,
-            contract_hash: None,
-            extra: Map::new(),
+            ..Todo::pending(label(child)?)
         });
     }
     let mut spec = spec(text)?;
@@ -2233,6 +2235,7 @@ mod contracts {
                     None => None,
                 },
                 children: Vec::new(),
+                cites: Default::default(),
             });
         }
         Ok((goal, specs))

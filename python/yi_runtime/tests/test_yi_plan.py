@@ -114,6 +114,8 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TypeError) as refused:
             await plan.todo(key="tests", delegate=Writer(accept=None))
         self.assertEqual(str(refused.exception), "a worktree Writer needs accept=")
+        with self.assertRaises(TypeError, msg="a container writer has the same lane and owes the same contract"):
+            await plan.todo(key="boxed", delegate=Writer(accept=None, isolation="container:rust:1.91"))
         self.assertEqual(host.ops(), ["init"], "nothing was sent")
         inline = await plan.todo(key="inline", delegate=Writer(accept=None, isolation=None))
         self.assertNotIn("contract", inline._doc, "an inline writer may still run on the owner's word")

@@ -233,7 +233,7 @@ fn goal_json(goal: &Goal) -> Value {
 }
 
 /// Uncached input plus output.
-fn usage_delta(usage: &yi_types::message::Usage) -> u64 {
+pub(crate) fn usage_delta(usage: &yi_types::message::Usage) -> u64 {
     let uncached = usage.input.saturating_sub(usage.cache_read).max(0);
     let output = usage.output.max(0);
     u64::try_from(uncached.saturating_add(output)).unwrap_or(0)

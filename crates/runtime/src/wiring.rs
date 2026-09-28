@@ -211,13 +211,34 @@ fn wire_schedule(
     wiring: &RuntimeWiring,
     registry: &mut crate::kernel::HostRegistry,
 ) {
-    let shared = crate::schedule::shared::intern(wiring.rlm_dir.join("scheduled-jobs.json"));
+    let shared =
+        crate::schedule::shared::intern(wiring.rlm_dir.join("scheduled-jobs.json"), |_| {});
     let heartbeats_cwd = wiring.cwd.to_string_lossy().into_owned();
     let deliver = session.heartbeat_deliverer();
-    let heartbeats = Arc::new(
+    let heartbeats =
         crate::schedule::HeartbeatService::new(Arc::clone(&shared.store), heartbeats_cwd)
-            .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver)),
-    );
+            .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver))
+            .with_stop(session.halt_hook())
+            .with_words(session.store_handle())
+            .with_channels(
+                wiring
+                    .sessions_dir
+                    .as_ref()
+                    .unwrap_or(&wiring.rlm_dir)
+                    .join("channels"),
+            )
+            .with_gate({
+                let (broker, contained) = (wiring.broker.clone(), wiring.wall.container.is_some());
+                Arc::new(move |command: &str| {
+                    crate::tools::refuse_armed(command, contained, broker.as_deref(), "")
+                })
+            })
+            .interned();
+    crate::schedule::adapter::adapters_home(&wiring.home);
+    let heartbeats = Arc::new(match (&wiring.sessions_dir, wiring.depth) {
+        (Some(sessions), 0) => heartbeats.durable(sessions.join("schedules")),
+        _ => heartbeats,
+    });
     heartbeats.register(registry);
     session.set_schedule(Arc::clone(&heartbeats));
 }
@@ -312,6 +333,9 @@ fn wire_fetch(
         })
     });
     register_history_grep(registry, session.store_handle());
+    if let Some(dir) = wiring.sessions_dir.clone().filter(|_| wiring.depth == 0) {
+        crate::history::register(registry, dir, wiring.cwd.clone());
+    }
     crate::memory::attach(
         Some(session),
         registry,
@@ -336,36 +360,61 @@ pub fn register_history_grep(
                 .filter(|pattern| !pattern.is_empty())
                 .ok_or_else(|| "history.grep requires a \"pattern\" argument".to_owned())?
                 .to_owned();
-            let limit = payload
-                .get("limit")
-                .and_then(Value::as_u64)
-                .map_or(8, |n| usize::try_from(n).unwrap_or(8));
-            let hits = tokio::task::spawn_blocking(move || {
+            let number = |key: &str, default: usize| {
+                payload
+                    .get(key)
+                    .and_then(Value::as_u64)
+                    .map_or(default, |n| usize::try_from(n).unwrap_or(default))
+            };
+            let (offset, limit) = (number("offset", 0), number("limit", 8));
+            let page = tokio::task::spawn_blocking(move || {
                 let shared = handle()
                     .ok_or_else(|| "history.grep: missing an attached session store".to_owned())?;
                 let store = yi_session::lock_session(&shared);
-                Ok::<_, String>(store.grep(&pattern, limit))
+                Ok::<_, String>((store.grep_page(&pattern, offset, limit), pattern))
             })
             .await
             .map_err(|error| format!("history.grep task failed: {error}"))??;
-            let mut reply = Map::new();
-            reply.insert(
-                "hits".to_owned(),
-                Value::Array(
-                    hits.iter()
-                        .map(|hit| {
-                            let mut item = Map::new();
-                            item.insert("entryId".to_owned(), Value::String(hit.entry_id.clone()));
-                            item.insert("type".to_owned(), Value::String(hit.entry_type.clone()));
-                            item.insert("snippet".to_owned(), Value::String(hit.snippet.clone()));
-                            Value::Object(item)
-                        })
-                        .collect(),
-                ),
-            );
-            Ok(reply)
+            let ((hits, total), pattern) = page;
+            Ok(grep_reply(&hits, total, &pattern, offset, limit))
         })
     });
+}
+
+fn grep_reply(
+    hits: &[yi_session::HistoryHit],
+    total: usize,
+    pattern: &str,
+    offset: usize,
+    limit: usize,
+) -> Map<String, Value> {
+    let mut reply = Map::new();
+    let items = hits
+        .iter()
+        .map(|hit| {
+            let mut item = Map::new();
+            item.insert("entryId".to_owned(), Value::String(hit.entry_id.clone()));
+            item.insert("type".to_owned(), Value::String(hit.entry_type.clone()));
+            item.insert("snippet".to_owned(), Value::String(hit.snippet.clone()));
+            Value::Object(item)
+        })
+        .collect();
+    reply.insert("hits".to_owned(), Value::Array(items));
+    reply.insert("total".to_owned(), Value::from(total));
+    let next = offset.saturating_add(hits.len());
+    if next < total {
+        let cap = limit.clamp(1, yi_session::GREP_PAGE_MAX);
+        let quoted = Value::from(pattern);
+        reply.insert(
+            "notice".to_owned(),
+            Value::from(format!(
+                "[{} of {total} hits · limit {cap} (at most {}) · compact.recall({quoted}, limit={cap}, offset={next}) for the next]",
+                hits.len(),
+                yi_session::GREP_PAGE_MAX,
+            )),
+        );
+    }
+    reply
 }
 
 /// The engine and `plan.op` with this session's principal; `None` (no plan surface at all)
@@ -433,7 +482,8 @@ fn wire_plan_request(
         .with_op_sink(ops)
         .with_liveness(liveness)
         .with_cwd(cwd.clone())
-        .with_owned(owned_roots(session, host));
+        .with_owned(owned_roots(session, host))
+        .with_owner_words(session.store_handle());
     // This session's host seats the juries (plan section 6.4). A verification never outlives
     // the run (D177): the verifier and every lane settle read the session's deadline too.
     let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
@@ -493,10 +543,6 @@ fn wire_plan_engine(
     let Some((engine, actor, todos)) = plan else {
         return;
     };
-    let probe_deliver: crate::goal::DeliverFn = {
-        let hook = session.heartbeat_hook();
-        Arc::new(move |message, mode| hook(message, mode))
-    };
     if let Some(service) = session.plan_service() {
         service.set_engine(Arc::clone(&engine), actor.clone());
     }
@@ -508,6 +554,14 @@ fn wire_plan_engine(
         &todos,
     ))));
     session.set_todos(Arc::clone(&todos));
+    if let Some(clock) = session.heartbeat_service() {
+        let clock = Arc::downgrade(&clock);
+        todos.on_change(Arc::new(move |list| {
+            if let Some(clock) = clock.upgrade() {
+                clock.watch(list);
+            }
+        }));
+    }
     let inner = (wiring.depth == 0).then(|| {
         crate::plan::finish::install(host, &engine, {
             let hook = session.heartbeat_hook();
@@ -515,42 +569,44 @@ fn wire_plan_engine(
         });
         let children = Arc::clone(host);
         let leased = Arc::clone(host);
-        let ladder = Arc::new(
-            crate::plan::probe::ProbeLadder::new(engine, (plans_dir, &wiring.cwd), probe_deliver)
-                .with_children(Arc::new(move || children.states()), {
-                    let (notice, stalled) = (lifecycle_notice(session), Arc::clone(host));
-                    Arc::new(move |text: &str, news| {
-                        notice(text, news);
-                        stalled.publish_all();
-                    })
+        let mut timer = crate::plan::timer::PlanTimer::new(engine)
+            .with_children(Arc::new(move || children.states()), {
+                let (notice, stalled) = (lifecycle_notice(session), Arc::clone(host));
+                Arc::new(move |text: &str, news| {
+                    notice(text, news);
+                    stalled.publish_all();
                 })
-                .with_leases(Arc::new(move || {
-                    let host = Arc::clone(&leased);
-                    tokio::spawn(async move { host.expire().await });
-                }))
-                .with_owned({
-                    let store = session.store_handle();
-                    Arc::new(move || {
-                        store()
-                            .map(|session| crate::plan::ledger::owned_roots(&session))
-                            .unwrap_or_default()
-                    })
-                }),
-        );
+            })
+            .with_leases(Arc::new(move || {
+                let host = Arc::clone(&leased);
+                tokio::spawn(async move { host.expire().await });
+            }))
+            .with_owned({
+                let store = session.store_handle();
+                Arc::new(move || {
+                    store()
+                        .map(|session| crate::plan::ledger::owned_roots(&session))
+                        .unwrap_or_default()
+                })
+            });
+        if let Some(clock) = session.heartbeat_service() {
+            let clock = Arc::downgrade(&clock);
+            timer = timer.with_arm(Arc::new(move |waits| {
+                if let Some(clock) = clock.upgrade() {
+                    clock.arm(waits);
+                }
+            }));
+        }
+        let timer = Arc::new(timer);
         // A grace rides the loop's own due-time set, so an earlier one interrupts its sleep.
-        let timer = Arc::clone(&ladder);
+        let due = Arc::clone(&timer);
         host.set_lease_clock(
             None,
             Some(Arc::new(move |grace| {
-                timer.wake_at(
-                    timer
-                        .now()
-                        .checked_add(grace)
-                        .unwrap_or_else(|| timer.now()),
-                );
+                due.wake_at(due.now().checked_add(grace).unwrap_or_else(|| due.now()));
             })),
         );
-        crate::plan::probe::spawn(ladder);
+        crate::plan::timer::spawn(timer);
         crate::plan::loop_coupling::coupling(
             session,
             crate::plan::loop_coupling::CouplingOptions {
@@ -913,5 +969,46 @@ fn wire_compacted(
                 }
             });
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cut_grep_page_names_the_call_for_the_next_page() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut store = yi_session::SessionStore::in_memory(yi_types::wire::SessionMetadata {
+            id: "s".to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+            name: None,
+        });
+        for turn in 0..10 {
+            store.append_compaction(
+                "main",
+                format!("the ö needle, turn {turn}"),
+                Vec::new(),
+                1,
+                None,
+            )?;
+        }
+        let (hits, total) = store.grep_page("Needle", 0, 8);
+        let reply = grep_reply(&hits, total, "Needle", 0, 8);
+        assert_eq!(reply["total"], 10);
+        assert_eq!(
+            reply["notice"],
+            "[8 of 10 hits · limit 8 (at most 32) · compact.recall(\"Needle\", limit=8, offset=8) for the next]"
+        );
+        let (rest, total) = store.grep_page("Needle", 8, 8);
+        let last = grep_reply(&rest, total, "Needle", 8, 8);
+        assert_eq!(last["hits"].as_array().map(Vec::len), Some(2));
+        assert!(last.get("notice").is_none(), "{last:?}");
+        let (clamped, total) = store.grep_page("needle", 0, 500);
+        let wide = grep_reply(&clamped, total, "needle", 0, 500);
+        assert_eq!(wide["hits"].as_array().map(Vec::len), Some(10));
+        assert!(wide.get("notice").is_none());
+        Ok(())
     }
 }

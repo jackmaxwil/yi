@@ -18,6 +18,17 @@ Invariants:
 - A note file that does not parse is never refused on disk. It is indexed by its first body line
   and counted as unparsed.
 - Every write holds the store's `.lock` file lock and replaces files by staged rename.
+- Each store keeps `ops.jsonl`, a journal of `save`, `edit`, `adopt`, `forget` and `read` records
+  appended under that lock in the same critical section as the file change, each carrying
+  `sha256(previous digest ‖ canonical record)` as the plan journal does. It names versions by
+  hash and never holds a body; append order is the one order across lanes.
+- Every version's text is `objects/<sha256 hex>`. `memory.forget` deletes all of a note's objects,
+  so no copy stays in the store. The save call's own arguments stay in the transcript of the
+  session that made it, where `history.grep` still finds them.
+- Reconcile at session start journals a note that predates the journal (`adopt`), a hand edit
+  (`edit`) and a hand deletion (`forget` with `by: hand`, its objects deleted too).
+- Each verb also appends a `custom{memory}` entry `{op, name, scope, hash}` to the root session.
+  It never carries the body.
 - Replies never carry a filesystem path; the kernel sandbox cannot read `~/.yi`.
 
 Owner: [`crates/runtime/src/memory/`](../crates/runtime/src/memory/mod.rs) (`mod.rs` verbs,
@@ -37,7 +48,8 @@ Shapes (on disk):
   of the git common dir, so every worktree and lane of one repository shares it (§14). Outside
   a repository the key is the canonical cwd.
 - Global store: `~/.yi/memory/`. Each store holds `<name>.md` per note, `MEMORY.md` (the index, one
-  `- [name](name.md) — description` line per note, hand-editable), `usage.json` and `.lock`.
+  `- [name](name.md) — description` line per note, hand-editable), `usage.json`, `.lock`, the
+  journal `ops.jsonl` ([`MemoryRecord`](../crates/types/src/memory.rs)) and `objects/`.
 
 ## Verbs
 
@@ -49,8 +61,27 @@ The kernel imports the `memory` package at startup (§9). Each function is a hos
   `type`, `scope`, `updated`, `warnings`.
 - `memory.read(name, scope=None)`: matches a note by file name or slug. Failing that, it matches
   by index label or description, case-insensitive. It searches repo first, then global, and
-  counts a read in `usage.json`. The reply carries the body as `text`.
+  counts a read in `usage.json`. Failing both, it opens the top `memory.search` hit and warns
+  `[no note has that name or hook · opened <name>, the closest of N by memory.search ·
+  memory.search("…", limit=N) for the ranking]`; `forget` never does. The reply carries the body as `text`.
+- `memory.search(query, limit=5, scope=None)`: ranks every note of both stores (or the given one)
+  by BM25 (k1 1.2, b 0.75, Lucene's form) over its name, description and body, tokenized as
+  lowercase ASCII words with `.`, `/` and `-` joining a path or identifier into one token and 61
+  function words dropped. The reply is `hits` (`name`, `description`, `scope`), best first, and
+  `total`; a cut list carries `[5 of N notes · limit 5 · memory.search("…", limit=N) for all]`.
 - `memory.forget(name, scope=None)`: deletes the note, its index line and its usage entry.
+
+## Past sessions
+
+`history.search(query, limit=8, offset=0)` (kernel `compact.search`) ranks user messages, assistant
+text turns and compaction summaries by the same BM25, across every root session whose directory
+under the sessions dir ran in this repository: the header's `cwd` resolves to the same canonical
+repository (the git common dir), or sits inside it once its checkout is gone. Tool calls, their
+arguments and their results are never indexed. A hit carries `session`, `entryId`, `type`, a
+160-character `snippet` and `url`, `history://<session>/<entry>`, which `fetch` resolves across
+lanes. A cut page names the call for the next one; a directory whose checkout is gone and whose
+repository is therefore unknown is counted in a second notice line, never searched. The parsed
+units are cached per file and re-read when a file's length changes. Root session only.
 
 ## Start block
 
@@ -72,9 +103,12 @@ and one line per save or forget as footer cells; the HUD shows `saved N`.
 
 ## CLI
 
-`yi memory [list | show <name> | forget <name> | import <dir> | stats | check]` works on both
-stores of the cwd. `import` copies a directory of notes into the repo store, skips identical
+`yi memory [list | show <name> | search <words> | forget <name> | import <dir> | stats | check |
+rebuild]` works on both stores of the cwd; `search` prints every ranked hit. `import` copies a directory of notes into the repo store, skips identical
 files, merges index lines and reconciles. `stats` prints saves and reads per session per store.
-`check` prints `path:line: reason` per unparsed note and exits 1 if there is any.
+`check` prints `path:line: reason` per unparsed note and exits 1 if there is any. `rebuild`
+restores every note the journal holds and has not forgotten, recounts `usage.json` from the
+journal, names a file that differs from its journal head and a version with no object, and
+exits 1 on a missing object or a broken chain.
 
-Settled by: D169.
+Settled by: D169, D277, D278, D279.

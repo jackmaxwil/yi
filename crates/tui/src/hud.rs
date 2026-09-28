@@ -4,8 +4,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use yi_runtime::todo::DEFAULT_PHASE;
-use yi_types::plan::doc::TodoStateName;
-use yi_types::todo::{TodoItem, TodoList};
+use yi_types::plan::doc::{Todo, TodoState};
+use yi_types::todo::TodoList;
 
 use crate::colors::Theme;
 
@@ -112,10 +112,10 @@ pub fn todo_rows(
     }
     let current = list
         .items()
-        .position(|item| item.state == TodoStateName::Running)
+        .position(|item| matches!(item.state, TodoState::Running { .. }))
         .or_else(|| {
             list.items().position(|item| {
-                matches!(item.state, TodoStateName::Pending | TodoStateName::Blocked)
+                matches!(item.state, TodoState::Pending | TodoState::Blocked { .. })
             })
         })
         .unwrap_or(0);
@@ -154,6 +154,7 @@ pub fn todo_rows(
                             .push(Span::styled("  claimed", theme.muted_style()));
                     }
                     rows.push(line);
+                    rows.extend(options(row, indent, theme));
                 }
                 number = number.saturating_add(1);
             }
@@ -162,23 +163,41 @@ pub fn todo_rows(
     Some((title, rows))
 }
 
-fn todo_row(
-    item: &TodoItem,
-    number: usize,
-    indent: &str,
-    live: bool,
-    theme: &Theme,
-) -> Line<'static> {
+fn options(item: &Todo, indent: &str, theme: &Theme) -> Vec<Line<'static>> {
+    let Some(ask) = item.ask.as_ref() else {
+        return Vec::new();
+    };
+    if !matches!(item.state, TodoState::Blocked { .. }) {
+        return Vec::new();
+    }
+    let rows = ask.options.iter().zip(1_usize..).map(|(option, number)| {
+        let preview = option.preview.as_deref().map(|text| {
+            let first = text.lines().next().unwrap_or_default();
+            match text.lines().count().saturating_sub(1) {
+                0 => format!(" · {first}"),
+                more => format!(" · {first} (+{more} lines)"),
+            }
+        });
+        let preview = preview.unwrap_or_default();
+        let text = format!("{indent}     {number}. {}{preview}", option.label);
+        Line::from(Span::styled(text, theme.muted_style()))
+    });
+    rows.collect()
+}
+
+fn todo_row(item: &Todo, number: usize, indent: &str, live: bool, theme: &Theme) -> Line<'static> {
     let plain = Style::default().fg(theme.text);
     let (glyph, style) = match item.state {
-        TodoStateName::Done => ("✓", theme.dim_style()),
-        TodoStateName::Running if live => ("▶", theme.accent_style().add_modifier(Modifier::BOLD)),
-        TodoStateName::Running => ("▷", theme.muted_style()),
-        TodoStateName::Blocked => ("!", Style::default().fg(theme.warning)),
-        TodoStateName::Abandoned | TodoStateName::Failed => {
+        TodoState::Done { .. } => ("✓", theme.dim_style()),
+        TodoState::Running { .. } if live => {
+            ("▶", theme.accent_style().add_modifier(Modifier::BOLD))
+        }
+        TodoState::Running { .. } => ("▷", theme.muted_style()),
+        TodoState::Blocked { .. } => ("!", Style::default().fg(theme.warning)),
+        TodoState::Abandoned | TodoState::Failed { .. } => {
             ("−", theme.dim_style().add_modifier(Modifier::CROSSED_OUT))
         }
-        TodoStateName::Pending | TodoStateName::Other(_) => ("○", plain),
+        TodoState::Pending | TodoState::Other(_) => ("○", plain),
     };
     let cut = if item.is_cut() { "…" } else { "" };
     Line::from(Span::styled(
