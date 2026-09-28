@@ -140,6 +140,26 @@ pub fn line_map(pre: &str, post: &str) -> Vec<Option<u64>> {
     map
 }
 
+/// Which `pre` line each `post` line came from (`split('\n')` positions), for restoring
+/// terminators: identity when the line counts match, else `line_map` inverted, rewritten `None`.
+pub fn line_origins(pre: &str, post: &str) -> Vec<Option<usize>> {
+    let count = post.split('\n').count();
+    if pre.split('\n').count() == count {
+        return (0..count).map(Some).collect();
+    }
+    let mut origins = vec![None; count];
+    for (from, to) in line_map(pre, post).into_iter().enumerate() {
+        let slot = to
+            .and_then(|line| usize::try_from(line).ok())
+            .and_then(|line| line.checked_sub(1))
+            .and_then(|index| origins.get_mut(index));
+        if let Some(slot) = slot {
+            *slot = Some(from);
+        }
+    }
+    origins
+}
+
 fn split_lines(text: &str) -> Vec<&str> {
     let mut lines: Vec<&str> = text.split('\n').collect();
     if lines.last() == Some(&"") {

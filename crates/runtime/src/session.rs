@@ -72,6 +72,7 @@ struct Shared {
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
+    rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     deadline: OnceLock<Deadline>,
     turn_time: Mutex<(Option<std::time::Instant>, Option<Duration>)>,
     cancelled: std::sync::atomic::AtomicBool,
@@ -145,7 +146,6 @@ pub struct AgentSession {
     goal: Mutex<Option<Arc<crate::goal::GoalService>>>,
     plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
     memory: Mutex<Option<Arc<crate::memory::Activity>>>,
-    rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     wall: Mutex<crate::wall::Wall>,
     kernel: Arc<Mutex<Option<Arc<crate::kernel::KernelService>>>>,
 }
@@ -179,6 +179,7 @@ impl AgentSession {
                 lane: Mutex::new(None),
                 telemetry: Mutex::new(None),
                 todos: Mutex::new(None),
+                rules: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
                 coupling: Mutex::new(None),
                 waits: Mutex::new(None),
@@ -198,7 +199,6 @@ impl AgentSession {
             goal: Mutex::new(None),
             plan: Mutex::new(None),
             memory: Mutex::new(None),
-            rules: Mutex::new(None),
             wall: Mutex::new(crate::wall::Wall::default()),
             kernel: Arc::new(Mutex::new(None)),
         }
@@ -360,7 +360,7 @@ impl AgentSession {
     }
 
     pub fn set_rules_engine(&self, engine: Arc<crate::rules::RuleEngine>) {
-        if let Ok(mut slot) = self.rules.lock() {
+        if let Ok(mut slot) = self.shared.rules.lock() {
             *slot = Some(engine);
         }
     }
@@ -379,7 +379,8 @@ impl AgentSession {
     }
 
     pub fn rules_engine(&self) -> Option<Arc<crate::rules::RuleEngine>> {
-        self.rules
+        self.shared
+            .rules
             .lock()
             .ok()
             .and_then(|slot| slot.as_ref().map(Arc::clone))

@@ -247,7 +247,8 @@ extension `Host` whose synchronous extensions turn session events into effects.
   `host::probe_at` (DMI, cpuinfo, container markers, SSH, WSL), probed once; SSH is re-read.
 - Reminders fire on evidence: `orchestrate` attaches silently at turn end only after an edit and
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
-  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in); ≤ 2 `skill://` hints a turn.
+  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `skill://` hint answers
+  only a message the user typed, placed right behind it: ≤ 2 a message, a typed `$name` always.
 - Next-step lines: `affordance::render` over the compiled-in `graph.json` walks 2 hops from the
   last call over edges whose condition is `always` or a host-asserted fact from the closed
   `PREDICATES`, by weight, ≤ 2 `next:` lines (3 for `todo`). `Graph::check` bounds edges (400),
@@ -340,11 +341,11 @@ with no paired end restores unscoped and says so. Turn start and end capture int
 
 ### 7.8 Skills
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
-`<name>/SKILL.md` walked 2 levels. Frontmatter at discovery, body via `read`; `$name` arms the
-skill as a rule. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
+`<name>/SKILL.md` walked 2 levels. Frontmatter at discovery, body via `read`; `$name` or a
+`trigger:` needle in a message the user typed points at the skill. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.
 
-- Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139.
+- Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D292.
 
 ## 8. Permission
 A pure `decide` over the call, mode, rules, grants, holds and catastrophic context.
@@ -363,10 +364,12 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   ~/.docker`; no network. Without it, `Contain` becomes a reviewable `Ask`.
 - With `models.autoReview` set, a reviewable ask goes to the reviewer (30 s); non-allow denies
   with a request id `ask_user` replays; `ActionLedger` (256) makes an approval single-use.
+- Every settled ask is journaled as a `permission` custom entry: the ask, the verdict, and
+  whether the user, the reviewer or nobody answered.
 - Owner: [`decide`](../crates/permission/src/decide.rs), [`sandbox`](../crates/tools/src/sandbox.rs)
 - State: `PermissionMode { Ask, Auto, Yolo }`, `Decision { Allow, Contain, Deny, Ask { title,
   description, reviewable } }`, `Class { Safe, Destructive, Egress, Unknown }`.
-- Shapes: [`types`](../crates/types/src/permission.rs). Settled by: D15, D26, D81, D205, D206, D207.
+- Shapes: [`types`](../crates/types/src/permission.rs). Settled by: D15, D26, D81, D205, D206, D207, D293.
 
 ## 9. Kernel
 A persistent IPython process per session that reaches the host only through host requests.

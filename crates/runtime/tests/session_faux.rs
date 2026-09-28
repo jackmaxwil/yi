@@ -672,3 +672,173 @@ async fn the_end_capture_follows_a_slow_start_capture() -> Result<(), Box<dyn Er
     assert_eq!(seen, ["request", "captured", "end"]);
     Ok(())
 }
+
+/// Every settled ask of a session run with `asker`, read back from its journal.
+async fn journaled(
+    root: &std::path::Path,
+    asker: Option<yi_runtime::Asker>,
+) -> Result<Vec<yi_types::permission::PermissionRecord>, Box<dyn Error>> {
+    let mut repo = JsonlRepo::new(root.join("sessions"), "/tmp/yi-perm-journal");
+    let store = repo.create(CreateOptions::default())?;
+    let mut session = tool_call_session("echo journaled");
+    session.attach_store(Arc::clone(&store))?;
+    let broker = Arc::new(yi_runtime::PermissionBroker::new(
+        yi_runtime::PermissionMode::Ask,
+        root.to_path_buf(),
+        Vec::new(),
+        asker,
+        session.events_sender(),
+    ));
+    let provider = Arc::clone(session.provider_arc());
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: "sys".to_owned(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: root.to_path_buf(),
+            home: root.join("home"),
+            lane_slots: 1,
+            broker: Some(broker),
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    session.prompt("run it")?;
+    session.wait_idle().await;
+    let entries = yi_session::lock_session(&store).find_entries(&yi_session::EntryQuery {
+        order: yi_session::EntryOrder::OldestFirst,
+        ..yi_session::EntryQuery::default()
+    })?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            yi_types::entry::Entry::Custom {
+                custom_type, data, ..
+            } if custom_type == yi_types::permission::PERMISSION_ENTRY => data,
+            _ => None,
+        })
+        .map(serde_json::from_value)
+        .collect::<Result<_, _>>()?)
+}
+
+/// Approvals are the labels a classifier fits its thresholds on, so each settled ask is journaled
+/// in the session, not only broadcast. Dies with the record missing, or naming the wrong answerer.
+#[tokio::test]
+async fn a_settled_ask_is_journaled_in_the_session() -> Result<(), Box<dyn Error>> {
+    use yi_types::permission::Answerer;
+    let approve: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::AllowOnce);
+    for (asker, want) in [
+        (None, (false, Answerer::Nobody)),
+        (Some(approve), (true, Answerer::User)),
+    ] {
+        let root = scratch("perm-journal")?;
+        let records = journaled(&root, asker).await?;
+        let [record] = records.as_slice() else {
+            return Err(format!("one settled ask, one record: {records:?}").into());
+        };
+        assert_eq!((record.allowed, record.by.clone()), want, "{record:?}");
+        assert!(record.description.contains("echo journaled"), "{record:?}");
+    }
+    Ok(())
+}
+
+/// What the model was sent, in order: user text, reminder text, or `assistant`.
+fn transcript(session: &AgentSession) -> Vec<String> {
+    use yi_types::message::UserContent;
+    session
+        .messages()
+        .into_iter()
+        .filter_map(|message| match message {
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            } => Some(format!("user: {text}")),
+            AgentMessage::Custom {
+                custom_type,
+                content: UserContent::Text(text),
+                ..
+            } if custom_type == "reminder" => Some(format!("reminder: {text}")),
+            AgentMessage::Assistant { .. } => Some("assistant".to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), Box<dyn Error>> {
+    use yi_runtime::rules::{RuleDoc, RuleEngine, RuleGap, RuleMode, RuleScope};
+    use yi_runtime::session::user_input;
+    let skill = |name: &str, needle: &str| RuleDoc {
+        name: name.to_owned(),
+        body: format!("skill://{name}"),
+        path: std::path::PathBuf::from(format!("/skills/{name}/SKILL.md")),
+        needles: vec![needle.to_owned()],
+        scope: RuleScope::Text,
+        gap: RuleGap::AfterTurns(1),
+        mode: RuleMode::Remind,
+        paths: Vec::new(),
+        after: 1,
+    };
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(
+        ["one", "two", "three"]
+            .into_iter()
+            .map(|text| faux_assistant_message(vec![faux_text(text)], StopReason::Stop))
+            .collect(),
+    );
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.set_rules_engine(Arc::new(RuleEngine::new(vec![
+        skill("gate", "cargo nextest"),
+        skill("review", "review the work"),
+        skill("plan", "write a plan"),
+    ])));
+    session.prompt_message(user_input("run cargo nextest"))?;
+    assert!(
+        session.follow_up_message(user_input("then review the work")),
+        "the run is going, so the follow-up waits for its answer"
+    );
+    session.wait_idle().await;
+    // An idle session's follow-up starts the run itself.
+    session.follow_up_message(user_input("write a plan"));
+    session.wait_idle().await;
+    assert_eq!(
+        transcript(&session),
+        [
+            "user: run cargo nextest",
+            "reminder: Relevant: skill://gate (matched \"cargo nextest\")",
+            "assistant",
+            "user: then review the work",
+            "reminder: Relevant: skill://review (matched \"review the work\")",
+            "assistant",
+            "user: write a plan",
+            "reminder: Relevant: skill://plan (matched \"write a plan\")",
+            "assistant",
+        ]
+    );
+    Ok(())
+}

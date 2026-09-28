@@ -6,8 +6,7 @@ description: >
   check is about to be claimed; when a todo is about to be stepped to done.
   Do NOT use to learn a repository's state for an assessment (that quotes
   the record) or to debug a failure (that is the debug skill).
-trigger: verified, finished, complete, before saying done
-scope: text
+trigger: before saying done
 after: 1
 ---
 
