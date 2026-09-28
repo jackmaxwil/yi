@@ -829,6 +829,66 @@ fn an_old_session_without_ids_rehydrates_with_ids() -> TestResult {
     Ok(())
 }
 
+/// Dies with a batch checked only against the list it joins: both `a` rows land, and a later
+/// `rm a` takes the two.
+#[test]
+fn an_append_that_repeats_a_label_is_refused_and_changes_nothing() -> TestResult {
+    let (_root, session) = session("dup-append")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(Arc::clone(&store));
+    let (is_error, text) = call(&tool, json!({"op": "init", "items": ["one"]}));
+    assert!(!is_error, "{text}");
+    let (before, touched) = (store.list(), store.touched());
+    let (is_error, text) = call(&tool, json!({"op": "append", "items": ["a", "a"]}));
+    assert!(is_error, "a repeated label was taken: {text}");
+    assert!(text.contains("todo \"a\""), "{text}");
+    assert_eq!((store.list(), store.touched()), (before, touched));
+    Ok(())
+}
+
+#[test]
+fn a_flat_init_that_repeats_a_label_is_refused() -> TestResult {
+    let (_root, session) = session("dup-init")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(Arc::clone(&store));
+    let (is_error, text) = call(&tool, json!({"op": "init", "items": ["x", "x"]}));
+    assert!(is_error, "a repeated label was taken: {text}");
+    assert!(text.contains("todo \"x\""), "{text}");
+    assert!(store.list().items().next().is_none());
+    Ok(())
+}
+
+/// Dies with `rm` keeping only rows of another label: on a list an older binary wrote with two
+/// `a` rows, `rm t2` takes `t1` with it.
+#[test]
+fn rm_on_a_legacy_list_with_a_repeated_label_removes_only_the_named_row() -> TestResult {
+    let (_root, session) = session("dup-legacy")?;
+    let record = json!({
+        "op": "append", "actor": "main", "at": 1790552725363_u64, "touched": 2,
+        "list": {"format": 2, "phases": [{"name": "Tasks", "items": [
+            {"id": "t1", "label": "a", "state": "running", "by": "main", "attempt": 1, "refusals": 0},
+            {"id": "t2", "label": "a", "state": "pending", "attempt": 1, "refusals": 0}
+        ]}], "nextId": 3}
+    });
+    yi_session::lock_session(&session).append_custom("main", "todo", Some(record))?;
+    let tool = TodoTool::new(store_for(&session));
+    let (is_error, text) = call(&tool, json!({"op": "append", "items": ["b"]}));
+    assert!(!is_error, "a legacy list must stay repairable: {text}");
+    let (is_error, text) = call(&tool, json!({"op": "append", "items": ["a"]}));
+    assert!(is_error, "a third `a` was taken: {text}");
+    let (is_error, text) = call(&tool, json!({"op": "rm", "id": "t2"}));
+    assert!(!is_error, "{text}");
+    let list = store_for(&session).list();
+    assert_eq!(
+        ids(&list),
+        vec![
+            ("t1".to_owned(), "a".to_owned()),
+            ("t3".to_owned(), "b".to_owned())
+        ]
+    );
+    Ok(())
+}
+
 #[test]
 fn every_argument_error_ends_with_an_id_call_that_lands() -> TestResult {
     let (_root, session) = session("example")?;
