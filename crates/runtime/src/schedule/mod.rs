@@ -1,3 +1,5 @@
+pub mod adapter;
+pub mod channel;
 pub mod clock;
 mod kernel;
 mod lanes;
@@ -492,7 +494,7 @@ pub fn is_heartbeat_job(job: &Job) -> bool {
 /// Holds a due heartbeat back whenever delivering it would stack redundant work or land
 /// mid-operation; steering tolerates plain streaming, a follow-up does not (§15.2).
 pub fn should_defer(job: &Job, activity: &SessionActivity) -> bool {
-    if !is_heartbeat_job(job) && job.unblocks.is_none() {
+    if !is_heartbeat_job(job) && job.unblocks.is_none() && job.channel.is_none() {
         return false;
     }
     if activity.is_compacting || activity.has_pending_session_work {
@@ -575,6 +577,10 @@ pub enum RunOutcome {
     Skipped,
     /// Held back by what the session is doing: the tick is still owed and retries soon.
     Deferred,
+    /// A channel tick with nothing to hand its target: the subscription keeps waiting.
+    Idle,
+    /// The channel's adapter is past its restart intensity, so the subscription pauses.
+    Paused,
 }
 
 /// Incident: a deferred tick re-armed to its next scheduled time, so a daily clock due while a
@@ -610,6 +616,19 @@ pub fn record_dispatch_result_in_state(
                 .flatten();
             job.next_run_at = Some(next.map_or(retry, |next| next.min(retry)));
             job.last_skipped_at = Some(now_ms);
+            job.updated_at = now_ms;
+            updated = Some(job.clone());
+            continue;
+        }
+        if outcome == RunOutcome::Idle && error.is_none() {
+            job.updated_at = now_ms;
+            updated = Some(job.clone());
+            continue;
+        }
+        if outcome == RunOutcome::Paused {
+            job.status = JobStatus::Paused;
+            job.next_run_at = None;
+            job.last_error = Some("its adapter stopped past its restart intensity".to_owned());
             job.updated_at = now_ms;
             updated = Some(job.clone());
             continue;
@@ -780,6 +799,7 @@ pub fn new_job(spec: JobSpec) -> Job {
         catch_up: None,
         unblocks: None,
         halted: false,
+        channel: None,
         extra: serde_json::Map::new(),
     }
 }
@@ -800,6 +820,8 @@ pub struct HeartbeatService {
     deliver: Option<std::sync::Arc<DeliverFn>>,
     stop: Option<std::sync::Arc<shared::StopFn>>,
     words: Option<crate::goal::StoreHandle>,
+    /// The machine's channel buffers, `<sessions>/channels/`.
+    channels: Option<std::path::PathBuf>,
     /// Bound to a store every session of this process shares, so a halt reaches them all.
     interned: bool,
 }
@@ -815,8 +837,14 @@ impl HeartbeatService {
             deliver: None,
             stop: None,
             words: None,
+            channels: None,
             interned: false,
         }
+    }
+
+    pub fn with_channels(mut self, home: std::path::PathBuf) -> Self {
+        self.channels = Some(home);
+        self
     }
 
     pub fn with_words(mut self, words: crate::goal::StoreHandle) -> Self {
@@ -984,7 +1012,9 @@ fn render_job_line(job: &Job) -> String {
             JobStatus::Cancelled => "cancelled",
         },
         if job.halted { ", halted" } else { "" },
-        job.schedule.expression,
+        job.channel
+            .as_ref()
+            .map_or(job.schedule.expression.as_str(), |sub| sub.address.as_str()),
         job.prompt,
         job.run_count,
         job.next_run_at

@@ -4,7 +4,6 @@
  "plan.retry_cap": 8,
  "plan.stale_turns": 12,
  "plan.probe_first_s": 60,
- "plan.probe_max_s": 1800,
  "plan.stop_cap": 2,
  "plan.multi_step_score": 2,
  "plan.long_prompt_words": 30,
