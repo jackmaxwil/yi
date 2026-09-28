@@ -224,7 +224,7 @@ pub(crate) fn kernel_profile(
     // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling.
     profile
         .writable
-        .extend(family_dir.map(std::path::Path::to_path_buf));
+        .extend(family_dir.map(crate::kernel_state::board));
     profile.loopback = true;
     profile.writable.sort();
     profile.writable.dedup();
