@@ -1,4 +1,4 @@
-//! One typed plan for every request's cache marks (D295): at most four, none naming
+//! One typed set of cache breakpoints for every request (D295): at most four, none naming
 //! `LlmContext.transient`, which the adapters render only after [`encode`] has run.
 
 use serde_json::{Value, json};
@@ -12,10 +12,10 @@ pub enum Ttl {
     Hour1,
 }
 
-/// Where a mark lands: the end of the stable prefix (tools and system), or the last block
-/// of the message at that index of the transformed `messages`. `transient` has no anchor.
+/// Where a breakpoint sits: the end of the stable prefix (tools and system), or the last block
+/// of the message at that index of the transformed `messages`. `transient` has no position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Anchor {
+pub enum Position {
     Stable,
     /// The previous request's tail: a free exact-position read that also covers a lookback
     /// the appended blocks would otherwise overflow.
@@ -24,7 +24,7 @@ pub enum Anchor {
     Tail(usize),
 }
 
-impl Anchor {
+impl Position {
     pub fn index(self) -> Option<usize> {
         match self {
             Self::Stable => None,
@@ -34,21 +34,21 @@ impl Anchor {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Mark {
-    pub anchor: Anchor,
+pub struct Breakpoint {
+    pub position: Position,
     pub ttl: Ttl,
 }
 
 /// What the request is for. Only a loop request writes a tail: a one-shot's is never read
 /// again and a `tool_choice: none` final has already invalidated the messages tier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Purpose {
+pub enum Reuse {
     Loop,
     OneShot,
     Final,
 }
 
-impl Purpose {
+impl Reuse {
     /// Read from the typed request, not its content: a forced `none` is a final, a request
     /// with no tool table is a one-shot (title, compaction, branch summary), the rest loop.
     pub fn of(context: &LlmContext) -> Self {
@@ -112,15 +112,15 @@ impl Engine {
     }
 }
 
-/// The route as the plan sees it.
+/// The route as the breakpoints see it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Route {
+pub struct CacheRoute {
     pub engine: Engine,
     /// The stable mark's TTL; the tail marks are always 5m, so the order along the prompt holds.
     pub stable_ttl: Ttl,
 }
 
-impl Route {
+impl CacheRoute {
     /// `hold_1h`: an interactive session keeps its stable prefix for an hour on an engine that
     /// prices one (D116). The adaptive rule that switches after an expiry miss is a later stage.
     pub fn of(model: &Model, hold_1h: bool) -> Self {
@@ -136,11 +136,11 @@ impl Route {
 /// The most marks any engine takes.
 pub const SLOTS: usize = 4;
 
-/// Built only by [`CachePlan::build`]: at most [`SLOTS`] marks in prompt order, TTL never
-/// rising, every message anchor inside the slice it was built over.
+/// Built only by [`Breakpoints::build`]: at most [`SLOTS`] breakpoints in prompt order, TTL never
+/// rising, every message position inside the slice it was built over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CachePlan {
-    marks: [Option<Mark>; SLOTS],
+pub struct Breakpoints {
+    marks: [Option<Breakpoint>; SLOTS],
 }
 
 fn is_tail_kind(message: &AgentMessage) -> bool {
@@ -150,16 +150,16 @@ fn is_tail_kind(message: &AgentMessage) -> bool {
     )
 }
 
-impl CachePlan {
+impl Breakpoints {
     /// `messages` is the transformed history the adapter renders, never `transient`; slots
     /// fill stable, tail, then prev_tail (the last user-role message ahead of the last reply).
-    pub fn build(route: &Route, messages: &[AgentMessage], purpose: Purpose) -> Self {
-        let stable = Mark {
-            anchor: Anchor::Stable,
+    pub fn build(route: &CacheRoute, messages: &[AgentMessage], reuse: Reuse) -> Self {
+        let stable = Breakpoint {
+            position: Position::Stable,
             ttl: route.stable_ttl,
         };
         let mut marks = [Some(stable), None, None, None];
-        if purpose != Purpose::Loop {
+        if reuse != Reuse::Loop {
             return Self { marks };
         }
         let slots = route.engine.slots();
@@ -172,38 +172,38 @@ impl CachePlan {
                     .rposition(|message| matches!(message, AgentMessage::Assistant { .. }))
             })
             .and_then(|reply| messages.get(..reply)?.iter().rposition(is_tail_kind));
-        let five = |anchor| {
-            Some(Mark {
-                anchor,
+        let five = |position| {
+            Some(Breakpoint {
+                position,
                 ttl: Ttl::Min5,
             })
         };
         match (prev_tail, tail) {
             (Some(prev), Some(tail)) if slots >= 3 => {
-                marks[1] = five(Anchor::PrevTail(prev));
-                marks[2] = five(Anchor::Tail(tail));
+                marks[1] = five(Position::PrevTail(prev));
+                marks[2] = five(Position::Tail(tail));
             }
             (_, Some(tail)) if slots >= 2 => {
-                marks[1] = five(Anchor::Tail(tail));
+                marks[1] = five(Position::Tail(tail));
             }
             _ => {}
         }
         Self { marks }
     }
 
-    pub fn marks(&self) -> impl Iterator<Item = Mark> + '_ {
+    pub fn marks(&self) -> impl Iterator<Item = Breakpoint> + '_ {
         self.marks.iter().flatten().copied()
     }
 }
 
-/// The wire shape a plan is spelled in; every arm is matched, and none is a root mark.
+/// The wire shape breakpoints are spelled in; every arm is matched, and none is a root mark.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dialect {
     /// Anthropic Messages: `cache_control` on the last system block (the last tool when
-    /// there is no system) and on the last block of an anchored message.
+    /// there is no system) and on the last block of the message a breakpoint names.
     AnthropicBlocks,
     /// openai-completions through OpenRouter: `cache_control` on the last part of the
-    /// system message and of an anchored message; a string content becomes one text part.
+    /// system message and of the message a breakpoint names; a string content becomes one text part.
     OpenRouterParts,
     /// openai-completions elsewhere and the Responses API: the provider places its own
     /// breakpoint, and no explicit mark is known to be accepted there (design §11).
@@ -229,14 +229,19 @@ fn mark_last_part(message: &mut Value, control: Value) {
     }
 }
 
-/// Spells the plan into the rendered body: `origins[j]` is the `messages` index rendered as
+/// Spells the breakpoints into the rendered body: `origins[j]` is the `messages` index rendered as
 /// body message `j` (`None` for the system message and anything synthesized).
-pub fn encode(plan: &CachePlan, dialect: Dialect, params: &mut Value, origins: &[Option<usize>]) {
-    for mark in plan.marks() {
+pub fn encode(
+    breakpoints: &Breakpoints,
+    dialect: Dialect,
+    params: &mut Value,
+    origins: &[Option<usize>],
+) {
+    for mark in breakpoints.marks() {
         let control = ephemeral(mark.ttl);
-        match (dialect, mark.anchor) {
+        match (dialect, mark.position) {
             (Dialect::Automatic, _) => {}
-            (Dialect::AnthropicBlocks, Anchor::Stable) => {
+            (Dialect::AnthropicBlocks, Position::Stable) => {
                 let has_system = params
                     .get("system")
                     .and_then(Value::as_array)
@@ -250,7 +255,7 @@ pub fn encode(plan: &CachePlan, dialect: Dialect, params: &mut Value, origins: &
                     block["cache_control"] = control;
                 }
             }
-            (Dialect::OpenRouterParts, Anchor::Stable) => {
+            (Dialect::OpenRouterParts, Position::Stable) => {
                 if let Some(system) = params
                     .get_mut("messages")
                     .and_then(Value::as_array_mut)
@@ -264,7 +269,7 @@ pub fn encode(plan: &CachePlan, dialect: Dialect, params: &mut Value, origins: &
             }
             (
                 Dialect::AnthropicBlocks | Dialect::OpenRouterParts,
-                Anchor::PrevTail(index) | Anchor::Tail(index),
+                Position::PrevTail(index) | Position::Tail(index),
             ) => {
                 let Some(at) = origins.iter().position(|origin| *origin == Some(index)) else {
                     continue;

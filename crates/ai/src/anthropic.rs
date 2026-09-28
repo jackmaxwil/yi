@@ -4,7 +4,7 @@ use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 use yi_types::model::{LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolChoice, ToolDef};
 
-use crate::cache::{CachePlan, Dialect, Purpose, Route, encode};
+use crate::breakpoints::{Breakpoints, CacheRoute, Dialect, Reuse, encode};
 use crate::catalog::calculate_cost;
 use crate::compat::compat_bool;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
@@ -40,7 +40,7 @@ pub struct AnthropicOptions {
 }
 
 /// Universal prefix, trusted prompt, yard: one block each, so a later stage can mark a
-/// boundary between them; the plan's stable mark sits on the last one (D295).
+/// boundary between them; the stable breakpoint sits on the last one (D295).
 fn system_blocks(system: &str) -> Vec<Value> {
     let parts: Vec<&str> = system.split(SYSTEM_BLOCK_SEPARATOR).collect();
     let mut texts: Vec<String> = Vec::new();
@@ -93,7 +93,7 @@ fn content_blocks(content: &[Content]) -> Value {
 }
 
 /// Rendered messages beside, per rendered message, the index of the message it came from,
-/// which is what a plan's anchor names.
+/// which is what a breakpoint position names.
 fn convert_messages(messages: &[AgentMessage]) -> (Vec<Value>, Vec<Option<usize>>) {
     let _span = yi_types::trace::span("ai.convert_messages");
     let mut params: Vec<Value> = Vec::new();
@@ -257,10 +257,10 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
         model,
         Some(normalize_anthropic_tool_call_id),
     );
-    let plan = CachePlan::build(
-        &Route::of(model, options.cache_1h),
+    let breakpoints = Breakpoints::build(
+        &CacheRoute::of(model, options.cache_1h),
         &history,
-        Purpose::of(context),
+        Reuse::of(context),
     );
     let (messages, origins) = convert_messages(&history);
     let mut params = json!({
@@ -322,7 +322,12 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
             }
         }
     }
-    encode(&plan, Dialect::AnthropicBlocks, &mut params, &origins);
+    encode(
+        &breakpoints,
+        Dialect::AnthropicBlocks,
+        &mut params,
+        &origins,
+    );
     // The per-request facts render after every mark, so none can land on them.
     let (transient, _) = convert_messages(&transform_messages(
         &context.transient,

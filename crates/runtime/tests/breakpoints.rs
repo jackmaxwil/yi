@@ -1,5 +1,5 @@
-//! The cache plan's invariants over random requests (D295): at most the engine's slots, a
-//! TTL that never rises along the prompt, no anchor past the history (so none in
+//! The breakpoints' invariants over random requests (D295): at most the engine's slots, a
+//! TTL that never rises along the prompt, no position past the history (so none in
 //! `transient`), and no tail for a one-shot or a final. The same requests are then rendered
 //! through both dialects, and the environment messages come out last and bare.
 
@@ -10,7 +10,7 @@ use proptest::prelude::{Just, Strategy, any, prop, prop_oneof};
 use proptest::test_runner::{Config, RngSeed, TestCaseError, TestRunner};
 use serde_json::{Value, json};
 use yi_ai::anthropic::{self, AnthropicOptions};
-use yi_ai::cache::{Anchor, CachePlan, Engine, Purpose, Route, SLOTS, Ttl};
+use yi_ai::breakpoints::{Breakpoints, CacheRoute, Engine, Position, Reuse, SLOTS, Ttl};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_ai::openai::{self, OpenAiOptions};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
@@ -80,22 +80,18 @@ fn message(kind: u8, index: usize) -> AgentMessage {
     }
 }
 
-/// A random request: history kinds, environment count, purpose, engine and TTL choices.
+/// A random request: history kinds, environment count, reuse, engine and TTL choices.
 #[derive(Clone, Debug)]
 struct Case {
     kinds: Vec<u8>,
     transient: usize,
-    purpose: Purpose,
+    reuse: Reuse,
     engine: Engine,
     hold_1h: bool,
 }
 
 fn case_strategy() -> impl Strategy<Value = Case> {
-    let purpose = prop_oneof![
-        Just(Purpose::Loop),
-        Just(Purpose::OneShot),
-        Just(Purpose::Final)
-    ];
+    let reuse = prop_oneof![Just(Reuse::Loop), Just(Reuse::OneShot), Just(Reuse::Final)];
     let engine = prop_oneof![
         (1..=SLOTS, any::<bool>()).prop_map(|(slots, hour)| Engine::Breakpoint { slots, hour }),
         Just(Engine::Snapshot),
@@ -104,14 +100,14 @@ fn case_strategy() -> impl Strategy<Value = Case> {
     (
         prop::collection::vec(0..5u8, 0..12),
         0..3usize,
-        purpose,
+        reuse,
         engine,
         any::<bool>(),
     )
-        .prop_map(|(kinds, transient, purpose, engine, hold_1h)| Case {
+        .prop_map(|(kinds, transient, reuse, engine, hold_1h)| Case {
             kinds,
             transient,
-            purpose,
+            reuse,
             engine,
             hold_1h,
         })
@@ -124,10 +120,10 @@ fn context(case: &Case) -> LlmContext {
         parameters: json!({"type": "object", "properties": {}}),
         freeform: None,
     };
-    let (tools, tool_choice) = match case.purpose {
-        Purpose::Loop => (Some(vec![tool]), None),
-        Purpose::OneShot => (None, None),
-        Purpose::Final => (Some(vec![tool]), Some(ToolChoice::None)),
+    let (tools, tool_choice) = match case.reuse {
+        Reuse::Loop => (Some(vec![tool]), None),
+        Reuse::OneShot => (None, None),
+        Reuse::Final => (Some(vec![tool]), Some(ToolChoice::None)),
     };
     LlmContext {
         system_prompt: "be terse".to_owned(),
@@ -146,39 +142,42 @@ fn context(case: &Case) -> LlmContext {
     }
 }
 
-fn check_plan(case: &Case, ctx: &LlmContext) -> Result<(), TestCaseError> {
+fn check_breakpoints(case: &Case, ctx: &LlmContext) -> Result<(), TestCaseError> {
     let stable_ttl = match case.engine {
         Engine::Breakpoint { hour: true, .. } if case.hold_1h => Ttl::Hour1,
         _ => Ttl::Min5,
     };
-    let route = Route {
+    let route = CacheRoute {
         engine: case.engine,
         stable_ttl,
     };
-    let plan = CachePlan::build(&route, &ctx.messages, case.purpose);
-    let marks: Vec<_> = plan.marks().collect();
+    let breakpoints = Breakpoints::build(&route, &ctx.messages, case.reuse);
+    let marks: Vec<_> = breakpoints.marks().collect();
     let slots = match case.engine {
         Engine::Breakpoint { slots, .. } => slots,
         Engine::Snapshot => 1,
         Engine::Prefix => SLOTS,
     };
     proptest::prop_assert!(marks.len() <= slots, "{marks:?} over {slots} slots");
-    proptest::prop_assert_eq!(marks.first().map(|mark| mark.anchor), Some(Anchor::Stable));
+    proptest::prop_assert_eq!(
+        marks.first().map(|mark| mark.position),
+        Some(Position::Stable)
+    );
     for pair in marks.windows(2) {
         proptest::prop_assert!(pair[1].ttl <= pair[0].ttl, "TTL rises: {marks:?}");
         proptest::prop_assert!(
-            pair[1].anchor.index() > pair[0].anchor.index(),
-            "anchors out of prompt order: {marks:?}"
+            pair[1].position.index() > pair[0].position.index(),
+            "positions out of prompt order: {marks:?}"
         );
     }
     for mark in &marks {
-        if let Some(index) = mark.anchor.index() {
+        if let Some(index) = mark.position.index() {
             proptest::prop_assert!(
                 index < ctx.messages.len(),
-                "anchor {index} past the history of {}: transient is in reach",
+                "position {index} past the history of {}: transient is in reach",
                 ctx.messages.len()
             );
-            proptest::prop_assert_eq!(case.purpose, Purpose::Loop, "a tail on {:?}", case.purpose);
+            proptest::prop_assert_eq!(case.reuse, Reuse::Loop, "a tail on {:?}", case.reuse);
         }
     }
     Ok(())
@@ -215,9 +214,9 @@ fn check_rendered(case: &Case, body: &Value, dialect: &str) -> Result<(), TestCa
         .filter(|message| marked(message))
         .count();
     proptest::prop_assert!(
-        case.purpose == Purpose::Loop || history_marks == 0,
+        case.reuse == Reuse::Loop || history_marks == 0,
         "{dialect}: {history_marks} history marks on {:?}",
-        case.purpose
+        case.reuse
     );
     proptest::prop_assert!(
         body.get("cache_control").is_none(),
@@ -227,7 +226,8 @@ fn check_rendered(case: &Case, body: &Value, dialect: &str) -> Result<(), TestCa
 }
 
 #[test]
-fn random_requests_hold_every_plan_invariant_on_both_dialects() -> Result<(), Box<dyn Error>> {
+fn random_requests_hold_every_breakpoint_invariant_on_both_dialects() -> Result<(), Box<dyn Error>>
+{
     let mut config = Config {
         failure_persistence: None,
         ..Config::default()
@@ -237,7 +237,7 @@ fn random_requests_hold_every_plan_invariant_on_both_dialects() -> Result<(), Bo
     }
     let seed = match config.rng_seed {
         RngSeed::Fixed(seed) => seed,
-        RngSeed::Random => RandomState::new().hash_one("cache-plan"),
+        RngSeed::Random => RandomState::new().hash_one("breakpoints"),
     };
     config.rng_seed = RngSeed::Fixed(seed);
     let replay = format!("PROPTEST_RNG_SEED={seed} replays this run");
@@ -257,7 +257,7 @@ fn random_requests_hold_every_plan_invariant_on_both_dialects() -> Result<(), Bo
     runner
         .run(&case_strategy(), |case| {
             let ctx = context(&case);
-            check_plan(&case, &ctx)?;
+            check_breakpoints(&case, &ctx)?;
             let options = AnthropicOptions {
                 cache_1h: case.hold_1h,
                 ..AnthropicOptions::default()
