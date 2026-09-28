@@ -268,14 +268,24 @@ impl SandboxRefusal {
             .iter()
             .any(|raw| denied(&absolute_path(raw, cwd)));
         // A read outside home never asks: `cat /etc/hosts` after a refused `/etc` write.
-        let in_home = home.is_some_and(|home| dir.starts_with(home));
-        let needle = dir.to_string_lossy();
-        let named = text.match_indices(needle.as_ref()).any(|(at, _)| {
-            let rest = text.get(at..).unwrap_or_default();
-            let end = rest.find(|c: char| c.is_whitespace() || PATH_END.contains(&c));
-            let spelled = rest.get(..end.unwrap_or(rest.len())).unwrap_or(rest);
-            denied(&yi_permission::lexical_normalize(Path::new(spelled)))
-        });
+        let in_home = home.as_deref().is_some_and(|home| dir.starts_with(home));
+        // The directory as spelled from `/` or from `~`, found anywhere in the text.
+        let dir_text = dir.to_string_lossy();
+        let from_tilde = (home.as_deref())
+            .and_then(|home| Some(format!("~{}", dir_text.strip_prefix(home.to_str()?)?)));
+        let named = [Some(dir_text.to_string()), from_tilde]
+            .into_iter()
+            .flatten()
+            .any(|needle| {
+                text.match_indices(needle.as_str()).any(|(at, _)| {
+                    let rest = text.get(at..).unwrap_or_default();
+                    let end = rest.find(|c: char| c.is_whitespace() || PATH_END.contains(&c));
+                    denied(&absolute_path(
+                        rest.get(..end.unwrap_or(rest.len())).unwrap_or(rest),
+                        cwd,
+                    ))
+                })
+            });
         written || (in_home && named)
     }
 }
@@ -283,28 +293,10 @@ impl SandboxRefusal {
 /// What ends a path spelled inside a command: a quote, a shell operator, a comma.
 const PATH_END: [char; 12] = ['\'', '"', '`', ';', '|', '&', '<', '>', '(', ')', ',', '$'];
 
-/// `command` with `${HOME}`, `$HOME` and a word-leading `~` written as `home`, the spellings a
-/// shell or a model reaches the home directory by.
+/// `command` with `${HOME}` and `$HOME` written as `home`; `resolve_target` reads `~` itself.
 fn with_home_expanded(command: &str, home: Option<&Path>) -> String {
-    let Some(home) = home.map(Path::to_string_lossy) else {
-        return command.to_owned();
-    };
-    let text = command.replace("${HOME}", &home).replace("$HOME", &home);
-    let mut out = String::with_capacity(text.len());
-    let mut previous = ' ';
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        let starts = previous.is_whitespace() || "=:'\"(".contains(previous);
-        let ends = chars
-            .peek()
-            .is_none_or(|next| *next == '/' || next.is_whitespace() || "'\";)".contains(*next));
-        match c == '~' && starts && ends {
-            true => out.push_str(&home),
-            false => out.push(c),
-        }
-        previous = c;
-    }
-    out
+    let home = home.map_or_else(|| "$HOME".into(), Path::to_string_lossy);
+    command.replace("${HOME}", &home).replace("$HOME", &home)
 }
 
 fn absolute_path(raw: &str, cwd: &Path) -> PathBuf {
