@@ -364,6 +364,9 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
 - Sandbox: Seatbelt `/usr/bin/sandbox-exec`, macOS only; writable cwd, git dirs minus
   `hooks config commondir gitdir`, session dir, tmp; reads deny `~/.ssh ~/.gnupg ~/.aws ~/.kube
   ~/.docker`; no network. Without it, `Contain` becomes a reviewable `Ask`.
+- With `classifier.approve` and `LAYA_API_KEY`, a reviewable auto-mode ask first gets one `noul`
+  from the classifier sidecar: P(safe) ≥ 0.9 (0.98 if destructive) allows, ≤ 0.05 asks the user,
+  else on to the reviewer; an ask it may judge left unanswered 120 s is settled by that judgement.
 - With `models.autoReview` set, a reviewable ask goes to the reviewer (30 s); non-allow denies
   with a request id `ask_user` replays; `ActionLedger` (256) makes an approval single-use.
 - Every settled ask is journaled as a `permission` custom entry: the ask, the verdict, and
@@ -371,7 +374,7 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
 - Owner: [`decide`](../crates/permission/src/decide.rs), [`sandbox`](../crates/tools/src/sandbox.rs)
 - State: `PermissionMode { Ask, Auto, Yolo }`, `Decision { Allow, Contain, Deny, Ask { title,
   description, reviewable } }`, `Class { Safe, Destructive, Egress, Unknown }`.
-- Shapes: [`types`](../crates/types/src/permission.rs). Settled by: D15, D26, D81, D205, D206, D207, D293.
+- Shapes: [`types`](../crates/types/src/permission.rs). Settled by: D15, D26, D81, D205, D206, D207, D293, D298.
 
 ## 9. Kernel
 A persistent IPython process per session that reaches the host only through host requests.
@@ -748,7 +751,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
-  `classifier{url,timeoutMs,threshold}`.
+  `classifier{url,timeoutMs,threshold,approve,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)
