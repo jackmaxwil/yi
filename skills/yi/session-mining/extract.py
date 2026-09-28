@@ -323,6 +323,7 @@ def signals(entries):
             intercepts.append(message)
         elif role == "custom" and message.get("customType") == "length_redrive":
             out["length_redrive"] += 1
+            # Historical: the forced-bash redrive was removed in be90b814, so a live session reads 0.
             if (message.get("details") or {}).get("forced"):
                 out["length_forced"] += 1
             if (message.get("details") or {}).get("cut"):
@@ -416,7 +417,8 @@ def signals(entries):
             out["kernel_dead"] += 1
         if tool == "ipython" and "is not installed in the kernel. Run `%pip install" in result["text"]:
             out["module_missing"] += 1
-        if tool == "todo" and ("done needs evidence shaped" in result["text"] or "`set` cannot close" in result["text"]):
+        # "done needs evidence shaped" until the refusal was reworded to "done needs evidence:".
+        if tool == "todo" and ("done needs evidence" in result["text"] or "`set` cannot close" in result["text"]):
             out["evidence_shape_refused"] += 1
         if "PermissionDenied" in result["text"] and "PermissionDenied" in final:
             out["sandbox_denial_as_finding"] += 1
