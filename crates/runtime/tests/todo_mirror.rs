@@ -712,31 +712,39 @@ fn a_todo_set_or_init_under_a_plan_writes_the_owners_rows_beside_it() -> TestRes
 }
 
 /// Dies with the batch checked against the owner's rows only: `gate` joins beside the plan's
-/// `gate`, and the next projection drops it without a word.
+/// `gate`, and the next projection drops it without a word. Dies too with a refusal that does not
+/// name the plan, which leaves a model that echoed the rendered list into a `set` guessing why.
 #[test]
-fn appending_a_plan_rows_label_is_refused() -> TestResult {
+fn a_plan_rows_label_in_an_append_or_a_set_is_refused_naming_the_plan() -> TestResult {
     use yi_tools::{Tool, ToolContext};
     let dir = Scratch::new("yi-todo-mirror-dup")?;
     let (_session, todos, _engine) = mirrored(&dir)?;
     let before = todos.list();
+    let plan = plan_of(&before).ok_or("the list names no plan")?.to_owned();
     let tool = yi_runtime::todo::tool::TodoTool::new(Arc::clone(&todos));
-    let args = json!({"op": "append", "items": ["gate"]});
-    let output = tool.execute(
-        args.as_object().cloned().unwrap_or_default(),
-        &ToolContext::new(dir.to_path_buf()),
-    );
-    let text: String = output
-        .result
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert!(output.is_error, "a plan row's label was taken: {text}");
-    assert!(text.contains("todo \"gate\""), "{text}");
-    assert_eq!(todos.list(), before);
+    let echo = text::checklist(&before).join("\n");
+    for (args, label) in [
+        (json!({"op": "append", "items": ["gate"]}), "gate"),
+        (json!({"op": "set", "list": echo}), "delegated job"),
+    ] {
+        let output = tool.execute(
+            args.as_object().cloned().unwrap_or_default(),
+            &ToolContext::new(dir.to_path_buf()),
+        );
+        let text: String = output
+            .result
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(output.is_error, "a plan row's label was taken: {text}");
+        let named = format!("todo {label:?} is a row of plan {plan}");
+        assert!(text.contains(&named), "{text}");
+        assert_eq!(todos.list(), before);
+    }
     Ok(())
 }
 

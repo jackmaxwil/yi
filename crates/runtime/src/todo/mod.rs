@@ -122,6 +122,10 @@ pub enum TodoError {
     NoSuchPhase { phase: String, known: String },
     #[error("todo {label:?} is already in the list; labels are unique")]
     Duplicate { label: String },
+    #[error(
+        "todo {label:?} is a row of plan {plan}, and labels are unique; leave the plan's rows out of a set or init, and give a new todo a label of its own"
+    )]
+    PlanRow { label: String, plan: String },
     #[error("{op} is not a move for {label:?} in state {from}; legal here: {legal}")]
     Illegal {
         op: &'static str,
@@ -248,7 +252,13 @@ impl TodoStore {
             .collect();
         let target = match running.as_slice() {
             [] => Target::All,
-            [one] => Target::Label(one.label.clone()),
+            // By id: a list an older binary wrote may give the running row's label to another.
+            [one] => Target::Label(
+                one.id
+                    .as_ref()
+                    .and_then(|id| TodoLabel::new(id.as_str()).ok())
+                    .unwrap_or_else(|| one.label.clone()),
+            ),
             many => {
                 return Err(TodoError::ManyRunning {
                     running: many
@@ -466,8 +476,17 @@ impl TodoStore {
             .into_iter()
             .find(|label| rows(&list, label) > rows(&before, label))
         {
-            return Err(TodoError::Duplicate {
-                label: label.to_string(),
+            let plan = before
+                .items()
+                .filter(|item| item.label == *label)
+                .find_map(mirror::row_plan);
+            let label = label.to_string();
+            return Err(match plan {
+                Some(plan) => TodoError::PlanRow {
+                    label,
+                    plan: plan.to_string(),
+                },
+                None => TodoError::Duplicate { label },
             });
         }
         state.list = list.clone();
@@ -822,6 +841,23 @@ fn add_items(
     Ok(())
 }
 
+/// The list an init replaces may already repeat a label, so the new list's own rows are checked.
+fn init_list(phases: Vec<(PhaseName, Vec<Todo>)>) -> Result<TodoList, TodoError> {
+    let mut fresh = TodoList::default();
+    for (name, items) in phases {
+        add_items(&mut fresh, Some(name), None, items)?;
+    }
+    if fresh.items().next().is_none() {
+        return Err(TodoError::Empty);
+    }
+    if let Some(label) = fresh.duplicates().first() {
+        return Err(TodoError::Duplicate {
+            label: label.to_string(),
+        });
+    }
+    Ok(fresh)
+}
+
 fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
     let done = |item: &Todo| matches!(item.state, TodoState::Done { .. });
     match op {
@@ -853,14 +889,7 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             Ok(())
         }
         Op::Init { phases } => {
-            let mut fresh = TodoList::default();
-            for (name, items) in phases {
-                add_items(&mut fresh, Some(name), None, items)?;
-            }
-            if fresh.items().next().is_none() {
-                return Err(TodoError::Empty);
-            }
-            *list = fresh;
+            *list = init_list(phases)?;
             Ok(())
         }
         Op::Append {
@@ -879,8 +908,8 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
                 by: AgentId::owner(),
             };
             item.note = None;
-            let target = item.label.clone();
-            list.for_each_mut(|other| demote(other, &target));
+            let started = (item.label.clone(), item.id.clone());
+            list.for_each_mut(|other| demote(other, &started));
             Ok(())
         }
         Op::Done { target, evidence } => {
@@ -982,8 +1011,9 @@ fn keep_one_running(row: &mut Todo, seen: &mut bool) {
     }
 }
 
-fn demote(item: &mut Todo, keep: &TodoLabel) {
-    if matches!(item.state, TodoState::Running { .. }) && item.label != *keep {
+/// A list an older binary wrote may repeat a label, so the started row is kept by label and id.
+fn demote(item: &mut Todo, (label, id): &(TodoLabel, Option<TodoId>)) {
+    if matches!(item.state, TodoState::Running { .. }) && (item.label != *label || item.id != *id) {
         item.state = TodoState::Pending;
     }
 }
