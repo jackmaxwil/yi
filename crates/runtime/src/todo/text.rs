@@ -1,4 +1,4 @@
-use yi_types::plan::doc::{AgentId, BlockedOn, Todo, TodoLabel, TodoState, TodoStateName};
+use yi_types::plan::doc::{AgentId, BlockedOn, Todo, TodoState, TodoStateName};
 use yi_types::todo::{PhaseName, TodoId, TodoList, TodoPhase};
 
 use super::{DEFAULT_PHASE, TodoError};
@@ -106,14 +106,10 @@ pub fn parse(source: &str) -> Result<TodoList, TodoError> {
     if list.items().next().is_none() {
         return Err(TodoError::Empty);
     }
-    let mut seen: Vec<&TodoLabel> = Vec::new();
-    for item in list.items() {
-        if seen.contains(&&item.label) {
-            return Err(TodoError::Duplicate {
-                label: item.label.to_string(),
-            });
-        }
-        seen.push(&item.label);
+    if let Some(label) = list.duplicates().first() {
+        return Err(TodoError::Duplicate {
+            label: label.to_string(),
+        });
     }
     Ok(list)
 }
