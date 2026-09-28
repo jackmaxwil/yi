@@ -352,7 +352,7 @@ Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a
 ## 8. Permission
 A pure `decide` over the call, mode, rules, grants, holds and catastrophic context.
 
-- Modes `Ask`, `Auto`, `Yolo`; default `Auto` (`--confirm`, `--auto`, `--yolo`); one prompt
+- Modes `Ask`, `Auto`, `Yolo`; default `permissions.mode`, else `Auto` (`--confirm`, `--auto`, `--yolo`); one prompt
   fragment each. Order: catastrophic (every mode), configured deny, session rule or grant,
   configured allow/ask, hold, mode. `Auto` allows reads, in-tree writes and provably safe
   commands, contains the unproven, asks for destructive and egress segments. Commands are
@@ -737,9 +737,9 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `lanes [reap <slot>]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
-| `login`, `logout`, `mcp …`, `version` | Provider credentials; the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
+| `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
-- The default permission mode is `auto`; `--confirm` selects `ask`, `--yolo` selects `yolo` (§8).
+- The default permission mode is `permissions.mode`, else `auto`; `--confirm` selects `ask`, `--yolo` selects `yolo` (§8).
 - Exit codes: 0 ok; 1 error; 2 usage, bad flag, bad config or refused build; 3 an answer failing
   `--schema`. Under `--json` an agent failure is in-band and exits 0. Errors print `error: …`.
 - `~/.yi/config.json` is the only config file, parsed once; every struct is `deny_unknown_fields`
@@ -748,7 +748,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
-  `classifier{url,timeoutMs,threshold}`.
+  `classifier{url,timeoutMs,threshold}`, `permissions{mode}`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)
