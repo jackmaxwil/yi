@@ -328,5 +328,10 @@ pub(crate) fn session_extensions(
             .as_deref()
             .and_then(|spec| yi_runtime::schema::Schema::load(spec).ok())
             .map(|schema| schema.instruction()),
+        global_skills: crate::config()
+            .skills
+            .as_ref()
+            .and_then(|skills| skills.global.clone())
+            .unwrap_or_default(),
     })
 }
