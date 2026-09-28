@@ -246,9 +246,10 @@ def windows(diff):
     return hashes
 
 
-def duplicate_findings(pr, diff, others, diff_of, repo):
+def duplicate_findings(pr, diff, others, diff_of, repo, stacked=lambda a, b: False):
     """The same issue closed twice, or added text another PR already adds. A stack's own
-    neighbours are not twins: one is the other's base."""
+    neighbours are not twins: one is the other's base, or one head carries the other's.
+    Incident: #765, stacked on #733 and opened against main, was read as #733's twin."""
     mine, closes = windows(diff), {int(n) for kind, _, n in CITE.findall(pr.get("body") or "") if kind.lower() == "closes"}
     out = []
     for other in others:
@@ -256,6 +257,8 @@ def duplicate_findings(pr, diff, others, diff_of, repo):
             continue
         theirs = {int(n) for kind, named, n in CITE.findall(other.get("body") or "") if kind.lower() == "closes" and named in ("", repo)}
         shared = mine & windows(diff_of(other["number"])) if mine else set()
+        if (closes & theirs or len(shared) >= DUP_SHARED) and stacked(pr, other):
+            continue
         if closes & theirs:
             claim = f"#{other['number']} ({other['state']}) also closes " + ", ".join(f"#{n}" for n in sorted(closes & theirs))
         elif len(shared) >= DUP_SHARED:
@@ -267,10 +270,21 @@ def duplicate_findings(pr, diff, others, diff_of, repo):
     return out
 
 
-def intake(pr, diff, others, diff_of, repo):
+def intake(pr, diff, others, diff_of, repo, stacked=lambda a, b: False):
     found = [{"lens": "template", "severity": "high", "claim": err, "path": "", "line": 0, "quote": "", "fix": "edit the PR body"}
              for err in template_problems(pr.get("body") or "")]
-    return found + duplicate_findings(pr, diff, others, diff_of, repo)
+    return found + duplicate_findings(pr, diff, others, diff_of, repo, stacked)
+
+
+def stacked(pr, other):
+    """The two heads share commits the base does not have, so one was built on the other,
+    even when the successor has not yet merged the predecessor's newest push. Fetched only
+    for a PR the cheap checks already flagged."""
+    forge_pr.git("fetch", "-q", "origin", f"refs/pull/{pr['number']}/head", f"refs/pull/{other['number']}/head")
+    shared = forge_pr.git("merge-base", pr["head"]["sha"], other["head"]["sha"])
+    on_base = subprocess.run(("git", "-C", str(ROOT), "merge-base", "--is-ancestor", shared, f"origin/{pr['base']['ref']}"),
+                             capture_output=True).returncode == 0
+    return bool(shared) and not on_base
 
 
 # --- lenses and refuters --------------------------------------------------------------
@@ -419,7 +433,7 @@ def read_pr(repo, number, allowed):
         diff = forge_pr.git("diff", f"{base}..{sha}")
         others = (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50") or []) + \
                  (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=closed&sort=recentupdate&limit=30") or [])
-        found = intake(pr, raw_diff(repo, number), others, lambda n: raw_diff(repo, n), repo)
+        found = intake(pr, raw_diff(repo, number), others, lambda n: raw_diff(repo, n), repo, stacked)
         kept, dropped = read_round(pr, diff, base, sha, tree, lambda p, s, cwd: ask(p, s, cwd))
     finally:
         discard(tree)
@@ -648,6 +662,9 @@ def selfcheck():
     diffs = {6: other, 7: "", 8: other, 9: ""}
     found = duplicate_findings(pr, diff, [twin, same_issue, stacked, stranger, dict(twin, number=5)], diffs.get, "apex/yi")
     assert [f["claim"].split(" ")[0] for f in found] == ["#6", "#7"], found
+    successor = dict(twin, number=10)
+    assert duplicate_findings(pr, diff, [successor], {10: other}.get, "apex/yi", lambda a, b: b["number"] == 10) == [], \
+        "a successor opened against main that carries this head is a stack, not a twin"
     assert "15 of the same" in found[0]["claim"] and "also closes #4" in found[1]["claim"]
     assert intake(dict(pr, body=""), "", [], diffs.get, "apex/yi")[0]["lens"] == "template"
 
