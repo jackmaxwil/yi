@@ -39,9 +39,9 @@ class Revert(unittest.TestCase):
         self.commit("First", CORE, TESTS, init=True)
         for message, core, tests in (STRIP, JOIN):
             self.commit(message, core, tests)
-        self.saved = dict(mutate.REPOS), revert.CACHE
-        mutate.REPOS.clear()
-        mutate.REPOS["toy"] = {"path": repo, "src": "lib", "tests": "tests", "commit": None}
+        self.saved = dict(revert.REPOS), revert.CACHE
+        revert.REPOS.clear()
+        revert.REPOS["toy"] = {"path": repo, "src": "lib", "tests": "tests", "commit": None}
         revert.CACHE = self.root / "cache"
         self.saved_sizes = revert.SIZES[3]
 
@@ -56,8 +56,8 @@ class Revert(unittest.TestCase):
                               "commit", "-q", "-m", message], check=True)
 
     def tearDown(self):
-        mutate.REPOS.clear()
-        mutate.REPOS.update(self.saved[0])
+        revert.REPOS.clear()
+        revert.REPOS.update(self.saved[0])
         revert.CACHE = self.saved[1]
         shutil.rmtree(self.root, ignore_errors=True)
 
@@ -89,7 +89,7 @@ class Revert(unittest.TestCase):
                 task = revert.make(0, level)
                 plan = revert._plan(0, level)
                 workspace = gen.materialize(task, self.root / f"h{level}")
-                visible = mutate._suite(workspace, mutate.REPOS["toy"])
+                visible = mutate._suite(workspace, revert.REPOS["toy"])
                 for test in plan["f2p"]:
                     self.assertNotIn(test, visible, "the commit's new test is hidden")
                     self.assertIn(f"{test}: {plan['notes'][test]}", task["prompt"], "its failure line is shown instead")

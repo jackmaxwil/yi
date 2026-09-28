@@ -130,7 +130,9 @@ def _apply(text, site):
 
 def _hide(root, spec, tests):
     """{test file: its text without the given tests}, or None when one is not a literal method of
-    its class (a generated or inherited test cannot be cut out without taking others with it)."""
+    its class or of a base class in the same module (a generated test has no text to cut). An
+    inherited test is cut where it is defined: pyparsing runs its suite once per subclass, with
+    and without packrat, and a bug breaks every copy."""
     wanted = {}
     for test in tests:
         module, cls, method = test.rsplit(".", 2)
@@ -141,14 +143,25 @@ def _hide(root, spec, tests):
     for relative, methods in wanted.items():
         text = (Path(root) / relative).read_text()
         tree = ast.parse(text)
+        classes = {c.name: c for c in tree.body if isinstance(c, ast.ClassDef)}
+
+        def define(cls, method, seen=()):
+            c = classes.get(cls)
+            if c is None or cls in seen:
+                return None
+            for f in c.body:
+                if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.name == method:
+                    return f
+            bases = (b.id for b in c.bases if isinstance(b, ast.Name))
+            return next(filter(None, (define(b, method, (*seen, cls)) for b in bases)), None)
+
         cut = set()
         for cls, method in methods:
-            found = [f for c in tree.body if isinstance(c, ast.ClassDef) and c.name == cls for f in c.body
-                     if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.name == method]
-            if not found:
+            found = define(cls, method)
+            if found is None:
                 return None
-            first = min([found[0].lineno] + [d.lineno for d in found[0].decorator_list])
-            cut.update(range(first - 1, found[0].end_lineno))
+            first = min([found.lineno] + [d.lineno for d in found.decorator_list])
+            cut.update(range(first - 1, found.end_lineno))
         body = "".join(line for i, line in enumerate(text.splitlines(keepends=True)) if i not in cut)
         try:
             ast.parse(body)
