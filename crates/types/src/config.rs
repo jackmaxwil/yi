@@ -50,6 +50,7 @@ pub struct UserConfig {
     pub rlm: Option<RlmConfig>,
     pub spend: Option<SpendConfig>,
     pub node: Option<NodeConfig>,
+    pub skills: Option<SkillsConfig>,
     pub classifier: Option<ClassifierConfig>,
     pub permissions: Option<PermissionsConfig>,
 }
@@ -172,6 +173,14 @@ pub struct TuiConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TelemetryConfig {
     pub enabled: Option<bool>,
+}
+
+/// `skills.global`: the skills under the home roots (`~/.yi`, `~/.agents`, `~/.pi`, `~/.claude`)
+/// that the root session's catalog lists; absent, it lists only the repository's own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillsConfig {
+    pub global: Option<Vec<String>>,
 }
 
 /// `catalog.refreshHours`: how old `~/.yi/catalog/<provider>.json` may be before a session
