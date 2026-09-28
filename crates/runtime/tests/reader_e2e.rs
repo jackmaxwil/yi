@@ -45,7 +45,7 @@ struct Family {
     shapes: Arc<Mutex<Vec<Shape>>>,
 }
 
-type Shape = Option<(Option<Value>, Option<usize>)>;
+type Shape = Option<yi_runtime::session::RequestShape>;
 
 /// A reader is built by the runtime's own `reader::session`; any other child is a plain one.
 fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
@@ -319,12 +319,16 @@ async fn a_readers_schema_and_a_shared_partition_shape_its_requests() -> TestRes
         )?;
     }
     let shapes = family.shapes.lock().map_err(|_| "poisoned")?.clone();
+    let shape = |shared_through| {
+        Some(yi_runtime::session::RequestShape {
+            schema: Some(schema.clone()),
+            shared_through,
+            one_shot: false,
+        })
+    };
     assert_eq!(
         shapes,
-        vec![
-            Some((Some(schema.clone()), None)),
-            Some((Some(schema.clone()), Some(0)))
-        ],
+        vec![shape(None), shape(Some(0))],
         "the second sibling over the same partition marks it; both ask for the shape"
     );
     let rows = transcript(&family, "s1").await?;
@@ -332,5 +336,19 @@ async fn a_readers_schema_and_a_shared_partition_shape_its_requests() -> TestRes
         role == "user" && text.contains("Reply with one JSON object matching this schema")
     });
     assert!(asked, "{rows:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reader_without_tools_is_one_request() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![reply("line 2")]));
+    let family = family(4, script)?;
+    family.host.spawn(
+        "Which line names the sky?".to_owned(),
+        kwargs(json!({"name": "one", "role": "reader", "tools": []})),
+    )?;
+    let shapes = family.shapes.lock().map_err(|_| "poisoned")?.clone();
+    let shape = shapes.first().cloned().flatten().ok_or("no reader built")?;
+    assert!(shape.one_shot, "{shape:?}");
     Ok(())
 }

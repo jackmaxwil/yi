@@ -48,6 +48,13 @@ pub struct SessionConfig {
     pub tool_execution: ExecutionMode,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RequestShape {
+    pub schema: Option<serde_json::Value>,
+    pub shared_through: Option<usize>,
+    pub one_shot: bool,
+}
+
 struct Shared {
     ext: Mutex<Option<Arc<Mutex<crate::ext::Host>>>>,
     model: Mutex<Model>,
@@ -76,7 +83,7 @@ struct Shared {
     rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     deadline: OnceLock<Deadline>,
     turn_cap: OnceLock<u32>,
-    shape: OnceLock<(Option<serde_json::Value>, Option<usize>)>,
+    shape: OnceLock<RequestShape>,
     turn_time: Mutex<(Option<std::time::Instant>, Option<Duration>)>,
     cancelled: std::sync::atomic::AtomicBool,
     /// The kill switch's hold: no wake starts a turn until it lifts; a typed prompt still does.
@@ -277,11 +284,11 @@ impl AgentSession {
         self.shared.turn_cap.get_or_init(|| turns);
     }
 
-    pub fn set_request_shape(&self, schema: Option<serde_json::Value>, shared: Option<usize>) {
-        self.shared.shape.get_or_init(|| (schema, shared));
+    pub fn set_request_shape(&self, shape: RequestShape) {
+        self.shared.shape.get_or_init(|| shape);
     }
 
-    pub fn request_shape(&self) -> Option<(Option<serde_json::Value>, Option<usize>)> {
+    pub fn request_shape(&self) -> Option<RequestShape> {
         self.shared.shape.get().cloned()
     }
 
