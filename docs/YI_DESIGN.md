@@ -239,7 +239,8 @@ extension `Host` whose synchronous extensions turn session events into effects.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
   Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for HTML
-  comment lines rides once) and project skills render here. Project
+  comment lines rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
+  granted) and project skills render here. Project
   packs load only when `~/.yi/trust.json` (`yi trust`) grants their content hash.
 - The table persists as `custom{ext_state}` on change and is restored on resume.
 - The environment block is a `host_user` message appended per request by `transform_context`,

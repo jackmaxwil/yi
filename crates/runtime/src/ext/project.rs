@@ -163,23 +163,30 @@ impl ProjectResources {
 
     fn instructions(&self, out: &mut Vec<Effect>) {
         let root = git_root(&self.cwd).unwrap_or_else(|| self.cwd.clone());
-        let mut seen = Vec::new();
+        let mut seen: Vec<(String, usize)> = Vec::new();
         for path in Self::instruction_files(&self.cwd) {
             let Ok(content) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let hash = content_hash(&instruction_text(&content));
-            if seen.contains(&hash) {
-                continue;
-            }
-            seen.push(hash);
             let source = display_source(&path, &root);
-            let trust = self.gate.trust_of(&root, &source, &content);
-            out.push(Effect::AttachExternal {
+            let trust = match committed(&root, &path, &source) {
+                true => Trust::Granted,
+                false => self.gate.trust_of(&root, &source, &content),
+            };
+            let effect = Effect::AttachExternal {
                 source,
                 trust,
                 text: yi_context::fit(&content, self.budget).text,
-            });
+            };
+            let hash = content_hash(&instruction_text(&content));
+            match seen.iter().find(|(seen_hash, _)| *seen_hash == hash) {
+                Some(&(_, at)) if trust == Trust::Granted => out[at] = effect,
+                Some(_) => {}
+                None => {
+                    seen.push((hash, out.len()));
+                    out.push(effect);
+                }
+            }
         }
     }
 
@@ -208,13 +215,22 @@ impl ProjectResources {
 }
 
 fn instruction_text(content: &str) -> String {
-    let is_comment =
-        |line: &&str| line.trim_start().starts_with("<!--") && line.trim_end().ends_with("-->");
+    let is_comment = |line: &&str| {
+        let line = line.trim();
+        line.starts_with("<!--") && line.find("-->") == line.len().checked_sub(3)
+    };
     content
         .lines()
         .filter(|line| !is_comment(line))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn committed(root: &Path, path: &Path, source: &str) -> bool {
+    let path = path.to_string_lossy();
+    let head = crate::lane::git(root, &["rev-parse", &format!("HEAD:{source}")]);
+    let blob = crate::lane::git(root, &["hash-object", "--", &path]);
+    matches!((head, blob), (Ok(head), Ok(blob)) if head.trim() == blob.trim())
 }
 
 pub fn contributions(cwd: &Path, home: &Path) -> Vec<(String, String)> {
