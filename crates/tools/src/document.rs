@@ -290,9 +290,14 @@ pub(crate) fn could_be_document(bytes: &[u8]) -> bool {
     head.starts_with(b"PK\x03\x04")
         || head.starts_with(b"\xd0\xcf\x11\xe0")
         || head.starts_with(b"{\\rtf")
-        || bytes
-            .get(..1024.min(bytes.len()))
-            .is_some_and(|window| window.windows(5).any(|w| w == b"%PDF-"))
+        || is_pdf(bytes)
+}
+
+/// Only a PDF has pages the converter can pick; every other format converts whole.
+pub(crate) fn is_pdf(bytes: &[u8]) -> bool {
+    bytes
+        .get(..1024.min(bytes.len()))
+        .is_some_and(|window| window.windows(5).any(|w| w == b"%PDF-"))
 }
 
 fn is_rtf(bytes: &[u8]) -> bool {

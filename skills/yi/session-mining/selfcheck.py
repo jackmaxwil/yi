@@ -242,6 +242,16 @@ def selfcheck():
         nested = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals-blocked-v2")
         assert nested["signals"]["blocked_on_user_without_question"] == 1, "a format-2 blocker is nested"
         assert blocked_row["signals"]["evidence_shape_refused"] == 1, blocked_row["signals"]
+        # Incident: the refusal was reworded to "done needs evidence: …" (crates/runtime/src/todo/mod.rs,
+        # `NoEvidence`) while the matcher kept the old wording, so the live binary's refusals read 0.
+        live_in = Path(tmp) / "live-evidence-in"
+        live_in.mkdir()
+        (live_in / "signals-blocked.jsonl").write_text((fixtures / "signals-blocked.jsonl").read_text().replace(
+            "done needs evidence shaped `<command>` then the output line it produced, e.g. `pytest -q` 3 passed in 0.41s; prose is not evidence for \\\"land\\\"",
+            "done needs evidence: the command you ran and the line of its output that proves \\\"land\\\""))
+        assert "the line of its output that proves" in (live_in / "signals-blocked.jsonl").read_text(), "the live text must be planted"
+        live = next(r for r in sweep(live_in, Path(tmp) / "live-evidence-out")["mu"] if r["sessionId"] == "fixture-signals-blocked")
+        assert live["signals"]["evidence_shape_refused"] == 1, "the live refusal text must count"
         assert blocked_row["signals"]["waiting_without_block"] == 0 and "?" not in (blocked_row.get("final") or ""), "the blocked fixture asks nothing in its last paragraph"
         assert blocked_row["signals"]["waiting_without_block"] == 0, blocked_row["signals"]
         signal_text = report(result, fixtures, first)

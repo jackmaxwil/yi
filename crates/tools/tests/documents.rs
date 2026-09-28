@@ -87,6 +87,37 @@ fn an_unbuilt_venv_is_named_beside_the_plain_error() -> TestResult {
     Ok(())
 }
 
+/// `pages=` on a docx was passed to a converter that only pages PDFs: the whole document came
+/// back under a header naming the pages, and the paged size ceiling let a 1 GiB file through.
+#[test]
+fn pages_on_an_office_document_is_refused_like_plain_text() -> TestResult {
+    let root = Scratch::new("yi-documents-pages-docx")?;
+    std::fs::write(
+        root.join("brief.docx"),
+        [b'P', b'K', 0x03, 0x04, 0xff, 0xfe, 0x00, 0x81],
+    )?;
+    let read = read_of(builtin_tools_with(
+        false,
+        Some(unbuilt(root.to_path_buf(), &["docx", "pdf"])),
+    ))?;
+    let input: Map<String, serde_json::Value> =
+        serde_json::from_value(json!({"path": "brief.docx", "pages": "1"}))?;
+    let output = read.execute(input, &ToolContext::new(root.to_path_buf()));
+    assert!(output.is_error);
+    assert_eq!(output.result.details["errorKind"], json!("invalid_args"));
+    let text: String = output
+        .result
+        .content
+        .iter()
+        .map(|content| match content {
+            Content::Text { text, .. } => text.clone(),
+            _ => String::new(),
+        })
+        .collect();
+    assert_eq!(text, "pages= applies to a PDF");
+    Ok(())
+}
+
 /// Incident: the forge live lane's bash-marker read 0 cached tokens because the venv landed
 /// between its first and second request and rewrote the tool table in front of the transcript.
 #[test]

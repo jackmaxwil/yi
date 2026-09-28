@@ -276,7 +276,47 @@ def report(rows, store, corpus):
     return "\n".join(lines)
 
 
+def clean(row):
+    return row.get("exit") == 0 and not row.get("timedOut") and not row.get("missingFiles")
+
+
+def compare(base, candidate):
+    """N6 (docs/plans/2026-09-26-self-improvement-evals.md 6.6): the reason a tool-text candidate
+    is refused against its base, or None. Each side is a list of `surface.json` documents from
+    runs made alternately with the base's. Refused when any tool's refusal rate over the side's
+    summed calls rises, or when a scenario clean on every base run is unclean on a candidate one."""
+    def rates(docs):
+        calls, refusals = {}, {}
+        for doc in docs:
+            for tool, count in doc["toolSurface"]["calls"].items():
+                calls[tool] = calls.get(tool, 0) + count
+            for tool, count in doc["toolSurface"]["refusals"].items():
+                refusals[tool] = refusals.get(tool, 0) + count
+        return {tool: refusals.get(tool, 0) / calls[tool] for tool in calls if calls[tool]}
+
+    was, now = rates(base), rates(candidate)
+    for tool in sorted(now):
+        if now[tool] > was.get(tool, 0.0):
+            return f"refusal_rate_rose:{tool}"
+    base_rows = [row for doc in base for row in doc.get("rows", [])]
+    always = {row["scenario"] for row in base_rows} - {row["scenario"] for row in base_rows if not clean(row)}
+    for row in (row for doc in candidate for row in doc.get("rows", [])):
+        if row["scenario"] in always and not clean(row):
+            return f"scenario_unclean:{row['scenario']}"
+    return None
+
+
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["compare"]:
+        pair = argparse.ArgumentParser(description=compare.__doc__.splitlines()[0])
+        pair.add_argument("--base", action="append", required=True, help="a base run's surface.json")
+        pair.add_argument("--candidate", action="append", required=True, help="a candidate run's surface.json")
+        sides = pair.parse_args(argv[1:])
+        read = lambda paths: [json.loads(Path(path).read_text()) for path in paths]
+        reason = compare(read(sides.base), read(sides.candidate))
+        print(json.dumps({"verdict": "refused" if reason else "pass", "reason": reason}))
+        return 1 if reason else 0
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--binary", default=str(ROOT.parent / "target/debug/yi"))
     parser.add_argument("--model", required=True)
@@ -334,7 +374,9 @@ def main(argv=None):
         store = mine(corpus, out)
         counts = census(store)
         machine = {"scenarios": len(rows), "model": args.model, "toolSurface": counts,
-                   "spentUsd": round(spent, 4), "stopped": stopped}
+                   "spentUsd": round(spent, 4), "stopped": stopped,
+                   "rows": [{key: row.get(key) for key in ("scenario", "exit", "timedOut", "missingFiles")}
+                            for row in rows]}
         (out / "surface.json").write_text(json.dumps(machine, indent=1) + "\n")
         print(json.dumps(machine), flush=True)
         print(report(rows, store, corpus))
