@@ -231,6 +231,7 @@ pub struct SubagentHost {
     /// The board a long reply is kept on: the wiring's, set once after construction (D242).
     pub(crate) family: std::sync::OnceLock<PathBuf>,
     pub(crate) resolver: std::sync::OnceLock<Arc<crate::fetch::Resolver>>,
+    pub(crate) partitions: Mutex<HashMap<String, std::time::Instant>>,
 }
 
 impl SubagentHost {
@@ -422,6 +423,7 @@ fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
                     | "partition"
                     | "tools"
                     | "turns"
+                    | "schema"
             )
         })
         .collect();
@@ -512,6 +514,7 @@ impl SubagentHost {
             stuck: Mutex::default(),
             family: std::sync::OnceLock::new(),
             resolver: std::sync::OnceLock::new(),
+            partitions: Mutex::default(),
         }
     }
 
@@ -702,13 +705,7 @@ impl SubagentHost {
             ));
         }
         let mut cast = self.cast(&kwargs)?;
-        let prompt = reader::brief(
-            self.resolver.get(),
-            &kwargs,
-            prompt,
-            &cast.2,
-            &self.options.cwd,
-        )?;
+        let (seed, prompt) = reader::brief(self, &kwargs, prompt, &mut cast)?;
         let model = cast.0.clone();
         let (session_dir, child_id) = self.create_child_dir(&self.options.parent_session_dir)?;
         let session_name =
@@ -734,6 +731,7 @@ impl SubagentHost {
         };
         cast.2.container = container.as_ref().map(|held| held.name().to_owned());
         let child = self.build(cast, &session_name, &session_dir, cwd, &lease, None)?;
+        reader::seed(&child, seed);
         if fork != Fork::None {
             let seed = seed_for_fork(
                 &(self.options.parent_messages)(),

@@ -102,6 +102,7 @@ pub async fn summarize_branch(session: &AgentSession, stub: BranchStub) {
         )],
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::OneShot,
         tools: None,
         tool_choice: None,

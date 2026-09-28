@@ -273,5 +273,6 @@ edited by hand.
 - [D290](adr/d290.md) - the catalog lists home-root skills only by name
 - [D300](adr/d300.md) - a child's request is made of its brief
 - [D301](adr/d301.md) - a bare rlm.run is a question-child
+- [D302](adr/d302.md) - a reader's answer shape and shared context go to the provider
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
