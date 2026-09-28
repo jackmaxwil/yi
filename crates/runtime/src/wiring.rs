@@ -384,7 +384,7 @@ fn grep_reply(
         reply.insert(
             "notice".to_owned(),
             Value::from(format!(
-                "[{} of {total} hits · limit {cap} (at most {}) · history.grep({quoted}, limit={cap}, offset={next}) for the next]",
+                "[{} of {total} hits · limit {cap} (at most {}) · compact.recall({quoted}, limit={cap}, offset={next}) for the next]",
                 hits.len(),
                 yi_session::GREP_PAGE_MAX,
             )),
@@ -968,7 +968,7 @@ mod tests {
         assert_eq!(reply["total"], 10);
         assert_eq!(
             reply["notice"],
-            "[8 of 10 hits · limit 8 (at most 32) · history.grep(\"Needle\", limit=8, offset=8) for the next]"
+            "[8 of 10 hits · limit 8 (at most 32) · compact.recall(\"Needle\", limit=8, offset=8) for the next]"
         );
         let (rest, total) = store.grep_page("Needle", 8, 8);
         let last = grep_reply(&rest, total, "Needle", 8, 8);
