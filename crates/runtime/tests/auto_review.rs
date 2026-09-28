@@ -12,6 +12,7 @@ use yi_runtime::{AskOutcome, Asker, PermissionMode, ProviderStream};
 use yi_tools::ToolKind;
 use yi_types::message::StopReason;
 use yi_types::model::{Model, ModelCost};
+use yi_types::permission::Answerer;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -302,6 +303,7 @@ async fn a_malformed_or_absent_reviewer_answer_denies_rather_than_allows() -> Te
 #[tokio::test]
 async fn an_approved_request_lets_the_identical_call_through_once() -> TestResult {
     let harness = setup(Some(AskOutcome::AllowOnce), true)?;
+    let journal = journal(&harness.broker);
     harness.provider.queue_faux(answers(&["deny unprovable"]));
     let denied = decide(&harness.broker, destructive_args()).await?;
     assert!(!denied.allowed);
@@ -325,6 +327,11 @@ async fn an_approved_request_lets_the_identical_call_through_once() -> TestResul
 
     let again = decide(&harness.broker, destructive_args()).await?;
     assert!(!again.allowed, "one yes is one run, not a standing grant");
+    assert_eq!(
+        answerers(&journal),
+        [Answerer::Reviewer, Answerer::User, Answerer::Reviewer],
+        "the approved re-issue replays the user's answer; the one after it is reviewed afresh"
+    );
     Ok(())
 }
 
@@ -333,6 +340,7 @@ async fn an_approved_request_lets_the_identical_call_through_once() -> TestResul
 #[tokio::test]
 async fn a_denied_call_re_issued_unchanged_spends_no_second_review() -> TestResult {
     let harness = setup(Some(AskOutcome::Reject), true)?;
+    let journal = journal(&harness.broker);
     harness.provider.queue_faux(answers(&["deny unprovable"]));
     let first = decide(&harness.broker, destructive_args()).await?;
     let after_review = provider_calls(&harness.provider);
@@ -358,19 +366,18 @@ async fn a_denied_call_re_issued_unchanged_spends_no_second_review() -> TestResu
         provider_calls(&harness.provider) > after_review,
         "a mutated call is a different action and must be reviewed on its own"
     );
+    assert_eq!(
+        answerers(&journal),
+        [Answerer::Reviewer, Answerer::Reviewer],
+        "the replayed denial is not journaled; the mutated call's review is"
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn a_user_denial_stands_without_asking_again() -> TestResult {
     let harness = setup(Some(AskOutcome::Reject), true)?;
-    let journal = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&journal);
-    harness.broker.set_journal(Arc::new(move |record| {
-        if let Ok(mut sink) = sink.lock() {
-            sink.push(record.by);
-        }
-    }));
+    let journal = journal(&harness.broker);
     harness.provider.queue_faux(answers(&["deny unprovable"]));
     decide(&harness.broker, destructive_args()).await?;
     let replay = harness.broker.resolve_request(1, "call-ask");
@@ -388,13 +395,27 @@ async fn a_user_denial_stands_without_asking_again() -> TestResult {
         1,
         "the user is asked once and not worn down"
     );
-    use yi_types::permission::Answerer;
     assert_eq!(
-        journal.lock().map(|by| by.clone()).unwrap_or_default(),
+        answerers(&journal),
         [Answerer::Reviewer, Answerer::User],
         "a replayed answer is not journaled as a second one"
     );
     Ok(())
+}
+
+fn journal(broker: &PermissionBroker) -> Arc<Mutex<Vec<Answerer>>> {
+    let journal = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&journal);
+    broker.set_journal(Arc::new(move |record| {
+        if let Ok(mut sink) = sink.lock() {
+            sink.push(record.by);
+        }
+    }));
+    journal
+}
+
+fn answerers(journal: &Mutex<Vec<Answerer>>) -> Vec<Answerer> {
+    journal.lock().map(|by| by.clone()).unwrap_or_default()
 }
 
 /// D28: headless, an escalation degrades to text that keeps the evidence,

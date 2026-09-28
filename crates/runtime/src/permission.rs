@@ -502,7 +502,8 @@ impl PermissionBroker {
             reason: reviewed.reason,
             cwd: &cwd,
         };
-        let approver = self.approver.get().filter(|_| reviewed.reviewable);
+        let approver =
+            (self.approver.get()).filter(|_| reviewed.reviewable && !self.answered(canonical));
         let mut prior = None;
         if let Some(approver) = approver
             && self.mode() == PermissionMode::Auto
@@ -649,6 +650,14 @@ impl PermissionBroker {
             reason,
             contained: false,
         }
+    }
+
+    fn answered(&self, canonical: &str) -> bool {
+        self.ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .state_of(ActionId::of(canonical))
+            .is_some()
     }
 
     fn recall(&self, action: ActionId) -> Option<(RequestId, ActionState)> {
