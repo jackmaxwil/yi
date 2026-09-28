@@ -103,6 +103,7 @@ fn poisoned_project_text_stays_in_the_yard() -> TestResult {
         user_system: String::new(),
         schema_instruction: None,
         context_window: 128_000,
+        global_skills: Vec::new(),
     });
     host.start(None, false);
     let assembled = host.system_prompt();
