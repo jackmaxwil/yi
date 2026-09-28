@@ -271,5 +271,6 @@ edited by hand.
 - [D297](adr/d297.md) - an optional `classifier` model role asks a local sidecar which skill a typed...
 - [D289](adr/d289.md) - the project rules load whole and once, lanes included
 - [D290](adr/d290.md) - the catalog lists home-root skills only by name
+- [D299](adr/d299.md) - the last word forces no tool choice (amends D235)
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
