@@ -817,6 +817,7 @@ The nouns are unchanged: candidate, runner, trial row, gate. Only the task set a
 | piece | status | where |
 |---|---|---|
 | generators `logs`, `bugfix`, `reconcile` | ✚ | `evals/inner/gen/` (each: `make`, `check`, `solve`; the grader never enters the workspace) |
+| family `mutate`, bug injection into real repos | ✚ | `evals/inner/gen/mutate.py` (the repos stay outside this repository, under `INNER_REPOS`) |
 | inner runner (the runner protocol, parallel, auto mode) | ✚ | `evals/inner/runner.py` |
 | graded score from `testsPassed/testsTotal` | ✓ | `evals/levers.py` `graded` |
 | stage and week caps | ✓ | `evals/drivers/trials.py` (`caps` takes the inner per-trial estimate) |
@@ -829,4 +830,12 @@ The generators map to the failure classes that fire most in the real-session cor
 - `bugfix`: read, edit and run the tests (edit refusals, lost tests);
 - `reconcile`: multi-step spec work (intercepts, `done` without evidence).
 
-Open: `bugfix` starts at 10 of 13-14 checks on an untouched workspace, so its headroom is small. The inner A/A decides whether any family saturates.
+The inner A/A saturated them (ledger 0064: 115 of 120 full), and so did their harder levels (0065: 28 of 30). glm-5.3-flash writes a script for any crisp spec, so these three measure economy (cost, turns, wall), not capability. For the capability signal the owner chose "Bug injection into real repos" (the `mutate` family):
+- seeded operator and constant flips in pure-Python libraries with stdlib-unittest suites (Markdown, more-itertools, tomli), cloned outside this repository at a pinned commit;
+- a flip is kept only when 1-12 of the pristine suite's passing tests turn red;
+- the pristine tests grade it: each broken test fixed, plus one point when nothing else regressed;
+- the workspace has no `.git`, so the bug cannot be diffed out.
+
+Level 1 plants one bug and level 2 two, and both name the failing tests; they saturate as well (0066: 15 of 16, the miss an upstream refusal). Level 3 plants two bugs and hides the tests they break, giving only their failure messages, as an issue report does. It scored 7 of 8 full but tripled the wall time, and 3 of 8 reached yi's wind-down (0067).
+
+So on glm-5.3-flash the inner loop is the economy suite: cost, turns, wall and wind-downs over hundreds of paired seeds. A capability claim still needs Terminal-Bench validation. Its first find was a harness defect, not a lever: the last-word turn sends `tool_choice: "none"`, which no OpenRouter endpoint for the model accepts (0066).

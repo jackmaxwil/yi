@@ -36,10 +36,7 @@ def one(task_id, binary, levers, keep):
     started = time.monotonic()
     keep.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="yi-inner-") as tmp:
-        workspace = pathlib.Path(tmp) / "work"
-        for relative, body in task["files"].items():
-            (workspace / relative).parent.mkdir(parents=True, exist_ok=True)
-            (workspace / relative).write_text(body)
+        workspace = gen.materialize(task, pathlib.Path(tmp) / "work")
         events = keep / "events.jsonl"
         command = [binary, "ask", "--model", MODEL, "--json", "--here", "--cwd", str(workspace),
                    "--session-dir", str(keep / "sessions"), "--deadline", str(task["timeoutSec"])]

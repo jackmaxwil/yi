@@ -42,6 +42,7 @@ import yi_usage  # noqa: E402
 import test_refine  # noqa: E402
 import test_levers  # noqa: E402
 import test_inner  # noqa: E402
+import test_mutate  # noqa: E402
 import test_judge_replay  # noqa: E402
 import test_improve  # noqa: E402
 
@@ -790,6 +791,13 @@ def check_inner():
     result = unittest.TextTestRunner(stream=report).run(suite)
     assert result.testsRun >= 3 and result.wasSuccessful(), report.getvalue()
 
+def check_mutate():
+    """Bug injection on a synthetic repo: a seeded red mutation, graded by the pristine tests."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_mutate)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 2 and result.wasSuccessful(), report.getvalue()
+
 def check_levers():
     """D220: the manifest, the shared default fixture and the floors agree, and the gates hold."""
     report = io.StringIO()
@@ -816,6 +824,7 @@ CHECKS = (
     check_graph_refiner,
     check_levers,
     check_inner,
+    check_mutate,
     check_improve,
     check_trials,
     check_watch_prune,
