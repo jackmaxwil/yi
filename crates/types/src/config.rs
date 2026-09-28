@@ -44,6 +44,25 @@ pub struct UserConfig {
     pub routing: Option<serde_json::Value>,
     /// `rlm.maxDepth`, how deep a family may nest (default 1, ceiling 3) (D165).
     pub rlm: Option<RlmConfig>,
+    pub spend: Option<SpendConfig>,
+    pub node: Option<NodeConfig>,
+}
+
+/// `node`: overrides `~/.yi/node.json` field by field; `slots` bounds the kernels this
+/// machine holds live at once, and `isolation` the placements a spawn may ask for.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NodeConfig {
+    pub slots: Option<std::num::NonZeroU8>,
+    pub isolation: Option<Vec<String>>,
+}
+
+/// `spend.alertTokens`: a notice each time a session's tokens, its children's included, cross
+/// another multiple of it; absent, no alert.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpendConfig {
+    pub alert_tokens: Option<u64>,
 }
 
 /// A key an older Yi read that this one does not: [`migrate`] drops it before the strict

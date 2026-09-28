@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Yi channel adapter: sqs://<queue url without https://> long-polls an SQS queue.
+
+`aws sqs receive-message` waits up to 20 s; each message is emitted with its MessageId as
+the id, and deleted only once the host acks it, so a message the host never wrote stays
+in the queue for its visibility timeout and comes back. The protocol is adapters/README.md.
+"""
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+
+pending = {}
+lock = threading.Lock()
+
+
+def aws(queue, *args):
+    return subprocess.run(
+        ["aws", "sqs", *args, "--queue-url", queue, "--output", "json"],
+        capture_output=True, text=True,
+    )
+
+
+def delete_on_ack(queue):
+    for line in sys.stdin:
+        ack = json.loads(line).get("ack")
+        with lock:
+            handle = pending.pop(ack, None)
+        if handle is not None:
+            aws(queue, "delete-message", "--receipt-handle", handle)
+    os._exit(0)
+
+
+def main():
+    queue = "https://" + sys.argv[1].removeprefix("sqs://").partition("?every=")[0]
+    threading.Thread(target=delete_on_ack, args=(queue,), daemon=True).start()
+    while True:
+        done = aws(queue, "receive-message", "--wait-time-seconds", "20", "--max-number-of-messages", "10")
+        if done.returncode != 0:
+            sys.stderr.write(done.stderr)
+            sys.exit(1)
+        for message in json.loads(done.stdout or "{}").get("Messages", []):
+            try:
+                data = json.loads(message["Body"])
+            except ValueError:
+                data = {"body": message["Body"]}
+            with lock:
+                pending[message["MessageId"]] = message["ReceiptHandle"]
+            line = {"id": message["MessageId"], "at": int(time.time() * 1000), "data": data}
+            print(json.dumps(line), flush=True)
+
+
+if __name__ == "__main__":
+    main()

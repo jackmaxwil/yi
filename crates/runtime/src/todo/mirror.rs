@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use yi_types::plan::doc::{self, Plan, PlanState, Todo, TodoState, TodoStateName};
+use yi_types::plan::doc::{self, Plan, PlanState, Todo};
 use yi_types::plan::ledger::PlanOpRecord;
-use yi_types::todo::{BlockedOn, PhaseName, TodoItem, TodoList, TodoPhase};
+use yi_types::todo::{PhaseName, TodoList, TodoPhase};
 
 use super::TodoStore;
 use crate::plan::ops::{Actor, Op, OpRequest, OpSink, PlanEngine};
@@ -14,6 +14,11 @@ pub const PLAN_KEY: &str = "plan";
 
 pub fn plan_of(list: &TodoList) -> Option<&str> {
     list.extra.get(PLAN_KEY).and_then(Value::as_str)
+}
+
+/// The plan a mirrored row came from; a row of the session's own has none.
+pub fn row_plan(item: &Todo) -> Option<doc::PlanId> {
+    doc::PlanId::new(item.extra.get(PLAN_KEY)?.as_str()?).ok()
 }
 
 /// Invariant: each committed plan op re-projects its root plan into the list every reader shares.
@@ -44,34 +49,14 @@ impl OpSink for Mirror {
     }
 }
 
-fn blocked_on(on: &doc::BlockedOn) -> BlockedOn {
-    match on {
-        doc::BlockedOn::User => BlockedOn::User,
-        doc::BlockedOn::External { .. } => BlockedOn::External,
-        doc::BlockedOn::Child(_) => BlockedOn::Child,
-        doc::BlockedOn::Other(tag) => BlockedOn::Other(tag.clone()),
-    }
-}
-
-fn row(todo: &Todo, plan: &Plan, was: Option<&TodoItem>) -> TodoItem {
-    let mut item = TodoItem::pending(todo.label.clone());
+fn row(todo: &Todo, plan: &Plan, was: Option<&Todo>) -> Todo {
+    let mut item = todo.clone();
+    // Invariant: the plan journal holds these; the list rides every session record, per op.
+    item.delegation = None;
+    item.contract = None;
+    item.contract_hash = None;
+    item.note = None;
     item.id = was.and_then(|seen| seen.id.clone());
-    item.state = TodoStateName::of(&todo.state);
-    match &todo.state {
-        TodoState::Blocked { on, note } => {
-            item.on = Some(blocked_on(on));
-            item.note = Some(note.clone());
-        }
-        TodoState::Failed { cause, .. } => item.note = Some(cause.clone()),
-        TodoState::Running { by } => {
-            item.extra
-                .insert("by".to_owned(), Value::String(by.as_str().to_owned()));
-        }
-        TodoState::Pending
-        | TodoState::Done { .. }
-        | TodoState::Abandoned
-        | TodoState::Other(_) => {}
-    }
     item.extra.insert(
         PLAN_KEY.to_owned(),
         Value::String(plan.id.as_str().to_owned()),
@@ -106,27 +91,52 @@ pub fn rejoin(mirrored: &TodoList, own: TodoList) -> TodoList {
 }
 
 pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
-    Arc::new(move |label, done, pending| {
+    Arc::new(move |label, carried| {
         let engine = engine.upgrade().ok_or("the plan engine is gone")?;
+        let plan = match &carried {
+            super::Carried::Wait { plan, .. } => Some(plan.clone()),
+            _ => None,
+        };
         let apply = |op: Op| {
             let request = OpRequest {
-                plan: None,
-                actor: Actor::Owner,
+                plan: plan.clone(),
+                actor: if matches!(op, Op::Unblock { .. }) {
+                    Actor::Host
+                } else {
+                    Actor::Owner
+                },
                 op: op.clone(),
                 request_id: None,
                 expected_revision: None,
             };
             engine
                 .apply(request)
-                .map(|outcome| crate::plan::tool::render_outcome(&op, &outcome))
+                .map(|outcome| Some(crate::plan::tool::render_outcome(&op, &outcome)))
                 .map_err(|error| error.to_string())
         };
         let start = Op::Start {
             label: label.clone(),
         };
-        if !done {
-            return apply(start);
-        }
+        let unblock = Op::Unblock {
+            label: label.clone(),
+            answer: None,
+        };
+        let pending = match carried {
+            super::Carried::Start => return apply(start),
+            super::Carried::Wait { plan, address } => {
+                let read = engine
+                    .store()
+                    .read(&plan)
+                    .map_err(|error| error.to_string())?;
+                let waits = read.todos.iter().any(|todo| {
+                    todo.label == *label
+                        && matches!(&todo.state, doc::TodoState::Blocked { on, .. }
+                            if crate::schedule::clock::wait_of(on).is_some_and(|(at, _)| at == address))
+                });
+                return if waits { apply(unblock) } else { Ok(None) };
+            }
+            super::Carried::Done { pending } => pending,
+        };
         if pending {
             apply(start)?;
         }
@@ -153,15 +163,11 @@ pub fn projected(plan: &Plan, current: &TodoList) -> TodoList {
                 .flat_map(|phase| &phase.items)
                 .find(|seen| seen.label == todo.label);
             let mut item = row(todo, plan, was);
-            item.children = todo
-                .children
-                .iter()
-                .map(|child| {
-                    let seen = was
-                        .and_then(|was| was.children.iter().find(|seen| seen.label == child.label));
-                    row(child, plan, seen)
-                })
-                .collect();
+            for child in &mut item.children {
+                let seen =
+                    was.and_then(|was| was.children.iter().find(|seen| seen.label == child.label));
+                *child = row(child, plan, seen);
+            }
             item
         })
         .collect();

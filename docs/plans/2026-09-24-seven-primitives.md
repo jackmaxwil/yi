@@ -764,14 +764,69 @@ Each stage has its own demo and gate, and each gets a D-row and an issue when it
 
 | stage | scope | demo | gate |
 | --- | --- | --- | --- |
-| **0. Judge replay** (read-only; `evals/judge_replay.py`, #609) | A judge replays existing session JSONL. At each recorded boundary it predicts your first objections, citing byte ranges of your messages. It is scored against what you actually said next. Nothing is written back. | a report over the corpus: citation accuracy, and agreement with your later corrections on a held-out split | citations resolve to your words; agreement beats a no-judge baseline. **If this fails, the intent/judge bet is false** and stages 1–2 change before anything irreversible is spent |
+| **0. Judge replay** (read-only; `evals/judge_replay.py`, #609) | A judge replays existing session JSONL. At each recorded boundary it predicts your first objections, citing byte ranges of your messages. It is scored against what you actually said next. Nothing is written back. | a report over the corpus: citation accuracy, and agreement with your later corrections on a held-out split | citations resolve to your words; agreement beats a no-judge baseline. **If this fails, the intent/judge bet is false** and stages 1–2 change before anything irreversible is spent. **Failed on held-out, 2026-09-27 (§14.1).** |
 | **1. Your words by address** | the intent-record field on todos (both types); summarizer sections quote by address; two-way traceability | a plan that flags a forgotten message and cuts an item nobody asked for | traceability red on a planted omission; no schema change to existing rows |
-| **2. Previews and the judge** | options payload; the intent judge with its verdict enum at the §7.6 boundaries; exam v2; both must pass | the landing page of §6.7 | the judge catches a planted drift; held-out agreement is reported |
+| **2. Previews and the judge** | **Reshaped by stage 0: previews only, and the judge routes nothing (#702).** options payload; the intent judge with its verdict enum at the §7.6 boundaries; exam v2; both must pass | the landing page of §6.7 | the judge catches a planted drift; held-out agreement is reported |
 | **3. Todo merge** | one type, migration, before/after fixtures | old sessions and plans load unchanged | the schema fixtures before and after |
 | **4. Channels** | the `clock` adapter; subscriptions creating or unblocking todos; `BlockedOn::Channel`; overlap and catch-up; kill switch; spend alerts | the 9 a.m. workflow on an awake laptop, and a tick missed during sleep that fires once on wake; a plan that waits for approval at $0 | the eight `mbx-*` trials stay green; the heartbeat store retires |
 | **5. Node admission and containers** | the node card for one computer; `container:` placement | eight container children on one laptop, the ninth waiting for a slot | the result and merge path are identical to worktrees |
 | **6. Adapters** | `exec`, `file`, `github`, `aws+sqs` | CI red → todo → verified fix | the probe ladder retires |
 | **7. Claim protocol and many machines** ⏸ | epochs, fences, expiry, `@node`, `Wire`, registry, partition | close the lid and the work continues on the forge | the hive plan's O1 drive script |
+
+### 14.1 Stage 0 result, 2026-09-27
+
+Row 0060 of docs/eval-ledger.md records the run. The corpus was 1,248 boundaries, 1,177 of
+them from Claude Code transcripts and 71 from Yi sessions, split into fit and held-out by
+conversation. Every paid call went to OpenRouter, and the whole stage cost $19.31.
+
+A first labelling pass through `yi ask` was aborted after 99 calls and $0.37: only 30 came
+back with a label, because the agent loop kept calling tools past the JSON answer. The replay
+then called OpenRouter directly.
+
+The first design (v1) was wrong, not only its judges. Its ground truth was the owner's
+attention: a flaw the owner didn't notice was labelled accepted, so a judge that found it
+scored as wrong, and finding it is the capability under test. The judge read the agent's own
+summary, which is the restatement §1.3 says a checker must not grade. It tested an outside
+reader, while the owner's steps 9–10 in §1.3 describe the working agent, with its full
+context, being asked to check itself. Its positives mixed intent loss, which rests on words
+the owner already said, with new requirements and opinions, which nothing can predict. A
+verdict with no score tied every run to one threshold. And the sample, sorted by id, put the
+negatives first, so the cap left Opus with 9 positives in 61.
+
+v2 renders the full session prefix up to the boundary and runs two arms over it: `self`, where
+the agent is asked the owner's check about its own session, and `judge`, the outside reader.
+Both return `p_objection`. A positive is `intent_loss` or `check_revealed`; the 191 `new_info`
+objections are left out. Scored on AUROC, the fit split holds 643 boundaries with 101
+positives, and held-out holds 404 with 76. The gate asks for a held-out AUROC lower bound above
+0.5, citation resolution of at least 0.95, and zero calls without a verdict.
+
+| design | model | split | n | score, 95% interval | citations | catch | cost |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| v1, prompt 7b739264b76e | glm-5.3-flash | fit | 200 | balanced 0.540 [0.467, 0.603] | 0.929 | 0.170 | $0.45 |
+| v1, prompt 8e00b1b79830 | glm-5.3-flash | fit | 199 | balanced 0.499 [0.438, 0.557] | 0.950 | 0.030 | $0.45 |
+| v1, prompt 7b739264b76e | glm-5.3, effort high | fit | 200 | balanced 0.520 [0.459, 0.579] | 0.981 | 0.040 | $1.85 |
+| v1, prompt 7b739264b76e | glm-5.3, effort high | held-out | 28 | balanced 0.667 [0.437, 0.833] | 0.982 | 0.000 | $0.21 |
+| v1, prompt 7b739264b76e | claude-opus-5.5 | fit | 61 | balanced 0.670 [0.525, 0.872] | 1.000 | not matched | $2.59 |
+| v2, `self` | glm-5.3-flash | fit | 93 | AUROC 0.560 [0.432, 0.689] | 0.931 | 0.423 | $1.29 |
+| v2, `judge` | glm-5.3-flash | fit | 99 | AUROC 0.654 [0.539, 0.759] | 0.995 | 0.357 | $1.29 |
+| v2, `judge` | glm-5.3-flash | held-out | 108 | AUROC 0.577 [0.470, 0.677] | 0.959 | 0.346 | $1.36 |
+| v2, `judge` | claude-opus-5.5 | held-out | 18 of 19 | not scored | | | $6.15 |
+
+Labels cost $0.71 for v1 and $2.57 for v2, both from glm-5.3-flash; the v1 matcher cost $0.02.
+The held-out run of the `judge` arm on glm-5.3-flash fails the gate twice: its lower bound is
+0.470, and 2 calls came back without a verdict. The Opus held-out run stopped when OpenRouter
+answered 402, credits exhausted, after 20 calls ($6.15, one boundary refused twice), which is
+too few to score.
+
+The limits on this result. The labels come from one small model and were never checked against
+the owner. The corpus is mostly Claude Code transcripts: Yi's 17 held-out boundaries hold no
+positive. Only one prompt, one arm and one model were scored on held-out; the `self` arm, the
+one closest to steps 9–10, ran on fit only. Opus was never scored under v2. So the result says
+the intent/judge bet is not supported at this power, not that no judge can work.
+
+Per the stage 0 gate, stage 2 changes before anything irreversible is spent: it keeps the
+previews of §6.3, and the judge routes no work (#702). Stage 1 (#690, #701) does not depend on
+the judge and stands as written.
 
 ## 15. Decisions and open questions
 

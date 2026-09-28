@@ -659,17 +659,17 @@ pub fn apply_op(
                 TodoState::Abandoned
             })?;
         }
-        Op::Block { label, on, note } => {
-            let (on, note) = (on.clone(), note.clone());
-            step_todo(
-                state.plan_mut(id)?,
-                label,
-                OpKind::Block,
-                decided,
-                move |_| TodoState::Blocked { on, note },
-            )?;
+        Op::Block {
+            label, on, note, ..
+        } => {
+            step_todo(state.plan_mut(id)?, label, OpKind::Block, decided, |_| {
+                TodoState::Blocked {
+                    on: on.clone(),
+                    note: note.clone(),
+                }
+            })?;
         }
-        Op::Unblock { label } => {
+        Op::Unblock { label, .. } => {
             step_todo(state.plan_mut(id)?, label, OpKind::Unblock, decided, |_| {
                 TodoState::Pending
             })?;
@@ -757,7 +757,7 @@ pub fn apply_op(
             )?;
         }
     }
-    let plan = state.plan_mut(id)?;
+    let plan = super::ask::record(state.plan_mut(id)?, op);
     plan.touched = plan.touched.bump();
     if matches!(plan.state, PlanState::Active | PlanState::Done) {
         plan.state = if plan.finished() {
@@ -1049,6 +1049,9 @@ fn apply_set(plan: &mut Plan, rows: &[SetRow]) -> Result<(), PlanOpError> {
         todo.children = row.spec.children.clone();
         if let Some(contract) = &row.spec.contract {
             todo.contract = Some(contract.clone());
+        }
+        if !row.spec.cites.is_empty() {
+            todo.cites = row.spec.cites.clone();
         }
         if TodoStateName::of(&todo.state) != row.state {
             todo.state = match row.state {
