@@ -665,7 +665,12 @@ impl RuleEngine {
         };
         let mut texts = Vec::new();
         let classifier = self.classifier.lock().ok().and_then(|slot| slot.clone());
-        let mut pointed: Vec<String> = state.loaded.iter().cloned().collect();
+        let mut pointed: Vec<String> = rules
+            .iter()
+            .filter(|rule| self.skill_already_loaded(&state, rule))
+            .filter_map(skill_name)
+            .map(str::to_owned)
+            .collect();
         let mut counted = 0_usize;
         let mut dropped = Vec::new();
         for rule in &rules {
@@ -694,12 +699,14 @@ impl RuleEngine {
                     dropped.push(format!("skill://{name}"));
                     continue;
                 }
+                if classifier.as_ref().is_some_and(|c| !c.claim(name)) {
+                    continue;
+                }
                 counted += 1;
+            } else if let Some(classifier) = &classifier {
+                classifier.claim(name);
             }
             state.mark(&evidence);
-            if let Some(classifier) = &classifier {
-                classifier.note(name);
-            }
             pointed.push(name.to_owned());
             let shown = if named { mention.as_str() } else { needle };
             texts.push(self.render_reminder(rule, shown));
