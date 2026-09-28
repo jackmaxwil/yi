@@ -757,6 +757,15 @@ impl Tool for PlanTool {
             .map_err(|error| error.to_string())
     }
 
+    fn arms(&self, input: &Map<String, Value>) -> Vec<String> {
+        input
+            .get("on")
+            .and_then(|on| serde_json::from_value::<BlockedOn>(on.clone()).ok())
+            .and_then(|on| crate::schedule::clock::armed_command(&on))
+            .into_iter()
+            .collect()
+    }
+
     fn execute(&self, input: Map<String, Value>, _context: &ToolContext) -> ToolOutput {
         match self.run(&input) {
             Ok(text) => text_output(text),

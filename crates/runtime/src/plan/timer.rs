@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
-use yi_types::plan::doc::PlanId;
+use yi_types::plan::doc::{Plan, PlanId, PlanState, TodoState};
 
 use super::ops::PlanEngine;
 use crate::family::{MemberView, StuckLatch};
@@ -17,6 +17,7 @@ const IDLE_POLL: Duration = Duration::from_secs(60);
 pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 pub type Children = Arc<dyn Fn() -> Vec<MemberView> + Send + Sync>;
 pub type Owned = Arc<dyn Fn() -> Vec<PlanId> + Send + Sync>;
+pub type Arm = Arc<dyn Fn(&[crate::schedule::clock::Wait]) + Send + Sync>;
 
 /// The plan's host timer: each wake runs the lease job, the stuck job and the dispatch backstop.
 /// A blocked todo's wait is a channel subscription, never this loop's (D287).
@@ -37,6 +38,7 @@ pub struct PlanTimer {
     /// even looked at, so a tick still in flight never delays a cancel's expiry.
     leases: Option<Arc<dyn Fn() + Send + Sync>>,
     owned: Option<Owned>,
+    arm: Option<Arm>,
 }
 
 impl PlanTimer {
@@ -51,7 +53,13 @@ impl PlanTimer {
             latch: Mutex::new(StuckLatch::default()),
             leases: None,
             owned: None,
+            arm: None,
         }
+    }
+
+    pub fn with_arm(mut self, arm: Arm) -> Self {
+        self.arm = Some(arm);
+        self
     }
 
     pub fn with_owned(mut self, owned: Owned) -> Self {
@@ -110,12 +118,40 @@ impl PlanTimer {
         }
     }
 
-    /// The backstop: starts the ready todos of the roots this session's ledger names.
+    /// The backstop: starts the ready todos of the roots this session owns, and arms their waits.
     pub fn tick(&self, now: Instant) {
         self.take_due(now);
-        if let Some(owned) = &self.owned {
-            self.engine.dispatch_ready_in(&owned());
+        let Some(owned) = &self.owned else {
+            return;
+        };
+        let roots = owned();
+        self.engine.dispatch_ready_in(&roots);
+        let Some(arm) = &self.arm else {
+            return;
+        };
+        let store = self.engine.store();
+        let active = |id: &PlanId| {
+            store
+                .read(id)
+                .ok()
+                .filter(|plan| plan.state == PlanState::Active)
+        };
+        let mut waits = Vec::new();
+        for root in roots.iter().filter_map(active) {
+            let subs: Vec<Plan> = root
+                .todos
+                .iter()
+                .filter_map(|todo| active(todo.subplan.as_ref()?))
+                .collect();
+            for plan in std::iter::once(&root).chain(&subs) {
+                for todo in &plan.todos {
+                    if let TodoState::Blocked { on, .. } = &todo.state {
+                        waits.push((Some(plan.id.clone()), todo.label.clone(), on.clone()));
+                    }
+                }
+            }
         }
+        arm(&waits);
     }
 
     /// The stuck job: one `[child <name> stuck: <note>]` per episode, from the records the

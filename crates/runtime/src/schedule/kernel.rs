@@ -111,6 +111,10 @@ impl HeartbeatService {
                 })
             }
             (None, Some(address)) => {
+                let command = super::adapter::exec_command(address);
+                if let Some(refused) = command.and_then(|command| self.gate.as_ref()?(&command)) {
+                    return Err(refused);
+                }
                 let spec = subscription(address, payload, label, prompt)?;
                 let mut job = self.channel_job(&self.bound_session_id()?, spec, None, now)?;
                 job.delivery_mode = delivery;
@@ -149,15 +153,20 @@ impl HeartbeatService {
         });
         let create = std::sync::Arc::clone(self);
         registry.register("rlm_heartbeat.create", move |payload| {
-            let result = (|| {
-                let job = create.create_job(&payload)?;
-                create.store().mutate(|state| state.jobs.push(job.clone()));
-                serde_json::json!({"job": job})
-                    .as_object()
-                    .cloned()
-                    .ok_or_else(|| "serialization failed".to_owned())
-            })();
-            Box::pin(async move { result })
+            let create = std::sync::Arc::clone(&create);
+            // Off the reactor: an exec:// address may wait on the user's permission answer.
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    let job = create.create_job(&payload)?;
+                    create.store().mutate(|state| state.jobs.push(job.clone()));
+                    serde_json::json!({"job": job})
+                        .as_object()
+                        .cloned()
+                        .ok_or_else(|| "serialization failed".to_owned())
+                })
+                .await
+                .map_err(|error| error.to_string())?
+            })
         });
         let update = std::sync::Arc::clone(self);
         registry.register("rlm_heartbeat.update", move |payload| {

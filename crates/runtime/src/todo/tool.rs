@@ -441,6 +441,15 @@ impl Tool for TodoTool {
             .map_err(|error| error.to_string())
     }
 
+    fn arms(&self, input: &Map<String, Value>) -> Vec<String> {
+        match parse_op(input) {
+            Ok(Op::Block { on, .. }) => crate::schedule::clock::armed_command(&on)
+                .into_iter()
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     fn execute(&self, input: Map<String, Value>, _context: &ToolContext) -> ToolOutput {
         match self.run(&input) {
             Ok(text) => text_output(text),

@@ -227,6 +227,12 @@ fn wire_schedule(
                     .unwrap_or(&wiring.rlm_dir)
                     .join("channels"),
             )
+            .with_gate({
+                let (broker, contained) = (wiring.broker.clone(), wiring.wall.container.is_some());
+                Arc::new(move |command: &str| {
+                    crate::tools::refuse_armed(command, contained, broker.as_deref(), "")
+                })
+            })
             .interned();
     crate::schedule::adapter::adapters_home(&wiring.home);
     let heartbeats = Arc::new(match (&wiring.sessions_dir, wiring.depth) {
@@ -535,28 +541,35 @@ fn wire_plan_engine(
         });
         let children = Arc::clone(host);
         let leased = Arc::clone(host);
-        let timer = Arc::new(
-            crate::plan::timer::PlanTimer::new(engine)
-                .with_children(Arc::new(move || children.states()), {
-                    let (notice, stalled) = (lifecycle_notice(session), Arc::clone(host));
-                    Arc::new(move |text: &str, news| {
-                        notice(text, news);
-                        stalled.publish_all();
-                    })
+        let mut timer = crate::plan::timer::PlanTimer::new(engine)
+            .with_children(Arc::new(move || children.states()), {
+                let (notice, stalled) = (lifecycle_notice(session), Arc::clone(host));
+                Arc::new(move |text: &str, news| {
+                    notice(text, news);
+                    stalled.publish_all();
                 })
-                .with_leases(Arc::new(move || {
-                    let host = Arc::clone(&leased);
-                    tokio::spawn(async move { host.expire().await });
-                }))
-                .with_owned({
-                    let store = session.store_handle();
-                    Arc::new(move || {
-                        store()
-                            .map(|session| crate::plan::ledger::owned_roots(&session))
-                            .unwrap_or_default()
-                    })
-                }),
-        );
+            })
+            .with_leases(Arc::new(move || {
+                let host = Arc::clone(&leased);
+                tokio::spawn(async move { host.expire().await });
+            }))
+            .with_owned({
+                let store = session.store_handle();
+                Arc::new(move || {
+                    store()
+                        .map(|session| crate::plan::ledger::owned_roots(&session))
+                        .unwrap_or_default()
+                })
+            });
+        if let Some(clock) = session.heartbeat_service() {
+            let clock = Arc::downgrade(&clock);
+            timer = timer.with_arm(Arc::new(move |waits| {
+                if let Some(clock) = clock.upgrade() {
+                    clock.arm(waits);
+                }
+            }));
+        }
+        let timer = Arc::new(timer);
         // A grace rides the loop's own due-time set, so an earlier one interrupts its sleep.
         let due = Arc::clone(&timer);
         host.set_lease_clock(

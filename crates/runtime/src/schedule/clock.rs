@@ -1,5 +1,5 @@
 use yi_types::message::{AgentMessage, UserContent};
-use yi_types::plan::doc::{BlockedOn, Note, TODO_LABEL_MAX, Todo, TodoLabel, TodoState};
+use yi_types::plan::doc::{BlockedOn, Note, PlanId, TODO_LABEL_MAX, Todo, TodoLabel, TodoState};
 use yi_types::schedule::{
     CLOCK_KEY, CatchUp, ClockStamp, CronSchedule, HALT_ENTRY_TYPE, HaltRecord, Job, JobStatus,
     Overlap, ScheduleKind,
@@ -17,6 +17,8 @@ pub const CLOCK_SCHEME: &str = "clock://";
 pub const CLOCK_ACTOR: &str = "clock";
 /// How often an `External` probe's command runs as an `exec` wait; the lever `plan.probe_first_s`.
 pub const PROBE_EVERY_S: u64 = 60;
+/// The ceiling a wait's unchanged source backs off to; the lever `plan.probe_max_s`.
+pub const PROBE_MAX_S: u64 = 1800;
 
 /// Invariant: `catch_up: all` adds at most this many todos a claim; the last one's note counts
 /// the rest, so a week asleep on a 10-minute clock cannot bury the list.
@@ -86,6 +88,9 @@ pub enum Fired {
     Stopped(String),
 }
 
+/// A blocked todo as [`HeartbeatService::arm`] takes it: the plan owning it, if one does.
+pub type Wait = (Option<PlanId>, TodoLabel, BlockedOn);
+
 /// What a blocked todo waits on as a channel address and filter. Invariant: an `External` probe
 /// is an `exec` wait on its command's exit, so a plan written before channels still unblocks.
 pub fn wait_of(on: &BlockedOn) -> Option<(String, Option<String>)> {
@@ -104,6 +109,10 @@ pub fn wait_of(on: &BlockedOn) -> Option<(String, Option<String>)> {
         BlockedOn::Child(_) | BlockedOn::User | BlockedOn::External { probe: None } => None,
         BlockedOn::Other(_) => None,
     }
+}
+
+pub fn armed_command(on: &BlockedOn) -> Option<String> {
+    wait_of(on).and_then(|(address, _)| super::adapter::exec_command(&address))
 }
 
 fn address(job: &Job) -> String {
@@ -129,18 +138,27 @@ pub(super) fn unblock(
     label: &TodoLabel,
     actor: &str,
 ) -> Result<Fired, String> {
-    todos.resync();
-    let waiting = todos.list().items().any(|item| {
-        item.label == *label
-            && matches!(&item.state, TodoState::Blocked { on, .. }
-                if wait_of(on).map(|(address, _)| address).as_ref() == job.label.as_ref())
-    });
-    if !waiting {
+    let unblocked = match (&job.plan, &job.label) {
+        (Some(plan), Some(address)) => todos.unblock_in(plan, label, address)?,
+        _ => {
+            todos.resync();
+            let waiting = todos.list().items().any(|item| {
+                item.label == *label
+                    && crate::todo::mirror::row_plan(item).is_none()
+                    && matches!(&item.state, TodoState::Blocked { on, .. }
+                        if wait_of(on).map(|(address, _)| address).as_ref() == job.label.as_ref())
+            });
+            if waiting {
+                todos.unblock_as(label, actor)?;
+            }
+            waiting
+        }
+    };
+    if !unblocked {
         return Ok(Fired::Held(format!(
             "todo {label} no longer waits on this address"
         )));
     }
-    todos.unblock_as(label, actor)?;
     Ok(Fired::Unblocked(label.clone()))
 }
 
@@ -413,67 +431,94 @@ impl HeartbeatService {
     }
 
     /// Invariant: the todo is the wait's authority and the store a view of it, so a restart
-    /// that lost `rlm-<pid>/` re-arms every `clock://` wait from the rehydrated list.
+    /// that lost `rlm-<pid>/` re-arms every wait from the rehydrated list.
     pub fn watch(&self, list: &TodoList) {
+        let waits: Vec<Wait> = list
+            .items()
+            .filter_map(|item| match &item.state {
+                TodoState::Blocked { on, .. } => Some((
+                    crate::todo::mirror::row_plan(item),
+                    item.label.clone(),
+                    on.clone(),
+                )),
+                _ => None,
+            })
+            .collect();
+        self.arm(&waits);
+    }
+
+    /// Arms each wait not armed yet; the plan timer hands in every plan's, sub-plans included.
+    pub fn arm(&self, waits: &[Wait]) {
         let Ok(session) = self.bound_session_id() else {
             return;
         };
-        let waits: Vec<(TodoLabel, String, Option<String>)> = list
-            .items()
-            .filter_map(|item| match &item.state {
-                TodoState::Blocked { on, .. } => {
-                    wait_of(on).map(|(address, filter)| (item.label.clone(), address, filter))
-                }
-                _ => None,
+        let waits: Vec<(Option<&PlanId>, &TodoLabel, String, Option<String>)> = waits
+            .iter()
+            .filter_map(|(plan, label, on)| {
+                wait_of(on).map(|(address, filter)| (plan.as_ref(), label, address, filter))
             })
             .collect();
         if waits.is_empty() {
             return;
         }
         let state = self.store().snapshot();
-        let armed = |label: &TodoLabel, address: &String| {
+        let armed = |plan: Option<&PlanId>, label: &TodoLabel, address: &String| {
             state.jobs.iter().any(|job| {
                 job.session_id == session
                     && job.unblocks.as_ref() == Some(label)
                     && job.label.as_ref() == Some(address)
+                    && (job.plan.is_none() || job.plan.as_ref() == plan)
                     && matches!(job.status, JobStatus::Active | JobStatus::Paused)
             })
         };
         let now = yi_session::now_ms();
         let fresh: Vec<Job> = waits
             .iter()
-            .filter(|(label, address, _)| !armed(label, address))
-            .filter_map(|(label, address, filter)| {
-                if !address.starts_with(CLOCK_SCHEME) {
-                    let spec = super::channel::Subscribe {
-                        address: address.clone(),
-                        filter: filter.clone(),
-                        label: Some(address.clone()),
-                        prompt: format!("unblock {label}"),
-                        ..Default::default()
-                    };
-                    return self.channel_job(&session, spec, Some(label), now).ok();
-                }
-                let (schedule, next_run_at) = wait_schedule(address, now).ok()?;
-                let mut job = new_job(JobSpec {
-                    id: format!("wait-{}", crate::subagent::random_suffix().ok()?),
-                    session_id: session.clone(),
-                    cwd: self.cwd.clone(),
-                    source: yi_types::schedule::JobSource::Heartbeat,
-                    delivery_mode: None,
-                    label: Some(address.clone()),
-                    prompt: format!("unblock {label}"),
-                    schedule,
-                    next_run_at,
-                    now_ms: now,
-                });
-                job.source = None;
-                job.unblocks = Some(label.clone());
+            .filter(|(plan, label, address, _)| !armed(*plan, label, address))
+            .filter_map(|(plan, label, address, filter)| {
+                let mut job = self.wait_job(&session, label, address, filter, now)?;
+                job.plan = plan.cloned();
                 Some(job)
             })
             .collect();
         if !fresh.is_empty() {
             self.store().mutate(|state| state.jobs.extend(fresh));
         }
+    }
+
+    fn wait_job(
+        &self,
+        session: &str,
+        label: &TodoLabel,
+        address: &str,
+        filter: &Option<String>,
+        now: u64,
+    ) -> Option<Job> {
+        if !address.starts_with(CLOCK_SCHEME) {
+            let spec = super::channel::Subscribe {
+                address: address.to_owned(),
+                filter: filter.clone(),
+                label: Some(address.to_owned()),
+                prompt: format!("unblock {label}"),
+                ..Default::default()
+            };
+            return self.channel_job(session, spec, Some(label), now).ok();
+        }
+        let (schedule, next_run_at) = wait_schedule(address, now).ok()?;
+        let mut job = new_job(JobSpec {
+            id: format!("wait-{}", crate::subagent::random_suffix().ok()?),
+            session_id: session.to_owned(),
+            cwd: self.cwd.clone(),
+            source: yi_types::schedule::JobSource::Heartbeat,
+            delivery_mode: None,
+            label: Some(address.to_owned()),
+            prompt: format!("unblock {label}"),
+            schedule,
+            next_run_at,
+            now_ms: now,
+        });
+        job.source = None;
+        job.unblocks = Some(label.clone());
+        Some(job)
     }
 }

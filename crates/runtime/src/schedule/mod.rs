@@ -734,12 +734,32 @@ impl JobStore {
     /// Every mutation persists (tmp + fsync + rename) before notifying the
     /// timer — the claim-before-deliver contract (§15.2) rides on this ordering.
     pub fn mutate<R>(&self, action: impl FnOnce(&mut ScheduleState) -> R) -> R {
-        let result = {
+        let reading = |state: &ScheduleState| -> Vec<(String, String)> {
+            state
+                .jobs
+                .iter()
+                .filter(|job| !matches!(job.status, JobStatus::Completed | JobStatus::Cancelled))
+                .filter_map(|job| Some((job.id.clone(), job.channel.as_ref()?.path.clone())))
+                .collect()
+        };
+        let (result, ended) = {
             let mut state = lock_or_poisoned(&self.state);
+            let before = reading(&state);
             let result = action(&mut state);
             self.persist(&state);
-            result
+            let after = reading(&state);
+            let ended: Vec<(String, String)> = before
+                .into_iter()
+                .filter(|job| !after.contains(job))
+                .collect();
+            (result, ended)
         };
+        // Invariant: a channel job that ends by any path drops its ack, so a finished wait or a
+        // cancelled subscription never holds its channel's truncation back.
+        for (id, path) in ended {
+            let _an_unreleased_ack_only_delays_truncation =
+                channel::Channel::at(path).unsubscribe(&id);
+        }
         self.changed.notify_waiters();
         result
     }
@@ -800,12 +820,15 @@ pub fn new_job(spec: JobSpec) -> Job {
         unblocks: None,
         halted: false,
         channel: None,
+        plan: None,
         extra: serde_json::Map::new(),
     }
 }
 
 /// An `Err` is a tick that ran and failed; the job records it as its last error.
 pub type DeliverFn = dyn Fn(&Job, &Firing) -> Result<RunOutcome, String> + Send + Sync;
+/// `Some` is the refusal of a command a subscription would run on the host.
+pub type GateFn = dyn Fn(&str) -> Option<String> + Send + Sync;
 
 /// Design §15.2 surfaces: the `/heartbeat` verbs and the kernel's
 /// `rlm_heartbeat.*` vocabulary over one store.
@@ -822,6 +845,7 @@ pub struct HeartbeatService {
     words: Option<crate::goal::StoreHandle>,
     /// The machine's channel buffers, `<sessions>/channels/`.
     channels: Option<std::path::PathBuf>,
+    gate: Option<std::sync::Arc<GateFn>>,
     /// Bound to a store every session of this process shares, so a halt reaches them all.
     interned: bool,
 }
@@ -838,12 +862,18 @@ impl HeartbeatService {
             stop: None,
             words: None,
             channels: None,
+            gate: None,
             interned: false,
         }
     }
 
     pub fn with_channels(mut self, home: std::path::PathBuf) -> Self {
         self.channels = Some(home);
+        self
+    }
+
+    pub fn with_gate(mut self, gate: std::sync::Arc<GateFn>) -> Self {
+        self.gate = Some(gate);
         self
     }
 
