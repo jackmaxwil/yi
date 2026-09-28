@@ -403,3 +403,140 @@ Asked whether to approve the spike, which installs microsandbox and runs it thro
 > "audit, copy the patterns, own microsandbox code directly in yi crate, port the highest quality most important code and cut the bloat and make our own yi flavored version HAR compliant"
 
 So the subprocess-to-`msb` runner of §8 and the spike of §9 are superseded. §3's case against a Rust dependency on the `microsandbox` crate still holds: the port owns the code instead of depending on it. The findings in §1-§7 are the audit's starting map. The open forks the port must decide are the hypervisor backend (libkrun as `msb_krun`, or Apple's Virtualization.framework on macOS), where the hypervisor entitlement lives (a separate signed helper binary, or `yi` itself), and the port's scope. The port is a separate proposal.
+
+## 13. Port sketch (exploratory)
+
+```
+status:  EXPLORATORY (2026-09-28). The owner: "this is explatory only dont put too much effort
+         into making it reality". Counts are measured on a v0.7.3 clone (f9f40e1) with tokei and
+         grep; nothing was built or installed. The Virtualization.framework claims are from
+         Apple's API as known, not checked for this sketch.
+```
+
+### 13.1 The audit: what microsandbox is made of, and the verdicts
+
+The narrow need: create an arm64 Linux VM from a base image, copy files in and out, exec with a
+timeout, allow egress to one API host with the key kept on the host, kill the VM.
+
+| crate | Rust LOC | `unsafe` lines | direct deps | verdict | why |
+|---|---:|---:|---:|---|---|
+| `sdk/rust` | 101,191 | 258 | 57 | CUT | the embeddable SDK (backends, db, image, volume, snapshot, setup); its `build.rs` downloads `msb` and `libkrunfw` by default |
+| `crates/runtime` | 38,231 | 78 | 33 | PORT ~5% | keep `runner/vm.rs`'s device list and exit path as a pattern; cut `relay.rs` (7,846, a multi-client relay), `checkpoint/` (~10k), `cpu/`, `writeback/` |
+| `crates/filesystem` | 35,831 | 363 | 12 | CUT | virtio-fs servers for libkrun; `passthroughfs` alone is 18,759 LOC with 286 unsafe blocks. VZ has its own virtio-fs; copies go as tar over exec |
+| `crates/network` | 27,972 | 58 | 37 | CUT the code, PORT the idea | smoltcp, DNS interception, TLS interception, secret substitution (`secrets/` 5,433, `dns/` 4,004, policy 3,122). A guest with no NIC replaces all of it (13.3) |
+| `crates/cli` | 27,066 | 51 | 40 | CUT | yi has its own verbs |
+| `crates/image` | 22,966 | 10 | 23 | CUT | OCI registry, EROFS writer and reader, ext4 formatter and resizer, docker archives. One base image built once outside yi replaces it |
+| `crates/agentd` | 17,063 | 123 | 12 | PORT ~10% | PID 1 mounts, pipe-mode exec, teardown. Cut PTY sessions, TCP relay, handoff, checkpoint mounts, CA install, clock sync |
+| `crates/protocol` | 4,821 | 0 | 10 | PORT ~15% | the frame `[len u32 BE][id u32][flags u8][body]`, the 4 MiB cap, the raw bulk flag. Bodies in serde_json, not CBOR |
+| `crates/migration`, `crates/db` | 5,707 | 0 | 3, 8 | CUT | SQLite state through sea-orm and sqlx. A VM lives exactly as long as its helper process |
+| `crates/metrics`, `metrics-collector` | 6,051 | 40 | 4, 20 | CUT | OpenTelemetry export |
+| `crates/utils` | 2,368 | 58 | 5 | CUT | paths, reflink copy, ureq downloads. `std::fs::copy` already clones on APFS |
+| `crates/vsock` | 1,018 | 13 | 6 | CUT | vsock routes over `msb_krun`; VZ has `VZVirtioSocketDevice` |
+| `packages/agent-client` | 3,647 | 8 | 12 | PORT ~20% | the host side of exec: request, stream, exit |
+| `packages/` types, macros, control-client, protocol-client | 15,716 | 0 | 13, 3, 9, 5 | CUT | ts-rs and utoipa types for the SDKs; IPC to the relay |
+| `crates/testing` | 144 | 4 | 6 | CUT | |
+| **workspace** (no examples or language bindings) | **~309,800** | **~1,060** | | | no crate has `forbid(unsafe_code)`; there is no `[workspace.lints]` |
+
+**`msb_krun` is a crates.io dependency, not vendored source:** eleven `msb_krun*` crates plus
+`msb-vm-memory`, pinned `=0.1.39`, about 1.87 MB of compressed `.crate` files (`msb_krun_vmm`
+0.92 MB, `msb_krun_devices` 0.63 MB; crates.io metadata). Their repository fields name
+`containers/libkrun` and `zerocore-ai/libkrun`. The guest kernel is `libkrunfw`, a git submodule
+(`vendor/libkrunfw`, empty in a shallow clone) built into a dylib and loaded with `dlopen`.
+Verdict under fork (a): CUT. It would be DEPEND if the backend were libkrun.
+
+### 13.2 The minimal port
+
+| piece | adapted from | est. LOC | unsafe | new deps |
+|---|---|---:|---:|---|
+| frame codec and messages: exec, stdio chunk, exit, signal, tar in and out | `protocol/lib/codec.rs`, `message.rs`, `exec.rs`, the bulk flag | 700 | 0 | none (serde_json) |
+| `yi-guest`, PID 1: mounts, pipe exec in its own process group, kill on timeout, zombie reaping, vsock server, a TCP-to-vsock forward, poweroff | `agentd/lib/init.rs`, `session.rs` (the pipe path only), the `agent.rs` loop, `teardown.rs` | 1,800 | 0 | `rustix` as a direct dependency (it is already in the lockfile) |
+| `yi-vm` helper: VZ config (kernel, cmdline, virtio-blk, vsock, a virtio-fs share for live logs, serial to a file, no NIC), start and stop, frames on stdin and stdout | `runner/vm.rs`'s device list, not its code | 1,000 | 30-50 | `objc2`, `objc2-foundation`, `objc2-virtualization`, `block2`, `dispatch2` |
+| key proxy in `yi-vm`: one vsock port becomes HTTPS to one host, with `Authorization` added on the host | the idea in `network/lib/engine/secrets`, not its code | 500 | 0 | none (`ureq` is present) |
+| client in yi: spawn the helper; create, exec, copy, kill; nested deadlines; kill on drop and at exit | the SDK's lifecycle, `agent-client` | 700 | 0 | none |
+| disks: a raw ext4 `base.img`; each VM gets an APFS clone through `std::fs::copy` | replaces the EROFS layers and the ext4 upper | 50 | 0 | none |
+| base image and kernel recipe: arm64 `docker export` into `mke2fs -d`; a kernel pinned by sha256 | replaces the registry and EROFS code | ~100 (just, Python) | 0 | e2fsprogs on the host; a kernel artifact |
+| tests: frame fixtures, the proxy's header injection, a no-egress probe, kill and timeout | | 800 | 0 | |
+
+**About 4,850 LOC of code plus 800 of tests**, about 1.6% of the audited workspace. There are
+**30-50 unsafe blocks, all in `yi-vm`'s VZ module**. yi and `yi-guest` keep `forbid(unsafe_code)`,
+because std's `CommandExt::process_group` replaces `pre_exec`, and `rustix` wraps mount, vsock
+and reboot in safe calls. The new dependencies are the five objc2 crates and `rustix` as a
+direct dependency. Nothing is added from the smoltcp, hickory, rcgen, sea-orm or oci-client
+families.
+
+### 13.3 The network without a NIC
+
+The guest gets no network device at all. `yi-guest` listens on `127.0.0.1:8080` and carries each
+connection over vsock to `yi-vm`. `yi-vm` reads one HTTP/1.1 request, refuses any path outside
+`/api/v1/`, removes any guest `Authorization` header, adds the real one from its own environment,
+and sends the request over HTTPS to the one allowed host. It streams the response back, and SSE
+passes through unchanged. The allowlist exists by construction: there is no DNS, no smoltcp, no
+CA in the guest and no TLS interception, and the key never enters the guest. That removes the
+path of #1691. One catch: `crates/ai/src/openai.rs:37` drops OpenRouter's routing parameters
+unless `base_url` contains `openrouter.ai`. So the guest points yi at
+`http://openrouter.ai:8080/api/v1` and maps `openrouter.ai` to `127.0.0.1` in `/etc/hosts`. That
+needs a base-URL override in yi's config (to verify; `refresh.rs:36` hard-codes it). A task that
+needs a second host adds a second forwarded port, never a NIC.
+
+### 13.4 The three forks
+
+**(a) The hypervisor backend: Virtualization.framework through `objc2-virtualization`.**
+libkrun's appeal is one code path for KVM and HVF, a claimed boot under 100 ms, and TSI. But it
+means depending on 1.87 MB of VMM from a fork maintained by two people. It puts the device
+emulation, the guest's escape surface, inside our process. Live log mounts would need their
+`passthroughfs` (286 unsafe blocks). And we would ship `libkrunfw` as a dylib. VZ is Apple's.
+Its devices run outside the caller's process. It has built-in virtio-fs, vsock, virtio-blk and a
+Linux direct-boot loader. It also offers Rosetta for Linux (`VZLinuxRosettaDirectoryShare`), which
+could run x86_64 user space in the arm64 guest and so might reopen TB's x86_64 images, the §2
+blocker (unverified). Its costs: it runs only on macOS; the objc2 calls need unsafe and must run
+on the VM's dispatch queue; and boot time is unmeasured. The need names only an Apple Silicon
+Mac, and the frame codec, `yi-guest` and the proxy are plain Linux or portable code that the
+forge's Linux CI can test. **Recommend VZ.** Add a KVM backend only if evals ever move to the
+Buildhost.
+
+**(b) Where the entitlement lives: a separate small helper binary, `yi-vm`.** VZ needs
+`com.apple.security.virtualization`, which an ad-hoc signature satisfies for local use. Putting it
+in `yi` would sign every user's binary for a feature only the evals use. It would also end the
+all-crates `forbid(unsafe_code)` posture (all 16 crates declare it today). And it would grow the
+dist-binary ratchet. A helper process per VM, like microsandbox's `msb machine`, has three
+advantages: the unsafe stays in one small binary, a VMM crash cannot take yi down, and killing
+the process is the kill switch. The costs are a second binary to build and sign, and the
+stdin/stdout framing, which reuses the same codec. **Recommend the helper**, built only by an
+evals recipe and never shipped in `yi` dist.
+
+**(c) Scope: exec, copy, allowlist and kill only.** A disk snapshot is an APFS clone of a stopped
+VM's `disk.img`, a few lines of code. That keeps §5's fork at the failure point possible later.
+Defer memory snapshots and branching (VZ `saveMachineStateTo` exists on macOS 14 and later): §5
+already found a memory branch buys nothing when the candidate is a different binary. **Cut TLS
+interception for good**: 13.3 makes it unnecessary, and it is the part with the open bugs.
+
+### 13.5 HAR concerns
+
+- **Unsafe.** Only one module allows it: `yi-vm`'s VZ module. It keeps an inventory of its sites
+  and sets `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block` and
+  `missing_safety_doc` to deny, plus `unsafe_op_in_unsafe_fn`. No microsandbox unsafe is copied:
+  the ported pieces have none, and agentd's PTY and fork code is cut.
+- **FFI.** VZ completion handlers are `block2` closures called from Objective-C, so a panic there
+  must not unwind. Release already uses `panic = "abort"` (`Cargo.toml:133`); the test profile
+  needs a `catch_unwind` wrapper. Audit it the way har-unsafe treats GPUI and Metal: by thread
+  affinity to the VM's queue, not pointer by pointer.
+- **Build scripts.** The port adds none. microsandbox has three `build.rs`, and two of them
+  download release binaries under default features (`sdk/rust/build.rs:9-102`,
+  `crates/filesystem/build.rs:62-65`, `default = ["download-binaries", ...]`). The kernel and
+  base image come from a recipe, pinned by sha256, never fetched at `cargo build`.
+- **Supply chain.** Five objc2 crates, from one project. Check at admission with
+  `cargo tree -e build`, `cargo deny check`. A guest kernel becomes a yi-owned artifact:
+  libkrunfw's minimal virtio config is the pattern to copy. Files adapted from microsandbox keep
+  an Apache-2.0 attribution header.
+- **Panics.** yi denies `unwrap`, `expect` and `panic`. The five audited crates carry about 4,800
+  `unwrap()`/`expect(` calls, counting inline tests, so the port rewrites to `Result` rather than
+  copying. A panic in `yi-guest` as PID 1 is a kernel panic, so every error becomes an exit frame
+  and then a poweroff. The host treats a closed vsock as a dead VM.
+- **Threat.** The guest is untrusted input to `yi-vm`: the 4 MiB frame cap, bounded buffers, one
+  path prefix and one host in the proxy, and the guest's `Authorization` stripped (har-threat).
+
+**The biggest reason it might not be worth it:** the Rust is the cheap part. What microsandbox
+really maintains is a working guest kernel, a base image pipeline and a signed VMM process, and
+the port makes all three yi's to own. That means a Linux kernel artifact, an aarch64 musl
+toolchain, an entitled helper, and yi's first unsafe code, all for an eval-only need that the
+product never uses.
