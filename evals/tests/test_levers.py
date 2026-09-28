@@ -212,6 +212,10 @@ class TaskLevel(unittest.TestCase):
                           lambda t, r: trial(t, 0.9, censored=(t == "t00")))
         got = self.judge(base, cand)
         self.assertEqual(got["per_task"]["graded"]["t00"], -0.5, "the censored arm scores 0, not 0.9")
+        # N1: a verifier that timed out under load scored its trial 0 without judging it.
+        timed = self.judge(*arms(SLICE, 2, lambda t, r: trial(t, 0.5),
+                                  lambda t, r: trial(t, 0.9, verifierUnmeasured=(t == "t00"))))
+        self.assertEqual(timed["per_task"]["graded"]["t00"], -0.5, "an unjudged trial is unusable, not a score")
         both = lambda t, r: trial(t, 0.5, censored=t in {"t00", "t01", "t02"})
         dropped = self.judge(*arms(SLICE, 2, both, both))
         self.assertEqual((dropped["verdict"], dropped["reason"]), ("inconclusive", "pairs_dropped"))

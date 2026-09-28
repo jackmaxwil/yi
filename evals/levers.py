@@ -232,8 +232,9 @@ def per_task(rows):
 
 
 def usable(row):
-    """A trial the watcher stopped or that errored scored nothing it can be credited with."""
-    return not (row.get("censored") or row.get("errored"))
+    """A trial the watcher stopped, that errored, or whose verifier never judged it (N1: verifier
+    timeouts under load) scored nothing it can be credited with."""
+    return not (row.get("censored") or row.get("errored") or row.get("verifierUnmeasured"))
 
 
 def unpriced(row):
