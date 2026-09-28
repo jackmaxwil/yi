@@ -456,6 +456,20 @@ impl TodoStore {
         if mirrored.is_some() {
             list = mirror::rejoin(&before, list);
         }
+        // Invariant: an op adds no row whose label another row holds. A repeat an older binary
+        // wrote is not this op's, so that list still takes the moves that repair it.
+        let rows = |list: &TodoList, label: &TodoLabel| {
+            list.items().filter(|item| item.label == *label).count()
+        };
+        if let Some(label) = list
+            .duplicates()
+            .into_iter()
+            .find(|label| rows(&list, label) > rows(&before, label))
+        {
+            return Err(TodoError::Duplicate {
+                label: label.to_string(),
+            });
+        }
         state.list = list.clone();
         state.touched = state.touched.saturating_add(1);
         let touched = state.touched;
@@ -569,20 +583,6 @@ fn known_phases(list: &TodoList) -> String {
     } else {
         names.join(", ")
     }
-}
-
-fn find_mut<'a>(list: &'a mut TodoList, label: &TodoLabel) -> Option<&'a mut Todo> {
-    for phase in &mut list.phases {
-        for item in &mut phase.items {
-            if item.label == *label {
-                return Some(item);
-            }
-            if let Some(child) = item.children.iter_mut().find(|child| child.label == *label) {
-                return Some(child);
-            }
-        }
-    }
-    None
 }
 
 fn nth_mut(list: &mut TodoList, index: usize) -> Option<&mut Todo> {
@@ -799,13 +799,6 @@ fn add_items(
     under: Option<TodoLabel>,
     items: Vec<Todo>,
 ) -> Result<(), TodoError> {
-    for item in &items {
-        if find_mut(list, &item.label).is_some() {
-            return Err(TodoError::Duplicate {
-                label: item.label.to_string(),
-            });
-        }
-    }
     if let Some(parent) = under {
         resolve(list, &parent)?.children.extend(items);
         return Ok(());
@@ -956,11 +949,13 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
         }
         Op::Rm { target } => match target {
             Target::Label(needle) => {
-                let label = resolve(list, &needle)?.label.clone();
+                let row = resolve(list, &needle)?.clone();
+                // A list an older binary wrote may repeat a label; only the named row goes.
+                let other = |item: &Todo| item.label != row.label || item.id != row.id;
                 for phase in &mut list.phases {
-                    phase.items.retain(|item| item.label != label);
+                    phase.items.retain(other);
                     for item in &mut phase.items {
-                        item.children.retain(|child| child.label != label);
+                        item.children.retain(other);
                     }
                 }
                 Ok(())
