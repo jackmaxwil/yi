@@ -4,7 +4,22 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::kernel::{VARIABLE_MARKER, VARIABLE_MAX_CHARS, VariableName, VariableReply};
+use crate::kernel::{VARIABLE_MARKER, VARIABLE_MAX_CHARS, VariableName};
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum VariableReply {
+    Missing,
+    Value { text: String, chars: usize },
+    Unreadable { python: String },
+}
+
+pub(crate) fn render_value(text: String, chars: usize) -> String {
+    let shown = text.chars().count();
+    if chars <= shown {
+        return text;
+    }
+    format!("{text}\n[... truncated: {shown} of {chars} chars ...]")
+}
 
 pub(crate) fn py_literal(value: &str) -> String {
     Value::String(value.to_owned()).to_string()

@@ -107,7 +107,7 @@ impl SubagentHost {
                 "restart asks for {restart} respawns and this host allows {MAX_RESTARTS} within {window} s; nothing is clamped, ask for less"
             ));
         }
-        if super::parse_isolation(&kwargs)? == super::Isolation::Worktree {
+        if super::parse_isolation(&kwargs)? != super::Isolation::None {
             return Err("a service runs in the parent's tree: a respawn has no lane to settle the last incarnation's worktree into".to_owned());
         }
         // An ordinary child holding the name falls through to the spawn's own refusal.

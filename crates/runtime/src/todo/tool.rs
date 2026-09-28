@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
-use yi_types::plan::doc::TodoLabel;
-use yi_types::todo::{BlockedOn, PhaseName, TodoItem};
+use yi_types::plan::doc::{BlockedOn, Todo, TodoLabel};
+use yi_types::todo::PhaseName;
 
 use super::{Op, Target, TodoError, TodoStore, mirror, text};
 
@@ -21,7 +21,7 @@ pub fn schema() -> Value {
         "type": "object",
         "properties": {
             "op": {"type": "string", "enum": OPS, "description": "done/drop/rm also take a phase, or nothing for all"},
-            "list": {"type": "string", "description": "set: the checklist"},
+            "list": {"type": "string", "description": "set: the checklist; trailing `user://<n>` tokens on a row cite the user messages it serves"},
             "phases": {"type": "array", "items": {"type": "object"}, "description": "init: [{name, items: [label]}]"},
             "items": {"type": "array", "items": {"type": "string"}, "description": "init (flat, one phase) or append: labels to add"},
             "phase": {"type": "string", "description": "append: the phase (created if missing); done/drop/rm: every item in it"},
@@ -30,8 +30,9 @@ pub fn schema() -> Value {
             "label": {"type": "string", "description": "start/done/drop/block/unblock/rm: the item, verbatim"},
             "evidence": {"type": "string", "description": "done: the command in backticks and the output line that proves it"},
             "reason": {"type": "string", "description": "drop: why the item no longer applies"},
-            "on": {"type": "string", "enum": ["user", "external", "child"], "description": "block: who it waits on"},
+            "on": {"type": "string", "description": "block: who it waits on: user, external, child, or `clock://at <ISO time>`, which unblocks it then"},
             "note": {"type": "string", "description": "block: what would unblock it"},
+            "options": {"type": "array", "items": {"type": "object"}, "description": "block on user: 3 to 5 answers [{id, label, preview?}] the user picks one of by number, id or label; a preview is light, at most 2048 bytes"},
             "touched": {"type": "integer", "description": "optional: the touched counter you last saw; a stale value is refused so a user edit is never overwritten"}
         }
     })
@@ -104,7 +105,7 @@ fn named(args: &Map<String, Value>) -> Option<String> {
 
 fn label(args: &Map<String, Value>, op: &'static str) -> Result<TodoLabel, ArgError> {
     let needle = named(args).ok_or(ArgError::Missing { op, field: "label" })?;
-    TodoItem::from_text(&needle)
+    Todo::from_text(&needle)
         .map(|item| item.label)
         .map_err(|cause| ArgError::Malformed {
             op,
@@ -120,7 +121,7 @@ fn item_list(args: &Map<String, Value>) -> Option<&Vec<Value>> {
         .and_then(Value::as_array)
 }
 
-fn items(args: &Map<String, Value>, op: &'static str) -> Result<Vec<TodoItem>, ArgError> {
+fn items(args: &Map<String, Value>, op: &'static str) -> Result<Vec<Todo>, ArgError> {
     let field = "items";
     let raw = item_list(args).ok_or(ArgError::Missing { op, field })?;
     raw.iter()
@@ -134,7 +135,7 @@ fn items(args: &Map<String, Value>, op: &'static str) -> Result<Vec<TodoItem>, A
                     cause: "every item is a string".to_owned(),
                 })
                 .and_then(|text| {
-                    TodoItem::from_text(text).map_err(|cause| ArgError::Malformed {
+                    Todo::from_text(text).map_err(|cause| ArgError::Malformed {
                         op,
                         field,
                         cause: cause.to_string(),
@@ -303,16 +304,34 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         },
         "block" => Op::Block {
             label: label(args, "block")?,
-            on: match string(args, "on").as_deref() {
-                None | Some("user") => BlockedOn::User,
-                Some("external") => BlockedOn::External,
-                Some("child") => BlockedOn::Child,
-                Some(other) => BlockedOn::Other(other.to_owned()),
+            on: match BlockedOn::from_word(string(args, "on").as_deref()) {
+                BlockedOn::Channel { address, filter } => {
+                    crate::schedule::clock::wait_schedule(&address, yi_session::now_ms()).map_err(
+                        |cause| ArgError::Malformed {
+                            op: "block",
+                            field: "on",
+                            cause,
+                        },
+                    )?;
+                    BlockedOn::Channel { address, filter }
+                }
+                on => on,
             },
             note: need_string(args, "block", "note")?,
+            ask: crate::plan::ask::parse(
+                args.get("options"),
+                string(args, "on").is_none_or(|on| on == "user"),
+            )
+            .map_err(|cause| ArgError::Malformed {
+                op: "block",
+                field: "options",
+                cause,
+            })?
+            .map(Box::new),
         },
         "unblock" => Op::Unblock {
             label: label(args, "unblock")?,
+            answer: None,
         },
         "rm" => Op::Rm {
             target: target(args, "rm")?,
@@ -367,7 +386,7 @@ impl TodoTool {
         } else {
             text::render(&applied.list)
         };
-        let gone: Vec<&TodoItem> = applied
+        let gone: Vec<&Todo> = applied
             .before
             .items()
             .filter(|item| !applied.list.items().any(|kept| kept.label == item.label))
