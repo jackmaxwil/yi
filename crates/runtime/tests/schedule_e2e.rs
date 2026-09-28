@@ -92,7 +92,7 @@ fn memory_store(id: &str) -> yi_session::SharedSession {
 
 /// A session the way `attach_runtime` leaves one for the clock: a ledger and a todo list.
 fn clock_session(reply: &str) -> Result<(AgentSession, Arc<TodoStore>), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![faux_assistant_message(
         vec![faux_text(reply)],
         StopReason::Stop,
@@ -207,7 +207,7 @@ async fn a_cron_tick_creates_one_todo_with_its_intent_and_wakes_an_idle_session(
 /// and the summarized history then overwrote the turn it had added.
 #[tokio::test]
 async fn a_heartbeat_due_mid_compaction_is_deferred() -> TestResult {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         faux_assistant_message(
             vec![faux_text(&format!("long body {}", "y".repeat(400)))],
@@ -1056,7 +1056,7 @@ async fn until(mut ready: impl FnMut() -> bool) -> bool {
 async fn the_kill_switch_holds_the_clock_and_a_turn_until_resume() -> TestResult {
     let dir = Scratch::new("yi-halt")?;
     let started = dir.join("started");
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut args = serde_json::Map::new();
     args.insert(
         "command".to_owned(),
@@ -1145,7 +1145,7 @@ fn wired_root(root: &std::path::Path, reply: &str) -> Result<AgentSession, Box<d
     let (cwd, home) = (root.join("cwd"), root.join("home"));
     std::fs::create_dir_all(&cwd)?;
     std::fs::create_dir_all(&home)?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![faux_assistant_message(
         vec![faux_text(reply)],
         StopReason::Stop,

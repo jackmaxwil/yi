@@ -143,7 +143,7 @@ mod tests {
 
     /// A faux session whose clock began `ago` of `total` seconds back, its model paced.
     fn late_session(script: Vec<AgentMessage>, ago: u64, total: u64) -> super::super::AgentSession {
-        let provider = std::sync::Arc::new(crate::provider::ProviderStream::new(None, None));
+        let provider = std::sync::Arc::new(crate::provider::ProviderStream::new(None));
         provider.queue_faux(script);
         if let Ok(mut pace) = provider.faux_pace.lock() {
             *pace = Some(Duration::from_millis(500));

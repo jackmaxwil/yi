@@ -15,19 +15,6 @@ pub(crate) fn fast_path() {
     });
 }
 
-/// The credential the session streams with: the secret plus, for a stored OAuth
-/// login, its profile's headers (D191). `None` is the faux provider, which needs none.
-pub(crate) fn stream_for(
-    provider: &str,
-    resolved: Option<&yi_runtime::auth::Resolved>,
-) -> yi_runtime::ProviderStream {
-    let stream = yi_runtime::ProviderStream::new(None, None);
-    match resolved {
-        Some(found) => stream.with_auth(provider, found),
-        None => stream,
-    }
-}
-
 /// A provider with neither an env key nor a stored credential: the refusal names
 /// the verb that fixes it, so a missing login never reads as a provider outage.
 pub(crate) fn no_credential(provider: &str) -> crate::Refused {
