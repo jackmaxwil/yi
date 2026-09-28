@@ -25,6 +25,7 @@ fn started(cwd: &Path, home: &Path) -> Host {
         user_system: String::new(),
         schema_instruction: None,
         context_window: 128_000,
+        global_skills: Vec::new(),
     });
     host.start(None, false);
     host
@@ -173,6 +174,7 @@ fn the_slot_table_survives_a_resume() -> TestResult {
         user_system: String::new(),
         schema_instruction: None,
         context_window: 128_000,
+        global_skills: Vec::new(),
     });
     resumed.start(Some(&store), true);
     assert!(
@@ -710,6 +712,39 @@ fn identical_instruction_files_ride_the_yard_once() -> TestResult {
 }
 
 #[test]
+fn the_catalog_lists_a_home_skill_only_when_config_names_it() -> TestResult {
+    let dir = Scratch::new("yi-ext-global-skills")?;
+    let (home, project) = (dir.join("home"), dir.join("project"));
+    std::fs::create_dir_all(&project)?;
+    repo(&project)?;
+    for name in ["named-one", "unnamed-one"] {
+        let skill = home.join(".agents/skills").join(name);
+        std::fs::create_dir_all(&skill)?;
+        let front = format!("---\nname: {name}\ndescription: The {name} skill.\n---\n");
+        std::fs::write(skill.join("SKILL.md"), front)?;
+    }
+    let catalog = |global_skills: Vec<String>| {
+        let mut host = install(ExtOptions {
+            cwd: project.clone(),
+            home: home.clone(),
+            mode: yi_runtime::PermissionMode::Auto,
+            user_system: String::new(),
+            schema_instruction: None,
+            context_window: 128_000,
+            global_skills,
+        });
+        host.start(None, false);
+        host.system_prompt()
+    };
+    let named = catalog(vec!["named-one".to_owned()]);
+    assert!(named.contains("The named-one skill."), "{named}");
+    assert!(!named.contains("unnamed-one"), "{named}");
+    let bare = catalog(Vec::new());
+    assert!(!bare.contains("named-one"), "{bare}");
+    Ok(())
+}
+
+#[test]
 fn the_memory_block_is_present_at_zero_notes() -> TestResult {
     let cwd = Scratch::new("yi-ext-memory-zero-cwd")?;
     let home = Scratch::new("yi-ext-memory-zero-home")?;
@@ -720,6 +755,7 @@ fn the_memory_block_is_present_at_zero_notes() -> TestResult {
         user_system: String::new(),
         schema_instruction: None,
         context_window: 128_000,
+        global_skills: Vec::new(),
     });
     let feed = std::sync::Arc::new(yi_runtime::memory::Activity::default());
     host.register(Box::new(yi_runtime::memory::MemoryExt::new(
