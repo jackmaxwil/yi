@@ -17,7 +17,8 @@ use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_context::{Settings, Tokens};
 use yi_loop::ExecutionMode;
 use yi_runtime::goal::GoalService;
-use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
+use yi_runtime::permission::PermissionBroker;
+use yi_runtime::{AgentSession, PermissionMode, ProviderStream, SessionConfig};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
 use yi_types::event::{AgentEvent, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
@@ -353,10 +354,19 @@ async fn drive(cassette: &Value, root: &Path) -> Result<Recorded, Fatal> {
             ),
         });
     }
+    // A broker, as every session has one: the gate then previews each call before it runs
+    // it, the path a blind edit once slipped through.
+    let broker = Arc::new(PermissionBroker::new(
+        PermissionMode::Yolo,
+        root.to_path_buf(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    ));
     session.use_tools(
         cassette_tools(items(cassette, "stubs"))?,
         root.to_path_buf(),
-        None,
+        Some(broker),
     );
 
     let goal = match cassette.get("goal") {

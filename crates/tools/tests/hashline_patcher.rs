@@ -1010,14 +1010,17 @@ fn a_preview_of_an_unseen_line_unlocks_nothing_for_the_execute() -> TestResult {
     Ok(())
 }
 
-/// A line wider than 512 columns is clipped by `read` and by every refusal, so it never joins
-/// the seen set; the refusal names a remedy that lands, not the read that would loop.
+/// A line wider than 512 columns is clipped by `read` and by every refusal, so neither marks
+/// it seen; the refusal names a remedy scoped to this file, not the read that would loop.
 #[test]
-fn a_clipped_anchor_names_a_remedy_that_lands() -> TestResult {
+fn a_clipped_anchor_names_a_remedy_scoped_to_the_file() -> TestResult {
     let fixture = Fixture::new("gate-wide")?;
     let wide = format!("{}TOKEN{}", "x".repeat(300), "y".repeat(300));
     let body = format!("one\ntwo\n{wide}\nfour\n");
     fixture.write("wide.txt", &body)?;
+    // Siblings the pattern also matches: an unscoped remedy would rewrite them too.
+    fixture.write("other.txt", "keep TOKEN here\n")?;
+    fixture.write("wide.txt.bak", &body)?;
     let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
         args(&[("path", json!("wide.txt")), ("limit", json!(1))]),
         &fixture.context,
@@ -1027,30 +1030,69 @@ fn a_clipped_anchor_names_a_remedy_that_lands() -> TestResult {
     let text = output_text(&on_wide);
     assert!(on_wide.is_error, "{text}");
     assert!(
-        text.contains("Line(s) 3 exceed 512 columns and are never edit anchors"),
+        text.contains("Line(s) 3 exceed 512 columns") && text.contains("path=wide.txt"),
         "{text}"
     );
     assert!(!text.contains("ranges="), "{text}");
     // The clipped row blocked only itself: line 4, shown whole beside it, now anchors.
     let beside = fixture.edit(&format!("[wide.txt#{tag}]\nPUT 4.=4:\n+FOUR\n"));
     assert!(!beside.is_error, "{}", output_text(&beside));
-    // The named remedy, run once: grep replace with apply rewrites the wide line in place.
-    let applied = yi_tools::GrepTool {
-        hashline: Some(std::sync::Arc::clone(&fixture.state)),
-    }
-    .execute(
-        args(&[
-            ("pattern", json!("TOKEN")),
-            ("replace", json!("token")),
-            ("apply", json!(true)),
-        ]),
-        &fixture.context,
-    );
+    // The named remedy, run as worded: `replace` on this file shows the rewrite and writes
+    // nothing, then `apply` writes it, and only wide.txt changes.
+    let grep = |apply: bool| {
+        yi_tools::GrepTool {
+            hashline: Some(std::sync::Arc::clone(&fixture.state)),
+        }
+        .execute(
+            args(&[
+                ("pattern", json!("TOKEN")),
+                ("path", json!("wide.txt")),
+                ("replace", json!("token")),
+                ("apply", json!(apply)),
+            ]),
+            &fixture.context,
+        )
+    };
+    let previewed = grep(false);
+    assert!(!previewed.is_error, "{}", output_text(&previewed));
+    assert!(fixture.content("wide.txt")?.contains("TOKEN"));
+    let applied = grep(true);
     assert!(!applied.is_error, "{}", output_text(&applied));
     assert_eq!(
         fixture.content("wide.txt")?,
         body.replace("TOKEN", "token").replace("four", "FOUR")
     );
+    assert_eq!(fixture.content("other.txt")?, "keep TOKEN here\n");
+    assert_eq!(fixture.content("wide.txt.bak")?, body);
+    Ok(())
+}
+
+/// A file op names no line, so its refusal has no rows to show; it still carries the minted
+/// header, and never the past-the-end sentence with an empty range.
+#[test]
+fn a_file_op_on_a_never_read_file_is_refused_with_the_header_then_lands() -> TestResult {
+    let fixture = Fixture::new("gate-file-op")?;
+    fixture.write("a.txt", "alpha\nbeta\n")?;
+    let moved = fixture.edit("[a.txt]\nMV b.txt\n");
+    let text = output_text(&moved);
+    assert!(moved.is_error, "{text}");
+    assert!(!text.contains("past the end"), "{text}");
+    assert!(text.contains("then re-issue with this header"), "{text}");
+    let tag = minted_tag(&text, "a.txt")?;
+    let retry = fixture.edit(&format!("[a.txt#{tag}]\nMV b.txt\n"));
+    assert!(!retry.is_error, "{}", output_text(&retry));
+    assert_eq!(fixture.content("b.txt")?, "alpha\nbeta\n");
+
+    fixture.write("c.txt", "gamma\n")?;
+    let removed = fixture.edit("[c.txt#0000]\nREM\n");
+    let text = output_text(&removed);
+    assert!(removed.is_error, "{text}");
+    assert!(text.contains("not from this session"), "{text}");
+    assert!(!text.contains("past the end"), "{text}");
+    let tag = minted_tag(&text, "c.txt")?;
+    let retry = fixture.edit(&format!("[c.txt#{tag}]\nREM\n"));
+    assert!(!retry.is_error, "{}", output_text(&retry));
+    assert!(!fixture.context.cwd.join("c.txt").exists());
     Ok(())
 }
 
