@@ -28,6 +28,8 @@ pub struct ToolContext {
     /// Invariant: paths the reviewer wall hides from this agent. A tool reading a tree rather
     /// than a named path shows the wall no target, so it consults this set itself.
     pub deny_read: Vec<PathBuf>,
+    /// Invariant: set, bash runs each command in this docker container, never on the host.
+    pub container: Option<String>,
     /// The id of the call being executed, so a tool that asks the user in its
     /// own right can name the cell that is waiting. Empty when no id exists.
     pub call_id: String,
@@ -42,6 +44,7 @@ impl ToolContext {
             auto_background: None,
             sandbox: None,
             deny_read: Vec::new(),
+            container: None,
             call_id: String::new(),
         }
     }
@@ -77,6 +80,12 @@ pub trait Tool: Send + Sync {
 
     fn validate(&self, _input: &Map<String, Value>) -> Result<(), String> {
         Ok(())
+    }
+
+    /// Shell commands this call arms to run later on the host, outside any sandbox (a todo
+    /// blocked on `exec://`); the gate judges each as the bash call it amounts to.
+    fn arms(&self, _input: &Map<String, Value>) -> Vec<String> {
+        Vec::new()
     }
 
     /// The approval prompt judges a mutation by what it changes, and only the

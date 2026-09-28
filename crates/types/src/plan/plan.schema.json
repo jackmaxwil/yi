@@ -171,6 +171,54 @@
             "description": "present when state is done: verified_done, accepted_by_user or legacy_unverified; absent on an uncontracted todo",
             "type": "string"
           },
+          "intent": {
+            "description": "addresses of the owner's messages this todo serves (user://<n>); addresses only, never text",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "waived": {
+            "description": "owner messages this plan deliberately leaves unserved",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "address",
+                "reason"
+              ]
+            }
+          },
+          "ask": {
+            "description": "a question to the user: 3 to 5 options, the newest user message when it was asked (after), and the reply once one came (answer: its user:// address and the option it picked, the exemplar)",
+            "type": "object",
+            "required": [
+              "options"
+            ],
+            "properties": {
+              "options": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 5,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "label"
+                  ]
+                }
+              },
+              "after": {
+                "type": "string"
+              },
+              "answer": {
+                "type": "object",
+                "required": [
+                  "address"
+                ]
+              }
+            }
+          },
           "after": {
             "description": "sibling labels this todo follows; ordering only",
             "type": "array",

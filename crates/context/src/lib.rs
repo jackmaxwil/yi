@@ -28,7 +28,7 @@ pub use floor::{RETENTION_FLOOR_BUDGET, retain_floor};
 pub use policy::{Settings, should_compact};
 pub use prepare::{Preparation, compose_summary, prepare_compaction};
 pub use project::{project, project_attributed};
-pub use serialize::serialize_conversation;
+pub use serialize::{KEY_HEAD_CHARS, KEY_ROWS, serialize_conversation, user_key};
 pub use view::{
     Attributed, BRIEF_LINE_CAP, BRIEF_LINE_CHARS, BriefLine, CompiledView, EARLIER_CAP,
     OUTSTANDING_CAP, compile_view, view_extra, view_from_extra,
