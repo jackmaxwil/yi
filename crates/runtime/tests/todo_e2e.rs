@@ -1244,7 +1244,7 @@ fn a_session_todos_ask_waits_for_the_reply_and_records_the_pick() -> TestResult 
     Ok(())
 }
 
-/// The tool refuses a clock address no clock ticks, naming why, and keeps one it can.
+/// The tool refuses an address nothing can serve, naming why, and keeps one it can.
 #[test]
 fn a_block_on_a_clock_address_is_checked_before_it_waits() -> TestResult {
     let (_root, session) = session("clock-wait")?;
@@ -1263,7 +1263,7 @@ fn a_block_on_a_clock_address_is_checked_before_it_waits() -> TestResult {
         json!({"op": "block", "id": "t1", "on": "ci://apex/main", "note": "wait"}),
     );
     assert!(
-        refused && text.contains("not a clock:// address"),
+        refused && text.contains("no adapter for ci://"),
         "a channel nothing feeds was taken: {text}"
     );
 

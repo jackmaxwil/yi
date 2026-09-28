@@ -16,6 +16,11 @@ pub fn plan_of(list: &TodoList) -> Option<&str> {
     list.extra.get(PLAN_KEY).and_then(Value::as_str)
 }
 
+/// The plan a mirrored row came from; a row of the session's own has none.
+pub fn row_plan(item: &Todo) -> Option<doc::PlanId> {
+    doc::PlanId::new(item.extra.get(PLAN_KEY)?.as_str()?).ok()
+}
+
 /// Invariant: each committed plan op re-projects its root plan into the list every reader shares.
 pub struct Mirror {
     pub inner: Arc<dyn OpSink>,
@@ -88,9 +93,13 @@ pub fn rejoin(mirrored: &TodoList, own: TodoList) -> TodoList {
 pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
     Arc::new(move |label, carried| {
         let engine = engine.upgrade().ok_or("the plan engine is gone")?;
+        let plan = match &carried {
+            super::Carried::Wait { plan, .. } => Some(plan.clone()),
+            _ => None,
+        };
         let apply = |op: Op| {
             let request = OpRequest {
-                plan: None,
+                plan: plan.clone(),
                 actor: if matches!(op, Op::Unblock { .. }) {
                     Actor::Host
                 } else {
@@ -102,19 +111,29 @@ pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
             };
             engine
                 .apply(request)
-                .map(|outcome| crate::plan::tool::render_outcome(&op, &outcome))
+                .map(|outcome| Some(crate::plan::tool::render_outcome(&op, &outcome)))
                 .map_err(|error| error.to_string())
         };
         let start = Op::Start {
             label: label.clone(),
         };
+        let unblock = Op::Unblock {
+            label: label.clone(),
+            answer: None,
+        };
         let pending = match carried {
             super::Carried::Start => return apply(start),
-            super::Carried::Unblock => {
-                return apply(Op::Unblock {
-                    label: label.clone(),
-                    answer: None,
+            super::Carried::Wait { plan, address } => {
+                let read = engine
+                    .store()
+                    .read(&plan)
+                    .map_err(|error| error.to_string())?;
+                let waits = read.todos.iter().any(|todo| {
+                    todo.label == *label
+                        && matches!(&todo.state, doc::TodoState::Blocked { on, .. }
+                            if crate::schedule::clock::wait_of(on).is_some_and(|(at, _)| at == address))
                 });
+                return if waits { apply(unblock) } else { Ok(None) };
             }
             super::Carried::Done { pending } => pending,
         };

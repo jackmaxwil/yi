@@ -30,8 +30,8 @@ converters compiled into the binary · Windows · dynamically loaded plugins (ex
 in-process Rust, §6) · a GUI · browser automation, computer use, email, or any capability that
 is not a coding agent · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
 the console · a scheduled job that puts its own text in front of the model or runs saved code
-(a tick creates a todo, §15.2) · a durable channel buffer, external channel adapters and
-consumer groups (the clock is the only channel, D283) · placement on another machine, a VM or a
+(a tick creates a todo, §15.2) · a polling probe ladder (an `External` probe is an `exec`
+channel wait, D287) · channel consumer groups and a channel home on another machine · placement on another machine, a VM or a
 cloud, and a kernel or agent loop inside a container (a container child's kernel stays on the
 host, D286).
 
@@ -598,7 +598,7 @@ A worktree todo needs a contract; it is Done only via acceptance or as `Accepted
 
 ### 13.3 Engine dispatch, finish, and the todo list
 - After every op, `dispatch_ready` applies `start` as `Actor::Engine` to each ready delegated
-  todo admission allows; the probe tick's `dispatch_ready_in` is the backstop.
+  todo admission allows; the plan timer's `dispatch_ready_in` is the backstop.
 - A plan child's end is the engine's: it stores the last answer and applies `submit`, `done`; a
   `fail` verdict fails the todo `retained`. The owner gets one `plan: accepted|refused|failed`.
 - The `todo` tool keeps a session list of `custom{todo}` entries whose items are plan `Todo`s: a
@@ -655,8 +655,8 @@ One objective per session, stored as `Fact::Goal` outside the transcript.
 
 ### 15.2 Schedule
 A `JobStore` holds jobs and claims; an in-process `Scheduler` delivers due jobs to sessions. A job is
-a clock subscription `clock://<schedule>`, the one channel (D283): its tick creates a todo or
-unblocks one and wakes the session, and the woken agent decides what to run.
+a subscription: to the clock `clock://<schedule>` (D283), or to a channel (D287). Its tick creates
+a todo or unblocks one and wakes the session, and the woken agent decides what to run.
 
 - A root session's `scheduled-jobs.json` is `<sessions>/schedules/<session id>/`, so its clocks
   survive a restart; a child's is its runtime directory's. Each is interned by path, one timer each.
@@ -676,15 +676,33 @@ unblocks one and wakes the session, and the woken agent decides what to run.
   deliverer feeds `should_defer` whether the session is streaming, compacting, or has queued
   steer/follow-up work behind a running turn, so a heartbeat due mid-turn or mid-compaction
   defers to the next boundary instead of interleaving with it; a deferred tick retries within 30 s.
+- A channel is `<sessions>/channels/<name>.jsonl`, its `<name>.json` meta (source, required
+  retention, acks) and a `<name>.lock`: the home assigns offsets, keeps an id once, syncs before an
+  ack, refuses `data` over 16 KiB by name, and truncates past retention only behind the slowest ack.
+  It is never authority once delivered: the target's log is written first, then the ack.
+- A channel job carries `channel: {address, path, filter?, batch?}` and ticks on its cadence (60 s
+  unasked); a landing message pokes it due. It filters on the host, creates one todo per batch
+  (stamped `channel: {job, ids}`) or unblocks its waiter, and wakes with the messages fenced as data.
+  `External {probe}` is an `exec` wait on `ok=true`. [`plan/timer.rs`](../crates/runtime/src/plan/timer.rs)
+  runs only leases, stuck children and the dispatch backstop.
+- Adapters: `exec://` and `file://` in the host; any other scheme is `yi-adapter-<scheme>`
+  (`~/.yi/adapters/`, then `PATH`) over JSON lines (`adapters/README.md`), one per channel per
+  process, restarted within `rlm.service`'s intensity and past it stopped with its subscriptions
+  paused and told; `/heartbeat halt` stops them all. An `exec://` command a tool call or the
+  kernel arms is judged as the bash call it amounts to, never contained; a source only waits
+  read backs off to `plan.probe_max_s` while its level holds. A wake shows at most 32 KiB.
 - Surfaces: RPC `heartbeat`, ACP `_yi/heartbeat` and slash `/heartbeat` (default `every 5m`, one
   per session, reaching the solo TUI, the console and ACP `_yi/slash`); kernel
-  `rlm_heartbeat.{list, create, update, delete}`, `create` taking `overlap`, `catchUp`, `intent`.
+  `rlm_heartbeat.{list, create, update, delete}`, `create` taking `overlap`, `catchUp`, `intent`,
+  and an `address` with `filter`, `batch`, `windowMs`, `minIntervalMs`, `retention`, which
+  `rlm.subscribe` sends.
 
 Owner: [`schedule/mod.rs`](../crates/runtime/src/schedule/mod.rs). Shapes:
 [`schedule.rs`](../crates/types/src/schedule.rs): `CronSchedule{kind: { Once, Cron, Interval }}`,
 `Job`, `JobStatus { Active, Paused, Completed, Cancelled }`, `JobSource { Cron, Heartbeat,
 RlmHeartbeat }`, `DeliveryMode { Steer, FollowUp }`, `Overlap`, `CatchUp`, `ClockStamp`,
-`HaltRecord`. Settled by: D86, D246, D283.
+`HaltRecord`; [`channel.rs`](../crates/types/src/channel.rs): `ChannelEntry`, `ChannelMeta`,
+`Retention`, `ChannelSub`, `ChannelStamp`. Settled by: D86, D246, D283, D287.
 
 ## 16. Advisor
 A reviewer that reads a digest of the session's work log and may emit one advice per review.
