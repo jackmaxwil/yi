@@ -6,7 +6,8 @@
 //! |---|---|---|---|---|
 //! | `a_child_model_streams_with_its_own_providers_key` | T1 | An `anthropic` model on a stream that also holds an `openrouter` key sends the `anthropic` one. | `ProviderStream::credential` keyed by `model.provider`. | One stored secret: the last seeded key goes to every provider (the dogfood 401). |
 //! | `a_model_with_no_credential_never_reaches_the_wire` | T1 | A provider with no credential gets one `Error` event carrying the startup refusal text, and no connection. | `stream_raw` resolves before it opens a request. | The request goes out with another provider's key. |
-//! | `only_credentialed_models_are_offered_or_spawned` | T1 | On an OpenRouter-only setup `find_models` lists only `openrouter` models and `rlm.run(model="anthropic/claude-haiku-4-5")` is refused with the missing-credential text. | `usable` filters the listing; `cast` checks before a lane or a lease. | A text-only filter offers models the child then fails on with 401. |
+//! | `an_entry_near_its_expiry_is_resolved_again_before_use` | T1 | A held credential within 30 s of expiry is resolved again before the request; one two minutes out is kept. | The expiry check in `credential` (D191). | Keep an expiring entry and a days-long session streams a dead token turn by turn. |
+//! | `only_credentialed_models_are_offered_or_spawned` | T1 | On an OpenRouter-only setup `find_models` lists only `openrouter` models and `rlm.run(model="anthropic/claude-haiku-4-5")` is refused with the missing-credential text. | `has_credential` filters the listing; `cast` checks before a lane or a lease. | A text-only filter offers models the child then fails on with 401. |
 
 use crate::scratch::Scratch;
 use crate::support;
@@ -116,6 +117,29 @@ async fn a_model_with_no_credential_never_reaches_the_wire() -> TestResult {
         error_message.as_deref(),
         Some(missing_message("yi-test-nokey").as_str())
     );
+    Ok(())
+}
+
+/// Nextest runs each test in its own process, so HOME and the key set here reach no other test.
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the entry expires against the clock credential() reads"
+)]
+fn an_entry_near_its_expiry_is_resolved_again_before_use() -> TestResult {
+    let root = Scratch::new("yi-provider-expiry")?;
+    unsafe { std::env::set_var("HOME", root.home()?) };
+    unsafe { std::env::set_var("OPENROUTER_API_KEY", "key-fresh") };
+    let now = std::time::SystemTime::now();
+    let held = |seconds: u64| {
+        let mut stale = key("key-stale");
+        stale.expires = Some(now + Duration::from_secs(seconds));
+        ProviderStream::new(None).with_auth("openrouter", stale)
+    };
+    let near = held(10).credential("openrouter")?;
+    assert_eq!(near.secret.expose(), "key-fresh");
+    let far = held(120).credential("openrouter")?;
+    assert_eq!(far.secret.expose(), "key-stale");
     Ok(())
 }
 

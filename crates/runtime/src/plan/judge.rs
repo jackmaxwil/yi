@@ -13,7 +13,7 @@ use yi_types::plan::contract::{
 };
 
 use super::verify::{Judge, Seat, Snapshot};
-use crate::subagent::models::{credentialed, family_of, other_families, selector_of};
+use crate::subagent::models::{credentialed_models, family_of, other_families, selector_of};
 use crate::subagent::{ChildExit, SubagentHost};
 
 pub const JUDGE_BRIEF: &str = include_str!("../prompts/judge.md");
@@ -152,7 +152,7 @@ impl Jury {
     /// Seats jurors on the models whose provider holds a credential on the host's stream.
     pub fn new(host: Arc<SubagentHost>) -> Self {
         let stream = Arc::clone(&host.options.provider);
-        let registry = move || credentialed(&stream);
+        let registry = move || credentialed_models(&stream);
         Self::over(host, Arc::new(registry))
     }
 

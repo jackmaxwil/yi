@@ -11,6 +11,7 @@
 //! | test | tier | what it pins | the control it dies with |
 //! |---|---|---|---|
 //! | `a_judge_is_another_family_or_the_item_abstains` | T0 | The family of a model is its vendor segment. With the owner on one family and the registry offering only that family, directly or through a reseller, the item abstains `no other family` and no child is spawned; with another family on offer every juror line names it. The model the plan spawned the todo's child with is an owner too. | `other_families` over `family_of`, fed by the host's settings and the plan's recorded selector. Seat the cheapest model whatever its family and the owner grades its own work. |
+//! | `a_juror_without_a_credential_is_never_seated` | T1 | `Jury::new` seats only models whose provider holds a credential on the host's stream: with only the owner's `anthropic` held the item abstains `no other family` and nothing is spawned; with `openrouter` held too, every juror is an `openrouter` model and the item passes. | `credentialed_models` over the host's `ProviderStream`. Seat from the whole registry and a juror with no key is refused at spawn, abstains, and moves the verdict. |
 //! | `malformed_or_empty_answers_abstain` | T0 | An empty answer, a bare word, fenced JSON, prose after the object, a missing key, an unknown key, a fourth verdict word and an array are each an abstention; so is a decided vote that quotes nothing. Only the schema, quoted, is a vote. | `vote_of`, the strict `JurorAnswer` parse (`deny_unknown_fields`). Read the first word, or forgive a key, and a juror steered into chatter votes. |
 //! | `an_unbacked_quote_abstains_the_item` | T1 | The `quotes` rows of `fixtures/plans/judge/jurors.json`, each played as a juror transcript: a quote of evidence never fetched, fetched at another version, misquoted, past the end, blank, or from a source that is not the item's evidence is `unbacked`, even on an abstaining answer. Through a whole jury, one such juror abstains the item though the other two pass with backed quotes, and the dropped juror's line carries the check's own flag. | `Evidence::backs` over `rows_of` the juror's own transcript, and `judge` putting an unbacked quote above the tally. Trust the quote and a juror passes an item on text nobody read; back a blank line and a steered juror passes on nothing. |
 //! | `the_brief_carries_no_history_or_prior_verdict` | T0 | The juror's whole history is the brief and its own turns: the first message is exactly `brief(rubric, evidence)`, nothing the owner said or an earlier verdict said appears in it, the evidence text itself is not inlined, and the juror's wall denies every write and the `history://`, `kernel://`, `agent://` and `plan://` schemes. | `brief` taking only the rubric and the addresses, and `juror_kwargs` carrying no `fork` and no `context`. Fork the owner's transcript in and the juror judges the author, not the work. |
@@ -158,6 +159,11 @@ fn key() -> yi_runtime::auth::Resolved {
 }
 
 fn rig(owner: Model, max_children: usize) -> Result<Rig, Box<dyn Error>> {
+    rig_holding(owner, max_children, &["anthropic", "openrouter"])
+}
+
+/// A rig whose host stream holds a credential for exactly the `held` providers.
+fn rig_holding(owner: Model, max_children: usize, held: &[&str]) -> Result<Rig, Box<dyn Error>> {
     let root = Scratch::new("yi-judge")?;
     let (events, _keep) = tokio::sync::broadcast::channel(64);
     let scripts: Arc<Mutex<VecDeque<Script>>> = Arc::default();
@@ -172,12 +178,9 @@ fn rig(owner: Model, max_children: usize) -> Result<Rig, Box<dyn Error>> {
     );
     let cwd = root.to_path_buf();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
-        // The owner is anthropic's and the jurors openrouter's: a spawn needs a credential.
-        provider: Arc::new(
-            ProviderStream::new(None)
-                .with_auth("anthropic", key())
-                .with_auth("openrouter", key()),
-        ),
+        provider: Arc::new(held.iter().fold(ProviderStream::new(None), |stream, held| {
+            stream.with_auth(held, key())
+        })),
         depth: 0,
         max_depth: 1,
         max_children,
@@ -266,8 +269,18 @@ impl Rig {
         purpose: Purpose,
         owner_model: Option<&str>,
     ) -> Result<(ItemVerdict, Vec<JurorLine>), Box<dyn Error>> {
-        let permit = Capacity::for_slots(3).reserve(purpose)?;
         let jury = Jury::over(Arc::clone(&self.host), Arc::new(move || registry.clone()));
+        self.adjudicate(&jury, item, purpose, owner_model)
+    }
+
+    fn adjudicate(
+        &self,
+        jury: &Jury,
+        item: &ContractItem,
+        purpose: Purpose,
+        owner_model: Option<&str>,
+    ) -> Result<(ItemVerdict, Vec<JurorLine>), Box<dyn Error>> {
+        let permit = Capacity::for_slots(3).reserve(purpose)?;
         let snapshot = Snapshot {
             id: "tree",
             root: &self.root,
@@ -385,6 +398,46 @@ async fn a_judge_is_another_family_or_the_item_abstains() -> TestResult {
     assert!(matches!(verdict, ItemVerdict::Abstain { reason } if reason == "no other family"));
     let (verdict, _) = rig.judge(vec![glm], &item, Purpose::Verification, Some("no/such"))?;
     assert!(matches!(verdict, ItemVerdict::Abstain { .. }));
+    Ok(())
+}
+
+/// Nextest runs each test in its own process, so HOME and the key variables cleared here reach
+/// no other test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_juror_without_a_credential_is_never_seated() -> TestResult {
+    let home = Scratch::new("yi-judge-keys")?;
+    unsafe { std::env::set_var("HOME", &*home) };
+    for variable in [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+    ] {
+        unsafe { std::env::remove_var(variable) };
+    }
+    let claude = catalog("anthropic", "claude-haiku-4-5")?;
+
+    let rig = rig_holding(claude.clone(), 8, &["anthropic"])?;
+    let (item, _) = rig.item(3)?;
+    let jury = Jury::new(Arc::clone(&rig.host));
+    let (verdict, lines) = rig.adjudicate(&jury, &item, Purpose::Verification, None)?;
+    let other = ItemVerdict::Abstain {
+        reason: "no other family".to_owned(),
+    };
+    assert_eq!(verdict, other, "{lines:?}");
+    assert!(rig.walls.lock().is_ok_and(|seen| seen.is_empty()));
+
+    let rig = rig_holding(claude, 8, &["anthropic", "openrouter"])?;
+    let (item, url) = rig.item(3)?;
+    rig.play(vec![passing(&url), passing(&url), passing(&url)]);
+    let jury = Jury::new(Arc::clone(&rig.host));
+    let (verdict, lines) = rig.adjudicate(&jury, &item, Purpose::Verification, None)?;
+    assert_eq!(verdict, ItemVerdict::Pass, "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .all(|line| line.model.starts_with("openrouter/"))
+    );
     Ok(())
 }
 

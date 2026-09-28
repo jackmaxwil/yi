@@ -10,7 +10,7 @@ use crate::provider::{ProviderStream, available_models};
 impl SubagentHost {
     pub fn find_models(&self, query: &str, limit: usize) -> Map<String, Value> {
         let needle = query.to_lowercase();
-        let models: Vec<Value> = credentialed(&self.options.provider)
+        let models: Vec<Value> = credentialed_models(&self.options.provider)
             .into_iter()
             .filter(|model| {
                 needle.is_empty()
@@ -35,13 +35,13 @@ impl SubagentHost {
 }
 
 /// The registry's models whose provider holds a credential, each provider asked once.
-pub fn credentialed(stream: &ProviderStream) -> Vec<Model> {
-    let mut usable = std::collections::HashMap::new();
+pub fn credentialed_models(stream: &ProviderStream) -> Vec<Model> {
+    let mut asked = std::collections::HashMap::new();
     let mut models = available_models();
     models.retain(|model| {
-        *usable
+        *asked
             .entry(model.provider.clone())
-            .or_insert_with(|| stream.usable(&model.provider))
+            .or_insert_with(|| stream.has_credential(&model.provider))
     });
     models
 }

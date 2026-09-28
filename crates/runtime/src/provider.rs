@@ -41,15 +41,14 @@ enum ProviderApi {
     AnthropicMessages,
     OpenAiCompletions,
     OpenAiResponses,
-    Faux,
 }
 
-fn provider_api(api: &str) -> ProviderApi {
+fn provider_api(api: &str) -> Option<ProviderApi> {
     match api {
-        "anthropic-messages" => ProviderApi::AnthropicMessages,
-        "openai-completions" => ProviderApi::OpenAiCompletions,
-        "openai-responses" => ProviderApi::OpenAiResponses,
-        _ => ProviderApi::Faux,
+        "anthropic-messages" => Some(ProviderApi::AnthropicMessages),
+        "openai-completions" => Some(ProviderApi::OpenAiCompletions),
+        "openai-responses" => Some(ProviderApi::OpenAiResponses),
+        _ => None,
     }
 }
 
@@ -139,12 +138,12 @@ impl ProviderStream {
                 }
                 Ok(fresh)
             }
-            // A failed refresh keeps the old entry: its 401 names `yi login`.
+            // The credential is gone (logout, env unset): keep what was held.
             None => held.ok_or_else(|| yi_ai::auth::missing_message(provider)),
         }
     }
 
-    pub fn usable(&self, provider: &str) -> bool {
+    pub fn has_credential(&self, provider: &str) -> bool {
         provider == yi_ai::faux::FAUX_PROVIDER || self.credential(provider).is_ok()
     }
 
@@ -225,13 +224,12 @@ impl ProviderStream {
         effort: Effort,
         signal: &InterruptSignal,
     ) -> Receiver<AssistantMessageEvent> {
-        let api = provider_api(&model.api);
-        if api == ProviderApi::Faux {
+        let Some(api) = provider_api(&model.api) else {
             return self.faux_stream();
-        }
+        };
         let credential = match self.credential(&model.provider) {
             Ok(credential) => credential,
-            Err(missing) => return refused(model, &missing),
+            Err(missing) => return error_stream(model, &missing),
         };
         let (key, oauth) = (
             credential.secret.expose(),
@@ -266,7 +264,6 @@ impl ProviderStream {
             ProviderApi::OpenAiResponses => {
                 openai_responses::stream(model, context, &openai(), key)
             }
-            ProviderApi::Faux => self.faux_stream(),
         }
     }
 
@@ -289,10 +286,10 @@ impl ProviderStream {
     }
 }
 
-fn refused(model: &Model, missing: &str) -> Receiver<AssistantMessageEvent> {
+fn error_stream(model: &Model, text: &str) -> Receiver<AssistantMessageEvent> {
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
     let mut output = yi_ai::request::empty_assistant(model);
-    let _ = sender.try_send(yi_ai::request::fail_message(&mut output, missing));
+    let _ = sender.try_send(yi_ai::request::fail_message(&mut output, text));
     receiver
 }
 
@@ -332,7 +329,7 @@ mod tests {
     fn luna_routes_to_responses_not_faux() -> Result<(), Box<dyn std::error::Error>> {
         let model = resolve_model("openai", "gpt-5.6-luna")
             .ok_or("bundled catalog missing gpt-5.6-luna")?;
-        assert_eq!(provider_api(&model.api), ProviderApi::OpenAiResponses);
+        assert_eq!(provider_api(&model.api), Some(ProviderApi::OpenAiResponses));
         Ok(())
     }
 }
