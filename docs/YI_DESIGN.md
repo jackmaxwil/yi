@@ -340,8 +340,8 @@ with no paired end restores unscoped and says so. Turn start and end capture int
 
 ### 7.8 Skills
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
-`<name>/SKILL.md` walked 2 levels. The catalog lists every repository skill but a home-root skill
-only when config `skills.global` names it; a child's lists none. Frontmatter at discovery, body via `read`; `$name` arms the
+`<name>/SKILL.md` walked 2 levels. The catalog lists every repository skill and every `~/.yi/skills` skill, but
+another home-root skill only when config `skills.global` names it; a child's lists none of those. Frontmatter at discovery, body via `read`; `$name` arms the
 skill as a rule. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.
 

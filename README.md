@@ -225,7 +225,7 @@ One file: `~/.yi/config.json`. Current keys:
   "rlm": { "maxDepth": 1 },                    // how deep a family nests (ceiling 3); 8 children per parent, 16 live per family
   "console": { "autoSide": true },             // first kernel cell / tracked edit opens a side pane
   "tui": { "pace": 100 },                      // streamed-text reveal speed, percent; 0 paints on arrival
-  "skills": { "global": ["har"] },             // home-root skills the catalog lists; the repo's own always are
+  "skills": { "global": ["har"] },             // ~/.agents, ~/.claude skills the catalog lists; repo and ~/.yi skills always are
   "keys": { "ctrl+g": "some-action" }          // solo keymap overrides
 }
 ```

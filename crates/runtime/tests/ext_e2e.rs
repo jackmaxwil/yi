@@ -717,8 +717,14 @@ fn the_catalog_lists_a_home_skill_only_when_config_names_it() -> TestResult {
     let (home, project) = (dir.join("home"), dir.join("project"));
     std::fs::create_dir_all(&project)?;
     repo(&project)?;
-    for name in ["named-one", "unnamed-one"] {
-        let skill = home.join(".agents/skills").join(name);
+    let roots = [
+        (home.join(".agents/skills"), "named-one"),
+        (home.join(".agents/skills"), "other-one"),
+        (home.join(".yi/skills/yi"), "yis-own"),
+        (project.join(".yi/skills"), "repos-own"),
+    ];
+    for (root, name) in roots {
+        let skill = root.join(name);
         std::fs::create_dir_all(&skill)?;
         let front = format!("---\nname: {name}\ndescription: The {name} skill.\n---\n");
         std::fs::write(skill.join("SKILL.md"), front)?;
@@ -738,9 +744,17 @@ fn the_catalog_lists_a_home_skill_only_when_config_names_it() -> TestResult {
     };
     let named = catalog(vec!["named-one".to_owned()]);
     assert!(named.contains("The named-one skill."), "{named}");
-    assert!(!named.contains("unnamed-one"), "{named}");
+    assert!(!named.contains("other-one"), "{named}");
     let bare = catalog(Vec::new());
     assert!(!bare.contains("named-one"), "{bare}");
+    assert!(
+        bare.contains("The yis-own skill."),
+        "Yi's own root lists whole: {bare}"
+    );
+    assert!(
+        bare.contains("The repos-own skill."),
+        "the repository's skills stay: {bare}"
+    );
     Ok(())
 }
 
