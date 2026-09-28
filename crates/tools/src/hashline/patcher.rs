@@ -11,9 +11,7 @@ use super::messages::{
     rebased_warning, unseen_lines_message,
 };
 use super::mismatch::MismatchError;
-use super::normalize::{
-    LineEnding, detect_line_ending, normalize_to_lf, restore_line_endings, strip_bom,
-};
+use super::normalize::{Endings, split};
 use super::rebase::{LineMap, remap_edits};
 use super::snapshots::{Snapshot, SnapshotStore};
 use super::types::{ApplyResult, BlockResolverRequest, BlockSpan, Clipboard, Edit, FileOp};
@@ -51,8 +49,7 @@ pub struct PreparedSection {
     section: PatchSection,
     canonical_path: String,
     exists: bool,
-    bom: &'static str,
-    line_ending: LineEnding,
+    endings: Endings,
     normalized: String,
     apply_result: ApplyResult,
     parse_warnings: Vec<String>,
@@ -286,10 +283,7 @@ impl<'a> Patcher<'a> {
             return Err(format!("MV destination is the same as {}.", target.path));
         }
 
-        let bom_result = strip_bom(&raw_content);
-        let bom = bom_result.bom;
-        let line_ending = detect_line_ending(bom_result.text);
-        let normalized = normalize_to_lf(bom_result.text);
+        let (normalized, endings) = split(&raw_content);
 
         let edits = if matches!(file_op, Some(FileOp::Rem)) {
             Vec::new()
@@ -309,8 +303,7 @@ impl<'a> Patcher<'a> {
             section: target,
             canonical_path,
             exists: true,
-            bom,
-            line_ending,
+            endings,
             normalized,
             apply_result,
             parse_warnings,
@@ -380,11 +373,9 @@ impl<'a> Patcher<'a> {
             });
         }
 
-        let persisted = format!(
-            "{}{}",
-            prepared.bom,
-            restore_line_endings(&after, prepared.line_ending)
-        );
+        let persisted = prepared
+            .endings
+            .restore(&after, &prepared.apply_result.origins);
 
         if let Some(dest) = move_dest {
             self.refuse_symlink(&section.path)?;
@@ -446,7 +437,7 @@ impl<'a> Patcher<'a> {
         canonical_path: &str,
         text: &str,
     ) -> Result<String, String> {
-        let normalized = normalize_to_lf(text);
+        let (normalized, _) = split(text);
         let anchors = section.collect_anchor_lines()?;
         let file_lines: Vec<String> = normalized.split('\n').map(str::to_owned).collect();
         let shown = anchored_lines(
