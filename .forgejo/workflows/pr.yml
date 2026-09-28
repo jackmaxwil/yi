@@ -145,6 +145,32 @@ jobs:
               --model openrouter/deepseek/deepseek-v4-flash-0731 --cap-usd 1 --out "live-again-$n" || true
             runs+=("live-again-$n/run.json")
           done
+      # An OpenRouter Claude route caches nothing without explicit marks, and the DeepSeek run above
+      # cannot see that: its upstream caches on its own (#742). The pin is this route's, not the
+      # ledger's, so it is not EVAL_ROUTING. The job stays advisory; a red here names a real loss.
+      - name: a Claude route reads its warm prefix
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CLAUDE_ROUTING: '{"order":["amazon-bedrock"],"allow_fallbacks":false}'
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then echo "inconclusive: no OPENROUTER_API_KEY secret"; exit 0; fi
+          EVAL_ROUTING="$CLAUDE_ROUTING" python3 evals/run.py --live --task cache-warm --binary target/debug/yi \
+            --model openrouter/anthropic/claude-haiku-4.5 --cap-usd 0.2 --out live-claude || true
+          python3 - <<'EOF'
+          import json, sys
+          try:
+              rows = json.load(open("live-claude/run.json")).get("rows", [])
+          except (OSError, ValueError) as error:
+              sys.exit(print(f"inconclusive: {error}"))
+          row = next((row for row in rows if row.get("task") == "cache-warm"), {})
+          read, fresh = row.get("warmRead", 0), row.get("warmInput", 0)
+          if row.get("status") == "inconclusive" or read + fresh == 0:
+              sys.exit(print(f"inconclusive: {row.get('detail', 'no warm turn')}"))
+          rate = read / (read + fresh)
+          print(f"claude warm hit {rate:.3f}: read {read}, uncached {fresh}")
+          sys.exit(0 if rate >= 0.9 else 1)
+          EOF
       - name: post the live report
         env:
           FORGEJO_API_URL: ${{ github.api_url }}
