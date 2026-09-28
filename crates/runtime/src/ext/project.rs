@@ -168,7 +168,7 @@ impl ProjectResources {
             let Ok(content) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let hash = content_hash(&content);
+            let hash = content_hash(&instruction_text(&content));
             if seen.contains(&hash) {
                 continue;
             }
@@ -205,6 +205,16 @@ impl ProjectResources {
             text: catalog.text,
         });
     }
+}
+
+fn instruction_text(content: &str) -> String {
+    let is_comment =
+        |line: &&str| line.trim_start().starts_with("<!--") && line.trim_end().ends_with("-->");
+    content
+        .lines()
+        .filter(|line| !is_comment(line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn contributions(cwd: &Path, home: &Path) -> Vec<(String, String)> {
