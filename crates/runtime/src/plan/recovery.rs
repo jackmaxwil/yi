@@ -204,6 +204,7 @@ impl PlanEngine {
                 Op::Repair { resolutions },
                 request,
                 expected,
+                Default::default(),
             )?
         };
         outcome.notices.splice(0..0, notices);

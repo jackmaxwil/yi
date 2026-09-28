@@ -12,10 +12,8 @@ use yi_runtime::todo::{Op, Target, TodoStore, latest_record};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, Attribution, StopReason, UserContent};
 use yi_types::model::{Model, ModelCost, ToolChoice};
-use yi_types::plan::doc::TodoLabel;
-use yi_types::todo::{
-    BlockedOn, PhaseName, TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord, TodoItem,
-};
+use yi_types::plan::doc::{BlockedOn, Todo, TodoLabel};
+use yi_types::todo::{PhaseName, TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -86,10 +84,7 @@ fn open_list(todos: &TodoStore) -> Result<(), Box<dyn Error>> {
         Op::Init {
             phases: vec![(
                 PhaseName::new("Tasks")?,
-                vec![
-                    TodoItem::from_text("first")?,
-                    TodoItem::from_text("second")?,
-                ],
+                vec![Todo::from_text("first")?, Todo::from_text("second")?],
             )],
         },
         None,
@@ -209,8 +204,9 @@ fn posture_reads_states_never_sentences() -> TestResult {
     r.todos.apply(
         Op::Block {
             label: TodoLabel::new("first")?,
-            on: BlockedOn::External,
+            on: BlockedOn::External { probe: None },
             note: "CI".to_owned(),
+            ask: None,
         },
         None,
     )?;
@@ -218,8 +214,9 @@ fn posture_reads_states_never_sentences() -> TestResult {
     r.todos.apply(
         Op::Block {
             label: TodoLabel::new("second")?,
-            on: BlockedOn::External,
+            on: BlockedOn::External { probe: None },
             note: "CI".to_owned(),
+            ask: None,
         },
         None,
     )?;
@@ -229,6 +226,7 @@ fn posture_reads_states_never_sentences() -> TestResult {
             label: TodoLabel::new("second")?,
             on: BlockedOn::User,
             note: "which branch".to_owned(),
+            ask: None,
         },
         None,
     )?;
@@ -379,6 +377,7 @@ fn only_a_state_suppresses_the_interception() -> TestResult {
             label: TodoLabel::new("first")?,
             on: BlockedOn::User,
             note: "which branch".to_owned(),
+            ask: None,
         },
         None,
     )?;

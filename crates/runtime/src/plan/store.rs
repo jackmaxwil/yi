@@ -903,6 +903,7 @@ mod tests {
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         }))?;
         let id = out.plan.id.clone();
@@ -949,6 +950,7 @@ mod tests {
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         }))?;
         let id = out.plan.id.clone();
@@ -963,6 +965,7 @@ mod tests {
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         }));
         assert!(
@@ -986,6 +989,7 @@ mod tests {
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         }))?;
         assert_eq!(landed.plan.todos.len(), 2, "once regenerated, work resumes");

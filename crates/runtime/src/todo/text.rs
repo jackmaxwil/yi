@@ -1,33 +1,41 @@
-use yi_types::plan::doc::{TodoLabel, TodoStateName};
-use yi_types::todo::{BlockedOn, PhaseName, TodoId, TodoItem, TodoList, TodoPhase};
+use yi_types::plan::doc::{AgentId, BlockedOn, Todo, TodoLabel, TodoState, TodoStateName};
+use yi_types::todo::{PhaseName, TodoId, TodoList, TodoPhase};
 
 use super::{DEFAULT_PHASE, TodoError};
 
 pub const NEXT_LINES: usize = 3;
 
-fn marker(state: &TodoStateName) -> &'static str {
+fn marker(state: &TodoState) -> &'static str {
     match state {
-        TodoStateName::Pending => "[ ]",
-        TodoStateName::Running => "[>]",
-        TodoStateName::Blocked => "[!]",
-        TodoStateName::Done => "[x]",
-        TodoStateName::Abandoned | TodoStateName::Failed => "[-]",
-        TodoStateName::Other(_) => "[?]",
+        TodoState::Pending => "[ ]",
+        TodoState::Running { .. } => "[>]",
+        TodoState::Blocked { .. } => "[!]",
+        TodoState::Done { .. } => "[x]",
+        TodoState::Abandoned | TodoState::Failed { .. } => "[-]",
+        TodoState::Other(_) => "[?]",
     }
 }
 
-fn state_of(mark: char) -> Option<TodoStateName> {
+fn state_of(mark: char) -> Option<TodoState> {
     match mark {
-        ' ' => Some(TodoStateName::Pending),
-        '>' => Some(TodoStateName::Running),
-        'x' | 'X' => Some(TodoStateName::Done),
-        '-' | '~' => Some(TodoStateName::Abandoned),
-        '!' => Some(TodoStateName::Blocked),
+        ' ' => Some(TodoState::Pending),
+        '>' => Some(TodoState::Running {
+            by: AgentId::owner(),
+        }),
+        'x' | 'X' => Some(TodoState::Done {
+            output: None,
+            resolution: None,
+        }),
+        '-' | '~' => Some(TodoState::Abandoned),
+        '!' => Some(TodoState::Blocked {
+            on: BlockedOn::User,
+            note: String::new(),
+        }),
         _ => None,
     }
 }
 
-fn row(raw: &str, line: usize) -> Result<(usize, TodoItem), TodoError> {
+fn row(raw: &str, line: usize) -> Result<(usize, Todo), TodoError> {
     let indent = raw.len().saturating_sub(raw.trim_start().len());
     let body = raw.trim_start();
     let bad = || TodoError::Checklist {
@@ -47,12 +55,9 @@ fn row(raw: &str, line: usize) -> Result<(usize, TodoItem), TodoError> {
         Some((id, tail)) => (Some(id), tail),
         None => (None, text),
     };
-    let mut item = TodoItem::from_text(text)?;
+    let mut item = Todo::from_text(text)?;
     item.id = id;
     item.state = state;
-    if item.state == TodoStateName::Blocked {
-        item.on = Some(BlockedOn::User);
-    }
     Ok((indent, item))
 }
 
@@ -126,28 +131,32 @@ pub fn merge(old: &TodoList, mut new: TodoList) -> TodoList {
     new
 }
 
-fn carry(old: &TodoList, row: &mut TodoItem) {
+fn carry(old: &TodoList, row: &mut Todo) {
     let Some(prior) = old.items().find(|prior| prior.label == row.label) else {
         return;
     };
     if row.id.is_none() {
         row.id = prior.id.clone();
     }
-    if prior.state == row.state {
-        row.on = prior.on.clone();
+    if row.cites.intent.is_empty() {
+        row.cites.intent = prior.cites.intent.clone();
+    }
+    if TodoStateName::of(&prior.state) == TodoStateName::of(&row.state) {
+        row.state = prior.state.clone();
         row.note = row.note.take().or_else(|| prior.note.clone());
         row.evidence = prior.evidence.clone();
+        row.ask = prior.ask.clone();
     }
 }
 
-pub fn name(item: &TodoItem) -> String {
+pub fn name(item: &Todo) -> String {
     match &item.id {
         Some(id) => id.to_string(),
         None => format!("{:?}", item.label.as_str()),
     }
 }
 
-fn row_text(item: &TodoItem) -> String {
+fn row_text(item: &Todo) -> String {
     let id = item
         .id
         .as_ref()
@@ -155,21 +164,31 @@ fn row_text(item: &TodoItem) -> String {
         .unwrap_or_default();
     let cut = if item.is_cut() { "…" } else { "" };
     format!(
-        "{} {id}{}{cut}{}",
+        "{} {id}{}{cut}{}{}",
         marker(&item.state),
         item.label,
-        suffix(item)
+        suffix(item),
+        asked(item)
     )
 }
 
-pub fn suffix(item: &TodoItem) -> String {
-    match (&item.state, &item.on, &item.note) {
-        (TodoStateName::Blocked, Some(on), Some(note)) => {
+pub fn asked(item: &Todo) -> String {
+    match (&item.state, &item.ask) {
+        (TodoState::Blocked { .. }, Some(ask)) => format!(" — {ask}"),
+        _ => String::new(),
+    }
+}
+
+pub fn suffix(item: &Todo) -> String {
+    match (&item.state, &item.note) {
+        (TodoState::Blocked { on, note }, _) if note.is_empty() => {
+            format!(" (blocked on {})", on.as_str())
+        }
+        (TodoState::Blocked { on, note }, _) => {
             format!(" (blocked on {on}: {note})", on = on.as_str())
         }
-        (TodoStateName::Blocked, Some(on), None) => format!(" (blocked on {})", on.as_str()),
-        (TodoStateName::Abandoned, _, Some(note)) => format!(" (dropped: {note})"),
-        (TodoStateName::Failed, _, Some(note)) => format!(" (failed: {note})"),
+        (TodoState::Abandoned, Some(note)) => format!(" (dropped: {})", note.as_str()),
+        (TodoState::Failed { cause, .. }, _) => format!(" (failed: {cause})"),
         _ => String::new(),
     }
 }
@@ -179,7 +198,8 @@ pub fn header(list: &TodoList) -> String {
     let mut line = format!("Todos {}/{}", progress.done, progress.total);
     let planned = super::mirror::plan_of(list).and_then(|_| {
         list.items().find(|item| {
-            item.state == TodoStateName::Running && item.extra.contains_key(super::mirror::PLAN_KEY)
+            matches!(item.state, TodoState::Running { .. })
+                && item.extra.contains_key(super::mirror::PLAN_KEY)
         })
     });
     if let Some(running) = planned.or_else(|| list.running()) {
@@ -208,8 +228,12 @@ pub fn checklist(list: &TodoList) -> Vec<String> {
     out
 }
 
-fn moves(item: &TodoItem) -> Option<String> {
-    let state = format!("{}({})", yi_types::graph::TODO_STATE, item.state.as_str());
+fn moves(item: &Todo) -> Option<String> {
+    let state = format!(
+        "{}({})",
+        yi_types::graph::TODO_STATE,
+        TodoStateName::of(&item.state)
+    );
     let facts = crate::affordance::Facts {
         holds: &[state.as_str()],
         name: &name(item),
@@ -225,7 +249,7 @@ pub fn next_lines(list: &TodoList) -> Vec<String> {
     let mut out: Vec<String> = list.running().and_then(moves).into_iter().collect();
     let pending = list
         .items()
-        .filter(|item| item.state == TodoStateName::Pending)
+        .filter(|item| matches!(item.state, TodoState::Pending))
         .take(
             crate::levers::get()
                 .graph_next_lines
@@ -235,7 +259,7 @@ pub fn next_lines(list: &TodoList) -> Vec<String> {
     if out.is_empty() {
         let blocked = list
             .items()
-            .find(|item| item.state == TodoStateName::Blocked);
+            .find(|item| matches!(item.state, TodoState::Blocked { .. }));
         out.extend(blocked.and_then(moves));
     }
     out

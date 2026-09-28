@@ -9,12 +9,13 @@ use scratch::Scratch;
 
 use std::collections::HashMap;
 use std::error::Error;
+use std::hash::{BuildHasher, RandomState};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use proptest::prelude::{Just, Strategy, any, prop, prop_oneof};
-use proptest::test_runner::{Config, TestCaseError, TestRunner};
+use proptest::test_runner::{Config, RngSeed, TestCaseError, TestRunner};
 use yi_runtime::plan::journal::{Fs, RealFs};
 use yi_runtime::plan::ops::{
     Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec,
@@ -31,8 +32,10 @@ use yi_types::url::{Durability, Scheme, Url};
 
 /// Invariant: the fuzz lane rides `just check`, so the case budget stays small
 /// enough that the whole property finishes in a few seconds; a soak raises
-/// PROPTEST_CASES instead, at roughly linear cost.
-const CASES: u32 = 256;
+/// PROPTEST_CASES instead, at roughly linear cost. Incident: 256 cases took
+/// 13-16 s on an idle forge runner and passed the 60 s cutoff under load (#721);
+/// every run draws a new seed, so coverage accrues across runs instead.
+const CASES: u32 = 64;
 const MAX_ACTIONS: usize = 20;
 
 /// Slots 2 and 4 differ verbatim but collide after slugging, exercising the
@@ -282,6 +285,7 @@ fn todo_specs(
                     _ => None,
                 },
                 children: Vec::new(),
+                cites: Default::default(),
             })
         })
         .collect()
@@ -915,6 +919,7 @@ fn act_verified(case: &mut Case, passes: bool) -> Result<(), TestCaseError> {
         delegation: None,
         contract: Some(contract_for(case, &id, passes)?),
         children: Vec::new(),
+        cites: Default::default(),
     };
     let inserted = match opening {
         Some(goal) => case.apply(
@@ -1088,6 +1093,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                     delegation: None,
                     contract: None,
                     children: Vec::new(),
+                    cites: Default::default(),
                 });
             }
             let _refused = case.apply(owner(None, Op::Append { todos }), Bump::Touch)?;
@@ -1122,6 +1128,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                         label: label(*slot)?,
                         on: BlockedOn::User,
                         note: "x".repeat(usize::from(*note_len)),
+                        ask: None,
                     },
                 ),
                 Bump::Touch,
@@ -1144,6 +1151,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                     actor,
                     op: Op::Unblock {
                         label: label(*slot)?,
+                        answer: None,
                     },
                     request_id: None,
                     expected_revision: None,
@@ -1450,7 +1458,10 @@ fn action_strategy() -> impl Strategy<Value = Action> {
             .prop_map(|(at_sync, specs)| Action::Crash { at_sync, specs }),
         1 => (any::<u8>(), prop::collection::vec(slot_strategy(), 0..4))
             .prop_map(|(serial, slots)| Action::Import { serial, slots }),
-        1 => any::<bool>().prop_map(|passes| Action::Verified { passes }),
+        // Three, not one: at 64 cases a weight of one reaches each outcome about six times a
+        // run, so about one run in 260 misses one and fails the reachability check below;
+        // three reaches each about twenty times.
+        3 => any::<bool>().prop_map(|passes| Action::Verified { passes }),
     ]
 }
 
@@ -1470,12 +1481,18 @@ fn random_op_sequences_hold_every_invariant() -> Result<(), Box<dyn Error>> {
     if std::env::var_os("PROPTEST_CASES").is_none() {
         config.cases = CASES;
     }
+    let seed = match config.rng_seed {
+        RngSeed::Fixed(seed) => seed,
+        RngSeed::Random => RandomState::new().hash_one("plan-fuzz"),
+    };
+    config.rng_seed = RngSeed::Fixed(seed);
+    let replay = format!("PROPTEST_RNG_SEED={seed} replays this run");
     let mut runner = TestRunner::new(config);
     runner
         .run(&sequence_strategy(), |(width, actions)| {
             run_case(width, &actions)
         })
-        .map_err(|error| format!("{error}"))?;
+        .map_err(|error| format!("{error}; {replay}"))?;
     // The F0c invariant is only evidence when the lane reached both outcomes.
     let (verified, refused) = (
         VERIFIED_DONE.load(Ordering::SeqCst),
@@ -1483,7 +1500,7 @@ fn random_op_sequences_hold_every_invariant() -> Result<(), Box<dyn Error>> {
     );
     if verified == 0 || refused == 0 {
         return Err(format!(
-            "the lane reached {verified} verified completions and {refused} refused verdicts; both must be reached"
+            "the lane reached {verified} verified completions and {refused} refused verdicts; both must be reached; {replay}"
         )
         .into());
     }
