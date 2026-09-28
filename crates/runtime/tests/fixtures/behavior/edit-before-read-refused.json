@@ -70,7 +70,7 @@
     {
       "kind": "toolResultContains",
       "callId": "edit-blind",
-      "needle": "No version of notes.txt was shown this session"
+      "needle": "No version of notes.txt is on record for this session"
     },
     {
       "kind": "toolResultContains",

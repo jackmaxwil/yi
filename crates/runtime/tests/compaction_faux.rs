@@ -92,7 +92,7 @@ async fn auto_compaction_fires_at_the_message_boundary_and_persists() -> Result<
         ..CreateOptions::default()
     })?;
 
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
         faux_assistant_message(
@@ -150,7 +150,7 @@ async fn auto_compaction_fires_at_the_message_boundary_and_persists() -> Result<
     drop(store);
     let reopened = repo.open("compact-one")?;
     let resumed = {
-        let provider = Arc::new(ProviderStream::new(None, None));
+        let provider = Arc::new(ProviderStream::new(None));
         let mut session = session_for_compaction(provider);
         session.enable_compaction_with(Settings {
             enabled: false,
@@ -173,7 +173,7 @@ async fn auto_compaction_fires_at_the_message_boundary_and_persists() -> Result<
 
 #[tokio::test]
 async fn compact_now_applies_immediately_when_idle() -> Result<(), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         reply_with_usage(&format!("long body {}", "y".repeat(400)), 100, 5_000),
         faux_assistant_message(vec![faux_text("## Goal\nIdle summary")], StopReason::Stop),
@@ -213,7 +213,7 @@ async fn a_compaction_that_fails_to_write_is_not_applied() -> Result<(), Box<dyn
         id: Some("unsaved".to_owned()),
         ..CreateOptions::default()
     })?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         reply_with_usage(&format!("long body {}", "y".repeat(400)), 100, 5_000),
         faux_assistant_message(
@@ -243,7 +243,7 @@ async fn a_compaction_that_fails_to_write_is_not_applied() -> Result<(), Box<dyn
     std::fs::remove_dir(&path)?;
     std::fs::rename(&aside, &path)?;
 
-    let resumed = session_for_compaction(Arc::new(ProviderStream::new(None, None)));
+    let resumed = session_for_compaction(Arc::new(ProviderStream::new(None)));
     resumed.attach_store(repo.open("unsaved")?)?;
     assert_eq!(
         live,
@@ -341,7 +341,7 @@ async fn seed_and_compact(tag: &str, needle: &str) -> Result<Recalled, Box<dyn E
         )?
     };
 
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
         faux_assistant_message(
@@ -437,7 +437,7 @@ fn fetch_entry(seeded: &Recalled) -> Result<String, Box<dyn Error>> {
 
 #[tokio::test]
 async fn compaction_below_threshold_is_a_no_op() -> Result<(), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         reply_with_usage("tiny", 10, 50),
         reply_with_usage("also tiny", 10, 60),
@@ -473,7 +473,7 @@ async fn an_unknown_usage_never_pins_the_window_prefill() -> Result<(), Box<dyn 
             reply_with_usage(&"answer ".repeat(30), 1_500, 1_600),
             AgentMessage::host_user(UserContent::Text("follow up".to_owned()), 0),
         ];
-        let provider = Arc::new(ProviderStream::new(None, None));
+        let provider = Arc::new(ProviderStream::new(None));
         let signal = yi_loop::interrupt::InterruptSignal::default();
         compactor
             .maybe_compact(
@@ -509,7 +509,7 @@ async fn a_compaction_announces_itself_and_closes() -> Result<(), Box<dyn Error>
         id: Some("compact-wait".to_owned()),
         ..CreateOptions::default()
     })?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
         faux_assistant_message(vec![faux_text("## Goal\nSummary")], StopReason::Stop),
@@ -549,7 +549,7 @@ async fn a_request_that_is_not_due_assembles_nothing() -> Result<(), Box<dyn Err
     let (prompts, stores) = (Arc::clone(&asked), Arc::clone(&asked));
     let hook = yi_runtime::compaction::loop_hook(
         Arc::new(compactor),
-        Arc::new(ProviderStream::new(None, None)),
+        Arc::new(ProviderStream::new(None)),
         faux_model(2_000),
         Arc::new(move || {
             prompts.fetch_add(1, Ordering::SeqCst);
@@ -585,7 +585,7 @@ async fn a_summarys_user_addresses_resolve_to_the_users_own_words() -> Result<()
         "first requirement: keep the guardrails green",
         "second ask with enough characters to keep recent",
     ];
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
         faux_assistant_message(

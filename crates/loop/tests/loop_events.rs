@@ -919,6 +919,7 @@ fn openrouter_body(model: &Model, effort: yi_types::model::Effort, context: &Llm
             ..yi_ai::openai::OpenAiOptions::default()
         },
     )
+    .into_value()
 }
 
 fn last_message(body: &Value) -> Value {
