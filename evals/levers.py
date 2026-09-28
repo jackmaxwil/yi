@@ -28,6 +28,7 @@ import argparse, itertools, json, math, os, pathlib, re, shlex, statistics, subp
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "evals/graph"))
 sys.path.insert(0, str(ROOT / "evals/adapters"))
+sys.path.insert(0, str(ROOT / "skills/yi/session-mining"))
 from refine import Refused, names  # noqa: E402
 from yi_usage import LEVERS_ENV  # noqa: E402
 
@@ -231,8 +232,9 @@ def per_task(rows):
 
 
 def usable(row):
-    """A trial the watcher stopped or that errored scored nothing it can be credited with."""
-    return not (row.get("censored") or row.get("errored"))
+    """A trial the watcher stopped, that errored, or whose verifier never judged it (N1: verifier
+    timeouts under load) scored nothing it can be credited with."""
+    return not (row.get("censored") or row.get("errored") or row.get("verifierUnmeasured"))
 
 
 def unpriced(row):
@@ -292,10 +294,11 @@ def judge(baseline, runs, floors, accesses=1, delta=DELTA):
     if reason == "no_efficiency_gain":
         reason = None
 
-    def passes(rows):
-        return sum(1 for row in rows if usable(row) and value(row, "reward") > 0)
-
-    hard = reason or ("pass_lost" if passes(flat) < passes(base_flat) else None)
+    # Binary passes are judged like everything else, one difference per task: `pass_lost` needs the
+    # whole pass interval below zero. Incident: a zero-tolerance count rejected an inner A/A whose
+    # second arm fully solved one task fewer of 60.
+    lost = intervals["reward"]
+    hard = reason or ("pass_lost" if lost["high"] < 0 and lost["confidence"] >= target else None)
     soft = ("unmeasured" if sum(1 for row in base_flat + flat if unpriced(row)) > 1
             else "pairs_dropped" if seen and dropped / seen > MAX_DROPPED else None)
     sure = {key: row["confidence"] >= target for key, row in intervals.items()}
@@ -324,6 +327,42 @@ def screen(baseline, runs, floors):
     if not graded_diffs or statistics.median(graded_diffs) < 0:
         return "median_task_worse"
     return None
+
+
+def max_cut_rung(entries):
+    """The highest `rung` a cut redrive carried: the loop's own cut count (`run.rs`
+    `length_redrive`). The cut that ends a run writes no redrive, so a run stopped at the
+    default's cut left rung `default - 1` behind."""
+    return max((((entry.get("message") or {}).get("details") or {}).get("rung") or 0
+                for entry in entries
+                if (entry.get("message") or {}).get("customType") == "length_redrive"
+                and (((entry.get("message") or {}).get("details") or {}).get("cut"))), default=0)
+
+
+# The levers whose decision can be replayed from what a session records (design section 6.5).
+# loop.length_stop_at is not one: a truncated tool call counts a length stop without a
+# redrive. loop.reasoning_cap is not one: a cut aborts at the cap, so no longer reasoning exists.
+CENSUS = {"loop.cut_stop_at": max_cut_rung}
+
+
+def census(lever, candidate, sessions):
+    """How many recorded sessions would have stopped differently at `candidate`: the S0 screen
+    that refuses, for nothing, a value no session ever met. Below the default a session flips
+    when its cuts reached the candidate; above it, when the default's stop ended it."""
+    if lever not in CENSUS:
+        raise Refused(f"no census for {lever}: its decision is not recorded in a session")
+    import extract
+    default, flips, seen = manifest()[lever]["default"], 0, 0
+    for path in sorted(pathlib.Path(sessions).rglob("*.jsonl")):
+        if path.name.endswith(".telemetry.jsonl"):
+            continue
+        header, entries, _corrupt = extract.read_session(path)
+        if not header:
+            continue
+        seen += 1
+        rung = CENSUS[lever](entries)
+        flips += rung >= candidate if candidate < default else rung >= default - 1 if candidate > default else 0
+    return {"lever": lever, "value": candidate, "default": default, "sessions": seen, "flips": int(flips)}
 
 
 def grid(knobs, tasks, run, floors, listed, k=3, max_runs=MAX_RUNS, accesses=1):
@@ -371,6 +410,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--selfcheck", action="store_true", help="hold the manifest, the fixture and the floors together")
     verbs = parser.add_subparsers(dest="verb")
+    tally = verbs.add_parser("census", help="sessions a candidate value would have stopped differently")
+    tally.add_argument("--lever", required=True)
+    tally.add_argument("--value", type=int, required=True)
+    tally.add_argument("--sessions", required=True, help="a directory of v4 session files")
     for verb in ("compare", "grid"):
         sub = verbs.add_parser(verb)
         sub.add_argument("--runner", required=True, help="the owner's scoring command; this file starts no model")
@@ -386,6 +429,13 @@ def main(argv=None):
             sub.add_argument("--knob", action="append", required=True, help="name=v1,v2")
             sub.add_argument("--max-runs", type=int, default=MAX_RUNS)
     args = parser.parse_args(argv)
+    if args.verb == "census":
+        try:
+            print(json.dumps(census(args.lever, args.value, args.sessions)))
+        except Refused as refusal:
+            print(f"refused: {refusal}", file=sys.stderr)
+            return 2
+        return 0
     if args.verb:
         return search(args)
     if not args.selfcheck:

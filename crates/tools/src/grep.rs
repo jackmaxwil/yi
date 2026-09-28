@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 use crate::builtins::walk_files;
-use crate::hashline::normalize::{LineEnding, detect_line_ending, restore_line_endings};
+use crate::hashline::normalize::{Endings, split};
 use crate::hashline::types::BlockResolverRequest;
 use crate::tool::{
     Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, resolve_path, text_output,
@@ -180,8 +180,8 @@ struct FileHits {
     canonical: String,
     normalized: String,
     hits: Vec<usize>,
-    ending: LineEnding,
-    bom: &'static str,
+    endings: Endings,
+    utf8: bool,
 }
 
 fn hits_in(matcher: &regex::Regex, normalized: &str, multiline: bool, def: bool) -> Vec<usize> {
@@ -329,10 +329,17 @@ fn collect(
             binary_skipped = binary_skipped.saturating_add(1);
             return true;
         }
-        let raw = converted.unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
-        let stripped = crate::hashline::normalize::strip_bom(&raw);
-        let ending = detect_line_ending(stripped.text);
-        let normalized = crate::hashline::normalize::normalize_to_lf(stripped.text);
+        let (raw, utf8) = match converted {
+            Some(markdown) => (markdown, true),
+            None => match String::from_utf8(bytes) {
+                Ok(text) => (text, true),
+                Err(error) => (
+                    String::from_utf8_lossy(error.as_bytes()).into_owned(),
+                    false,
+                ),
+            },
+        };
+        let (normalized, endings) = split(&raw);
         let mut hits = hits_in(matcher, &normalized, options.multiline, options.def);
         if hits.is_empty() {
             return true;
@@ -360,8 +367,8 @@ fn collect(
                 .into_owned(),
             normalized,
             hits,
-            ending,
-            bom: stripped.bom,
+            endings,
+            utf8,
         });
         !collection_capped
     };
@@ -593,7 +600,12 @@ impl GrepTool {
         let mut changed = 0_usize;
         let mut written = 0_usize;
         let mut failures: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
         for file in &collected.files {
+            if !file.utf8 {
+                skipped.push(file.display.clone());
+                continue;
+            }
             let after: String = if options.multiline {
                 matcher
                     .replace_all(&file.normalized, replacement)
@@ -614,7 +626,9 @@ impl GrepTool {
             if !options.apply {
                 continue;
             }
-            let persisted = format!("{}{}", file.bom, restore_line_endings(&after, file.ending));
+            let persisted = file
+                .endings
+                .restore(&after, &crate::diff::line_origins(&file.normalized, &after));
             match fs::write(&file.canonical, persisted) {
                 Ok(()) => {
                     written = written.saturating_add(1);
@@ -640,6 +654,11 @@ impl GrepTool {
             ));
         }
         rows.extend(failures.iter().map(|failure| format!("failed: {failure}")));
+        rows.extend(
+            skipped
+                .iter()
+                .map(|path| format!("skipped (not UTF-8): {path}")),
+        );
         let mut output = text_output(rows.join("\n"));
         output.result.details = json!({
             "hits": collected.total,

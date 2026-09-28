@@ -1,0 +1,16 @@
+{
+  "answers": {
+    "skill": {
+      "choice": "land",
+      "confidence": 0.71,
+      "answer_confidence": 0.91,
+      "probabilities": {"land": 0.91, "gate": 0.06, "none": 0.03}
+    }
+  },
+  "routing": {
+    "model": "english",
+    "repo": "convaiinnovations/laya/english",
+    "reason": "Latin script, English"
+  },
+  "usage": {"input_tokens": 0, "output_tokens": 0}
+}
