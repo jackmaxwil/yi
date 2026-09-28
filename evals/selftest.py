@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,7 @@ import orient_census  # noqa: E402
 import rule_fires  # noqa: E402
 import record  # noqa: E402
 import tb21_cost  # noqa: E402
+import cache_probe  # noqa: E402
 import atif  # noqa: E402
 import run  # noqa: E402
 import yi_arc  # noqa: E402
@@ -40,6 +42,7 @@ import yi_usage  # noqa: E402
 import test_refine  # noqa: E402
 import test_levers  # noqa: E402
 import test_judge_replay  # noqa: E402
+import test_improve  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 EVENTS = FIXTURES / "ask_events.jsonl"
@@ -415,6 +418,16 @@ def check_driver_ceiling():
         done = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, timeout=60,
                               cwd=ROOT.parent)
         assert done.returncode == 1 and "OPENROUTER_API_KEY" in done.stderr, (name, done.stderr)
+    # The runner mode (`<runner> <overrides.json> <task>...`, the protocol levers.py calls) files
+    # its rows under a run id, so a call without one or without a task is refused before it pays.
+    sweep, env = ROOT / "drivers" / "tbv4_sweep.sh", {"PATH": os.environ.get("PATH", "")}
+    for argv, said in ((["--runner", "o.json"], "--runner wants"), (["--runner", "o.json", "t"], "EVAL_RUN_ID")):
+        done = subprocess.run(["sh", str(sweep), *argv], capture_output=True, text=True, env=env, timeout=60,
+                              cwd=ROOT.parent)
+        assert done.returncode == 1 and said in done.stderr, (argv, done.stderr)
+    # N1: harbor's RuntimeError is both a pull that timed out before the agent ran and an
+    # artifact the agent never wrote, so the runner never retries by exception type.
+    assert "--retry-include" not in sweep.read_text() and "trials.py unstarted" in sweep.read_text()
 
 
 def check_watch_stops():
@@ -431,6 +444,145 @@ def check_watch_stops():
                                "--poll", "0.2", "--", "sh", "-c", "exit 3"], capture_output=True, text=True,
                               timeout=60)
         assert done.returncode == 3, done
+
+    def trial_events(path, cost=None, unknown=False):
+        lines = EVENTS.read_text().splitlines()
+        for index, line in enumerate(lines):
+            event = json.loads(line)
+            message = event.get("message") or {}
+            if event.get("type") == "message_end" and message.get("role") == "assistant":
+                message["usage"]["cost"] = {"total": cost}
+                message["usage"]["unknown"] = unknown
+                lines[index] = json.dumps(event)
+        path.parent.mkdir(parents=True)
+        path.write_text("\n".join(lines) + "\n")
+
+    # A trial the watcher stops is marked `censored`: its verifier may still score whatever the
+    # stop left, and the gate must not read that as the arm's own result.
+    with tempfile.TemporaryDirectory() as tmp:
+        runs = Path(tmp) / "runs"
+        trial_events(runs / "job" / "task__one" / "agent" / "yi.jsonl", cost=2.0)
+        done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "1.5", "--wall", "60",
+                               "--poll", "0.2", "--", "sleep", "30"], capture_output=True, text=True, timeout=60)
+        assert done.returncode == 2 and "TRIAL STOP task__one" in done.stdout, done
+        assert "$1 or 180 turns" in (runs / "job" / "task__one" / "censored").read_text(), "a stopped trial is censored"
+    # An unpriced trial is charged the per-trial cap it cannot exceed, never $0 and never a
+    # price table (E14), and the stream goes on while the charge fits under the hard cap.
+    with tempfile.TemporaryDirectory() as tmp:
+        runs = Path(tmp) / "runs"
+        trial_events(runs / "job" / "task__two" / "agent" / "yi.jsonl", unknown=True)
+        done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "0.5", "--wall", "60",
+                               "--poll", "0.2", "--", "sleep", "30"], capture_output=True, text=True, timeout=60)
+        assert done.returncode == 2 and "spend $1.000 passed the hard cap" in done.stdout, done
+
+
+def check_watch_prune():
+    """An image goes after IDLE_POLLS consecutive unused polls, a use resets its count, and the
+    final prune after harbor exits takes every unused one (PAID-0: a sidecar pruned mid-pull)."""
+    import watch
+    containers, removed, images = {}, [], ["sidecar", "main"]  # container id -> image id
+
+    def fake_docker(*args):
+        if args[0] == "images":
+            return "\n".join(f"harborframework/terminal-bench {i}" for i in images if i not in removed)
+        if args[0] == "ps":
+            return "\n".join(containers)
+        return containers.get(args[-1], "")  # inspect --format {{.Image}} <container>
+
+    # PAID-0's sidecar sat unused for the minutes the main image took to pull; at the
+    # default 60 s poll, ten polls cover that and two did not.
+    assert watch.IDLE_POLLS >= 10, watch.IDLE_POLLS
+    real_docker, real_run = watch.docker, watch.subprocess.run
+    watch.docker = fake_docker
+    watch.subprocess.run = lambda argv, **kw: removed.append(argv[-1]) or subprocess.CompletedProcess(argv, 0)
+    try:
+        idle = {}
+        for _ in range(watch.IDLE_POLLS - 1):
+            watch.prune(idle)
+        assert removed == [], "an image unused for fewer than IDLE_POLLS polls stays"
+        containers["c1"] = "main"  # the main image's container starts: its count resets
+        watch.prune(idle)
+        assert removed == ["sidecar"], removed
+        del containers["c1"]
+        watch.prune(idle)
+        assert removed == ["sidecar"], "main was used one poll ago"
+        assert watch.prune(idle, ripe_at=0) == 1 and removed == ["sidecar", "main"], "the final prune takes every unused image"
+    finally:
+        watch.docker, watch.subprocess.run = real_docker, real_run
+
+def check_trials():
+    """One row per harbor trial, whatever sessions it wrote, and the caps a runner call may spend."""
+    import trials
+    with tempfile.TemporaryDirectory() as tmp:
+        job = Path(tmp) / "job"
+        shutil.copytree(FIXTURES / "axes" / "harbor" / "job", job)
+        # A child session beside the root one: the trial's tokens and cost are the sum of both.
+        root = next((job / "fixture-a__x" / "agent" / "yi" / "sessions").glob("*.jsonl"))
+        shutil.copy(root, root.with_name("1787544431470_fixture-a-child.jsonl"))
+        (job / "fixture-b__y" / "censored").write_text("stopped\n")
+        rows = {row["trial"]: row for row in trials.trial_rows(job)}
+        assert sorted(rows) == ["fixture-a__x", "fixture-b__y"], rows
+        assert (rows["fixture-a__x"]["input"], rows["fixture-a__x"]["costUsd"]) == (2400, 0.014864), rows["fixture-a__x"]
+        assert rows["fixture-b__y"]["censored"] and not rows["fixture-a__x"]["censored"], rows
+        for key in ("task", "reward", "partialScore", "cacheRead", "output", "wallSec", "errored",
+                    "testsPassed", "testsTotal", "traceScored"):
+            assert key in rows["fixture-a__x"], key
+        assert rows["fixture-b__y"]["traceScored"] and not rows["fixture-a__x"]["traceScored"], rows
+        # A trial that finished without a session ran no agent: its task is the one rerun.
+        unstarted = job / "fixture-c__z"
+        unstarted.mkdir()
+        (unstarted / "result.json").write_text(json.dumps({"task_name": "terminal-bench/fixture-c",
+                                                            "exception_info": {"exception_type": "RuntimeError"}}))
+        assert trials.unstarted(job) == ["fixture-c"], trials.unstarted(job)
+        store = Path(tmp) / "store"
+        store.mkdir()
+        real_store, trials.STORE = trials.STORE, store
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                assert trials.main(["rows", str(job), "--run-id", "r", "--dry"]) == 0
+            assert len(said.getvalue().splitlines()) == 2 and not list(store.iterdir()), "--dry prints and files nothing"
+        finally:
+            trials.STORE = real_store
+    now = 1790000000  # 2026-09-21T14:13:20Z, a Monday
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Path(tmp)
+        def put(run, *costs, at=now):
+            with (store / f"{run}.jsonl").open("a") as sink:
+                for cost in costs:
+                    sink.write(json.dumps({"task": "t", "costUsd": cost, "at": at}) + "\n")
+        put("old", 50.0, at=now - 8 * 86400)
+        put("r1", 20.0, None)
+        assert trials.spend(store, now) == (0.0, 21.0), "last week is not this week; an unpriced trial costs $1"
+        assert trials.caps("r2", 12, store, now) == (9.0, None), "hard: the smaller of the stage's $15 and the week's $30 left"
+        assert trials.caps("r2", 16, store, now)[1].startswith("week soft cap"), "21 + 16 x 0.27 passes the $25 soft cap"
+        put("r2", 12.9)
+        assert trials.caps("r2", 1, store, now)[1].startswith("stage soft cap"), "12.9 + 0.27 passes the stage's $13"
+
+
+def check_pin_probe():
+    """N4 (design 6.4): pin the cheapest upstream whose every warm turn hit at least 0.9 and that
+    returned no 429; with none, the best hit rate with fallbacks allowed, and the verdict says so."""
+    def sample(t2_input, t2_read, cost=0.001, error=None):
+        return {"t2": {"input": t2_input, "cacheRead": t2_read, "cacheWrite": 0, "costUsd": cost,
+                       "nAssistantMessages": 1, "costUnknownTurns": 0}, "error": error}
+    probes = {"together": [sample(100, 9900, 0.002)] * 3,
+              "parasail": [sample(500, 9500, 0.001)] * 3,
+              "relace": [sample(100, 9900, 0.0005), sample(100, 9900, 0.0005), sample(100, 9900, error="HTTP 429")],
+              "wafer": [sample(9000, 1000, 0.0001)] * 3}
+    verdict = cache_probe.pin(probes)
+    assert verdict["pin"] == "parasail" and verdict["allowFallbacks"] is False, verdict
+    assert verdict["routing"] == {"order": ["parasail"], "allow_fallbacks": False}, verdict
+    assert verdict["upstreams"]["relace"]["qualifies"] is False, "a 429 disqualifies however cheap"
+    assert verdict["upstreams"]["together"]["qualifies"] is True, verdict
+    # The first session on an upstream writes the cache the later ones read (N4): a cold first
+    # sample does not disqualify, a cold later one does.
+    warm = cache_probe.pin({"z-ai": [sample(13273, 0)] + [sample(345, 12928)] * 2})
+    assert (warm["pin"], warm["allowFallbacks"]) == ("z-ai", False), warm
+    cold = cache_probe.pin({"relace": [sample(13280, 0), sample(13273, 0), sample(342, 12928)]})
+    assert cold["allowFallbacks"] is True, cold
+    none = cache_probe.pin({"wafer": [sample(9000, 1000)] * 3, "together": [sample(5000, 5000)] * 3})
+    assert (none["pin"], none["allowFallbacks"]) == ("together", True), none
+    assert none["routing"] == {"order": ["together"], "allow_fallbacks": True}, none
 
 
 def check_record():
@@ -570,6 +722,21 @@ def check_rule_fires():
     assert report["comment_fp"] == 2, report
 
 
+def check_surface_compare():
+    """N6 (design 6.6): a tool-text patch is refused when any tool's refusal rate rises or a
+    scenario clean on every base run turns unclean; a candidate no worse passes."""
+    def doc(calls, refusals, rows):
+        return {"toolSurface": {"calls": calls, "refusals": refusals}, "rows": rows}
+    clean = {"scenario": "write-then-edit", "exit": 0, "timedOut": False, "missingFiles": []}
+    base = [doc({"edit": 10, "read": 5}, {"edit": 2}, [clean])] * 2
+    assert surface.compare(base, [doc({"edit": 10, "read": 5}, {"edit": 1}, [clean])] * 2) is None
+    assert surface.compare(base, [doc({"edit": 10}, {"edit": 3}, [clean])] * 2) == "refusal_rate_rose:edit"
+    assert surface.compare(base, [doc({"read": 4}, {"read": 1}, [clean])] * 2) == "refusal_rate_rose:read"
+    lost = dict(clean, missingFiles=["stats.py"])
+    assert surface.compare(base, [doc({"edit": 10}, {}, [clean]), doc({"edit": 10}, {}, [lost])]) \
+        == "scenario_unclean:write-then-edit"
+
+
 def check_surface():
     """The tool-surface loop's schema and its census, with no binary and no key:
     every scenario parses, a malformed one is refused by name, and the per-tool
@@ -608,6 +775,13 @@ def check_graph_refiner():
     assert result.testsRun >= 5 and result.wasSuccessful(), report.getvalue()
 
 
+def check_improve():
+    """The round's proposer half: a development-only corpus, a history-free snapshot, S0."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_improve)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 4 and result.wasSuccessful(), report.getvalue()
+
 def check_levers():
     """D220: the manifest, the shared default fixture and the floors agree, and the gates hold."""
     report = io.StringIO()
@@ -629,9 +803,14 @@ def check_judge_replay():
 
 CHECKS = (
     check_surface,
+    check_surface_compare,
     check_judge_replay,
     check_graph_refiner,
     check_levers,
+    check_improve,
+    check_trials,
+    check_watch_prune,
+    check_pin_probe,
     check_cost_cap,
     check_orient_census,
     check_rule_fires,

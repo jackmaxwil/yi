@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use yi_runtime::memory::{Note, Store, block, global_dir, repo_dir};
+use yi_runtime::memory::{Note, Store, block, global_dir, ranked, repo_dir};
 
-const USAGE: &str =
-    "usage: yi memory [list | show <name> | forget <name> | import <dir> | stats | check]";
+const USAGE: &str = "usage: yi memory [list | show <name> | search <words> | forget <name> | import <dir> | stats | check | rebuild]";
 
 fn find<'a>(
     stores: &'a [(&'static str, Store)],
@@ -77,6 +76,41 @@ fn check(stores: &[(&'static str, Store)]) -> i32 {
     }
 }
 
+fn rebuild(stores: &[(&'static str, Store)]) -> i32 {
+    let mut code = 0;
+    for (label, store) in stores {
+        let report = match store.rebuild() {
+            Ok(report) => report,
+            Err(error) => {
+                eprintln!("error: {label}: {error}");
+                code = 1;
+                continue;
+            }
+        };
+        let journal = report.broken.map_or_else(
+            || "journal ok".to_owned(),
+            |line| format!("journal breaks at line {line}"),
+        );
+        println!(
+            "  {label} · {} notes · {} restored · {} forgotten · {journal}",
+            report.live, report.restored, report.forgotten
+        );
+        for name in &report.differ {
+            println!(
+                "  {label} · {name}: the file differs from the journal; a session start records it as an edit"
+            );
+        }
+        for name in &report.missing {
+            println!("  {label} · {name}: no object holds this version");
+            code = 1;
+        }
+        if report.broken.is_some() {
+            code = 1;
+        }
+    }
+    code
+}
+
 pub fn run(args: &crate::Args) -> i32 {
     let cwd = crate::effective_cwd(args);
     let home = std::env::var_os("HOME")
@@ -94,6 +128,15 @@ pub fn run(args: &crate::Args) -> i32 {
         ("" | "list", "") => list(&home, &cwd, &stores),
         ("stats", "") => stats(&stores),
         ("check", "") => check(&stores),
+        ("rebuild", "") => rebuild(&stores),
+        ("search", query) if !query.is_empty() => {
+            let refs: Vec<&Store> = stores.iter().map(|(_, store)| store).collect();
+            for (at, note) in ranked(&refs, query) {
+                let label = stores.get(at).map_or("", |(label, _)| *label);
+                println!("{:<30} {label:<6} {}", note.name, note.hook);
+            }
+            0
+        }
         ("show", query) if !query.is_empty() => match find(&stores, query) {
             Some((_, store, note)) => {
                 match std::fs::read_to_string(store.dir().join(note.name.file())) {
@@ -114,7 +157,7 @@ pub fn run(args: &crate::Args) -> i32 {
         },
         ("forget", query) if !query.is_empty() => match find(&stores, query) {
             Some((label, store, note)) => match store.forget(&note.name) {
-                Ok(()) => {
+                Ok(_) => {
                     println!("memory · forgot {} · {label}", note.name);
                     0
                 }

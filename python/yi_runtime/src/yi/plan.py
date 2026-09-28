@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable
 import rlm
 
 from .contract import JSON_TYPE, Contract, canonical, freeze
-from .roles import Role
+from .roles import Role, _lanes
 
 KEY = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 SOURCE_TYPE = "text/x-python"
@@ -479,6 +479,7 @@ class Plan:
         accept: Contract | None = None,
         run: Callable[[], Awaitable[Any]] | None = None,
         among: dict[str, str] | None = None,
+        intent: list | tuple = (),
     ) -> tuple[dict, list[dict], str]:
         if not isinstance(key, str) or not KEY.match(key):
             raise ValueError(f"key {key!r} must match {KEY.pattern}")
@@ -488,7 +489,7 @@ class Plan:
         edges = [item.label if isinstance(item, Todo) else (among or {}).get(item) or self[item].label for item in after]
         if accept is None and delegate is not None:
             accept = delegate.accept
-        if accept is None and delegate is not None and delegate.isolation == "worktree":
+        if accept is None and delegate is not None and _lanes(delegate.isolation):
             raise TypeError("a worktree Writer needs accept=")
         contract, blobs = None, []
         if accept is not None:
@@ -500,6 +501,7 @@ class Plan:
             "after": edges,
             "delegation": delegation,
             "contract": contract,
+            "intent": list(intent),
         }
         return _pruned(wire), blobs + noted, key
 
@@ -510,6 +512,8 @@ class Plan:
         changed one raises ``SpecDrift`` and writes nothing. ``run=`` names an
         async function executed in this kernel; ``delegate=`` a child's role,
         whose ``accept`` is the contract unless ``accept=`` names another.
+        ``intent=["user://3"]`` cites the user's messages it serves; omitted, the
+        host cites the latest.
 
             tests = await plan.todo(key="tests", label="write the test suite", after=["freeze"],
                 delegate=Writer(accept=contract(cmd("pytest -q tests/", critical=True))))
