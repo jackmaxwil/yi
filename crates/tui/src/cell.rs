@@ -675,7 +675,7 @@ impl ToolCell {
             ),
             _ => first()?.to_owned(),
         };
-        let digest = digest.trim().to_owned();
+        let digest = crate::transcript::printable(digest.trim());
         (!digest.is_empty()).then_some(digest)
     }
 }

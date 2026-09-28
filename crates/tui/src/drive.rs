@@ -295,6 +295,11 @@ pub fn run_headless(
         }
 
         crate::render::draw(&mut app, &mut terminal, Some(&port));
+        if let Some(cell) = terminal.backend().control_cell() {
+            eprintln!("error: a control character reached a cell: {cell}");
+            exit_code = 1;
+            break;
+        }
         if let Some(dir) = &drive.frames_dir {
             let frame = terminal.backend().screen();
             if frame != last_frame {

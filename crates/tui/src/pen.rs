@@ -5,7 +5,7 @@ use yi_types::event::Wait;
 
 use crate::cell::{ToolCell, ToolStatus};
 use crate::motion::elapsed_ms;
-use crate::transcript::arg_summary;
+use crate::transcript::{arg_summary, printable};
 
 #[derive(Debug, Clone)]
 pub struct Pen {
@@ -46,7 +46,7 @@ impl Pen {
             preview: lines
                 .iter()
                 .skip(tail)
-                .map(|line| (*line).to_owned())
+                .map(|line| printable(line))
                 .collect(),
             elapsed_ms: elapsed_ms(self.since),
             calls: 1,
