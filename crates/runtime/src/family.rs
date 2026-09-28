@@ -3,7 +3,9 @@
 use serde_json::Value;
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content};
+use yi_types::plan::doc::TodoStateName;
 use yi_types::subagent::{ChildExit, ChildFlag, ChildStatus, ChildUpdate, LoopSignal};
+use yi_types::todo::{BlockedOn, TodoRecord};
 
 /// A running member with no new record for this long is `stuck` with note `idle Ns`.
 pub const STUCK_IDLE_MS: u64 = 300_000;
@@ -145,23 +147,17 @@ fn cut(text: &str) -> String {
     }
 }
 
-/// A stuck or waiting signal in one recent record. `stuck` is the loop's typed `signal`,
-/// never a record's name: a renamed or look-alike record cannot make or hide a stuck child.
+/// A stuck signal in one recent record. `stuck` is the loop's typed `signal`, never a record's
+/// name: a renamed or look-alike record cannot make or hide a stuck child.
 fn signal_of(entry: &Entry) -> Option<(MemberState, String)> {
-    let (data, blocked) = match entry {
+    let data = match entry {
         Entry::Message {
             message: AgentMessage::Custom { details, .. },
             ..
-        } => (details.as_ref()?, false),
-        Entry::Custom {
-            custom_type, data, ..
-        } => (data.as_ref()?, custom_type == "todo"),
+        } => details.as_ref()?,
+        Entry::Custom { data, .. } => data.as_ref()?,
         _ => return None,
     };
-    let text = |key: &str| data.get(key).and_then(Value::as_str).unwrap_or_default();
-    if blocked && text("op") == "block" && text("on") == "user" {
-        return Some((MemberState::NeedsYou, "blocked on user".to_owned()));
-    }
     let signal = serde_json::from_value::<LoopSignal>(data.get("signal")?.clone()).ok()?;
     let rung = data.get("rung").and_then(Value::as_u64).unwrap_or(0);
     let note = match signal {
@@ -171,6 +167,30 @@ fn signal_of(entry: &Entry) -> Option<(MemberState, String)> {
         LoopSignal::LetGo => "todo_intercept let go".to_owned(),
     };
     Some((MemberState::Stuck, note))
+}
+
+/// Invariant: only the newest todo record speaks, since each is the whole list and an older one
+/// still in the window holds a question the newer one may have answered.
+fn asked_of(recent: &[Entry]) -> Option<(MemberState, String)> {
+    let data = recent.iter().find_map(|entry| match entry {
+        Entry::Custom {
+            custom_type, data, ..
+        } if custom_type == "todo" => data.as_ref(),
+        _ => None,
+    })?;
+    let record = serde_json::from_value::<TodoRecord>(data.clone()).ok()?;
+    let asked = record
+        .list
+        .items()
+        .find(|item| item.state == TodoStateName::Blocked && item.on == Some(BlockedOn::User))?;
+    let (suffix, options) = (
+        crate::todo::text::suffix(asked),
+        crate::todo::text::asked(asked),
+    );
+    Some((
+        MemberState::NeedsYou,
+        format!("{}{suffix}{options}", asked.label),
+    ))
 }
 
 fn timestamp_of(entry: &Entry) -> u64 {
@@ -204,7 +224,9 @@ pub fn state_from_records(
             (MemberState::RepossessionPending, error.map(cut), idle_s)
         }
         MemberState::Running => {
-            if let Some((state, note)) = recent.iter().find_map(signal_of) {
+            if let Some((state, note)) =
+                asked_of(recent).or_else(|| recent.iter().find_map(signal_of))
+            {
                 return (state, Some(note), idle_s);
             }
             if now_ms.saturating_sub(newest)

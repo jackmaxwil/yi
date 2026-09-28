@@ -211,6 +211,7 @@ fn posture_reads_states_never_sentences() -> TestResult {
             label: TodoLabel::new("first")?,
             on: BlockedOn::External,
             note: "CI".to_owned(),
+            ask: None,
         },
         None,
     )?;
@@ -220,6 +221,7 @@ fn posture_reads_states_never_sentences() -> TestResult {
             label: TodoLabel::new("second")?,
             on: BlockedOn::External,
             note: "CI".to_owned(),
+            ask: None,
         },
         None,
     )?;
@@ -229,6 +231,7 @@ fn posture_reads_states_never_sentences() -> TestResult {
             label: TodoLabel::new("second")?,
             on: BlockedOn::User,
             note: "which branch".to_owned(),
+            ask: None,
         },
         None,
     )?;
@@ -379,6 +382,7 @@ fn only_a_state_suppresses_the_interception() -> TestResult {
             label: TodoLabel::new("first")?,
             on: BlockedOn::User,
             note: "which branch".to_owned(),
+            ask: None,
         },
         None,
     )?;

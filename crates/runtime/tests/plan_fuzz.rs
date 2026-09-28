@@ -1128,6 +1128,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                         label: label(*slot)?,
                         on: BlockedOn::User,
                         note: "x".repeat(usize::from(*note_len)),
+                        ask: None,
                     },
                 ),
                 Bump::Touch,
@@ -1150,6 +1151,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                     actor,
                     op: Op::Unblock {
                         label: label(*slot)?,
+                        answer: None,
                     },
                     request_id: None,
                     expected_revision: None,

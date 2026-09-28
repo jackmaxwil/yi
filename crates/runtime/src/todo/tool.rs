@@ -32,6 +32,7 @@ pub fn schema() -> Value {
             "reason": {"type": "string", "description": "drop: why the item no longer applies"},
             "on": {"type": "string", "enum": ["user", "external", "child"], "description": "block: who it waits on"},
             "note": {"type": "string", "description": "block: what would unblock it"},
+            "options": {"type": "array", "items": {"type": "object"}, "description": "block on user: 3 to 5 answers [{id, label, preview?}] the user picks one of by number, id or label; a preview is light, at most 2048 bytes"},
             "touched": {"type": "integer", "description": "optional: the touched counter you last saw; a stale value is refused so a user edit is never overwritten"}
         }
     })
@@ -310,9 +311,20 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                 Some(other) => BlockedOn::Other(other.to_owned()),
             },
             note: need_string(args, "block", "note")?,
+            ask: crate::plan::ask::parse(
+                args.get("options"),
+                string(args, "on").is_none_or(|on| on == "user"),
+            )
+            .map_err(|cause| ArgError::Malformed {
+                op: "block",
+                field: "options",
+                cause,
+            })?
+            .map(Box::new),
         },
         "unblock" => Op::Unblock {
             label: label(args, "unblock")?,
+            answer: None,
         },
         "rm" => Op::Rm {
             target: target(args, "rm")?,

@@ -103,7 +103,7 @@ fn known_keys(kind: OpKind) -> &'static [&'static str] {
         OpKind::Append => &["op", "plan", "todos"],
         OpKind::Unblock | OpKind::Start => &["op", "plan", "label", "todo"],
         OpKind::Drop => &["op", "plan", "label", "todo", "disposition"],
-        OpKind::Block => &["op", "plan", "label", "todo", "on", "note"],
+        OpKind::Block => &["op", "plan", "label", "todo", "on", "note", "options"],
         OpKind::Reorder => &["op", "plan", "labels"],
         OpKind::AddEdge => &["op", "plan", "todo", "after"],
         OpKind::Done => &["op", "plan", "label", "todo", "output"],
@@ -291,7 +291,7 @@ pub enum PlanToolError {
 
 /// Invariant: yi-runtime carries no `serde` dependency, so the deserialize
 /// bound is a local trait over `serde_json::from_value`.
-trait FromArg: Sized {
+pub(super) trait FromArg: Sized {
     fn from_arg(value: Value) -> Result<Self, serde_json::Error>;
 }
 
@@ -341,7 +341,7 @@ fn opt<T: FromArg>(
     }
 }
 
-fn need<T: FromArg>(
+pub(super) fn need<T: FromArg>(
     args: &Map<String, Value>,
     op: OpKind,
     field: &'static str,
@@ -349,7 +349,7 @@ fn need<T: FromArg>(
     opt(args, op, field)?.ok_or(ArgError::Missing { op, field })
 }
 
-fn label(args: &Map<String, Value>, op: OpKind) -> Result<TodoLabel, ArgError> {
+pub(super) fn label(args: &Map<String, Value>, op: OpKind) -> Result<TodoLabel, ArgError> {
     match opt(args, op, "label")? {
         Some(label) => Ok(label),
         None => need(args, op, "todo").map_err(|_| ArgError::Missing { op, field: "label" }),
@@ -418,13 +418,10 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
             label: label(args, kind)?,
             disposition: opt(args, kind, "disposition")?,
         },
-        OpKind::Block => Op::Block {
-            label: label(args, kind)?,
-            on: need(args, kind, "on")?,
-            note: need(args, kind, "note")?,
-        },
+        OpKind::Block => super::ask::block(args, kind)?,
         OpKind::Unblock => Op::Unblock {
             label: label(args, kind)?,
+            answer: None,
         },
         OpKind::Reorder => Op::Reorder {
             labels: need(args, kind, "labels")?,
@@ -592,6 +589,7 @@ fn todo_line(todo: &Todo) -> String {
         }
         TodoState::Pending | TodoState::Abandoned | TodoState::Other(_) => {}
     }
+    line.push_str(&super::ask::line(todo));
     if let Some(Value::String(url)) = todo.extra.get(super::state::SUBMITTED_KEY) {
         line.push_str(&format!(" submitted {url}"));
     }
@@ -799,6 +797,7 @@ pub fn schema() -> Value {
                 "after": {"type": "string", "description": "add_edge: the sibling it waits on"},
                 "on": {"type": "object", "description": "block: {\"child\": agent} | {\"user\": null} | {\"external\": {\"probe\": command}}"},
                 "note": {"type": "string", "description": "block: what would unblock it"},
+                "options": {"type": "array", "items": {"type": "object"}, "description": "block on user: 3 to 5 answers [{id, label, preview?}] the user picks one of by replying with its number, id or label; a preview is light (a line, a small diagram's source, or an address), at most 2048 bytes"},
                 "cause": {"type": "string", "description": "fail: what went wrong"},
                 "output": {"type": "string", "description": "done: url of the product; required when the delegation declares an output schema"},
                 "delegation": {"type": "object", "description": "retry: replacement delegation, shaped as in todos"},
@@ -978,6 +977,7 @@ mod tests {
             contract_hash: None,
             extra: Map::new(),
             cites: Default::default(),
+            ask: None,
         })
     }
 

@@ -288,3 +288,48 @@ fn a_done_row_whose_evidence_nothing_checks_says_claimed() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with the options cut off the end of one row at the terminal's width, or still listed once
+/// the reply unblocked the item: each option is its own numbered row while the item waits.
+#[test]
+fn a_question_to_the_user_lists_its_options_one_per_row() -> TestResult {
+    let record: yi_types::todo::TodoRecord = serde_json::from_str(include_str!(
+        "../../types/tests/fixtures/todo-record-ask-v1.json"
+    ))?;
+    let (_, shown) = rows(&record.list, true)?;
+    assert_eq!(
+        shown,
+        [
+            "land-the-page",
+            "  1. ! hero style (blocked on user: which hero?)",
+            "       1. Calm · soft grey hero, one line of copy",
+            "       2. Bold · graph TD; Hero-->CTA",
+            "       3. Dense · store://hero-dense",
+        ]
+    );
+    let mut answered = record.list;
+    answered.for_each_mut(|row| row.state = TodoStateName::Pending);
+    let (_, shown) = rows(&answered, true)?;
+    assert_eq!(shown, ["land-the-page", "  1. ○ hero style"]);
+    Ok(())
+}
+
+/// Dies with a diagram's source shown as its first line alone, as if that were the whole preview.
+#[test]
+fn a_preview_longer_than_its_row_says_how_many_lines_it_hides() -> TestResult {
+    let record: yi_types::todo::TodoRecord = serde_json::from_str(include_str!(
+        "../../types/tests/fixtures/todo-record-ask-v1.json"
+    ))?;
+    let mut list = record.list;
+    list.for_each_mut(|row| {
+        if let Some(option) = row.ask.as_mut().and_then(|ask| ask.options.get_mut(1)) {
+            option.preview = Some("graph TD\n  Hero-->CTA\n  CTA-->Footer".to_owned());
+        }
+    });
+    let (_, shown) = rows(&list, true)?;
+    assert_eq!(
+        shown.get(3).map(String::as_str),
+        Some("       2. Bold · graph TD (+2 lines)")
+    );
+    Ok(())
+}

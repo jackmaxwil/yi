@@ -823,7 +823,13 @@ fn a_reused_request_id_with_another_op_kind_is_refused() -> TestResult {
         "r-1",
     )?)?;
     assert!(dropped.notices.is_empty(), "{:?}", dropped.notices);
-    let unblocked = rig.engine.apply(request(Op::Unblock { label }, "r-1")?);
+    let unblocked = rig.engine.apply(request(
+        Op::Unblock {
+            label,
+            answer: None,
+        },
+        "r-1",
+    )?);
     assert!(
         matches!(unblocked, Err(PlanOpError::RequestIdReused { .. })),
         "{unblocked:?}"

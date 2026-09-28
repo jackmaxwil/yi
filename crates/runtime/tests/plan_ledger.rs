@@ -129,6 +129,7 @@ fn plan_with(edges: &[(&str, &[&str])]) -> Result<Plan, Box<dyn Error>> {
             contract_hash: None,
             extra: serde_json::Map::new(),
             cites: Default::default(),
+            ask: None,
         });
     }
     Ok(Plan::opening(

@@ -132,6 +132,7 @@ fn the_list_rehydrates_from_the_session_on_a_fresh_store() -> TestResult {
             label: label("two")?,
             on: BlockedOn::User,
             note: "which branch to land on".to_owned(),
+            ask: None,
         },
         None,
     )?;
@@ -270,6 +271,7 @@ fn set_keeps_a_blocker_the_rewrite_did_not_mention() -> TestResult {
             label: label("b")?,
             on: BlockedOn::External,
             note: "CI is down".to_owned(),
+            ask: None,
         },
         None,
     )?;
@@ -719,6 +721,35 @@ fn a_long_label_is_cut_into_its_note_not_refused() -> TestResult {
     Ok(())
 }
 
+/// Dies with the options dropped between the call and the list a parent reads, or with a two-option
+/// question let through: the child's own list is where its `needs_you` note is read from.
+#[test]
+fn a_block_on_the_user_carries_three_to_five_options() -> TestResult {
+    let (_root, session) = session("asks")?;
+    let tool = TodoTool::new(store_for(&session));
+    call(&tool, json!({"op": "init", "items": ["pick a name"]}));
+    let option = |id: &str| json!({"id": id, "label": format!("name {id}")});
+    let block = |options: Vec<Value>| json!({"op": "block", "id": "t1", "on": "user", "note": "which name?", "options": options});
+    let (is_error, text) = call(&tool, block(vec![option("a"), option("b")]));
+    assert!(
+        is_error && text.contains("offers 3 to 5 options, not 2"),
+        "{text}"
+    );
+    let (is_error, text) = call(&tool, block(vec![option("a"), option("b"), option("c")]));
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("(blocked on user: which name?) — 1. name a · 2. name b · 3. name c"),
+        "{text}"
+    );
+    let list = latest_record(&session).ok_or("no record")?.list;
+    let asked = list
+        .items()
+        .find_map(|item| item.ask.as_ref())
+        .ok_or("no ask")?;
+    assert_eq!(asked.options.len(), 3);
+    Ok(())
+}
+
 #[test]
 fn a_call_with_items_and_no_op_is_an_append() -> TestResult {
     let (_root, session) = session("infer")?;
@@ -1149,5 +1180,45 @@ fn a_done_naming_no_item_lands_on_the_running_one() -> TestResult {
         is_error && text.contains("t1") && text.contains("t3"),
         "{text}"
     );
+    Ok(())
+}
+
+/// Dies with the session list, the common case with no plan open, unblocking an ask nobody has
+/// answered, or leaving the user's pick unrecorded once they reply.
+#[test]
+fn a_session_todos_ask_waits_for_the_reply_and_records_the_pick() -> TestResult {
+    let (_root, session) = session("asked")?;
+    let typed = |text: &str| {
+        yi_types::message::AgentMessage::user_input(
+            yi_types::message::UserContent::Text(text.to_owned()),
+            0,
+        )
+    };
+    yi_session::lock_session(&session).append_message("main", typed("name the crate"))?;
+    let tool = TodoTool::new(store_for(&session));
+    call(&tool, json!({"op": "init", "items": ["pick a name"]}));
+    let option = |id: &str| json!({"id": id, "label": format!("name {id}")});
+    let options = vec![option("a"), option("b"), option("c")];
+    let block =
+        json!({"op": "block", "id": "t1", "on": "user", "note": "which?", "options": options});
+    let (is_error, text) = call(&tool, block);
+    assert!(!is_error, "{text}");
+    let unblock = json!({"op": "unblock", "id": "t1"});
+    let (is_error, text) = call(&tool, unblock.clone());
+    assert!(
+        is_error && text.contains("waits on the user's pick"),
+        "{text}"
+    );
+    yi_session::lock_session(&session).append_message("main", typed("2"))?;
+    let (is_error, text) = call(&tool, unblock);
+    assert!(!is_error, "{text}");
+    let list = latest_record(&session).ok_or("no record")?.list;
+    let item = list.items().next().ok_or("no item")?;
+    let answer = item.ask.as_ref().and_then(|ask| ask.answer.as_ref());
+    assert_eq!(
+        answer.map(|answer| (answer.address.to_string(), answer.option.clone())),
+        Some(("user://2".to_owned(), Some("b".to_owned().try_into()?)))
+    );
+    assert!(item.intent.iter().any(|url| url.to_string() == "user://2"));
     Ok(())
 }

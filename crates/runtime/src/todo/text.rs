@@ -140,6 +140,7 @@ fn carry(old: &TodoList, row: &mut TodoItem) {
         row.on = prior.on.clone();
         row.note = row.note.take().or_else(|| prior.note.clone());
         row.evidence = prior.evidence.clone();
+        row.ask = prior.ask.clone();
     }
 }
 
@@ -158,11 +159,19 @@ fn row_text(item: &TodoItem) -> String {
         .unwrap_or_default();
     let cut = if item.is_cut() { "…" } else { "" };
     format!(
-        "{} {id}{}{cut}{}",
+        "{} {id}{}{cut}{}{}",
         marker(&item.state),
         item.label,
-        suffix(item)
+        suffix(item),
+        asked(item)
     )
+}
+
+pub fn asked(item: &TodoItem) -> String {
+    match (&item.state, &item.ask) {
+        (TodoStateName::Blocked, Some(ask)) => format!(" — {ask}"),
+        _ => String::new(),
+    }
 }
 
 pub fn suffix(item: &TodoItem) -> String {
