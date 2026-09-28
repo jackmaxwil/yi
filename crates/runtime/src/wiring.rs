@@ -333,6 +333,9 @@ fn wire_fetch(
         })
     });
     register_history_grep(registry, session.store_handle());
+    if let Some(dir) = wiring.sessions_dir.clone().filter(|_| wiring.depth == 0) {
+        crate::history::register(registry, dir, wiring.cwd.clone());
+    }
     crate::memory::attach(
         Some(session),
         registry,
