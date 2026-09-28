@@ -5,13 +5,13 @@ rollout cannot read its grader; the same seed on both arms of a comparison is th
 import shutil
 from pathlib import Path
 
-from . import bugfix, logs, mutate, reconcile
+from . import bugfix, logs, mutate, reconcile, revert
 
 # The generated families, graded by construction; they saturate on glm-5.3-flash at every level
 # (inner A/A and probe, 2026-09-28) and so measure economy. `mutate` injects bugs into real repos
-# for the capability signal.
+# and saturates too; `revert` has yi redo real past fixes from those repos' history.
 SYNTHETIC = {"bugfix": bugfix, "logs": logs, "reconcile": reconcile}
-FAMILIES = {**SYNTHETIC, "mutate": mutate}
+FAMILIES = {**SYNTHETIC, "mutate": mutate, "revert": revert}
 # Inner A/A, 2026-09-28: level 1 scored full on 12 of its first 13 trials, so each family has
 # harder levels whose additions are what level 1 left out (tests/test_inner.py names them).
 LEVELS = (1, 2, 3)

@@ -46,7 +46,7 @@ fn faux_model() -> Model {
 }
 
 fn faux_session(reply: &str) -> AgentSession {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![yi_runtime::faux::faux_assistant_message(
         vec![yi_runtime::faux::faux_text(reply)],
         StopReason::Stop,
@@ -206,6 +206,7 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
         .build()?;
     let dir = Scratch::new("yi-tui-e2e")?;
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 4,
@@ -1062,7 +1063,7 @@ fn the_status_cost_sums_the_session_not_the_last_turn() -> TestResult {
         .enable_all()
         .build()?;
     let dir = Scratch::new("yi-tui-cost")?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![priced("one", 0.02), priced("two", 0.03)]);
     let session = Arc::new(AgentSession::new(
         SessionConfig {
@@ -1074,6 +1075,7 @@ fn the_status_cost_sums_the_session_not_the_last_turn() -> TestResult {
         provider,
     ));
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 4,
@@ -1177,6 +1179,7 @@ fn a_recording_replays_to_the_frame_the_run_asserted_on() -> TestResult {
     let dir = Scratch::new("yi-tui-cast")?;
     let session = Arc::new(faux_session("recorded reply"));
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 4,
@@ -1370,6 +1373,7 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
         .build()?;
     let dir = Scratch::new("yi-tui-spawn")?;
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 4,
@@ -1984,6 +1988,7 @@ fn the_hud_shows_open_todos_in_a_headless_frame() -> TestResult {
     )?;
     session.set_todos(todos);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 4,
@@ -2047,6 +2052,7 @@ fn child_host(dir: &Scratch, reply: &'static str) -> Arc<SubagentHost> {
 
 fn child_host_options(dir: &Scratch, reply: &'static str) -> SubagentHostOptions {
     SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 4,
@@ -2133,7 +2139,7 @@ fn a_card_adopted_after_the_first_tool_event_names_it() -> TestResult {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut args = Map::new();
     args.insert("path".to_owned(), "src/lagged.rs".into());
     provider.queue_faux(vec![

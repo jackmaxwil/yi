@@ -137,6 +137,33 @@ class Mutate(unittest.TestCase):
                 mutate.solve(seed, workspace, 3)
                 self.assertEqual(mutate.check(seed, workspace, 3), (total, total))
 
+    def test_an_inherited_test_is_hidden_where_it_is_defined(self):
+        # pyparsing runs one suite per subclass; each copy of a broken test is an id of its own.
+        module = self.root / "inherit" / "tests" / "test_x.py"
+        module.parent.mkdir(parents=True)
+        module.write_text(textwrap.dedent('''\
+            import unittest
+
+
+            class Base(unittest.TestCase):
+                def test_a(self):
+                    pass
+
+                def test_b(self):
+                    pass
+
+
+            class WithPackrat(Base):
+                pass
+            '''))
+        spec = {"path": module.parents[1], "tests": "tests"}
+        hidden = mutate._hide(module.parents[1], spec, ["tests.test_x.Base.test_a", "tests.test_x.WithPackrat.test_a"])
+        self.assertIsNotNone(hidden)
+        body = hidden["tests/test_x.py"]
+        self.assertNotIn("def test_a", body)
+        self.assertIn("def test_b", body, "only the broken test is cut")
+        self.assertIsNone(mutate._hide(module.parents[1], spec, ["tests.test_x.WithPackrat.test_missing"]))
+
 
 if __name__ == "__main__":
     unittest.main()
