@@ -876,11 +876,17 @@ fn a_wait_backgrounds_a_command_still_running() -> TestResult {
     let details = &started.result.details;
     assert_eq!(details["backgrounded"], json!(true), "{text}");
     assert_eq!(
-        (&details["waitSecs"], &details["timeoutSecs"]),
-        (&json!(5), &json!(300))
+        (&details["afterMs"], &details["timeoutSecs"]),
+        (&json!(5000), &json!(300))
     );
     assert!(text.contains("began") && !text.contains("slept"), "{text}");
     let job = details["job"].as_u64().ok_or("no job id")?;
+    assert!(
+        text.contains(&format!(
+            "before you end the turn, wait for it with bash job={job} wait="
+        )),
+        "{text}"
+    );
     let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
     let finished = text_of(&polled.result.content);
     assert!(
@@ -890,10 +896,12 @@ fn a_wait_backgrounds_a_command_still_running() -> TestResult {
     Ok(())
 }
 
+/// The kill counts from the command's start: from the backgrounding it would land at 13 s.
 #[test]
 fn a_backgrounded_job_still_dies_at_timeout_secs() -> TestResult {
     let dir = temp_dir("bash-wait-timeout")?;
     let (tool, context) = (BashTool::default(), ToolContext::new(dir.to_path_buf()));
+    let clock = std::time::Instant::now();
     let started = tool.execute(
         args(&[
             ("command", json!("sleep 30")),
@@ -907,20 +915,24 @@ fn a_backgrounded_job_still_dies_at_timeout_secs() -> TestResult {
     let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
     let killed = text_of(&polled.result.content);
     assert!(
-        killed.contains(&format!("job {job} killed (timeout_secs or a kill)")),
+        killed.contains(&format!(
+            "job {job} killed (timeout_secs or an interrupt): sleep 30"
+        )),
         "{killed}"
     );
+    let at = clock.elapsed();
+    assert!(at < std::time::Duration::from_secs(11), "killed at {at:?}");
     Ok(())
 }
 
 #[test]
-fn a_wait_that_reaches_timeout_secs_runs_in_the_turn() -> TestResult {
+fn a_wait_not_below_timeout_secs_runs_in_the_turn() -> TestResult {
     let dir = temp_dir("bash-wait-reaches")?;
     let context = ToolContext::new(dir.to_path_buf());
     let output = BashTool::default().execute(
         args(&[
             ("command", json!("sleep 30")),
-            ("wait", json!(5)),
+            ("wait", json!(1)),
             ("timeout_secs", json!(5)),
         ]),
         &context,
@@ -928,9 +940,123 @@ fn a_wait_that_reaches_timeout_secs_runs_in_the_turn() -> TestResult {
     let text = text_of(&output.result.content);
     assert_eq!(output.result.details["timedOut"], json!(true), "{text}");
     assert!(
-        text.contains("[wait 5s reaches timeout_secs 5s: it ran in the turn and was killed]"),
+        text.contains("[wait 1s (clamped to 5s) is not below timeout_secs 5s, so it ran in the turn; pass a wait below timeout_secs to get the turn back]"),
         "{text}"
     );
+    Ok(())
+}
+
+/// A long line and many lines, per `.ruler/045-loud-caps.md`: the tail is bounded and says so.
+#[test]
+fn the_output_so_far_names_its_cut() -> TestResult {
+    let dir = temp_dir("bash-wait-tail")?;
+    let command = "seq 1 30; head -c 20000 /dev/zero | tr '\\0' x; echo; echo last; sleep 6";
+    let started = BashTool::default().execute(
+        args(&[("command", json!(command)), ("wait", json!(5))]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    let text = text_of(&started.result.content);
+    let job = started.result.details["job"]
+        .as_u64()
+        .ok_or_else(|| text.clone())?;
+    assert!(text.len() < 3_000, "{} bytes", text.len());
+    assert!(text.ends_with("last"), "{text}");
+    assert!(
+        text.contains(&format!("[the last 2048 of 20087 bytes printed so far (the preview keeps 20 lines, at most 2048 bytes); bash job={job} wait=<s> returns its output once it exits]")),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// Esc or a deadline on a later turn fired the session's interrupt, which every job's kill
+/// check read for its whole life; once backgrounded, only `timeout_secs` ends it.
+#[test]
+fn an_interrupt_after_backgrounding_leaves_the_job_running() -> TestResult {
+    let dir = temp_dir("bash-wait-interrupt")?;
+    let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut context = ToolContext::new(dir.to_path_buf());
+    let flag = Arc::clone(&fired);
+    context.cancelled = Arc::new(move || flag.load(std::sync::atomic::Ordering::SeqCst));
+    let tool = BashTool::default();
+    let started = tool.execute(
+        args(&[("command", json!("sleep 7; echo kept")), ("wait", json!(5))]),
+        &context,
+    );
+    let job = started.result.details["job"].as_u64().ok_or("no job id")?;
+    fired.store(true, std::sync::atomic::Ordering::SeqCst);
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
+    let finished = text_of(&polled.result.content);
+    assert!(
+        finished.contains("finished (exit 0)") && finished.contains("kept"),
+        "{finished}"
+    );
+    Ok(())
+}
+
+/// The completion loop woke on an inline command's settle and could take it before the call
+/// marked it reported, so a command whose output the call returned was announced again.
+#[test]
+fn a_command_that_finishes_in_the_turn_is_never_announced() -> TestResult {
+    let dir = temp_dir("bash-inline")?;
+    let listener = std::thread::spawn(|| {
+        yi_tools::jobs::registry().wait_settle(0);
+        yi_tools::jobs::registry().take_finished()
+    });
+    let output = BashTool::default().execute(
+        args(&[("command", json!("echo inline"))]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    assert!(text_of(&output.result.content).contains("inline"));
+    let taken = listener.join().map_err(|_| "the listener panicked")?;
+    assert!(
+        taken.is_empty(),
+        "{:?}",
+        taken.iter().map(|r| r.headline()).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// A job a poll returned finished is not sent again as an `<async_result>`.
+#[test]
+fn a_polled_job_is_not_reported_again() -> TestResult {
+    let dir = temp_dir("bash-wait-polled")?;
+    let (tool, context) = (BashTool::default(), ToolContext::new(dir.to_path_buf()));
+    let started = tool.execute(
+        args(&[("command", json!("sleep 6")), ("wait", json!(5))]),
+        &context,
+    );
+    let job = started.result.details["job"].as_u64().ok_or("no job id")?;
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
+    assert!(text_of(&polled.result.content).contains("finished (exit 0)"));
+    let reported: Vec<u64> = yi_tools::jobs::registry()
+        .take_finished()
+        .iter()
+        .map(|r| r.id.0)
+        .collect();
+    assert!(!reported.contains(&job), "{reported:?}");
+    Ok(())
+}
+
+/// A poll that gives up hands the job back, so its result is still reported when it exits.
+#[test]
+fn a_poll_that_gives_up_leaves_the_job_to_its_report() -> TestResult {
+    let dir = temp_dir("bash-wait-gives-up")?;
+    let (tool, context) = (BashTool::default(), ToolContext::new(dir.to_path_buf()));
+    let started = tool.execute(
+        args(&[("command", json!("sleep 11")), ("wait", json!(5))]),
+        &context,
+    );
+    let job = started.result.details["job"].as_u64().ok_or("no job id")?;
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(5))]), &context);
+    assert!(text_of(&polled.result.content).contains("still running"));
+    let id = yi_tools::jobs::JobId(job);
+    yi_tools::jobs::registry().wait_settled(Some(id), std::time::Duration::from_secs(10));
+    let reported: Vec<u64> = yi_tools::jobs::registry()
+        .take_finished()
+        .iter()
+        .map(|r| r.id.0)
+        .collect();
+    assert_eq!(reported, [job]);
     Ok(())
 }
 

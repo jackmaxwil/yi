@@ -446,12 +446,16 @@ async fn an_abort_during_a_tool_call_kills_the_child() -> Result<(), Box<dyn Err
 /// `tool_call_session` wired the way `yi ask` is, `--deadline` included.
 fn deadline_session(root: &std::path::Path, command: &str, total: Duration) -> AgentSession {
     let mut session = tool_call_session(command);
-    attach_as_ask(&mut session, root, Some(total));
+    attach_like_yi_ask(&mut session, root, Some(total));
     session
 }
 
 /// `session` wired the way `yi ask` is.
-fn attach_as_ask(session: &mut AgentSession, root: &std::path::Path, deadline: Option<Duration>) {
+fn attach_like_yi_ask(
+    session: &mut AgentSession,
+    root: &std::path::Path,
+    deadline: Option<Duration>,
+) {
     let provider = Arc::clone(session.provider_arc());
     yi_runtime::attach_runtime(
         session,
@@ -859,25 +863,19 @@ async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), 
     Ok(())
 }
 
-/// Issue #758: a command still running at its `wait` hands the turn back as a job, and a job that
-/// exits while that turn still runs reaches the model as `<async_result>` before the run ends.
-#[tokio::test]
-async fn a_job_that_exits_mid_turn_reports_into_that_turn() -> Result<(), Box<dyn Error>> {
-    let root = scratch("job-report")?;
-    let bash = |id: &str, args: serde_json::Value| {
-        let args = args.as_object().cloned().unwrap_or_default();
-        faux_assistant_message(vec![faux_tool_call(id, "bash", args)], StopReason::ToolUse)
-    };
+/// A session wired like `yi ask` whose faux model makes `calls` (bash arguments) in order and
+/// then says each of `replies`.
+fn bash_session(root: &Scratch, calls: &[serde_json::Value], replies: &[&str]) -> AgentSession {
     let provider = Arc::new(ProviderStream::new(None, None));
-    provider.queue_faux(vec![
-        bash(
-            "call-1",
-            serde_json::json!({"command": "sleep 6; echo w$((1+1))ke", "wait": 5}),
-        ),
-        bash("call-2", serde_json::json!({"command": "sleep 3"})),
-        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
-        faux_assistant_message(vec![faux_text("seen")], StopReason::Stop),
-    ]);
+    let calls = calls.iter().enumerate().map(|(n, args)| {
+        let args = args.as_object().cloned().unwrap_or_default();
+        let call = faux_tool_call(&format!("call-{n}"), "bash", args);
+        faux_assistant_message(vec![call], StopReason::ToolUse)
+    });
+    let replies = replies
+        .iter()
+        .map(|text| faux_assistant_message(vec![faux_text(text)], StopReason::Stop));
+    provider.queue_faux(calls.chain(replies).collect());
     let config = SessionConfig {
         system_prompt: "sys".to_owned(),
         model: faux_model(),
@@ -885,7 +883,20 @@ async fn a_job_that_exits_mid_turn_reports_into_that_turn() -> Result<(), Box<dy
         tool_execution: ExecutionMode::Sequential,
     };
     let mut session = AgentSession::new(config, provider);
-    attach_as_ask(&mut session, &root, None);
+    attach_like_yi_ask(&mut session, root, None);
+    session
+}
+
+/// Issue #758: a command still running at its `wait` hands the turn back as a job, and a job that
+/// exits while that turn still runs reaches the model as `<async_result>` before the run ends.
+#[tokio::test]
+async fn a_job_that_exits_mid_turn_reports_into_that_turn() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-report")?;
+    let calls = [
+        serde_json::json!({"command": "sleep 6; echo w$((1+1))ke", "wait": 5}),
+        serde_json::json!({"command": "sleep 4"}),
+    ];
+    let session = bash_session(&root, &calls, &["done", "seen"]);
     session.prompt("run it")?;
     tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
     let said = serde_json::to_string(&session.messages())?;
@@ -895,5 +906,51 @@ async fn a_job_that_exits_mid_turn_reports_into_that_turn() -> Result<(), Box<dy
         .nth(1)
         .ok_or_else(|| said.clone())?;
     assert!(report.contains("w2ke") && report.contains("seen"), "{said}");
+    Ok(())
+}
+
+/// What the bash text now says of an idle session: a job that exits after the turn ended is
+/// heard only once a later turn ends. #820 wakes the session instead; this pins today's truth.
+#[tokio::test]
+async fn a_job_that_exits_after_the_turn_waits_for_the_next_one() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-idle")?;
+    let calls = [serde_json::json!({"command": "sleep 6; echo w$((1+1))ke", "wait": 5})];
+    let session = bash_session(&root, &calls, &["done", "seen", "after"]);
+    session.prompt("run it")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let jobs = yi_tools::jobs::registry();
+    tokio::task::spawn_blocking(|| jobs.wait_settled(None, Duration::from_secs(20))).await?;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let idle = serde_json::to_string(&session.messages())?;
+    assert!(!idle.contains("<async_result"), "{idle}");
+    assert_eq!(session.status(), Status::Idle);
+    session.prompt("next")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = serde_json::to_string(&session.messages())?;
+    let (seen, report) = (said.find("seen"), said.find("<async_result"));
+    assert!(seen.is_some() && seen < report, "{said}");
+    Ok(())
+}
+
+/// A job the watchdog killed says so in its `<async_result>`, not a bare exit code.
+#[tokio::test]
+async fn a_killed_job_reports_that_timeout_secs_killed_it() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-killed")?;
+    let calls = [
+        serde_json::json!({"command": "echo started; sleep 30", "wait": 5, "timeout_secs": 7}),
+        serde_json::json!({"command": "sleep 5"}),
+    ];
+    let session = bash_session(&root, &calls, &["done", "seen"]);
+    session.prompt("run it")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = serde_json::to_string(&session.messages())?;
+    let report = said
+        .split("<async_result")
+        .nth(1)
+        .ok_or_else(|| said.clone())?;
+    assert!(
+        report.contains("killed (timeout_secs or an interrupt): echo started; sleep 30"),
+        "{said}"
+    );
     Ok(())
 }

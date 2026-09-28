@@ -211,11 +211,20 @@ impl Jobs {
             .wait_timeout_while(self.lock(), timeout, running);
     }
 
-    fn mark_reported(&self, id: JobId) {
-        if let Some(job) = self.lock().get_mut(&id.0)
-            && let Reaper::Poller { reported } = &mut job.reaper
-        {
-            *reported = true;
+    /// A poll holds the report while it waits, so the result is not sent twice; one that gives
+    /// up hands it back and re-announces a settle it held, or the completion loop never looks.
+    pub(crate) fn set_reported(&self, id: JobId, held: bool) {
+        let mut jobs = self.lock();
+        let Some(job) = jobs.get_mut(&id.0) else {
+            return;
+        };
+        if let Reaper::Poller { reported } = &mut job.reaper {
+            *reported = held;
+        }
+        if !held && job.capture.is_some() {
+            self.settles.fetch_add(1, Ordering::SeqCst);
+            drop(jobs);
+            self.settled.notify_all();
         }
     }
 
@@ -284,6 +293,22 @@ impl Jobs {
         }
         out.sort_by_key(|report| report.id);
         out
+    }
+}
+
+impl JobReport {
+    /// `job 7 finished (exit 0): cmd`, the one wording the poll and the `<async_result>` share.
+    pub fn headline(&self) -> String {
+        let ending = match self.state {
+            JobState::Settled(Outcome::Killed) => {
+                "killed (timeout_secs or an interrupt)".to_owned()
+            }
+            JobState::Settled(Outcome::Exited { code }) => {
+                format!("finished (exit {})", code.unwrap_or(-1))
+            }
+            JobState::Running => "still running".to_owned(),
+        };
+        format!("job {} {ending}: {}", self.id, self.command)
     }
 }
 
@@ -460,38 +485,42 @@ pub fn spawn_job(
     start(shell_command, cwd, cancelled, sandbox, Reaper::Handle, None).0
 }
 
-/// Past `background` (a call's `wait`, else `bash.autoBackgroundMs`; `None` holds the turn) a
-/// command keeps running as a job; past `timeout` from its start it is killed, job or not.
+/// Past `background_after` (a call's `wait`, else `bash.autoBackgroundMs`; `None` holds the turn)
+/// a command keeps running as a job that no interrupt ends: only `timeout`, from its start, does.
 pub fn run_or_background(
     shell_command: &str,
     cwd: &Path,
     cancelled: &CancelFlag,
-    background: Option<Duration>,
+    background_after: Option<Duration>,
     timeout: Duration,
     sandbox: Option<&crate::sandbox::Sandbox>,
     sweep: Option<&str>,
 ) -> Result<Run, String> {
     let begun = std::time::Instant::now();
+    let detached = Arc::new(AtomicBool::new(false));
+    let interrupt: CancelFlag = {
+        let (detached, cancelled) = (Arc::clone(&detached), Arc::clone(cancelled));
+        Arc::new(move || !detached.load(Ordering::SeqCst) && cancelled())
+    };
     let (id, receiver) = start(
         shell_command,
         cwd,
-        cancelled,
+        &interrupt,
         sandbox,
-        Reaper::Poller { reported: false },
+        // Invariant: held until the call hands the turn back, or its output is announced twice.
+        Reaper::Poller { reported: true },
         sweep,
     );
-    let background = background.filter(|limit| *limit < timeout);
+    let background = background_after.filter(|limit| *limit < timeout);
     match receiver.recv_timeout(background.unwrap_or(timeout)) {
-        Ok(Ok(capture)) => {
-            registry().mark_reported(id);
-            Ok(Run::Finished(Box::new(capture)))
-        }
+        Ok(Ok(capture)) => Ok(Run::Finished(Box::new(capture))),
         Ok(Err(message)) => Err(message),
         Err(RecvTimeoutError::Timeout) if background.is_some() => {
+            detached.store(true, Ordering::SeqCst);
+            registry().set_reported(id, false);
             let left = timeout.saturating_sub(begun.elapsed());
-            // ponytail: a parked thread per job until its timeout; a timer heap past hundreds.
             std::thread::spawn(move || {
-                std::thread::sleep(left);
+                registry().wait_settled(Some(id), left);
                 let _settled_or_evicted_meanwhile_is_fine = registry().kill(id);
             });
             Ok(Run::Backgrounded(id))
@@ -501,21 +530,21 @@ pub fn run_or_background(
             // Incident: `timeout 3000 python3 …` left the shell's group and held the pipes
             // for 43 minutes; the kill gets five seconds, then the turn moves on.
             match receiver.recv_timeout(KILL_GRACE) {
-                Ok(Ok(capture)) => {
-                    registry().mark_reported(id);
-                    Ok(Run::TimedOut(Box::new(capture)))
-                }
+                Ok(Ok(capture)) => Ok(Run::TimedOut(Box::new(capture))),
                 Ok(Err(message)) => Err(message),
-                Err(_) => Ok(Run::TimedOut(Box::new(CommandCapture {
-                    stdout: String::new(),
-                    stderr: format!(
-                        "[the process outlived the kill and keeps running as job {id}; its output arrives as a job result]"
-                    ),
-                    exit_code: None,
-                    cancelled: true,
-                    truncated: false,
-                    kill_error: None,
-                }))),
+                Err(_) => {
+                    registry().set_reported(id, false);
+                    Ok(Run::TimedOut(Box::new(CommandCapture {
+                        stdout: String::new(),
+                        stderr: format!(
+                            "[the process outlived the kill and keeps running as job {id}; bash job={id} wait=<s> waits for it]"
+                        ),
+                        exit_code: None,
+                        cancelled: true,
+                        truncated: false,
+                        kill_error: None,
+                    })))
+                }
             }
         }
         Err(RecvTimeoutError::Disconnected) => {

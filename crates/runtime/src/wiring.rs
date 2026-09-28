@@ -88,7 +88,7 @@ pub struct RuntimeWiring {
     pub parent_link: Option<ParentLink>,
     /// The wall reduction: paths this session may not touch (plan §3.4 wall).
     pub wall: crate::wall::Wall,
-    /// D13 `bash.autoBackgroundMs`; None keeps every command in the turn.
+    /// `bash.autoBackgroundMs`, for a call that passes no `wait`; None backgrounds only one that does.
     pub auto_background: Option<std::time::Duration>,
     /// `--deadline`: the run's wall clock, counted down in the environment block and enforced.
     pub deadline: Option<std::time::Duration>,
@@ -678,11 +678,9 @@ fn wire_job_completions(session: &AgentSession) {
             let mut next = std::pin::pin!(settled.notified());
             next.as_mut().enable();
             for report in yi_tools::jobs::registry().take_finished() {
+                let (job, headline) = (report.id, report.headline());
                 follow_up(&format!(
-                    "<async_result job=\"{}\" exit=\"{}\">{}\n{}</async_result>",
-                    report.id,
-                    report.exit_code.unwrap_or(-1),
-                    report.command,
+                    "<async_result job=\"{job}\">{headline}\n{}</async_result>",
                     report.output
                 ));
             }
