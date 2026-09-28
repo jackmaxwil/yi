@@ -21,7 +21,7 @@
 //! | `merge_conflict_retains_recoverable_candidate` | T1 | `Rig::fixture_repo`, `git` | `yi/cand-conflict` against the moved generation records `MergeFailed` with the conflicting path and its merge base, keeps the branch, keeps the slot, and names the conflict the next `submit` resolves. Nothing about the parent moved. | The conflict path writing a disposition rather than returning an error. Return an error and the lane drops through `Drop` with no record, so the branch is the only evidence and nothing points at it. |
 //! | `cleanup_preserves_artifacts_before_releasing_slot` | T1 | `Rig::fixture_repo`, `Rig::pool`, `orphan` | With the release made to fail after the disposition commits, the disposition is still in the journal and its `kept` references still resolve; the slot is the only thing left behind. Order, not outcome. | The commit preceding `Lane::settle()`. Release first and a settle that fails between the two erases the only copy of a result, which section 6.6 forbids by name. |
 //! | `writer_is_quiescent_before_snapshot_or_settle` | T1 | `Rig::fixture_repo`, `Rig::pool`, `git`, a background command in the lane | A lane whose child still has a command running refuses both the candidate snapshot and the settle, naming the running command; once it exits, both succeed and the snapshot covers the bytes the command wrote. | The quiescence test in `Lane::settle()`, hoisted out of `take_settled_worktree`'s `ChildStatus::Running` check. Test the status alone and a child that returned while its own background command keeps writing gets snapshotted mid-write, so the verified tree is not the tree that lands. |
-//! | `user_dirty_tree_is_preserved_during_integration` | T1 | `Rig::fixture_repo(Dirt::Dirty)` and `(Dirt::Staged)`, `git` | A full accept over a parent holding an edit to the overlapping file, unstaged or staged, and an untracked file leaves the status byte for byte and the untracked file in no commit; the candidate's new file is in the working tree and the index, and nothing of the integration shows as a staged reversal. The integration happened in a staging worktree and publication moved a ref, then followed it on every path the user had not touched. | The staging worktree, publication never running `git add -A` near the parent, and the ref-only publication restoring the untouched paths. Prepare in the user's checkout and the accept either refuses on their dirt or commits it; move the ref alone and every path the user did not touch reads as reverted, so their next `git commit -a` undoes the acceptance. |
+//! | `user_dirty_tree_is_preserved_during_integration` and `user_staged_tree_is_preserved_during_integration` | T1 | `Rig::fixture_repo(Dirt::Dirty)` and `(Dirt::Staged)`, `git` | A full accept over a parent holding an edit to the overlapping file, unstaged or staged, and an untracked file leaves the status byte for byte and the untracked file in no commit; the candidate's new file is in the working tree and the index, and nothing of the integration shows as a staged reversal. The integration happened in a staging worktree and publication moved a ref, then followed it on every path the user had not touched. | The staging worktree, publication never running `git add -A` near the parent, and the ref-only publication restoring the untouched paths. Prepare in the user's checkout and the accept either refuses on their dirt or commits it; move the ref alone and every path the user did not touch reads as reverted, so their next `git commit -a` undoes the acceptance. |
 //! | `a_replayed_done_returns_the_recorded_acceptance` | T1 | `Rig::fixture_repo`, `Bench::done_as` | The same `done` request id twice after a submit: the second answers the recorded acceptance, journals nothing, and the todo is `Done` once. | `replay` matching an `accepted` record as the `done` it answered. Compare the raw op name and a retried `done` whose reply the kernel dropped is refused `request_id_reused` for an acceptance that succeeded. |
 //! | `done_naming_an_output_the_integration_never_saw_is_stale` | T1 | `Rig::fixture_repo`, `Bench::done_as`, the bench's `Serve` | `done` naming another output than the candidate submitted is refused stale with a `verification_stale` record, charges no refusal, and leaves the attempt at its verified integration; `done` naming nothing accepts the submitted output. | Section 6.3 step 5 at the accept phase: the token recomputed under the lease and compared whole. Skip it and a product the checks never saw is recorded `VerifiedDone`. |
 //! | `full_worker_capacity_does_not_deadlock_verification` | T1 | `Rig::fixture_repo`, `PlanEngine::capacity` | With the engine's own worker share held to its cap, a worktree todo still submits, verifies and is accepted, and the run ends with no verification permit and no slot held. | `Purpose::Verification` being its own counter (capacity.rs). Charge the checks against the worker share and a parent whose workers hold every worker lane cannot verify the candidate any of them submits. |
@@ -764,6 +764,22 @@ impl Dirt {
 }
 
 impl Rig {
+    /// A rig whose repository is the section 6.6 fixture parent, returned beside it: the
+    /// scratch repository `Rig::new` commits would be five git runs no fixture test reads.
+    fn fixture(label: &str, dirt: Dirt) -> Result<(Self, PathBuf), Box<dyn Error>> {
+        let root = Scratch::new(&format!("yi-lanes-{label}"))?;
+        let home = root.join("home");
+        std::fs::create_dir_all(&home)?;
+        let mut rig = Self {
+            repo: PathBuf::new(),
+            home,
+            root,
+        };
+        rig.repo = rig.fixture_repo(dirt)?;
+        let parent = rig.repo.clone();
+        Ok((rig, parent))
+    }
+
     /// Build the section 6.6 fixture repository under this rig's scratch and return the parent
     /// checkout. `dirt` leaves the user's uncommitted work in it.
     fn fixture_repo(&self, dirt: Dirt) -> Result<PathBuf, Box<dyn Error>> {
@@ -1136,8 +1152,7 @@ mod accept {
     // candidate the checker refused.
     #[test]
     fn failing_candidate_never_contaminates_parent_checkout() -> TestResult {
-        let rig = Rig::new("f0d-red")?;
-        let parent = rig.fixture_repo(Dirt::Dirty)?;
+        let (rig, parent) = Rig::fixture("f0d-red", Dirt::Dirty)?;
         let before = parent_view(&parent)?;
         let bench = bench(&rig, parent.clone(), "yi/cand-red")?;
         let refused = bench.submit();
@@ -1184,8 +1199,7 @@ mod accept {
     // writes the integration's bytes over the user's only copy.
     #[test]
     fn an_untracked_directory_survives_a_ref_only_publication() -> TestResult {
-        let rig = Rig::new("f0d-nested")?;
-        let parent = rig.fixture_repo(Dirt::Nested)?;
+        let (rig, parent) = Rig::fixture("f0d-nested", Dirt::Nested)?;
         let mine = std::fs::read_to_string(parent.join("docs/ROTATE.md"))?;
         let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
         bench.submit()?;
@@ -1213,8 +1227,7 @@ mod accept {
     // cwd and `restore -- docs/ROTATE.md` resolves against `sub/` after the ref has moved.
     #[test]
     fn a_publication_runs_from_the_repository_root_whatever_the_cwd() -> TestResult {
-        let rig = Rig::new("f0d-subdir")?;
-        let parent = rig.fixture_repo(Dirt::Dirty)?;
+        let (rig, parent) = Rig::fixture("f0d-subdir", Dirt::Dirty)?;
         let pool = Pool::open(&rig.home, &parent, 2)?;
         let generation = generation_of(&parent, None)?;
         let Prepared::Merged(staging) = prepare(
@@ -1252,8 +1265,7 @@ mod accept {
     // with the checkout left behind.
     #[test]
     fn a_transient_fast_forward_failure_publishes_nothing() -> TestResult {
-        let rig = Rig::new("f0d-transient")?;
-        let parent = rig.fixture_repo(Dirt::Dirty)?;
+        let (rig, parent) = Rig::fixture("f0d-transient", Dirt::Dirty)?;
         let pool = Pool::open(&rig.home, &parent, 2)?;
         let generation = generation_of(&parent, None)?;
         let Prepared::Merged(staging) = prepare(
@@ -1298,8 +1310,7 @@ mod accept {
     // refused `integration_prepared` missing, with no way back but `retry`.
     #[test]
     fn a_stale_integration_left_unprepared_is_prepared_by_the_next_done() -> TestResult {
-        let rig = Rig::new("f0d-stale-crash")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-stale-crash", Dirt::Clean)?;
         let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
         bench.submit()?;
         let old = sha(&parent, "HEAD")?;
@@ -1343,8 +1354,7 @@ mod accept {
     // after the publication and before `accepted` reads its own HEAD as a moved parent.
     #[test]
     fn a_publication_killed_before_its_record_is_accepted_by_the_next_done() -> TestResult {
-        let rig = Rig::new("f0d-publish-crash")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-publish-crash", Dirt::Clean)?;
         let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
         bench.submit()?;
         let prepared = bench
@@ -1384,8 +1394,7 @@ mod accept {
     // `integration_prepared` leaves a slot and a branch no record names and no `done` frees.
     #[test]
     fn a_staging_lane_killed_before_its_record_is_dropped_by_the_next_done() -> TestResult {
-        let rig = Rig::new("f0d-stage-crash")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-stage-crash", Dirt::Clean)?;
         let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
         bench.submit()?;
         let kinds = bench.kinds()?;
@@ -1447,8 +1456,7 @@ mod accept {
     // `integration_prepared` left a slot and a branch that only a retry of that attempt freed.
     #[test]
     fn repair_drops_the_staging_a_crash_left_before_prepare_and_names_it() -> TestResult {
-        let rig = Rig::new("f0d-stage-repair")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-stage-repair", Dirt::Clean)?;
         let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
         bench.submit()?;
         let head = sha(&parent, "HEAD")?;
@@ -1487,8 +1495,7 @@ mod accept {
     #[test]
     fn a_verified_candidate_whose_integration_never_landed_is_prepared_by_the_next_done()
     -> TestResult {
-        let rig = Rig::new("f0d-prepared-crash")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-prepared-crash", Dirt::Clean)?;
         let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
         bench.submit()?;
         let base = sha(&parent, "HEAD")?;
@@ -1528,8 +1535,7 @@ mod accept {
     // path, where nothing asks for a candidate, an integration or an `accepted` record.
     #[test]
     fn an_unreadable_checkpoint_never_completes_a_worktree_todo_plainly() -> TestResult {
-        let rig = Rig::new("f0d-unreadable")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-unreadable", Dirt::Clean)?;
         let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
         bench.submit()?;
         std::fs::write(
@@ -1559,8 +1565,7 @@ mod accept {
     // of the tree it replaced.
     #[test]
     fn a_resubmitted_candidate_carries_no_verdict_from_the_one_it_replaced() -> TestResult {
-        let rig = Rig::new("f0d-resubmit")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-resubmit", Dirt::Clean)?;
         let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
         bench.submit()?;
         let label = TodoLabel::new(LABEL)?;
@@ -1591,8 +1596,7 @@ mod accept {
     // moved makes `done` fail on git instead of preparing again against the new generation.
     #[test]
     fn changed_parent_generation_rejects_stale_integration() -> TestResult {
-        let rig = Rig::new("f0d-stale")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-stale", Dirt::Clean)?;
         let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
         bench.submit()?;
         assert_eq!(
@@ -1648,8 +1652,7 @@ mod accept {
     // default and the record says retained for a branch the host deletes.
     #[test]
     fn discarded_worktree_is_not_reported_as_merged() -> TestResult {
-        let rig = Rig::new("f0d-discard")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-discard", Dirt::Clean)?;
         let head = sha(&parent, "HEAD")?;
         let bench = bench(&rig, parent.clone(), "yi/cand-red")?;
         bench.fail(Some(Choice::Discarded))?;
@@ -1717,8 +1720,7 @@ mod accept {
     // the integration is already published.
     #[test]
     fn an_accepted_worktree_tells_the_host_its_branch_is_kept() -> TestResult {
-        let rig = Rig::new("f0d-accept-mark")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-accept-mark", Dirt::Clean)?;
         let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
         bench.submit()?;
         bench.done()?;
@@ -1758,8 +1760,7 @@ mod accept {
     // candidate and the todo stays running under a child that ended.
     #[test]
     fn a_finished_worktree_child_is_accepted_without_an_owner_op() -> TestResult {
-        let rig = Rig::new("g2-accept")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("g2-accept", Dirt::Clean)?;
         let bench = bench(&rig, parent, "yi/cand-green")?;
         let line = finish(&bench).ok_or("the engine did not take its own child")?;
         assert!(
@@ -1787,8 +1788,7 @@ mod accept {
     // candidate gets a second submission from the engine and a second verification.
     #[test]
     fn an_early_submit_is_accepted_at_the_finish_and_not_submitted_again() -> TestResult {
-        let rig = Rig::new("g2-early")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("g2-early", Dirt::Clean)?;
         let bench = bench(&rig, parent, "yi/cand-green")?;
         bench.submit()?;
         let line = finish(&bench).ok_or("the engine did not take its own child")?;
@@ -1802,8 +1802,7 @@ mod accept {
     // leaves its todo running under a child that ended, and only an owner op moves it.
     #[test]
     fn a_red_contract_fails_the_todo_retained() -> TestResult {
-        let rig = Rig::new("g2-red")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("g2-red", Dirt::Clean)?;
         let bench = bench(&rig, parent.clone(), "yi/cand-red")?;
         let line = finish(&bench).ok_or("the engine did not take its own child")?;
         assert!(
@@ -1833,8 +1832,7 @@ mod accept {
     // "nothing to do", so the todo had no road; the engine fails it and retries it once.
     #[test]
     fn a_merge_conflict_at_the_finish_fails_the_attempt_and_the_engine_retries_it() -> TestResult {
-        let rig = Rig::new("g5-conflict-retry")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("g5-conflict-retry", Dirt::Clean)?;
         let bench = bench(&rig, parent, "yi/cand-conflict")?;
         let line = finish(&bench).ok_or("the engine did not take its own child")?;
         assert!(
@@ -1874,8 +1872,7 @@ mod accept {
     // instead and the lane drops through `Drop` with no record naming the branch.
     #[test]
     fn merge_conflict_retains_recoverable_candidate() -> TestResult {
-        let rig = Rig::new("f0d-conflict")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-conflict", Dirt::Clean)?;
         let head = sha(&parent, "HEAD")?;
         let bench = bench(&rig, parent.clone(), "yi/cand-conflict")?;
         let refused = bench.submit();
@@ -1934,8 +1931,7 @@ mod accept {
     // first and a wedged child leaves no record pointing at the only copy of the result.
     #[test]
     fn cleanup_preserves_artifacts_before_releasing_slot() -> TestResult {
-        let rig = Rig::new("f0d-order")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-order", Dirt::Clean)?;
         let bench = bench(&rig, parent.clone(), "yi/cand-red")?;
         bench.child.fail_reap.store(true, Ordering::SeqCst);
         let wedged = bench.fail(None);
@@ -2086,64 +2082,72 @@ mod accept {
     // the user's next `git commit -a` would commit over the acceptance.
     #[test]
     fn user_dirty_tree_is_preserved_during_integration() -> TestResult {
-        for dirt in [Dirt::Dirty, Dirt::Staged] {
-            let rig = Rig::new(&format!("f0d-{}", dirt.arg()))?;
-            let parent = rig.fixture_repo(dirt)?;
-            let before = parent_view(&parent)?;
-            let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
-            bench.submit()?;
-            bench.done()?;
-            let records = bench.records()?;
-            let accepted = records
-                .iter()
-                .find(|record| record.record.op == KIND_ACCEPTED)
-                .ok_or("no accepted record")?;
-            assert_eq!(
-                accepted.args["how"], "ref_only",
-                "{dirt:?}: the ref moved alone"
-            );
-            assert_eq!(accepted.record.extra["resolution"], "verified_done");
-            let after = parent_view(&parent)?;
-            assert_eq!(
-                after.0, accepted.args["published"],
-                "{dirt:?}: the head moved to the integration"
-            );
-            assert_ne!(after.0, before.0);
-            assert_eq!(
-                after.1, before.1,
-                "{dirt:?}: the status is the user's dirt, byte for byte"
-            );
-            assert_eq!(
-                after.2, before.2,
-                "{dirt:?}: rotate.sh keeps the user's edit"
-            );
-            assert_eq!(after.3, before.3, "{dirt:?}: scratch.txt is where it was");
-            assert_eq!(
-                git(&parent, &["log", "--all", "--oneline", "--", "scratch.txt"])?,
-                "",
-                "the untracked file is in no commit"
-            );
-            assert!(
-                git(&parent, &["show", "HEAD:rotate.sh"])?.contains("list rotate"),
-                "the published commit carries the candidate"
-            );
-            // The path the user never touched follows the ref, in the tree and the index.
-            assert_eq!(
-                std::fs::read_to_string(parent.join("docs/ROTATE.md"))?,
-                git(&parent, &["show", "HEAD:docs/ROTATE.md"])?.to_owned() + "\n",
-                "{dirt:?}: the candidate's new file is in the checkout"
-            );
-            let staged = git(&parent, &["diff", "--cached", "--name-only"])?;
-            let unstaged = git(&parent, &["diff", "--name-only"])?;
-            match dirt {
-                Dirt::Dirty => assert_eq!((staged.as_str(), unstaged.as_str()), ("", "rotate.sh")),
-                Dirt::Staged | Dirt::Clean | Dirt::Nested => {
-                    assert_eq!((staged.as_str(), unstaged.as_str()), ("rotate.sh", ""));
-                }
+        the_users_dirt_survives_the_accept(Dirt::Dirty)
+    }
+
+    /// The staged half of the row above, a test of its own so the two halves' hundred-odd git
+    /// runs go in parallel: in series they passed the 60 s cutoff on a loaded runner (#721).
+    #[test]
+    fn user_staged_tree_is_preserved_during_integration() -> TestResult {
+        the_users_dirt_survives_the_accept(Dirt::Staged)
+    }
+
+    fn the_users_dirt_survives_the_accept(dirt: Dirt) -> TestResult {
+        let (rig, parent) = Rig::fixture(&format!("f0d-{}", dirt.arg()), dirt)?;
+        let before = parent_view(&parent)?;
+        let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
+        bench.submit()?;
+        bench.done()?;
+        let records = bench.records()?;
+        let accepted = records
+            .iter()
+            .find(|record| record.record.op == KIND_ACCEPTED)
+            .ok_or("no accepted record")?;
+        assert_eq!(
+            accepted.args["how"], "ref_only",
+            "{dirt:?}: the ref moved alone"
+        );
+        assert_eq!(accepted.record.extra["resolution"], "verified_done");
+        let after = parent_view(&parent)?;
+        assert_eq!(
+            after.0, accepted.args["published"],
+            "{dirt:?}: the head moved to the integration"
+        );
+        assert_ne!(after.0, before.0);
+        assert_eq!(
+            after.1, before.1,
+            "{dirt:?}: the status is the user's dirt, byte for byte"
+        );
+        assert_eq!(
+            after.2, before.2,
+            "{dirt:?}: rotate.sh keeps the user's edit"
+        );
+        assert_eq!(after.3, before.3, "{dirt:?}: scratch.txt is where it was");
+        assert_eq!(
+            git(&parent, &["log", "--all", "--oneline", "--", "scratch.txt"])?,
+            "",
+            "the untracked file is in no commit"
+        );
+        assert!(
+            git(&parent, &["show", "HEAD:rotate.sh"])?.contains("list rotate"),
+            "the published commit carries the candidate"
+        );
+        // The path the user never touched follows the ref, in the tree and the index.
+        assert_eq!(
+            std::fs::read_to_string(parent.join("docs/ROTATE.md"))?,
+            git(&parent, &["show", "HEAD:docs/ROTATE.md"])?.to_owned() + "\n",
+            "{dirt:?}: the candidate's new file is in the checkout"
+        );
+        let staged = git(&parent, &["diff", "--cached", "--name-only"])?;
+        let unstaged = git(&parent, &["diff", "--name-only"])?;
+        match dirt {
+            Dirt::Dirty => assert_eq!((staged.as_str(), unstaged.as_str()), ("", "rotate.sh")),
+            Dirt::Staged | Dirt::Clean | Dirt::Nested => {
+                assert_eq!((staged.as_str(), unstaged.as_str()), ("rotate.sh", ""));
             }
-            assert!(matches!(bench.state()?, TodoState::Done { .. }));
-            assert_eq!(held(&bench.pool)?, 0);
         }
+        assert!(matches!(bench.state()?, TodoState::Done { .. }));
+        assert_eq!(held(&bench.pool)?, 0);
         Ok(())
     }
 
@@ -2151,8 +2155,7 @@ mod accept {
     // retried `done` is refused `request_id_reused` for an acceptance that succeeded.
     #[test]
     fn a_replayed_done_returns_the_recorded_acceptance() -> TestResult {
-        let rig = Rig::new("f0d-replay")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-replay", Dirt::Clean)?;
         let bench = bench(&rig, parent, "yi/cand-green")?;
         bench.submit()?;
         let first = bench.done_as(Some("req-accept-once"), None)?;
@@ -2188,8 +2191,7 @@ mod accept {
     // the candidate and integration checks never saw is recorded `VerifiedDone`.
     #[test]
     fn done_naming_an_output_the_integration_never_saw_is_stale() -> TestResult {
-        let rig = Rig::new("f0d-stale-output")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-stale-output", Dirt::Clean)?;
         let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
         bench.submit()?;
         let head = sha(&parent, "HEAD")?;
@@ -2223,8 +2225,7 @@ mod accept {
     // cannot verify the candidate any of them submits.
     #[test]
     fn full_worker_capacity_does_not_deadlock_verification() -> TestResult {
-        let rig = Rig::new("f0d-capacity")?;
-        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let (rig, parent) = Rig::fixture("f0d-capacity", Dirt::Clean)?;
         let bench = bench(&rig, parent, "yi/cand-green")?;
         let capacity = bench.engine.capacity();
         let mut workers = Vec::new();
