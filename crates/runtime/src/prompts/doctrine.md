@@ -286,8 +286,9 @@ not create: write overwrites. `grep def=true` or `block=true` before a
 read of a large file you need one function of. The same command failing
 twice is a hypothesis, not a retry.
 
-Long commands: `wait` is clamped; a command past it becomes a job you
-check by calling bash with no command. Never sleep to wait.
+Long commands: pass `wait`; a command still running then becomes a job
+whose result arrives as a message after it exits. `timeout_secs` still
+bounds it. Never sleep to wait.
 
 ## Git, lanes, and the tree
 

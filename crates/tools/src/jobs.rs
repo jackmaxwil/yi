@@ -460,17 +460,18 @@ pub fn spawn_job(
     start(shell_command, cwd, cancelled, sandbox, Reaper::Handle, None).0
 }
 
-/// A command outliving `auto_background` keeps running as a job instead of holding the turn
-/// (`None` disables it: silently detaching surprises); past `timeout` it is killed instead.
+/// Past `background` (a call's `wait`, else `bash.autoBackgroundMs`; `None` holds the turn) a
+/// command keeps running as a job; past `timeout` from its start it is killed, job or not.
 pub fn run_or_background(
     shell_command: &str,
     cwd: &Path,
     cancelled: &CancelFlag,
-    auto_background: Option<Duration>,
+    background: Option<Duration>,
     timeout: Duration,
     sandbox: Option<&crate::sandbox::Sandbox>,
     sweep: Option<&str>,
 ) -> Result<Run, String> {
+    let begun = std::time::Instant::now();
     let (id, receiver) = start(
         shell_command,
         cwd,
@@ -479,14 +480,22 @@ pub fn run_or_background(
         Reaper::Poller { reported: false },
         sweep,
     );
-    let background = auto_background.filter(|limit| *limit <= timeout);
+    let background = background.filter(|limit| *limit < timeout);
     match receiver.recv_timeout(background.unwrap_or(timeout)) {
         Ok(Ok(capture)) => {
             registry().mark_reported(id);
             Ok(Run::Finished(Box::new(capture)))
         }
         Ok(Err(message)) => Err(message),
-        Err(RecvTimeoutError::Timeout) if background.is_some() => Ok(Run::Backgrounded(id)),
+        Err(RecvTimeoutError::Timeout) if background.is_some() => {
+            let left = timeout.saturating_sub(begun.elapsed());
+            // ponytail: a parked thread per job until its timeout; a timer heap past hundreds.
+            std::thread::spawn(move || {
+                std::thread::sleep(left);
+                let _settled_or_evicted_meanwhile_is_fine = registry().kill(id);
+            });
+            Ok(Run::Backgrounded(id))
+        }
         Err(RecvTimeoutError::Timeout) => {
             let _a_job_that_settled_meanwhile_is_fine = registry().kill(id);
             // Incident: `timeout 3000 python3 …` left the shell's group and held the pipes
@@ -525,7 +534,7 @@ pub fn clamp_wait(seconds: u64) -> Duration {
 pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const KILL_GRACE: Duration = Duration::from_secs(5);
 /// One sixth of a one-hour attempt: room for a cold build or a whole suite, and twice the
-/// wait clamp, so anything longer is already a job.
+/// wait clamp; a job is killed here too, so a server belongs in `nohup … &`.
 pub const MAX_TIMEOUT_SECS: u64 = 600;
 
 /// Absent or zero is the default; the ceiling holds whatever the model asks.

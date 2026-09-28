@@ -562,7 +562,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 8,192 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. wait is clamped 5-300 s; a longer command becomes a job you check by calling bash with no command. A command is killed at timeout_secs (default 300 s, ceiling 600 s); raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
+        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 8,192 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s) with a command to get the turn back: still running then, it becomes a job whose result arrives as a message after it exits; bash with job and no command checks it, waiting up to wait. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
     }
 
     fn schema(&self) -> Value {
@@ -571,7 +571,7 @@ impl Tool for BashTool {
             "properties": {
                 "command": {"type": "string", "description": "Shell command to run. Omit it to check on a background job instead."},
                 "job": {"type": "integer", "description": "Background job to check on; defaults to the most recent"},
-                "wait": {"type": "integer", "description": "Seconds to wait for that job, clamped to 5-300"},
+                "wait": {"type": "integer", "description": "With command: seconds before a still-running command becomes a background job. Without: seconds to wait for that job. Clamped 5-300."},
                 "timeout_secs": {"type": "integer", "description": "Wall-clock limit in seconds, default 300, ceiling 600; raise it for a build or a test suite. Past it the command is killed and reported as timed out."},
                 "max_output_lines": {"type": "integer", "description": "Per-call reducer line budget, for when the full output matters"}
             }
@@ -609,6 +609,11 @@ impl Tool for BashTool {
         }
         let requested_timeout = input.get("timeout_secs").and_then(Value::as_u64);
         let timeout = crate::jobs::clamp_timeout(requested_timeout);
+        let wait = input
+            .get("wait")
+            .and_then(Value::as_u64)
+            .map(crate::jobs::clamp_wait);
+        let background = wait.or(context.auto_background);
         let started = std::time::Instant::now();
         let mut sections = Vec::new();
         if let Some(asked) = requested_timeout.filter(|asked| *asked > MAX_TIMEOUT_SECS) {
@@ -623,7 +628,7 @@ impl Tool for BashTool {
             placed.as_ref().map_or(command, |(run, _)| run),
             &context.cwd,
             &context.cancelled,
-            context.auto_background,
+            background,
             timeout,
             context.sandbox.as_ref().filter(|_| placed.is_none()),
             placed.as_ref().map(|(_, sweep)| sweep.as_str()),
@@ -631,12 +636,7 @@ impl Tool for BashTool {
             Ok(crate::jobs::Run::Finished(capture)) => (*capture, false),
             Ok(crate::jobs::Run::TimedOut(capture)) => (*capture, true),
             Ok(crate::jobs::Run::Backgrounded(id)) => {
-                sections.push(format!(
-                    "Backgrounded as job {id}. Call bash with no command (optionally job={id}) to check on it."
-                ));
-                let mut output = text_output(sections.join("\n"));
-                output.result.details = json!({ "job": id.0, "backgrounded": true });
-                return output;
+                return backgrounded_output(sections, id, background.unwrap_or_default(), timeout);
             }
             Err(message) => return error_output(message),
         };
@@ -663,14 +663,8 @@ impl Tool for BashTool {
         if capture.truncated {
             sections.push("[output truncated]".to_owned());
         }
-        if timed_out && nudge.is_some() {
-            sections.push(format!("[timed out after {}s]", timeout.as_secs()));
-        } else if timed_out {
-            sections.push(format!(
-                "[timed out after {}s; pass timeout_secs up to {} for a longer run, or narrow the command]",
-                timeout.as_secs(),
-                crate::jobs::MAX_TIMEOUT_SECS
-            ));
+        if timed_out {
+            sections.extend(timed_out_notes(timeout, nudge.is_some(), wait));
         } else if capture.cancelled {
             sections.push("[command aborted]".to_owned());
         }
@@ -745,8 +739,58 @@ impl Tool for BashTool {
     }
 }
 
+/// A command still running at its wait: the turn gets the job and the last lines printed so far.
+fn backgrounded_output(
+    mut sections: Vec<String>,
+    id: crate::jobs::JobId,
+    after: std::time::Duration,
+    timeout: std::time::Duration,
+) -> ToolOutput {
+    let timeout = timeout.as_secs();
+    sections.push(format!(
+        "[still running after {after:?}: now job {id}. Its result arrives as a message after it exits; bash job={id} wait=<s> checks it sooner. It is killed {timeout}s after it started (timeout_secs).]"
+    ));
+    let so_far = crate::jobs::registry().output_since(id, 0);
+    let so_far = so_far.map(|chunk| chunk.text).unwrap_or_default();
+    let lines: Vec<&str> = so_far.lines().collect();
+    let tail = lines
+        .get(lines.len().saturating_sub(20)..)
+        .unwrap_or_default();
+    sections.extend(tail.iter().map(|line| (*line).to_owned()));
+    let mut output = text_output(sections.join("\n"));
+    output.result.details = json!({
+        "job": id.0, "backgrounded": true, "waitSecs": after.as_secs(), "timeoutSecs": timeout,
+    });
+    output
+}
+
+/// The timeout's remedy, unless the nudge names one, and why a `wait` did not make a job.
+fn timed_out_notes(
+    timeout: std::time::Duration,
+    nudged: bool,
+    wait: Option<std::time::Duration>,
+) -> Vec<String> {
+    let secs = timeout.as_secs();
+    let mut notes = vec![if nudged {
+        format!("[timed out after {secs}s]")
+    } else {
+        format!(
+            "[timed out after {secs}s; pass timeout_secs up to {} for a longer run, or narrow the command]",
+            crate::jobs::MAX_TIMEOUT_SECS
+        )
+    }];
+    if let Some(wait) = wait.filter(|wait| *wait >= timeout) {
+        notes.push(format!(
+            "[wait {}s reaches timeout_secs {secs}s: it ran in the turn and was killed]",
+            wait.as_secs()
+        ));
+    }
+    notes
+}
+
 /// The same tool with no command, never a second tool to discover.
 fn poll_job(input: &Map<String, Value>) -> ToolOutput {
+    use crate::jobs::{JobState, Outcome};
     let requested = input
         .get("job")
         .and_then(Value::as_u64)
@@ -767,8 +811,14 @@ fn poll_job(input: &Map<String, Value>) -> ToolOutput {
         };
         if report.finished {
             let exit_code = report.exit_code.unwrap_or(-1);
+            let how = match report.state {
+                JobState::Settled(Outcome::Killed) => "killed (timeout_secs or a kill)".to_owned(),
+                JobState::Settled(Outcome::Exited { .. }) | JobState::Running => {
+                    format!("finished (exit {exit_code})")
+                }
+            };
             let mut output = text_output(format!(
-                "job {} finished (exit {exit_code}): {}\n{}",
+                "job {} {how}: {}\n{}",
                 report.id, report.command, report.output
             ));
             output.result.details = json!({ "job": report.id.0, "exitCode": exit_code });
