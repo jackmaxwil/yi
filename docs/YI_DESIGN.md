@@ -209,7 +209,7 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   `openai-codex`), `openai-completions` (`openrouter`, `google`); any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`. Model: `--model`, else
   `models.primary`, else `model`; none is built in.
-- Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
+- Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
   wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s.
@@ -222,8 +222,8 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   a per-provider flock; profiles are the user's `~/.yi/oauth/<provider>.json`, Yi ships none.
 - Owner: [`crates/runtime/src/provider.rs`](../crates/runtime/src/provider.rs),
   [`crates/ai/src/`](../crates/ai/src/), [`crates/oauth/src/`](../crates/oauth/src/)
-- State: `models { primary, summarizer, advisor, autoReview }` in `~/.yi/config.json`
-  ([`config.rs`](../crates/types/src/config.rs)), advisor and autoReview off until named;
+- State: `models { primary, summarizer, advisor, autoReview, classifier }` in `~/.yi/config.json`
+  ([`config.rs`](../crates/types/src/config.rs)), advisor, autoReview and classifier off until named;
   [`RetryPolicy`](../crates/ai/src/retry.rs). Shapes: [`model.rs`](../crates/types/src/model.rs).
 - Settled by: D34, D57, D128, D191, D197, D231
 
@@ -251,6 +251,8 @@ extension `Host` whose synchronous extensions turn session events into effects.
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
   `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `skill://` hint answers
   only a message the user typed, placed right behind it: ≤ 2 a message, a typed `$name` always.
+  With `models.classifier` set, a local sidecar is also asked which triggered skill the message
+  calls for (`classify` entry); it points only at or above `classifier.threshold`.
 - Next-step lines: `affordance::render` over the compiled-in `graph.json` walks 2 hops from the
   last call over edges whose condition is `always` or a host-asserted fact from the closed
   `PREDICATES`, by weight, ≤ 2 `next:` lines (3 for `todo`). `Graph::check` bounds edges (400),
@@ -744,10 +746,11 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `--schema`. Under `--json` an agent failure is in-band and exits 0. Errors print `error: …`.
 - `~/.yi/config.json` is the only config file, parsed once; every struct is `deny_unknown_fields`
   and `migrate` drops keys an older build read, reporting each. Keys: `model`, `thinking`,
-  `models{primary,summarizer,advisor,autoReview}`, `bash{autoBackgroundMs}`, `plans{dir}`,
+  `models{primary,summarizer,advisor,autoReview,classifier}`, `bash{autoBackgroundMs}`, `plans{dir}`,
   `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
-  `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`.
+  `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
+  `classifier{url,timeoutMs,threshold}`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)
