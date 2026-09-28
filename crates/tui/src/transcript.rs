@@ -311,3 +311,12 @@ pub(crate) fn fence_tail(tail: &str, rows: usize) -> std::borrow::Cow<'_, str> {
         _ => std::borrow::Cow::Borrowed(tail),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_control_character_prints_as_its_glyph_and_a_tab_as_four_spaces() {
+        let raw = "a\tb\r\u{1b}[1m\u{7f}\u{85}";
+        assert_eq!(super::printable(raw), "a    b␍␛[1m␡\u{fffd}");
+    }
+}
