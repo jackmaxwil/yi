@@ -109,7 +109,11 @@ pub fn session(
         provider,
     );
     child.set_turn_cap(reader.turns);
-    child.set_request_shape(reader.schema.clone(), reader.shared_through);
+    child.set_request_shape(crate::session::RequestShape {
+        schema: reader.schema.clone(),
+        shared_through: reader.shared_through,
+        one_shot: reader.tools.is_empty(),
+    });
     child.set_wall(build.wall);
     let named = tools
         .into_iter()
