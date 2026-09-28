@@ -32,6 +32,31 @@ fn the_default_fixture_equals_the_compiled_defaults() -> Result<(), Box<dyn Erro
     Ok(())
 }
 
+/// D280: the three loop guards reach yi-loop through `LoopConfig`, whose defaults are the loop's
+/// own constants; an override in an eval run moves exactly the guard it names.
+#[test]
+fn the_loop_guards_are_the_levers_the_run_read() -> Result<(), Box<dyn Error>> {
+    assert_eq!(
+        Levers::DEFAULT.loop_guards(),
+        yi_loop::LoopGuards::default()
+    );
+    let path = overrides(
+        "guards",
+        r#"{"loop.cut_stop_at": 2, "loop.length_stop_at": 1, "loop.reasoning_cap": 9000}"#,
+    )?;
+    let guards = load(&path)?.loop_guards();
+    std::fs::remove_file(&path)?;
+    assert_eq!(
+        guards,
+        yi_loop::LoopGuards {
+            length_stop_at: 1,
+            cut_stop_at: 2,
+            reasoning_cap: 9000
+        }
+    );
+    Ok(())
+}
+
 /// Invariant: `family.depth`'s default is the same number an unset `rlm.maxDepth` resolves
 /// to, so the inventory names the config's real default rather than a shadow copy of it.
 #[test]

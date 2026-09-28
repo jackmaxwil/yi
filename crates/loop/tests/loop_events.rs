@@ -812,6 +812,79 @@ async fn consecutive_cuts_re_drive_past_the_third_and_name_the_write() {
     );
 }
 
+/// D280: the stop guards are the config's, so an eval run's levers reach them. Four spirals and an
+/// answer, run once with the cut stop at 2 and once with a cap no spiral reaches.
+#[tokio::test]
+async fn the_config_s_guards_decide_when_a_spiral_is_cut_and_when_it_stops() {
+    let spiral = || {
+        let mut message = faux_assistant_message(
+            vec![faux_thinking(
+                &"the router must rise at y=2, no, y=3, ".repeat(2_000),
+            )],
+            StopReason::Stop,
+        );
+        if let AgentMessage::Assistant { usage, .. } = &mut message {
+            usage.unknown = true;
+        }
+        message
+    };
+    let run = |guards: yi_loop::LoopGuards| {
+        let answer = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+        let stream = Spiral::new(vec![spiral(), spiral(), spiral(), spiral(), answer]);
+        async move {
+            let mut context = LoopContext {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: vec![Arc::new(EchoTool)],
+            };
+            let mut config = LoopConfig::new(faux_model());
+            config.guards = guards;
+            let signal = InterruptSignal::default();
+            let (_events, mut emit) = collector();
+            let collected = run_loop(
+                &mut context,
+                vec![user("go")],
+                &config,
+                &signal,
+                &mut emit,
+                &stream,
+            )
+            .await;
+            let answers = collected
+                .iter()
+                .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+                .count();
+            let cuts = collected
+                .iter()
+                .filter(|message| {
+                    matches!(message, AgentMessage::Custom { custom_type, .. }
+                    if custom_type == yi_loop::LENGTH_REDRIVE_CUSTOM_TYPE)
+                })
+                .count();
+            (answers, cuts)
+        }
+    };
+    let defaults = yi_loop::LoopGuards::default();
+    assert_eq!(
+        run(yi_loop::LoopGuards {
+            cut_stop_at: 2,
+            ..defaults
+        })
+        .await,
+        (2, 1),
+        "the second cut ends the run"
+    );
+    assert_eq!(
+        run(yi_loop::LoopGuards {
+            reasoning_cap: 200_000,
+            ..defaults
+        })
+        .await,
+        (1, 0),
+        "a cap the spiral never reaches cuts nothing, and the uncut spiral is the answer"
+    );
+}
+
 /// `z-ai/glm-5.3-flash` from the bundled catalog: the model and route of the 2026-09-11 sweep.
 fn glm_5_3_flash() -> Option<Model> {
     yi_ai::catalog::Catalog::bundled()
