@@ -17,7 +17,7 @@ pub use install::{ExtOptions, install};
 pub use orchestrate::{Features, Route, features, prefilter};
 pub use pack::Pack;
 pub use project::{
-    TrustGate, content_hash, contributions, git_root, is_project_root, resource_roots,
+    TrustGate, content_hash, contributions, git_root, is_project_root, listed, resource_roots,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
