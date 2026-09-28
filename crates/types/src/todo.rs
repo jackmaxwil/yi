@@ -1,9 +1,17 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
-use crate::plan::doc::{DocError, TODO_LABEL_MAX, TodoLabel, TodoStateName};
+use crate::plan::ask::Ask;
+use crate::plan::doc::{
+    AgentId, BlockedOn, DocError, NOTE_MAX_BYTES, Note, TODO_LABEL_MAX, Todo, TodoLabel, TodoState,
+    TodoStateName,
+};
+use crate::url::{Scheme, Url};
 
 pub const TODO_ENTRY_TYPE: &str = "todo";
+/// A format-2 list holds plan [`Todo`]s; a list with no format is the name-only item shape
+/// sessions wrote before the two todo types merged.
+pub const TODO_LIST_FORMAT: u32 = 2;
 pub const TODO_INTERCEPT_ENTRY_TYPE: &str = "todo_intercept";
 pub const PHASE_NAME_MAX: usize = 80;
 
@@ -55,26 +63,20 @@ impl From<PhaseName> for String {
     }
 }
 
-/// Who a blocked todo waits on; `user` is the one value that ends a turn cleanly.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BlockedOn {
-    User,
-    External,
-    Child,
-    #[serde(untagged)]
-    Other(String),
-}
-
-impl BlockedOn {
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::User => "user",
-            Self::External => "external",
-            Self::Child => "child",
-            Self::Other(tag) => tag,
-        }
+/// A checklist row's trailing `user://<n>` tokens are its intent, cut from the label.
+pub fn split_cited(text: &str) -> (&str, Vec<Url>) {
+    let mut rest = text.trim_end();
+    let mut cited = Vec::new();
+    while let Some((head, token)) = rest.rsplit_once(' ')
+        && let Ok(url) = token.parse::<Url>()
+        && url.scheme() == &Scheme::User
+        && url.path().bytes().all(|byte| byte.is_ascii_digit())
+    {
+        cited.push(url);
+        rest = head.trim_end();
     }
+    cited.reverse();
+    (rest, cited)
 }
 
 /// A per-session item id, `t<n>`; minted by the store, never reused, additive so old
@@ -119,93 +121,225 @@ pub struct Claim {
     pub observed: Option<String>,
 }
 
-/// One todo: `note` is the blocker, the drop reason or the fail cause, `evidence`
-/// the check quoted at `done`; a child carries the same fields one level down.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TodoItem {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<TodoId>,
-    pub label: TodoLabel,
-    pub state: TodoStateName,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on: Option<BlockedOn>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evidence: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub children: Vec<TodoItem>,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-impl TodoItem {
-    pub fn pending(label: TodoLabel) -> Self {
-        Self {
-            id: None,
-            label,
-            state: TodoStateName::Pending,
-            on: None,
-            note: None,
-            evidence: None,
-            children: Vec::new(),
-            extra: Map::new(),
-        }
-    }
-
-    /// Text over the label max is cut to a label and kept whole as the note.
+impl Todo {
+    /// Text over the label max is cut to a label and kept whole as the note; trailing
+    /// `user://<n>` tokens are the intent.
     pub fn from_text(text: &str) -> Result<Self, DocError> {
-        let text = text.trim();
-        if text.chars().count() <= TODO_LABEL_MAX {
-            return Ok(Self::pending(TodoLabel::new(text)?));
-        }
+        let (text, intent) = split_cited(text.trim());
         let cut: String = text.chars().take(TODO_LABEL_MAX).collect();
-        let mut item = Self::pending(TodoLabel::new(cut.trim_end())?);
-        item.note = Some(text.to_owned());
-        Ok(item)
+        let mut todo = Self::pending(TodoLabel::new(cut.trim_end())?);
+        if cut.len() < text.len() {
+            todo.note = Some(Note::new(text)?);
+        }
+        todo.cites.intent = intent;
+        Ok(todo)
     }
 
     pub fn is_cut(&self) -> bool {
         let label = self.label.as_str();
-        self.note
-            .as_deref()
-            .is_some_and(|note| note.len() > label.len() && note.starts_with(label))
-    }
-
-    pub fn is_open(&self) -> bool {
-        matches!(self.state, TodoStateName::Pending | TodoStateName::Running)
-    }
-
-    pub fn is_closed(&self) -> bool {
-        matches!(
-            self.state,
-            TodoStateName::Done | TodoStateName::Abandoned | TodoStateName::Failed
-        )
+        self.note.as_ref().is_some_and(|note| {
+            note.as_str().len() > label.len() && note.as_str().starts_with(label)
+        })
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TodoPhase {
     pub name: PhaseName,
-    #[serde(default)]
-    pub items: Vec<TodoItem>,
+    pub items: Vec<Todo>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
 /// The session's task list: the whole shape rides every `custom{todo}` entry so
 /// the latest entry is the state and no replay is needed.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(try_from = "ListRepr")]
 pub struct TodoList {
-    #[serde(default)]
     pub phases: Vec<TodoPhase>,
-    #[serde(default)]
     pub next_id: u64,
-    #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListOut<'a> {
+    format: u32,
+    phases: &'a [TodoPhase],
+    next_id: u64,
+    #[serde(flatten)]
+    extra: &'a Map<String, Value>,
+}
+
+impl Serialize for TodoList {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ListOut {
+            format: TODO_LIST_FORMAT,
+            phases: &self.phases,
+            next_id: self.next_id,
+            extra: &self.extra,
+        }
+        .serialize(serializer)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListRepr {
+    #[serde(default)]
+    phases: Vec<PhaseRepr>,
+    #[serde(default)]
+    next_id: u64,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+struct PhaseRepr {
+    name: PhaseName,
+    #[serde(default)]
+    items: Vec<Value>,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+impl TryFrom<ListRepr> for TodoList {
+    type Error = serde_json::Error;
+
+    fn try_from(repr: ListRepr) -> Result<Self, Self::Error> {
+        let phases = repr
+            .phases
+            .into_iter()
+            .map(|phase| {
+                Ok(TodoPhase {
+                    name: phase.name,
+                    items: phase
+                        .items
+                        .into_iter()
+                        .map(read_item)
+                        .collect::<Result<_, _>>()?,
+                    extra: phase.extra,
+                })
+            })
+            .collect::<Result<_, Self::Error>>()?;
+        let mut extra = repr.extra;
+        extra.remove("format");
+        Ok(Self {
+            phases,
+            next_id: repr.next_id,
+            extra,
+        })
+    }
+}
+
+/// A format-2 item never carries `on` at its top level; one that does, or that fails the
+/// format-2 read, was written in the name-only shape by this binary or an older one.
+fn read_item(value: Value) -> Result<Todo, serde_json::Error> {
+    if value.get("on").is_some() {
+        return named(value);
+    }
+    serde_json::from_value::<Todo>(value.clone()).or_else(|error| named(value).map_err(|_| error))
+}
+
+/// Incident: a pre-merge binary rewrote a format-2 list and left the payload of the state it
+/// replaced, and the strict read then lost the whole list; its `state` word is the newest fact.
+fn named(value: Value) -> Result<Todo, serde_json::Error> {
+    let mut item: Map<String, Value> = serde_json::from_value(value)?;
+    for stale in ["blocked", "cause", "last", "output", "resolution"] {
+        item.remove(stale);
+    }
+    let children: Vec<Value> = match item.remove("children") {
+        Some(children) => serde_json::from_value(children)?,
+        None => Vec::new(),
+    };
+    let named: FormatOneItem = serde_json::from_value(Value::Object(item))?;
+    // Kept format-2 keys (attempt, after, contract) sit in `extra`; the second read seats them.
+    let mut todo: Todo = serde_json::from_value(serde_json::to_value(Todo::from(named))?)?;
+    todo.children = children
+        .into_iter()
+        .map(read_item)
+        .collect::<Result<_, _>>()?;
+    Ok(todo)
+}
+
+/// A format-1 item: the state by name, its payload in `on` and `note`.
+#[derive(Deserialize)]
+struct FormatOneItem {
+    #[serde(default)]
+    id: Option<TodoId>,
+    label: TodoLabel,
+    state: TodoStateName,
+    #[serde(default)]
+    on: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    evidence: Option<String>,
+    #[serde(default)]
+    intent: Vec<Url>,
+    #[serde(default)]
+    ask: Option<Ask>,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+/// Invariant: format 1 had no note cap, so one past [`NOTE_MAX_BYTES`] keeps its head rather
+/// than failing the whole list it rides in.
+fn capped(note: String) -> Option<Note> {
+    let mut end = note.len().min(NOTE_MAX_BYTES);
+    while !note.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    Note::new(note.get(..end)?).ok()
+}
+
+impl From<FormatOneItem> for Todo {
+    fn from(item: FormatOneItem) -> Self {
+        let FormatOneItem {
+            id,
+            label,
+            state,
+            on,
+            mut note,
+            evidence,
+            intent,
+            ask,
+            mut extra,
+        } = item;
+        // A mirrored row kept its plan's runner in `by`; the session's own rows named none.
+        let by = extra
+            .remove("by")
+            .and_then(|by| AgentId::new(by.as_str()?).ok())
+            .unwrap_or_else(AgentId::owner);
+        let state = match state {
+            TodoStateName::Pending => TodoState::Pending,
+            TodoStateName::Running => TodoState::Running { by },
+            TodoStateName::Blocked => TodoState::Blocked {
+                on: BlockedOn::from_word(on.as_deref()),
+                note: note.take().unwrap_or_default(),
+            },
+            TodoStateName::Done => TodoState::Done {
+                output: None,
+                resolution: None,
+            },
+            TodoStateName::Failed => TodoState::Failed {
+                cause: note.take().unwrap_or_default(),
+                last: None,
+            },
+            TodoStateName::Abandoned => TodoState::Abandoned,
+            TodoStateName::Other(tag) => TodoState::Other(tag),
+        };
+        let mut todo = Self::pending(label);
+        todo.id = id;
+        todo.state = state;
+        todo.note = note.and_then(capped);
+        todo.evidence = evidence;
+        todo.cites.intent = intent;
+        todo.ask = ask;
+        todo.extra = extra;
+        todo
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -217,7 +351,7 @@ pub struct TodoProgress {
 }
 
 impl TodoList {
-    pub fn items(&self) -> impl Iterator<Item = &TodoItem> {
+    pub fn items(&self) -> impl Iterator<Item = &Todo> {
         self.phases.iter().flat_map(|phase| {
             phase
                 .items
@@ -226,7 +360,7 @@ impl TodoList {
         })
     }
 
-    pub fn for_each_mut(&mut self, mut act: impl FnMut(&mut TodoItem)) {
+    pub fn for_each_mut(&mut self, mut act: impl FnMut(&mut Todo)) {
         for phase in &mut self.phases {
             for item in &mut phase.items {
                 act(item);
@@ -242,20 +376,20 @@ impl TodoList {
         for item in self.items() {
             progress.total = progress.total.saturating_add(1);
             match item.state {
-                TodoStateName::Done => progress.done = progress.done.saturating_add(1),
-                TodoStateName::Pending | TodoStateName::Running => {
+                TodoState::Done { .. } => progress.done = progress.done.saturating_add(1),
+                TodoState::Pending | TodoState::Running { .. } => {
                     progress.open = progress.open.saturating_add(1);
                 }
-                TodoStateName::Blocked => progress.blocked = progress.blocked.saturating_add(1),
-                TodoStateName::Failed | TodoStateName::Abandoned | TodoStateName::Other(_) => {}
+                TodoState::Blocked { .. } => progress.blocked = progress.blocked.saturating_add(1),
+                TodoState::Failed { .. } | TodoState::Abandoned | TodoState::Other(_) => {}
             }
         }
         progress
     }
 
-    pub fn running(&self) -> Option<&TodoItem> {
+    pub fn running(&self) -> Option<&Todo> {
         self.items()
-            .find(|item| item.state == TodoStateName::Running)
+            .find(|item| matches!(item.state, TodoState::Running { .. }))
     }
 
     /// Sorted open labels with their states: equal fingerprints mean the model
@@ -263,8 +397,8 @@ impl TodoList {
     pub fn fingerprint(&self) -> String {
         let mut rows: Vec<String> = self
             .items()
-            .filter(|item| !item.is_closed())
-            .map(|item| format!("{}={}", item.label, item.state))
+            .filter(|item| !item.state.is_terminal())
+            .map(|item| format!("{}={}", item.label, TodoStateName::of(&item.state)))
             .collect();
         rows.sort();
         rows.join("\n")

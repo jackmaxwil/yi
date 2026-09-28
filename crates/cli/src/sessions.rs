@@ -73,7 +73,8 @@ pub(crate) fn board_dir(session_dir: &Path, id: &str) -> PathBuf {
 fn remove_board(session_dir: &Path, id: &str) -> Result<(), String> {
     validate_session_id(id).map_err(|error| error.to_string())?;
     let kernel = session_dir.join("kernels").join(id);
-    [board_dir(session_dir, id), kernel]
+    let clock = session_dir.join("schedules").join(id);
+    [board_dir(session_dir, id), kernel, clock]
         .into_iter()
         .try_for_each(|dir| match std::fs::remove_dir_all(dir) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),

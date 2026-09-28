@@ -1,0 +1,1 @@
+{"op":"plan","actor":"engine","at":1790541884719,"touched":1,"list":{"phases":[{"name":"replace-the-lexer","items":[{"id":"t1","label":"write the new lexer","state":"pending","intent":["user://2"],"plan":"replace-the-lexer"},{"id":"t2","label":"delete the old lexer","state":"pending","intent":["user://2"],"plan":"replace-the-lexer"}]}],"nextId":3,"plan":"replace-the-lexer"}}

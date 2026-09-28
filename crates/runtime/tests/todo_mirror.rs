@@ -19,9 +19,10 @@ use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, Attribution, StopReason, UserContent};
 use yi_types::model::{Model, ModelCost};
 use yi_types::plan::doc::{
-    AgentId, Check, Delegation, GoalText, SpawnSpec, TodoAddr, TodoLabel, TodoStateName,
+    AgentId, BlockedOn, Check, Delegation, GoalText, Plan, PlanId, PlanTier, ProbeCommand,
+    SpawnSpec, Todo, TodoAddr, TodoLabel, TodoState, TodoStateName,
 };
-use yi_types::todo::{PhaseName, TodoItem};
+use yi_types::todo::{PhaseName, TodoList};
 use yi_types::url::Url;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -46,7 +47,7 @@ impl yi_runtime::plan::ops::OpSink for Nothing {
     }
 }
 
-fn faux_model() -> Model {
+pub(crate) fn faux_model() -> Model {
     let zero = || serde_json::Number::from(0u64);
     Model {
         id: "faux-1".to_owned(),
@@ -71,7 +72,7 @@ fn faux_model() -> Model {
     }
 }
 
-fn session(provider: Arc<ProviderStream>) -> AgentSession {
+pub(crate) fn session(provider: Arc<ProviderStream>) -> AgentSession {
     AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
@@ -83,7 +84,7 @@ fn session(provider: Arc<ProviderStream>) -> AgentSession {
     )
 }
 
-fn memory_store() -> yi_session::SharedSession {
+pub(crate) fn memory_store() -> yi_session::SharedSession {
     Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
         yi_session::SessionMetadata {
             id: "mirror".to_owned(),
@@ -119,6 +120,7 @@ fn spec(text: &str, delegated: bool) -> Result<TodoSpec, Box<dyn Error>> {
         delegation,
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     })
 }
 
@@ -141,7 +143,7 @@ fn mirrored(dir: &Scratch) -> Result<(AgentSession, Arc<TodoStore>, PlanEngine),
         TodoOp::Init {
             phases: vec![(
                 PhaseName::new("Tasks")?,
-                vec![TodoItem::from_text("first")?, TodoItem::from_text("gate")?],
+                vec![Todo::from_text("first")?, Todo::from_text("gate")?],
             )],
         },
         None,
@@ -172,7 +174,7 @@ fn ids(todos: &TodoStore) -> Vec<(String, String, TodoStateName)> {
                     .map(ToString::to_string)
                     .unwrap_or_default(),
                 item.label.to_string(),
-                item.state.clone(),
+                TodoStateName::of(&item.state),
             )
         })
         .collect()
@@ -204,7 +206,12 @@ fn a_plan_op_replaces_the_list_and_keeps_ids() -> TestResult {
         "gate keeps its id, the new label takes the next one"
     );
     let running = list.items().nth(2).ok_or("no third item")?;
-    assert_eq!(running.extra.get("by"), Some(&json!("child-0")));
+    assert_eq!(
+        running.state,
+        TodoState::Running {
+            by: AgentId::new("child-0")?
+        }
+    );
     assert_eq!(running.extra.get("plan"), Some(&json!(plan)));
     let record =
         latest_record(&session.store_handle()().ok_or("no store")?).ok_or("no todo record")?;
@@ -240,26 +247,54 @@ fn a_plan_op_racing_an_owner_row_write_never_undoes_it() -> TestResult {
     let state_of = |todos: &TodoStore| {
         let list = todos.list();
         let item = list.items().find(|item| item.label == first).cloned();
-        item.map(|item| item.state)
+        item.map(|item| TodoStateName::of(&item.state))
     };
     let lost = std::thread::scope(|scope| {
         scope.spawn(|| {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 let on = yi_types::plan::doc::BlockedOn::User;
                 let (label, note) = (gate.clone(), "wait".to_owned());
-                let _ = engine.apply(owner(Op::Block { label, on, note }));
+                let _ = engine.apply(owner(Op::Block {
+                    label,
+                    on,
+                    note,
+                    ask: None,
+                }));
                 let label = gate.clone();
-                let _ = engine.apply(owner(Op::Unblock { label }));
+                let _ = engine.apply(owner(Op::Unblock {
+                    label,
+                    answer: None,
+                }));
             }
         });
         let mut lost = 0;
         for _ in 0..100 {
-            let on = yi_types::todo::BlockedOn::User;
+            let on = yi_types::plan::doc::BlockedOn::User;
             let (label, note) = (first.clone(), "wait".to_owned());
-            let blocked = todos.apply(TodoOp::Block { label, on, note }, None).is_ok();
+            let blocked = todos
+                .apply(
+                    TodoOp::Block {
+                        label,
+                        on,
+                        note,
+                        ask: None,
+                    },
+                    None,
+                )
+                .is_ok();
             lost += usize::from(!blocked || state_of(&todos) != Some(TodoStateName::Blocked));
             let label = first.clone();
-            lost += usize::from(todos.apply(TodoOp::Unblock { label }, None).is_err());
+            lost += usize::from(
+                todos
+                    .apply(
+                        TodoOp::Unblock {
+                            label,
+                            answer: None,
+                        },
+                        None,
+                    )
+                    .is_err(),
+            );
         }
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         lost
@@ -383,8 +418,23 @@ async fn a_plan_opened_through_the_tool_is_the_sessions_todo_list() -> TestResul
     ]);
     let mut session = session(Arc::clone(&provider));
     session.attach_store(memory_store())?;
+    wired(&mut session, &root, provider);
+    session.prompt("open a plan")?;
+    session.wait_idle().await;
+    let list = session.todos().ok_or("no todo store")?.list();
+    assert!(plan_of(&list).is_some(), "{list:?}");
+    assert_eq!(
+        text::header(&list),
+        "Todos 1/2",
+        "the todo tool's done reached the plan"
+    );
+    Ok(())
+}
+
+/// A root session wired as `yi` wires one, its plans under `root/plans`.
+pub(crate) fn wired(session: &mut AgentSession, root: &Scratch, provider: Arc<ProviderStream>) {
     yi_runtime::attach_runtime(
-        &mut session,
+        session,
         yi_runtime::RuntimeWiring {
             provider,
             system_prompt: "sys".to_owned(),
@@ -413,16 +463,6 @@ async fn a_plan_opened_through_the_tool_is_the_sessions_todo_list() -> TestResul
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
-    session.prompt("open a plan")?;
-    session.wait_idle().await;
-    let list = session.todos().ok_or("no todo store")?.list();
-    assert!(plan_of(&list).is_some(), "{list:?}");
-    assert_eq!(
-        text::header(&list),
-        "Todos 1/2",
-        "the todo tool's done reached the plan"
-    );
-    Ok(())
 }
 
 // Dies with the resync in `apply_as`: the list keeps the finished plan's lock and every todo op
@@ -444,7 +484,7 @@ fn a_list_whose_plan_another_engine_finished_is_released() -> TestResult {
     assert!(plan_of(&todos.list()).is_some(), "no op reached the mirror");
     todos.apply(
         TodoOp::Init {
-            phases: vec![(PhaseName::new("Next")?, vec![TodoItem::from_text("after")?])],
+            phases: vec![(PhaseName::new("Next")?, vec![Todo::from_text("after")?])],
         },
         None,
     )?;
@@ -605,10 +645,24 @@ fn an_owner_row_is_not_promoted_to_running_while_the_plan_is_open() -> TestResul
     let dir = Scratch::new("yi-todo-mirror-promote")?;
     let (_session, todos, _engine) = mirrored(&dir)?;
     let (label, note) = (TodoLabel::new("first")?, "wait".to_owned());
-    let on = yi_types::todo::BlockedOn::User;
-    todos.apply(TodoOp::Block { label, on, note }, None)?;
+    let on = yi_types::plan::doc::BlockedOn::User;
+    todos.apply(
+        TodoOp::Block {
+            label,
+            on,
+            note,
+            ask: None,
+        },
+        None,
+    )?;
     let label = TodoLabel::new("first")?;
-    todos.apply(TodoOp::Unblock { label }, None)?;
+    todos.apply(
+        TodoOp::Unblock {
+            label,
+            answer: None,
+        },
+        None,
+    )?;
     let rows = ids(&todos);
     assert_eq!(rows[0].2, TodoStateName::Pending, "{rows:?}");
     assert_eq!(
@@ -626,7 +680,7 @@ fn a_todo_set_or_init_under_a_plan_writes_the_owners_rows_beside_it() -> TestRes
     let (_session, todos, _engine) = mirrored(&dir)?;
     let plan_rows = |todos: &TodoStore| {
         let list = todos.list();
-        let rows: Vec<TodoItem> = list
+        let rows: Vec<Todo> = list
             .items()
             .filter(|item| item.extra.contains_key("plan"))
             .cloned()
@@ -640,10 +694,7 @@ fn a_todo_set_or_init_under_a_plan_writes_the_owners_rows_beside_it() -> TestRes
         },
         None,
     )?;
-    let phases = vec![(
-        PhaseName::new("Mine")?,
-        vec![TodoItem::from_text("verify it")?],
-    )];
+    let phases = vec![(PhaseName::new("Mine")?, vec![Todo::from_text("verify it")?])];
     todos.apply(TodoOp::Init { phases }, None)?;
     assert_eq!(plan_rows(&todos), before, "the plan's rows never move");
     let list = todos.list();
@@ -693,6 +744,97 @@ fn a_todo_done_on_an_inline_plan_item_is_carried_to_the_plan_tool() -> TestResul
         TodoStateName::of(&gate.state),
         TodoStateName::Done,
         "{text}"
+    );
+    Ok(())
+}
+
+/// Dies with the mirror flattening a blocker: a plan todo waiting on a child or on an external
+/// probe reads back from the session's list naming the agent and the probe command it waits on.
+#[test]
+fn a_mirrored_blocker_keeps_its_child_and_its_probe() -> TestResult {
+    let mut child = Todo::pending(TodoLabel::new("delegated")?);
+    child.state = TodoState::Blocked {
+        on: BlockedOn::Child(AgentId::new("child-0")?),
+        note: "running".to_owned(),
+    };
+    let mut ci = Todo::pending(TodoLabel::new("wait for ci")?);
+    ci.state = TodoState::Blocked {
+        on: BlockedOn::External {
+            probe: Some(ProbeCommand::new("gh run view 7")?),
+        },
+        note: "ci is red".to_owned(),
+    };
+    let plan = Plan::opening(
+        PlanId::new("ship")?,
+        GoalText::new("ship it")?,
+        PlanTier::Root,
+        vec![child.clone(), ci.clone()],
+    );
+    let list = yi_runtime::todo::mirror::projected(&plan, &TodoList::default());
+    let read: TodoList = serde_json::from_str(&serde_json::to_string(&list)?)?;
+    let states: Vec<&TodoState> = read.items().map(|item| &item.state).collect();
+    assert_eq!(states, [&child.state, &ci.state]);
+    Ok(())
+}
+
+/// Dies with every session todo record carrying the plan's delegation and note: the list is
+/// written whole per plan op, and those facts already live in the plan journal.
+#[test]
+fn a_mirrored_row_leaves_the_delegation_and_note_to_the_plan() -> TestResult {
+    let mut delegated = Todo::pending(TodoLabel::new("delegated")?);
+    delegated.delegation = spec("delegated", true)?.delegation;
+    delegated.note = Some(yi_types::plan::doc::Note::new("x".repeat(4000))?);
+    let plan = Plan::opening(
+        PlanId::new("ship")?,
+        GoalText::new("ship it")?,
+        PlanTier::Root,
+        vec![delegated.clone()],
+    );
+    let list = yi_runtime::todo::mirror::projected(&plan, &TodoList::default());
+    let row = list.items().next().ok_or("no mirrored row")?;
+    assert_eq!(row.label, delegated.label);
+    assert!(row.delegation.is_none() && row.note.is_none(), "{row:?}");
+    Ok(())
+}
+
+/// A plan waiting at $0: its row blocked on a clock address arms a timer from the session's
+/// list, and the tick unblocks the row in the plan itself, as the host.
+#[test]
+fn a_plan_row_waiting_on_the_clock_is_unblocked_in_the_plan() -> TestResult {
+    use yi_runtime::schedule::{Firing, HeartbeatService, JobStore, clock};
+    let dir = Scratch::new("yi-todo-mirror-clock")?;
+    let (_session, todos, engine) = mirrored(&dir)?;
+    let engine = Arc::new(engine);
+    todos.set_carry(yi_runtime::todo::mirror::carry(Arc::downgrade(&engine)));
+    let gate = TodoLabel::new("gate")?;
+    engine.apply(owner(Op::Block {
+        label: gate.clone(),
+        on: BlockedOn::Channel {
+            address: "clock://at 2026-09-29T09:00Z".to_owned(),
+            filter: None,
+        },
+        note: "approve at nine".to_owned(),
+        ask: None,
+    }))?;
+    let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
+    let clock_service = HeartbeatService::new(Arc::clone(&store), "/tmp");
+    clock_service.bind_session("mirror".to_owned());
+    clock_service.watch(&todos.list());
+    let job = store
+        .snapshot()
+        .jobs
+        .into_iter()
+        .find(|job| job.unblocks.as_ref() == Some(&gate))
+        .ok_or("the plan row's wait armed no timer")?;
+
+    let fired = clock::fire(&todos, &job, &Firing::at(job.next_run_at.unwrap_or(0)))?;
+    assert_eq!(fired, clock::Fired::Unblocked(gate.clone()));
+    let plan = engine.store().read(&engine.store().roots()?[0])?;
+    let row = plan.todo(&gate).ok_or("gate")?;
+    assert!(
+        !matches!(row.state, TodoState::Blocked { .. }),
+        "the plan still waits: {:?}",
+        row.state
     );
     Ok(())
 }

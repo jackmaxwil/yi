@@ -116,6 +116,7 @@ pub fn stop_posture(plan: &Plan) -> StopPosture {
                     return StopPosture::Cadence;
                 }
                 BlockedOn::Child(_) => blocked_on_child = true,
+                BlockedOn::Channel { .. } => {}
             },
             TodoState::Running { by } => {
                 if by.as_str() == OWNER_AGENT {
@@ -243,7 +244,7 @@ pub fn install(session: &AgentSession, options: CouplingOptions) {
 mod tests {
     use super::*;
     use serde_json::Value;
-    use yi_types::plan::doc::{AgentId, GoalText, PlanId, PlanTier, RetryCount, Todo, TodoLabel};
+    use yi_types::plan::doc::{AgentId, GoalText, PlanId, PlanTier, Todo, TodoLabel};
 
     type Fallible = Result<(), Box<dyn std::error::Error>>;
 
@@ -288,19 +289,8 @@ mod tests {
 
     fn todo(label: &str, state: TodoState) -> Fallible2<Todo> {
         Ok(Todo {
-            label: TodoLabel::new(label)?,
-            after: Vec::new(),
             state,
-            delegation: None,
-            subplan: None,
-            retries: RetryCount::default(),
-            children: Vec::new(),
-            note: None,
-            attempt: yi_types::plan::doc::AttemptId::FIRST,
-            refusals: 0,
-            contract: None,
-            contract_hash: None,
-            extra: serde_json::Map::new(),
+            ..Todo::pending(TodoLabel::new(label)?)
         })
     }
 
