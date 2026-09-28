@@ -1000,6 +1000,7 @@ mod accept {
                     delegation: Some(delegation),
                     contract: Some(contract),
                     children: Vec::new(),
+                    cites: Default::default(),
                 }],
             },
             request_id: None,

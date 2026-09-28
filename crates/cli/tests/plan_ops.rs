@@ -230,6 +230,7 @@ fn a_shell_import_is_adopted_by_the_session_that_ran_it() -> TestResult {
             delegation: None,
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         }])
     };
     let mine = session("importer")?;
@@ -317,6 +318,7 @@ fn cli_done_validates_a_declared_output_schema() -> TestResult {
             delegation: Some(delegation),
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         }],
     }))?;
 

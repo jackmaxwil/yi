@@ -314,6 +314,7 @@ fn an_op_waits_out_a_short_lease_hold() -> TestResult {
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         },
         request_id: None,

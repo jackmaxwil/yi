@@ -621,7 +621,7 @@ async fn stream_assistant_response<S: StreamFn>(
     let mut first_token = true;
     let mut added_partial = false;
     let mut final_message: Option<AgentMessage> = None;
-    let mut budget = ReasoningBudget::default();
+    let mut budget = ReasoningBudget::new(config.guards.reasoning_cap);
     let mut cut: Option<usize> = None;
     let mut timed_out = false;
     loop {
@@ -967,8 +967,8 @@ pub async fn run_loop<S: StreamFn>(
                 return end(config, emit, collected).await;
             }
             if repeats >= REPEAT_STOP_AT
-                || length_stops >= LENGTH_STOP_AT
-                || cut_stops >= CUT_STOP_AT
+                || length_stops >= config.guards.length_stop_at
+                || cut_stops >= config.guards.cut_stop_at
             {
                 return end(config, emit, collected).await;
             }
