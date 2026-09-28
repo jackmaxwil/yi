@@ -6,10 +6,12 @@ mod pack;
 mod project;
 mod telemetry;
 
+use std::cell::OnceCell;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::Value;
+use yi_types::message::{AgentMessage, UserContent};
 
 pub(crate) use assemble::sanitize;
 pub use assemble::{PromptState, Rank, Slot, Trust};
@@ -123,14 +125,21 @@ pub trait Extension: Send {
     fn on(&mut self, event: &Event, out: &mut Vec<Effect>);
 }
 
-pub type Notice = Arc<dyn Fn(&str) + Send + Sync>;
+/// The one way the host puts a message in the transcript: a reminder line, or a fragment
+/// attached after the first request (D306). The session presents it at the next boundary.
+pub type Notice = Arc<dyn Fn(AgentMessage) + Send + Sync>;
 
 const STATE_ENTRY: &str = "ext_state";
 const RECORD_ENTRY: &str = "ext_record";
+/// A fragment attached after the first request rides the transcript as this custom entry,
+/// which `yi_context::convert_to_llm` renders through the internal-context wrapper.
+const FRAGMENT_ENTRY: &str = "fragment";
 
 pub struct Host {
     extensions: Vec<Box<dyn Extension>>,
     state: PromptState,
+    /// The bytes the first request sent; every later request sends the same (D306).
+    frozen: OnceCell<String>,
     started: bool,
     turn: u32,
     tool_calls_this_turn: u32,
@@ -155,6 +164,7 @@ impl Host {
         Self {
             extensions: Vec::new(),
             state: PromptState::default(),
+            frozen: OnceCell::new(),
             started: false,
             turn: 0,
             tool_calls_this_turn: 0,
@@ -172,16 +182,31 @@ impl Host {
         self.notice = Some(notice);
     }
 
-    pub fn attach(&mut self, slot: Slot, text: String) {
-        self.state.attach(slot, text);
+    /// Before the first request the slot joins the prompt. After it, the text is delivered once
+    /// as a `fragment` message, and the slot still lands in the snapshot a resume restores.
+    pub fn attach(&mut self, slot: Slot, text: String) -> bool {
+        let late = self.frozen.get().is_some().then(|| fragment_message(&text));
+        let changed = self.state.attach(slot, text);
+        if changed && let Some(message) = late {
+            self.deliver(message);
+        }
+        changed
+    }
+
+    fn deliver(&self, message: AgentMessage) {
+        if let Some(notice) = &self.notice {
+            notice(message);
+        }
     }
 
     pub fn state(&self) -> &PromptState {
         &self.state
     }
 
+    /// The first rendering is the conversation's system prompt (D306): every request sends
+    /// these bytes, and whatever attaches later goes out as a message instead.
     pub fn system_prompt(&self) -> String {
-        self.state.assemble()
+        self.frozen.get_or_init(|| self.state.assemble()).clone()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -250,7 +275,7 @@ impl Host {
         for effect in effects {
             match effect {
                 Effect::AttachFragment { slot, text } => {
-                    changed |= self.state.attach(slot, text);
+                    changed |= self.attach(slot, text);
                 }
                 Effect::DetachFragment { slot } => {
                     changed |= self.state.detach(&slot);
@@ -260,19 +285,31 @@ impl Host {
                     trust,
                     text,
                 } => {
+                    // Every external attach fires at session start; a late one has no delivery
+                    // (the yard's fence would be lost), so a debug build refuses it.
+                    debug_assert!(
+                        self.frozen.get().is_none(),
+                        "an external attach after the first request reaches no request"
+                    );
                     changed |= self.state.attach_external(&source, trust, &text);
                 }
-                Effect::Remind { text } => {
-                    if let Some(notice) = &self.notice {
-                        notice(&text);
-                    }
-                }
+                Effect::Remind { text } => self.deliver(crate::session::user_message(&text)),
                 Effect::Record { key, value } => record(store, key, &value),
             }
         }
         if changed && let Some(store) = store {
             persist_state(store, &self.state);
         }
+    }
+}
+
+fn fragment_message(text: &str) -> AgentMessage {
+    AgentMessage::Custom {
+        custom_type: FRAGMENT_ENTRY.to_owned(),
+        content: UserContent::Text(text.to_owned()),
+        display: false,
+        details: None,
+        timestamp: yi_session::now_ms(),
     }
 }
 
