@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
 use yi_runtime::{AgentSession, SubagentHost};
 
-use crate::app::{App, AskRequest, TuiOptions};
+use crate::app::{App, TuiOptions};
+use crate::approval::AskRequest;
 use crate::capture::{RecordingBackend, write_still};
 use crate::colors::Theme;
 use crate::keymap::{KeyCodeValue, SingleKey, default_keymap};

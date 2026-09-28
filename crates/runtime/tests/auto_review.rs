@@ -92,7 +92,7 @@ fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> std::io::Result<Harn
         asker,
         events,
     ));
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     if with_reviewer {
         broker.set_reviewer(Arc::new(Reviewer::new(Arc::clone(&provider), faux_model())));
     }
@@ -467,6 +467,7 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
             user_system: String::new(),
             schema_instruction: None,
             context_window: 128_000,
+            global_skills: Vec::new(),
         }));
         let mut tools: Vec<Arc<dyn yi_tools::Tool>> = Vec::new();
         yi_runtime::auto_review::wire_role(

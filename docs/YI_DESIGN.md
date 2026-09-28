@@ -238,7 +238,9 @@ extension `Host` whose synchronous extensions turn session events into effects.
   (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `grid`, `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
-  Project instruction files (`AGENTS.md`, `CLAUDE.md`) and project skills render here. Project
+  Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for HTML
+  comment lines rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
+  granted) and project skills render here. Project
   packs load only when `~/.yi/trust.json` (`yi trust`) grants their content hash.
 - The table persists as `custom{ext_state}` on change and is restored on resume.
 - The environment block is a `host_user` message appended per request by `transform_context`,
@@ -267,7 +269,7 @@ extension `Host` whose synchronous extensions turn session events into effects.
   SessionStart, PromptSubmitted, ToolCall, ToolResult, TurnEnd, Usage, Compacted }`, `Effect {
   AttachFragment, DetachFragment, AttachExternal, Remind, Record }`.
 - Shapes: [`graph.rs`](../crates/types/src/graph.rs) (`Graph`, `Edge`, `Relation`, `Predicate`).
-- Settled by: D138, D139, D187, D188, D196, D209, D219, D220, D231.
+- Settled by: D138, D139, D187, D188, D196, D209, D219, D220, D231, D289.
 
 ## 7. Tool
 A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at session build.
@@ -327,9 +329,11 @@ MCP is a CLI, never a tool. `yi mcp` runs one-shot: `connect <server> @s`, `clos
 `login`, `logout`, `grep`, `skill`; per session `tools-list|get|call`, `resources-list|read`,
 `prompts-list`, `ping`. It speaks JSON-RPC itself, only yi-cli depends on it, `mcp.enabled` gates
 it. A bare name resolves in `~/.yi/mcp.json`, `.mcp.json`, `.vscode/mcp.json`, `.cursor/mcp.json`.
-The kernel shells out: `rlm.mcp.list_tools|call_tool|reload|close` run `$YI_BIN mcp … --json`.
+The kernel shells out: `rlm.mcp.list_tools|call_tool|reload|close` run `$YI_BIN mcp … --json`;
+`connect` alone goes through the host, from `~/.yi/mcp.json`. A stdio server starts in `~/.yi`,
+outside every sandbox's writable roots, so its command is an absolute path or on `PATH`.
 
-- Owner: [`mcp-cli`](../crates/mcp-cli/src/lib.rs). Settled by: D36, D71.
+- Owner: [`mcp-cli`](../crates/mcp-cli/src/lib.rs). Settled by: D36, D71, D296.
 
 ### 7.7 Checkpoints
 A shadow gitdir `~/.yi/checkpoints/<xxh32 of project>/`, the project as work tree, one lock per
@@ -343,16 +347,18 @@ with no paired end restores unscoped and says so. Turn start and end capture int
 
 ### 7.8 Skills
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
-`<name>/SKILL.md` walked 2 levels. Frontmatter at discovery, body via `read`; `$name` or a
+`<name>/SKILL.md` walked 2 levels. The catalog lists every repository skill and every
+`~/.yi/skills` skill, but another home-root skill only when config `skills.global` names it; a
+child's lists none of those. Frontmatter at discovery, body via `read`; `$name` or a
 `trigger:` needle in a message the user typed points at the skill. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.
 
-- Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D292.
+- Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D290, D292.
 
 ## 8. Permission
 A pure `decide` over the call, mode, rules, grants, holds and catastrophic context.
 
-- Modes `Ask`, `Auto`, `Yolo`; default `Auto` (`--confirm`, `--auto`, `--yolo`); one prompt
+- Modes `Ask`, `Auto`, `Yolo`; default `permissions.mode`, else `Auto` (`--confirm`, `--auto`, `--yolo`); one prompt
   fragment each. Order: catastrophic (every mode), configured deny, session rule or grant,
   configured allow/ask, hold, mode. `Auto` allows reads, in-tree writes and provably safe
   commands, contains the unproven, asks for destructive and egress segments. Commands are
@@ -364,6 +370,9 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
 - Sandbox: Seatbelt `/usr/bin/sandbox-exec`, macOS only; writable cwd, git dirs minus
   `hooks config commondir gitdir`, session dir, tmp; reads deny `~/.ssh ~/.gnupg ~/.aws ~/.kube
   ~/.docker`; no network. Without it, `Contain` becomes a reviewable `Ask`.
+- With `classifier.approve` and `LAYA_API_KEY`, a reviewable auto-mode ask first gets one `noul`
+  from the classifier sidecar: P(safe) ≥ 0.9 (0.98 if destructive) allows, ≤ 0.05 asks the user,
+  else on to the reviewer; an ask it may judge left unanswered 120 s is settled by that judgement.
 - With `models.autoReview` set, a reviewable ask goes to the reviewer (30 s); non-allow denies
   with a request id `ask_user` replays; `ActionLedger` (256) makes an approval single-use.
 - Every settled ask is journaled as a `permission` custom entry: the ask, the verdict, and
@@ -371,7 +380,7 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
 - Owner: [`decide`](../crates/permission/src/decide.rs), [`sandbox`](../crates/tools/src/sandbox.rs)
 - State: `PermissionMode { Ask, Auto, Yolo }`, `Decision { Allow, Contain, Deny, Ask { title,
   description, reviewable } }`, `Class { Safe, Destructive, Egress, Unknown }`.
-- Shapes: [`types`](../crates/types/src/permission.rs). Settled by: D15, D26, D81, D205, D206, D207, D293.
+- Shapes: [`types`](../crates/types/src/permission.rs). Settled by: D15, D26, D81, D205, D206, D207, D293, D301.
 
 ## 9. Kernel
 A persistent IPython process per session that reaches the host only through host requests.
@@ -737,9 +746,9 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `lanes [reap <slot>]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
-| `login`, `logout`, `mcp …`, `version` | Provider credentials; the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
+| `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
-- The default permission mode is `auto`; `--confirm` selects `ask`, `--yolo` selects `yolo` (§8).
+- The default permission mode is `permissions.mode`, else `auto`; `--confirm` selects `ask`, `--yolo` selects `yolo` (§8).
 - Exit codes: 0 ok; 1 error; 2 usage, bad flag, bad config or refused build; 3 an answer failing
   `--schema`. Under `--json` an agent failure is in-band and exits 0. Errors print `error: …`.
 - `~/.yi/config.json` is the only config file, parsed once; every struct is `deny_unknown_fields`
@@ -748,7 +757,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
-  `classifier{url,timeoutMs,threshold}`.
+  `classifier{url,timeoutMs,threshold,approve,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode}`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)
