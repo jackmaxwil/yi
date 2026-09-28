@@ -573,6 +573,9 @@ fn build_session(
         },
     );
     drop(wiring);
+    if let Err(why) = yi_runtime::classifier::attach(&session, &work, &home, config()) {
+        eprintln!("warning: {why}");
+    }
     if let Some(every) = config()
         .spend
         .as_ref()
