@@ -23,6 +23,7 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/guardrails"))
+from check_pr_metadata import DRAFT  # noqa: E402
 
 BASELINES = ROOT / "scripts/guardrails/baselines"
 SUBJECT_LIMIT = 72
@@ -131,6 +132,9 @@ def decide(pr, jobs, required, behind):
         return "merged"
     if pr.get("state") != "open":
         return "closed"
+    # The forge refuses to merge a draft, so polling one for green waits on nothing.
+    if pr.get("title", "").startswith(DRAFT):
+        return "draft"
     if behind:
         return "behind"
     failed = [job for job in required if jobs.get(job) == "failure"]
@@ -296,7 +300,8 @@ def pushed():
 def check_problems(title, body):
     import check_pr_metadata as gate
 
-    errs = [f"title: {err}" for err in gate.subject_errors(title.strip())]
+    errs = [f"title: {err}" for err in gate.title_errors(title.strip())]
+    errs += gate.template_problems(body)
     measured, why = gate.measure()
     if why:
         return errs + [why]
@@ -351,7 +356,9 @@ def compose_body(args):
 
 def cmd_open(args):
     body = compose_body(args)
-    errs = check_problems(args.title, body)
+    # Every PR opens as a draft; `just pr ready` is what takes the marker off.
+    title = DRAFT + args.title.removeprefix(DRAFT)
+    errs = check_problems(title, body)
     if errs:
         for err in errs:
             print(err)
@@ -362,7 +369,7 @@ def cmd_open(args):
         if code:
             return code
     out = subprocess.run(
-        ("fgj", "pr", "create", *scope(), "--head", branch(), "--base", "main", "--title", args.title, "--body", body),
+        ("fgj", "pr", "create", *scope(), "--head", branch(), "--base", "main", "--title", title, "--body", body),
         capture_output=True, text=True, check=False,
     )
     found = re.search(r"#(\d+)", out.stdout + out.stderr)
@@ -377,7 +384,9 @@ def cmd_open(args):
 def cmd_edit(args):
     payload = {}
     if args.title:
-        errs = subject_problems(args.title)
+        import check_pr_metadata as gate
+
+        errs = gate.title_errors(args.title)
         if errs:
             for err in errs:
                 print(f"title: {err}")
@@ -390,6 +399,17 @@ def cmd_edit(args):
         return 1
     fgj_api("PATCH", f"repos/{repo()}/pulls/{args.number}", payload)
     print(f"#{args.number} edited")
+    return 0
+
+
+def cmd_ready(args):
+    number = pull_number(args.number)
+    title = pull(number)["title"]
+    if not title.startswith(DRAFT):
+        print(f"#{number} is not a draft")
+        return 0
+    fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
+    print(f"#{number} is ready: {title.removeprefix(DRAFT)}")
     return 0
 
 
@@ -423,6 +443,7 @@ def report(pr, jobs, need, verdict):
     for job in need:
         print(f"  {jobs.get(job, 'not run'):<10} {job}")
     hints = {
+        "draft": f"a draft; the forge will not merge it — just pr ready {pr['number']} once it is reviewed",
         "behind": f"main moved under it — just pr update {pr['number']}",
         "failed:title": f"the title job refused — just pr check {pr['number']} prints why",
         "pending": "the gate is still running",
@@ -486,7 +507,7 @@ def cmd_merge(args):
                 print(f"merge refused: {answer['message']}")
                 if "behind" not in answer["message"]:
                     return 1
-        elif verdict.startswith("failed:") or verdict == "closed":
+        elif verdict.startswith("failed:") or verdict in ("closed", "draft"):
             report(pr, jobs, need, verdict)
             if verdict == "failed:title":
                 for err in check_problems(pr["title"], pr.get("body") or ""):
@@ -587,7 +608,9 @@ def cmd_land(args):
     code = cmd_open(args)
     if code:
         return code
+    # `just land` is the owner asking for this merge now, so it readies its own draft.
     args.number = None
+    cmd_ready(args)
     args.wait = True
     return cmd_merge(args)
 
@@ -616,6 +639,9 @@ def selfcheck():
     assert decide(open_pr, {"title": "failure", "gate (test)": "failure"}, need, False) == "failed:title"
     assert decide(open_pr, {"title": "success", "gate (test)": "failure"}, need, False) == "failed:gate (test)"
     assert decide({"state": "closed", "merged": False}, {}, need, False) == "closed"
+    draft = dict(open_pr, title=DRAFT + "Keep the gate")
+    assert decide(draft, jobs, need, True) == "draft", "a draft is judged before behind and the jobs"
+    assert decide(dict(open_pr, title="Keep the WIP: marker out"), jobs, need, False) == "ready"
     short = ratchet_subject(["test LOC 1 -> 2"], "the rail")
     assert short == "Ratchet: test LOC 1 -> 2 for the rail", short
     long = ratchet_subject(["test LOC 36636 -> 36696", "tui crate 10922 -> 10984", "dist binary 5696512 -> 5696544"], "the console pane and its avatars")
@@ -637,11 +663,15 @@ def selfcheck():
     real = gate.measure, globals()["repo"]
     gate.measure = lambda: (([], [], 0, ([], ["tool:bash"])), None)
     globals()["repo"] = lambda: "apex/yi"
+    filled = "".join(f"## {title}\n\nwords\n\n" for title in gate.REQUIRED)
     try:
-        errs = check_problems("Lock the tool surface", "## Summary\n\nwords\n")
+        errs = check_problems("Lock the tool surface", filled)
+        drafted = check_problems(DRAFT + "Lock the tool surface", "## Summary\n\nwords\n")
     finally:
         gate.measure, globals()["repo"] = real
     assert len(errs) == 1 and "## Claims ledger" in errs[0] and "tool:bash" in errs[0], errs
+    assert not [e for e in drafted if e.startswith("title:")], "a draft title passes the title rule"
+    assert any("no `## Why needed`" in e for e in drafted), "`just pr open` runs the template check"
     # Incident: the D249 hard-cap line missed the ratchet regex, so `just push` went on.
     import contextlib, io
 
@@ -696,7 +726,7 @@ def main(argv):
     edit.add_argument("--title")
     edit.add_argument("--body")
     edit.set_defaults(run=cmd_edit)
-    for name, run in (("status", cmd_status), ("update", cmd_update), ("rerun", cmd_rerun)):
+    for name, run in (("status", cmd_status), ("ready", cmd_ready), ("update", cmd_update), ("rerun", cmd_rerun)):
         sub = pr.add_parser(name)
         sub.add_argument("number", nargs="?")
         sub.set_defaults(run=run)

@@ -205,7 +205,8 @@ Every PR opens as `WIP: <subject>`. Forgejo disables the merge button on it nati
 The `title` rule accepts exactly `WIP: ` in front of a subject and judges the rest.
 `WIP`, `wip` and `fixup!` stay refused everywhere else. When round 2 or later is clean
 on the head, the lifecycle strips the prefix (owner: "WIP prefix + bot strips"). The title
-edit has to re-run the `title` job, so that job listens for `edited` (open question 1).
+edit needs no rerun of the `title` job: the job judged the subject after the prefix, which is
+the title the strip leaves (D288).
 
 ### 3.9 The lease
 
@@ -349,11 +350,10 @@ regressions, performance drains, etc"
 
 ## 10. Open questions
 
-1. Forgejo Actions' default `pull_request` types are `opened`, `synchronize` and `reopened`.
-   Does stripping `WIP:` fire `edited`, and does the `title` job need `types:` to
-   include it? PR #377: a body edit left the title run stale.
-2. Does Forgejo 15 refuse a merge of a `WIP:` PR through the API, or only in the UI?
-   If only the UI refuses it, `just pr merge` needs the same refusal.
+1. Settled by stage 0 (D288): stripping `WIP:` leaves the subject the `title` job already
+   judged, so no rerun is needed.
+2. Whether Forgejo 15's merge API refuses a `WIP:` PR as its UI does is unverified;
+   `just pr merge` stops on a draft either way (D288).
 3. The duplicate thresholds: `grid diff` overlap and window-hash matches. Set them from
    stage 2's fixture pairs.
 4. Stacked PRs have a base other than main. A delta round and a duplicate check should
