@@ -466,3 +466,11 @@ fn a_control_character_in_a_cell_reaches_the_terminal_as_its_glyph() -> TestResu
     backend.0.assert_buffer_lines(["␉␍␍x"]);
     Ok(())
 }
+
+/// Incident: a title holding `BEL ESC]52;…` ended OSC 2 early and had the terminal write the
+/// clipboard; C1 ST (U+009C) ends an OSC on terminals that read 8-bit controls.
+#[test]
+fn a_window_title_carries_no_control_character() {
+    let osc = yi_tui::term::window_title_osc("Fix\u{7}\u{1b}]52;c;ZWNobyBwd25lZA==\u{9c} now");
+    assert_eq!(osc, "\u{1b}]2;Fix]52;c;ZWNobyBwd25lZA== now\u{7}");
+}
