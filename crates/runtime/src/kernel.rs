@@ -221,9 +221,8 @@ pub(crate) fn kernel_profile(
     family_dir: Option<&std::path::Path>,
 ) -> yi_tools::Sandbox {
     let mut profile = sandbox.clone();
-    // Only what the kernel side writes under ~/.yi; the venv stays read-only.
-    let yi = home.join(".yi");
-    profile.writable.push(yi.join("mcp"));
+    // ~/.yi stays read-only: the MCP store is the host's, and its token files are hidden.
+    profile.deny_read.push(home.join(".yi/mcp/tokens"));
     // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling.
     profile
         .writable
