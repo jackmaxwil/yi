@@ -193,7 +193,7 @@ impl ProjectResources {
 
     fn catalogs(&self, out: &mut Vec<Effect>) {
         let (mut global, project) = crate::skills::discover_split(&self.cwd, &self.home);
-        global.retain(|skill| self.global_skills.contains(&skill.name));
+        global.retain(|skill| listed(skill, &self.home, &self.global_skills));
         if let Some(catalog) = crate::skills::catalog_text(&global, self.catalog) {
             out.push(Effect::AttachFragment {
                 slot: Slot::new(Rank::Catalog, "skills"),
@@ -214,6 +214,10 @@ impl ProjectResources {
             text: catalog.text,
         });
     }
+}
+
+pub fn listed(skill: &crate::skills::Skill, home: &Path, named: &[String]) -> bool {
+    skill.path.starts_with(home.join(".yi/skills")) || named.contains(&skill.name)
 }
 
 pub fn contributions(cwd: &Path, home: &Path) -> Vec<(String, String)> {
