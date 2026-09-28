@@ -794,3 +794,39 @@ this section, this section holds.
   (#717, `check_watch_prune`).
 - **A cut stop of 2 or 3 is the only T2 range the corpus reaches.** On those 11 sessions a value of
   4 or more flips none (#720, `levers.py census`).
+
+## 19. The rethink: two speeds (2026-09-28)
+
+N1 showed Terminal-Bench cannot be the development loop. The owner's five findings: "environment is not stable", "these evals are too long and slow", "results are too similar", "sample sizes are not big enough" and "sandboxes are too heavy". The evidence:
+- 20 of 42 trials were lost before the agent ran;
+- a median trial took 45-51 minutes, many at the 1-hour cap;
+- repeats of a task landed within 0.03 on four tasks and swung 0.14 and 0.40 on two;
+- 12 tasks cannot detect anything but a near-uniform gain;
+- each task needs a ~1.5 GB image plus sidecars in Docker Desktop.
+
+The owner's decisions, verbatim:
+- "Mine from our failures": failure classes, not individual failures.
+- "Seeded generators per class": one generator per failure class emits unlimited graded instances by seed. The same seed on both arms is the pairing; the precedent is SWE-smith's synthesized bugs.
+- "Real sessions + N1, final stays clean": classes may come from real sessions and N1's slice sessions; the six final tasks stay untouched.
+- "Validation + final only": Terminal-Bench runs only for inner-loop winners, at k=1.
+- "Temp dirs, auto mode + Seatbelt": inner tasks run container-free, and auto mode lets Seatbelt contain bash, which `--yolo` does not (`crates/permission/src/decide.rs`, the `Yolo` arm).
+- "3 generators × 20 seeds + inner A/A": the milestone before scaling.
+
+The nouns are unchanged: candidate, runner, trial row, gate. Only the task set and the runner are new:
+
+| piece | status | where |
+|---|---|---|
+| generators `logs`, `bugfix`, `reconcile` | ✚ | `evals/inner/gen/` (each: `make`, `check`, `solve`; the grader never enters the workspace) |
+| inner runner (the runner protocol, parallel, auto mode) | ✚ | `evals/inner/runner.py` |
+| graded score from `testsPassed/testsTotal` | ✓ | `evals/levers.py` `graded` |
+| stage and week caps | ✓ | `evals/drivers/trials.py` (`caps` takes the inner per-trial estimate) |
+| gate | ✓ | `evals/levers.py` `judge` (one difference per task) |
+
+Statistics for the inner loop: k=1 over many tasks, since repeats barely move. The gate's interval is over per-task differences. A cached baseline is allowed once a scheduled A/A shows no drift. The health metric is the transfer rate: the share of inner-loop winners that also pass Terminal-Bench validation.
+
+The generators map to the failure classes that fire most in the real-session corpus (199 sessions from the last 30 days) and in N1:
+- `logs`: large output the reducer cuts (`pointer_never_read`, `reduced_results`, `spiral_cut`);
+- `bugfix`: read, edit and run the tests (edit refusals, lost tests);
+- `reconcile`: multi-step spec work (intercepts, `done` without evidence).
+
+Open: `bugfix` starts at 10 of 13-14 checks on an untouched workspace, so its headroom is small. The inner A/A decides whether any family saturates.

@@ -41,6 +41,7 @@ import axes  # noqa: E402
 import yi_usage  # noqa: E402
 import test_refine  # noqa: E402
 import test_levers  # noqa: E402
+import test_inner  # noqa: E402
 import test_judge_replay  # noqa: E402
 import test_improve  # noqa: E402
 
@@ -782,6 +783,13 @@ def check_improve():
     result = unittest.TextTestRunner(stream=report).run(suite)
     assert result.testsRun >= 4 and result.wasSuccessful(), report.getvalue()
 
+def check_inner():
+    """The inner loop's generators: seeded, red untouched, green solved, the grader outside the workspace."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_inner)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 3 and result.wasSuccessful(), report.getvalue()
+
 def check_levers():
     """D220: the manifest, the shared default fixture and the floors agree, and the gates hold."""
     report = io.StringIO()
@@ -807,6 +815,7 @@ CHECKS = (
     check_judge_replay,
     check_graph_refiner,
     check_levers,
+    check_inner,
     check_improve,
     check_trials,
     check_watch_prune,
