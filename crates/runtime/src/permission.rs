@@ -127,6 +127,7 @@ pub struct PermissionBroker {
     confirms: AtomicU64,
     journal: std::sync::OnceLock<Journal>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
+    prompts_close_on_settle: std::sync::atomic::AtomicBool,
 }
 
 pub struct CallOutcome {
@@ -189,6 +190,7 @@ impl PermissionBroker {
             confirms: AtomicU64::new(0),
             journal: std::sync::OnceLock::new(),
             approver: std::sync::OnceLock::new(),
+            prompts_close_on_settle: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -198,6 +200,10 @@ impl PermissionBroker {
 
     pub fn set_approver(&self, approver: Arc<crate::classifier::Approver>) {
         let _first_wiring_wins = self.approver.set(approver);
+    }
+
+    pub fn prompts_close_on_settle(&self) {
+        self.prompts_close_on_settle.store(true, Ordering::Relaxed);
     }
 
     fn settle(&self, tool_call_id: &str, ask: &PermissionAsk<'_>, allowed: bool, by: Answerer) {
@@ -822,7 +828,9 @@ impl PermissionBroker {
             title: ask.title.to_owned(),
             description: rendered.clone(),
         });
-        let limit = timed.and_then(|timed| timed.approver.ask_timeout());
+        let limit = timed
+            .filter(|_| self.prompts_close_on_settle.load(Ordering::Relaxed))
+            .and_then(|timed| timed.approver.ask_timeout());
         let outcome = match (&self.asker, timed.zip(limit)) {
             (Some(asker), Some((timed, limit))) => match ask_within(asker, ask, limit) {
                 Some(outcome) => outcome,

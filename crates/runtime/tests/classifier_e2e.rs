@@ -323,6 +323,9 @@ fn gate_in(
         allow_destructive_at: 0.98,
         ask_at: 0.2,
     };
+    if !thinking.is_zero() {
+        broker.prompts_close_on_settle();
+    }
     broker.set_approver(Arc::new(Approver::new(
         sidecar,
         thresholds,
@@ -461,5 +464,64 @@ fn a_timed_out_ask_the_classifier_was_unsure_about_is_denied() -> TestResult {
             .is_err(),
         "asked once, not twice"
     );
+    Ok(())
+}
+
+/// A command Yi cannot read (an expansion, a redirect) is not proven ordinary, so it needs the
+/// stricter bar too. Dies with `make $TARGET` allowed at 0.95.
+#[test]
+fn an_unreadable_command_needs_the_stricter_bar() -> TestResult {
+    let (port, _served) = sidecar(vec![safe(0.95)])?;
+    let gate = gate(port, None);
+    let outcome = run(&gate, "make $TARGET");
+    assert!(!outcome.allowed, "{}", outcome.reason);
+    let record = gate.records.recv_timeout(Duration::from_secs(1))?;
+    assert_eq!(
+        record.extra.get("verdictClass"),
+        Some(&serde_json::json!("unproven"))
+    );
+    Ok(())
+}
+
+/// An asker that cannot close its prompt (a terminal blocked on stdin) is never timed out: a
+/// stale reader would take the next prompt's answer.
+#[test]
+fn a_prompt_that_cannot_close_is_never_timed_out() -> TestResult {
+    use yi_runtime::classifier::{Approver, Thresholds};
+    let (port, _served) = sidecar(vec![safe(0.5)])?;
+    let asker: yi_runtime::Asker = Arc::new(|_| {
+        std::thread::sleep(Duration::from_millis(600));
+        yi_runtime::AskOutcome::AllowOnce
+    });
+    let (events, _) = tokio::sync::broadcast::channel(16);
+    let broker = yi_runtime::PermissionBroker::new(
+        yi_runtime::PermissionMode::Auto,
+        std::env::temp_dir(),
+        Vec::new(),
+        Some(asker),
+        events,
+    );
+    let sidecar = Sidecar {
+        url: format!("http://127.0.0.1:{port}"),
+        key: Some("k".to_owned()),
+        model: "english".to_owned(),
+        timeout: Duration::from_secs(2),
+        threshold: None,
+    };
+    let thresholds = Thresholds {
+        allow_at: 0.9,
+        allow_destructive_at: 0.98,
+        ask_at: 0.05,
+    };
+    broker.set_approver(Arc::new(Approver::new(
+        sidecar,
+        thresholds,
+        Some(Duration::from_millis(100)),
+        Arc::new(|_| {}),
+    )));
+    let mut args = serde_json::Map::new();
+    args.insert("command".to_owned(), serde_json::json!("make build"));
+    let outcome = broker.decide_call("bash", yi_tools::ToolKind::Exec, false, "c1", &args, None);
+    assert_eq!(outcome.reason, "allowed by user");
     Ok(())
 }
