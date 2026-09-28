@@ -286,9 +286,10 @@ not create: write overwrites. `grep def=true` or `block=true` before a
 read of a large file you need one function of. The same command failing
 twice is a hypothesis, not a retry.
 
-Long commands: pass `wait`; a command still running then becomes a job
-whose result arrives as a message after it exits. `timeout_secs` still
-bounds it. Never sleep to wait.
+Long commands: pass `wait`; a command still running then becomes a job.
+Its result comes on its own only while your turn runs, so before you end
+the turn wait for it with `bash job=N wait=S`. `timeout_secs` still bounds
+it. Never sleep to wait.
 
 ## Git, lanes, and the tree
 
