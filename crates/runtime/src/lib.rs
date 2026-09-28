@@ -4,6 +4,7 @@ pub mod advisor;
 pub mod affordance;
 pub mod auto_review;
 pub mod checkpoint;
+pub mod classifier;
 pub mod compaction;
 pub mod environment;
 pub mod ext;
