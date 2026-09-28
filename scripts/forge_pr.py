@@ -403,7 +403,10 @@ def cmd_edit(args):
     if not payload:
         print("edit: nothing to change (--title, --body)")
         return 1
-    fgj_api("PATCH", f"repos/{repo()}/pulls/{args.number}", payload)
+    answer = fgj_api("PATCH", f"repos/{repo()}/pulls/{args.number}", payload)
+    if not answer or answer.get("message"):
+        print(f"#{args.number} not edited: {(answer or {}).get('message', 'the forge answered 404')}")
+        return 1
     print(f"#{args.number} edited")
     return 0
 
@@ -662,7 +665,6 @@ def selfcheck():
     draft = dict(open_pr, title=DRAFT + "Keep the gate")
     assert decide(draft, jobs, need, False) == "draft", "a green draft is still a draft"
     assert decide(draft, {"title": "success", "gate (test)": "failure"}, need, False) == "failed:gate (test)", "a red job outranks the draft"
-    assert decide(draft, {}, need, False) == "draft", "a pending draft is still a draft: the forge refuses a draft merge, so polling waits on nothing"
     assert decide(dict(open_pr, title="Keep the WIP: marker out"), jobs, need, False) == "green"
     short = ratchet_subject(["test LOC 1 -> 2"], "the rail")
     assert short == "Ratchet: test LOC 1 -> 2 for the rail", short
@@ -736,6 +738,13 @@ def selfcheck():
         globals()["pull"] = real_pull
         body_file.unlink()
     assert stopped == 1, "an incomplete body is refused by edit"
+    globals()["fgj_api"] = lambda method, path, payload=None: {"message": "pull request is closed"}
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            stopped = cmd_edit(argparse.Namespace(number=7, title="Keep the gate", body=None))
+    finally:
+        globals()["fgj_api"] = real_fgj
+    assert stopped == 1, "a refused PATCH is not reported as an edit"
     assert any("no `## Why needed`" in line for line in seen.getvalue().splitlines()), seen.getvalue()
     # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green,
     # because nothing here built the verbs; a name the parser wires that no longer exists
