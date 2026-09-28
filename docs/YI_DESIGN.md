@@ -17,8 +17,7 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 | MCP | A one-shot CLI (`yi mcp`), compiled into every build, refused unless `mcp.enabled` is true; the agent reaches it through `bash` and the kernel, never a registered tool (§7.6) | D36, D71 |
 | Python | A Jupyter kernel over ZeroMQ, its package embedded in the binary, its toolchain a pinned, verified uv (§9) | D156, D238 |
 | Permission | Modes and rules, a per-segment command classifier, a catastrophic denylist, an optional model reviewer, Seatbelt containment on macOS (§8) | D81, D205 |
-| Worktrees | A root session claims a git worktree slot unless `--here`, `lanes.enabled: false` or no repository (§14) | D119, D203 |
-| Node | One machine is a node card, `~/.yi/node.json`; every live kernel on it takes one of its slots or shares its family's (§9), and a child may run its bash in a local container (§11) | D285, D286 |
+| Worktrees and node | Resource admission: a root session claims a git worktree slot unless `--here`, `lanes.enabled: false` or no repository (§14); one machine is a node card, `~/.yi/node.json`, and every live kernel on it takes one of its slots or shares its family's (§9); a child may run its bash in a local container (§11) | D119, D203, D285, D286 |
 | ACP | v2 only; a lower `protocolVersion` gets a version-mismatch error; the wire is hand-rolled (§17.2) | D1, D40 |
 | Workspace | `yi serve` owns sessions; `yi console` is an ACP client over its socket; bare `yi` on a terminal opens the console, `--solo` the TUI (§17) | D95, D118 |
 
