@@ -520,6 +520,7 @@ fn frozen_block(cwd: &std::path::Path, home: &std::path::Path) -> Result<String,
         user_system: String::new(),
         schema_instruction: None,
         context_window: 128_000,
+        global_skills: Vec::new(),
     });
     host.start(None, false);
     Ok(host
@@ -637,6 +638,7 @@ fn two_fresh_sessions_send_the_same_system_prompt_and_tools() -> TestResult {
             user_system: String::new(),
             schema_instruction: None,
             context_window: 128_000,
+            global_skills: Vec::new(),
         });
         host.start(None, false);
         std::thread::sleep(std::time::Duration::from_millis(2));
