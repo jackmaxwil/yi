@@ -23,6 +23,7 @@ pub mod levers;
 mod mail;
 pub mod mailbox;
 pub mod memory;
+pub mod node;
 pub mod permission;
 pub mod plan;
 pub mod provider;

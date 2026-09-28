@@ -416,6 +416,15 @@ fn start(
     (id, receiver)
 }
 
+/// `docker exec` of `command` under `sh -c` in `cwd` inside `container`, quoted for the host
+/// shell so the command arrives whole. A time limit kills the host `docker exec` only.
+pub fn in_container(container: &str, cwd: &Path, command: &str) -> String {
+    let quote = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
+    let cwd = cwd.to_string_lossy();
+    let (cwd, container, command) = (quote(&cwd), quote(container), quote(command));
+    format!("docker exec -w {cwd} {container} sh -c {command}")
+}
+
 /// A job owned by its caller's handle: never announced by another session's poller and never
 /// evicted, so only [`Jobs::release`] retires it. Returns at once; the child has a thread.
 pub fn spawn_job(
@@ -743,6 +752,29 @@ mod tests {
         assert_eq!(chunk.dropped, chunk.next.saturating_sub(cap));
         assert_eq!(u64::try_from(chunk.text.len())?, cap);
         registry().release(id)?;
+        Ok(())
+    }
+
+    /// Dies with the quoting cut: a command carrying its own quotes or a spaced working
+    /// directory reaches the container's `sh -c` split, and runs something else.
+    #[test]
+    fn a_container_command_arrives_whole() -> Fallible {
+        let fake = r#"docker() { [ "$1|$2|$3|$4|$5|$6" = "exec|-w|/w d|c|sh|-c" ] || exit 9; shift 4; "$@"; }"#;
+        for command in [
+            "echo 'a b'",
+            r#"printf '%s\n' "it's" 'x"y'"#,
+            "echo $((1+2)) | wc -c",
+        ] {
+            let placed = in_container("c", Path::new("/w d"), command);
+            let run = |text: &str| crate::command("sh").args(["-c", text]).output();
+            let (inside, direct) = (run(&format!("{fake}; {placed}"))?, run(command)?);
+            assert!(
+                inside.status.success(),
+                "{placed}: {}",
+                String::from_utf8_lossy(&inside.stderr)
+            );
+            assert_eq!(inside.stdout, direct.stdout, "{placed}");
+        }
         Ok(())
     }
 }

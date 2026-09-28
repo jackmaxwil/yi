@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable
 import rlm
 
 from .contract import JSON_TYPE, Contract, canonical, freeze
-from .roles import Role
+from .roles import Role, _lanes
 
 KEY = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 SOURCE_TYPE = "text/x-python"
@@ -489,7 +489,7 @@ class Plan:
         edges = [item.label if isinstance(item, Todo) else (among or {}).get(item) or self[item].label for item in after]
         if accept is None and delegate is not None:
             accept = delegate.accept
-        if accept is None and delegate is not None and delegate.isolation == "worktree":
+        if accept is None and delegate is not None and _lanes(delegate.isolation):
             raise TypeError("a worktree Writer needs accept=")
         contract, blobs = None, []
         if accept is not None:

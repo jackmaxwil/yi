@@ -196,6 +196,22 @@ pub enum Isolation {
     Other(String),
 }
 
+impl Isolation {
+    /// `container:<image>` rides [`Isolation::Other`]: a worktree lane whose tool calls run
+    /// in a container of that image, so an older reader keeps the tag verbatim.
+    pub fn container_image(&self) -> Option<&str> {
+        match self {
+            Self::Other(tag) => tag.strip_prefix("container:"),
+            Self::None | Self::Worktree => None,
+        }
+    }
+
+    /// A lane of its own, handed back through the same merge: a worktree or a container.
+    pub fn lanes(&self) -> bool {
+        matches!(self, Self::Worktree) || self.container_image().is_some()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenBudget(pub u64);
 

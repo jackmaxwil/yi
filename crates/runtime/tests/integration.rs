@@ -36,6 +36,7 @@ mod kernel_lane;
 mod kernel_sandbox;
 mod lanes;
 mod levers;
+mod node;
 mod permission_scope;
 mod plan_declare;
 mod plan_e2e;

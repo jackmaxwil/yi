@@ -644,6 +644,7 @@ mod tests {
             deny_write: Vec::new(),
             deny_read: vec![workspace.join("secret")],
             deny_url: vec!["plan://forbidden".to_owned()],
+            container: None,
         };
         let resolver = Resolver::new(workspace.to_path_buf(), wall);
         let path_walled: Url = "local://secret/key.txt".parse()?;
@@ -687,6 +688,7 @@ mod tests {
             deny_write: Vec::new(),
             deny_read: vec![workspace.join("secret")],
             deny_url: Vec::new(),
+            container: None,
         };
         let resolver = Resolver::new(workspace.to_path_buf(), wall);
         let escape: Url = "local://escape.txt".parse()?;
