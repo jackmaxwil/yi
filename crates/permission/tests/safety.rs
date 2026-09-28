@@ -413,15 +413,16 @@ fn scope_names_program_and_subcommand() {
 }
 
 /// Where a refused write went: the splitter skips redirect targets, which is how the dogfood
-/// hint blamed `yes` for `echo y > ~/yidog_probe`.
+/// hint blamed `yes` for `echo y > ~/yidog_probe`. File verbs name theirs too.
 #[test]
 fn write_targets_keep_what_the_splitter_skips() {
-    let cases: [(&str, &[&str]); 6] = [
+    let cases: [(&str, &[&str]); 7] = [
         (
             "yes | head -5; echo y > ~/yidog_probe && echo wrote-home",
             &["~/yidog_probe"],
         ),
-        ("cargo fmt 2>&1 | tee -a log >>out.txt", &["out.txt"]),
+        ("cargo fmt 2>&1 | tee -a log >>out.txt", &["out.txt", "log"]),
+        ("touch /outside/x | tail -1", &["/outside/x"]),
         ("make 2>err.log &>'all.log'", &["err.log", "all.log"]),
         ("echo x >/outside/f; echo y >| g", &["/outside/f", "g"]),
         ("cmd >&2 2> /dev/null", &["/dev/null"]),

@@ -57,7 +57,7 @@ struct Reviewed<'a> {
 
 pub struct PermissionBroker {
     sandbox: Option<yi_tools::Sandbox>,
-    contained_failures: Mutex<std::collections::BTreeSet<yi_tools::Refusal>>,
+    contained_failures: Mutex<std::collections::BTreeSet<yi_tools::SandboxRefusal>>,
     mode: Mutex<PermissionMode>,
     config_rules: Vec<ConfigRule>,
     session_rules: Mutex<SessionRules>,
@@ -183,7 +183,8 @@ impl PermissionBroker {
     /// path so unrelated work stays contained, or by program and verb when none was found.
     pub fn note_containment_failure(&self, command: &str, exit_code: Option<i32>, output: &str) {
         if let Some(sandbox) = &self.sandbox
-            && let Some(refusal) = yi_tools::refusal(sandbox, &self.cwd, exit_code, output, command)
+            && let Some(refusal) =
+                yi_tools::sandbox_refusal(sandbox, &self.cwd, exit_code, output, command)
             && let Ok(mut failures) = self.contained_failures.lock()
         {
             failures.insert(refusal);
@@ -191,7 +192,7 @@ impl PermissionBroker {
     }
 
     fn contained_and_failed(&self, sandbox: &yi_tools::Sandbox, command: Option<&str>) -> bool {
-        let covers = |refusal: &yi_tools::Refusal| {
+        let covers = |refusal: &yi_tools::SandboxRefusal| {
             command.is_some_and(|command| refusal.covers(sandbox, &self.cwd, command))
         };
         self.contained_failures

@@ -217,14 +217,14 @@ fn temp_roots() -> Vec<PathBuf> {
 
 /// Why a contained command failed, as the hint words it and the broker remembers it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Refusal {
+pub enum SandboxRefusal {
     /// A write this profile denies.
     Path(PathBuf),
     /// No denied path found, so likely the network: the programs that ran.
     Scopes(Vec<String>),
 }
 
-impl Refusal {
+impl SandboxRefusal {
     /// Whether `command` retries this refusal: it names a path the profile denies in the refused
     /// path's directory or, when no path was found, runs a refused program.
     pub fn covers(&self, sandbox: &Sandbox, cwd: &Path, command: &str) -> bool {
@@ -263,7 +263,7 @@ fn named_paths(text: &str) -> impl Iterator<Item = &str> {
         .filter(|word| word.starts_with('/') || word.starts_with('~'))
 }
 
-/// Once an output line reports a refusal: the first redirect target, else path on such a line,
+/// Once an output line reports a refusal: the first write target, else a path on such a line,
 /// that this profile denies, so a real permission error inside the tree is not blamed on it.
 fn refused_path(sandbox: &Sandbox, cwd: &Path, command: &str, output: &str) -> Option<PathBuf> {
     let lines: Vec<&str> = output
@@ -287,16 +287,16 @@ fn refused_path(sandbox: &Sandbox, cwd: &Path, command: &str, output: &str) -> O
 
 /// Seatbelt denies with a plain errno. A denied path counts at any exit (`touch x | tail -1` is 0);
 /// without one, a non-zero exit that is no known shell failure, plus output naming a denial.
-pub fn refusal(
+pub fn sandbox_refusal(
     sandbox: &Sandbox,
     cwd: &Path,
     exit_code: Option<i32>,
     output: &str,
     command: &str,
-) -> Option<Refusal> {
+) -> Option<SandboxRefusal> {
     const QUICK_REJECT: [i32; 3] = [2, 126, 127];
     if let Some(path) = refused_path(sandbox, cwd, command, output) {
-        return Some(Refusal::Path(path));
+        return Some(SandboxRefusal::Path(path));
     }
     let code = exit_code?;
     let lower = output.to_lowercase();
@@ -305,7 +305,7 @@ pub fn refusal(
         .chain(&REFUSED)
         .any(|needle| lower.contains(needle));
     (code != 0 && !QUICK_REJECT.contains(&code) && named)
-        .then(|| Refusal::Scopes(yi_permission::refused_scopes(command)))
+        .then(|| SandboxRefusal::Scopes(yi_permission::refused_scopes(command)))
 }
 
 pub fn denial_hint(
@@ -317,19 +317,21 @@ pub fn denial_hint(
 ) -> Option<String> {
     const CONTAINED: &str =
         "a contained run writes only the working tree, its git dirs and tmp, and has no network";
-    Some(match refusal(sandbox, cwd, exit_code, output, command)? {
-        Refusal::Path(path) => format!(
-            "next: the sandbox refused writing `{}` ({CONTAINED}); the next call naming a path under `{}` outside those asks instead of running contained, and is refused where nobody can answer",
-            path.display(),
-            path.parent().unwrap_or(&path).display()
-        ),
-        Refusal::Scopes(scopes) => {
-            let needs = if scopes.len() == 1 { "needs" } else { "need" };
-            let scopes: Vec<String> = scopes.iter().map(|scope| format!("`{scope}`")).collect();
-            format!(
-                "next: the sandbox refused this ({CONTAINED}); {} now {needs} permission: the next call using it asks instead of running contained, and is refused where nobody can answer",
-                scopes.join(", ")
-            )
-        }
-    })
+    Some(
+        match sandbox_refusal(sandbox, cwd, exit_code, output, command)? {
+            SandboxRefusal::Path(path) => format!(
+                "next: the sandbox refused writing `{}` ({CONTAINED}); the next call naming a path under `{}` outside those asks instead of running contained, and is refused where nobody can answer",
+                path.display(),
+                path.parent().unwrap_or(&path).display()
+            ),
+            SandboxRefusal::Scopes(scopes) => {
+                let needs = if scopes.len() == 1 { "needs" } else { "need" };
+                let scopes: Vec<String> = scopes.iter().map(|scope| format!("`{scope}`")).collect();
+                format!(
+                    "next: the sandbox refused this ({CONTAINED}); {} now {needs} permission: the next call using it asks instead of running contained, and is refused where nobody can answer",
+                    scopes.join(", ")
+                )
+            }
+        },
+    )
 }
