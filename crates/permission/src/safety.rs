@@ -567,18 +567,15 @@ pub fn write_targets(command: &str) -> Vec<String> {
                 if operands.first().is_some_and(|verb| {
                     matches!(
                         verb.as_str(),
-                        "checkout"
-                            | "restore"
-                            | "rm"
-                            | "mv"
-                            | "clean"
-                            | "reset"
-                            | "apply"
-                            | "worktree"
+                        "checkout" | "restore" | "rm" | "mv" | "clean" | "reset" | "apply"
                     )
                 }) =>
             {
                 out.extend(operands.into_iter().skip(1))
+            }
+            // Only `add` of the worktree subcommands writes, at its path.
+            "git" if operands.get(..2) == Some(&["worktree".to_owned(), "add".to_owned()]) => {
+                out.extend(operands.into_iter().skip(2))
             }
             _ => {}
         }

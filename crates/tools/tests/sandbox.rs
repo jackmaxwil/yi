@@ -314,6 +314,84 @@ fn a_refusal_round_trips_through_the_result_details() {
         assert_eq!(SandboxRefusal::from_json(&refusal.to_json()), Some(refusal));
     }
     assert_eq!(SandboxRefusal::from_json(&serde_json::Value::Null), None);
+    // An empty or relative path would sit above every path, so every outside write would ask.
+    for path in ["", "relative/y"] {
+        let detail = serde_json::json!({ "path": path });
+        assert_eq!(SandboxRefusal::from_json(&detail), None, "{path:?}");
+    }
+}
+
+/// A `~` counts as home only where a shell expands it, at a word's start: backup files, a
+/// `sed` delimiter and a printed tilde are no home path, even after a refusal directly in home.
+#[test]
+fn a_tilde_inside_a_word_is_not_home() -> TestResult {
+    let (sandbox, home) = home_project()?;
+    let refused = SandboxRefusal::Path(home.join("yidog_probe"));
+    for command in [
+        "rm *~",
+        "sed -i 's~a~b~' notes.txt",
+        "python3 -c \"print('~')\"",
+        "echo ~'quoted'",
+    ] {
+        assert!(
+            !refused.retried_by(&sandbox, Path::new("/work"), command),
+            "{command}"
+        );
+    }
+    Ok(())
+}
+
+/// The hint says what asks next: in home a call naming a path there, elsewhere only a write.
+#[test]
+fn the_hint_words_the_rule_the_broker_keeps() -> TestResult {
+    let (_sandbox, home) = home_project()?;
+    let in_home = denial_hint(&SandboxRefusal::Path(home.join("yidog_probe")));
+    assert!(
+        in_home.contains(&format!(
+            "the next call naming a path under `{}`",
+            home.display()
+        )),
+        "{in_home}"
+    );
+    let outside = denial_hint(&SandboxRefusal::Path(PathBuf::from("/etc/yi-probe")));
+    assert!(
+        outside.contains("the next call writing under `/etc`"),
+        "{outside}"
+    );
+    Ok(())
+}
+
+/// Rust's io errors (rustfmt, uv) and node's EPERM name the refused path too; the lines are
+/// theirs under Seatbelt, the home directory renamed.
+#[test]
+fn rust_and_node_errno_lines_name_the_refused_path() -> TestResult {
+    let (sandbox, _home) = home_project()?;
+    let cases = [
+        (
+            "rustfmt /Users/dev/fmt.rs",
+            "Error writing files: io error: /Users/dev/fmt.rs: Operation not permitted (os error 1)\n",
+            "/Users/dev/fmt.rs",
+        ),
+        (
+            "uv venv -q /Users/dev/venv",
+            "error: Failed to initialize cache at `/Users/dev/.cache/uv`\n  Caused by: failed to open file `/Users/dev/.cache/uv/sdists-v9/.git`: Operation not permitted (os error 1)\n",
+            "/Users/dev/.cache/uv/sdists-v9/.git",
+        ),
+        (
+            "node -e \"require('fs').writeFileSync('/Users/dev/out','y')\"",
+            "node:fs:2482\n    return binding.writeFileUtf8(\n\nError: EPERM: operation not permitted, open '/Users/dev/out'\n    at Object.writeFileSync (node:fs:2482:20)\n",
+            "/Users/dev/out",
+        ),
+    ];
+    for (command, output, path) in cases {
+        let found = sandbox_refusal(&sandbox, Path::new("/work"), Some(1), output, command);
+        assert_eq!(
+            found,
+            Some(SandboxRefusal::Path(PathBuf::from(path))),
+            "{command}"
+        );
+    }
+    Ok(())
 }
 
 /// The live half. Everything above describes the policy; this runs it.
