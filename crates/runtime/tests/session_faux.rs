@@ -672,3 +672,87 @@ async fn the_end_capture_follows_a_slow_start_capture() -> Result<(), Box<dyn Er
     assert_eq!(seen, ["request", "captured", "end"]);
     Ok(())
 }
+
+/// What the model was sent, in order: user text, reminder text, or `assistant`.
+fn transcript(session: &AgentSession) -> Vec<String> {
+    use yi_types::message::UserContent;
+    session
+        .messages()
+        .into_iter()
+        .filter_map(|message| match message {
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            } => Some(format!("user: {text}")),
+            AgentMessage::Custom {
+                custom_type,
+                content: UserContent::Text(text),
+                ..
+            } if custom_type == "reminder" => Some(format!("reminder: {text}")),
+            AgentMessage::Assistant { .. } => Some("assistant".to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), Box<dyn Error>> {
+    use yi_runtime::rules::{RuleDoc, RuleEngine, RuleGap, RuleMode, RuleScope};
+    use yi_runtime::session::user_input;
+    let skill = |name: &str, needle: &str| RuleDoc {
+        name: name.to_owned(),
+        body: format!("skill://{name}"),
+        path: std::path::PathBuf::from(format!("/skills/{name}/SKILL.md")),
+        needles: vec![needle.to_owned()],
+        scope: RuleScope::Text,
+        gap: RuleGap::AfterTurns(1),
+        mode: RuleMode::Remind,
+        paths: Vec::new(),
+        after: 1,
+    };
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(
+        ["one", "two", "three"]
+            .into_iter()
+            .map(|text| faux_assistant_message(vec![faux_text(text)], StopReason::Stop))
+            .collect(),
+    );
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.set_rules_engine(Arc::new(RuleEngine::new(vec![
+        skill("gate", "cargo nextest"),
+        skill("review", "review the work"),
+        skill("plan", "write a plan"),
+    ])));
+    session.prompt_message(user_input("run cargo nextest"))?;
+    assert!(
+        session.follow_up_message(user_input("then review the work")),
+        "the run is going, so the follow-up waits for its answer"
+    );
+    session.wait_idle().await;
+    // An idle session's follow-up starts the run itself.
+    session.follow_up_message(user_input("write a plan"));
+    session.wait_idle().await;
+    assert_eq!(
+        transcript(&session),
+        [
+            "user: run cargo nextest",
+            "reminder: Relevant: skill://gate (matched \"cargo nextest\")",
+            "assistant",
+            "user: then review the work",
+            "reminder: Relevant: skill://review (matched \"review the work\")",
+            "assistant",
+            "user: write a plan",
+            "reminder: Relevant: skill://plan (matched \"write a plan\")",
+            "assistant",
+        ]
+    );
+    Ok(())
+}
