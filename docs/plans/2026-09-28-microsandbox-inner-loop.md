@@ -395,3 +395,11 @@ stays on `run.py`, and nothing else changes, because the runner protocol hides t
    mined trial (fixture trials run $0.007-0.013), that is $9-15 per candidate against the $25/$30 week
    of §18. Does the inner loop get its own line?
 6. **The fork-at-failure eval (§5):** worth a resume contract in yi later, or not at all?
+
+## 12. Owner decision (2026-09-28)
+
+Asked whether to approve the spike, which installs microsandbox and runs it through the `msb` CLI, the owner answered:
+
+> "audit, copy the patterns, own microsandbox code directly in yi crate, port the highest quality most important code and cut the bloat and make our own yi flavored version HAR compliant"
+
+So the subprocess-to-`msb` runner of §8 and the spike of §9 are superseded. §3's case against a Rust dependency on the `microsandbox` crate still holds: the port owns the code instead of depending on it. The findings in §1-§7 are the audit's starting map. The open forks the port must decide are the hypervisor backend (libkrun as `msb_krun`, or Apple's Virtualization.framework on macOS), where the hypervisor entitlement lives (a separate signed helper binary, or `yi` itself), and the port's scope. The port is a separate proposal.
