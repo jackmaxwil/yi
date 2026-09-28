@@ -533,7 +533,7 @@ fn a_shell_comment_needs_the_stricter_bar_and_stays_out_of_the_reason() -> TestR
 async fn an_unsafe_answer_goes_straight_to_the_user() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.05)])?;
     let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
-    let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None));
     provider.queue_faux(vec![yi_ai::faux::faux_assistant_message(
         vec![yi_ai::faux::faux_text("allow")],
         yi_types::message::StopReason::Stop,
