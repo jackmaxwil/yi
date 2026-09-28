@@ -44,6 +44,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             user_system: String::new(),
             schema_instruction: None,
             context_window: child.model().context_window,
+            global_skills: Vec::new(),
         }));
         let host = attach_runtime(
             &mut child,
