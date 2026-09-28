@@ -657,8 +657,11 @@ fn config_of(journey: &Journey) -> Result<Value, Box<dyn Error>> {
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn setup_saves_the_answered_steps_and_keeps_every_other_key() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
     let journey = Journey::new("setup")?;
-    let before = std::fs::read_to_string(journey.root.join("home/.yi/config.json"))?;
+    let file = journey.root.join("home/.yi/config.json");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))?;
+    let before = std::fs::read_to_string(&file)?;
     let skipped = setup(&journey, "\n\n\n")?;
     assert!(skipped.status.success(), "{skipped:?}");
     assert_eq!(
@@ -675,6 +678,12 @@ fn setup_saves_the_answered_steps_and_keeps_every_other_key() -> TestResult {
         config["kernel"]["prewarm"], false,
         "a key setup never asked about survives"
     );
+    assert_eq!(
+        std::fs::metadata(&file)?.permissions().mode() & 0o777,
+        0o600,
+        "a config that may hold keys stays private"
+    );
+    assert!(!journey.root.join("home/.yi/.config.json.setup").exists());
     assert!(
         config.get("models").is_none(),
         "no classifier was set up: {config}"
@@ -741,6 +750,27 @@ fn setup_saves_the_classifier_only_once_one_answers() -> TestResult {
         config["classifier"]["url"],
         format!("http://127.0.0.1:{port}")
     );
+    journey.reclaim();
+    Ok(())
+}
+
+/// A config that names its model in the roles table gets the new model there, where it is read.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_writes_the_model_where_the_config_reads_it() -> TestResult {
+    let journey = Journey::new("setup-primary")?;
+    std::fs::write(
+        journey.root.join("home/.yi/config.json"),
+        r#"{"kernel":{"prewarm":false},"models":{"primary":"faux/faux-1"}}"#,
+    )?;
+    let saved = setup(&journey, "openrouter\n\n\nn\n")?;
+    assert!(saved.status.success(), "{saved:?}");
+    let config = config_of(&journey)?;
+    assert_eq!(
+        config["models"]["primary"],
+        "openrouter/anthropic/claude-sonnet-5"
+    );
+    assert!(config.get("model").is_none(), "{config}");
     journey.reclaim();
     Ok(())
 }

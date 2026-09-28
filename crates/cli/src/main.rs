@@ -264,7 +264,6 @@ static CONFIG: std::sync::OnceLock<yi_types::config::UserConfig> = std::sync::On
 /// The one config load, strict, before dispatch — a typo that reads as an unset default
 /// is the failure nobody sees. It lives here because no fs or `$HOME` may reach yi-types.
 fn load_config() -> Result<(), String> {
-    setup::early();
     let Some(home) = std::env::var_os("HOME") else {
         return set_config(yi_types::config::UserConfig::default());
     };
@@ -276,6 +275,7 @@ fn load_config() -> Result<(), String> {
             home.to_string_lossy()
         ));
     }
+    setup::early();
     yi_runtime::set_catalog_cache_dir(std::path::Path::new(&home).join(".yi/catalog"));
     let (config, migrations) = read_config(std::path::Path::new(&home))?;
     for migration in migrations {
