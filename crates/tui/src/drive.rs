@@ -311,6 +311,11 @@ pub fn run_headless(
                 last_frame = frame;
             }
         }
+        if let Some((x, y, symbol)) = terminal.backend().first_control_cell() {
+            eprintln!("error: a control character reached a cell: {symbol:?} at ({x}, {y})");
+            exit_code = 1;
+            break;
+        }
     }
 
     if let Some(path) = &drive.snap
