@@ -156,18 +156,44 @@ fn show_config(args: &Args) -> i32 {
 }
 
 fn skills(args: &Args) -> i32 {
-    let found = yi_runtime::skills::discover(&effective_cwd(args), &home());
+    let (cwd, home) = (effective_cwd(args), home());
+    let named = crate::config()
+        .skills
+        .as_ref()
+        .and_then(|skills| skills.global.clone())
+        .unwrap_or_default();
+    let (global, project) = yi_runtime::skills::discover_split(&cwd, &home);
+    let shown =
+        |skill: &yi_runtime::skills::Skill| match yi_runtime::ext::listed(skill, &home, &named) {
+            true => "listed",
+            false => "hidden: not in skills.global",
+        };
+    let rows = project
+        .iter()
+        .map(|skill| (skill, "repo"))
+        .chain(global.iter().map(|skill| (skill, shown(skill))));
+    let unknown: Vec<&String> = named
+        .iter()
+        .filter(|name| {
+            !global
+                .iter()
+                .chain(&project)
+                .any(|skill| &&skill.name == name)
+        })
+        .collect();
     if args.json {
-        let rows: Vec<Value> = found
-            .iter()
-            .map(|skill| json!({"name": skill.name, "description": skill.description, "path": skill.path}))
+        let rows: Vec<Value> = rows
+            .map(|(skill, catalog)| json!({"name": skill.name, "description": skill.description, "path": skill.path, "catalog": catalog}))
             .collect();
-        println!("{}", Value::Array(rows));
+        println!("{}", json!({"skills": rows, "unknownGlobal": unknown}));
         return 0;
     }
-    for skill in found {
-        println!("{:<24} {}", skill.name, skill.path.display());
+    for (skill, catalog) in rows {
+        println!("{:<24} {} ({catalog})", skill.name, skill.path.display());
         println!("  {}", skill.description);
+    }
+    for name in unknown {
+        println!("skills.global names {name:?}, which no root holds");
     }
     0
 }
