@@ -95,6 +95,77 @@ fn facts_of(tool: &str, command: &str, output: &yi_tools::ToolOutput) -> Vec<Str
     holds
 }
 
+/// Invariant: a command a call arms runs later on the host with no sandbox and no container,
+/// so it passes every gate bash does, and a containment the sandbox would enforce is refused.
+async fn gate_armed(
+    command: &str,
+    (rules, wall, broker): Gates<'_>,
+    context: &ToolContext,
+) -> Option<String> {
+    let json = serde_json::to_string(&bash(command)).unwrap_or_default();
+    if let Some(denial) = rules
+        .as_ref()
+        .and_then(|rules| rules.check_tool("bash", &json))
+    {
+        return Some(denial);
+    }
+    let walled = wall.check(
+        "bash",
+        yi_tools::ToolKind::Exec,
+        &bash(command),
+        &context.cwd,
+    );
+    if walled.is_some() {
+        return walled;
+    }
+    let (broker, id, owned) = (broker.cloned(), context.call_id.clone(), command.to_owned());
+    let container = context.container.is_some();
+    tokio::task::spawn_blocking(move || refuse_armed(&owned, container, broker.as_deref(), &id))
+        .await
+        .unwrap_or_else(|join_error| Some(format!("permission check failed: {join_error}")))
+}
+
+fn bash(command: &str) -> Map<String, Value> {
+    [("command".to_owned(), Value::from(command))]
+        .into_iter()
+        .collect()
+}
+
+/// Blocking, since an ask waits for its answer; the kernel's `rlm_heartbeat.create` shares it.
+pub fn refuse_armed(
+    command: &str,
+    in_container: bool,
+    broker: Option<&PermissionBroker>,
+    call_id: &str,
+) -> Option<String> {
+    if in_container {
+        return Some(format!(
+            "an exec:// source runs `{command}` on the host, and this session's commands run in a container"
+        ));
+    }
+    let outcome = broker?.decide_call(
+        "bash",
+        yi_tools::ToolKind::Exec,
+        true,
+        call_id,
+        &bash(command),
+        Some(command),
+    );
+    match (outcome.allowed, outcome.contained) {
+        (true, false) => None,
+        (true, true) => Some(format!(
+            "an exec:// source runs `{command}` outside the sandbox, which allows it only contained: run it with bash in a turn, or allow it by a permission rule"
+        )),
+        (false, _) => Some(format!("Permission denied: {}", outcome.reason)),
+    }
+}
+
+type Gates<'a> = (
+    &'a Option<Arc<crate::rules::RuleEngine>>,
+    &'a crate::wall::Wall,
+    Option<&'a Arc<PermissionBroker>>,
+);
+
 /// The §7.3 tee target: the home root, never the user's working tree.
 fn default_recovery_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi/tool-output"))
@@ -248,6 +319,19 @@ impl AgentTool for ToolAdapter {
                 };
             }
             drop(gate_span);
+            for command in tool.arms(&args) {
+                let refused =
+                    gate_armed(&command, (&rules, &wall, permission.as_ref()), &context).await;
+                if let Some(denial) = refused {
+                    return ToolOutcome {
+                        result: yi_loop::tool::error_tool_result_kind(
+                            &denial,
+                            yi_types::event::ToolErrorKind::Denied,
+                        ),
+                        is_error: true,
+                    };
+                }
+            }
             let mut contained: Option<Arc<PermissionBroker>> = None;
             if let Some(broker) = permission {
                 let sandbox = broker.sandbox().cloned();
