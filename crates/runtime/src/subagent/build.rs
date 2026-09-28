@@ -103,6 +103,10 @@ impl SubagentHost {
                     .ok_or_else(|| format!("no model matches selector {selector}"))?
             }
         };
+        // Before a lane, a container or a lease is taken: the child would stream with no key.
+        if !self.options.provider.usable(&model.provider) {
+            return Err(yi_ai::auth::missing_message(&model.provider));
+        }
         let wall = self.wall_for(kwargs)?;
         Ok((model, thinking.unwrap_or(parent_effort), wall))
     }

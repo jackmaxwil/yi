@@ -108,7 +108,7 @@ fn catalog(provider: &str, id: &str) -> Result<Model, Box<dyn Error>> {
 }
 
 fn juror_session(build: ChildBuild<'_>, script: Script, cwd: &std::path::Path) -> AgentSession {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     if !script.fetch.is_empty() {
         let calls = script
             .fetch
@@ -147,6 +147,16 @@ fn juror_session(build: ChildBuild<'_>, script: Script, cwd: &std::path::Path) -
     session
 }
 
+fn key() -> yi_runtime::auth::Resolved {
+    yi_runtime::auth::Resolved {
+        secret: yi_runtime::auth::Secret::new("key".to_owned()),
+        kind: yi_runtime::auth::AuthKind::ApiKey,
+        org: None,
+        expires: None,
+        headers: Vec::new(),
+    }
+}
+
 fn rig(owner: Model, max_children: usize) -> Result<Rig, Box<dyn Error>> {
     let root = Scratch::new("yi-judge")?;
     let (events, _keep) = tokio::sync::broadcast::channel(64);
@@ -162,6 +172,12 @@ fn rig(owner: Model, max_children: usize) -> Result<Rig, Box<dyn Error>> {
     );
     let cwd = root.to_path_buf();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        // The owner is anthropic's and the jurors openrouter's: a spawn needs a credential.
+        provider: Arc::new(
+            ProviderStream::new(None)
+                .with_auth("anthropic", key())
+                .with_auth("openrouter", key()),
+        ),
         depth: 0,
         max_depth: 1,
         max_children,

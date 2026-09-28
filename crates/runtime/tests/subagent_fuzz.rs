@@ -74,6 +74,7 @@ fn host(root: &Scratch) -> (Arc<SubagentHost>, Bus) {
 fn host_with(root: &Scratch, gate: Arc<dyn Fn() + Send + Sync>) -> (Arc<SubagentHost>, Bus) {
     let (events, bus) = tokio::sync::broadcast::channel(1024);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 4,
@@ -84,7 +85,7 @@ fn host_with(root: &Scratch, gate: Arc<dyn Fn() + Send + Sync>) -> (Arc<Subagent
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
         factory: Arc::new(move |build| {
             gate();
-            let provider = Arc::new(ProviderStream::new(None, None));
+            let provider = Arc::new(ProviderStream::new(None));
             provider.queue_faux(vec![faux_assistant_message(
                 vec![faux_text("done")],
                 StopReason::Stop,

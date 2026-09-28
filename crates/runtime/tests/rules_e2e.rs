@@ -333,7 +333,7 @@ async fn gate_rule_denies_through_the_real_adapter_before_execution() -> TestRes
         thinking_level_map: None,
         headers: None,
     };
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut call_args = serde_json::Map::new();
     let dir = Scratch::new("yi-rule-gate")?;
     let marker = dir.join("touched");

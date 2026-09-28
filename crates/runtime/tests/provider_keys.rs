@@ -1,0 +1,156 @@
+//! A session's stream holds one credential per provider (D294): a child on another provider
+//! streams with that provider's key, a model with no credential never reaches the wire, and a
+//! spawn or a listing refuses what no credential backs.
+//!
+//! | test | tier | claim | mechanism | contrast |
+//! |---|---|---|---|---|
+//! | `a_child_model_streams_with_its_own_providers_key` | T1 | An `anthropic` model on a stream that also holds an `openrouter` key sends the `anthropic` one. | `ProviderStream::credential` keyed by `model.provider`. | One stored secret: the last seeded key goes to every provider (the dogfood 401). |
+//! | `a_model_with_no_credential_never_reaches_the_wire` | T1 | A provider with no credential gets one `Error` event carrying the startup refusal text, and no connection. | `stream_raw` resolves before it opens a request. | The request goes out with another provider's key. |
+//! | `only_credentialed_models_are_offered_or_spawned` | T1 | On an OpenRouter-only setup `find_models` lists only `openrouter` models and `rlm.run(model="anthropic/claude-haiku-4-5")` is refused with the missing-credential text. | `usable` filters the listing; `cast` checks before a lane or a lease. | A text-only filter offers models the child then fails on with 401. |
+
+use crate::scratch::Scratch;
+use crate::support;
+
+use std::error::Error;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::mpsc;
+use std::time::Duration;
+
+use serde_json::json;
+use yi_loop::run::StreamFn;
+use yi_runtime::ProviderStream;
+use yi_runtime::auth::{AuthKind, Resolved, Secret, missing_message};
+use yi_types::event::AssistantMessageEvent;
+use yi_types::message::AgentMessage;
+use yi_types::model::{Effort, LlmContext, Model};
+
+type TestResult = Result<(), Box<dyn Error>>;
+
+/// Every request the mock receives, as text; it answers each with an empty 200.
+fn listen() -> Result<(u16, mpsc::Receiver<String>), Box<dyn Error>> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let (sender, requests) = mpsc::channel();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut buf = [0u8; 8192];
+            let read = stream.read(&mut buf).unwrap_or(0);
+            let _ = sender.send(String::from_utf8_lossy(&buf[..read]).into_owned());
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n");
+        }
+    });
+    Ok((port, requests))
+}
+
+fn model(provider: &str, port: u16) -> Result<Model, Box<dyn Error>> {
+    Ok(serde_json::from_value(json!({
+        "id": "probe",
+        "name": "probe",
+        "api": "anthropic-messages",
+        "provider": provider,
+        "baseUrl": format!("http://127.0.0.1:{port}"),
+        "reasoning": false,
+        "input": ["text"],
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+        "contextWindow": 1000,
+        "maxTokens": 16
+    }))?)
+}
+
+fn key(secret: &str) -> Resolved {
+    Resolved {
+        secret: Secret::new(secret.to_owned()),
+        kind: AuthKind::ApiKey,
+        org: None,
+        expires: None,
+        headers: Vec::new(),
+    }
+}
+
+async fn stream(provider: &ProviderStream, model: &Model) -> Vec<AssistantMessageEvent> {
+    let context = LlmContext {
+        system_prompt: String::new(),
+        messages: vec![],
+        tools: None,
+        tool_choice: None,
+    };
+    let signal = yi_loop::interrupt::InterruptSignal::default();
+    let mut receiver = provider.stream(model, &context, Effort::Off, &signal);
+    let mut events = Vec::new();
+    while let Some(event) = receiver.recv().await {
+        events.push(event);
+    }
+    events
+}
+
+#[tokio::test]
+async fn a_child_model_streams_with_its_own_providers_key() -> TestResult {
+    let (port, requests) = listen()?;
+    let provider = ProviderStream::new(None)
+        .with_auth("anthropic", key("key-a"))
+        .with_auth("openrouter", key("key-or"));
+    stream(&provider, &model("anthropic", port)?).await;
+    let request = requests.recv_timeout(Duration::from_secs(10))?;
+    let lower = request.to_ascii_lowercase();
+    assert!(lower.contains("x-api-key: key-a"), "{request}");
+    assert!(!lower.contains("key-or"), "{request}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_model_with_no_credential_never_reaches_the_wire() -> TestResult {
+    let (port, requests) = listen()?;
+    let provider = ProviderStream::new(None).with_auth("openrouter", key("key-or"));
+    let events = stream(&provider, &model("yi-test-nokey", port)?).await;
+    if let Ok(request) = requests.recv_timeout(Duration::from_secs(1)) {
+        return Err(format!("the request reached the wire: {request}").into());
+    }
+    let [AssistantMessageEvent::Error { error, .. }] = events.as_slice() else {
+        return Err(format!("expected one Error event, got {events:?}").into());
+    };
+    let AgentMessage::Assistant { error_message, .. } = error else {
+        return Err("the Error event carries no assistant message".into());
+    };
+    assert_eq!(
+        error_message.as_deref(),
+        Some(missing_message("yi-test-nokey").as_str())
+    );
+    Ok(())
+}
+
+/// Nextest runs each test in its own process, so HOME and the provider variables set here
+/// reach no other test.
+#[tokio::test]
+async fn only_credentialed_models_are_offered_or_spawned() -> TestResult {
+    let root = Scratch::new("yi-provider-keys")?;
+    let home = root.home()?;
+    unsafe { std::env::set_var("HOME", &home) };
+    for variable in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"] {
+        unsafe { std::env::remove_var(variable) };
+    }
+    unsafe { std::env::set_var("OPENROUTER_API_KEY", "key-or") };
+    let family = support::family(
+        root.to_path_buf(),
+        root.to_path_buf(),
+        support::memory_store("root"),
+        None,
+    );
+
+    let listed = family.host.find_models("", 10_000);
+    let providers: std::collections::BTreeSet<&str> = listed["models"]
+        .as_array()
+        .ok_or("find_models returned no list")?
+        .iter()
+        .filter_map(|model| model["provider"].as_str())
+        .collect();
+    assert_eq!(providers, ["openrouter"].into(), "{listed:?}");
+
+    let kwargs = json!({"model": "anthropic/claude-haiku-4-5"});
+    let refused = family.host.spawn(
+        "summarize".to_owned(),
+        kwargs.as_object().cloned().unwrap_or_default(),
+    );
+    assert_eq!(refused.err(), Some(missing_message("anthropic")));
+    Ok(())
+}

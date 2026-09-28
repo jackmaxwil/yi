@@ -57,7 +57,7 @@ async fn cell(
 
 #[tokio::test]
 async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
