@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc::Receiver;
 use yi_ai::anthropic::{self, AnthropicOptions, Thinking};
+use yi_ai::auth::{AuthKind, Resolved};
 use yi_ai::catalog::Catalog;
 use yi_ai::faux::FauxProvider;
 use yi_ai::openai::{self, OpenAiOptions};
@@ -73,8 +75,7 @@ fn anthropic_thinking(model: &Model, effort: Effort) -> Thinking {
 }
 
 pub struct ProviderStream {
-    auth: Mutex<AuthCell>,
-    provider: String,
+    credentials: Mutex<BTreeMap<String, Arc<Resolved>>>,
     pub session_id: Option<String>,
     pub faux: Mutex<FauxProvider>,
     pub(crate) faux_pace: Mutex<Option<std::time::Duration>>,
@@ -82,9 +83,6 @@ pub struct ProviderStream {
     proxy: Option<yi_ai::request::ProxyConfig>,
     routing: Option<serde_json::Value>,
     telemetry: Option<Arc<crate::telemetry::Telemetry>>,
-    oauth: bool,
-    org: Option<String>,
-    headers: Vec<(String, String)>,
 }
 
 const HALF_MINUTE: std::time::Duration = std::time::Duration::from_secs(30);
@@ -97,21 +95,10 @@ fn auth_now() -> std::time::SystemTime {
     std::time::SystemTime::now()
 }
 
-/// The credential a stream is using, re-resolved when it expires so a days-long
-/// TUI, ACP or daemon session refreshes instead of failing turn by turn (D191).
-struct AuthCell {
-    secret: Option<yi_ai::auth::Secret>,
-    expires: Option<std::time::SystemTime>,
-}
-
 impl ProviderStream {
-    pub fn new(api_key: Option<yi_ai::auth::Secret>, session_id: Option<String>) -> Self {
+    pub fn new(session_id: Option<String>) -> Self {
         Self {
-            auth: Mutex::new(AuthCell {
-                secret: api_key,
-                expires: None,
-            }),
-            provider: String::new(),
+            credentials: Mutex::new(BTreeMap::new()),
             session_id,
             faux: Mutex::new(FauxProvider::default()),
             faux_pace: Mutex::new(None),
@@ -119,27 +106,46 @@ impl ProviderStream {
             proxy: None,
             routing: None,
             telemetry: None,
-            oauth: false,
-            org: None,
-            headers: Vec::new(),
         }
     }
 
-    /// The resolved credential's shape and the login profile's headers (D191):
-    /// a stored OAuth token streams as Bearer and carries whatever that file holds.
+    /// Seeds `provider`'s entry with a credential already resolved.
     #[must_use]
-    pub fn with_auth(mut self, provider: &str, resolved: &yi_ai::auth::Resolved) -> Self {
-        self.provider = provider.to_owned();
-        self.oauth = resolved.kind == yi_ai::auth::AuthKind::Oauth;
-        self.org = resolved.org.clone();
-        self.headers = resolved.headers.clone();
-        if let Ok(mut cell) = self.auth.lock() {
-            cell.secret = Some(yi_ai::auth::Secret::new(
-                resolved.secret.expose().to_owned(),
-            ));
-            cell.expires = resolved.expires;
+    pub fn with_auth(self, provider: &str, resolved: Resolved) -> Self {
+        if let Ok(mut credentials) = self.credentials.lock() {
+            credentials.insert(provider.to_owned(), Arc::new(resolved));
         }
         self
+    }
+
+    /// Per provider on first use, re-resolved outside the map lock 30 s before expiry (D191);
+    /// a miss is not kept, so a `yi login` mid-session is seen on the next call (D294).
+    pub fn credential(&self, provider: &str) -> Result<Arc<Resolved>, String> {
+        let held = self
+            .credentials
+            .lock()
+            .ok()
+            .and_then(|credentials| credentials.get(provider).cloned());
+        if let Some(held) = &held
+            && held.expires.is_none_or(|at| auth_now() + HALF_MINUTE < at)
+        {
+            return Ok(Arc::clone(held));
+        }
+        match yi_ai::auth::resolve_with_proxy(provider, self.proxy.as_ref()) {
+            Some(fresh) => {
+                let fresh = Arc::new(fresh);
+                if let Ok(mut credentials) = self.credentials.lock() {
+                    credentials.insert(provider.to_owned(), Arc::clone(&fresh));
+                }
+                Ok(fresh)
+            }
+            // A failed refresh keeps the old entry: its 401 names `yi login`.
+            None => held.ok_or_else(|| yi_ai::auth::missing_message(provider)),
+        }
+    }
+
+    pub fn usable(&self, provider: &str) -> bool {
+        provider == yi_ai::faux::FAUX_PROVIDER || self.credential(provider).is_ok()
     }
 
     /// An interactive session keeps its stable prefix for an hour; a headless
@@ -171,46 +177,19 @@ impl ProviderStream {
             faux.append_responses(responses);
         }
     }
+}
 
-    /// The profile's headers plus the account id a ChatGPT login's id_token carried
-    /// (H4) and the originator the `openai-codex` backend keys on.
-    fn openai_extra(&self, model: &Model) -> Vec<(String, String)> {
-        let mut extra = self.headers.clone();
-        if model.provider == "openai-codex" {
-            extra.push(("originator".to_owned(), "yi".to_owned()));
-        }
-        if let Some(org) = &self.org {
-            extra.push(("chatgpt-account-id".to_owned(), org.clone()));
-        }
-        extra
+/// The profile's headers plus the account id a ChatGPT login's id_token carried
+/// (H4) and the originator the `openai-codex` backend keys on.
+fn openai_extra(model: &Model, credential: &Resolved) -> Vec<(String, String)> {
+    let mut extra = credential.headers.clone();
+    if model.provider == "openai-codex" {
+        extra.push(("originator".to_owned(), "yi".to_owned()));
     }
-
-    fn key(&self) -> String {
-        if self.oauth && !self.provider.is_empty() {
-            let expired = self
-                .auth
-                .lock()
-                .map(|cell| {
-                    cell.expires
-                        .is_some_and(|at| auth_now() + HALF_MINUTE >= at)
-                })
-                .unwrap_or(false);
-            // resolve_with_proxy refreshes under the store's cross-process lock.
-            if expired
-                && let Some(fresh) =
-                    yi_ai::auth::resolve_with_proxy(&self.provider, self.proxy.as_ref())
-                && let Ok(mut cell) = self.auth.lock()
-            {
-                cell.secret = Some(fresh.secret);
-                cell.expires = fresh.expires;
-            }
-        }
-        self.auth
-            .lock()
-            .ok()
-            .and_then(|cell| cell.secret.as_ref().map(|s| s.expose().to_owned()))
-            .unwrap_or_default()
+    if let Some(org) = &credential.org {
+        extra.push(("chatgpt-account-id".to_owned(), org.clone()));
     }
+    extra
 }
 
 impl StreamFn for ProviderStream {
@@ -238,6 +217,7 @@ pub fn output_cap(model: &Model) -> u64 {
 }
 
 impl ProviderStream {
+    /// Invariant: a model streams with its own provider's credential or sends no request (D294).
     fn stream_raw(
         &self,
         model: &Model,
@@ -245,7 +225,30 @@ impl ProviderStream {
         effort: Effort,
         signal: &InterruptSignal,
     ) -> Receiver<AssistantMessageEvent> {
-        match provider_api(&model.api) {
+        let api = provider_api(&model.api);
+        if api == ProviderApi::Faux {
+            return self.faux_stream();
+        }
+        let credential = match self.credential(&model.provider) {
+            Ok(credential) => credential,
+            Err(missing) => return refused(model, &missing),
+        };
+        let (key, oauth) = (
+            credential.secret.expose(),
+            credential.kind == AuthKind::Oauth,
+        );
+        let openai = || OpenAiOptions {
+            max_tokens: Some(output_cap(model)),
+            reasoning_effort: (effort != Effort::Off).then_some(effort),
+            session_id: self.session_id.clone(),
+            proxy: self.proxy.clone(),
+            routing: self.routing.clone(),
+            stop: Some(signal.cut_flag()),
+            extra_headers: openai_extra(model, &credential),
+            oauth,
+            ..OpenAiOptions::default()
+        };
+        match api {
             ProviderApi::AnthropicMessages => {
                 let options = AnthropicOptions {
                     thinking: anthropic_thinking(model, effort),
@@ -253,59 +256,44 @@ impl ProviderStream {
                     cache_1h: self.long_cache,
                     proxy: self.proxy.clone(),
                     stop: Some(signal.cut_flag()),
-                    oauth: self.oauth,
-                    extra_headers: self.headers.clone(),
+                    oauth,
+                    extra_headers: credential.headers.clone(),
                     ..AnthropicOptions::default()
                 };
-                anthropic::stream(model, context, &options, &self.key())
+                anthropic::stream(model, context, &options, key)
             }
-            ProviderApi::OpenAiCompletions => {
-                let options = OpenAiOptions {
-                    max_tokens: Some(output_cap(model)),
-                    reasoning_effort: (effort != Effort::Off).then_some(effort),
-                    session_id: self.session_id.clone(),
-                    proxy: self.proxy.clone(),
-                    routing: self.routing.clone(),
-                    stop: Some(signal.cut_flag()),
-                    extra_headers: self.openai_extra(model),
-                    oauth: self.oauth,
-                    ..OpenAiOptions::default()
-                };
-                openai::stream(model, context, &options, &self.key())
-            }
+            ProviderApi::OpenAiCompletions => openai::stream(model, context, &openai(), key),
             ProviderApi::OpenAiResponses => {
-                let options = OpenAiOptions {
-                    max_tokens: Some(output_cap(model)),
-                    reasoning_effort: (effort != Effort::Off).then_some(effort),
-                    session_id: self.session_id.clone(),
-                    proxy: self.proxy.clone(),
-                    routing: self.routing.clone(),
-                    stop: Some(signal.cut_flag()),
-                    extra_headers: self.openai_extra(model),
-                    oauth: self.oauth,
-                    ..OpenAiOptions::default()
-                };
-                openai_responses::stream(model, context, &options, &self.key())
+                openai_responses::stream(model, context, &openai(), key)
             }
-            ProviderApi::Faux => {
-                let events = self
-                    .faux
-                    .lock()
-                    .map(|mut faux| faux.stream())
-                    .unwrap_or_default();
-                let (sender, receiver) = tokio::sync::mpsc::channel(events.len().max(1));
-                let pace = self.faux_pace.lock().ok().and_then(|pace| *pace);
-                if let Some(pace) = pace {
-                    drop(tokio::spawn(paced(sender, events, pace)));
-                    return receiver;
-                }
-                for event in events {
-                    let _ = sender.try_send(event);
-                }
-                receiver
-            }
+            ProviderApi::Faux => self.faux_stream(),
         }
     }
+
+    fn faux_stream(&self) -> Receiver<AssistantMessageEvent> {
+        let events = self
+            .faux
+            .lock()
+            .map(|mut faux| faux.stream())
+            .unwrap_or_default();
+        let (sender, receiver) = tokio::sync::mpsc::channel(events.len().max(1));
+        let pace = self.faux_pace.lock().ok().and_then(|pace| *pace);
+        if let Some(pace) = pace {
+            drop(tokio::spawn(paced(sender, events, pace)));
+            return receiver;
+        }
+        for event in events {
+            let _ = sender.try_send(event);
+        }
+        receiver
+    }
+}
+
+fn refused(model: &Model, missing: &str) -> Receiver<AssistantMessageEvent> {
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    let mut output = yi_ai::request::empty_assistant(model);
+    let _ = sender.try_send(yi_ai::request::fail_message(&mut output, missing));
+    receiver
 }
 
 async fn paced(

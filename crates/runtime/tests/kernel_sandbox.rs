@@ -183,7 +183,7 @@ fn root_session(
     sessions_dir: Option<PathBuf>,
     broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
 ) -> yi_runtime::AgentSession {
-    let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None));
     let mut session = yi_runtime::AgentSession::new(
         yi_runtime::SessionConfig {
             system_prompt: String::new(),

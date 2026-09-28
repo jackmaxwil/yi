@@ -155,7 +155,7 @@ async fn no_poisoned_command_actuates() -> TestResult {
         let dir = hostile_repo("run")?;
         let marker = Path::new("/tmp/yi-canary-target");
         std::fs::create_dir_all(marker)?;
-        let provider = Arc::new(ProviderStream::new(None, None));
+        let provider = Arc::new(ProviderStream::new(None));
         provider.queue_faux(vec![command_call(command)]);
         let mut session = AgentSession::new(
             SessionConfig {

@@ -118,7 +118,7 @@ fn digest_keeps_constraints_first_and_extracts_directives() {
 
 #[tokio::test]
 async fn a_failure_streak_reaches_the_primary_through_nothing() -> TestResult {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let session = session(Arc::clone(&provider));
     let advisor = attach_advisor(&session, AdvisorConfig::default(), AdvisorDeps::default());
 
@@ -209,7 +209,7 @@ fn headless_hold_degrades_to_warn() -> TestResult {
 #[tokio::test]
 async fn an_untargeted_hold_warns_instead_of_holding_every_call() -> TestResult {
     let root = Scratch::new("yi-untargeted-hold")?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut advise_args = Map::new();
     for (key, value) in [
         ("note", "Stop rewriting Cargo.lock by hand"),
@@ -304,7 +304,7 @@ async fn an_untargeted_hold_warns_instead_of_holding_every_call() -> TestResult 
 
 #[tokio::test]
 async fn llm_reviewer_advises_through_the_advise_tool() -> TestResult {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut advise_args = Map::new();
     advise_args.insert(
         "note".to_owned(),

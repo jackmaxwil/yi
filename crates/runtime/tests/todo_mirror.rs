@@ -136,7 +136,7 @@ fn owner(op: Op) -> OpRequest {
 
 /// A session with its own list `first`, `gate`, and an engine whose sink is the mirror.
 fn mirrored(dir: &Scratch) -> Result<(AgentSession, Arc<TodoStore>, PlanEngine), Box<dyn Error>> {
-    let session = session(Arc::new(ProviderStream::new(None, None)));
+    let session = session(Arc::new(ProviderStream::new(None)));
     session.attach_store(memory_store())?;
     let todos = TodoStore::new(session.store_handle(), "main");
     todos.apply(
@@ -393,7 +393,7 @@ fn a_mirrored_list_with_a_running_child_does_not_nag() -> TestResult {
 #[tokio::test]
 async fn a_plan_opened_through_the_tool_is_the_sessions_todo_list() -> TestResult {
     let root = Scratch::new("yi-todo-mirror-wired")?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut args: Map<String, Value> = Map::new();
     args.insert("op".to_owned(), json!("init"));
     args.insert("goal".to_owned(), json!("ship the widget"));
