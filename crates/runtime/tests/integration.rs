@@ -14,6 +14,7 @@ mod advisor_e2e;
 mod affordance;
 mod auto_review;
 mod branch_diff;
+mod breakpoints;
 mod channel_e2e;
 mod child_transcript;
 mod claims;

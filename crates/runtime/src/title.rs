@@ -60,6 +60,9 @@ pub async fn title_session(session: &AgentSession) -> Result<Option<String>, Str
             UserContent::Text(prompt),
             0,
         )]),
+        transient: Vec::new(),
+        schema: None,
+        reuse: yi_types::model::Reuse::OneShot,
         tools: None,
         tool_choice: None,
     };

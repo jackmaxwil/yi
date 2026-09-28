@@ -589,16 +589,28 @@ async fn stream_assistant_response<S: StreamFn>(
         .as_ref()
         .map(|tail| tail())
         .unwrap_or_default();
-    let llm_messages = {
+    // The tail is per-request fact, not history: it rides `transient`, which every provider
+    // renders after its cache marks and none may mark (D295).
+    let (llm_messages, transient) = {
         let _span = yi_types::trace::span("loop.convert_to_llm");
-        let mut converted = (config.convert_to_llm)(&context.messages);
-        converted.extend((config.convert_to_llm)(&tail));
-        converted
+        (
+            (config.convert_to_llm)(&context.messages),
+            (config.convert_to_llm)(&tail),
+        )
     };
     let tool_defs: Vec<ToolDef> = context.tools.iter().map(|tool| tool.definition()).collect();
+    // The loop says whether its tail is read again: the forced-none last word is the end.
+    let reuse = if tool_choice == Some(yi_types::model::ToolChoice::None) {
+        yi_types::model::Reuse::LastTurn
+    } else {
+        config.reuse
+    };
     let llm_context = LlmContext {
         system_prompt: context.system_prompt.clone(),
         messages: llm_messages,
+        transient,
+        schema: None,
+        reuse,
         tools: if tool_defs.is_empty() {
             None
         } else {

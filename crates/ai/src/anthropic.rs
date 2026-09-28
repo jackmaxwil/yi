@@ -4,6 +4,7 @@ use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 use yi_types::model::{LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolChoice, ToolDef};
 
+use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, encode};
 use crate::catalog::calculate_cost;
 use crate::compat::compat_bool;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
@@ -28,7 +29,6 @@ pub struct AnthropicOptions {
     pub max_tokens: Option<u64>,
     pub temperature: Option<f64>,
     pub thinking: Thinking,
-    pub cache: bool,
     /// Interactive sessions hold the stable prefix for an hour.
     pub cache_1h: bool,
     pub proxy: Option<crate::request::ProxyConfig>,
@@ -39,17 +39,9 @@ pub struct AnthropicOptions {
     pub extra_headers: Vec<(String, String)>,
 }
 
-fn ephemeral(long: bool) -> Value {
-    if long {
-        json!({"type": "ephemeral", "ttl": "1h"})
-    } else {
-        json!({"type": "ephemeral"})
-    }
-}
-
-/// Three of the four breakpoints: universal prefix, trusted prompt, yard. The
-/// fourth is the newest message.
-fn system_blocks(system: &str, options: &AnthropicOptions) -> Vec<Value> {
+/// Universal prefix, trusted prompt, yard: one block each, so a later stage can mark a
+/// boundary between them; the stable breakpoint sits on the last one (D295).
+fn system_blocks(system: &str) -> Vec<Value> {
     let parts: Vec<&str> = system.split(SYSTEM_BLOCK_SEPARATOR).collect();
     let mut texts: Vec<String> = Vec::new();
     for (index, part) in parts.iter().enumerate() {
@@ -60,16 +52,7 @@ fn system_blocks(system: &str, options: &AnthropicOptions) -> Vec<Value> {
             last.push_str(part);
         }
     }
-    texts
-        .iter()
-        .map(|text| {
-            let mut block = json!({"type": "text", "text": text});
-            if options.cache {
-                block["cache_control"] = ephemeral(options.cache_1h);
-            }
-            block
-        })
-        .collect()
+    texts.iter().map(|text| text_block(text)).collect()
 }
 
 fn text_block(text: &str) -> Value {
@@ -109,9 +92,12 @@ fn content_blocks(content: &[Content]) -> Value {
     Value::Array(blocks)
 }
 
-fn convert_messages(messages: &[AgentMessage], cache: bool) -> Vec<Value> {
+/// Rendered messages beside, per rendered message, the index of the message it came from,
+/// which is what a breakpoint position names.
+fn convert_messages(messages: &[AgentMessage]) -> (Vec<Value>, Vec<Option<usize>>) {
     let _span = yi_types::trace::span("ai.convert_messages");
     let mut params: Vec<Value> = Vec::new();
+    let mut origins: Vec<Option<usize>> = Vec::new();
     let mut index = 0;
     while index < messages.len() {
         match &messages[index] {
@@ -147,6 +133,7 @@ fn convert_messages(messages: &[AgentMessage], cache: bool) -> Vec<Value> {
                     }
                 };
                 params.push(json!({"role": "user", "content": value}));
+                origins.push(Some(index));
             }
             AgentMessage::Assistant { content, .. } => {
                 let mut blocks: Vec<Value> = Vec::new();
@@ -204,6 +191,7 @@ fn convert_messages(messages: &[AgentMessage], cache: bool) -> Vec<Value> {
                 }
                 if !blocks.is_empty() {
                     params.push(json!({"role": "assistant", "content": blocks}));
+                    origins.push(Some(index));
                 }
             }
             AgentMessage::ToolResult { .. } => {
@@ -225,46 +213,21 @@ fn convert_messages(messages: &[AgentMessage], cache: bool) -> Vec<Value> {
                 }
                 index -= 1;
                 params.push(json!({"role": "user", "content": results}));
+                origins.push(Some(index));
             }
             _ => {}
         }
         index += 1;
     }
-
-    let mut at = params.len().checked_sub(1);
-    if let Some(index) = at
-        && params.get(index).is_some_and(is_environment)
-    {
-        at = index.checked_sub(1);
-    }
-    if cache
-        && let Some(last) = at.and_then(|index| params.get_mut(index))
-        && last["role"] == "user"
-        && let Value::Array(blocks) = &mut last["content"]
-        && let Some(block) = blocks.last_mut()
-    {
-        block["cache_control"] = json!({"type": "ephemeral"});
-    }
-    params
+    (params, origins)
 }
 
-fn is_environment(param: &Value) -> bool {
-    param["role"] == "user"
-        && param["content"]
-            .as_array()
-            .is_some_and(|blocks| blocks.len() == 1)
-        && param["content"][0]["text"]
-            .as_str()
-            .is_some_and(|text| text.starts_with(yi_types::message::ENVIRONMENT_TAG))
-}
-
-fn convert_tools(tools: &[ToolDef], cache: bool) -> Vec<Value> {
+fn convert_tools(tools: &[ToolDef]) -> Vec<Value> {
     tools
         .iter()
-        .enumerate()
-        .map(|(index, tool)| {
+        .map(|tool| {
             let schema = &tool.parameters;
-            let mut value = json!({
+            json!({
                 "name": tool.name,
                 "description": tool.description,
                 "input_schema": {
@@ -272,11 +235,7 @@ fn convert_tools(tools: &[ToolDef], cache: bool) -> Vec<Value> {
                     "properties": schema.get("properties").cloned().unwrap_or_else(|| json!({})),
                     "required": schema.get("required").cloned().unwrap_or_else(|| json!([])),
                 },
-            });
-            if cache && index == tools.len().saturating_sub(1) {
-                value["cache_control"] = json!({"type": "ephemeral"});
-            }
-            value
+            })
         })
         .collect()
 }
@@ -289,23 +248,29 @@ fn convert_tool_choice(choice: &ToolChoice) -> Value {
     }
 }
 
-pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOptions) -> Value {
+pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOptions) -> Encoded {
     let _span = yi_types::trace::span("ai.build_params")
         .arg("api", "anthropic")
         .arg("messages", context.messages.len());
-    let transformed = transform_messages(
+    let history = transform_messages(
         &context.messages,
         model,
         Some(normalize_anthropic_tool_call_id),
     );
+    let breakpoints = Breakpoints::build(
+        &CachePolicy::of(model, options.cache_1h),
+        &history,
+        context.reuse,
+    );
+    let (messages, origins) = convert_messages(&history);
     let mut params = json!({
         "model": model.id,
-        "messages": convert_messages(&transformed, options.cache),
+        "messages": messages,
         "max_tokens": options.max_tokens.unwrap_or(model.max_tokens),
         "stream": true,
     });
     if !context.system_prompt.is_empty() {
-        params["system"] = Value::Array(system_blocks(&context.system_prompt, options));
+        params["system"] = Value::Array(system_blocks(&context.system_prompt));
     }
     let supports_temperature = compat_bool(model, "supportsTemperature", true);
     if let Some(temperature) = options.temperature
@@ -317,9 +282,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
     if let Some(tools) = &context.tools
         && !tools.is_empty()
     {
-        // Tools precede system, so a system breakpoint already caches them.
-        let cache_tools = options.cache && context.system_prompt.is_empty();
-        params["tools"] = Value::Array(convert_tools(tools, cache_tools));
+        params["tools"] = Value::Array(convert_tools(tools));
     }
     if let Some(choice) = &context.tool_choice {
         params["tool_choice"] = convert_tool_choice(choice);
@@ -359,7 +322,19 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
             }
         }
     }
-    params
+    // The per-request facts render after every breakpoint, so none can land on them.
+    let (transient, _) = convert_messages(&transform_messages(
+        &context.transient,
+        model,
+        Some(normalize_anthropic_tool_call_id),
+    ));
+    encode(
+        &breakpoints,
+        Dialect::AnthropicBlocks,
+        params,
+        &origins,
+        transient,
+    )
 }
 
 fn map_stop_reason(reason: &str, stop_details: Option<&Value>) -> (StopReason, Option<String>) {
@@ -773,7 +748,7 @@ const ANTHROPIC_MESSAGE_EVENTS: [&str; 6] = [
 
 fn run_request(
     model: &Model,
-    body: &Value,
+    body: &Encoded,
     wire: crate::request::Wire<'_>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
