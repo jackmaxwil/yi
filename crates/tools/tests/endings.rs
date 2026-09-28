@@ -216,7 +216,7 @@ fn a_never_read_bom_file_lands_on_the_retry_its_refusal_names() -> TestResult {
     let refused = lab.edit(&format!("[demo.sln]\n{patch}"));
     let text = output_text(&refused);
     assert!(
-        refused.is_error && text.contains("a straight retry now succeeds"),
+        refused.is_error && text.contains("then re-issue with this header"),
         "{text}"
     );
     let tag = tag_in(&text).ok_or("no minted tag in the refusal")?;
