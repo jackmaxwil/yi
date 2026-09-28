@@ -858,11 +858,9 @@ fn a_flat_init_that_repeats_a_label_is_refused() -> TestResult {
     Ok(())
 }
 
-/// Dies with `rm` keeping only rows of another label: on a list an older binary wrote with two
-/// `a` rows, `rm t2` takes `t1` with it.
-#[test]
-fn rm_on_a_legacy_list_with_a_repeated_label_removes_only_the_named_row() -> TestResult {
-    let (_root, session) = session("dup-legacy")?;
+/// The record an older binary wrote with the label `a` twice: `t1` running, `t2` pending.
+fn legacy_twins(name: &str) -> Result<(Scratch, SharedSession), Box<dyn Error>> {
+    let (root, session) = session(name)?;
     let record = json!({
         "op": "append", "actor": "main", "at": 1790552725363_u64, "touched": 2,
         "list": {"format": 2, "phases": [{"name": "Tasks", "items": [
@@ -871,6 +869,23 @@ fn rm_on_a_legacy_list_with_a_repeated_label_removes_only_the_named_row() -> Tes
         ]}], "nextId": 3}
     });
     yi_session::lock_session(&session).append_custom("main", "todo", Some(record))?;
+    Ok((root, session))
+}
+
+fn id_states(list: &TodoList) -> Vec<(String, TodoStateName)> {
+    list.items()
+        .map(|item| {
+            let id = item.id.as_ref().map(ToString::to_string);
+            (id.unwrap_or_default(), TodoStateName::of(&item.state))
+        })
+        .collect()
+}
+
+/// Dies with `rm` keeping only rows of another label: on a list an older binary wrote with two
+/// `a` rows, `rm t2` takes `t1` with it.
+#[test]
+fn rm_on_a_legacy_list_with_a_repeated_label_removes_only_the_named_row() -> TestResult {
+    let (_root, session) = legacy_twins("dup-legacy")?;
     let tool = TodoTool::new(store_for(&session));
     let (is_error, text) = call(&tool, json!({"op": "append", "items": ["b"]}));
     assert!(!is_error, "a legacy list must stay repairable: {text}");
@@ -886,6 +901,51 @@ fn rm_on_a_legacy_list_with_a_repeated_label_removes_only_the_named_row() -> Tes
             ("t3".to_owned(), "b".to_owned())
         ]
     );
+    Ok(())
+}
+
+/// Dies with `start` demoting other rows by label, which keeps `t1` running and `t2` pending,
+/// or with a `done` that names no item resolving the running row's label to `t1`.
+#[test]
+fn start_and_done_on_a_legacy_list_move_the_named_row_not_its_twin() -> TestResult {
+    let (_root, session) = legacy_twins("dup-legacy-start")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(Arc::clone(&store));
+    let (is_error, text) = call(&tool, json!({"op": "start", "id": "t2"}));
+    assert!(!is_error, "{text}");
+    let row = |id: &str, state| (id.to_owned(), state);
+    let (pending, running) = (TodoStateName::Pending, TodoStateName::Running);
+    assert_eq!(
+        id_states(&store.list()),
+        [row("t1", pending), row("t2", running)]
+    );
+    let (is_error, text) = call(&tool, json!({"op": "done", "evidence": "`make` ok"}));
+    assert!(!is_error, "{text}");
+    let (running, done) = (TodoStateName::Running, TodoStateName::Done);
+    assert_eq!(
+        id_states(&store.list()),
+        [row("t1", running), row("t2", done)]
+    );
+    Ok(())
+}
+
+/// Dies with `init` checked only against the list it replaces, which already holds `a` twice.
+#[test]
+fn an_init_that_repeats_a_label_is_refused_on_a_legacy_list() -> TestResult {
+    let (_root, session) = legacy_twins("dup-legacy-init")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(Arc::clone(&store));
+    let phases = json!([{"name": "A", "items": ["a"]}, {"name": "B", "items": ["a"]}]);
+    for args in [
+        json!({"op": "init", "phases": phases}),
+        json!({"op": "init", "items": ["a", "a"]}),
+    ] {
+        let (before, touched) = (store.list(), store.touched());
+        let (is_error, text) = call(&tool, args);
+        assert!(is_error, "a repeated label was taken: {text}");
+        assert!(text.contains("todo \"a\""), "{text}");
+        assert_eq!((store.list(), store.touched()), (before, touched));
+    }
     Ok(())
 }
 
