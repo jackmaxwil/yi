@@ -284,7 +284,13 @@ impl Approver {
             ("tool", call.tool),
             ("command", call.display),
             ("cwd", call.cwd),
-            ("why Yi asks", call.reason),
+            (
+                "why Yi asks",
+                call.reason
+                    .strip_suffix(call.display)
+                    .and_then(|reason| reason.strip_suffix(": "))
+                    .unwrap_or(call.reason),
+            ),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), serde_json::json!(value)))
@@ -356,16 +362,21 @@ impl Approver {
 }
 
 fn class(command: Option<&str>) -> &'static str {
-    match command.map(yi_permission::parse) {
-        Some(yi_permission::Parsed::Segments(segments))
-            if segments
-                .iter()
-                .any(|argv| yi_permission::classify(argv) == yi_permission::Class::Destructive) =>
-        {
-            "destructive"
-        }
-        Some(yi_permission::Parsed::Segments(_)) => "ordinary",
-        Some(yi_permission::Parsed::Unparsed) | None => "unproven",
+    let Some(yi_permission::Parsed::Segments(segments)) = command.map(yi_permission::parse) else {
+        return "unproven";
+    };
+    let classes: Vec<_> = segments
+        .iter()
+        .map(|argv| yi_permission::classify(argv))
+        .collect();
+    if classes.contains(&yi_permission::Class::Destructive) {
+        "destructive"
+    } else if classes.contains(&yi_permission::Class::Egress) {
+        "egress"
+    } else if segments.iter().flatten().any(|word| word.starts_with('#')) {
+        "unproven"
+    } else {
+        "ordinary"
     }
 }
 

@@ -31,13 +31,6 @@ pub struct PermissionAsk<'a> {
     pub tool_call_id: Option<&'a str>,
 }
 
-#[derive(Clone, Copy)]
-struct Timed<'a> {
-    approver: &'a crate::classifier::Approver,
-    call: &'a crate::classifier::Call<'a>,
-    prior: Option<crate::classifier::Judgement>,
-}
-
 struct OwnedAsk {
     title: String,
     description: String,
@@ -530,11 +523,9 @@ impl PermissionBroker {
                 | crate::classifier::Judgement::Undecided => {}
             }
         }
-        let timed = approver.map(|approver| Timed {
-            approver,
-            call: &call,
-            prior,
-        });
+        let timed = approver
+            .filter(|_| prior.is_some())
+            .and_then(|approver| approver.ask_timeout());
         let asks_user = matches!(prior, Some(crate::classifier::Judgement::AskUser(_)));
         let Some(reviewer) = self.reviewer.get().cloned().filter(|_| !asks_user) else {
             return self.run_ask(ask, tool_call_id, rule_kind, canonical, display, timed);
@@ -757,23 +748,9 @@ impl PermissionBroker {
         &self,
         ask: &PermissionAsk<'_>,
         tool_call_id: &str,
-        timed: Timed<'_>,
         limit: std::time::Duration,
     ) -> CallOutcome {
-        let judgement = timed
-            .prior
-            .unwrap_or_else(|| timed.approver.judge(timed.call));
         let waited = limit.as_secs();
-        if let crate::classifier::Judgement::Allow(safe) = judgement {
-            self.settle(tool_call_id, ask, true, Answerer::Classifier);
-            return CallOutcome {
-                allowed: true,
-                reason: format!(
-                    "no answer within {waited} s; allowed by the classifier (P(safe) {safe:.2})"
-                ),
-                contained: false,
-            };
-        }
         self.settle(tool_call_id, ask, false, Answerer::Nobody);
         CallOutcome {
             allowed: false,
@@ -820,7 +797,7 @@ impl PermissionBroker {
         rule_kind: RuleKind,
         canonical: &str,
         display: &str,
-        timed: Option<Timed<'_>>,
+        timed: Option<std::time::Duration>,
     ) -> CallOutcome {
         let rendered = ask.text();
         let _ = self.events.send(AgentEvent::PermissionRequested {
@@ -828,13 +805,11 @@ impl PermissionBroker {
             title: ask.title.to_owned(),
             description: rendered.clone(),
         });
-        let limit = timed
-            .filter(|_| self.prompts_close_on_settle.load(Ordering::Relaxed))
-            .and_then(|timed| timed.approver.ask_timeout());
-        let outcome = match (&self.asker, timed.zip(limit)) {
-            (Some(asker), Some((timed, limit))) => match ask_within(asker, ask, limit) {
+        let limit = timed.filter(|_| self.prompts_close_on_settle.load(Ordering::Relaxed));
+        let outcome = match (&self.asker, limit) {
+            (Some(asker), Some(limit)) => match ask_within(asker, ask, limit) {
                 Some(outcome) => outcome,
-                None => return self.expired(ask, tool_call_id, timed, limit),
+                None => return self.expired(ask, tool_call_id, limit),
             },
             (Some(asker), None) => asker(ask),
             (None, _) => {

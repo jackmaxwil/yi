@@ -408,7 +408,10 @@ fn a_prompt_closes_when_its_own_call_settles_elsewhere() -> TestResult {
     app.reduce_agent(settled("c1"));
     assert!(!prompt_up(&mut app)?, "{:#?}", live_rows(&mut app)?);
     assert!(
-        answered.try_recv().is_err(),
+        matches!(
+            answered.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ),
         "the waiting asker is released, not answered"
     );
     Ok(())
