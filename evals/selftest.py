@@ -43,6 +43,7 @@ import test_refine  # noqa: E402
 import test_levers  # noqa: E402
 import test_inner  # noqa: E402
 import test_mutate  # noqa: E402
+import test_revert  # noqa: E402
 import test_judge_replay  # noqa: E402
 import test_improve  # noqa: E402
 
@@ -792,11 +793,12 @@ def check_inner():
     assert result.testsRun >= 3 and result.wasSuccessful(), report.getvalue()
 
 def check_mutate():
-    """Bug injection on a synthetic repo: a seeded red mutation, graded by the pristine tests."""
+    """The real-repo families on synthetic repos: a seeded red mutation graded by the pristine tests,
+    and a past commit's change undone, graded by that commit's tests."""
     report = io.StringIO()
-    suite = unittest.defaultTestLoader.loadTestsFromModule(test_mutate)
-    result = unittest.TextTestRunner(stream=report).run(suite)
-    assert result.testsRun >= 2 and result.wasSuccessful(), report.getvalue()
+    load = unittest.defaultTestLoader.loadTestsFromModule
+    result = unittest.TextTestRunner(stream=report).run(unittest.TestSuite([load(test_mutate), load(test_revert)]))
+    assert result.testsRun >= 5 and result.wasSuccessful(), report.getvalue()
 
 def check_levers():
     """D220: the manifest, the shared default fixture and the floors agree, and the gates hold."""
