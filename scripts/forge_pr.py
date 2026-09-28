@@ -330,9 +330,11 @@ def cmd_check(args):
 def dedupe_counted(body, counted):
     """A section the author already wrote — matched by its level-two heading,
     case-insensitive — wins over the prefill, so `just pr open` never prints a
-    section twice."""
+    section twice. The prefill's own header comment goes too: appended after the
+    author's prose it would sit in their last section, which the template check
+    then refuses as a placeholder."""
     have = {line[3:].strip().lower() for line in body.splitlines() if line.startswith("## ")}
-    out, keep = [], True
+    out, keep = [], False
     for line in counted.splitlines():
         if line.startswith("## "):
             keep = line[3:].strip().lower() not in have
@@ -655,7 +657,9 @@ def selfcheck():
     assert "mine" not in kept and "prefill files" in kept and kept.count("## Summary") == 0, kept
     kept = dedupe_counted("## summary\n\nmine\n", counted)
     assert "## Summary" not in kept, "the heading match is case-insensitive"
-    assert dedupe_counted("", counted) == counted.strip(), "no author prose keeps the whole prefill"
+    assert dedupe_counted("", counted) == counted.split("\n", 2)[2].strip(), "no author prose keeps every section"
+    assert "<!--" not in dedupe_counted("## Summary\n\nmine\n", counted), "the header comment never lands in a section"
+    assert dedupe_counted("## Summary\n\na\n\n## Files edited\n\nb\n", counted) == "", "nothing owed, nothing appended"
     # Incident: measure() grew the surface delta and this unpack still took three, so
     # `just pr open`, `pr check` and `land` died on a ValueError before asking anything.
     import check_pr_metadata as gate

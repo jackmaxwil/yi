@@ -158,6 +158,7 @@ def footer_problems(body):
 
 
 COMMENT = re.compile(r"<!--.*?-->", re.S)
+CODE_SPAN = re.compile(r"`+[^`]*`+")
 DRAFT = "WIP: "
 TEMPLATE = ROOT / ".github/PULL_REQUEST_TEMPLATE.md"
 REQUIRED = (
@@ -198,7 +199,7 @@ def template_problems(body):
         text = section(body, title)
         if text is None:
             errs.append(f"the body has no `## {title}`; {TEMPLATE.relative_to(ROOT)} lists every section")
-        elif "<!--" in text:
+        elif "<!--" in CODE_SPAN.sub("", text):
             errs.append(f"`## {title}` still holds a template comment; replace it with prose, or \"None\" and why")
         elif not text.strip():
             errs.append(f"`## {title}` is empty; write it, or \"None\" and why")
@@ -405,6 +406,8 @@ def selfcheck():
     )
     errs = template_problems(stale)
     assert len(errs) == 1 and "`## Files edited` still holds a template comment" in errs[0], errs
+    quoted = filled.replace("None, because the change is a test.", "It kept `<!-- a placeholder -->`.", 1)
+    assert template_problems(quoted) == [], "a comment quoted in a code span is prose"
     errs = template_problems(filled.replace("## Performance\n\nNone, because the change is a test.", "## Performance\n"))
     assert len(errs) == 1 and "`## Performance` is empty" in errs[0], errs
     errs = template_problems(filled.replace("## Why needed", "## Why"))
