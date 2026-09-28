@@ -423,6 +423,9 @@ def check_driver_ceiling():
         done = subprocess.run(["sh", str(sweep), *argv], capture_output=True, text=True, env=env, timeout=60,
                               cwd=ROOT.parent)
         assert done.returncode == 1 and said in done.stderr, (argv, done.stderr)
+    # N1: a Docker Hub timeout failed a trial's environment before its agent ran; that is not a
+    # result, so the runner retries harbor's RuntimeError (compose, pull) and nothing else.
+    assert "--max-retries 2 --retry-include RuntimeError" in sweep.read_text()
 
 
 def check_watch_stops():
@@ -519,8 +522,19 @@ def check_trials():
         assert sorted(rows) == ["fixture-a__x", "fixture-b__y"], rows
         assert (rows["fixture-a__x"]["input"], rows["fixture-a__x"]["costUsd"]) == (2400, 0.014864), rows["fixture-a__x"]
         assert rows["fixture-b__y"]["censored"] and not rows["fixture-a__x"]["censored"], rows
-        for key in ("task", "reward", "partialScore", "cacheRead", "output", "wallSec", "errored"):
+        for key in ("task", "reward", "partialScore", "cacheRead", "output", "wallSec", "errored",
+                    "testsPassed", "testsTotal", "traceScored"):
             assert key in rows["fixture-a__x"], key
+        assert rows["fixture-b__y"]["traceScored"] and not rows["fixture-a__x"]["traceScored"], rows
+        store = Path(tmp) / "store"
+        store.mkdir()
+        real_store, trials.STORE = trials.STORE, store
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                assert trials.main(["rows", str(job), "--run-id", "r", "--dry"]) == 0
+            assert len(said.getvalue().splitlines()) == 2 and not list(store.iterdir()), "--dry prints and files nothing"
+        finally:
+            trials.STORE = real_store
     now = 1790000000  # 2026-09-21T14:13:20Z, a Monday
     with tempfile.TemporaryDirectory() as tmp:
         store = Path(tmp)

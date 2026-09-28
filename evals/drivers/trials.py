@@ -28,7 +28,8 @@ STAGE_SOFT, STAGE_HARD, WEEK_SOFT, WEEK_HARD = 13.0, 15.0, 25.0, 30.0
 # (which the cheap tasks pulled down); a call is predicted at this per task before it starts.
 TRIAL_USD = 0.27
 SUMMED = ("input", "cacheRead", "cacheWrite", "output", "turns")
-KEPT = ("task", "trial", "reward", "partialScore", "censored", "errored", "timedOut", "wallSec")
+KEPT = ("task", "trial", "reward", "partialScore", "testsPassed", "testsTotal", "traceScored", "censored",
+        "errored", "timedOut", "wallSec")
 
 
 def trial_rows(job):
@@ -90,6 +91,7 @@ def main(argv=None):
     rows.add_argument("job", type=Path)
     rows.add_argument("--run-id", required=True)
     rows.add_argument("--arm", default="")
+    rows.add_argument("--dry", action="store_true", help="print the rows, file nothing (rebuilding a store)")
     cap = verbs.add_parser("caps")
     cap.add_argument("--run-id", required=True)
     cap.add_argument("--tasks", type=int, required=True)
@@ -102,6 +104,10 @@ def main(argv=None):
         print(f"{hard:.2f}")
         return 0
     found = trial_rows(args.job)
+    if args.dry:
+        for row in found:
+            print(json.dumps(row, sort_keys=True))
+        return 0 if found else 2
     STORE.mkdir(exist_ok=True)
     at = int(time.time())
     with (STORE / f"{args.run_id}.jsonl").open("a") as sink:
