@@ -431,6 +431,9 @@ def authors():
 def raw_diff(repo, number):
     out = subprocess.run(["fgj", "api", "--hostname", forge_pr.HOST, f"repos/{repo}/pulls/{number}.diff"],
                          capture_output=True, text=True, check=False)
+    if out.returncode:
+        # An empty diff would read as "no twin" and the round would post as if it had looked.
+        raise Unanswered(f"the forge did not serve #{number}'s diff: {out.stderr.strip()[-200:]}")
     return out.stdout
 
 
@@ -493,8 +496,8 @@ def cmd_review(args):
 def replay_row(read, label):
     """One labelled PR's reading for the calibration table. Intake is counted apart: a PR
     written before the v2 template fails it whatever its code is worth."""
-    lens = {s: sum(f["severity"] == s for f in read["kept"]) for s in SEVERITIES}
-    return {"pr": read["pr"]["number"], "label": label, "sha": read["sha"], "lens": lens,
+    severity = {s: sum(f["severity"] == s for f in read["kept"]) for s in SEVERITIES}
+    return {"pr": read["pr"]["number"], "label": label, "sha": read["sha"], "severity": severity,
             "intake": sorted({f["lens"] for f in read["intake"]}), "dropped": read["dropped"],
             "findings": [{k: f[k] for k in ("lens", "severity", "claim", "path", "line")} for f in read["kept"]]}
 
@@ -511,8 +514,18 @@ def cmd_replay(args):
                 row = {"pr": number, "label": args.label, "unanswered": str(err)}
             out.write(json.dumps(row) + "\n")
             out.flush()
-            print(json.dumps({k: row.get(k) for k in ("pr", "label", "lens", "intake", "unanswered")}))
+            print(json.dumps({k: row.get(k) for k in ("pr", "label", "severity", "intake", "unanswered")}))
     return 0
+
+
+def changed_paths(tree):
+    """Every path the fixer touched, both sides of a rename: `git status --porcelain` prints a
+    rename as `old -> new`, which read as one path would let a move into a walled directory
+    through."""
+    subprocess.run(("git", "-C", str(tree), "add", "-A"), capture_output=True, check=False)
+    out = subprocess.run(("git", "-C", str(tree), "diff", "--cached", "--name-only", "--no-renames"),
+                         capture_output=True, text=True, check=False)
+    return out.stdout.splitlines()
 
 
 def walled(paths):
@@ -557,7 +570,7 @@ def cmd_fix(args):
         except Unanswered as err:
             print(f"#{number}: the fixer did not answer ({err}); nothing is kept")
             return 1
-        changed = [line[3:] for line in subprocess.run(("git", "-C", str(tree), "status", "--porcelain"), capture_output=True, text=True).stdout.splitlines()]
+        changed = changed_paths(tree)
         if walled(changed):
             print(f"#{number}: the fixer touched {', '.join(walled(changed))}; nothing is kept")
             return 1
@@ -706,8 +719,20 @@ def selfcheck():
     read = {"pr": {"number": 340}, "sha": "abc", "intake": [{"lens": "template", "severity": "high"}],
             "kept": [finding, dict(finding, severity="low")], "dropped": 2}
     row = replay_row(read, "bad")
-    assert row["lens"] == {"high": 1, "medium": 0, "low": 1} and row["intake"] == ["template"], row
+    assert row["severity"] == {"high": 1, "medium": 0, "low": 1} and row["intake"] == ["template"], row
 
+    repo_dir = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-wall-"))
+    try:
+        git = lambda *a: subprocess.run(("git", "-C", str(repo_dir)) + a, capture_output=True, check=True)
+        git("init", "-q")
+        (repo_dir / "a.rs").write_text("x\n")
+        git("add", "a.rs")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "seed")
+        (repo_dir / "scripts/guardrails").mkdir(parents=True)
+        git("mv", "a.rs", "scripts/guardrails/a.rs")
+        assert walled(changed_paths(repo_dir)) == ["scripts/guardrails/a.rs"], "a rename into the wall is seen"
+    finally:
+        shutil.rmtree(repo_dir)
     assert walled(["crates/a.rs", "scripts/guardrails/baselines/src_loc.json", ".forgejo/workflows/pr.yml"]) == [
         "scripts/guardrails/baselines/src_loc.json", ".forgejo/workflows/pr.yml"]
     assert "Do not touch" in fix_prompt({"number": 1, "title": "t"}, [finding])
