@@ -446,9 +446,15 @@ async fn an_abort_during_a_tool_call_kills_the_child() -> Result<(), Box<dyn Err
 /// `tool_call_session` wired the way `yi ask` is, `--deadline` included.
 fn deadline_session(root: &std::path::Path, command: &str, total: Duration) -> AgentSession {
     let mut session = tool_call_session(command);
+    attach_as_ask(&mut session, root, Some(total));
+    session
+}
+
+/// `session` wired the way `yi ask` is.
+fn attach_as_ask(session: &mut AgentSession, root: &std::path::Path, deadline: Option<Duration>) {
     let provider = Arc::clone(session.provider_arc());
     yi_runtime::attach_runtime(
-        &mut session,
+        session,
         yi_runtime::RuntimeWiring {
             provider,
             system_prompt: "sys".to_owned(),
@@ -470,14 +476,13 @@ fn deadline_session(root: &std::path::Path, command: &str, total: Duration) -> A
             parent_link: None,
             wall: yi_runtime::Wall::default(),
             auto_background: None,
-            deadline: Some(total),
+            deadline,
             kernel_prewarm: false,
             mcp_read: None,
             sessions_dir: None,
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
-    session
 }
 
 fn scratch(name: &str) -> Result<Scratch, Box<dyn Error>> {
@@ -851,5 +856,44 @@ async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), 
             "assistant",
         ]
     );
+    Ok(())
+}
+
+/// Issue #758: a command still running at its `wait` hands the turn back as a job, and a job that
+/// exits while that turn still runs reaches the model as `<async_result>` before the run ends.
+#[tokio::test]
+async fn a_job_that_exits_mid_turn_reports_into_that_turn() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-report")?;
+    let bash = |id: &str, args: serde_json::Value| {
+        let args = args.as_object().cloned().unwrap_or_default();
+        faux_assistant_message(vec![faux_tool_call(id, "bash", args)], StopReason::ToolUse)
+    };
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        bash(
+            "call-1",
+            serde_json::json!({"command": "sleep 6; echo w$((1+1))ke", "wait": 5}),
+        ),
+        bash("call-2", serde_json::json!({"command": "sleep 3"})),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+        faux_assistant_message(vec![faux_text("seen")], StopReason::Stop),
+    ]);
+    let config = SessionConfig {
+        system_prompt: "sys".to_owned(),
+        model: faux_model(),
+        thinking_level: None,
+        tool_execution: ExecutionMode::Sequential,
+    };
+    let mut session = AgentSession::new(config, provider);
+    attach_as_ask(&mut session, &root, None);
+    session.prompt("run it")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = serde_json::to_string(&session.messages())?;
+    assert!(said.contains("now job"), "not backgrounded: {said}");
+    let report = said
+        .split("<async_result")
+        .nth(1)
+        .ok_or_else(|| said.clone())?;
+    assert!(report.contains("w2ke") && report.contains("seen"), "{said}");
     Ok(())
 }

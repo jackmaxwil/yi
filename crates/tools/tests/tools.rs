@@ -268,7 +268,7 @@ fn a_capped_timeout_secs_opens_every_result_of_the_call() -> TestResult {
         &context,
     );
     let text = output_text(&output);
-    assert!(text.contains("Backgrounded as job"), "{text}");
+    assert!(text.contains("still running after"), "{text}");
     assert!(text.starts_with(capped), "{text}");
     context.auto_background = None;
     let command = "cd /app && timeout 580 ~/.yi/kernel-venv-8286f6bd/bin/python solve.py";
@@ -344,7 +344,7 @@ fn a_shorter_auto_background_wins_over_the_timeout() -> TestResult {
         &context,
     );
     assert!(!output.is_error);
-    assert!(output_text(&output).contains("Backgrounded as job"));
+    assert!(output_text(&output).contains("still running after"));
     Ok(())
 }
 
@@ -803,7 +803,7 @@ fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
     let started = tool.execute(args(&[("command", json!("sleep 1; echo woke"))]), &context);
     let announcement = text_of(&started.result.content);
     assert!(
-        announcement.contains("Backgrounded as job"),
+        announcement.contains("still running after"),
         "{announcement}"
     );
     let job = started
@@ -856,6 +856,81 @@ fn without_auto_background_a_command_holds_the_turn() -> TestResult {
         &context,
     );
     assert!(text_of(&output.result.content).contains("done"));
+    Ok(())
+}
+
+/// Issue #758: the dogfood's `sleep 20` with `wait=5` held the turn for 20 s, since `wait` was
+/// read only by a poll. `echo began` is the output so far the job announcement carries.
+#[test]
+fn a_wait_backgrounds_a_command_still_running() -> TestResult {
+    let dir = temp_dir("bash-wait")?;
+    let (tool, context) = (BashTool::default(), ToolContext::new(dir.to_path_buf()));
+    let clock = std::time::Instant::now();
+    let command = json!("echo began; sleep 8; echo slept");
+    let started = tool.execute(args(&[("command", command), ("wait", json!(5))]), &context);
+    let text = text_of(&started.result.content);
+    assert!(
+        clock.elapsed() < std::time::Duration::from_secs(7),
+        "{text}"
+    );
+    let details = &started.result.details;
+    assert_eq!(details["backgrounded"], json!(true), "{text}");
+    assert_eq!(
+        (&details["waitSecs"], &details["timeoutSecs"]),
+        (&json!(5), &json!(300))
+    );
+    assert!(text.contains("began") && !text.contains("slept"), "{text}");
+    let job = details["job"].as_u64().ok_or("no job id")?;
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
+    let finished = text_of(&polled.result.content);
+    assert!(
+        finished.contains("finished (exit 0)") && finished.contains("slept"),
+        "{finished}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_backgrounded_job_still_dies_at_timeout_secs() -> TestResult {
+    let dir = temp_dir("bash-wait-timeout")?;
+    let (tool, context) = (BashTool::default(), ToolContext::new(dir.to_path_buf()));
+    let started = tool.execute(
+        args(&[
+            ("command", json!("sleep 30")),
+            ("wait", json!(5)),
+            ("timeout_secs", json!(8)),
+        ]),
+        &context,
+    );
+    let text = text_of(&started.result.content);
+    let job = started.result.details["job"].as_u64().ok_or(text)?;
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
+    let killed = text_of(&polled.result.content);
+    assert!(
+        killed.contains(&format!("job {job} killed (timeout_secs or a kill)")),
+        "{killed}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_wait_that_reaches_timeout_secs_runs_in_the_turn() -> TestResult {
+    let dir = temp_dir("bash-wait-reaches")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let output = BashTool::default().execute(
+        args(&[
+            ("command", json!("sleep 30")),
+            ("wait", json!(5)),
+            ("timeout_secs", json!(5)),
+        ]),
+        &context,
+    );
+    let text = text_of(&output.result.content);
+    assert_eq!(output.result.details["timedOut"], json!(true), "{text}");
+    assert!(
+        text.contains("[wait 5s reaches timeout_secs 5s: it ran in the turn and was killed]"),
+        "{text}"
+    );
     Ok(())
 }
 
