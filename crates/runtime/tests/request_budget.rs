@@ -124,7 +124,7 @@ fn session_tool_defs() -> Result<Vec<ToolDef>, Box<dyn Error>> {
                 .collect(),
         },
     );
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),

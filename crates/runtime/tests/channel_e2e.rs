@@ -69,7 +69,7 @@ fn faux_model() -> Model {
 
 /// A session the way `attach_runtime` leaves one for the timer: a ledger and a todo list.
 fn session(replies: &[&str]) -> Result<(AgentSession, Arc<TodoStore>), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(
         replies
             .iter()

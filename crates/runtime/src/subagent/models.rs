@@ -5,12 +5,12 @@ use serde_json::{Map, Value, json};
 use yi_types::model::Model;
 
 use super::SubagentHost;
-use crate::provider::available_models;
+use crate::provider::{ProviderStream, available_models};
 
 impl SubagentHost {
-    pub fn find_models(query: &str, limit: usize) -> Map<String, Value> {
+    pub fn find_models(&self, query: &str, limit: usize) -> Map<String, Value> {
         let needle = query.to_lowercase();
-        let models: Vec<Value> = available_models()
+        let models: Vec<Value> = credentialed_models(&self.options.provider)
             .into_iter()
             .filter(|model| {
                 needle.is_empty()
@@ -32,6 +32,18 @@ impl SubagentHost {
         reply.insert("models".to_owned(), Value::Array(models));
         reply
     }
+}
+
+/// The registry's models whose provider holds a credential, each provider asked once.
+pub fn credentialed_models(stream: &ProviderStream) -> Vec<Model> {
+    let mut asked = std::collections::HashMap::new();
+    let mut models = available_models();
+    models.retain(|model| {
+        *asked
+            .entry(model.provider.clone())
+            .or_insert_with(|| stream.has_credential(&model.provider))
+    });
+    models
 }
 
 pub fn selector_of(model: &Model) -> String {

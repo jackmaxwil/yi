@@ -72,7 +72,7 @@ async fn run(files: &[&str]) -> Result<Run, Box<dyn Error>> {
         id: Some("undo-to".to_owned()),
         ..CreateOptions::default()
     })?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(
         files
             .iter()

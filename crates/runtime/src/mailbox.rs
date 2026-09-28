@@ -1029,6 +1029,7 @@ mod tests {
         let sink = Arc::clone(&reports);
         let plans_dir = cwd.join(crate::plan::PLANS_DIR);
         let host = Arc::new(SubagentHost::new(crate::subagent::SubagentHostOptions {
+            provider: Arc::new(crate::provider::ProviderStream::new(None)),
             depth: 0,
             max_depth: 1,
             max_children: 8,

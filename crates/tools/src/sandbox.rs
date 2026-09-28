@@ -19,9 +19,16 @@ pub struct Sandbox {
     pub loopback: bool,
 }
 
-/// Credential stores, matching the paths the permission layer already refuses
-/// to destroy or read.
-const CREDENTIAL_DIRS: [&str; 5] = [".ssh", ".gnupg", ".aws", ".kube", ".docker"];
+/// Credential stores: the paths the permission layer already refuses to destroy or read,
+/// and the MCP OAuth token files.
+const CREDENTIAL_DIRS: [&str; 6] = [
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".kube",
+    ".docker",
+    ".yi/mcp/tokens",
+];
 
 /// A git dir's escape hatches: `hooks` and `config` run under the host's next git, and the
 /// pointers are what the next sandbox policy is built from.

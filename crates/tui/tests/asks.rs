@@ -246,7 +246,7 @@ fn a_draft_answers_the_question_open_when_it_started() -> TestResult {
 }
 
 fn faux_session(replies: Vec<AgentMessage>) -> AgentSession {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(replies);
     AgentSession::new(
         SessionConfig {
@@ -269,6 +269,7 @@ fn said(text: &str) -> AgentMessage {
 /// A family whose one child asks its parent a question through `ask_user`.
 fn asking_host(dir: &Scratch, parent: &Arc<AgentSession>) -> Arc<SubagentHost> {
     Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 4,
@@ -374,6 +375,45 @@ fn the_reply_box_answers_a_childs_question() -> TestResult {
             .lines()
             .any(|row| row.contains("╭") && row.contains("reply to writer: asks ")),
         "the composer's own border is the reply box: {boxed}"
+    );
+    Ok(())
+}
+
+/// A permission prompt the broker settled without the human (its ask timed out) closes, and only
+/// its own: another call settling leaves it up. Dies with a stale prompt whose answer goes nowhere.
+#[test]
+fn a_prompt_closes_when_its_own_call_settles_elsewhere() -> TestResult {
+    use yi_types::event::AgentEvent;
+    let mut app = app();
+    let (reply, answered) = std::sync::mpsc::channel();
+    app.open_approval(yi_tui::AskRequest {
+        title: "bash requires permission".to_owned(),
+        description: "make build".to_owned(),
+        grants: Vec::new(),
+        reply,
+        tool_call_id: Some("c1".to_owned()),
+    });
+    let prompt_up = |app: &mut App| -> Result<bool, Box<dyn Error>> {
+        Ok(live_rows(app)?.iter().any(|row| row.contains("Allow once")))
+    };
+    assert!(prompt_up(&mut app)?, "{:#?}", live_rows(&mut app)?);
+    let settled = |id: &str| AgentEvent::PermissionResolved {
+        tool_call_id: id.to_owned(),
+        allowed: false,
+    };
+    app.reduce_agent(settled("c2"));
+    assert!(
+        prompt_up(&mut app)?,
+        "another call settling leaves this prompt up"
+    );
+    app.reduce_agent(settled("c1"));
+    assert!(!prompt_up(&mut app)?, "{:#?}", live_rows(&mut app)?);
+    assert!(
+        matches!(
+            answered.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ),
+        "the waiting asker is released, not answered"
     );
     Ok(())
 }

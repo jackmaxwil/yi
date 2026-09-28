@@ -51,6 +51,7 @@ fn host(answer: Option<&'static str>) -> std::io::Result<(Scratch, Arc<SubagentH
     let root = Scratch::new("yi-child-transcript")?;
     let (events, _keep) = tokio::sync::broadcast::channel(64);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 4,
@@ -60,7 +61,7 @@ fn host(answer: Option<&'static str>) -> std::io::Result<(Scratch, Arc<SubagentH
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
-            let provider = Arc::new(ProviderStream::new(None, None));
+            let provider = Arc::new(ProviderStream::new(None));
             if let Some(text) = answer {
                 provider.queue_faux(vec![faux_assistant_message(
                     vec![faux_text(text)],
