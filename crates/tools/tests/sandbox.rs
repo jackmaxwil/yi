@@ -4,7 +4,9 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use yi_tools::{CancelFlag, Run, Sandbox, denial_hint, run_or_background};
+use yi_tools::{
+    CancelFlag, Run, Sandbox, SandboxRefusal, denial_hint, run_or_background, sandbox_refusal,
+};
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
@@ -112,7 +114,9 @@ fn a_denial_is_only_claimed_when_the_output_says_so() {
         loopback: false,
     };
     let hint = |code, output: &str, command: &str| {
-        denial_hint(&sandbox, cwd, Some(code), output, command).unwrap_or_default()
+        sandbox_refusal(&sandbox, cwd, Some(code), output, command)
+            .map(|refusal| denial_hint(&refusal))
+            .unwrap_or_default()
     };
     assert!(hint(0, "operation not permitted", "touch x").is_empty());
     assert!(hint(127, "command not found", "nope").is_empty());
@@ -143,6 +147,173 @@ fn a_denial_is_only_claimed_when_the_output_says_so() {
         "chmod 0 /work/x",
     );
     assert!(!inside.contains("refused writing"), "{inside}");
+}
+
+/// A sandbox over `/work` with a project under HOME, as a worktree in the home directory has.
+fn home_project() -> Result<(Sandbox, PathBuf), Box<dyn Error>> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let sandbox = Sandbox {
+        writable: vec![PathBuf::from("/work"), home.join("project")],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        loopback: false,
+    };
+    Ok((sandbox, home))
+}
+
+/// The model's second try at a refused home write spells it `$HOME`, quotes it inside python or
+/// hangs it on a flag; each must ask, where a whole-word match let it run contained again.
+#[test]
+fn a_retry_asks_in_every_spelling_of_the_refused_directory() -> TestResult {
+    let (sandbox, home) = home_project()?;
+    let cwd = Path::new("/work");
+    let refused = SandboxRefusal::Path(home.join("yidog_probe"));
+    let abs = home.display();
+    for retry in [
+        format!("echo y > {abs}/yidog_probe"),
+        "echo y > ~/yidog_probe".to_owned(),
+        "echo y > $HOME/yidog_probe".to_owned(),
+        "echo y > \"${HOME}\"/yidog_probe".to_owned(),
+        format!("python3 -c \"open('{abs}/yidog_probe','w').write('y')\""),
+        format!("cargo build --target-dir={abs}/target"),
+        format!("P={abs}/yidog_probe; echo y > $P"),
+        "cd ~ && ./write-here".to_owned(),
+    ] {
+        assert!(refused.retried_by(&sandbox, cwd, &retry), "{retry}");
+    }
+    for unrelated in [
+        "yes | head -1".to_owned(),
+        "echo hi > /work/x".to_owned(),
+        format!("./check {abs}/project/src/lib.rs"),
+        "git log HEAD~1".to_owned(),
+    ] {
+        assert!(
+            !refused.retried_by(&sandbox, cwd, &unrelated),
+            "{unrelated}"
+        );
+    }
+    Ok(())
+}
+
+/// A refusal outside home asks for a write there and never for a read: `cat /etc/hosts` stays
+/// contained after `/etc/yi-probe` was refused.
+#[test]
+fn a_refused_system_path_asks_for_writes_there_and_never_for_reads() -> TestResult {
+    let (sandbox, _home) = home_project()?;
+    let cwd = Path::new("/work");
+    let refused = SandboxRefusal::Path(PathBuf::from("/etc/yi-probe"));
+    assert!(refused.retried_by(&sandbox, cwd, "echo y > /etc/yi-other"));
+    for read in [
+        "cat /etc/hosts",
+        "ls /etc | head -3",
+        "./tool --config=/etc/tool.conf",
+    ] {
+        assert!(!refused.retried_by(&sandbox, cwd, read), "{read}");
+    }
+    Ok(())
+}
+
+/// Printed text is no refusal: the phrase echoed, grep's hits in the SDK's errno header, and a
+/// privacy read refusal from `find` behind an exit-0 pipe all name no refused write.
+#[test]
+fn only_an_errno_line_of_a_failed_command_names_a_refused_path() -> TestResult {
+    let (sandbox, _home) = home_project()?;
+    let cwd = Path::new("/work");
+    let sdk = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/errno.h";
+    let grep = format!(
+        "{sdk}:88:#define EPERM           1               /* Operation not permitted */\n\
+         {sdk}:101:#define EACCES          13              /* Permission denied */\n"
+    );
+    let cases = [
+        (
+            0,
+            "y\n/ permission denied\n".to_owned(),
+            "yes | head -1; echo '/ permission denied'",
+        ),
+        (
+            1,
+            "y\n/ permission denied\n".to_owned(),
+            "yes | head -1; echo '/ permission denied'; false",
+        ),
+        (
+            0,
+            grep.clone(),
+            "yes | head -1; grep -rn 'Permission denied' $SDK/usr/include/sys/",
+        ),
+        (
+            1,
+            grep,
+            "yes | head -1; grep -rn 'Permission denied' $SDK/usr/include/sys/; false",
+        ),
+        (
+            0,
+            "/Users/dev/Library/Mail\nfind: /Users/dev/Library/Mail: Operation not permitted\n"
+                .to_owned(),
+            "find /Users/dev/Library/Mail -maxdepth 1 2>&1 | head -2",
+        ),
+    ];
+    for (code, output, command) in cases {
+        let found = sandbox_refusal(&sandbox, cwd, Some(code), &output, command);
+        assert!(
+            !matches!(found, Some(SandboxRefusal::Path(_))),
+            "{command}: {found:?}"
+        );
+    }
+    Ok(())
+}
+
+/// The base policy grants `/dev/null`, `/dev/ptmx` and the ttys, nothing else under `/dev`: a
+/// refused `> /dev/stderr` is named, not blamed on the `yes` before it.
+#[test]
+fn a_refused_device_write_is_named() -> TestResult {
+    let (sandbox, _home) = home_project()?;
+    let found = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(1),
+        "y\nbash: line 1: /dev/stderr: Operation not permitted\n",
+        "yes | head -1; echo hi > /dev/stderr",
+    );
+    assert_eq!(
+        found,
+        Some(SandboxRefusal::Path(PathBuf::from("/dev/stderr")))
+    );
+    Ok(())
+}
+
+/// The plan's case: `git worktree add … | tail -3` exits 0, and git quotes the path it could not
+/// create, so the worktree operand is the refused write.
+#[test]
+fn a_refused_worktree_behind_a_zero_exit_pipe_is_named() -> TestResult {
+    let (sandbox, home) = home_project()?;
+    let worktree = home.join("yidog_wt");
+    let found = sandbox_refusal(
+        &sandbox,
+        Path::new("/work"),
+        Some(0),
+        &format!(
+            "fatal: could not create leading directories of '{}/.git': Operation not permitted\n",
+            worktree.display()
+        ),
+        &format!("git worktree add -q {} 2>&1 | tail -3", worktree.display()),
+    );
+    assert_eq!(found, Some(SandboxRefusal::Path(worktree)));
+    Ok(())
+}
+
+/// The broker reads the refusal the bash tool found from its result details, so both kinds
+/// survive the trip, and a result with no refusal carries none.
+#[test]
+fn a_refusal_round_trips_through_the_result_details() {
+    for refusal in [
+        SandboxRefusal::Path(PathBuf::from("/outside/y")),
+        SandboxRefusal::Scopes(vec!["curl".to_owned(), "git worktree".to_owned()]),
+    ] {
+        assert_eq!(SandboxRefusal::from_json(&refusal.to_json()), Some(refusal));
+    }
+    assert_eq!(SandboxRefusal::from_json(&serde_json::Value::Null), None);
 }
 
 /// The live half. Everything above describes the policy; this runs it.
@@ -177,7 +348,7 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
         "the file must not exist"
     );
     assert!(
-        denial_hint(&sandbox, &project, Some(code), &output, &escape).is_some(),
+        sandbox_refusal(&sandbox, &project, Some(code), &output, &escape).is_some(),
         "the failure must read as a sandbox denial: {output}"
     );
 

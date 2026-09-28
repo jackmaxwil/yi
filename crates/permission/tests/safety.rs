@@ -416,13 +416,17 @@ fn scope_names_program_and_subcommand() {
 /// hint blamed `yes` for `echo y > ~/yidog_probe`. File verbs name theirs too.
 #[test]
 fn write_targets_keep_what_the_splitter_skips() {
-    let cases: [(&str, &[&str]); 7] = [
+    let cases: [(&str, &[&str]); 8] = [
         (
             "yes | head -5; echo y > ~/yidog_probe && echo wrote-home",
             &["~/yidog_probe"],
         ),
         ("cargo fmt 2>&1 | tee -a log >>out.txt", &["out.txt", "log"]),
         ("touch /outside/x | tail -1", &["/outside/x"]),
+        (
+            "git worktree add -q /outside/wt 2>&1 | tail -3",
+            &["add", "/outside/wt"],
+        ),
         ("make 2>err.log &>'all.log'", &["err.log", "all.log"]),
         ("echo x >/outside/f; echo y >| g", &["/outside/f", "g"]),
         ("cmd >&2 2> /dev/null", &["/dev/null"]),

@@ -206,7 +206,7 @@ async fn a_refused_program_asks_even_when_the_retry_text_differs() -> TestResult
     let second = format!("mkdir {} && ls", home.join("b").display());
     let results = run_contained(&project, confined_to(&project), &[&first, &second]).await?;
     assert!(
-        results[0].contains(&format!("naming a path under `{}`", home.display())),
+        results[0].contains(&format!("writing under `{}`", home.display())),
         "the hint names what will ask: {}",
         results[0]
     );
@@ -287,6 +287,78 @@ async fn a_refusal_under_a_zero_exit_pipe_is_detected() -> TestResult {
         results[0].contains(&format!("refused writing `{}`", refused.display())),
         "a refusal behind a zero exit still explains itself: {}",
         results[0]
+    );
+    Ok(())
+}
+
+/// The spellings a model reaches for second: `$HOME`, then the path quoted inside python. Both
+/// ran contained again while the hint promised a question.
+#[tokio::test]
+async fn a_retry_spelled_through_home_or_python_asks() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, sandbox, probe) = workspace("yi-seam-spell")?;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if home.as_deref() != Some(probe.as_path()) {
+        return Err("these spellings need a HOME no writable root covers".into());
+    }
+    let tmp = root.join("yidog");
+    std::fs::create_dir_all(&tmp)?;
+    let name = format!("yidog_spell-{}", std::process::id());
+    let refused = probe.join(&name);
+    let via_home = format!("echo y > $HOME/{name}");
+    let via_python = format!(
+        "python3 -c \"open('{}','w').write('y')\"",
+        refused.display()
+    );
+    let results = run_contained(
+        &project,
+        sandbox,
+        &[&dogfood(&tmp, &refused), &via_home, &via_python],
+    )
+    .await?;
+    for (retry, result) in [&via_home, &via_python].iter().zip(&results[1..]) {
+        assert!(
+            result.contains("Permission denied") && !refused.exists(),
+            "{retry} asks instead of failing contained again: {result}"
+        );
+    }
+    Ok(())
+}
+
+/// A refusal in the middle of long output: the reducer keeps the head and the tail, so a broker
+/// reading the reduced text found nothing and the retry ran contained again.
+#[tokio::test]
+async fn a_refusal_deep_in_long_output_is_remembered() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, probe) = workspace("yi-seam-long")?;
+    let refused = probe.join(format!("yidog_long-{}.log", std::process::id()));
+    let noise = |from: u32, to: u32| {
+        format!(
+            "seq -f 'test {from}-{to} case %g passed in 0.01s, nothing to report here' {from} {to} >&2"
+        )
+    };
+    let first = format!(
+        "{}; echo y > {}; {}",
+        noise(1, 150),
+        refused.display(),
+        noise(152, 300)
+    );
+    let retry = format!("printf y > {}", refused.display());
+    let results = run_contained(&project, sandbox, &[&first, &retry]).await?;
+    let errno = format!("{}: Operation not permitted", refused.display());
+    assert!(
+        !results[0].contains(&errno) && results[0].contains("refused writing"),
+        "the reducer cut the refusal line, and the hint read it from the raw output: {}",
+        results[0]
+    );
+    assert!(
+        results[1].contains("Permission denied") && !refused.exists(),
+        "the retry asks: {}",
+        results[1]
     );
     Ok(())
 }
