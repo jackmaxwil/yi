@@ -215,10 +215,34 @@ async fn a_forced_choice_is_spent_on_the_first_turn_and_gone_by_the_second()
     Ok(())
 }
 
-/// Dies with the wind-down ending the run on a tool call: the stopped run gets one last
-/// request, with tool choice `none`, and no second one however that turn ends.
+/// Counts its runs.
+struct Counted(Arc<Mutex<u32>>);
+
+impl AgentTool for Counted {
+    fn definition(&self) -> ToolDef {
+        Noop.definition()
+    }
+
+    fn execute<'a>(
+        &'a self,
+        tool_call_id: &'a str,
+        args: serde_json::Map<String, serde_json::Value>,
+        signal: &'a InterruptSignal,
+    ) -> ToolFuture<'a> {
+        if let Ok(mut runs) = self.0.lock() {
+            *runs += 1;
+        }
+        Noop.execute(tool_call_id, args, signal)
+    }
+}
+
+/// Dies with the wind-down ending the run on a tool call. Incident (2026-09-28): the last word
+/// went out with tool choice `none`, which no OpenRouter endpoint for glm-5.3-flash accepts
+/// ("No endpoints found ... Filter by Tool Compatibility"); the retry went out without it, the
+/// model called bash after "Time is up", and the call ran. Now no request forces a choice, a
+/// dropped last word is asked again, and a tool call in the reply is answered, never run.
 #[tokio::test]
-async fn a_stop_after_a_tool_call_asks_once_for_a_tool_free_last_word() {
+async fn a_last_word_forces_no_choice_and_runs_no_tool_it_calls() {
     let mut config = LoopConfig::new(faux_model());
     config.should_stop_after_turn = Some(Box::new(|_| true));
     config.last_word = Some(Box::new(|_| {
@@ -233,12 +257,54 @@ async fn a_stop_after_a_tool_call_asks_once_for_a_tool_free_last_word() {
             StopReason::ToolUse,
         )
     };
-    let choices: Vec<Option<ToolChoice>> = run_spied(config, vec![call(), call()])
-        .await
-        .into_iter()
-        .map(|(_, choice)| choice)
-        .collect();
-    assert_eq!(choices, vec![None, Some(ToolChoice::None)]);
+    let mut dropped = faux_assistant_message(Vec::new(), StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut dropped {
+        *error_message = Some("HTTP 404: No endpoints found for z-ai/glm-5.3-flash.".to_owned());
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let runs = Arc::new(Mutex::new(0));
+    let stream = Spy {
+        seen: Arc::clone(&seen),
+        responses: Mutex::new(vec![call(), dropped, call()]),
+    };
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(Counted(Arc::clone(&runs)))],
+    };
+    let mut ended = false;
+    let mut emit = |event: AgentEvent| ended |= matches!(event, AgentEvent::AgentEnd { .. });
+    let prompt = yi_types::message::UserContent::Text("hi".to_owned());
+    let messages = run_loop(
+        &mut context,
+        vec![AgentMessage::host_user(prompt, 0)],
+        &config,
+        &InterruptSignal::default(),
+        &mut emit,
+        &stream,
+    )
+    .await;
+
+    let choices: Vec<Option<ToolChoice>> = seen.lock().map_or_else(
+        |_| Vec::new(),
+        |seen| seen.iter().map(|(_, choice)| choice.clone()).collect(),
+    );
+    assert_eq!(
+        choices,
+        vec![None, None, None],
+        "no forced choice, the retry included"
+    );
+    assert_eq!(
+        runs.lock().map(|runs| *runs).ok(),
+        Some(1),
+        "only the turn before the last word ran"
+    );
+    assert!(ended, "the run ends");
+    let last = messages.last();
+    assert!(
+        matches!(last, Some(AgentMessage::ToolResult { is_error: true, .. })),
+        "the last word's call is answered as not run: {last:?}"
+    );
 }
 
 /// Records every request's messages and answers `done`.
@@ -254,6 +320,7 @@ impl yi_loop::run::StreamFn for Recorder {
     ) -> Receiver<AssistantMessageEvent> {
         if let Ok(mut seen) = self.0.lock() {
             seen.push(context.messages.clone());
+            seen.push(context.transient.clone());
         }
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
         let message = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
@@ -265,8 +332,8 @@ impl yi_loop::run::StreamFn for Recorder {
     }
 }
 
-/// The per-request tail (the environment block) trails the request and never enters the
-/// history; it used to be appended to a full copy of the history on every request.
+/// The per-request tail (the environment block) rides the request's `transient`, never its
+/// history: the recorder sees the history and the tail as two lists per request.
 #[tokio::test]
 async fn the_request_tail_trails_each_request_and_stays_out_of_the_history() {
     let text = |value: &str| {
@@ -286,10 +353,69 @@ async fn the_request_tail_trails_each_request_and_stays_out_of_the_history() {
     let prompt = vec![text("hi")];
     run_loop(&mut context, prompt, &config, &signal, &mut emit, &stream).await;
     let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
-    assert_eq!(seen, vec![vec![text("hi"), text("tail")]]);
+    assert_eq!(seen, vec![vec![text("hi")], vec![text("tail")]]);
     assert!(
         !context.messages.contains(&text("tail")),
         "{:?}",
         context.messages
     );
+}
+
+/// Records the `reuse` each request carries and answers `done`.
+struct ReuseRecorder(Arc<Mutex<Vec<yi_types::model::Reuse>>>);
+
+impl yi_loop::run::StreamFn for ReuseRecorder {
+    fn stream(
+        &self,
+        _model: &Model,
+        context: &LlmContext,
+        _effort: Effort,
+        _signal: &InterruptSignal,
+    ) -> Receiver<AssistantMessageEvent> {
+        if let Ok(mut seen) = self.0.lock() {
+            seen.push(context.reuse);
+        }
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let message = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+        let _ = sender.try_send(AssistantMessageEvent::Done {
+            reason: StopReason::Stop,
+            message,
+        });
+        receiver
+    }
+}
+
+/// The request says what its config says about reuse (D295): a session that will never be
+/// continued, the auto-reviewer's, sets `OneShot` and the loop passes it through; the
+/// default is `Loop`, the side whose failure is one spare write.
+#[tokio::test]
+async fn the_request_carries_the_configured_reuse() {
+    for (configured, expected) in [
+        (None, yi_types::model::Reuse::Loop),
+        (
+            Some(yi_types::model::Reuse::OneShot),
+            yi_types::model::Reuse::OneShot,
+        ),
+    ] {
+        let mut config = LoopConfig::new(faux_model());
+        if let Some(reuse) = configured {
+            config.reuse = reuse;
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut context = LoopContext {
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        let mut emit = |_: AgentEvent| {};
+        let stream = ReuseRecorder(Arc::clone(&seen));
+        let signal = InterruptSignal::default();
+        let prompt = vec![AgentMessage::host_user(
+            yi_types::message::UserContent::Text("hi".to_owned()),
+            0,
+        )];
+        run_loop(&mut context, prompt, &config, &signal, &mut emit, &stream).await;
+        let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
+        assert_eq!(seen, vec![expected], "configured {configured:?}");
+    }
 }

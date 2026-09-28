@@ -41,6 +41,9 @@ import axes  # noqa: E402
 import yi_usage  # noqa: E402
 import test_refine  # noqa: E402
 import test_levers  # noqa: E402
+import test_inner  # noqa: E402
+import test_mutate  # noqa: E402
+import test_revert  # noqa: E402
 import test_judge_replay  # noqa: E402
 import test_improve  # noqa: E402
 import test_skill_labels  # noqa: E402
@@ -783,6 +786,21 @@ def check_improve():
     result = unittest.TextTestRunner(stream=report).run(suite)
     assert result.testsRun >= 4 and result.wasSuccessful(), report.getvalue()
 
+def check_inner():
+    """The inner loop's generators: seeded, red untouched, green solved, the grader outside the workspace."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_inner)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 3 and result.wasSuccessful(), report.getvalue()
+
+def check_mutate():
+    """The real-repo families on synthetic repos: a seeded red mutation graded by the pristine tests,
+    and a past commit's change undone, graded by that commit's tests."""
+    report = io.StringIO()
+    load = unittest.defaultTestLoader.loadTestsFromModule
+    result = unittest.TextTestRunner(stream=report).run(unittest.TestSuite([load(test_mutate), load(test_revert)]))
+    assert result.testsRun >= 5 and result.wasSuccessful(), report.getvalue()
+
 def check_levers():
     """D220: the manifest, the shared default fixture and the floors agree, and the gates hold."""
     report = io.StringIO()
@@ -817,6 +835,8 @@ CHECKS = (
     check_judge_replay,
     check_graph_refiner,
     check_levers,
+    check_inner,
+    check_mutate,
     check_skill_labels,
     check_improve,
     check_trials,
