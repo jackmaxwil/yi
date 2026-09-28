@@ -60,12 +60,15 @@ impl Fixture {
             .execute(args(&[("path", json!(path))]), &self.context)
     }
 
+    /// The runtime previews every call for the permission ask before it executes it; the
+    /// fixture does the same, so a preview's side effects cannot hide from the suite.
     fn edit(&self, patch: &str) -> ToolOutput {
-        HashlineEditTool {
+        let tool = HashlineEditTool {
             state: std::sync::Arc::clone(&self.state),
             freeform_grammar: false,
-        }
-        .execute(args(&[("patch", json!(patch))]), &self.context)
+        };
+        let _ = tool.preview(&args(&[("patch", json!(patch))]), &self.context.cwd);
+        tool.execute(args(&[("patch", json!(patch))]), &self.context)
     }
 
     fn tag_of(&self, path: &str) -> Result<String, Box<dyn Error>> {
@@ -233,7 +236,7 @@ fn missing_tag_rejects_with_teaching_text() -> TestResult {
     assert!(edit.is_error);
     let text = output_text(&edit);
     assert!(
-        text.contains("No version of a.txt was shown this session"),
+        text.contains("No version of a.txt is on record for this session"),
         "{text}"
     );
     assert!(
@@ -870,6 +873,7 @@ fn a_tail_insert_under_a_tag_never_minted_is_refused_then_lands_with_the_minted_
         "{text}"
     );
     assert!(text.contains("1:/target"), "{text}");
+    assert!(!text.lines().any(|line| line == " 2:"), "{text}");
     assert_eq!(fixture.content(".gitignore")?, "/target\n");
 
     let tag = minted_tag(&text, ".gitignore")?;
@@ -898,7 +902,7 @@ fn a_tag_from_a_prior_session_is_refused_until_this_one_shows_the_lines() -> Tes
     let text = output_text(&blind);
     assert!(blind.is_error, "{text}");
     assert!(
-        text.contains("No version of Cargo.toml was shown this session"),
+        text.contains("No version of Cargo.toml is on record for this session"),
         "{text}"
     );
     assert!(text.contains("*3:version = \"0.1.0\""), "{text}");
@@ -946,5 +950,122 @@ fn a_reveal_past_forty_rows_unlocks_nothing_and_names_the_ranged_read() -> TestR
     let tag = minted_tag(&output_text(&read), "LICENSE-APACHE")?;
     let landed = fixture.edit(&patch(&format!("#{tag}")));
     assert!(!landed.is_error, "{}", output_text(&landed));
+    Ok(())
+}
+
+/// The runtime previews an edit before it executes it. A preview that recorded its refusal's
+/// reveal as displayed let the first execute land blind, with no refusal ever shown.
+#[test]
+fn a_preview_of_a_never_read_file_unlocks_nothing_for_the_execute() -> TestResult {
+    let fixture = Fixture::new("preview-never-read")?;
+    fixture.write("a.txt", &ten_lines())?;
+    let patch = "[a.txt]\nPUT 7.=7:\n+seven\n";
+    assert!(fixture.preview(patch).is_none());
+    let edit = fixture.edit(patch);
+    let text = output_text(&edit);
+    assert!(edit.is_error, "{text}");
+    assert!(text.contains("is on record for this session"), "{text}");
+    assert_eq!(fixture.content("a.txt")?, ten_lines());
+    Ok(())
+}
+
+#[test]
+fn a_preview_under_a_prior_sessions_tag_unlocks_nothing_for_the_execute() -> TestResult {
+    let fixture = Fixture::new("preview-resumed")?;
+    fixture.write("Cargo.toml", CARGO_TOML)?;
+    let tag = fixture.tag_of("Cargo.toml")?;
+    let resumed = Fixture {
+        state: shared_hashline_state(),
+        ..fixture
+    };
+    let patch = format!("[Cargo.toml#{tag}]\nPUT 3.=3:\n+version = \"0.2.0\"\n");
+    assert!(resumed.preview(&patch).is_none());
+    let edit = resumed.edit(&patch);
+    assert!(edit.is_error, "{}", output_text(&edit));
+    assert_eq!(resumed.content("Cargo.toml")?, CARGO_TOML);
+    Ok(())
+}
+
+#[test]
+fn a_preview_of_an_unseen_line_unlocks_nothing_for_the_execute() -> TestResult {
+    let fixture = Fixture::new("preview-unseen")?;
+    let body: String = (1..=50).map(|n| format!("line {n}\n")).collect();
+    fixture.write("big.txt", &body)?;
+    let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
+        args(&[
+            ("path", json!("big.txt")),
+            ("offset", json!(1)),
+            ("limit", json!(10)),
+        ]),
+        &fixture.context,
+    );
+    let tag = minted_tag(&output_text(&read), "big.txt")?;
+    let patch = format!("[big.txt#{tag}]\nPUT 30.=30:\n+changed\n");
+    assert!(fixture.preview(&patch).is_none());
+    let edit = fixture.edit(&patch);
+    let text = output_text(&edit);
+    assert!(edit.is_error, "{text}");
+    assert!(text.contains("never displayed"), "{text}");
+    assert_eq!(fixture.content("big.txt")?, body);
+    Ok(())
+}
+
+/// A line wider than 512 columns is clipped by `read` and by every refusal, so it never joins
+/// the seen set; the refusal names a remedy that lands, not the read that would loop.
+#[test]
+fn a_clipped_anchor_names_a_remedy_that_lands() -> TestResult {
+    let fixture = Fixture::new("gate-wide")?;
+    let wide = format!("{}TOKEN{}", "x".repeat(300), "y".repeat(300));
+    let body = format!("one\ntwo\n{wide}\nfour\n");
+    fixture.write("wide.txt", &body)?;
+    let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
+        args(&[("path", json!("wide.txt")), ("limit", json!(1))]),
+        &fixture.context,
+    );
+    let tag = minted_tag(&output_text(&read), "wide.txt")?;
+    let on_wide = fixture.edit(&format!("[wide.txt#{tag}]\nPUT 3.=3:\n+three\n"));
+    let text = output_text(&on_wide);
+    assert!(on_wide.is_error, "{text}");
+    assert!(
+        text.contains("Line(s) 3 exceed 512 columns and are never edit anchors"),
+        "{text}"
+    );
+    assert!(!text.contains("ranges="), "{text}");
+    // The clipped row blocked only itself: line 4, shown whole beside it, now anchors.
+    let beside = fixture.edit(&format!("[wide.txt#{tag}]\nPUT 4.=4:\n+FOUR\n"));
+    assert!(!beside.is_error, "{}", output_text(&beside));
+    // The named remedy, run once: grep replace with apply rewrites the wide line in place.
+    let applied = yi_tools::GrepTool {
+        hashline: Some(std::sync::Arc::clone(&fixture.state)),
+    }
+    .execute(
+        args(&[
+            ("pattern", json!("TOKEN")),
+            ("replace", json!("token")),
+            ("apply", json!(true)),
+        ]),
+        &fixture.context,
+    );
+    assert!(!applied.is_error, "{}", output_text(&applied));
+    assert_eq!(
+        fixture.content("wide.txt")?,
+        body.replace("TOKEN", "token").replace("four", "FOUR")
+    );
+    Ok(())
+}
+
+/// An anchor past the end shows nothing; the refusal says so instead of promising a retry.
+#[test]
+fn an_anchor_past_the_end_of_a_never_read_file_names_the_length() -> TestResult {
+    let fixture = Fixture::new("gate-past-eof")?;
+    fixture.write("a.txt", &ten_lines())?;
+    let edit = fixture.edit("[a.txt]\nPUT 500.=500:\n+x\n");
+    let text = output_text(&edit);
+    assert!(edit.is_error, "{text}");
+    assert!(
+        text.contains("Lines 500 are past the end (the file has 10 lines)"),
+        "{text}"
+    );
+    assert!(!text.contains("re-issue with this header"), "{text}");
     Ok(())
 }

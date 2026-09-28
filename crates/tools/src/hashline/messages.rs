@@ -25,16 +25,18 @@ pub fn anchored_lines(anchor_lines: &[u64], total: u64) -> Vec<u64> {
     display
 }
 
-/// One refusal's rows; `seen` is every line printed, or empty when the cap or the clip cut any.
-pub struct Reveal {
+/// One refusal's rows; `seen` is every whole line printed, or empty past the row cap.
+pub struct RefusalRows {
     pub rows: Vec<String>,
     pub seen: Vec<u64>,
-    pub cut: bool,
+    pub cut_rows: bool,
+    pub clipped: Vec<u64>,
 }
 
-pub fn reveal(display: &[u64], anchors: &[u64], lines: &[impl AsRef<str>]) -> Reveal {
+pub fn refusal_rows(display: &[u64], anchors: &[u64], lines: &[impl AsRef<str>]) -> RefusalRows {
     let mut rows: Vec<String> = Vec::new();
-    let mut cut = display.len() > SEEN_LINE_REVEAL_CAP;
+    let mut clipped: Vec<u64> = Vec::new();
+    let cut_rows = display.len() > SEEN_LINE_REVEAL_CAP;
     let mut previous: Option<u64> = None;
     for &line in display.iter().take(SEEN_LINE_REVEAL_CAP) {
         if previous.is_some_and(|previous| line > previous.saturating_add(1)) {
@@ -47,27 +49,63 @@ pub fn reveal(display: &[u64], anchors: &[u64], lines: &[impl AsRef<str>]) -> Re
             .and_then(|index| lines.get(index))
             .map_or("", |text| text.as_ref());
         let text = if text.chars().count() > SEEN_LINE_REVEAL_MAX_COLUMNS {
-            cut = true;
-            let clipped: String = text.chars().take(SEEN_LINE_REVEAL_MAX_COLUMNS).collect();
-            format!("{clipped}\u{2026}")
+            clipped.push(line);
+            let head: String = text.chars().take(SEEN_LINE_REVEAL_MAX_COLUMNS).collect();
+            format!("{head}\u{2026}")
         } else {
             text.to_owned()
         };
         let marker = if anchors.contains(&line) { "*" } else { " " };
         rows.push(format!("{marker}{}", format_numbered_line(line, &text)));
     }
-    let seen = if cut { Vec::new() } else { display.to_vec() };
-    Reveal { rows, seen, cut }
+    let seen = if cut_rows {
+        Vec::new()
+    } else {
+        display
+            .iter()
+            .copied()
+            .filter(|line| !clipped.contains(line))
+            .collect()
+    };
+    RefusalRows {
+        rows,
+        seen,
+        cut_rows,
+        clipped,
+    }
 }
 
-/// A whole reveal is a view, so the retry may cite the header; a cut one displays nothing.
-pub fn reveal_footer(section_path: &str, tag: FileTag, cut: bool, anchors: &[u64]) -> String {
-    if cut {
+/// What the rows unlock: whole, the retry; cut at the cap, nothing; a clipped anchor, never.
+pub fn refusal_footer(
+    section_path: &str,
+    tag: FileTag,
+    shown: &RefusalRows,
+    anchors: &[u64],
+    total: u64,
+) -> String {
+    if shown.rows.is_empty() {
         return format!(
-            "This reveal is cut (at most {SEEN_LINE_REVEAL_CAP} rows of {SEEN_LINE_REVEAL_MAX_COLUMNS} columns), \
-so none of these lines count as displayed. Read them whole with `read` on {section_path} with {}, \
-then re-issue the edit with the header that read returns.",
+            "Lines {} are past the end (the file has {total} lines).",
+            format_line_ranges(anchors)
+        );
+    }
+    if shown.cut_rows {
+        return format!(
+            "More than {SEEN_LINE_REVEAL_CAP} rows, so none of these lines count as displayed. \
+Read them whole with `read` on {section_path} with {}, then re-issue the edit with the header that read returns.",
             read_ranges(anchors)
+        );
+    }
+    let wide: Vec<u64> = anchors
+        .iter()
+        .copied()
+        .filter(|line| shown.clipped.contains(line))
+        .collect();
+    if !wide.is_empty() {
+        return format!(
+            "Line(s) {} exceed {SEEN_LINE_REVEAL_MAX_COLUMNS} columns and are never edit anchors: change them with \
+`grep` `replace` and `apply`, or rewrite the file with `write`.",
+            format_line_ranges(&wide)
         );
     }
     format!(
@@ -264,7 +302,7 @@ The next multi-line block begins at line {} and ends at line {}. Retry `{retry}`
     }
     if let Some(file_lines) = file_lines {
         let total = u64::try_from(file_lines.len()).unwrap_or(u64::MAX);
-        let rows = reveal(&anchored_lines(&[line], total), &[line], file_lines).rows;
+        let rows = refusal_rows(&anchored_lines(&[line], total), &[line], file_lines).rows;
         if !rows.is_empty() {
             message.push_str(&format!("\n\n{}", rows.join("\n")));
         }
@@ -389,17 +427,16 @@ extra changes were unexpected."
 
 pub fn missing_snapshot_tag_message(
     section_path: &str,
-    minted: Option<(FileTag, &Reveal, &[u64])>,
+    minted: Option<(FileTag, &[String], &str)>,
 ) -> String {
     match minted {
-        Some((tag, shown, anchors)) => format!(
-            "No version of {section_path} was shown this session. It reads now as \
-{HL_FILE_PREFIX}{section_path}{HL_FILE_HASH_SEP}{tag}{HL_FILE_SUFFIX} at the lines this edit names:\n{}\n{}",
-            shown.rows.join("\n"),
-            reveal_footer(section_path, tag, shown.cut, anchors)
+        Some((tag, rows, footer)) => format!(
+            "No version of {section_path} is on record for this session (never shown, or no longer held). \
+It reads now as {HL_FILE_PREFIX}{section_path}{HL_FILE_HASH_SEP}{tag}{HL_FILE_SUFFIX} at the lines this edit names:\n{}\n{footer}",
+            rows.join("\n")
         ),
         None => format!(
-            "No version of {section_path} was shown this session; `read` or `grep` it first (the {HL_FILE_HASH_SEP}tag in the header is then optional). To create a new file, use the write tool."
+            "No version of {section_path} is on record for this session (never shown, or no longer held); `read` or `grep` it first (the {HL_FILE_HASH_SEP}tag in the header is then optional). To create a new file, use the write tool."
         ),
     }
 }
@@ -500,15 +537,15 @@ pub fn unseen_lines_message(
     section_path: &str,
     unseen_lines: &[u64],
     tag: FileTag,
-    shown: &Reveal,
+    rows: &[String],
+    footer: &str,
 ) -> String {
     format!(
         "This edit anchors to lines {} of {section_path} that \
 {HL_FILE_PREFIX}{section_path}{HL_FILE_HASH_SEP}{tag}{HL_FILE_SUFFIX} never displayed (it showed a \
-partial range, a search hit, or a folded summary). Those lines read now:\n{}\n{}",
+partial range, a search hit, or a folded summary). Those lines read now:\n{}\n{footer}",
         format_line_ranges(unseen_lines),
-        shown.rows.join("\n"),
-        reveal_footer(section_path, tag, shown.cut, unseen_lines)
+        rows.join("\n")
     )
 }
 

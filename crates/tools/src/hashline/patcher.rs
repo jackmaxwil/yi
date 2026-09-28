@@ -5,19 +5,20 @@ use super::blocks::{brace_block_resolver, indent_block_resolver, resolve_block_e
 use super::clipboard::{OnEmptyPaste, fork_clipboard, start_clipboard_batch};
 use super::format::{
     FileTag, HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP, compute_file_hash, format_hashline_header,
+    split_addressable_file_lines,
 };
 use super::input::{Patch, PatchSection};
 use super::messages::{
-    HEADTAIL_DRIFT_WARNING, Reveal, anchored_lines, missing_snapshot_tag_message,
-    path_recovered_from_tag_message, rebased_warning, reveal, reveal_footer, unseen_lines_message,
+    HEADTAIL_DRIFT_WARNING, RefusalRows, anchored_lines, missing_snapshot_tag_message,
+    path_recovered_from_tag_message, rebased_warning, refusal_footer, refusal_rows,
+    unseen_lines_message,
 };
-use super::mismatch::MismatchError;
+use super::mismatch::mismatch_message;
 use super::normalize::{Endings, split};
 use super::rebase::{LineMap, remap_edits};
 use super::snapshots::{Snapshot, SnapshotStore};
 use super::types::{ApplyResult, BlockResolverRequest, BlockSpan, Clipboard, Edit, FileOp};
 
-/// Lines one refusal reveals; past it nothing counts as displayed, so no piecewise reveal.
 pub(crate) const SEEN_LINE_REVEAL_CAP: usize = 40;
 /// The one clip width for revealed and read rows alike; an over-wide line
 /// truncates so no line joins the seen set.
@@ -73,28 +74,6 @@ impl PreparedSection {
 pub struct Patcher<'a> {
     pub snapshots: &'a mut SnapshotStore,
     pub cwd: PathBuf,
-}
-
-fn has_anchor_scoped_edit(edits: &[Edit]) -> bool {
-    use super::types::{Cursor, PasteTarget};
-    edits.iter().any(|edit| match edit {
-        Edit::Delete { .. } | Edit::Block { .. } | Edit::Cut { .. } => true,
-        Edit::Paste { at, .. } => match at {
-            PasteTarget::Span { .. } => true,
-            PasteTarget::Gap { cursor } => {
-                matches!(
-                    cursor,
-                    Cursor::BeforeAnchor { .. } | Cursor::AfterAnchor { .. }
-                )
-            }
-        },
-        Edit::Insert { cursor, .. } => {
-            matches!(
-                cursor,
-                Cursor::BeforeAnchor { .. } | Cursor::AfterAnchor { .. }
-            )
-        }
-    })
 }
 
 /// Chosen by extension: indentation-scoped languages have no closer to scan for.
@@ -217,10 +196,7 @@ impl<'a> Patcher<'a> {
         // No tag names the version this session last showed for the path.
         let expected = match section.file_hash.as_deref() {
             Some(text) => FileTag::parse(text).ok_or_else(|| {
-                format!(
-                    "Tag {HL_FILE_HASH_SEP}{text} on {} is not {HL_FILE_HASH_LENGTH} hex digits; copy the header from the read, write or edit result.",
-                    section.path
-                )
+                format!("Tag {HL_FILE_HASH_SEP}{text} is not {HL_FILE_HASH_LENGTH} hex digits.")
             })?,
             None => match self.snapshots.head(&canonical_path) {
                 Some(head) => head.hash,
@@ -434,13 +410,14 @@ impl<'a> Patcher<'a> {
         text: &str,
     ) -> Result<String, String> {
         let (normalized, _) = split(text);
-        let (anchors, shown) = refusal_rows(section, &normalized)?;
+        let (anchors, total, shown) = section_rows(section, &normalized)?;
         let tag = self
             .snapshots
             .record(canonical_path, &normalized, Some(&shown.seen));
+        let footer = refusal_footer(&section.path, tag, &shown, &anchors, total);
         Ok(missing_snapshot_tag_message(
             &section.path,
-            Some((tag, &shown, &anchors)),
+            Some((tag, &shown.rows, &footer)),
         ))
     }
 
@@ -478,7 +455,7 @@ impl<'a> Patcher<'a> {
         if seen.is_empty() && snapshot.text.is_empty() {
             return Ok(());
         }
-        let lines: Vec<&str> = snapshot.text.split('\n').collect();
+        let lines = split_addressable_file_lines(&snapshot.text);
         let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
         let unseen: Vec<u64> = section
             .collect_anchor_lines()?
@@ -488,14 +465,16 @@ impl<'a> Patcher<'a> {
         if unseen.is_empty() {
             return Ok(());
         }
-        let shown = reveal(&anchored_lines(&unseen, total), &unseen, &lines);
+        let shown = refusal_rows(&anchored_lines(&unseen, total), &unseen, &lines);
         self.snapshots
             .record_seen_lines(canonical_path, snapshot.hash, &shown.seen);
+        let footer = refusal_footer(&section.path, snapshot.hash, &shown, &unseen, total);
         Err(unseen_lines_message(
             &section.path,
             &unseen,
             snapshot.hash,
-            &shown,
+            &shown.rows,
+            &footer,
         ))
     }
 
@@ -521,9 +500,9 @@ impl<'a> Patcher<'a> {
         };
         match remap_edits(edits, &map, &old_block) {
             Ok(edits) => Ok(edits),
-            Err(_unmapped) => Err(self
-                .mismatch_error(section, canonical_path, normalized, expected, true)?
-                .display_message()),
+            Err(_unmapped) => {
+                Err(self.mismatch_error(section, canonical_path, normalized, expected, true)?)
+            }
         }
     }
 
@@ -544,11 +523,15 @@ impl<'a> Patcher<'a> {
             edits
         } else {
             let Some(old) = self.snapshots.by_hash(canonical_path, expected).cloned() else {
-                return Err(self
-                    .mismatch_error(section, canonical_path, normalized, expected, false)?
-                    .display_message());
+                return Err(self.mismatch_error(
+                    section,
+                    canonical_path,
+                    normalized,
+                    expected,
+                    false,
+                )?);
             };
-            if has_anchor_scoped_edit(&edits) {
+            if !section.collect_anchor_lines()?.is_empty() {
                 let edits =
                     self.rebase_edits(section, canonical_path, normalized, edits, expected, &old)?;
                 warnings.push(rebased_warning(old.hash, live_hash));
@@ -582,31 +565,35 @@ impl<'a> Patcher<'a> {
         normalized: &str,
         expected: FileTag,
         hash_recognized: bool,
-    ) -> Result<MismatchError, String> {
-        let (anchors, shown) = refusal_rows(section, normalized)?;
+    ) -> Result<String, String> {
+        let (anchors, total, shown) = section_rows(section, normalized)?;
         let actual = self
             .snapshots
             .record(canonical_path, normalized, Some(&shown.seen));
-        Ok(MismatchError {
-            path: Some(section.path.clone()),
-            expected_file_hash: expected.to_string(),
-            actual_file_hash: actual,
-            rows: shown.rows,
-            footer: reveal_footer(&section.path, actual, shown.cut, &anchors),
+        let footer = refusal_footer(&section.path, actual, &shown, &anchors, total);
+        Ok(mismatch_message(
+            &section.path,
+            &expected.to_string(),
+            actual,
             hash_recognized,
-        })
+            &shown.rows,
+            &footer,
+        ))
     }
 }
 
-/// The anchors and what a refusal prints: each ±2, plus the head or tail row an insert lands by.
-fn refusal_rows(section: &PatchSection, normalized: &str) -> Result<(Vec<u64>, Reveal), String> {
-    let lines: Vec<&str> = normalized.split('\n').collect();
+/// The anchors, the addressable line count, and the rows a refusal prints (anchors ±2).
+fn section_rows(
+    section: &PatchSection,
+    normalized: &str,
+) -> Result<(Vec<u64>, u64, RefusalRows), String> {
+    let lines = split_addressable_file_lines(normalized);
     let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
     let anchors = section.collect_anchor_lines()?;
     let (head, tail) = section.inserts_at_ends()?;
     let mut display = anchors.clone();
     display.extend(head.then_some(1));
     display.extend(tail.then_some(total));
-    let shown = reveal(&anchored_lines(&display, total), &anchors, &lines);
-    Ok((anchors, shown))
+    let shown = refusal_rows(&anchored_lines(&display, total), &anchors, &lines);
+    Ok((anchors, total, shown))
 }
