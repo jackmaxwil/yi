@@ -7,6 +7,8 @@ use crate::process::{OUTPUT_CAP, command, run_captured};
 use crate::tool::{Tool, ToolContext, ToolKind, ToolOutput, text_output};
 
 const LAYER_CAP: usize = 4_000;
+/// The skeleton footer's longest form, held back from the layer so the footer always fits.
+const FOOTER_ROOM: usize = 200;
 const SKELETON_FILES: usize = 40;
 const SKELETON_LINES: usize = 12;
 const SKELETON_SCAN: usize = 2_000;
@@ -139,6 +141,10 @@ fn clamp(name: &str, mut body: String) -> String {
     while end > 0 && !body.is_char_boundary(end) {
         end = end.saturating_sub(1);
     }
+    // A cut mid-row reads as a row; the last whole one is where the layer ends.
+    if let Some(row_end) = body.get(..end).and_then(|kept| kept.rfind('\n')) {
+        end = row_end;
+    }
     #[expect(
         clippy::disallowed_methods,
         reason = "walked back to a char boundary above"
@@ -230,18 +236,24 @@ fn skeletons(
     });
     let total = ranked.len();
     let mut out = order_line(&ranked, symbol);
+    let mut shown = 0_usize;
+    let mut cap = format!("the {SKELETON_FILES}-file cap");
     for (_, _, name) in ranked.iter().take(SKELETON_FILES) {
-        out.push_str(name);
-        out.push('\n');
+        let mut block = format!("{name}\n");
         for line in skeleton_lines(&root.join(name)) {
-            out.push_str("  ");
-            out.push_str(&line);
-            out.push('\n');
+            block.push_str(&format!("  {line}\n"));
         }
+        // Whole files only: the layer clamp cuts from the end, and this footer is what it cut.
+        if out.len().saturating_add(block.len()) > LAYER_CAP.saturating_sub(FOOTER_ROOM) {
+            cap = format!("the {LAYER_CAP}-byte layer budget");
+            break;
+        }
+        out.push_str(&block);
+        shown = shown.saturating_add(1);
     }
-    if total > SKELETON_FILES {
+    if shown < total {
         out.push_str(&format!(
-            "[skeletons truncated: {SKELETON_FILES} of {total} files at the {SKELETON_FILES}-file cap; \
+            "[skeletons truncated: {shown} of {total} files at {cap}; \
              read a directory for its skeletons, or pass symbol to rank its files first]\n"
         ));
     }
@@ -424,4 +436,15 @@ fn issue_row(line: &str) -> Option<String> {
         .find_map(|key| value.get(*key).and_then(Value::as_str))
         .unwrap_or("(no text)");
     Some(format!("{fingerprint}  {text}"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_clamped_layer_ends_on_a_whole_row() {
+        let clamped = super::clamp("heat", "abcdef\n".repeat(1_000));
+        let (kept, marker) = clamped.rsplit_once('\n').unwrap_or_default();
+        assert_eq!(marker, "[heat truncated at 4000 bytes]");
+        assert!(kept.lines().all(|row| row == "abcdef"), "{kept}");
+    }
 }

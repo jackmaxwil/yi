@@ -320,7 +320,7 @@ fn plan_get_serializes_the_document_with_ready_and_finished() -> TestResult {
     Ok(())
 }
 
-struct NoChildren;
+pub(crate) struct NoChildren;
 
 impl Delegate for NoChildren {
     fn spawn(
