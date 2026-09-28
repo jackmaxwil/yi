@@ -324,6 +324,22 @@ fn an_edit_that_adds_a_line_keeps_the_later_lf_line() -> TestResult {
 }
 
 #[test]
+fn a_replacement_equal_to_its_match_says_nothing_changed() -> TestResult {
+    let lab = Lab::with("identity", "requirements.txt")?;
+    let applied = lab.replace(r"requests==2\.32\.3", "requests==2.32.3", false);
+    assert_eq!(
+        output_text(&applied),
+        "nothing changed: each of the 1 matches is replaced by itself"
+    );
+    assert_eq!(applied.result.details["hits"], json!(1));
+    assert_bytes(
+        &lab.bytes("requirements.txt")?,
+        &fixture("requirements.txt")?,
+    );
+    Ok(())
+}
+
+#[test]
 fn a_never_read_bom_file_lands_on_the_retry_its_refusal_names() -> TestResult {
     let lab = Lab::with("bom-retry", "demo.sln")?;
     let patch = "PUT 3.=3:\n+# Visual Studio Version 18\n";
