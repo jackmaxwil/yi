@@ -768,3 +768,29 @@ Each major was re-checked against the tree before it was accepted.
 | LoopConfig fields never read by the loop | accepted | §5.2, §8 stage 3 |
 | Minor citation fixes (account.rs, memory store, retry, auto-review, cache key, README blocker, SD band, probe) | accepted | §1, §3, §6.1, §6.4 |
 | Merge the verdict ledger, census and runner into existing pieces | accepted | §0, §9 |
+
+## 18. Measured since revision 2 (2026-09-27)
+
+The first paid runs replaced four of this plan's estimates. Where a number above disagrees with
+this section, this section holds.
+
+- **A slice trial costs $0.27, not $0.13.** Row 0055's median was over all 38 sweep tasks, and the
+  cheap ones pulled it down. PAID-0 (row 0062) and N1's first call priced mid-band slice trials at
+  about $0.27. Z.AI bills exactly 2.0x the bundled catalog: PAID-0's catalog price is $0.122,
+  billed $0.244. At that rate one candidate through the cascade costs about $23.6: fixtures $0.61,
+  one task $0.27, dev $9.72, validation $12.96. The owner's decisions: "13$ is fine" for a stage
+  (soft $13 / hard $15, `evals/drivers/trials.py`), and "keep" for the week ($25 / $30), which is
+  one candidate to validation per week.
+- **The pin is Z.AI, and the probe needs a warm-up sample** (row 0061). The first session on any
+  upstream misses the cache that the later ones hit at 0.97, so `cache_probe.WARMUP = 1`. Z.AI,
+  Together and Wafer qualify, and Z.AI's warm turn is the cheapest by 1%. PAID-0 read 93.1% of its
+  prompt from cache, against 79.4% in row 0055. Whether another qualifying upstream bills nearer
+  the catalog is open.
+- **T4 drops below T5.** Recounted with the fixed extractor (#699) on 11 current-binary
+  sessions, `evidence_shape_refused` fired once and intercepts never did (#656). In the same
+  sessions `spiral_cut` fired 4 times (T2) and `pointer_never_read` 3 times (T5).
+- **The watcher removed an image a trial still needed.** A multi-image task's sidecar sat unused
+  while its main image pulled, and two idle polls removed it. The pruner now waits ten polls
+  (#717, `check_watch_prune`).
+- **A cut stop of 2 or 3 is the only T2 range the corpus reaches.** On those 11 sessions a value of
+  4 or more flips none (#720, `levers.py census`).
