@@ -75,6 +75,9 @@ async fn stream(provider: &ProviderStream, model: &Model) -> Vec<AssistantMessag
         messages: vec![],
         tools: None,
         tool_choice: None,
+        transient: Vec::new(),
+        schema: None,
+        reuse: yi_types::model::Reuse::OneShot,
     };
     let signal = yi_loop::interrupt::InterruptSignal::default();
     let mut receiver = provider.stream(model, &context, Effort::Off, &signal);
