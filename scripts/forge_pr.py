@@ -34,7 +34,7 @@ HOST = WEB.removeprefix("https://")
 
 
 def git(*args, check=False):
-    out = subprocess.run(("git", "-C", str(ROOT)) + args, capture_output=True, text=True, check=False)
+    out = subprocess.run(("git", "-C", str(ROOT)) + args, capture_output=True, text=True, errors="replace", check=False)
     if check and out.returncode != 0:
         raise SystemExit(f"git {' '.join(args)}: {out.stderr.strip()}")
     return out.stdout.strip()
