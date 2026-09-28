@@ -19,6 +19,7 @@ pub struct ExtOptions {
     pub user_system: String,
     pub schema_instruction: Option<String>,
     pub context_window: u64,
+    pub global_skills: Vec<String>,
 }
 
 fn rust_pack() -> Pack {
@@ -38,6 +39,7 @@ pub fn install(options: ExtOptions) -> Host {
         user_system,
         schema_instruction,
         context_window,
+        global_skills,
     } = options;
     let mut host = Host::new(cwd.clone());
     host.attach(
@@ -59,7 +61,9 @@ pub fn install(options: ExtOptions) -> Host {
         host.attach(Slot::new(Rank::Schema, "schema"), schema);
     }
     host.register(Box::new(
-        ProjectResources::new(cwd.clone(), home.clone()).with_context_window(context_window),
+        ProjectResources::new(cwd.clone(), home.clone())
+            .with_context_window(context_window)
+            .with_global_skills(global_skills),
     ));
     host.register(Box::new(PackExtension::new(rust_pack(), cwd.clone())));
     for pack in user_packs(&cwd, &home) {

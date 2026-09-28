@@ -6,6 +6,7 @@ pub mod advisor;
 pub mod backoff;
 pub mod channel;
 pub mod checkpoint;
+pub mod classifier;
 pub mod compaction;
 pub mod config;
 pub mod entry;

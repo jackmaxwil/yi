@@ -10,7 +10,7 @@ marks:   ✓ exists on main · ✚ new here · ◇ new in seven-primitives, not 
 
 ## Built, and where the build left this plan
 
-Stage 0 is D288 (#667). Stages 1-4 are D289 and D290 (#668-#670): `scripts/pr_review.py`
+Stage 0 is D302 (#667). Stages 1-4 are D303 and D304 (#668-#670): `scripts/pr_review.py`
 behind `just pr review|fix|sweep`, and the Forgejo adapter's `/pulls` mode. Stage 5, the
 flip from shadow to blocking, waits for the replay. Three departures, each forced by what
 the tree turned out to hold:
@@ -243,7 +243,7 @@ The `title` rule accepts exactly `WIP: ` in front of a subject and judges the re
 `WIP`, `wip` and `fixup!` stay refused everywhere else. When round 2 or later is clean
 on the head, the lifecycle strips the prefix (owner: "WIP prefix + bot strips"). The title
 edit needs no rerun of the `title` job: the job judged the subject after the prefix, which is
-the title the strip leaves (D288).
+the title the strip leaves (D302).
 
 ### 3.9 The lease
 
@@ -387,13 +387,13 @@ regressions, performance drains, etc"
 
 ## 10. Open questions
 
-1. Settled by stage 0 (D288): stripping `WIP:` leaves the subject the `title` job already
+1. Settled by stage 0 (D302): stripping `WIP:` leaves the subject the `title` job already
    judged, so no rerun is needed for the title edit. A body edit reruns nothing: the
    workflow deliberately omits the `edited` event, so a body fixed by `just pr edit
    --body` is re-judged only by the next push's synchronize (or locally by `edit`, which
    runs the same template check `pr open` does).
 2. Whether Forgejo 15's merge API refuses a `WIP:` PR as its UI does is unverified;
-   `just pr merge` stops on a draft either way (D288).
+   `just pr merge` stops on a draft either way (D302).
 3. The duplicate thresholds: `grid diff` overlap and window-hash matches. Set them from
    stage 2's fixture pairs.
 4. Stacked PRs have a base other than main. A delta round and a duplicate check should

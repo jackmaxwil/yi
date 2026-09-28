@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// Design §5 model roles. Each role names a `provider/id`; an unset role falls back to the
-/// primary, so a config that names nothing behaves as one model for everything.
+/// Design §5 model roles. Each role names a `provider/id`. An unset summarizer falls back to the
+/// primary; the advisor, auto reviewer and classifier do nothing until a role names them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelRoles {
@@ -17,6 +17,10 @@ pub struct ModelRoles {
     /// deterministic ladder and nothing extra is ever constructed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_review: Option<String>,
+    /// Naming a checkpoint (`english`) turns on the local `classifier` sidecar; unset, nothing
+    /// is constructed. It is never a chat model, so it never falls back to the primary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classifier: Option<String>,
 }
 
 /// `~/.yi/config.json` is the whole user surface. Config is not durable state, so §20's
@@ -46,6 +50,18 @@ pub struct UserConfig {
     pub rlm: Option<RlmConfig>,
     pub spend: Option<SpendConfig>,
     pub node: Option<NodeConfig>,
+    pub skills: Option<SkillsConfig>,
+    pub classifier: Option<ClassifierConfig>,
+}
+
+/// `classifier`: the sidecar's URL, one decision's deadline, and the confidence it points at;
+/// no threshold is shadow mode (record, never fire). The bearer is `LAYA_API_KEY`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClassifierConfig {
+    pub url: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub threshold: Option<serde_json::Number>,
 }
 
 /// `node`: overrides `~/.yi/node.json` field by field; `slots` bounds the kernels this
@@ -140,6 +156,14 @@ pub struct TuiConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TelemetryConfig {
     pub enabled: Option<bool>,
+}
+
+/// `skills.global`: the skills under the home roots (`~/.yi`, `~/.agents`, `~/.pi`, `~/.claude`)
+/// that the root session's catalog lists; absent, it lists only the repository's own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillsConfig {
+    pub global: Option<Vec<String>>,
 }
 
 /// `catalog.refreshHours`: how old `~/.yi/catalog/<provider>.json` may be before a session
