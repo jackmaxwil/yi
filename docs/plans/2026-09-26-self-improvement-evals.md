@@ -817,6 +817,7 @@ The nouns are unchanged: candidate, runner, trial row, gate. Only the task set a
 | piece | status | where |
 |---|---|---|
 | generators `logs`, `bugfix`, `reconcile` | ✚ | `evals/inner/gen/` (each: `make`, `check`, `solve`; the grader never enters the workspace) |
+| family `revert`, real past fixes redone | ✚ | `evals/inner/gen/revert.py` (full clones of Markdown, more-itertools and pyparsing; tomli's slot went to pyparsing) |
 | family `mutate`, bug injection into real repos | ✚ | `evals/inner/gen/mutate.py` (the repos stay outside this repository, under `INNER_REPOS`) |
 | inner runner (the runner protocol, parallel, auto mode) | ✚ | `evals/inner/runner.py` |
 | graded score from `testsPassed/testsTotal` | ✓ | `evals/levers.py` `graded` |
@@ -838,4 +839,10 @@ The inner A/A saturated them (ledger 0064: 115 of 120 full), and so did their ha
 
 Level 1 plants one bug and level 2 two, and both name the failing tests; they saturate as well (0066: 15 of 16, the miss an upstream refusal). Level 3 plants two bugs and hides the tests they break, giving only their failure messages, as an issue report does. It scored 7 of 8 full but tripled the wall time, and 3 of 8 reached yi's wind-down (0067).
 
-So on glm-5.3-flash the inner loop is the economy suite: cost, turns, wall and wind-downs over hundreds of paired seeds. A capability claim still needs Terminal-Bench validation. Its first find was a harness defect, not a lever: the last-word turn sends `tool_choice: "none"`, which no OpenRouter endpoint for the model accepts (0066).
+The owner then chose "Redo real past fixes" (the `revert` family, SWE-smith's PR mirroring):
+- a commit from the same repos' history that changed the library and its tests, with the library change undone;
+- its own tests grade the redo, and its message is the request.
+
+Level 1 shows the commit's tests and level 2 hides them behind their failure lines; they scored 8 of 8 and 6 of 8 full (0068). Level 3 takes a commit of 40-300 library lines on level 2's terms and scored 2 of 5 full, mean 0.63, without the tomli seeds, which the kernel venv's own tomli answers (0069); pyparsing took tomli's slot, and seeds 0-29 hold 19 level-3 tasks. That is the capability set; the other families measure economy.
+
+Before `revert`, the inner loop was the economy suite only: cost, turns, wall and wind-downs over hundreds of paired seeds. A capability claim still needs Terminal-Bench validation. Its first find was a harness defect, not a lever: the last-word turn sent `tool_choice: "none"`, which no OpenRouter endpoint for the model accepts (0066, fixed by D299 in #802).

@@ -72,6 +72,7 @@ pub const PERMISSION_ENTRY: &str = "permission";
 pub enum Answerer {
     User,
     Reviewer,
+    Classifier,
     Nobody,
     #[serde(untagged)]
     Other(String),
