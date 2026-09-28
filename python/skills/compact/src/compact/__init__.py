@@ -55,3 +55,20 @@ async def recall(pattern: str, limit: int | None = None, offset: int | None = No
     if offset is not None:
         payload["offset"] = offset
     return await host_request("history.grep", payload)
+
+
+async def search(query: str, limit: int | None = None, offset: int | None = None) -> dict[str, Any]:
+    """Rank turns from every root session of this repository, lanes and worktrees included.
+
+    BM25 over user messages, assistant text and compaction summaries; tool
+    calls and their results are not indexed. Returns `{"hits": [{"session",
+    "entryId", "type", "snippet", "url"}], "total": N}`, best first, 8 a page
+    by default and 32 at most; a cut page carries a `notice` naming the call
+    for the next one. Read a hit with `await rlm.fetch(hit["url"])`.
+    """
+    payload: dict[str, Any] = {"query": query}
+    if limit is not None:
+        payload["limit"] = limit
+    if offset is not None:
+        payload["offset"] = offset
+    return await host_request("history.search", payload)

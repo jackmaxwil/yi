@@ -403,7 +403,7 @@ A persistent IPython process per session that reaches the host only through host
 | owner | verbs |
 |---|---|
 | `kernel.rs` | `exec.spawn/tail/poll/kill/release` (the `bash()` handle), `mcp.config` (`{}`), `mcp.refresh` (error) |
-| `wiring.rs`, `memory/mod.rs` | `fetch`, `history.grep`, `compact.run` (schedules only), `compact.status`; `memory.save/read/search/forget` |
+| `wiring.rs`, `memory/mod.rs`, `history.rs` | `fetch`, `history.grep`, `history.search`, `compact.run` (schedules only), `compact.status`; `memory.save/read/search/forget` |
 | `subagent.rs` | `rlm.run` (returns at admission), `rlm.result/wait/status/list_subagents/delete_subagent/merge_worktree/discard_worktree/find_models`, `model.info`, parent-side `agent_message.send/request/list_agents` |
 | `mailbox.rs`, `lease.rs`, `subagent/service.rs` | child-side `agent_message.send/request/list_agents`, `rlm.receive`; `rlm.interrupt`, `rlm.revoke`; `rlm.service` |
 | `schedule/mod.rs`, `goal/mod.rs`, `plan/mod.rs`, `plan/request.rs` | `rlm_heartbeat.list/create/update/delete`; `goal.get/create/update`; `plan.get`, `plan.op` |
@@ -447,7 +447,7 @@ A persistent IPython process per session that reaches the host only through host
 | `local` / `user` | `<path>` / `<n>` | a workspace or spill file / the n-th user-attributed message |
 | `kernel` | `<agent>/<var>` | a member's variable: repr ≤ 8192 chars, or dilled into the family dir |
 | `plan` / `agent` | `<id>[/<slug>]` / `<name>` | a plan via its journal (§13) / a live child's transcript, else its reap pin |
-| `history` | `<agent>[/<entry>\|/tail/N\|/since/<seq>][/custom/<type>]` | a transcript; `self` is the reader's |
+| `history` | `<agent>[/<entry>\|/tail/N\|/since/<seq>][/custom/<type>]` | a transcript; `self` is the reader's; a root session id of any lane of this repository resolves too |
 | `checkpoint` / `mcp` | `<tree>/<path>` / `<server>/<uri>` | a checkpoint-tree file (§7.7) / an MCP resource (§7.6) |
 | `family` / `tree` | `<name>` / `<agent>/<path>` | a blackboard sidecar / a member's checkout file, under `deny_read` |
 
