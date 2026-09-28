@@ -377,3 +377,39 @@ fn the_reply_box_answers_a_childs_question() -> TestResult {
     );
     Ok(())
 }
+
+/// A permission prompt the broker settled without the human (its ask timed out) closes, and only
+/// its own: another call settling leaves it up. Dies with a stale prompt whose answer goes nowhere.
+#[test]
+fn a_prompt_closes_when_its_own_call_settles_elsewhere() -> TestResult {
+    use yi_types::event::AgentEvent;
+    let mut app = app();
+    let (reply, answered) = std::sync::mpsc::channel();
+    app.open_approval(yi_tui::AskRequest {
+        title: "bash requires permission".to_owned(),
+        description: "make build".to_owned(),
+        grants: Vec::new(),
+        reply,
+        tool_call_id: Some("c1".to_owned()),
+    });
+    let prompt_up = |app: &mut App| -> Result<bool, Box<dyn Error>> {
+        Ok(live_rows(app)?.iter().any(|row| row.contains("Allow once")))
+    };
+    assert!(prompt_up(&mut app)?, "{:#?}", live_rows(&mut app)?);
+    let settled = |id: &str| AgentEvent::PermissionResolved {
+        tool_call_id: id.to_owned(),
+        allowed: false,
+    };
+    app.reduce_agent(settled("c2"));
+    assert!(
+        prompt_up(&mut app)?,
+        "another call settling leaves this prompt up"
+    );
+    app.reduce_agent(settled("c1"));
+    assert!(!prompt_up(&mut app)?, "{:#?}", live_rows(&mut app)?);
+    assert!(
+        answered.try_recv().is_err(),
+        "the waiting asker is released, not answered"
+    );
+    Ok(())
+}

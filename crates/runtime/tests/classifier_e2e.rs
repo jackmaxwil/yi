@@ -273,6 +273,21 @@ struct Gate {
 
 /// A broker in auto mode with no sandbox, so an unknown command is a reviewable ask.
 fn gate(port: u16, answer_user: Option<yi_runtime::AskOutcome>) -> Gate {
+    gate_in(
+        port,
+        yi_runtime::PermissionMode::Auto,
+        answer_user,
+        Duration::ZERO,
+    )
+}
+
+/// `thinking` is how long the human takes to answer; past 300 ms the ask has timed out.
+fn gate_in(
+    port: u16,
+    mode: yi_runtime::PermissionMode,
+    answer_user: Option<yi_runtime::AskOutcome>,
+    thinking: Duration,
+) -> Gate {
     use yi_runtime::classifier::{Approver, Thresholds};
     let asked = Arc::new(Mutex::new(0u32));
     let count = Arc::clone(&asked);
@@ -281,18 +296,14 @@ fn gate(port: u16, answer_user: Option<yi_runtime::AskOutcome>) -> Gate {
             if let Ok(mut count) = count.lock() {
                 *count += 1;
             }
+            std::thread::sleep(thinking);
             outcome
         });
         asker
     });
     let (events, _) = tokio::sync::broadcast::channel(16);
-    let broker = yi_runtime::PermissionBroker::new(
-        yi_runtime::PermissionMode::Auto,
-        std::env::temp_dir(),
-        Vec::new(),
-        asker,
-        events,
-    );
+    let broker =
+        yi_runtime::PermissionBroker::new(mode, std::env::temp_dir(), Vec::new(), asker, events);
     let (sender, records) = channel();
     let sender = Mutex::new(sender);
     let record: Record = Arc::new(move |record| {
@@ -312,7 +323,12 @@ fn gate(port: u16, answer_user: Option<yi_runtime::AskOutcome>) -> Gate {
         allow_destructive_at: 0.98,
         ask_at: 0.2,
     };
-    broker.set_approver(Arc::new(Approver::new(sidecar, thresholds, record)));
+    broker.set_approver(Arc::new(Approver::new(
+        sidecar,
+        thresholds,
+        Some(Duration::from_millis(300)),
+        record,
+    )));
     Gate {
         broker,
         records,
@@ -399,6 +415,51 @@ fn a_catastrophic_command_never_reaches_the_classifier() -> TestResult {
             .recv_timeout(Duration::from_millis(300))
             .is_err(),
         "no decision was asked for"
+    );
+    Ok(())
+}
+
+/// Inside the limit the person decides: the timeout only ends an ask nobody answered.
+#[test]
+fn an_ask_answered_in_time_is_the_persons_decision() -> TestResult {
+    let (port, _served) = sidecar(vec![safe(0.5)])?;
+    let gate = gate_in(
+        port,
+        yi_runtime::PermissionMode::Auto,
+        Some(yi_runtime::AskOutcome::AllowOnce),
+        Duration::ZERO,
+    );
+    let outcome = run(&gate, "make build");
+    assert!(outcome.allowed, "{}", outcome.reason);
+    assert_eq!(outcome.reason, "allowed by user");
+    Ok(())
+}
+
+/// In auto mode the classifier already judged the call before asking; the timeout reuses that
+/// judgement instead of asking again, and an unsure one ends in a denial with evidence.
+#[test]
+fn a_timed_out_ask_the_classifier_was_unsure_about_is_denied() -> TestResult {
+    let (port, _served) = sidecar(vec![safe(0.5)])?;
+    let gate = gate_in(
+        port,
+        yi_runtime::PermissionMode::Auto,
+        Some(yi_runtime::AskOutcome::AllowOnce),
+        Duration::from_secs(3),
+    );
+    let outcome = run(&gate, "make build");
+    assert!(!outcome.allowed);
+    assert!(
+        outcome.reason.starts_with("No one answered within"),
+        "{}",
+        outcome.reason
+    );
+    let first = gate.records.recv_timeout(Duration::from_secs(1))?;
+    assert_eq!(first.answer.as_deref(), Some("undecided"));
+    assert!(
+        gate.records
+            .recv_timeout(Duration::from_millis(300))
+            .is_err(),
+        "asked once, not twice"
     );
     Ok(())
 }
