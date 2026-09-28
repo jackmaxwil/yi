@@ -142,16 +142,21 @@ pub(super) fn unblock(
         (Some(plan), Some(address)) => todos.unblock_in(plan, label, address)?,
         _ => {
             todos.resync();
-            let waiting = todos.list().items().any(|item| {
-                item.label == *label
-                    && crate::todo::mirror::row_plan(item).is_none()
-                    && matches!(&item.state, TodoState::Blocked { on, .. }
+            // By id: a list an older binary wrote may give the waiting row's label to another.
+            let waiting = todos
+                .list()
+                .items()
+                .find(|item| {
+                    item.label == *label
+                        && crate::todo::mirror::row_plan(item).is_none()
+                        && matches!(&item.state, TodoState::Blocked { on, .. }
                         if wait_of(on).map(|(address, _)| address).as_ref() == job.label.as_ref())
-            });
-            if waiting {
-                todos.unblock_as(label, actor)?;
+                })
+                .map(crate::todo::id_needle);
+            if let Some(row) = &waiting {
+                todos.unblock_as(row, actor)?;
             }
-            waiting
+            waiting.is_some()
         }
     };
     if !unblocked {
