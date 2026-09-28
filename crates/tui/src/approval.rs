@@ -184,7 +184,6 @@ impl BottomView for ApprovalView {
 }
 
 impl App {
-    /// An ask settled elsewhere (its timeout ran out) closes its prompt; a late key goes nowhere.
     pub(crate) fn expire_approval(&mut self, tool_call_id: &str) {
         if let Some(Bottom::Approval(view, _)) = &self.bottom
             && view.tool_call_id.as_deref() == Some(tool_call_id)
