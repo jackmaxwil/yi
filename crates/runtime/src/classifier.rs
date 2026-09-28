@@ -393,6 +393,33 @@ pub fn message_id(text: &str) -> String {
         .collect()
 }
 
+pub fn probe(url: &str, checkpoint: &str) -> Result<(), String> {
+    let criteria = [("yes", "this is a probe"), ("no", "this is not a probe")]
+        .into_iter()
+        .map(|(label, text)| (label.to_owned(), text.to_owned()))
+        .collect();
+    let request = DecisionRequest {
+        state: [("message".to_owned(), serde_json::json!("yi setup probe"))].into(),
+        questions: [(
+            "probe".to_owned(),
+            Question::Choice {
+                instructions: "Is this a probe?".to_owned(),
+                criteria,
+            },
+        )]
+        .into(),
+        model: Some(checkpoint.to_owned()),
+    };
+    let key = yi_ai::auth::api_key("laya");
+    let key = key.as_ref().map(|secret| secret.expose());
+    let answer = yi_ai::decide::decide(url, key, Duration::from_secs(10), &request)?;
+    if answer.answers.contains_key("probe") {
+        Ok(())
+    } else {
+        Err("the answer has no decision".to_owned())
+    }
+}
+
 pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConfig) -> Vec<String> {
     let Some(model) = config
         .models
