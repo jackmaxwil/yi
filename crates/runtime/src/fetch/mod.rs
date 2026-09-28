@@ -207,10 +207,14 @@ impl Transcripts for SessionTranscripts {
         if let Some(kept) = self.host.kept_transcript(agent) {
             return Some(Transcript::Kept(kept));
         }
-        let mut repo = yi_session::JsonlRepo::new(self.sessions_dir.clone()?, self.cwd.clone());
-        yi_session::SessionRepo::open(&mut repo, agent)
-            .ok()
-            .map(Transcript::Kept)
+        let dir = self.sessions_dir.clone()?;
+        let mut repo = yi_session::JsonlRepo::new(dir.clone(), self.cwd.clone());
+        if let Ok(session) = yi_session::SessionRepo::open(&mut repo, agent) {
+            return Some(Transcript::Kept(session));
+        }
+        let file = crate::history::find_session(&dir, Path::new(&self.cwd), agent)?;
+        let store = yi_session::load_session(&file).ok()?;
+        Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))))
     }
 }
 
