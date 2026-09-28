@@ -710,3 +710,43 @@ async fn a_call_the_user_refused_is_not_reopened_by_the_classifier() -> TestResu
     assert!(again.reason.contains("stays denied"), "{}", again.reason);
     Ok(())
 }
+
+/// Dies with a refusal given at the prompt overruled: with no reviewer, the unsure classifier
+/// sends the call to the user, who says no, and a confident answer on the retry must not run it.
+#[test]
+fn a_refusal_at_the_prompt_is_not_reopened_by_the_classifier() -> TestResult {
+    let (port, _served) = sidecar(vec![safe(0.5), safe(0.99)])?;
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
+    assert!(!run(&gate, "make deploy").allowed);
+    let again = run(&gate, "make deploy");
+    assert!(!again.allowed, "{}", again.reason);
+    assert_eq!(
+        *gate.asked.lock().map_err(|_| "lock")?,
+        2,
+        "the user is asked again"
+    );
+    Ok(())
+}
+
+/// Dies with a reviewer's refusal overruled before the user saw it: the retry replays the
+/// refusal and its request instead of asking the classifier again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_the_reviewer_refused_is_not_reopened_by_the_classifier() -> TestResult {
+    let (port, _served) = sidecar(vec![safe(0.5), safe(0.99)])?;
+    let gate = gate(port, None);
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+    provider.queue_faux(vec![yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text("deny unprovable")],
+        yi_types::message::StopReason::Stop,
+    )]);
+    gate.broker
+        .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
+            Arc::clone(&provider),
+            crate::support::faux_model(),
+        )));
+    let first = tokio::task::block_in_place(|| run(&gate, "make deploy"));
+    let again = tokio::task::block_in_place(|| run(&gate, "make deploy"));
+    assert!(!again.allowed, "{}", again.reason);
+    assert_eq!(first.reason, again.reason);
+    Ok(())
+}
