@@ -16,6 +16,8 @@ ADAPTER_VERSION = 1
 # host, where logs_dir/EVENTS_FILENAME is the transcript the parse reads.
 REMOTE_SESSION_DIR = "/logs/agent/yi/sessions"
 REMOTE_EVENTS_PATH = "/logs/agent/yi.jsonl"
+# E16: the host's YI_LEVERS file, uploaded at install; the binary reads it only under --eval.
+REMOTE_LEVERS_PATH = "/logs/agent/yi/levers.json"
 # logs_dir on the host is /logs/agent in the container, so these are the same
 # two artifacts seen from the two ends of the log sync.
 EVENTS_FILENAME = "yi.jsonl"
@@ -107,19 +109,21 @@ def kernel_problems(doctor_json):
     return problems
 
 
-def run_command(model_name, instruction, resume=False, deadline_sec=None):
+def run_command(model_name, instruction, resume=False, deadline_sec=None, levers=False):
     """Build the single shell command a trial runs.
 
     E6: no `grep` stage -- under harbor's `set -o pipefail` a fully filtered
     stream exits 1 and scores the trial 0. E7: the instruction is one shell
     quoted argv. E8: `--yolo`, because a permission prompt is a hang. `--here`:
     the grader reads the task's checkout, and an ask in a repository takes a
-    lane outside it (D119).
+    lane outside it (D119). E16: `levers` names the uploaded YI_LEVERS file and passes
+    `--eval`, the one flag under which the binary reads it; without it the command is unchanged.
     """
     if not model_name or "/" not in model_name:
         raise ValueError("model name must be 'provider/model'")
     resume_flag = "--continue " if resume else ""
     deadline_flag = f"--deadline {int(deadline_sec)} " if deadline_sec else ""
+    levers_env, eval_flag = (f"{LEVERS_ENV}={REMOTE_LEVERS_PATH} ", "--eval ") if levers else ("", "")
     # Incident: a 131k-token turn streamed 130,496 `message_update` snapshots,
     # 43.8 GB on one trial; harbor buffers the command's stdout, and the OS
     # killed it. The deltas are dropped through a guarded filter (E6: a bare
@@ -131,7 +135,7 @@ def run_command(model_name, instruction, resume=False, deadline_sec=None):
     # mid-event at 172,032 bytes; `stdbuf -oL`, since busybox grep has no
     # `--line-buffered`.
     return (
-        "yi ask --json --yolo --here "
+        f"{levers_env}yi ask {eval_flag}--json --yolo --here "
         f"--model {shlex.quote(model_name)} "
         f"--session-dir {REMOTE_SESSION_DIR} "
         f"{deadline_flag}{resume_flag}{shlex.quote(instruction)} "
