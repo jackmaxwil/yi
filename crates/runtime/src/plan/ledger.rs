@@ -444,7 +444,7 @@ pub fn lint(plan: &Plan, width: usize) -> Vec<Finding> {
                     .to_owned(),
             }),
             // `on: external` written flat lands in the untagged tail, which the
-            // probe ladder cannot read; the nested `external: {probe: …}` can.
+            // exec wait cannot read; the nested `external: {probe: …}` can.
             Some(BlockedOn::Other(tag)) => findings.push(Finding {
                 todo: Some(todo.label.clone()),
                 rule: "unknown-blocker",
@@ -453,22 +453,17 @@ pub fn lint(plan: &Plan, width: usize) -> Vec<Finding> {
                      person can clear it"
                 ),
             }),
-            Some(BlockedOn::Channel { address, .. })
-                if crate::schedule::clock::wait_schedule(address, 0).is_err() =>
-            {
-                findings.push(Finding {
-                    todo: Some(todo.label.clone()),
-                    rule: "unknown-channel",
-                    detail: format!(
-                        "blocked on {address:?}, which no clock ticks, so nothing but a person can clear it"
-                    ),
-                });
+            Some(BlockedOn::Channel { address, .. }) => {
+                if let Err(why) = crate::schedule::channel::check_address(address) {
+                    findings.push(Finding {
+                        todo: Some(todo.label.clone()),
+                        rule: "unknown-channel",
+                        detail: format!("{why}, so nothing but a person can clear it"),
+                    });
+                }
             }
             Some(
-                BlockedOn::Child(_)
-                | BlockedOn::User
-                | BlockedOn::External { probe: Some(_) }
-                | BlockedOn::Channel { .. },
+                BlockedOn::Child(_) | BlockedOn::User | BlockedOn::External { probe: Some(_) },
             )
             | None => {}
         }

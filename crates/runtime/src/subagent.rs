@@ -16,7 +16,7 @@ mod build;
 pub mod models;
 mod record;
 mod runs;
-mod service;
+pub(crate) mod service;
 pub use record::ChildFeed;
 pub(crate) use record::Step;
 use record::preview;
