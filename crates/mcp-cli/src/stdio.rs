@@ -14,6 +14,14 @@ pub struct StdioTransport {
     stdout: BufReader<ChildStdout>,
 }
 
+/// Invariant: a server runs from `~/.yi`, the host's own config dir, never the workspace: `npx`
+/// and any relative command resolve against cwd, and the workspace is what a cell can write.
+fn server_cwd() -> std::path::PathBuf {
+    let home = crate::home_dir();
+    let yi = home.join(".yi");
+    if yi.is_dir() { yi } else { home }
+}
+
 impl StdioTransport {
     pub fn spawn(command: &str, args: &[String], env: &Map<String, Value>) -> Result<Self, String> {
         #[expect(
@@ -21,7 +29,7 @@ impl StdioTransport {
             reason = "an MCP stdio server is a child process by definition (design §7.6)"
         )]
         let mut builder = Command::new(command);
-        builder.args(args);
+        builder.args(args).current_dir(server_cwd());
         for (key, value) in env {
             if let Some(text) = value.as_str() {
                 builder.env(key, text);

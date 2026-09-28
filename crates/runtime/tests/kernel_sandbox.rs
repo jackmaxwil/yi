@@ -462,7 +462,7 @@ impl yi_runtime::fetch::McpResourceRead for RecordingMcp {
         Err("no read in this test".to_owned())
     }
 
-    fn connect(
+    fn connect_server(
         &self,
         config: &std::path::Path,
         entry: &str,

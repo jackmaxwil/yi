@@ -83,9 +83,10 @@ fn register_mcp_connect(
                     config.display()
                 ));
             }
-            let reply = tokio::task::spawn_blocking(move || mcp.connect(&config, &entry, &session))
-                .await
-                .map_err(|error| error.to_string())??;
+            let reply =
+                tokio::task::spawn_blocking(move || mcp.connect_server(&config, &entry, &session))
+                    .await
+                    .map_err(|error| error.to_string())??;
             serde_json::from_str(&reply).map_err(|error| format!("mcp.connect: {error}"))
         })
     });
@@ -143,7 +144,12 @@ mod tests {
             Err("no read in this test".to_owned())
         }
 
-        fn connect(&self, config: &Path, entry: &str, session: &str) -> Result<String, String> {
+        fn connect_server(
+            &self,
+            config: &Path,
+            entry: &str,
+            session: &str,
+        ) -> Result<String, String> {
             self.0.lock().map_err(|error| error.to_string())?.push((
                 config.to_path_buf(),
                 entry.to_owned(),
@@ -153,7 +159,7 @@ mod tests {
         }
     }
 
-    async fn connect(
+    async fn ask_connect(
         home: &Path,
         host: &Arc<Recording>,
         server: &str,
@@ -175,7 +181,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(home.join(".yi"))?;
         let host = Arc::new(Recording(Mutex::new(Vec::new())));
-        let absent = connect(&home, &host, "fixture").await;
+        let absent = ask_connect(&home, &host, "fixture").await;
         assert!(
             absent
                 .as_ref()
@@ -191,7 +197,7 @@ mod tests {
             "https://x",
             "a b",
         ] {
-            let refused = connect(&home, &host, bad).await;
+            let refused = ask_connect(&home, &host, bad).await;
             assert!(
                 refused
                     .as_ref()
@@ -199,7 +205,7 @@ mod tests {
                 "{bad:?}: {refused:?}"
             );
         }
-        let live = connect(&home, &host, "fixture").await?;
+        let live = ask_connect(&home, &host, "fixture").await?;
         assert_eq!(live.get("state").and_then(Value::as_str), Some("live"));
         let calls = host.0.lock().map(|calls| calls.clone()).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&home);

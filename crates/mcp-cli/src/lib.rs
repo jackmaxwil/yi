@@ -54,7 +54,7 @@ fn fail(message: &str, code: i32) -> i32 {
     code
 }
 
-fn home_dir() -> PathBuf {
+pub(crate) fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
