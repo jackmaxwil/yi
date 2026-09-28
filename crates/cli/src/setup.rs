@@ -64,7 +64,7 @@ fn run() -> i32 {
 }
 
 fn offers(first_arg: Option<&str>, has_config: bool, terminal: bool) -> bool {
-    first_arg.is_none_or(|arg| arg.starts_with('-')) && !has_config && terminal
+    first_arg.is_none() && !has_config && terminal
 }
 
 fn config_path(home: &Path) -> PathBuf {
@@ -80,7 +80,7 @@ fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(),
         "Provider for the main model (anthropic, openai, openrouter; blank skips): ",
     )?;
     if !provider.is_empty() {
-        model_step(&provider, input, out, &mut edits)?;
+        model_step(home, &provider, input, out, &mut edits)?;
     }
     let mode = ask(
         input,
@@ -113,6 +113,7 @@ fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(),
 }
 
 fn model_step(
+    home: &Path,
     provider: &str,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
@@ -140,7 +141,16 @@ fn model_step(
             &format!("unknown model {model}; the model is left as it is"),
         );
     }
-    edits.push((vec!["model"], json!(model)));
+    let primary = std::fs::read_to_string(config_path(home))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .is_some_and(|config| config.pointer("/models/primary").is_some());
+    let key = if primary {
+        vec!["models", "primary"]
+    } else {
+        vec!["model"]
+    };
+    edits.push((key, json!(model)));
     Ok(())
 }
 
@@ -211,7 +221,7 @@ fn install_laya(venv: &Path) -> Result<(), String> {
                 "install".into(),
                 "--python".into(),
                 python.into(),
-                "laya[serve]".into(),
+                "laya[serve]==0.3.21".into(),
             ],
         ]
     } else {
@@ -220,7 +230,7 @@ fn install_laya(venv: &Path) -> Result<(), String> {
             vec![
                 venv.join("bin/pip").into(),
                 "install".into(),
-                "laya[serve]".into(),
+                "laya[serve]==0.3.21".into(),
             ],
         ]
     };
@@ -251,12 +261,33 @@ fn write_config(home: &Path, edits: &[Edit]) -> Result<PathBuf, String> {
     let text = serde_json::to_string_pretty(&root).map_err(|error| error.to_string())? + "\n";
     yi_types::config::parse(&text)
         .map_err(|error| format!("setup would write a config Yi cannot load: {error}"))?;
-    let dir = path.parent().ok_or("config path has no parent")?;
+    let target = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let dir = target.parent().ok_or("config path has no parent")?;
     std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    let mode = std::fs::metadata(&target).map_or(0o600, |meta| {
+        std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777
+    });
     let staging = dir.join(".config.json.setup");
-    std::fs::write(&staging, text).map_err(|error| format!("{}: {error}", staging.display()))?;
-    std::fs::rename(&staging, &path).map_err(|error| format!("{}: {error}", path.display()))?;
-    Ok(path)
+    let written = stage(&staging, &text, mode)
+        .and_then(|()| std::fs::rename(&staging, &target))
+        .map_err(|error| format!("{}: {error}", target.display()));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&staging);
+    }
+    written.map(|()| path)
+}
+
+fn stage(staging: &Path, text: &str, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(mode)
+        .open(staging)?;
+    std::fs::set_permissions(staging, std::os::unix::fs::PermissionsExt::from_mode(mode))?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()
 }
 
 fn set(root: &mut Value, keys: &[&str], value: Value) -> Result<(), String> {
@@ -279,9 +310,12 @@ fn ask(input: &mut dyn BufRead, out: &mut dyn Write, prompt: &str) -> Result<Str
     write!(out, "{prompt}").map_err(|error| error.to_string())?;
     out.flush().map_err(|error| error.to_string())?;
     let mut line = String::new();
-    input
+    let read = input
         .read_line(&mut line)
         .map_err(|error| error.to_string())?;
+    if read == 0 {
+        return Err("no answer (end of input); nothing saved".to_owned());
+    }
     Ok(line.trim().to_owned())
 }
 
@@ -304,7 +338,11 @@ mod tests {
     #[test]
     fn only_a_first_interactive_launch_is_offered_setup() {
         assert!(offers(None, false, true));
-        assert!(offers(Some("--yolo"), false, true));
+        assert!(
+            !offers(Some("--version"), false, true),
+            "only a bare `yi` is offered it"
+        );
+        assert!(!offers(Some("--yolo"), false, true));
         assert!(
             !offers(Some("ask"), false, true),
             "a subcommand is never interrupted"
