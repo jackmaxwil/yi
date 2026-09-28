@@ -200,10 +200,7 @@ impl PermissionBroker {
     }
 
     fn settle(&self, tool_call_id: &str, ask: &PermissionAsk<'_>, allowed: bool, by: Answerer) {
-        let _ = self.events.send(AgentEvent::PermissionResolved {
-            tool_call_id: tool_call_id.to_owned(),
-            allowed,
-        });
+        self.resolved(tool_call_id, allowed);
         if let Some(journal) = self.journal.get() {
             journal(PermissionRecord {
                 tool_call_id: tool_call_id.to_owned(),
@@ -214,6 +211,13 @@ impl PermissionBroker {
                 extra: std::collections::BTreeMap::new(),
             });
         }
+    }
+
+    fn resolved(&self, tool_call_id: &str, allowed: bool) {
+        let _ = self.events.send(AgentEvent::PermissionResolved {
+            tool_call_id: tool_call_id.to_owned(),
+            allowed,
+        });
     }
 
     /// A second call is a child session re-wiring the same broker; the first
@@ -540,10 +544,16 @@ impl PermissionBroker {
             title: ask.title.to_owned(),
             description: ask.text(),
         });
-        let (outcome, by) =
-            self.reviewed_outcome(reviewer, ask, reviewed, rule_kind, canonical, display);
-        self.settle(tool_call_id, ask, outcome.allowed, by);
-        outcome
+        match self.reviewed_outcome(reviewer, ask, reviewed, rule_kind, canonical, display) {
+            (outcome, Some(by)) => {
+                self.settle(tool_call_id, ask, outcome.allowed, by);
+                outcome
+            }
+            (outcome, None) => {
+                self.resolved(tool_call_id, outcome.allowed);
+                outcome
+            }
+        }
     }
 
     fn reviewed_outcome(
@@ -554,7 +564,7 @@ impl PermissionBroker {
         rule_kind: RuleKind,
         canonical: &str,
         display: &str,
-    ) -> (CallOutcome, Answerer) {
+    ) -> (CallOutcome, Option<Answerer>) {
         let action = ActionId::of(canonical);
         match self.recall(action) {
             Some((request, ActionState::UserApproved)) => {
@@ -563,20 +573,20 @@ impl PermissionBroker {
                     reason: format!("allowed by the user answering request {request}"),
                     contained: false,
                 };
-                return (allowed, Answerer::User);
+                return (allowed, None);
             }
             Some((request, ActionState::UserDenied)) => {
                 let denied = self.denied(format!(
                     "The user denied request {request} for this exact call. It stays denied; take another approach."
                 ));
-                return (denied, Answerer::User);
+                return (denied, None);
             }
             // Idempotent by action: a retry of an identical denied call gets the same request
             // back, never a second review or a second question for the user.
             Some((request, ActionState::DeniedPendingUser)) => {
                 let evidence = self.evidence_of(request);
                 let denied = self.denied(Self::escalation_text(&evidence, request));
-                return (denied, Answerer::Reviewer);
+                return (denied, None);
             }
             None => {}
         }
@@ -615,7 +625,7 @@ impl PermissionBroker {
                 self.denied(Self::escalation_text(&reason, request))
             }
         };
-        (outcome, Answerer::Reviewer)
+        (outcome, Some(Answerer::Reviewer))
     }
 
     fn escalation_text(evidence: &str, request: RequestId) -> String {

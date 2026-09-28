@@ -364,6 +364,13 @@ async fn a_denied_call_re_issued_unchanged_spends_no_second_review() -> TestResu
 #[tokio::test]
 async fn a_user_denial_stands_without_asking_again() -> TestResult {
     let harness = setup(Some(AskOutcome::Reject), true)?;
+    let journal = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&journal);
+    harness.broker.set_journal(Arc::new(move |record| {
+        if let Ok(mut sink) = sink.lock() {
+            sink.push(record.by);
+        }
+    }));
     harness.provider.queue_faux(answers(&["deny unprovable"]));
     decide(&harness.broker, destructive_args()).await?;
     let replay = harness.broker.resolve_request(1, "call-ask");
@@ -380,6 +387,12 @@ async fn a_user_denial_stands_without_asking_again() -> TestResult {
         harness.asks.lock().map(|asks| asks.len()).unwrap_or(0),
         1,
         "the user is asked once and not worn down"
+    );
+    use yi_types::permission::Answerer;
+    assert_eq!(
+        journal.lock().map(|by| by.clone()).unwrap_or_default(),
+        [Answerer::Reviewer, Answerer::User],
+        "a replayed answer is not journaled as a second one"
     );
     Ok(())
 }
