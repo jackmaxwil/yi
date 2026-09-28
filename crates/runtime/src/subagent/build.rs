@@ -9,7 +9,12 @@ use crate::provider::resolve_model;
 use yi_types::model::{Effort, Model};
 
 /// What a build is made from, read off the spawn's kwargs: the model, the effort, the wall.
-pub(super) type Cast = (Model, Effort, crate::wall::Wall);
+pub(super) type Cast = (
+    Model,
+    Effort,
+    crate::wall::Wall,
+    Option<super::reader::Reader>,
+);
 
 /// Dropped, it frees the name and the slot a build reserved, whether the build landed or not.
 pub(super) struct Reservation<'a> {
@@ -104,14 +109,15 @@ impl SubagentHost {
             }
         };
         let wall = self.wall_for(kwargs)?;
-        Ok((model, thinking.unwrap_or(parent_effort), wall))
+        let reader = super::reader::parse(kwargs)?;
+        Ok((model, thinking.unwrap_or(parent_effort), wall, reader))
     }
 
     /// Invariant: a child that runs unrecorded leaves nothing to read when it fails, so a
     /// transcript it cannot open refuses the build. `kept` is a respawned service's own.
     pub(super) fn build(
         self: &std::sync::Arc<Self>,
-        (model, thinking, wall): Cast,
+        (model, thinking, wall, reader): Cast,
         name: &str,
         session_dir: &Path,
         cwd: Option<&Path>,
@@ -133,6 +139,7 @@ impl SubagentHost {
             wall,
             deadline: clock,
             tokens: lease.tokens,
+            reader,
         })?;
         if let Some(clock) = clock {
             child.set_deadline(clock);

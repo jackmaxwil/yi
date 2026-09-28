@@ -11,6 +11,7 @@ use super::{
     record_store_error, store_of,
 };
 
+const TURN_CAP_WORD: &str = "[turns] No more tool calls: answer now from what you have, and name what is missing if it does not decide the question.";
 const LAST_WORD: &str = "[deadline] Time is up: no more tool calls. Write your final answer now from what you have, and say plainly what is unfinished.";
 
 /// Invariant: asked under the session's status lock when a turn would present the message, so
@@ -292,8 +293,16 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     config.side_work = Some(Box::new(move || Box::pin(settled(Arc::clone(&gate)))));
     // Not the interrupt: the turn in flight ends and settles, and no request follows.
     let stop = Arc::clone(&shared);
+    let capped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (turns, cap_hit) = (std::sync::atomic::AtomicU32::new(0), Arc::clone(&capped));
+    let cap = shared.turn_cap.get().copied();
     config.should_stop_after_turn = Some(Box::new(move |_| {
-        stop.winding_down() || stop.last_word_due()
+        let taken = turns
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .saturating_add(1);
+        let at_cap = cap.is_some_and(|cap| taken >= cap.saturating_sub(1));
+        cap_hit.store(at_cap, std::sync::atomic::Ordering::SeqCst);
+        stop.winding_down() || stop.last_word_due() || at_cap
     }));
     // Incident: the wind-down ended three confirmation runs on a tool call, with no answer.
     let clock = Arc::clone(&shared);
@@ -301,6 +310,9 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
         let cancelled = clock.cancelled.load(std::sync::atomic::Ordering::SeqCst);
         let out_of_time = clock.deadline.get().is_some_and(|at| at.winding_down());
         let out_of_time = out_of_time || clock.last_word_due();
+        if capped.load(std::sync::atomic::Ordering::SeqCst) && !out_of_time && !cancelled {
+            return Some(super::user_message(TURN_CAP_WORD));
+        }
         (out_of_time && !cancelled).then(|| super::user_message(LAST_WORD))
     }));
     let due = Arc::clone(&shared);

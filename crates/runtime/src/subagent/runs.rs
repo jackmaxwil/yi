@@ -116,7 +116,7 @@ impl SubagentHost {
             if record.step(Step::Exit(exit, error.clone())) {
                 let service = matches!(record.standing, Standing::Service(_));
                 let (replied, cause) = (record.replied, Cause::ended(exit));
-                juror = matches!(record.standing, Standing::Juror);
+                juror = matches!(record.standing, Standing::Juror | Standing::Reader);
                 let epoch = children.touch(child_id, cause);
                 ended = Some((replied, service, billed, epoch));
             }

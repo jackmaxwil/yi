@@ -55,6 +55,7 @@ mod plan_verify;
 mod plan_walkthrough;
 mod prompt_drift;
 mod prompts;
+mod reader_e2e;
 mod reap_kernel;
 mod recursion_e2e;
 mod requests_e2e;
