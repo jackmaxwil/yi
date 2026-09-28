@@ -11,7 +11,7 @@ use yi_permission::{
 };
 use yi_tools::ToolKind;
 use yi_types::event::AgentEvent;
-use yi_types::permission::{RuleDecision, RuleKind};
+use yi_types::permission::{Answerer, PermissionRecord, RuleDecision, RuleKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskOutcome {
@@ -44,6 +44,7 @@ impl PermissionAsk<'_> {
 }
 
 pub type Asker = Arc<dyn Fn(&PermissionAsk<'_>) -> AskOutcome + Send + Sync>;
+pub type Journal = Arc<dyn Fn(PermissionRecord) + Send + Sync>;
 
 /// What the reviewer is told about a call, and whether it may see it at all.
 #[derive(Clone, Copy)]
@@ -70,6 +71,7 @@ pub struct PermissionBroker {
     reviewer: std::sync::OnceLock<Arc<crate::auto_review::Reviewer>>,
     ledger: Mutex<ActionLedger>,
     confirms: AtomicU64,
+    journal: std::sync::OnceLock<Journal>,
 }
 
 pub struct CallOutcome {
@@ -130,6 +132,28 @@ impl PermissionBroker {
             reviewer: std::sync::OnceLock::new(),
             ledger: Mutex::new(ActionLedger::new()),
             confirms: AtomicU64::new(0),
+            journal: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub fn set_journal(&self, journal: Journal) {
+        let _first_wiring_wins = self.journal.set(journal);
+    }
+
+    fn settle(&self, tool_call_id: &str, ask: &PermissionAsk<'_>, allowed: bool, by: Answerer) {
+        let _ = self.events.send(AgentEvent::PermissionResolved {
+            tool_call_id: tool_call_id.to_owned(),
+            allowed,
+        });
+        if let Some(journal) = self.journal.get() {
+            journal(PermissionRecord {
+                tool_call_id: tool_call_id.to_owned(),
+                title: ask.title.to_owned(),
+                description: ask.text(),
+                allowed,
+                by,
+                extra: std::collections::BTreeMap::new(),
+            });
         }
     }
 
@@ -192,10 +216,13 @@ impl PermissionBroker {
             .asker
             .as_ref()
             .map_or(AskOutcome::Reject, |asker| asker(ask));
-        let _ = self.events.send(AgentEvent::PermissionResolved {
-            tool_call_id,
-            allowed: matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_)),
-        });
+        let by = if self.asker.is_some() {
+            Answerer::User
+        } else {
+            Answerer::Nobody
+        };
+        let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
+        self.settle(&tool_call_id, ask, allowed, by);
         outcome
     }
 
@@ -418,11 +445,9 @@ impl PermissionBroker {
             title: ask.title.to_owned(),
             description: ask.text(),
         });
-        let outcome = self.reviewed_outcome(reviewer, ask, reviewed, rule_kind, canonical, display);
-        let _ = self.events.send(AgentEvent::PermissionResolved {
-            tool_call_id: tool_call_id.to_owned(),
-            allowed: outcome.allowed,
-        });
+        let (outcome, by) =
+            self.reviewed_outcome(reviewer, ask, reviewed, rule_kind, canonical, display);
+        self.settle(tool_call_id, ask, outcome.allowed, by);
         outcome
     }
 
@@ -434,27 +459,29 @@ impl PermissionBroker {
         rule_kind: RuleKind,
         canonical: &str,
         display: &str,
-    ) -> CallOutcome {
+    ) -> (CallOutcome, Answerer) {
         let action = ActionId::of(canonical);
         match self.recall(action) {
             Some((request, ActionState::UserApproved)) => {
-                return CallOutcome {
+                let allowed = CallOutcome {
                     allowed: true,
                     reason: format!("allowed by the user answering request {request}"),
                     contained: false,
                 };
+                return (allowed, Answerer::User);
             }
             Some((request, ActionState::UserDenied)) => {
-                return self.denied(format!(
-                        "The user denied request {request} for this exact call. It stays denied; take another approach."
-                    ),
-                );
+                let denied = self.denied(format!(
+                    "The user denied request {request} for this exact call. It stays denied; take another approach."
+                ));
+                return (denied, Answerer::User);
             }
             // Idempotent by action: a retry of an identical denied call gets the same request
             // back, never a second review or a second question for the user.
             Some((request, ActionState::DeniedPendingUser)) => {
                 let evidence = self.evidence_of(request);
-                return self.denied(Self::escalation_text(&evidence, request));
+                let denied = self.denied(Self::escalation_text(&evidence, request));
+                return (denied, Answerer::Reviewer);
             }
             None => {}
         }
@@ -471,7 +498,7 @@ impl PermissionBroker {
             patch: ask.patch.map(Self::cut_preview),
             reason: reviewed.reason.to_owned(),
         };
-        match self.consult(reviewer, request) {
+        let outcome = match self.consult(reviewer, request) {
             crate::auto_review::ReviewOutcome::Allow => CallOutcome {
                 allowed: true,
                 reason: "allowed by the auto reviewer".to_owned(),
@@ -492,7 +519,8 @@ impl PermissionBroker {
                 let request = self.open_request(action, stored);
                 self.denied(Self::escalation_text(&reason, request))
             }
-        }
+        };
+        (outcome, Answerer::Reviewer)
     }
 
     fn escalation_text(evidence: &str, request: RequestId) -> String {
@@ -612,10 +640,12 @@ impl PermissionBroker {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .resolve(request, verdict);
-        let _ = self.events.send(AgentEvent::PermissionResolved {
-            tool_call_id: tool_call_id.to_owned(),
-            allowed: verdict == UserVerdict::Approved,
-        });
+        self.settle(
+            tool_call_id,
+            &ask,
+            verdict == UserVerdict::Approved,
+            Answerer::User,
+        );
         crate::auto_review::resolution_text(&stored.display, verdict)
     }
 
@@ -664,10 +694,7 @@ impl PermissionBroker {
         let outcome = match &self.asker {
             Some(asker) => asker(ask),
             None => {
-                let _ = self.events.send(AgentEvent::PermissionResolved {
-                    tool_call_id: tool_call_id.to_owned(),
-                    allowed: false,
-                });
+                self.settle(tool_call_id, ask, false, Answerer::Nobody);
                 let asked = yi_permission::Decision::Ask {
                     title: ask.title.to_owned(),
                     description: rendered,
@@ -681,10 +708,7 @@ impl PermissionBroker {
             }
         };
         let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
-        let _ = self.events.send(AgentEvent::PermissionResolved {
-            tool_call_id: tool_call_id.to_owned(),
-            allowed,
-        });
+        self.settle(tool_call_id, ask, allowed, Answerer::User);
         if let AskOutcome::AllowAlways(index) = outcome {
             self.keep_grant(ask.grants.get(index), rule_kind, canonical, display);
         }
