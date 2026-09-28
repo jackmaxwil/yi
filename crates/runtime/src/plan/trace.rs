@@ -16,6 +16,9 @@ pub const TRACE_KEY: &str = "trace";
 /// Flags a notice names before it points at the plan for the rest.
 pub const TRACE_SHOWN: usize = 8;
 
+/// Invariant: one op reads the owner's messages once; its citing default and trace share it.
+pub(super) type Asked = std::cell::OnceCell<Option<Vec<bool>>>;
+
 pub struct Trace {
     pub unasked: Vec<TodoLabel>,
     pub forgotten: Vec<Url>,
@@ -96,9 +99,14 @@ impl PlanEngine {
         asked.contains(&true).then_some(asked)
     }
 
+    fn asked<'a>(&self, asked: &'a Asked) -> Option<&'a [bool]> {
+        asked.get_or_init(|| self.owner_messages()).as_deref()
+    }
+
     /// A declared todo citing nothing keeps its label's old cites, else cites the latest message.
     /// ponytail: the latest message stands in for the drafting turn; a wake-driven turn cites it.
-    pub(super) fn cite_default(&self, mut op: Op, plan: Option<&PlanId>) -> Op {
+    pub(super) fn cite_default(&self, mut op: Op, plan: Option<&PlanId>) -> (Op, Asked) {
+        let asked = Asked::new();
         let specs: Vec<&mut TodoSpec> = match &mut op {
             Op::Init { todos, .. }
             | Op::Append { todos }
@@ -108,12 +116,12 @@ impl PlanEngine {
             _ => Vec::new(),
         };
         let Some(latest) = (!specs.is_empty())
-            .then(|| self.owner_messages())
+            .then(|| self.asked(&asked))
             .flatten()
             .and_then(|asked| asked.iter().rposition(|live| *live))
             .and_then(|at| user_url(at.saturating_add(1)))
         else {
-            return op;
+            return (op, asked);
         };
         let current = self
             .resolve(plan.cloned())
@@ -126,7 +134,7 @@ impl PlanEngine {
                 _ => {}
             }
         }
-        op
+        (op, asked)
     }
 
     /// Invariant: the journal record is the flags' authority, so the notice renders from it. A
@@ -146,15 +154,15 @@ impl PlanEngine {
                 | Op::Supersede { .. }
                 | Op::Set { .. }
         ) && matches!(plan.tier, PlanTier::Root);
-        let Some(asked) = self.owner_messages().filter(|_| declares) else {
+        let Some(asked) = declares.then(|| self.asked(&txn.asked)).flatten() else {
             return;
         };
-        let now = trace(plan, &asked).rows();
+        let now = trace(plan, asked).rows();
         let was = txn
             .state
             .plan(&plan.id)
             .ok()
-            .map(|was| trace(was, &asked).rows());
+            .map(|was| trace(was, asked).rows());
         let mut flags = Map::new();
         for ((row, now), was) in ROWS.iter().zip(now).zip(was.unwrap_or_default()) {
             let raised = raised(&txn.records, &plan.id, row.0);
