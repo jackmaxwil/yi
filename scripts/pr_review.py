@@ -386,7 +386,8 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900):
     command += ["--auto"] if write else ["--confirm"]
     if os.environ.get("YI_REVIEW_MODEL"):
         command += ["--model", os.environ["YI_REVIEW_MODEL"]]
-    for _ in range(2):
+    # Measured: 2 of the first 10 replayed rounds lost a lens to two malformed answers in a row.
+    for _ in range(3):
         out = subprocess.run(command + [prompt], stdin=subprocess.DEVNULL, capture_output=True, text=True,
                              timeout=deadline + 120, check=False)
         if out.returncode == 0:

@@ -25,6 +25,21 @@ the tree turned out to hold:
   unrelated pairs (at most 2) without building a chart per candidate. The "sweep cluster"
   below (#405, #406, #409) shares no window: those PRs were held over benchmark data and
   were never duplicates. The claim in §1.3 was wrong.
+- **A high finding has to quote a line the diff added.** #733's rounds 4 and 5 blocked on
+  claims about lines the PR never touched (a trigger's default event types, stated wrong).
+  Kept as medium, a claim about the codebase still reaches the fixer without blocking.
+- **The replay so far (2026-09-28, `openrouter/z-ai/glm-5.3-flash`).** Ten labelled PRs read
+  as rounds, with the diff rule above applied:
+
+  | label | PRs | answered | a high finding survives | clean |
+  | --- | --- | --- | --- | --- |
+  | bad (#344, #346, #350, #352, #356) | 5 | 4 | 3 (#344, #350, #352) | 1 (#356) |
+  | kept (#491, #518, #520, #524, #525) | 5 | 4 | 0 | 4 |
+
+  #346 and #525 lost a lens to malformed answers twice (a third try is now allowed). One
+  round costs about $0.28 and eight minutes on a 900-line diff. The flip to blocking waits
+  on the owner: the sample is ten PRs, and "bad" meant merged without being asked for, which
+  a code review can only partly see.
 - **The channel runs a verb, not the lifecycle plan.** A subscription creates a todo and
   wakes the session; it cannot start a plan or run a command. So the todo's note is
   `just pr sweep`, which is idempotent on the rounds already posted.
