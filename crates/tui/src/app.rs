@@ -10,7 +10,7 @@ use yi_runtime::{AgentSession, ChildUpdate, SubagentHost};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Attribution, StopReason};
 
-use crate::approval::{ApprovalView, AskChoice};
+use crate::approval::{ApprovalView, AskChoice, AskRequest};
 use crate::cell::{Cell, TaskCell, TaskStatus, ToolCell, ToolStatus, TranscriptMode};
 use crate::colors::{Theme, detect_dark, detect_tier};
 use crate::composer::Composer;
@@ -26,13 +26,6 @@ use crate::term;
 use crate::transcript::{arg_summary, intent_of, preview_lines, text_of, thinking_of, user_text};
 use crate::tree::TreeView;
 use yi_orb::OrbState;
-
-pub struct AskRequest {
-    pub title: String,
-    pub description: String,
-    pub grants: Vec<String>,
-    pub reply: Sender<AskChoice>,
-}
 
 pub enum UiEvent {
     Agent(AgentEvent),
@@ -394,10 +387,9 @@ impl App {
     }
 
     pub fn open_approval(&mut self, ask: AskRequest) {
-        self.bottom = Some(Bottom::Approval(
-            ApprovalView::new(ask.title, ask.description, ask.grants),
-            ask.reply,
-        ));
+        let mut view = ApprovalView::new(ask.title, ask.description, ask.grants);
+        view.tool_call_id = ask.tool_call_id;
+        self.bottom = Some(Bottom::Approval(view, ask.reply));
         self.scheduler.request();
     }
 
@@ -852,6 +844,7 @@ impl App {
             }
             AgentEvent::PermissionResolved { tool_call_id, .. } => {
                 self.set_awaiting(&tool_call_id, ToolStatus::Running);
+                self.expire_approval(&tool_call_id);
             }
             _ => {}
         }

@@ -125,7 +125,7 @@ fn session_tool_defs() -> Result<Vec<ToolDef>, Box<dyn Error>> {
                 .collect(),
         },
     );
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
@@ -518,6 +518,7 @@ fn frozen_block(cwd: &std::path::Path, home: &std::path::Path) -> Result<String,
         user_system: String::new(),
         schema_instruction: None,
         context_window: 128_000,
+        global_skills: Vec::new(),
     });
     host.start(None, false);
     Ok(host
@@ -635,6 +636,7 @@ fn two_fresh_sessions_send_the_same_system_prompt_and_tools() -> TestResult {
             user_system: String::new(),
             schema_instruction: None,
             context_window: 128_000,
+            global_skills: Vec::new(),
         });
         host.start(None, false);
         std::thread::sleep(std::time::Duration::from_millis(2));

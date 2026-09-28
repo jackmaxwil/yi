@@ -1,8 +1,10 @@
 """MCP access for kernel code: a subprocess wrapper over `yi mcp --json`.
 
 Yi's design (YI_DESIGN.md §7.6) keeps MCP client state out of the kernel:
-every call shells out to the one-shot `yi mcp` CLI, which owns config,
-sessions, and auth. No sockets or SDK live in this process.
+a connect asks the host, which runs `yi mcp connect` from its own
+`~/.yi/mcp.json` and writes the session store this process cannot; every
+other call shells out to the one-shot `yi mcp` CLI, which reads that store.
+No sockets or SDK live in this process.
 """
 
 from __future__ import annotations
@@ -61,11 +63,10 @@ async def _run(args: list[str], *, stdin: bytes | None = None, timeout: float) -
 
 
 async def _connect(server: str) -> Any:
+    from . import host_request
+
     try:
-        return await _run(
-            ["connect", server, f"@{_session(server)}", "--json"],
-            timeout=_DEFAULT_STARTUP_TIMEOUT,
-        )
+        return await host_request("mcp.connect", {"server": server, "session": _session(server)})
     except RuntimeError as exc:
         raise McpStartupError(f"MCP server '{server}' failed to connect: {exc}") from exc
 
@@ -73,7 +74,8 @@ async def _connect(server: str) -> Any:
 async def list_tools(server: str) -> list[dict[str, Any]]:
     _validate_name(server, "server")
     payload = await _connect(server)
-    tools = payload.get("tools") if isinstance(payload, dict) else None
+    connected = payload.get("server") if isinstance(payload, dict) else None
+    tools = connected.get("tools") if isinstance(connected, dict) else None
     return tools if isinstance(tools, list) else []
 
 

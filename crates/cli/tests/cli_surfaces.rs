@@ -1139,6 +1139,7 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "host",
             "home",
             "config",
+            "classifier",
             "catalog",
             "python-runtime",
             "kernel-toolchain",

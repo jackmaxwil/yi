@@ -39,7 +39,7 @@ fn faux_model() -> Model {
 
 #[tokio::test]
 async fn prompt_runs_to_idle_with_events() -> Result<(), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![faux_assistant_message(
         vec![faux_text("hello from faux")],
         StopReason::Stop,
@@ -75,7 +75,7 @@ async fn prompt_runs_to_idle_with_events() -> Result<(), Box<dyn Error>> {
 }
 
 fn session_with_reply(text: &str) -> AgentSession {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![faux_assistant_message(
         vec![faux_text(text)],
         StopReason::Stop,
@@ -96,7 +96,7 @@ async fn executes_a_read_tool_call_through_the_adapter() -> Result<(), Box<dyn E
     let dir = Scratch::new("yi-runtime-tool")?;
     std::fs::write(dir.join("fact.txt"), "the answer is 42")?;
 
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut call_args = serde_json::Map::new();
     call_args.insert("path".to_owned(), serde_json::json!("fact.txt"));
     provider.queue_faux(vec![
@@ -182,7 +182,7 @@ fn one_call_session(
     tool: &str,
     call_args: serde_json::Map<String, serde_json::Value>,
 ) -> AgentSession {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         faux_assistant_message(
             vec![faux_tool_call("call-1", tool, call_args)],
@@ -292,7 +292,7 @@ async fn write_approval_carries_the_patch() -> Result<(), Box<dyn Error>> {
     let target = dir.join("notes.txt");
     std::fs::write(&target, "alpha\nbravo\ncharlie\n")?;
 
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut call_args = serde_json::Map::new();
     call_args.insert("path".to_owned(), serde_json::json!("notes.txt"));
     call_args.insert(
@@ -352,7 +352,7 @@ async fn write_approval_carries_the_patch() -> Result<(), Box<dyn Error>> {
 /// at its first checkpoint. A session the user interrupted once was finished.
 #[tokio::test]
 async fn a_session_still_runs_turns_after_an_abort() -> Result<(), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         faux_assistant_message(vec![faux_text("first")], StopReason::Stop),
         faux_assistant_message(vec![faux_text("second")], StopReason::Stop),
@@ -503,7 +503,7 @@ async fn a_deadline_kills_a_running_bash_call() -> Result<(), Box<dyn Error>> {
 
 /// The deadline ends the run between turns, never inside one: the call in flight runs to its
 /// own end and no work turn follows. Dies too with a run that ends on that tool call with no
-/// answer (`mbx-service`, `mbx-ask`): one last turn, with tool choice `none`, answers.
+/// answer (`mbx-service`, `mbx-ask`): one last turn answers, and a tool it calls is not run.
 #[tokio::test]
 async fn a_deadline_ends_the_run_after_the_turn_in_flight() -> Result<(), Box<dyn Error>> {
     let root = scratch("deadline-stop")?;
@@ -577,7 +577,7 @@ fn note(log: &Log, what: &'static str) {
 /// A session whose start capture takes 300 ms and then writes `captured` into `fact.txt`;
 /// the log records each request, the capture's end and the end capture.
 fn capture_session(dir: &Scratch, replies: Vec<AgentMessage>) -> (AgentSession, Log) {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(replies);
     let mut session = AgentSession::new(
         SessionConfig {
@@ -807,7 +807,7 @@ async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), 
         paths: Vec::new(),
         after: 1,
     };
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(
         ["one", "two", "three"]
             .into_iter()
