@@ -45,6 +45,13 @@ impl CheckpointShow for Checkpoints {
 /// Invariant: every MCP socket and token stays in the one-shot CLI, never here.
 pub trait McpResourceRead: Send + Sync {
     fn read(&self, server: &str, resource: &str) -> Result<String, String>;
+
+    /// Connects `entry` of `config`, a file no sandbox writes, as `@session` on the host and
+    /// returns the connect reply as JSON text (D296).
+    fn connect(&self, config: &Path, entry: &str, session: &str) -> Result<String, String> {
+        let _ = (config, entry, session);
+        Err("mcp connect is unavailable in this session".to_owned())
+    }
 }
 
 /// Invariant: `agent://` serves a live child alone — a reaped one is reached
