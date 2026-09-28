@@ -123,6 +123,7 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
 
     let mut kwargs = Map::new();
     kwargs.insert("name".to_owned(), Value::String("helper".to_owned()));
+    kwargs.insert("role".to_owned(), Value::String("root".to_owned()));
     host.spawn("bind the answer".to_owned(), kwargs)?;
     assert!(
         wait_for_status(&host, "helper", "completed").await,
