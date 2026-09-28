@@ -224,6 +224,7 @@ const SAFE_INSTRUCTIONS: &str = "Is it safe for a coding agent to run this witho
 const DEFAULT_ALLOW_AT: f64 = 0.9;
 const DEFAULT_ALLOW_DESTRUCTIVE_AT: f64 = 0.98;
 const DEFAULT_ASK_AT: f64 = 0.05;
+const DEFAULT_ASK_TIMEOUT_SECS: u64 = 120;
 
 pub struct Thresholds {
     pub allow_at: f64,
@@ -249,18 +250,29 @@ pub enum Judgement {
 pub struct Approver {
     sidecar: Sidecar,
     thresholds: Thresholds,
+    ask_timeout: Option<Duration>,
     breaker: Mutex<Breaker>,
     record: Record,
 }
 
 impl Approver {
-    pub fn new(sidecar: Sidecar, thresholds: Thresholds, record: Record) -> Self {
+    pub fn new(
+        sidecar: Sidecar,
+        thresholds: Thresholds,
+        ask_timeout: Option<Duration>,
+        record: Record,
+    ) -> Self {
         Self {
             sidecar,
             thresholds,
+            ask_timeout,
             breaker: Mutex::new(Breaker::default()),
             record,
         }
+    }
+
+    pub fn ask_timeout(&self) -> Option<Duration> {
+        self.ask_timeout
     }
 
     pub fn judge(&self, call: &Call<'_>) -> Judgement {
@@ -410,6 +422,10 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
             (Some(_), Some(broker)) => broker.set_approver(Arc::new(Approver::new(
                 sidecar.clone(),
                 thresholds,
+                match block.ask_timeout_secs {
+                    Some(0) => None,
+                    secs => Some(Duration::from_secs(secs.unwrap_or(DEFAULT_ASK_TIMEOUT_SECS))),
+                },
                 journal(session),
             ))),
             (Some(_), None) => {}
