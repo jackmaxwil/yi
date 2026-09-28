@@ -132,9 +132,6 @@ def decide(pr, jobs, required, behind):
         return "merged"
     if pr.get("state") != "open":
         return "closed"
-    # The forge refuses to merge a draft, so polling one for green waits on nothing.
-    if pr.get("title", "").startswith(DRAFT):
-        return "draft"
     if behind:
         return "behind"
     failed = [job for job in required if jobs.get(job) == "failure"]
@@ -142,6 +139,9 @@ def decide(pr, jobs, required, behind):
         return "failed:title"
     if failed:
         return f"failed:{failed[0]}"
+    # The forge refuses to merge a draft, so polling one for green waits on nothing.
+    if pr.get("title", "").startswith(DRAFT):
+        return "draft"
     if all(jobs.get(job) == "success" for job in required):
         return "ready"
     return "pending"
@@ -642,7 +642,8 @@ def selfcheck():
     assert decide(open_pr, {"title": "success", "gate (test)": "failure"}, need, False) == "failed:gate (test)"
     assert decide({"state": "closed", "merged": False}, {}, need, False) == "closed"
     draft = dict(open_pr, title=DRAFT + "Keep the gate")
-    assert decide(draft, jobs, need, True) == "draft", "a draft is judged before behind and the jobs"
+    assert decide(draft, jobs, need, False) == "draft", "a green draft is still a draft"
+    assert decide(draft, {"title": "success", "gate (test)": "failure"}, need, False) == "failed:gate (test)", "a red job outranks the draft"
     assert decide(dict(open_pr, title="Keep the WIP: marker out"), jobs, need, False) == "ready"
     short = ratchet_subject(["test LOC 1 -> 2"], "the rail")
     assert short == "Ratchet: test LOC 1 -> 2 for the rail", short
