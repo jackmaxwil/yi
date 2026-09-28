@@ -69,7 +69,6 @@ impl<'a> Journal<'a> {
         };
         let lines: Vec<&str> = text.split_inclusive('\n').collect();
         let mut replay = Replay::default();
-        let mut kept = 0usize;
         for (at, line) in lines.iter().enumerate() {
             let last = at.saturating_add(1) == lines.len();
             match serde_json::from_str::<MemoryRecord>(line.trim_end()) {
@@ -79,11 +78,12 @@ impl<'a> Journal<'a> {
                     if !chained && replay.broken.is_none() {
                         replay.broken = Some(at.saturating_add(1));
                     }
-                    kept = kept.saturating_add(line.len());
                     replay.records.push(record);
                 }
                 _ if last => {
-                    let prefix = text.get(..kept).unwrap_or_default();
+                    let prefix = text
+                        .get(..text.len().saturating_sub(line.len()))
+                        .unwrap_or_default();
                     self.replace(JOURNAL, prefix)?;
                 }
                 _ => {
