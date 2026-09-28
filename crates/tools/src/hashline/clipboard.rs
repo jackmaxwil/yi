@@ -48,7 +48,12 @@ fn read_register(
         if on_empty == OnEmptyPaste::Drop {
             return Ok(None);
         }
-        let known: Vec<String> = clipboard.named.keys().cloned().collect();
+        let mut known: Vec<(String, usize)> = clipboard
+            .named
+            .iter()
+            .map(|(name, lines)| (name.clone(), lines.len()))
+            .collect();
+        known.sort();
         if span_target {
             return Err(format!(
                 "line {line_num}: {}",
@@ -86,19 +91,36 @@ fn write_register(
     line_num: u64,
     file_lines: &[String],
     clipboard: &mut Clipboard,
+    warnings: &mut Vec<String>,
 ) -> Result<(), String> {
-    if range.start.line < 1 || range.end.line > file_lines.len() as u64 {
-        return Err(format!(
+    let out_of_range = || {
+        format!(
             "line {line_num}: `{}` is out of range (file has {} lines).",
             describe_cut(range, register),
             file_lines.len()
-        ));
-    }
-    let captured: Vec<String> =
-        file_lines[(range.start.line - 1) as usize..range.end.line as usize].to_vec();
+        )
+    };
+    let start = range.start.line.checked_sub(1).ok_or_else(out_of_range)?;
+    let start = usize::try_from(start).map_err(|_| out_of_range())?;
+    let end = usize::try_from(range.end.line).map_err(|_| out_of_range())?;
+    let captured: Vec<String> = file_lines
+        .get(start..end)
+        .ok_or_else(out_of_range)?
+        .to_vec();
     match register {
-        Some(register) => {
-            clipboard.named.insert(register.to_owned(), captured);
+        Some(name) => {
+            // A named register outlives the call, and pasting it was the only way to see it.
+            let bytes = captured.iter().fold(0_usize, |sum, line| {
+                sum.saturating_add(line.len()).saturating_add(1)
+            });
+            warnings.push(format!(
+                "line {line_num}: `{}` captured lines {}-{} ({} lines, {bytes} bytes)",
+                describe_cut(range, register),
+                range.start.line,
+                range.end.line,
+                captured.len()
+            ));
+            clipboard.named.insert(name.to_owned(), captured);
         }
         None => {
             clipboard.lines = Some(captured);
@@ -128,7 +150,14 @@ pub fn resolve_clipboard_edits(
                 line_num,
                 ..
             } => {
-                write_register(&range, register.as_deref(), line_num, file_lines, clipboard)?;
+                write_register(
+                    &range,
+                    register.as_deref(),
+                    line_num,
+                    file_lines,
+                    clipboard,
+                    warnings,
+                )?;
             }
             Edit::Paste {
                 at,
