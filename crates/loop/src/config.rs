@@ -32,6 +32,25 @@ type CompactFn = dyn Fn(&[AgentMessage]) -> CompactFuture + Send + Sync;
 pub type GateFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 type GateFn = dyn Fn() -> GateFuture + Send + Sync;
 
+/// The three stop guards an eval run may move (D280): the loop reads them from here, and the
+/// runtime copies them from its levers. Defaults are the crate's constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoopGuards {
+    pub length_stop_at: u32,
+    pub cut_stop_at: u32,
+    pub reasoning_cap: usize,
+}
+
+impl Default for LoopGuards {
+    fn default() -> Self {
+        Self {
+            length_stop_at: crate::LENGTH_STOP_AT,
+            cut_stop_at: crate::CUT_STOP_AT,
+            reasoning_cap: crate::REASONING_CHAR_CAP,
+        }
+    }
+}
+
 pub struct LoopConfig {
     pub model: Model,
     pub effort: Effort,
@@ -57,6 +76,7 @@ pub struct LoopConfig {
     pub last_word_due: Option<Box<dyn Fn() -> bool + Send + Sync>>,
     /// Work started beside the request: awaited before each tool batch and before `AgentEnd`.
     pub side_work: Option<Box<GateFn>>,
+    pub guards: LoopGuards,
 }
 
 impl LoopConfig {
@@ -78,6 +98,7 @@ impl LoopConfig {
             last_word: None,
             last_word_due: None,
             side_work: None,
+            guards: LoopGuards::default(),
         }
     }
 }

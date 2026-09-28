@@ -71,12 +71,26 @@ if [ -z "$RUNNER" ]; then
       --model "$MODEL" -k "$ATTEMPTS" -n "$CONCURRENCY" \
       --agent-timeout-multiplier "$MULT" --verifier-timeout-multiplier 1.5 -o "$RUNS_DIR"
 fi
-# A RuntimeError is harbor's compose or pull failing before the agent runs (N1: a Docker Hub
-# timeout); that is not a result, so it is retried. An agent timeout or error is never retried.
 python3 evals/drivers/watch.py --runs "$RUNS_DIR" --hard "$HARD_CAP" --wall "$WALL" -- \
     harbor run --agent yi_harbor.agent:Yi -d "$DATASET" "$@" \
-    --model "$MODEL" -k "$ATTEMPTS" -n "$CONCURRENCY" --max-retries 2 --retry-include RuntimeError \
+    --model "$MODEL" -k "$ATTEMPTS" -n "$CONCURRENCY" \
     --agent-timeout-multiplier "$MULT" --verifier-timeout-multiplier 1.5 -o "$RUNS_DIR" >&2
 code=$?
+# N1: a Docker Hub timeout killed a trial's environment before its agent started, which is not
+# a result. A trial that left no session ran no agent, so its task runs once more; a trial that
+# did run is never rerun, whatever it raised (harbor's RuntimeError also reports an artifact
+# the agent failed to write, which is the agent's result).
+AGAIN=$(python3 evals/drivers/trials.py unstarted "$RUNS_DIR")
+if [ "$code" = 0 ] && [ -n "$AGAIN" ]; then
+  echo "rerunning tasks whose environment never started: $AGAIN" >&2
+  set --
+  for task in $AGAIN; do set -- "$@" -i "terminal-bench/$task"; done
+  python3 evals/drivers/watch.py --runs "$RUNS_DIR-again" --hard "$HARD_CAP" --wall "$WALL" -- \
+      harbor run --agent yi_harbor.agent:Yi -d "$DATASET" "$@" \
+      --model "$MODEL" -k 1 -n "$CONCURRENCY" \
+      --agent-timeout-multiplier "$MULT" --verifier-timeout-multiplier 1.5 -o "$RUNS_DIR-again" >&2
+  code=$?
+  python3 evals/drivers/trials.py rows "$RUNS_DIR-again" --run-id "$RUN_ID" --arm "$ARM" || true
+fi
 python3 evals/drivers/trials.py rows "$RUNS_DIR" --run-id "$RUN_ID" --arm "$ARM" || exit 2
 exit $code

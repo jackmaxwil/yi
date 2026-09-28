@@ -257,6 +257,11 @@ pr-body:
 ratchet *args:
     python3 scripts/forge_pr.py ratchet "$@"
 
+# The proposer half of one owner-started improvement round (evals/improve/round.py):
+# up to three candidate patches from yi in a container that sees only development-task data.
+improve base binary *args:
+    python3 evals/improve/round.py propose --base {{base}} --binary {{binary}} --out "$HOME/Development/yi-runs/improve/$(date +%Y%m%d-%H%M%S)" {{args}}
+
 # One ADR from its decision-log row, plus the index line.
 adr number:
     python3 scripts/adr.py {{number}}

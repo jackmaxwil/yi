@@ -16,6 +16,11 @@ def _pruned(value: dict) -> dict:
     return {key: item for key, item in value.items() if item not in (None, [], {}, ())}
 
 
+def _lanes(isolation: str | None) -> bool:
+    """A checkout of its own, handed back by merge: a worktree, or a container over one."""
+    return isolation == "worktree" or str(isolation or "").startswith("container:")
+
+
 def _inside(url: str, root: str) -> bool:
     """True when ``url`` is ``root`` itself or an entry under it; a partition is a prefix."""
     return url == root or url.startswith(root.rstrip("/") + "/")

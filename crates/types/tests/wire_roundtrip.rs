@@ -86,6 +86,21 @@ fn goal_discovery_ledger_round_trips_with_unknown_fields() -> Result<(), Box<dyn
     Ok(())
 }
 
+/// Recorded by the 0.382.0 binary, before a tick made todos: it loads with no policy and
+/// writes back the bytes `JobStore` wrote, so the prompt-era store is still the store.
+#[test]
+fn a_prompt_era_job_store_reads_with_default_policies_and_writes_back_unchanged()
+-> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scheduled-jobs-v1.json");
+    let stored = fs::read_to_string(path)?;
+    let state: yi_types::schedule::ScheduleState = serde_json::from_str(&stored)?;
+    let job = state.jobs.first().ok_or("the recorded job")?;
+    assert!(job.intent.is_empty() && job.unblocks.is_none() && !job.halted);
+    assert_eq!((&job.overlap, &job.catch_up), (&None, &None));
+    assert_eq!(serde_json::to_string_pretty(&state)?, stored);
+    Ok(())
+}
+
 #[test]
 fn daemon_ledger_fixture_round_trips_with_unknown_fields() -> Result<(), Box<dyn std::error::Error>>
 {

@@ -4,6 +4,7 @@
 pub mod acp;
 pub mod advisor;
 pub mod backoff;
+pub mod channel;
 pub mod checkpoint;
 pub mod compaction;
 pub mod config;
@@ -19,8 +20,10 @@ pub mod lane;
 pub mod lease;
 pub mod mail;
 pub mod mcp;
+pub mod memory;
 pub mod message;
 pub mod model;
+pub mod node;
 pub mod oauth;
 pub mod permission;
 pub mod plan;
