@@ -18,35 +18,51 @@ class Generators(unittest.TestCase):
     def test_every_family_is_seeded_red_untouched_and_green_solved(self):
         self.assertEqual(sorted(gen.FAMILIES), ["bugfix", "logs", "reconcile"])
         for name, family in gen.FAMILIES.items():
-            for seed in (1, 2, 7):
-                with self.subTest(family=name, seed=seed):
-                    task = family.make(seed)
-                    self.assertEqual(task, family.make(seed), "a seed is one task, every time")
-                    self.assertTrue(task["prompt"].strip() and task["files"])
-                    self.assertLessEqual(task["timeoutSec"], 300)
-                    with tempfile.TemporaryDirectory() as tmp:
-                        passed, total = family.check(seed, materialize(task, tmp))
-                    self.assertGreater(total, 1, "partial credit needs more than one check")
-                    self.assertLess(passed, total, "an untouched workspace must not pass")
-                    with tempfile.TemporaryDirectory() as tmp:
-                        workspace = materialize(task, tmp)
-                        family.solve(seed, workspace)
-                        self.assertEqual(family.check(seed, workspace), (total, total), "the reference solves it")
-            self.assertNotEqual(family.make(1), family.make(2), "seeds differ")
+            for level in gen.LEVELS:
+                for seed in (1, 2, 7):
+                    with self.subTest(family=name, level=level, seed=seed):
+                        task = family.make(seed, level)
+                        self.assertEqual(task, family.make(seed, level), "a seed is one task, every time")
+                        self.assertTrue(task["prompt"].strip() and task["files"])
+                        self.assertLessEqual(task["timeoutSec"], 600)
+                        with tempfile.TemporaryDirectory() as tmp:
+                            passed, total = family.check(seed, materialize(task, tmp), level)
+                        self.assertGreater(total, 1, "partial credit needs more than one check")
+                        self.assertLess(passed, total, "an untouched workspace must not pass")
+                        with tempfile.TemporaryDirectory() as tmp:
+                            workspace = materialize(task, tmp)
+                            family.solve(seed, workspace, level)
+                            self.assertEqual(family.check(seed, workspace, level), (total, total), "the reference solves it")
+                self.assertNotEqual(family.make(1, level), family.make(2, level), "seeds differ")
+
+    def test_each_level_adds_what_level_one_saturated_without(self):
+        # Inner A/A, 2026-09-28: level 1 of every family scored full on 12 of its first 13 trials.
+        logs, bugfix, reconcile = (gen.FAMILIES[name] for name in ("logs", "bugfix", "reconcile"))
+        self.assertEqual(sorted(logs.make(4, 2)["files"]), ["edge.log", "service.log"], "two logs to merge")
+        self.assertGreater(len(logs.make(4, 3)["files"]["edge.log"]), len(logs.make(4, 2)["files"]["edge.log"]))
+        self.assertIn("+02:00", logs.make(4, 3)["files"]["edge.log"], "level 3 writes a local offset")
+        for level in (2, 3):
+            shown = bugfix.make(4, level)["files"]["test_toolkit.py"].count("def test_")
+            self.assertGreater(bugfix.check(4, pathlib.Path(tempfile.mkdtemp()), level)[1], shown, "hidden tests")
+        self.assertIn("rates.csv", reconcile.make(4, 3)["files"], "level 3 converts a currency")
 
     def test_the_checker_never_trusts_the_workspace_tests(self):
         family = gen.FAMILIES["bugfix"]
-        task = family.make(3)
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = materialize(task, tmp)
-            # An agent that guts the tests instead of fixing the code scores nothing extra.
-            for path in workspace.glob("test_*.py"):
-                path.write_text("import unittest\n")
-            before = family.check(3, materialize(task, tempfile.mkdtemp()))
-            self.assertEqual(family.check(3, workspace), before)
+        for level in gen.LEVELS:
+            task = family.make(3, level)
+            with tempfile.TemporaryDirectory() as tmp:
+                workspace = materialize(task, tmp)
+                # An agent that guts the tests instead of fixing the code scores nothing extra.
+                for path in workspace.glob("test_*.py"):
+                    path.write_text("import unittest\n")
+                before = family.check(3, materialize(task, tempfile.mkdtemp()), level)
+                self.assertEqual(family.check(3, workspace, level), before)
 
     def test_ids_parse_back(self):
-        self.assertEqual(gen.parse("logs:12"), ("logs", 12))
+        self.assertEqual(gen.parse("logs:12"), ("logs", 12, 1))
+        self.assertEqual(gen.parse("logs:12:3"), ("logs", 12, 3))
+        with self.assertRaises(ValueError):
+            gen.parse("logs:12:9")
         with self.assertRaises(ValueError):
             gen.parse("nope:1")
 

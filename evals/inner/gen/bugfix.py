@@ -1,6 +1,8 @@
 """Fix failing tests: a small module with planted bugs and a unittest file. Targets the
 read-edit-test class: edit refusals, lost tests and done-without-check fire on this shape. The
-checker runs its own copy of the tests, so an agent that edits the tests gains nothing."""
+checker runs its own copy of the tests, so an agent that edits the tests gains nothing. Level 2
+has more functions and bugs and grades hidden tests the agent never sees; level 3 shows only one
+test per function, so most bugs are found by reading the code, not by running the tests."""
 import random
 import subprocess
 import sys
@@ -53,46 +55,70 @@ POOL = {
                     ["self.assertEqual(m.running_max([2, 5, 1, 7]), [2, 5, 5, 7])",
                      "self.assertEqual(m.running_max([-3, -5, -1]), [-3, -3, -1])"]),
 }
-FUNCTIONS, BUGS = 6, 3
+# Hidden cases per function: graded from level 2 on, never written into the workspace.
+HIDDEN = {
+    "clamp": ["self.assertEqual(m.clamp(3, 0, 3), 3)", "self.assertEqual(m.clamp(-1, -5, 5), -1)"],
+    "median": ["self.assertEqual(m.median([5]), 5)", "self.assertEqual(m.median([1, 2]), 1.5)"],
+    "chunk": ["self.assertEqual(m.chunk([], 2), [])", "self.assertEqual(m.chunk([1, 2, 3, 4], 4), [[1, 2, 3, 4]])"],
+    "dedupe": ["self.assertEqual(m.dedupe(['b', 'a', 'b']), ['b', 'a'])"],
+    "is_leap": ["self.assertFalse(m.is_leap(2100))", "self.assertTrue(m.is_leap(1996))"],
+    "parse_duration": ["self.assertEqual(m.parse_duration('2h'), 7200)",
+                       "self.assertEqual(m.parse_duration('1m30s'), 90)"],
+    "rot13": ["self.assertEqual(m.rot13('ABC'), 'NOP')", "self.assertEqual(m.rot13(''), '')"],
+    "running_max": ["self.assertEqual(m.running_max([]), [])", "self.assertEqual(m.running_max([-2]), [-2])"],
+}
+# (functions, bugs) per level; level 1 is the first version's shape.
+SHAPE = {1: (6, 3), 2: (8, 5), 3: (8, 6)}
 
 
-def _pick(seed):
-    rng = random.Random(f"bugfix:{seed}")
-    names = rng.sample(sorted(POOL), FUNCTIONS)
-    return names, set(rng.sample(names, BUGS))
+def _pick(seed, level=1):
+    rng = random.Random(f"bugfix:{seed}" if level == 1 else f"bugfix:{seed}:{level}")
+    functions, bugs = SHAPE[level]
+    names = rng.sample(sorted(POOL), functions)
+    return names, set(rng.sample(names, bugs))
 
 
 def _module(names, bugged):
     return "\n\n".join(POOL[n][1] if n in bugged else POOL[n][0] for n in names)
 
 
-def _tests(names):
+def _cases(name, level, graded):
+    """The shown cases, plus the hidden ones when grading from level 2 on; level 3 shows one."""
+    shown = POOL[name][2][:1] if level == 3 else POOL[name][2]
+    return (POOL[name][2] + HIDDEN[name]) if graded and level > 1 else shown
+
+
+def _tests(names, level=1, graded=False):
     lines = ["import unittest", "", "import toolkit as m", "", "", "class ToolkitTest(unittest.TestCase):"]
     for name in names:
-        for index, body in enumerate(POOL[name][2]):
+        for index, body in enumerate(_cases(name, level, graded)):
             lines += [f"    def test_{name}_{index}(self):", f"        {body}", ""]
     lines += ["", "if __name__ == '__main__':", "    unittest.main()", ""]
     return "\n".join(lines)
 
 
-def make(seed):
-    names, bugged = _pick(seed)
+def make(seed, level=1):
+    names, bugged = _pick(seed, level)
     prompt = ("The tests in test_toolkit.py fail against toolkit.py. Fix the bugs in toolkit.py so every test "
               "passes. Do not change test_toolkit.py. Run the tests with `python3 -m unittest -v` to check.")
-    return {"prompt": prompt, "files": {"toolkit.py": _module(names, bugged), "test_toolkit.py": _tests(names)},
-            "timeoutSec": 300}
+    if level > 1:
+        prompt += (" The tests shown are not all the tests toolkit.py will be graded on: every function must be "
+                   "correct for all valid inputs, as its name and behavior imply.")
+    return {"prompt": prompt, "files": {"toolkit.py": _module(names, bugged), "test_toolkit.py": _tests(names, level)},
+            "timeoutSec": 300 if level == 1 else 600}
 
 
-def check(seed, workspace):
-    """Tests passed out of tests run, against the checker's own copy of the test file."""
-    names, _ = _pick(seed)
-    total = sum(len(POOL[n][2]) for n in names)
+def check(seed, workspace, level=1):
+    """Tests passed out of tests run, against the checker's own copy of the test file (with the
+    hidden cases from level 2 on)."""
+    names, _ = _pick(seed, level)
+    total = sum(len(_cases(n, level, True)) for n in names)
     source = Path(workspace) / "toolkit.py"
     if not source.is_file():
         return 0, total
     with tempfile.TemporaryDirectory() as tmp:
         Path(tmp, "toolkit.py").write_text(source.read_text(errors="replace"))
-        Path(tmp, "test_toolkit.py").write_text(_tests(names))
+        Path(tmp, "test_toolkit.py").write_text(_tests(names, level, graded=True))
         try:
             done = subprocess.run([sys.executable, "-m", "unittest", "-v"], cwd=tmp, capture_output=True,
                                   text=True, timeout=60)
@@ -102,6 +128,6 @@ def check(seed, workspace):
     return passed, total
 
 
-def solve(seed, workspace):
-    names, _ = _pick(seed)
+def solve(seed, workspace, level=1):
+    names, _ = _pick(seed, level)
     (Path(workspace) / "toolkit.py").write_text(_module(names, set()))

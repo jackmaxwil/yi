@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The inner loop's runner (docs/plans/2026-09-26-self-improvement-evals.md section 19).
 
-    EVAL_RUN_ID=<id> EVAL_BINARY=<yi> python3 evals/inner/runner.py <overrides.json> <family:seed>...
+    EVAL_RUN_ID=<id> EVAL_BINARY=<yi> python3 evals/inner/runner.py <overrides.json> <family:seed[:level]>...
 
 The runner protocol `evals/levers.py` calls: one JSON trial row per task on stdout, filed in
 evals/trials/<run-id>.jsonl. Each task is generated from its seed into a fresh temp workspace and run
@@ -30,9 +30,9 @@ TRIAL_USD = float(os.environ.get("INNER_TRIAL_USD", "0.03"))
 
 
 def one(task_id, binary, levers, keep):
-    family, seed = gen.parse(task_id)
+    family, seed, level = gen.parse(task_id)
     module = gen.FAMILIES[family]
-    task = module.make(seed)
+    task = module.make(seed, level)
     started = time.monotonic()
     keep.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="yi-inner-") as tmp:
@@ -54,8 +54,8 @@ def one(task_id, binary, levers, keep):
                                       stdin=subprocess.DEVNULL, env=env, timeout=task["timeoutSec"] + 60).returncode
             except subprocess.TimeoutExpired:
                 timed_out = True
-        passed, total = module.check(seed, workspace)
-    row = {"task": task_id, "family": family, "seed": seed, "reward": float(passed == total),
+        passed, total = module.check(seed, workspace, level)
+    row = {"task": task_id, "family": family, "seed": seed, "level": level, "reward": float(passed == total),
            "testsPassed": passed, "testsTotal": total, "traceScored": False, "partialScore": None,
            "timedOut": timed_out, "errored": code not in (0, None) and not timed_out, "exit": code,
            "wallSec": round(time.monotonic() - started, 2)}
@@ -65,7 +65,7 @@ def one(task_id, binary, levers, keep):
 
 def main(argv):
     if len(argv) < 2:
-        print("usage: runner.py <overrides.json> <family:seed>...", file=sys.stderr)
+        print("usage: runner.py <overrides.json> <family:seed[:level]>...", file=sys.stderr)
         return 1
     overrides, tasks = argv[0], argv[1:]
     run_id, binary = os.environ.get("EVAL_RUN_ID"), os.environ.get("EVAL_BINARY")
