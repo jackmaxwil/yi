@@ -361,6 +361,30 @@ fn named_register_moves_content_across_files() -> TestResult {
     Ok(())
 }
 
+/// A CUT into a named register answered only "updated": the model never saw what it captured,
+/// and a later empty-register warning listed names with no sizes.
+#[test]
+fn a_named_cut_echoes_what_it_captured() -> TestResult {
+    let fixture = Fixture::new("cut-echo")?;
+    fixture.write("list.txt", "a\nbb\nc\nd\ne\n")?;
+    let tag = fixture.tag_of("list.txt")?;
+    let cut = fixture.edit(&format!("[list.txt#{tag}]\nCUT 2.=4 @x\n"));
+    let text = output_text(&cut);
+    assert!(!cut.is_error, "{text}");
+    assert!(
+        text.contains("`CUT 2.=4 @x` captured lines 2-4 (3 lines, 7 bytes)"),
+        "{text}"
+    );
+    let tag = fixture.tag_of("list.txt")?;
+    let paste = fixture.edit(&format!("[list.txt#{tag}]\nPUT >2 @nope\n"));
+    let text = output_text(&paste);
+    assert!(
+        text.contains("Available registers: `@x` (3 lines)."),
+        "{text}"
+    );
+    Ok(())
+}
+
 #[test]
 fn block_replace_resolves_braces_without_tree_sitter() -> TestResult {
     let fixture = Fixture::new("block")?;
