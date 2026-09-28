@@ -34,6 +34,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             user_system: String::new(),
             schema_instruction: None,
             context_window: child.model().context_window,
+            global_skills: Vec::new(),
         }));
         let host = attach_runtime(
             &mut child,
@@ -161,9 +162,8 @@ impl RuntimeWiring {
 
     /// The kernel's own profile, which its `bash()` jobs run under too (D241).
     fn exec_sandbox(&self) -> Option<yi_tools::Sandbox> {
-        self.session_sandbox().map(|sandbox| {
-            crate::kernel::kernel_profile(&sandbox, &self.home, Some(&self.family_dir()))
-        })
+        self.session_sandbox()
+            .map(|sandbox| crate::kernel::kernel_profile(&sandbox, Some(&self.family_dir())))
     }
 
     fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {
@@ -744,7 +744,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
     registry.register_exec(wiring.cwd.clone(), wiring.exec_sandbox());
-    crate::kernel_state::register_harness_save(&mut registry, wiring.broker.clone(), &wiring.home);
+    crate::kernel_state::register_host_stores(&mut registry, &wiring);
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort
         // the turn whose cell awaits the reply (design §9.2).
