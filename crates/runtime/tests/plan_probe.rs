@@ -135,6 +135,7 @@ fn open(rig: &Rig, label: &str, probe: Option<&str>) -> Result<(), Box<dyn Error
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         },
         request_id: None,
@@ -148,6 +149,7 @@ fn open(rig: &Rig, label: &str, probe: Option<&str>) -> Result<(), Box<dyn Error
             label: TodoLabel::new(label)?,
             on: BlockedOn::External { probe },
             note: "the deploy has to finish".to_owned(),
+            ask: None,
         },
         request_id: None,
         expected_revision: None,
@@ -189,6 +191,7 @@ fn a_block_inside_a_sub_plan_is_probed_too() -> TestResult {
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         },
     ))?;
@@ -210,6 +213,7 @@ fn a_block_inside_a_sub_plan_is_probed_too() -> TestResult {
                     delegation: None,
                     contract: None,
                     children: Vec::new(),
+                    cites: Default::default(),
                 }],
             },
         ))?
@@ -223,6 +227,7 @@ fn a_block_inside_a_sub_plan_is_probed_too() -> TestResult {
                 probe: Some(ProbeCommand::new("curl staging")?),
             },
             note: "staging is deploying".to_owned(),
+            ask: None,
         },
     ))?;
     rig.green.store(true, Ordering::SeqCst);
@@ -310,6 +315,7 @@ fn the_backstop_starts_only_the_roots_this_session_owns() -> TestResult {
                 }),
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         },
         request_id: None,

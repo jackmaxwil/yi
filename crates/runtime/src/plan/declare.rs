@@ -3,7 +3,7 @@ use yi_types::plan::canonical::{ArtifactRef, Digest, canonical_bytes};
 use yi_types::plan::contract::MANIFEST_FORMAT;
 use yi_types::plan::ids::INLINE_NOTE_MAX_BYTES;
 
-use yi_types::plan::doc::{PlanId, PlanState, Todo, TodoLabel, TodoState};
+use yi_types::plan::doc::{Isolation, PlanId, PlanState, Todo, TodoLabel, TodoState};
 
 use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError};
 
@@ -50,19 +50,22 @@ fn cmd_item(item: &mut Value, blobs: &mut Vec<Blob>) -> Option<()> {
     Some(())
 }
 
+fn lanes(delegation: &Value) -> bool {
+    delegation
+        .pointer("/spec/isolation")
+        .and_then(|tag| serde_json::from_value::<Isolation>(tag.clone()).ok())
+        .is_some_and(|isolation| isolation.lanes())
+}
+
 fn worktree_command(todo: &Map<String, Value>) -> Option<String> {
     let delegation = todo.get("delegation")?;
-    (delegation.pointer("/spec/isolation")?.as_str()? == "worktree").then_some(())?;
+    lanes(delegation).then_some(())?;
     Some(delegation.pointer("/accept/command")?.as_str()?.to_owned())
 }
 
 fn stated_worktree(todo: &Map<String, Value>) -> bool {
     todo.get("delegation").is_some_and(|delegation| {
-        delegation
-            .pointer("/spec/isolation")
-            .and_then(Value::as_str)
-            == Some("worktree")
-            && delegation.pointer("/accept/stated").is_some()
+        lanes(delegation) && delegation.pointer("/accept/stated").is_some()
     })
 }
 

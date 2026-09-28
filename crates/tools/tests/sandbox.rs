@@ -26,7 +26,7 @@ fn workspace(tag: &str) -> Result<(Scratch, PathBuf, PathBuf), Box<dyn Error>> {
 fn run(command: &str, cwd: &Path, sandbox: Option<&Sandbox>) -> Result<(i32, String), String> {
     let cancelled: CancelFlag = Arc::new(|| false);
     let timeout = std::time::Duration::from_secs(120);
-    match run_or_background(command, cwd, &cancelled, None, timeout, sandbox)? {
+    match run_or_background(command, cwd, &cancelled, None, timeout, sandbox, None)? {
         Run::Finished(capture) => Ok((
             capture.exit_code.unwrap_or(-1),
             format!("{}{}", capture.stdout, capture.stderr),

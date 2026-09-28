@@ -1,0 +1,23 @@
+{
+  "jobs": [
+    {
+      "id": "hb-40f42121",
+      "status": "active",
+      "source": "heartbeat",
+      "sessionId": "01a0e578-c8b5-7bb1-bc8f-61b4e8d58afd",
+      "cwd": "/tmp/work",
+      "prompt": "check the build and report red jobs",
+      "schedule": {
+        "kind": "interval",
+        "expression": "every 10s",
+        "intervalMs": 10000
+      },
+      "createdAt": 1790556293304,
+      "updatedAt": 1790556303331,
+      "nextRunAt": 1790556313311,
+      "lastRunAt": 1790556303331,
+      "runCount": 1
+    }
+  ],
+  "dispatches": []
+}

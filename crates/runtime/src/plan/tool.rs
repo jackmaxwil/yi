@@ -3,8 +3,8 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
 use yi_types::plan::doc::{
-    BlockedOn, Delegation, GoalText, Plan, PlanId, PlanTier, TODO_LABEL_MAX, Todo, TodoLabel,
-    TodoState, TodoStateName,
+    BlockedOn, Cites, Delegation, GoalText, Plan, PlanId, PlanTier, TODO_LABEL_MAX, Todo,
+    TodoLabel, TodoState, TodoStateName, Waiver,
 };
 use yi_types::url::Url;
 
@@ -103,7 +103,7 @@ fn known_keys(kind: OpKind) -> &'static [&'static str] {
         OpKind::Append => &["op", "plan", "todos"],
         OpKind::Unblock | OpKind::Start => &["op", "plan", "label", "todo"],
         OpKind::Drop => &["op", "plan", "label", "todo", "disposition"],
-        OpKind::Block => &["op", "plan", "label", "todo", "on", "note"],
+        OpKind::Block => &["op", "plan", "label", "todo", "on", "note", "options"],
         OpKind::Reorder => &["op", "plan", "labels"],
         OpKind::AddEdge => &["op", "plan", "todo", "after"],
         OpKind::Done => &["op", "plan", "label", "todo", "output"],
@@ -124,7 +124,14 @@ fn known_keys(kind: OpKind) -> &'static [&'static str] {
     }
 }
 
-const TODO_SPEC_KEYS: [&str; 4] = ["label", "after", "delegation", "contract"];
+const TODO_SPEC_KEYS: [&str; 6] = [
+    "label",
+    "after",
+    "delegation",
+    "contract",
+    "intent",
+    "waived",
+];
 
 /// Invariant: a key no op reads is refused, never dropped: a misspelled `contract` or `output`
 /// would otherwise land a todo on the unverified path with no error.
@@ -187,6 +194,7 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
         }
         // Incident: one F0e session shortened a label three times and never got under 80,
         // because the headline said the row was not a checklist row (#472).
+        let (label, cited) = yi_types::todo::split_cited(label);
         let label = TodoLabel::new(label).map_err(|cause| match cause {
             yi_types::plan::doc::DocError::LabelTooLong { label, max } => ArgError::LabelTooLong {
                 at: format!("set line {line}"),
@@ -198,9 +206,7 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                 text: cause.to_string(),
             },
         })?;
-        let todo = Todo {
-            label,
-            after: Vec::new(),
+        let mut todo = Todo {
             state: match &state {
                 TodoStateName::Running => TodoState::Running {
                     by: yi_types::plan::doc::AgentId::new(super::ops::OWNER_AGENT).map_err(
@@ -220,17 +226,9 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                 | TodoStateName::Abandoned
                 | TodoStateName::Other(_) => TodoState::Pending,
             },
-            delegation: None,
-            subplan: None,
-            retries: yi_types::plan::doc::RetryCount::default(),
-            children: Vec::new(),
-            note: None,
-            attempt: yi_types::plan::doc::AttemptId::FIRST,
-            refusals: 0,
-            contract: None,
-            contract_hash: None,
-            extra: serde_json::Map::new(),
+            ..Todo::pending(label)
         };
+        todo.cites.intent = cited;
         let depth = indent.min(path.len());
         path.truncate(depth);
         if depth == 0 {
@@ -276,6 +274,7 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                 delegation: None,
                 contract: None,
                 children: todo.children,
+                cites: todo.cites,
             },
             state,
         })
@@ -292,7 +291,7 @@ pub enum PlanToolError {
 
 /// Invariant: yi-runtime carries no `serde` dependency, so the deserialize
 /// bound is a local trait over `serde_json::from_value`.
-trait FromArg: Sized {
+pub(super) trait FromArg: Sized {
     fn from_arg(value: Value) -> Result<Self, serde_json::Error>;
 }
 
@@ -312,6 +311,8 @@ from_arg!(
     Vec<TodoLabel>,
     PlanId,
     Url,
+    Vec<Url>,
+    Vec<Waiver>,
     BlockedOn,
     Delegation,
     yi_types::plan::contract::Contract,
@@ -340,7 +341,7 @@ fn opt<T: FromArg>(
     }
 }
 
-fn need<T: FromArg>(
+pub(super) fn need<T: FromArg>(
     args: &Map<String, Value>,
     op: OpKind,
     field: &'static str,
@@ -348,7 +349,7 @@ fn need<T: FromArg>(
     opt(args, op, field)?.ok_or(ArgError::Missing { op, field })
 }
 
-fn label(args: &Map<String, Value>, op: OpKind) -> Result<TodoLabel, ArgError> {
+pub(super) fn label(args: &Map<String, Value>, op: OpKind) -> Result<TodoLabel, ArgError> {
     match opt(args, op, "label")? {
         Some(label) => Ok(label),
         None => need(args, op, "todo").map_err(|_| ArgError::Missing { op, field: "label" }),
@@ -382,6 +383,10 @@ fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, Ar
             delegation: opt(spec, op, "delegation")?,
             contract: opt(spec, op, "contract")?,
             children: Vec::new(),
+            cites: Cites {
+                intent: opt(spec, op, "intent")?.unwrap_or_default(),
+                waived: opt(spec, op, "waived")?.unwrap_or_default(),
+            },
         })?);
     }
     Ok(specs)
@@ -413,13 +418,10 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
             label: label(args, kind)?,
             disposition: opt(args, kind, "disposition")?,
         },
-        OpKind::Block => Op::Block {
-            label: label(args, kind)?,
-            on: need(args, kind, "on")?,
-            note: need(args, kind, "note")?,
-        },
+        OpKind::Block => super::ask::block(args, kind)?,
         OpKind::Unblock => Op::Unblock {
             label: label(args, kind)?,
+            answer: None,
         },
         OpKind::Reorder => Op::Reorder {
             labels: need(args, kind, "labels")?,
@@ -587,6 +589,7 @@ fn todo_line(todo: &Todo) -> String {
         }
         TodoState::Pending | TodoState::Abandoned | TodoState::Other(_) => {}
     }
+    line.push_str(&super::ask::line(todo));
     if let Some(Value::String(url)) = todo.extra.get(super::state::SUBMITTED_KEY) {
         line.push_str(&format!(" submitted {url}"));
     }
@@ -779,21 +782,22 @@ pub fn schema() -> Value {
                     "enum": ALL_OPS.iter().take(MODEL_OPS).map(|op| op_name(*op)).collect::<Vec<_>>(),
                     "description": "set replaces the whole list from a checklist; init goal+todos; append/drop/reorder/add_edge edit the cut; start/done/fail step a todo; block/unblock park one; retry a failed one; decompose a running one into a sub-plan; supersede replaces the whole cut; view echoes it"
                 },
-                "list": {"type": "string", "description": "set: the checklist, one `- [ ] label` per line (`[>]` running, `[x]` done), nested by two-space indent"},
+                "list": {"type": "string", "description": "set: the checklist, one `- [ ] label` per line (`[>]` running, `[x]` done), nested by two-space indent; trailing `user://<n>` tokens cite the user's messages the row serves"},
                 "plan": {"type": "string", "description": "Sub-plan id; omit for the root plan"},
                 "goal": {"type": "string", "description": "init: the whole deliverable in one line"},
                 "todos": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "init/append/decompose/supersede: [{label (at most 80 chars), after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, covers?: [glob], items: [{id, critical: bool, weight: 1..100, decider: {cmd: \"shell command\"} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract; done runs the contract (an artifact is {digest, media_type, length})",
+                    "description": "init/append/decompose/supersede: [{label (at most 80 chars), intent?: [user://<n> of each user message it serves; default the latest], waived?: [{address, reason}], after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, covers?: [glob], items: [{id, critical: bool, weight: 1..100, decider: {cmd: \"shell command\"} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract, as does container:<image>, the same worktree with its bash run in a container of that image; done runs the contract (an artifact is {digest, media_type, length})",
                     "minItems": 1
                 },
                 "label": {"type": "string", "description": "drop/block/unblock/start/done/fail/retry/decompose: the todo"},
                 "labels": {"type": "array", "items": {"type": "string"}, "description": "reorder: every label of the plan, in the new priority order"},
                 "todo": {"type": "string", "description": "add_edge: the todo that waits"},
                 "after": {"type": "string", "description": "add_edge: the sibling it waits on"},
-                "on": {"type": "object", "description": "block: {\"child\": agent} | {\"user\": null} | {\"external\": {\"probe\": command}}"},
+                "on": {"type": "object", "description": "block: {\"child\": agent} | {\"user\": null} | {\"external\": {\"probe\": command}} | {\"channel\": {\"address\": \"clock://at <ISO time>\"}}, unblocked then"},
                 "note": {"type": "string", "description": "block: what would unblock it"},
+                "options": {"type": "array", "items": {"type": "object"}, "description": "block on user: 3 to 5 answers [{id, label, preview?}] the user picks one of by replying with its number, id or label; a preview is light (a line, a small diagram's source, or an address), at most 2048 bytes"},
                 "cause": {"type": "string", "description": "fail: what went wrong"},
                 "output": {"type": "string", "description": "done: url of the product; required when the delegation declares an output schema"},
                 "delegation": {"type": "object", "description": "retry: replacement delegation, shaped as in todos"},
@@ -959,19 +963,8 @@ mod tests {
 
     fn todo(label: &str, state: TodoState) -> Result<Todo, yi_types::plan::doc::DocError> {
         Ok(Todo {
-            label: TodoLabel::new(label)?,
-            after: Vec::new(),
             state,
-            delegation: None,
-            subplan: None,
-            retries: yi_types::plan::doc::RetryCount::default(),
-            children: Vec::new(),
-            note: None,
-            attempt: yi_types::plan::doc::AttemptId::FIRST,
-            refusals: 0,
-            contract: None,
-            contract_hash: None,
-            extra: Map::new(),
+            ..Todo::pending(TodoLabel::new(label)?)
         })
     }
 

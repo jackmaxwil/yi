@@ -17,7 +17,7 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 | MCP | A one-shot CLI (`yi mcp`), compiled into every build, refused unless `mcp.enabled` is true; the agent reaches it through `bash` and the kernel, never a registered tool (§7.6) | D36, D71 |
 | Python | A Jupyter kernel over ZeroMQ, its package embedded in the binary, its toolchain a pinned, verified uv (§9) | D156, D238 |
 | Permission | Modes and rules, a per-segment command classifier, a catastrophic denylist, an optional model reviewer, Seatbelt containment on macOS (§8) | D81, D205 |
-| Worktrees | A root session claims a git worktree slot unless `--here`, `lanes.enabled: false` or no repository (§14) | D119, D203 |
+| Worktrees and node | Resource admission: a root session claims a git worktree slot unless `--here`, `lanes.enabled: false` or no repository (§14); one machine is a node card, `~/.yi/node.json`, and every live kernel on it takes one of its slots or shares its family's (§9); a child may run its bash in a local container (§11) | D119, D203, D285, D286 |
 | ACP | v2 only; a lower `protocolVersion` gets a version-mismatch error; the wire is hand-rolled (§17.2) | D1, D40 |
 | Workspace | `yi serve` owns sessions; `yi console` is an ACP client over its socket; bare `yi` on a terminal opens the console, `--solo` the TUI (§17) | D95, D118 |
 
@@ -29,7 +29,11 @@ JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WA
 converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6) · a GUI · browser automation, computer use, email, or any capability that
 is not a coding agent · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
-the console.
+the console · a scheduled job that puts its own text in front of the model or runs saved code
+(a tick creates a todo, §15.2) · a durable channel buffer, external channel adapters and
+consumer groups (the clock is the only channel, D283) · placement on another machine, a VM or a
+cloud, and a kernel or agent loop inside a container (a container child's kernel stays on the
+host, D286).
 
 ## 2. Crates and dependency direction
 A folder `crates/x/` is the crate `yi-x` (`scripts/guardrails/check_manifests.py`). The internal
@@ -373,6 +377,14 @@ A persistent IPython process per session that reaches the host only through host
   `kernel.prewarm` (default true); a failed prewarm is silent and the next cell reports it.
 - It runs under the session Seatbelt profile plus `~/.yi/harness` and `~/.yi/mcp`; a cell's
   wall clock is `cell_ceiling`, default 600 s, started after boot.
+- Admission (D285): a boot first takes one of the node card's `slots` (`~/.yi/node.json`, the
+  cores less one clamped 1..=8 on first use, `node.slots` in config over it), a flock on
+  `~/.yi/node/slots/<n>.held` that the kernel's process monitor holds until the process is
+  reaped, so any exit, a crash or a killed host included, frees it. With every slot held the
+  boot waits, cancellable, and the wait and the cell's result both say `node: N of N slots held
+  (node.slots=N); this kernel waits for one` with each holder's pid and directory; a prewarm
+  never waits. A kernel whose family already holds a slot shares it and never waits, so a parent
+  cell awaiting its child cannot deadlock the node; the family fuses (§11) bound what shares it.
 - A host request is a comm on target `host.request`, dispatched once per comm id; the reply
   rides the control channel as `{status: "ok", ..}` or `{status: "error", error}`. An
   unregistered verb answers `host request type "X" is not available in this session`.
@@ -451,6 +463,15 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   `{rlm_child_id, next, name, session_dir, model}` at admission and the run proceeds detached.
 - kwargs are a whitelist: `name, model, thinking, fork, isolation, deny_write, deny_read,
   deny_url, context, check, deadline_s, tokens, parent_close`; `fork=all` refuses a model.
+- `isolation` is `none`, `worktree` or `container:<image>` (D286), from `rlm.run` or a plan
+  delegation's `spec.isolation`. A container child claims the same lane, branch and merge as a
+  worktree child; `docker run -d --rm` starts one container of the image over it at spawn, the
+  lane bind-mounted at its own path with its git dirs and `.git` pointer read-only, run as the
+  lane's owner, and the wall's `container` sends every bash call through `docker exec`; a killed
+  call's processes in the container are killed before its job settles. It is removed when the child's record
+  drops (reap, repossession, a failed spawn) and by name at the next spawn on that lane. A node
+  whose card lacks `container` refuses before a lane is claimed; a missing image is pulled once
+  with a notice.
 - Admission refuses at lever `family.cap` (16) live sessions, at depth `rlm.maxDepth` (1,
   clamped 1..=3) but for a juror, at `family.max_children` (8) workers, and on a taken name.
 - `Standing { Worker, Juror, Service }`: juror and service stand outside the worker cap; lease,
@@ -520,7 +541,7 @@ applies and journals. A todo's contract decides when it is done.
 
 State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/src/plan/op.rs)):
 - `TodoState { Pending, Running{by}, Blocked{on, note}, Done{output, resolution},
-  Failed{cause, last}, Abandoned, Other }`, `BlockedOn { Child, User, External{probe}, Other }`,
+  Failed{cause, last}, Abandoned, Other }`, `BlockedOn { Child, User, External{probe}, Channel{address, filter?}, Other }`,
   `PlanState { Active, Done, Superseded{by}, Abandoned, Other }`.
 - `OpKind`, 23 kinds; the `plan` tool schema shows the first 15 (`MODEL_OPS`): `set, init, append,
   drop, block, unblock, reorder, add_edge, start, done, fail, retry, decompose, supersede, view`.
@@ -580,14 +601,16 @@ A worktree todo needs a contract; it is Done only via acceptance or as `Accepted
   todo admission allows; the probe tick's `dispatch_ready_in` is the backstop.
 - A plan child's end is the engine's: it stores the last answer and applies `submit`, `done`; a
   `fail` verdict fails the todo `retained`. The owner gets one `plan: accepted|refused|failed`.
-- The `todo` tool keeps a session list of `custom{todo}` entries. With a plan open at depth 0 the
-  list is the plan's view, re-projected by `Mirror` after each op; `todo start|done` on a plan item
-  is the owner's plan op, any other change to one is `TodoError::Mirrored`.
+- The `todo` tool keeps a session list of `custom{todo}` entries whose items are plan `Todo`s: a
+  session todo is a todo with no edges, with an optional `t<n>` id and `done` evidence. With a plan
+  open at depth 0 the list is the plan's view, each plan todo cloned in by `Mirror` after each op,
+  less the delegation, contract and note its journal holds; `todo start|done` on a plan item is
+  the owner's plan op, any other change to one is `TodoError::Mirrored`.
 - A done todo's evidence is held against the ledger for display only: it is observed when a span
   it quotes in backticks appears verbatim in a recorded call's arguments or output, and claimed
   otherwise (`todo::claims`). Nothing is refused (D255); the HUD marks claimed rows.
 - Owner: [`schedule.rs`](../crates/runtime/src/plan/schedule.rs). Settled by: D224, D225, D226,
-  D229, D275.
+  D229, D275, D282.
 
 ## 14. Lane
 A lane is a git worktree slot, leased from a per-repository pool and handed back by move.
@@ -631,24 +654,37 @@ One objective per session, stored as `Fact::Goal` outside the transcript.
 - Surfaces: host requests `goal.{get,create,update}`; RPC `goal`, ACP `_yi/goal`. Settled by: D52.
 
 ### 15.2 Schedule
-A `JobStore` holds jobs and claims; an in-process `Scheduler` delivers due jobs to sessions.
+A `JobStore` holds jobs and claims; an in-process `Scheduler` delivers due jobs to sessions. A job is
+a clock subscription `clock://<schedule>`, the one channel (D283): its tick creates a todo or
+unblocks one and wakes the session, and the woken agent decides what to run.
 
-- One `scheduled-jobs.json` per runtime directory (the root's `rlm-<pid>/`, a child's own),
-  interned by path, so the sessions on it share one store and timer.
-- A claim is persisted before delivery and re-arms `next_run_at` from claim time, collapsing
-  missed ticks. Recovery marks open claims `INTERRUPTED_ERROR`.
+- A root session's `scheduled-jobs.json` is `<sessions>/schedules/<session id>/`, so its clocks
+  survive a restart; a child's is its runtime directory's. Each is interned by path, one timer each.
+- A claim is persisted before delivery and re-arms `next_run_at` from claim time; the ticks it
+  stands for are counted, and `catchUp` (`once`, `skip`, `all`) decides their todos. Recovery marks
+  open claims `INTERRUPTED_ERROR`. The timer re-reads the wall clock at least every 60 s.
+- A tick appends one session todo: the label or instruction plus `@ <tick>`, the instruction as
+  its note, the setup's `user://<n>` as intent, a `clock` stamp; `overlap` (`skip`, `buffer_one`,
+  `allow`) bounds the open todos one job may hold. The wake names the address and the todo only.
+- A todo blocked on `Channel{address: clock://…}` arms one job with `unblocks`; its tick unblocks
+  the todo (a plan row through the engine as the host). The todo is the authority: a restart
+  re-arms every wait from the rehydrated list.
+- `/heartbeat halt` holds every job of every interned store (`halted`) and every bound session's
+  turn and machine wakes; `/heartbeat resume` lifts it, and only it while it is in effect. Both are `custom{halt}` records.
+  `spend.alertTokens` queues a shown `spend_alert` notice per multiple crossed.
 - Claimed jobs group by `Job.session_id`, serial within and concurrent across groups. The
   deliverer feeds `should_defer` whether the session is streaming, compacting, or has queued
   steer/follow-up work behind a running turn, so a heartbeat due mid-turn or mid-compaction
-  defers to the next boundary instead of interleaving with it.
+  defers to the next boundary instead of interleaving with it; a deferred tick retries within 30 s.
 - Surfaces: RPC `heartbeat`, ACP `_yi/heartbeat` and slash `/heartbeat` (default `every 5m`, one
   per session, reaching the solo TUI, the console and ACP `_yi/slash`); kernel
-  `rlm_heartbeat.{list, create, update, delete}`.
+  `rlm_heartbeat.{list, create, update, delete}`, `create` taking `overlap`, `catchUp`, `intent`.
 
 Owner: [`schedule/mod.rs`](../crates/runtime/src/schedule/mod.rs). Shapes:
 [`schedule.rs`](../crates/types/src/schedule.rs): `CronSchedule{kind: { Once, Cron, Interval }}`,
 `Job`, `JobStatus { Active, Paused, Completed, Cancelled }`, `JobSource { Cron, Heartbeat,
-RlmHeartbeat }`, `DeliveryMode { Steer, FollowUp }`. Settled by: D86, D246.
+RlmHeartbeat }`, `DeliveryMode { Steer, FollowUp }`, `Overlap`, `CatchUp`, `ClockStamp`,
+`HaltRecord`. Settled by: D86, D246, D283.
 
 ## 16. Advisor
 A reviewer that reads a digest of the session's work log and may emit one advice per review.
@@ -895,7 +931,8 @@ The enforced rules for Rust in `crates/`; production lines precede a file's firs
   [`check_schemas_lock.py`](../scripts/guardrails/check_schemas_lock.py)
 
 Versions: the session file is §4.1 (`Entry` is internally tagged, no catch-all); permission state
-`SessionPermissionState.version`, default 2; kernel venv `BOOTSTRAP_SCHEMA = 1` (§9.1); ACP
+`SessionPermissionState.version`, default 2; the session todo list `format`, 2, where an absent
+format is 1 and migrates on read (D282); kernel venv `BOOTSTRAP_SCHEMA = 1` (§9.1); ACP
 `protocolVersion` at `initialize` (§17.2).
 
 ## 21. Guardrails

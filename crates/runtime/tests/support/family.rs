@@ -120,6 +120,7 @@ pub fn family(
             let mut child = AgentSession::new(config, provider);
             if hold.is_some() {
                 let cwd = build.cwd.map_or_else(std::env::temp_dir, PathBuf::from);
+                child.set_wall(build.wall.clone());
                 child.use_tools(yi_tools::builtin_tools(), cwd, None);
             }
             Ok(child)

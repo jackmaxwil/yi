@@ -302,6 +302,7 @@ impl ProbeLadder {
             actor: Actor::Host,
             op: Op::Unblock {
                 label: label.clone(),
+                answer: None,
             },
             request_id: None,
             expected_revision: None,

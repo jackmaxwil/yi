@@ -3,12 +3,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::task::{Id, JoinSet};
-use yi_types::schedule::{JobStatus, ScheduleState};
+use yi_types::schedule::ScheduleState;
 
 use super::{
-    ClaimedDispatch, DeliverFn, JobStore, claim_due_in_state, record_dispatch_result_in_state,
-    recover_interrupted_in_state,
+    ClaimedDispatch, DeliverFn, JobStore, RunOutcome, claim_due_in_state, claimable,
+    record_dispatch_result_in_state, recover_interrupted_in_state,
 };
+
+/// Invariant: a monotonic sleep stops while the machine sleeps, so a tick due during it is
+/// re-read against the wall clock at least this often after waking.
+const WALL_RECHECK: Duration = Duration::from_secs(60);
 
 /// Invariant: a session with a lane in flight is unclaimable, so a blocked
 /// session's own re-armed interval must not pin the timer's next deadline.
@@ -16,7 +20,7 @@ fn next_claimable_run_at(state: &ScheduleState, busy: &HashSet<String>) -> Optio
     state
         .jobs
         .iter()
-        .filter(|job| job.status == JobStatus::Active && !busy.contains(&job.session_id))
+        .filter(|job| claimable(job) && !busy.contains(&job.session_id))
         .filter_map(|job| job.next_run_at)
         .min()
 }
@@ -66,13 +70,16 @@ fn spawn_claimed(
             // Invariant: a panicked DeliverFn reaps as a JoinError reap_lane logs (dist
             // aborts the process instead); either way Scheduler::start recovers its claims next.
             for dispatch in &lane {
-                let outcome = deliver(&dispatch.job);
+                let (outcome, error) = match deliver(&dispatch.job, &dispatch.firing) {
+                    Ok(outcome) => (outcome, None),
+                    Err(error) => (RunOutcome::Ran, Some(error)),
+                };
                 store.mutate(|state| {
                     record_dispatch_result_in_state(
                         state,
                         &dispatch.id,
                         outcome,
-                        None,
+                        error,
                         yi_session::now_ms(),
                     );
                 });
@@ -125,7 +132,8 @@ impl Scheduler {
                     );
                     continue;
                 }
-                let until_due = next.map(|at| Duration::from_millis(at.saturating_sub(now)));
+                let until_due =
+                    next.map(|at| Duration::from_millis(at.saturating_sub(now)).min(WALL_RECHECK));
                 let due = async move {
                     match until_due {
                         Some(wait) => tokio::time::sleep(wait).await,

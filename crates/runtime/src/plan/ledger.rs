@@ -453,8 +453,22 @@ pub fn lint(plan: &Plan, width: usize) -> Vec<Finding> {
                      person can clear it"
                 ),
             }),
+            Some(BlockedOn::Channel { address, .. })
+                if crate::schedule::clock::wait_schedule(address, 0).is_err() =>
+            {
+                findings.push(Finding {
+                    todo: Some(todo.label.clone()),
+                    rule: "unknown-channel",
+                    detail: format!(
+                        "blocked on {address:?}, which no clock ticks, so nothing but a person can clear it"
+                    ),
+                });
+            }
             Some(
-                BlockedOn::Child(_) | BlockedOn::User | BlockedOn::External { probe: Some(_) },
+                BlockedOn::Child(_)
+                | BlockedOn::User
+                | BlockedOn::External { probe: Some(_) }
+                | BlockedOn::Channel { .. },
             )
             | None => {}
         }
