@@ -149,10 +149,13 @@ impl TryFrom<TodoSpecRepr> for TodoSpec {
     type Error = SpecError;
 
     fn try_from(repr: TodoSpecRepr) -> Result<Self, Self::Error> {
-        let worktree = repr
-            .delegation
-            .as_ref()
-            .is_some_and(|delegation| delegation.spec.isolation == Some(Isolation::Worktree));
+        let worktree = repr.delegation.as_ref().is_some_and(|delegation| {
+            delegation
+                .spec
+                .isolation
+                .as_ref()
+                .is_some_and(Isolation::lanes)
+        });
         if worktree && repr.contract.is_none() {
             return Err(SpecError::UncontractedWorktree { label: repr.label });
         }

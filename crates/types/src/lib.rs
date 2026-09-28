@@ -21,6 +21,7 @@ pub mod mail;
 pub mod mcp;
 pub mod message;
 pub mod model;
+pub mod node;
 pub mod oauth;
 pub mod permission;
 pub mod plan;

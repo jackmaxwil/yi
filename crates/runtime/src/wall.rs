@@ -11,6 +11,9 @@ pub struct Wall {
     pub deny_write: Vec<PathBuf>,
     pub deny_read: Vec<PathBuf>,
     pub deny_url: Vec<String>,
+    /// Invariant: set, every bash call runs in this container, never on the host (D286);
+    /// the child's own, so [`Wall::under`] never hands it down.
+    pub container: Option<String>,
 }
 
 fn parse_paths(value: Option<&Value>, cwd: &Path, key: &str) -> Result<Vec<PathBuf>, String> {
@@ -56,6 +59,7 @@ impl Wall {
             deny_write: parse_paths(kwargs.get("deny_write"), cwd, "deny_write")?,
             deny_read: parse_paths(kwargs.get("deny_read"), cwd, "deny_read")?,
             deny_url: parse_prefixes(kwargs.get("deny_url"))?,
+            container: None,
         })
     }
 

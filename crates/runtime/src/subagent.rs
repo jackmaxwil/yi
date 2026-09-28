@@ -39,6 +39,8 @@ pub(crate) struct ChildRecord {
     /// The worker share of the lane pool this child's checkout was taken from; dropped with
     /// the lane, so a settled child stops holding a slot nobody is standing in.
     pub(crate) lane_permit: Option<crate::plan::capacity::Permit>,
+    /// The container this child's bash runs in; it goes when the record does (D286).
+    _container: Option<crate::node::Container>,
     /// How the worktree goes at reap, once the engine has journaled it (plan section 6.6).
     pub(crate) disposition: Option<yi_types::plan::op::Choice>,
     /// Dispatched by the plan engine: its worktree goes through `submit` or a journaled
@@ -309,12 +311,13 @@ pub enum Fork {
     LastN(u64),
 }
 
-/// Whether a child edits the parent's checkout or gets a git worktree of its own, so
-/// children writing files in parallel cannot overwrite each other (§11).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Whether a child edits the parent's checkout or gets a git worktree of its own (§11); a
+/// container child gets the same worktree and runs its bash in a container over it (D286).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Isolation {
     None,
     Worktree,
+    Container(String),
 }
 
 fn parse_isolation(kwargs: &Map<String, Value>) -> Result<Isolation, String> {
@@ -323,9 +326,12 @@ fn parse_isolation(kwargs: &Map<String, Value>) -> Result<Isolation, String> {
         Some(Value::String(value)) => match value.trim() {
             "none" => Ok(Isolation::None),
             "worktree" => Ok(Isolation::Worktree),
-            other => Err(format!(
-                "rlm.run isolation must be \"none\" or \"worktree\", got {other}"
-            )),
+            other => match crate::node::image_of(other) {
+                Some(image) => Ok(Isolation::Container(image?.to_owned())),
+                None => Err(format!(
+                    "rlm.run isolation must be \"none\", \"worktree\" or \"container:<image>\", got {other}"
+                )),
+            },
         },
         Some(other) => Err(format!("rlm.run isolation must be a string, got {other}")),
     }
@@ -666,21 +672,32 @@ impl SubagentHost {
                 self.options.depth, self.options.max_depth
             ));
         }
-        let cast = self.cast(&kwargs)?;
+        let mut cast = self.cast(&kwargs)?;
         let model = cast.0.clone();
         let (session_dir, child_id) = self.create_child_dir(&self.options.parent_session_dir)?;
         let session_name =
             requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
         let capped = matches!(standing, Standing::Worker);
         let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask, capped)?;
+        if let Isolation::Container(image) = &isolation {
+            crate::node::placeable(&self.options.home, image)?;
+        }
         let (worktree, lane_permit) = match isolation {
             Isolation::None => (None, None),
-            Isolation::Worktree => {
+            Isolation::Worktree | Isolation::Container(_) => {
                 let (lane, permit) = self.claim_child_lane(&child_id)?;
                 (Some(lane), Some(permit))
             }
         };
         let cwd = worktree.as_ref().map(|lane| lane.path());
+        let container = match (&isolation, cwd) {
+            (Isolation::Container(image), Some(lane)) => {
+                let notice = |text: &str| (self.options.notice)(text, None);
+                Some(crate::node::Container::up(image, lane, &notice)?)
+            }
+            _ => None,
+        };
+        cast.2.container = container.as_ref().map(|held| held.name().to_owned());
         let child = self.build(cast, &session_name, &session_dir, cwd, &lease, None)?;
         if fork != Fork::None {
             let seed = seed_for_fork(
@@ -709,6 +726,7 @@ impl SubagentHost {
                     session_dir: session_dir.clone(),
                     worktree,
                     lane_permit,
+                    _container: container,
                     disposition: None,
                     managed: false,
                     standing,
