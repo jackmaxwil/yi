@@ -241,7 +241,10 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer, {"text": "line 2", "schema": {"type": "object"}})
         kind, payload = sent[0]
         self.assertEqual(kind, "rlm.run")
-        self.assertEqual(payload["kwargs"], {"role": "reader", "partition": ["local://notes.txt"]})
+        self.assertEqual(
+            payload["kwargs"],
+            {"role": "reader", "partition": ["local://notes.txt"], "schema": {"type": "object"}},
+        )
         self.assertEqual(reaped, ["sub-1"])
 
     async def test_module_result_refuses_a_non_dict_schema_before_any_host_round_trip(

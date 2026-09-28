@@ -357,6 +357,9 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if let Some(routing) = routing_params(model, options) {
         params["provider"] = routing;
     }
+    if let Some(schema) = &context.schema {
+        params["response_format"] = crate::schema::chat(schema);
+    }
     if let Some(max_tokens) = options.max_tokens {
         params["max_completion_tokens"] = json!(max_tokens);
     }

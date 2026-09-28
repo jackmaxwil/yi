@@ -42,7 +42,10 @@ struct Family {
     root: Scratch,
     host: Arc<SubagentHost>,
     children: Arc<Mutex<Vec<Vec<String>>>>,
+    shapes: Arc<Mutex<Vec<Shape>>>,
 }
+
+type Shape = Option<(Option<Value>, Option<usize>)>;
 
 /// A reader is built by the runtime's own `reader::session`; any other child is a plain one.
 fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
@@ -56,6 +59,8 @@ fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
     let (events, _keep) = tokio::sync::broadcast::channel(64);
     let tool_names: Arc<Mutex<Vec<Vec<String>>>> = Arc::default();
     let names_sink = Arc::clone(&tool_names);
+    let shapes: Arc<Mutex<Vec<Shape>>> = Arc::default();
+    let shape_sink = Arc::clone(&shapes);
     let cwd = workspace.clone();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
@@ -97,6 +102,9 @@ fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
             if let Ok(mut sink) = names_sink.lock() {
                 sink.push(names);
             }
+            if let Ok(mut sink) = shape_sink.lock() {
+                sink.push(child.request_shape());
+            }
             Ok(child)
         }),
         notice: Arc::new(|_, _| {}),
@@ -116,6 +124,7 @@ fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
         root,
         host,
         children: tool_names,
+        shapes,
     })
 }
 
@@ -186,19 +195,24 @@ async fn a_reader_brief_carries_its_partition_numbered_and_fenced() -> TestResul
         kwargs(json!({"name": "q1", "role": "reader", "partition": ["local://notes.txt"]})),
     )?;
     let rows = transcript(&family, "q1").await?;
-    let brief = rows
+    let briefs: Vec<&String> = rows
         .iter()
-        .find(|(role, _)| role == "user")
-        .map(|(_, text)| text.clone())
-        .ok_or("no brief")?;
-    assert!(
-        brief.contains("source=\"local://notes.txt\" trust=\"untrusted\""),
-        "{brief}"
+        .filter(|(role, _)| role == "user")
+        .map(|(_, text)| text)
+        .collect();
+    let (partition, question) = (
+        briefs.first().ok_or("no partition")?,
+        briefs.get(1).ok_or("no question")?,
     );
-    assert!(brief.contains("2:blue sky"), "{brief}");
     assert!(
-        brief.trim_end().ends_with("Which line names the sky?"),
-        "{brief}"
+        partition.contains("source=\"local://notes.txt\" trust=\"untrusted\""),
+        "{partition}"
+    );
+    assert!(partition.contains("2:blue sky"), "{partition}");
+    assert!(question.starts_with("[task from parent]"), "{question}");
+    assert!(
+        question.trim_end().ends_with("Which line names the sky?"),
+        "{question}"
     );
     let tools = family.children.lock().map_err(|_| "poisoned")?;
     let names = tools.first().ok_or("no reader built")?.clone();
@@ -286,5 +300,37 @@ async fn held_readers_are_a_fuse_not_a_leak() -> TestResult {
         kwargs(json!({"name": "over", "role": "reader"})),
     );
     assert!(refused.is_err_and(|error| error.contains("readers are held")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_readers_schema_and_a_shared_partition_shape_its_requests() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![reply("{}"), reply("{}")]));
+    let family = family(4, script)?;
+    let schema = json!({"type": "object", "properties": {"line": {"type": "integer"}},
+                        "required": ["line"], "additionalProperties": false});
+    for name in ["s1", "s2"] {
+        family.host.spawn(
+            "Which line names the sky?".to_owned(),
+            kwargs(
+                json!({"name": name, "role": "reader", "partition": ["local://notes.txt"],
+                          "schema": schema}),
+            ),
+        )?;
+    }
+    let shapes = family.shapes.lock().map_err(|_| "poisoned")?.clone();
+    assert_eq!(
+        shapes,
+        vec![
+            Some((Some(schema.clone()), None)),
+            Some((Some(schema.clone()), Some(0)))
+        ],
+        "the second sibling over the same partition marks it; both ask for the shape"
+    );
+    let rows = transcript(&family, "s1").await?;
+    let asked = rows.iter().any(|(role, text)| {
+        role == "user" && text.contains("Reply with one JSON object matching this schema")
+    });
+    assert!(asked, "{rows:?}");
     Ok(())
 }
