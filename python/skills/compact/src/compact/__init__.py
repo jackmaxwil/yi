@@ -39,15 +39,36 @@ async def run(instructions: str | None = None) -> dict[str, Any]:
     return await host_request("compact.run", payload)
 
 
-async def recall(pattern: str, limit: int | None = None) -> dict[str, Any]:
+async def recall(pattern: str, limit: int | None = None, offset: int | None = None) -> dict[str, Any]:
     """Search the full session log for turns the summary cites as (#entryId).
 
     The compacted window holds a summary plus recent turns; the log keeps
     everything. `recall` greps that log (case-insensitive substring) and
-    returns `{"hits": [{"entryId", "type", "snippet"}]}`, oldest first.
+    returns `{"hits": [{"entryId", "type", "snippet"}], "total": N}`, oldest
+    first, 8 hits a page by default and 32 at most; a cut page carries a
+    `notice` naming the call for the next page.
     Pull the full entry with `await rlm.fetch(f"history://<session-id>/{entryId}")`.
     """
     payload: dict[str, Any] = {"pattern": pattern}
     if limit is not None:
         payload["limit"] = limit
+    if offset is not None:
+        payload["offset"] = offset
     return await host_request("history.grep", payload)
+
+
+async def search(query: str, limit: int | None = None, offset: int | None = None) -> dict[str, Any]:
+    """Rank turns from every root session of this repository, lanes and worktrees included.
+
+    BM25 over user messages, assistant text and compaction summaries; tool
+    calls and their results are not indexed. Returns `{"hits": [{"session",
+    "entryId", "type", "snippet", "url"}], "total": N}`, best first, 8 a page
+    by default and 32 at most; a cut page carries a `notice` naming the call
+    for the next one. Read a hit with `await rlm.fetch(hit["url"])`.
+    """
+    payload: dict[str, Any] = {"query": query}
+    if limit is not None:
+        payload["limit"] = limit
+    if offset is not None:
+        payload["offset"] = offset
+    return await host_request("history.search", payload)

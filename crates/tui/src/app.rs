@@ -606,6 +606,11 @@ impl App {
         Some(owner.map(|index| (index, self.history.source(index))))
     }
 
+    /// The source of transcript cell `index`, for rows a drag read before they scrolled away.
+    pub fn cell_source(&self, index: usize) -> Option<&str> {
+        self.history.source(index)
+    }
+
     pub fn reflowed(&self, rows: usize) -> Vec<Line<'static>> {
         self.history
             .lines(self.content_width(), &self.theme, self.mode, rows)
@@ -626,10 +631,6 @@ impl App {
 
     pub fn cwd(&self) -> &str {
         &self.options.cwd
-    }
-
-    pub fn landing_line(&self) -> Option<String> {
-        self.landing.as_ref().map(yi_runtime::slash::landing_line)
     }
 
     pub fn working_label(&self) -> Option<String> {

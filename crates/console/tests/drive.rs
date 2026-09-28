@@ -12,8 +12,8 @@ use yi_console::model::SidebarMode;
 use yi_console::{ConsoleOptions, DriveOptions, parse_script, run_headless};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
-use yi_types::plan::doc::{TodoLabel, TodoStateName};
-use yi_types::todo::{PhaseName, TodoItem, TodoList, TodoPhase};
+use yi_types::plan::doc::{AgentId, Todo, TodoLabel, TodoState};
+use yi_types::todo::{PhaseName, TodoList, TodoPhase};
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
@@ -1347,6 +1347,54 @@ fn untracked_edit_accumulates_without_opening() -> TestResult {
     )
 }
 
+fn why_reply(frame: &Value) -> Vec<Value> {
+    let path = frame["params"]["path"].clone();
+    let mut answers = vec![
+        json!({"line": 2, "uncommitted": true}),
+        json!({"line": 40, "error": "git blame failed: fatal: no such path"}),
+    ];
+    answers.extend(
+        (3..9).map(|n| json!({"line": n * 10, "commit": "1a2b3c4d5e6f", "subject": "Add a"})),
+    );
+    vec![ok(
+        frame,
+        json!({"path": path, "cap": 8, "unasked": [90, 120], "answers": answers}),
+    )]
+}
+
+/// Dies with `w` asking nothing once ↓ ran past the last file, though the `▸` still marked
+/// one; then with a missing chain read as uncommitted and the hunks past the cap unnamed.
+#[test]
+fn why_from_review_asks_for_the_marked_file_and_names_what_it_could_not_answer() -> TestResult {
+    let last = run_frames(
+        "review-why",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(edit_push),
+            Step::Expect("_yi/tracked", tracked_yes),
+            Step::Expect("_yi/why", why_reply),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 Review · session · 1 file +1 −0\n\
+         key alt-right\n\
+         key down\n\
+         key down\n\
+         key w\n\
+         wait-frame 3000 L2 not committed yet\n\
+         quit\n",
+    )?;
+    for needle in ["L40 no chain: git blame failed", "[…] 8 of 10 hunks asked"] {
+        assert!(last.contains(needle), "{needle}\n{last}");
+    }
+    Ok(())
+}
+
 /// Dies with one stray `l` in Review landing the branch: the first press shows what a second
 /// would run, another key cancels it, and only the second press sends it.
 #[test]
@@ -2651,9 +2699,9 @@ fn the_rail_reads_from_the_top() -> TestResult {
 }
 
 fn todo_update() -> Vec<Value> {
-    let item = |label: &str, state: TodoStateName| {
+    let item = |label: &str, state: TodoState| {
         TodoLabel::new(label).ok().map(|label| {
-            let mut item = TodoItem::pending(label);
+            let mut item = Todo::pending(label);
             item.state = state;
             item
         })
@@ -2665,8 +2713,19 @@ fn todo_update() -> Vec<Value> {
         phases: vec![TodoPhase {
             name: phase,
             items: [
-                item("read the record", TodoStateName::Done),
-                item("write the plan", TodoStateName::Running),
+                item(
+                    "read the record",
+                    TodoState::Done {
+                        output: None,
+                        resolution: None,
+                    },
+                ),
+                item(
+                    "write the plan",
+                    TodoState::Running {
+                        by: AgentId::owner(),
+                    },
+                ),
             ]
             .into_iter()
             .flatten()
@@ -2726,6 +2785,45 @@ fn a_drag_over_the_transcript_flashes_what_it_copied() -> TestResult {
          wait-frame 3000 copied 3 lines\n\
          quit\n",
     )
+}
+
+/// A drag stopped at the screen's edge: holding it on the pane's last text row now scrolls
+/// the transcript, and the copy keeps the rows that scrolled past, more than a screen of them.
+#[test]
+fn a_drag_held_at_the_bottom_edge_scrolls_and_copies_past_the_screen() -> TestResult {
+    let frame = run_frames(
+        "copy-scroll",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_long),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 row 59\n\
+         mouse scrollup 50 5\nmouse scrollup 50 5\nmouse scrollup 50 5\n\
+         mouse scrollup 50 5\nmouse scrollup 50 5\nmouse scrollup 50 5\n\
+         wait-frame 2000 !row 59\n\
+         mouse down 40 3\n\
+         mouse drag 40 29\n\
+         wait-frame 5000 row 59\n\
+         mouse up 40 29\n\
+         wait-frame 3000 copied\n\
+         quit\n",
+    )?;
+    let copied = frame
+        .split("copied ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|count| count.parse::<usize>().ok())
+        .ok_or_else(|| format!("no copy flash in:\n{frame}"))?;
+    assert!(
+        copied > 30,
+        "copied {copied} lines, less than a screen:\n{frame}"
+    );
+    Ok(())
 }
 
 fn resume_long(frame: &Value) -> Vec<Value> {

@@ -333,6 +333,7 @@ fn checker_cannot_gain_permission_through_contract() -> TestResult {
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         },
         request_id: None,
@@ -352,6 +353,7 @@ fn checker_cannot_gain_permission_through_contract() -> TestResult {
         delegation: None,
         contract: Some(contract),
         children: Vec::new(),
+        cites: Default::default(),
     };
     engine.apply(OpRequest {
         plan: Some(plan.clone()),
@@ -420,6 +422,7 @@ fn example_json_equality_ignores_whitespace_and_key_order() -> TestResult {
                 delegation: None,
                 contract: Some(serde_json::from_value(declared["contract"].clone())?),
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         },
     ))?;

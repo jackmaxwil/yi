@@ -52,6 +52,7 @@ pub enum RequestKind {
     Tracked(SessionId, Vec<String>),
     BranchDiff(SessionId),
     Tape(SessionId),
+    Why(SessionId),
     KernelExecute,
     KernelCancel,
     Slash(SessionId),
@@ -87,7 +88,7 @@ pub struct App {
     pub osc_out: Vec<String>,
     pub hits: Option<crate::render::Hits>,
     /// The live drag over the frame, and the text the last draw read under it.
-    pub selection: Option<crate::select::Selection>,
+    pub selection: Option<crate::select::Drag>,
     pub selected: String,
     pub flash: Option<(String, Instant)>,
     pub avatars: crate::avatar::Avatars,
@@ -252,6 +253,7 @@ impl App {
             self.send_request(outbound, RequestKind::ListDaemon, "session/list", json!({}));
         }
         self.tick_animations(now);
+        self.scroll_drag();
         if self
             .flash
             .as_ref()
@@ -491,6 +493,7 @@ impl App {
             RequestKind::Tracked(session, paths) => self.absorb_tracked(&session, &paths, &result),
             RequestKind::BranchDiff(session) => self.absorb_branch(&session, &result),
             RequestKind::Tape(session) => self.absorb_tape(&session, &result),
+            RequestKind::Why(session) => self.absorb_why(&session, &result),
             RequestKind::KernelExecute
             | RequestKind::KernelCancel
             | RequestKind::SetConfig(_)
@@ -502,13 +505,7 @@ impl App {
                     self.fan_out(&session, || UiEvent::Reply(Reply::Notice(text.clone())));
                 }
             }
-            RequestKind::Rewind(session) => {
-                if let Some(unsent) = result.get("unsent").and_then(Value::as_str) {
-                    for chat in self.state.chats_mut(&session) {
-                        chat.app.set_draft_if_empty(unsent);
-                    }
-                }
-            }
+            RequestKind::Rewind(session) => self.absorb_rewind(&session, &result),
             RequestKind::Plan(session) => {
                 let plan = result.get("plan").cloned().unwrap_or(Value::Null);
                 let subplans = result.get("subplans").cloned().unwrap_or(Value::Null);

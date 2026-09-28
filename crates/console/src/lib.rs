@@ -13,6 +13,7 @@ pub mod layout;
 pub mod model;
 pub mod notify;
 pub mod palette;
+pub mod panes;
 pub mod render;
 pub mod select;
 pub mod sidebar;
@@ -132,17 +133,29 @@ fn draw<B: Backend>(
         let mut view = render::compute_view(app, frame.area(), theme);
         drop(computing);
         let _rendering = yi_types::trace::span("console.render");
+        let scroll = |app: &App| {
+            let drag = app.selection.as_ref()?;
+            Some(app.state.panes.get(&drag.pane)?.scroll_from_bottom)
+        };
+        let before = scroll(app);
         render::render(app, frame, &mut view, theme);
-        app.selected = match app.selection {
-            Some(selection) => crate::select::selected(
+        app.selected.clear();
+        if let Some(mut drag) = app.selection.take() {
+            // A held view that grew below raises its scroll with nothing moving on screen.
+            if let (Some(before), Some(after)) = (before, scroll(app))
+                && after > before
+            {
+                drag.shift(after - before);
+            }
+            app.selected = crate::select::selected(
                 app,
                 &view,
                 frame.buffer_mut(),
-                selection,
+                &mut drag,
                 theme.selection_bg(),
-            ),
-            None => String::new(),
-        };
+            );
+            app.selection = Some(drag);
+        }
         if let Some(cursor) = view.editor_cursor {
             frame.set_cursor_position(cursor);
         }

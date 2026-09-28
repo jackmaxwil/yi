@@ -27,6 +27,8 @@ pub struct Answer {
 pub enum WhyError {
     #[error("git blame found nothing for {path}:{line}")]
     NotBlamed { path: String, line: u32 },
+    #[error("{path}:{line} is not committed yet, so no commit answers for it")]
+    Uncommitted { path: String, line: u32 },
     #[error("git {verb} failed: {detail}")]
     Git { verb: &'static str, detail: String },
 }
@@ -53,15 +55,22 @@ fn blame(cwd: &Path, path: &str, line: u32) -> Result<String, WhyError> {
         "blame",
         &["blame", "-L", &range, "--porcelain", "--", path],
     )?;
-    blamed
+    let commit = blamed
         .split_whitespace()
         .next()
         .filter(|first| first.len() == 40 && first.chars().all(|byte| byte.is_ascii_hexdigit()))
-        .map(str::to_owned)
         .ok_or_else(|| WhyError::NotBlamed {
             path: path.to_owned(),
             line,
-        })
+        })?;
+    // Invariant: git blames a line of the work tree that no commit holds on the all-zero id.
+    if commit.bytes().all(|byte| byte == b'0') {
+        return Err(WhyError::Uncommitted {
+            path: path.to_owned(),
+            line,
+        });
+    }
+    Ok(commit.to_owned())
 }
 
 fn trailer_of(body: &str) -> Option<(PlanId, String)> {

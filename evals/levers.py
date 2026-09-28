@@ -16,24 +16,35 @@ The runner is the owner's: it is called as `<runner> <overrides.json> <task>...`
 prints one JSON row per trial. The binary reads that file only in a run that carries `--eval`.
 
 A trial row is the shape `evals/axes.py` scores: `task`, `reward`, `input`, `cacheRead`,
-`output`, `costUsd`, `wallSec`. A lever change passes two gates (section 10.3): every
-class stays within `tolerance` of its floor, and at least one of cost, tokens and wall
-improves on the baseline; among the candidates that pass, only the nondominated survive.
+`output`, `costUsd`, `wallSec`, plus `partialScore`, `censored` and `errored` when the runner
+has them. The verdict takes one difference per task (repetitions of a task are one cluster):
+every class stays within `tolerance` of its floor and no binary pass is lost, then either
+graded credit rises with cost and wall within ten percent (capability), or cost, tokens or
+wall fall with graded credit within DELTA (economy); among the candidates that pass, only the
+nondominated survive. docs/plans/2026-09-26-self-improvement-evals.md section 6.3.
 """
 import argparse, itertools, json, math, os, pathlib, re, shlex, statistics, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "evals/graph"))
 sys.path.insert(0, str(ROOT / "evals/adapters"))
+sys.path.insert(0, str(ROOT / "skills/yi/session-mining"))
 from refine import Refused, names  # noqa: E402
 from yi_usage import LEVERS_ENV  # noqa: E402
 
 LEVERS = ROOT / "evals/levers"
 EFFICIENCY = ("costUsd", "tokens", "wallSec")
 MAX_KNOBS, MAX_RUNS, CONFIDENCE = 5, 40, 0.95
-# The pairs an interval needs before it can reach CONFIDENCE at all: the whole-sample
-# interval covers 1 - 2 / 2**n, so five pairs buy 0.9375 and no more.
-MIN_PAIRS = math.ceil(math.log2(2 / (1 - CONFIDENCE)))
+# The tasks an interval needs before it can reach CONFIDENCE at all: the whole-sample
+# interval covers 1 - 2 / 2**n, so five tasks buy 0.9375 and no more.
+MIN_TASKS = math.ceil(math.log2(2 / (1 - CONFIDENCE)))
+# Road 1's bound on the cost and wall a capability gain may add: the owner's number (OS plan 10.3).
+COST_TOLERANCE = 0.10
+# Road 2's non-inferiority margin on graded credit. A placeholder until the slice's A/A run
+# measures the task-level spread; it must stay below the smallest gain road 1 would accept.
+DELTA = 0.07
+# Past this share of (task, repetition) pairs lost on both arms, the run says nothing.
+MAX_DROPPED = 0.2
 SCATTER = ROOT / "python/yi_runtime/src/yi/shapes.py"
 
 
@@ -196,50 +207,163 @@ def interval(differences, confidence=CONFIDENCE):
             "confidence": round(1 - 2 * tail if rank else 1 - 2 * 0.5 ** n, 4)}
 
 
+def graded(row):
+    """Partial credit: a trace's own score when `axes.py` found one; else, for a task no trace
+    scores, its ctrf test tally (N1: most slice tasks, e.g. production-planning 16/20); else the
+    reward. A trace-scored task's ctrf can be a wrapper test that passes beside a failing trace
+    (`selftest.py` pins freight-dispatch-shift and vba-userform-port), so it is never read there."""
+    if row.get("partialScore") is not None:
+        return value(row, "partialScore")
+    if not row.get("traceScored") and row.get("testsTotal"):
+        return value(row, "testsPassed") / value(row, "testsTotal")
+    return value(row, "reward")
+
+
 def per_task(rows):
     """One number per task and metric for a single run: the sums a pair is the difference of."""
     out = {}
     for row in rows:
-        mine = out.setdefault(row["task"], dict.fromkeys(EFFICIENCY + ("reward",), 0))
+        mine = out.setdefault(row["task"], dict.fromkeys(EFFICIENCY + ("reward", "graded"), 0))
         mine["tokens"] += sum(value(row, k) for k in ("input", "cacheRead", "output"))
         for key in ("costUsd", "wallSec", "reward"):
             mine[key] += value(row, key)
+        mine["graded"] += graded(row) if usable(row) else 0
     return out
 
 
-def by_task(pairs, key):
-    """The median paired difference per task, printed beside the pooled interval: the pooled
-    one is over the runs that were made, and repetitions of one task are not independent
-    draws across tasks, so a per-task column is what says where a saving came from."""
-    out = {}
-    for base, mine in pairs:
-        for task in base:
-            if task in mine:
-                out.setdefault(task, []).append(mine[task][key] - base[task][key])
-    return {task: statistics.median(values) for task, values in sorted(out.items())}
+def usable(row):
+    """A trial the watcher stopped or that errored scored nothing it can be credited with."""
+    return not (row.get("censored") or row.get("errored"))
 
 
-def judge(baseline, runs, floors):
-    """A candidate's verdict against the baseline it was paired with, run for run: a pair is
-    one (task, repetition), so the interval is over the runs that were made and says nothing
-    about a task nobody ran. It is `better` only when both gates pass and a whole efficiency
-    interval, at the confidence asked for, lies below zero; a median alone is never a win."""
-    pairs = [(per_task(base), per_task(mine)) for base, mine in zip(baseline, runs)]
-    intervals = {key: interval([mine[task][key] - base[task][key]
-                                for base, mine in pairs for task in base if task in mine])
-                 for key in EFFICIENCY + ("reward",)}
-    flat = [row for run in runs for row in run]
-    reason = gate(measure([row for run in baseline for row in run], floors), measure(flat, floors), floors)
-    won = any(intervals[k]["high"] < 0 and intervals[k]["confidence"] >= CONFIDENCE for k in EFFICIENCY)
-    verdict = "better" if won and not reason else "inconclusive"
-    if reason and reason != "no_efficiency_gain":
-        verdict = "rejected"
-    return {"verdict": verdict, "reason": reason, "intervals": intervals,
-            "per_task": {key: by_task(pairs, key) for key in EFFICIENCY + ("reward",)},
+def unpriced(row):
+    return row.get("unmeasured") or ("costUsd" in row and row["costUsd"] is None)
+
+
+def relative(mine, base):
+    return (mine - base) / base if base else (0.0 if mine == base else math.inf)
+
+
+def task_differences(baseline, runs):
+    """One difference per task and metric: the candidate's mean over its repetitions minus the
+    base's. Repetitions of one task are one cluster, so pooling them as independent pairs
+    overstates the confidence (the 0.282.0 limits). A (task, repetition) unusable on both arms
+    is dropped; on one arm only, that arm's trial scores nothing, since a stop or an error is
+    part of what the arm did. Returns the differences, and the pairs seen and dropped."""
+    cells, seen, dropped = {}, 0, 0
+    for base_run, mine_run in zip(baseline, runs):
+        base_rows = {row["task"]: row for row in base_run}
+        for row in mine_run:
+            other = base_rows.get(row["task"])
+            if other is None:
+                continue
+            seen += 1
+            if not usable(row) and not usable(other):
+                dropped += 1
+                continue
+            cell = cells.setdefault(row["task"], ([], []))
+            cell[0].append(per_task([other])[row["task"]])
+            cell[1].append(per_task([row])[row["task"]])
+    diffs = {}
+    for task, (base, mine) in sorted(cells.items()):
+        mean = {side: {key: statistics.fmean(one[key] for one in rows) for key in base[0]}
+                for side, rows in (("base", base), ("mine", mine))}
+        diffs[task] = {key: mean["mine"][key] - mean["base"][key] for key in base[0]}
+        diffs[task]["relCost"] = relative(mean["mine"]["costUsd"], mean["base"]["costUsd"])
+        diffs[task]["relWall"] = relative(mean["mine"]["wallSec"], mean["base"]["wallSec"])
+    return diffs, seen, dropped
+
+
+def judge(baseline, runs, floors, accesses=1, delta=DELTA):
+    """A candidate's verdict against the fresh base it was paired with, one difference per task.
+
+    Rejected: below a floor, a task or class not run, or fewer binary passes than the base.
+    Inconclusive: more than one unpriced trial, too many pairs dropped, or neither road.
+    Better by road 1 (capability): the graded interval lies above 0 while the cost and wall
+    intervals stay within COST_TOLERANCE of the base. Better by road 2 (economy): an efficiency
+    interval lies below 0 while the graded interval stays above -delta. Every interval is at
+    confidence 1 - 0.05 / accesses: a validation group looked at `accesses` times spends its
+    error rate once per look (Bonferroni)."""
+    target = 1 - (1 - CONFIDENCE) / accesses
+    diffs, seen, dropped = task_differences(baseline, runs)
+    intervals = {key: interval([diff[key] for diff in diffs.values()], target)
+                 for key in EFFICIENCY + ("reward", "graded", "relCost", "relWall")}
+    base_flat, flat = [row for run in baseline for row in run], [row for run in runs for row in run]
+    reason = gate(measure(base_flat, floors), measure(flat, floors), floors)
+    if reason == "no_efficiency_gain":
+        reason = None
+
+    def passes(rows):
+        return sum(1 for row in rows if usable(row) and value(row, "reward") > 0)
+
+    hard = reason or ("pass_lost" if passes(flat) < passes(base_flat) else None)
+    soft = ("unmeasured" if sum(1 for row in base_flat + flat if unpriced(row)) > 1
+            else "pairs_dropped" if seen and dropped / seen > MAX_DROPPED else None)
+    sure = {key: row["confidence"] >= target for key, row in intervals.items()}
+    road = None
+    if sure["graded"] and intervals["graded"]["low"] > 0 and all(
+            sure[key] and intervals[key]["high"] <= COST_TOLERANCE for key in ("relCost", "relWall")):
+        road = "capability"
+    elif sure["graded"] and intervals["graded"]["low"] > -delta and any(
+            sure[key] and intervals[key]["high"] < 0 for key in EFFICIENCY):
+        road = "economy"
+    verdict = "rejected" if hard else "better" if road and not soft else "inconclusive"
+    return {"verdict": verdict, "reason": hard or soft, "road": None if hard or soft else road,
+            "intervals": intervals, "confidence": round(target, 4), "tasks": len(diffs),
+            "dropped": dropped, "per_task": {key: {task: diff[key] for task, diff in diffs.items()}
+                                             for key in EFFICIENCY + ("reward", "graded")},
             "measured": measure(flat, floors)}
 
 
-def grid(knobs, tasks, run, floors, listed, k=3, max_runs=MAX_RUNS):
+def screen(baseline, runs, floors):
+    """The dev stage's rule, which can refuse and never accept: None when the median task's
+    graded difference is at least 0, no pass is lost and no floor is broken."""
+    verdict = judge(baseline, runs, floors)
+    if verdict["verdict"] == "rejected":
+        return verdict["reason"]
+    graded_diffs = list(verdict["per_task"]["graded"].values())
+    if not graded_diffs or statistics.median(graded_diffs) < 0:
+        return "median_task_worse"
+    return None
+
+
+def max_cut_rung(entries):
+    """The highest `rung` a cut redrive carried: the loop's own cut count (`run.rs`
+    `length_redrive`). The cut that ends a run writes no redrive, so a run stopped at the
+    default's cut left rung `default - 1` behind."""
+    return max((((entry.get("message") or {}).get("details") or {}).get("rung") or 0
+                for entry in entries
+                if (entry.get("message") or {}).get("customType") == "length_redrive"
+                and (((entry.get("message") or {}).get("details") or {}).get("cut"))), default=0)
+
+
+# The levers whose decision can be replayed from what a session records (design section 6.5).
+# loop.length_stop_at is not one: a truncated tool call counts a length stop without a
+# redrive. loop.reasoning_cap is not one: a cut aborts at the cap, so no longer reasoning exists.
+CENSUS = {"loop.cut_stop_at": max_cut_rung}
+
+
+def census(lever, candidate, sessions):
+    """How many recorded sessions would have stopped differently at `candidate`: the S0 screen
+    that refuses, for nothing, a value no session ever met. Below the default a session flips
+    when its cuts reached the candidate; above it, when the default's stop ended it."""
+    if lever not in CENSUS:
+        raise Refused(f"no census for {lever}: its decision is not recorded in a session")
+    import extract
+    default, flips, seen = manifest()[lever]["default"], 0, 0
+    for path in sorted(pathlib.Path(sessions).rglob("*.jsonl")):
+        if path.name.endswith(".telemetry.jsonl"):
+            continue
+        header, entries, _corrupt = extract.read_session(path)
+        if not header:
+            continue
+        seen += 1
+        rung = CENSUS[lever](entries)
+        flips += rung >= candidate if candidate < default else rung >= default - 1 if candidate > default else 0
+    return {"lever": lever, "value": candidate, "default": default, "sessions": seen, "flips": int(flips)}
+
+
+def grid(knobs, tasks, run, floors, listed, k=3, max_runs=MAX_RUNS, accesses=1):
     """Every point of a small grid against one baseline, paired by repetition and interleaved
     so drift in the provider lands on both sides. Bounded before it starts: at most
     `MAX_KNOBS` knobs, and `(points + 1) * k` runs may not pass `max_runs`. No model is fitted
@@ -257,9 +381,9 @@ def grid(knobs, tasks, run, floors, listed, k=3, max_runs=MAX_RUNS):
     stray = sorted(set(tasks) - set(classes(floors)))
     if stray:
         raise Refused(f"task {stray[0]!r} has no class in floors.json")
-    if k * len(tasks) < MIN_PAIRS:
-        print(f"note: {k} repetitions over {len(tasks)} tasks is {k * len(tasks)} pairs, and an "
-              f"interval needs {MIN_PAIRS} to reach {CONFIDENCE}: no point here can be better",
+    if len(tasks) < MIN_TASKS:
+        print(f"note: {len(tasks)} tasks give {len(tasks)} differences whatever k is, and an "
+              f"interval needs {MIN_TASKS} tasks to reach {CONFIDENCE}: no point here can be better",
               file=sys.stderr)
     baseline, runs = [], [[] for _ in points]
     for repetition in range(k):
@@ -267,27 +391,35 @@ def grid(knobs, tasks, run, floors, listed, k=3, max_runs=MAX_RUNS):
         for index in order if repetition % 2 == 0 else reversed(order):
             rows = run({} if index is None else points[index], tasks)
             (baseline if index is None else runs[index]).append(rows)
-    judged = [dict(judge(baseline, mine, floors), levers=point) for point, mine in zip(points, runs)]
-    passed = {json.dumps(row["levers"], sort_keys=True): row["measured"] for row in judged if not row["reason"]}
+    judged = [dict(judge(baseline, mine, floors, accesses=accesses), levers=point)
+              for point, mine in zip(points, runs)]
+    passed = {json.dumps(row["levers"], sort_keys=True): row["measured"]
+              for row in judged if row["verdict"] == "better"}
     return {"spend": {"runs": planned, "trials": sum(len(rows) for rows in baseline + sum(runs, []))},
             "points": judged, "survivors": survivors(passed)}
 
 
-def compare(lever, value, tasks, run, floors, listed, k=3):
+def compare(lever, value, tasks, run, floors, listed, k=3, accesses=1):
     """One knob, one value, paired with the baseline: a grid of one point."""
-    return grid({lever: [value]}, tasks, run, floors, listed, k=k, max_runs=2 * k)
+    return grid({lever: [value]}, tasks, run, floors, listed, k=k, max_runs=2 * k, accesses=accesses)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--selfcheck", action="store_true", help="hold the manifest, the fixture and the floors together")
     verbs = parser.add_subparsers(dest="verb")
+    tally = verbs.add_parser("census", help="sessions a candidate value would have stopped differently")
+    tally.add_argument("--lever", required=True)
+    tally.add_argument("--value", type=int, required=True)
+    tally.add_argument("--sessions", required=True, help="a directory of v4 session files")
     for verb in ("compare", "grid"):
         sub = verbs.add_parser(verb)
         sub.add_argument("--runner", required=True, help="the owner's scoring command; this file starts no model")
         sub.add_argument("--group", choices=("development", "validation"), default="development",
                          help="validation is selection: say so in the ledger row")
         sub.add_argument("--k", type=int, default=3)
+        sub.add_argument("--accesses", type=int, default=1,
+                         help="validation looks this group has had, this one included (Bonferroni)")
         if verb == "compare":
             sub.add_argument("--lever", required=True)
             sub.add_argument("--value", type=int, required=True)
@@ -295,6 +427,13 @@ def main(argv=None):
             sub.add_argument("--knob", action="append", required=True, help="name=v1,v2")
             sub.add_argument("--max-runs", type=int, default=MAX_RUNS)
     args = parser.parse_args(argv)
+    if args.verb == "census":
+        try:
+            print(json.dumps(census(args.lever, args.value, args.sessions)))
+        except Refused as refusal:
+            print(f"refused: {refusal}", file=sys.stderr)
+            return 2
+        return 0
     if args.verb:
         return search(args)
     if not args.selfcheck:
@@ -321,11 +460,11 @@ def search(args):
     tasks, floors, listed = read("split.json")[args.group], read("floors.json"), manifest()
     try:
         if args.verb == "compare":
-            result = compare(args.lever, args.value, tasks, run, floors, listed, k=args.k)
+            result = compare(args.lever, args.value, tasks, run, floors, listed, k=args.k, accesses=args.accesses)
         else:
             knobs = {name: [int(v) for v in values.split(",")]
                      for name, values in (knob.split("=", 1) for knob in args.knob)}
-            result = grid(knobs, tasks, run, floors, listed, k=args.k, max_runs=args.max_runs)
+            result = grid(knobs, tasks, run, floors, listed, k=args.k, max_runs=args.max_runs, accesses=args.accesses)
     except (Refused, ValueError) as refusal:
         print(f"refused: {refusal}", file=sys.stderr)
         return 2

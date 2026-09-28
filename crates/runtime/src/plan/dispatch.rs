@@ -118,9 +118,12 @@ fn kwargs_of(agent: &AgentId, delegation: &Delegation) -> Result<Map<String, Val
         Some(Isolation::Worktree) => {
             kwargs.insert("isolation".to_owned(), Value::String("worktree".to_owned()));
         }
+        Some(isolation @ Isolation::Other(tag)) if isolation.container_image().is_some() => {
+            kwargs.insert("isolation".to_owned(), Value::String(tag.clone()));
+        }
         Some(Isolation::Other(tag)) => {
             return Err(format!(
-                "delegation isolation {tag:?} has no spawn mapping; use \"none\" or \"worktree\""
+                "delegation isolation {tag:?} has no spawn mapping; use \"none\", \"worktree\" or \"container:<image>\""
             ));
         }
     }
@@ -556,6 +559,7 @@ pub(crate) mod tests {
             }),
             contract: None,
             children: Vec::new(),
+            cites: Default::default(),
         })
     }
 

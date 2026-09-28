@@ -1,8 +1,8 @@
 use serde_json::Map;
+use yi_types::plan::ask::{Ask, AskError, AskOption, OptionId, PREVIEW_MAX_BYTES};
 use yi_types::plan::doc::{
     AgentId, BlockedOn, Check, DocError, GoalText, Isolation, Plan, PlanId, PlanIssue, PlanState,
-    PlanTier, ProbeCommand, RetryCount, SPAWN_CAP, Todo, TodoAddr, TodoLabel, TodoState,
-    terminal_durability,
+    PlanTier, ProbeCommand, SPAWN_CAP, Todo, TodoAddr, TodoLabel, TodoState, terminal_durability,
 };
 use yi_types::url::{Durability, Url};
 
@@ -48,22 +48,12 @@ fn plan_with(todos: Vec<Todo>) -> Result<Plan, DocError> {
 
 fn todo(label: &str, after: &[&str], state: TodoState) -> Result<Todo, DocError> {
     Ok(Todo {
-        label: TodoLabel::new(label)?,
         after: after
             .iter()
             .map(|name| TodoLabel::new(*name))
             .collect::<Result<_, _>>()?,
         state,
-        delegation: None,
-        subplan: None,
-        retries: RetryCount::default(),
-        children: Vec::new(),
-        note: None,
-        attempt: yi_types::plan::doc::AttemptId::FIRST,
-        refusals: 0,
-        contract: None,
-        contract_hash: None,
-        extra: Map::new(),
+        ..Todo::pending(TodoLabel::new(label)?)
     })
 }
 
@@ -386,5 +376,85 @@ fn an_uncontracted_worktree_spec_is_refused_at_parse_and_a_stored_todo_is_not() 
     let mut stored = bare;
     stored["state"] = serde_json::json!("pending");
     assert!(serde_json::from_value::<Todo>(stored).is_ok());
+    Ok(())
+}
+
+/// Dies with `intent` or `waived` dropped on the way through a checkpoint: a plan file the store
+/// wrote with both reads back with both, and writes back the same document.
+#[test]
+fn a_checkpoint_carrying_cites_round_trips() -> TestResult {
+    let raw = include_str!("fixtures/plan-cites-v1.json");
+    let plan: Plan = serde_json::from_str(raw)?;
+    let kept = plan
+        .todo(&TodoLabel::new("delete the old lexer")?)
+        .ok_or("no todo")?;
+    let intent: Vec<String> = kept.cites.intent.iter().map(ToString::to_string).collect();
+    assert_eq!(intent, ["user://2"]);
+    let waiver = kept.cites.waived.first().ok_or("no waiver")?;
+    assert_eq!(waiver.address.to_string(), "user://1");
+    assert_eq!(waiver.reason, "the second ask replaces the first");
+    assert_eq!(
+        serde_json::to_value(&plan)?,
+        serde_json::from_str::<serde_json::Value>(raw)?
+    );
+    Ok(())
+}
+
+/// Dies with the ask dropped or reshaped on the way through a checkpoint: the plan file the store
+/// wrote after a pick reads back with its options, the reply's address and the exemplar.
+#[test]
+fn a_checkpoint_carrying_an_answered_ask_round_trips() -> TestResult {
+    let raw = include_str!("fixtures/plan-ask-v1.json");
+    let plan: Plan = serde_json::from_str(raw)?;
+    let todo = plan.todo(&TodoLabel::new("hero style")?).ok_or("no todo")?;
+    let ask = todo.ask.as_ref().ok_or("no ask")?;
+    assert_eq!(ask.to_string(), "1. Calm · 2. Bold · 3. Dense");
+    let picked = ask.picked().ok_or("no pick")?;
+    assert_eq!(picked.label.as_str(), "Bold");
+    let answer = ask.answer.as_ref().ok_or("no answer")?;
+    assert_eq!(answer.address.to_string(), "user://2");
+    assert_eq!(
+        serde_json::to_value(&plan)?,
+        serde_json::from_str::<serde_json::Value>(raw)?
+    );
+    Ok(())
+}
+
+fn options(count: usize, preview: usize) -> Result<Vec<AskOption>, Box<dyn std::error::Error>> {
+    (0..count)
+        .map(|at| {
+            Ok(AskOption {
+                id: OptionId::try_from(format!("o{at}"))?,
+                label: TodoLabel::new(format!("style {at}"))?,
+                preview: Some("x".repeat(preview)),
+                extra: Map::new(),
+            })
+        })
+        .collect()
+}
+
+/// Dies with a bound off by one: three and five options are a question, two and six are refused
+/// naming the rule, and a preview is light at its byte cap and refused one byte past it.
+#[test]
+fn an_ask_takes_three_to_five_light_options() -> TestResult {
+    for (count, ok) in [(2, false), (3, true), (5, true), (6, false)] {
+        let made = Ask::new(options(count, 1)?);
+        assert_eq!(made.is_ok(), ok, "{count} options: {made:?}");
+        if let Err(error) = made {
+            assert_eq!(
+                error.to_string(),
+                format!("a question to the user offers 3 to 5 options, not {count}")
+            );
+        }
+    }
+    assert!(Ask::new(options(3, PREVIEW_MAX_BYTES)?).is_ok());
+    let heavy = Ask::new(options(3, PREVIEW_MAX_BYTES + 1)?);
+    assert_eq!(
+        heavy,
+        Err(AskError::PreviewTooLong {
+            id: "o0".to_owned(),
+            bytes: PREVIEW_MAX_BYTES + 1
+        })
+    );
     Ok(())
 }

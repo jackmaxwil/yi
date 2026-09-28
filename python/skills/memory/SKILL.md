@@ -6,6 +6,7 @@ new note is in that block.
 
 ```python
 await memory.read("buildhost-tmp-is-ram")      # a note's body, by name or hook
+await memory.search("probe home tmp")        # notes ranked by the words
 await memory.save("""---
 name: buildhost-tmp-is-ram
 description: Buildhost /tmp is RAM; never scratch there

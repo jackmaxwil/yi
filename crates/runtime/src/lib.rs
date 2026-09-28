@@ -11,6 +11,7 @@ pub mod family;
 pub mod fetch;
 pub mod gate;
 pub mod goal;
+pub mod history;
 pub mod host;
 pub mod kernel;
 mod kernel_bootstrap;
@@ -23,6 +24,7 @@ pub mod levers;
 mod mail;
 pub mod mailbox;
 pub mod memory;
+pub mod node;
 pub mod permission;
 pub mod plan;
 pub mod provider;
@@ -36,6 +38,7 @@ mod scratch;
 pub mod session;
 pub mod skills;
 pub mod slash;
+pub mod spend;
 pub mod subagent;
 pub mod tape;
 pub mod telemetry;
@@ -46,7 +49,7 @@ pub mod wall;
 pub mod wiring;
 
 pub use checkpoint::{
-    RecordedCheckpoint, UndoOutcome, describe_undo, recorded, undo, undo_notes,
+    RecordedCheckpoint, UndoOutcome, describe_undo, recorded, undo, undo_notes, undo_to,
     wire_turn_checkpoints,
 };
 pub use compaction::{CompactStatus, Compactor};
