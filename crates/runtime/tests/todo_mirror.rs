@@ -711,6 +711,35 @@ fn a_todo_set_or_init_under_a_plan_writes_the_owners_rows_beside_it() -> TestRes
     Ok(())
 }
 
+/// Dies with the batch checked against the owner's rows only: `gate` joins beside the plan's
+/// `gate`, and the next projection drops it without a word.
+#[test]
+fn appending_a_plan_rows_label_is_refused() -> TestResult {
+    use yi_tools::{Tool, ToolContext};
+    let dir = Scratch::new("yi-todo-mirror-dup")?;
+    let (_session, todos, _engine) = mirrored(&dir)?;
+    let before = todos.list();
+    let tool = yi_runtime::todo::tool::TodoTool::new(Arc::clone(&todos));
+    let args = json!({"op": "append", "items": ["gate"]});
+    let output = tool.execute(
+        args.as_object().cloned().unwrap_or_default(),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    let text: String = output
+        .result
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(output.is_error, "a plan row's label was taken: {text}");
+    assert!(text.contains("todo \"gate\""), "{text}");
+    assert_eq!(todos.list(), before);
+    Ok(())
+}
+
 /// A `todo done` on the plan's own inline item is the plan op the owner meant, not a bounce.
 #[test]
 fn a_todo_done_on_an_inline_plan_item_is_carried_to_the_plan_tool() -> TestResult {
