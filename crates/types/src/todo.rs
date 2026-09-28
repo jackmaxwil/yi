@@ -188,8 +188,6 @@ impl Serialize for TodoList {
 #[serde(rename_all = "camelCase")]
 struct ListRepr {
     #[serde(default)]
-    format: Option<u32>,
-    #[serde(default)]
     phases: Vec<PhaseRepr>,
     #[serde(default)]
     next_id: u64,
@@ -210,10 +208,6 @@ impl TryFrom<ListRepr> for TodoList {
     type Error = serde_json::Error;
 
     fn try_from(repr: ListRepr) -> Result<Self, Self::Error> {
-        let item = |value| match repr.format {
-            None => serde_json::from_value::<FormatOneItem>(value).map(Todo::from),
-            Some(_) => serde_json::from_value::<Todo>(value),
-        };
         let phases = repr
             .phases
             .into_iter()
@@ -223,18 +217,50 @@ impl TryFrom<ListRepr> for TodoList {
                     items: phase
                         .items
                         .into_iter()
-                        .map(item)
+                        .map(read_item)
                         .collect::<Result<_, _>>()?,
                     extra: phase.extra,
                 })
             })
             .collect::<Result<_, Self::Error>>()?;
+        let mut extra = repr.extra;
+        extra.remove("format");
         Ok(Self {
             phases,
             next_id: repr.next_id,
-            extra: repr.extra,
+            extra,
         })
     }
+}
+
+/// A format-2 item never carries `on` at its top level; one that does, or that fails the
+/// format-2 read, was written in the name-only shape by this binary or an older one.
+fn read_item(value: Value) -> Result<Todo, serde_json::Error> {
+    if value.get("on").is_some() {
+        return named(value);
+    }
+    serde_json::from_value::<Todo>(value.clone()).or_else(|error| named(value).map_err(|_| error))
+}
+
+/// Incident: a pre-merge binary rewrote a format-2 list and left the payload of the state it
+/// replaced, and the strict read then lost the whole list; its `state` word is the newest fact.
+fn named(value: Value) -> Result<Todo, serde_json::Error> {
+    let mut item: Map<String, Value> = serde_json::from_value(value)?;
+    for stale in ["blocked", "cause", "last", "output", "resolution"] {
+        item.remove(stale);
+    }
+    let children: Vec<Value> = match item.remove("children") {
+        Some(children) => serde_json::from_value(children)?,
+        None => Vec::new(),
+    };
+    let named: FormatOneItem = serde_json::from_value(Value::Object(item))?;
+    // Kept format-2 keys (attempt, after, contract) sit in `extra`; the second read seats them.
+    let mut todo: Todo = serde_json::from_value(serde_json::to_value(Todo::from(named))?)?;
+    todo.children = children
+        .into_iter()
+        .map(read_item)
+        .collect::<Result<_, _>>()?;
+    Ok(todo)
 }
 
 /// A format-1 item: the state by name, its payload in `on` and `note`.
@@ -250,8 +276,6 @@ struct FormatOneItem {
     note: Option<String>,
     #[serde(default)]
     evidence: Option<String>,
-    #[serde(default)]
-    children: Vec<FormatOneItem>,
     #[serde(default)]
     intent: Vec<Url>,
     #[serde(default)]
@@ -279,7 +303,6 @@ impl From<FormatOneItem> for Todo {
             on,
             mut note,
             evidence,
-            children,
             intent,
             ask,
             mut extra,
@@ -312,7 +335,6 @@ impl From<FormatOneItem> for Todo {
         todo.state = state;
         todo.note = note.and_then(capped);
         todo.evidence = evidence;
-        todo.children = children.into_iter().map(Self::from).collect();
         todo.cites.intent = intent;
         todo.ask = ask;
         todo.extra = extra;
