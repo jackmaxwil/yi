@@ -683,3 +683,30 @@ fn a_prompt_that_cannot_close_is_never_timed_out() -> TestResult {
     assert_eq!(outcome.reason, "allowed by user");
     Ok(())
 }
+
+/// Dies with a refused call run on the retry: the classifier was unsure the first time, the
+/// reviewer and then the user said no, and a confident answer the second time must not overrule
+/// them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_the_user_refused_is_not_reopened_by_the_classifier() -> TestResult {
+    let (port, _served) = sidecar(vec![safe(0.5), safe(0.99)])?;
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+    provider.queue_faux(vec![yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text("deny unprovable")],
+        yi_types::message::StopReason::Stop,
+    )]);
+    gate.broker
+        .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
+            Arc::clone(&provider),
+            crate::support::faux_model(),
+        )));
+    let first = tokio::task::block_in_place(|| run(&gate, "make deploy"));
+    assert!(!first.allowed, "{}", first.reason);
+    let answer = gate.broker.resolve_request(1, "call-ask");
+    assert!(answer.contains("denied"), "{answer}");
+    let again = tokio::task::block_in_place(|| run(&gate, "make deploy"));
+    assert!(!again.allowed, "{}", again.reason);
+    assert!(again.reason.contains("stays denied"), "{}", again.reason);
+    Ok(())
+}
