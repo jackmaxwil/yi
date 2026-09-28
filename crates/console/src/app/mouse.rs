@@ -23,6 +23,21 @@ impl App {
         self.dirty = true;
     }
 
+    /// A drag held past a pane's top or bottom text row scrolls it, one step per drawn
+    /// frame so every row passes through the view the copy is read from.
+    pub(super) fn scroll_drag(&mut self) {
+        let Some(drag) = &self.selection else { return };
+        let step = drag.edge_step();
+        if self.dirty || step == 0 {
+            return;
+        }
+        if let Some(pane) = self.state.panes.get_mut(&drag.pane) {
+            let scroll = pane.scroll_from_bottom.saturating_add_signed(step);
+            self.dirty = scroll != pane.scroll_from_bottom;
+            pane.scroll_from_bottom = scroll;
+        }
+    }
+
     fn scroll_pane_under(&mut self, x: u16, y: u16, delta: isize) {
         let target = self.hits.as_ref().and_then(|hits| {
             hits.panes
@@ -126,7 +141,12 @@ impl App {
                 tab.layout.focus_pane(pane_id);
             }
             self.state.zone = Zone::Panes;
-            self.selection = Some(crate::select::Selection::new(x, y));
+            let scroll = self
+                .state
+                .panes
+                .get(&pane_id)
+                .map_or(0, |pane| pane.scroll_from_bottom);
+            self.selection = Some(crate::select::Drag::new(pane_id, x, y, scroll));
             if let Some((row, col)) = self.editor_cell(pane_id, x, y) {
                 self.selection = None;
                 if let Some(editor) = self.editor_mut() {
@@ -171,8 +191,11 @@ impl App {
                     return;
                 }
                 let Some((tab_index, path)) = self.drag.clone() else {
-                    if let Some(selection) = &mut self.selection {
-                        selection.head = (x, y);
+                    if let Some(drag) = &mut self.selection
+                        && drag.head != (x, y)
+                    {
+                        drag.head = (x, y);
+                        drag.moved = true;
                         self.dirty = true;
                     }
                     return;
@@ -213,14 +236,13 @@ impl App {
                     self.dirty = true;
                     return;
                 }
-                if self.selection.is_some_and(|drag| drag.anchor == drag.head) {
-                    self.selection = None;
+                // The highlight goes once its text is on the clipboard; the flash says so.
+                if let Some(drag) = self.selection.take() {
                     self.dirty = true;
-                    return;
-                }
-                if self.selection.is_some() && !self.selected.is_empty() {
-                    let text = self.selected.clone();
-                    self.copy_out(&text);
+                    if drag.moved && !self.selected.is_empty() {
+                        let text = std::mem::take(&mut self.selected);
+                        self.copy_out(&text);
+                    }
                 }
             }
         }
