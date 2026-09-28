@@ -7,17 +7,13 @@ import gen  # noqa: E402
 
 
 def materialize(task, root):
-    for relative, body in task["files"].items():
-        target = pathlib.Path(root) / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(body)
-    return pathlib.Path(root)
+    return gen.materialize(task, pathlib.Path(root) / "w")
 
 
 class Generators(unittest.TestCase):
     def test_every_family_is_seeded_red_untouched_and_green_solved(self):
-        self.assertEqual(sorted(gen.FAMILIES), ["bugfix", "logs", "reconcile"])
-        for name, family in gen.FAMILIES.items():
+        self.assertEqual(sorted(gen.FAMILIES), ["bugfix", "logs", "mutate", "reconcile"])
+        for name, family in gen.SYNTHETIC.items():
             for level in gen.LEVELS:
                 for seed in (1, 2, 7):
                     with self.subTest(family=name, level=level, seed=seed):
