@@ -19,6 +19,9 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 lexopt = { workspace = true }
 
+[dev-dependencies]
+yi-tools = { workspace = true }
+
 [features]
 default = ["tui"]
 tui = ["dep:yi-tui", "dep:yi-console"]
