@@ -264,5 +264,6 @@ edited by hand.
 - [D277](adr/d277.md) - a memory store journals its ops and keeps bodies as objects
 - [D278](adr/d278.md) - notes are ranked by BM25 behind `memory.search`
 - [D279](adr/d279.md) - `history.search` ranks this repository's past sessions
+- [D292](adr/d292.md) - a skill pointer answers only what the user typed (revises D114, D139 and D196)
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
