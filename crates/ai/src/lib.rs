@@ -4,6 +4,7 @@ pub mod anthropic;
 pub mod auth;
 pub mod catalog;
 mod compat;
+pub mod decide;
 pub mod faux;
 pub use yi_types::json_salvage;
 pub mod leak;
