@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use serde_json::Value;
 use yi_types::model::Model;
 
-/// Deflated by `build.rs`: 170,536 bytes of JSON became 11,845 in the binary, and only
+/// Deflated by `build.rs`: 146,182 bytes of JSON became 11,857 in the binary, and only
 /// [`Catalog::bundled`] inflates them, once, behind its `OnceLock`.
 const ANTHROPIC_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/anthropic.zz"));
 const OPENAI_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openai.zz"));
@@ -21,30 +21,14 @@ pub const PROVIDERS: [&str; 5] = [
     "google",
 ];
 
-fn parse_packed(packed: &[u8], models: &mut HashMap<(String, String), Model>) {
-    if let Ok(data) = miniz_oxide::inflate::decompress_to_vec_zlib(packed) {
-        parse_catalog(&data, models);
-    }
-}
-
-pub(crate) fn parse_catalog(data: &[u8], models: &mut HashMap<(String, String), Model>) {
-    let Ok(Value::Object(by_api)) = serde_json::from_slice::<Value>(data) else {
-        return;
-    };
-    for by_model in by_api.into_iter().filter_map(|(_, value)| match value {
-        Value::Object(map) => Some(map),
-        _ => None,
-    }) {
-        for (_, entry) in by_model {
-            if let Ok(model) = serde_json::from_value::<Model>(entry) {
-                models.insert((model.provider.clone(), model.id.clone()), model);
-            }
-        }
-    }
-}
+/// A fetched file's top-level `"schema"`. One under another is stale and rewritten by the next
+/// session; its entries still load, so a model only the fetch knows keeps resolving.
+pub const SCHEMA: u64 = 2;
 
 pub struct Catalog {
     models: HashMap<(String, String), Model>,
+    /// A line per entry or file that did not load; `yi doctor` names them.
+    rejected: Vec<String>,
 }
 
 static SHARED: OnceLock<Catalog> = OnceLock::new();
@@ -70,24 +54,62 @@ impl Catalog {
     }
 
     pub fn bundled() -> Self {
-        let mut models = HashMap::new();
-        parse_packed(ANTHROPIC_DATA, &mut models);
-        parse_packed(OPENAI_DATA, &mut models);
-        parse_packed(OPENROUTER_DATA, &mut models);
-        parse_packed(CODEX_DATA, &mut models);
-        parse_packed(GOOGLE_DATA, &mut models);
-        Self { models }
+        let mut catalog = Self {
+            models: HashMap::new(),
+            rejected: Vec::new(),
+        };
+        for (provider, packed) in PROVIDERS.into_iter().zip([
+            ANTHROPIC_DATA,
+            OPENAI_DATA,
+            OPENROUTER_DATA,
+            CODEX_DATA,
+            GOOGLE_DATA,
+        ]) {
+            let source = format!("bundled {provider}.json");
+            match miniz_oxide::inflate::decompress_to_vec_zlib(packed) {
+                Ok(data) => catalog.parse_catalog(&source, &data),
+                Err(error) => catalog.rejected.push(format!("{source}: {error:?}")),
+            }
+        }
+        catalog
     }
 
     /// Invariant: a cache entry overrides the bundled one by `(provider, id)` and a missing or
     /// unreadable cache file changes nothing, so the bundled set is the floor, never shrunk.
     pub fn with_cache(mut self, dir: &Path) -> Self {
         for provider in PROVIDERS {
-            if let Ok(data) = std::fs::read(dir.join(format!("{provider}.json"))) {
-                parse_catalog(&data, &mut self.models);
+            let path = dir.join(format!("{provider}.json"));
+            if let Ok(data) = std::fs::read(&path) {
+                self.parse_catalog(&path.display().to_string(), &data);
             }
         }
         self
+    }
+
+    fn parse_catalog(&mut self, source: &str, data: &[u8]) {
+        let by_api = match serde_json::from_slice::<Value>(data) {
+            Ok(Value::Object(by_api)) => by_api,
+            Ok(_) => return self.rejected.push(format!("{source}: not a JSON object")),
+            Err(error) => return self.rejected.push(format!("{source}: {error}")),
+        };
+        for by_model in by_api.into_iter().filter_map(|(_, value)| match value {
+            Value::Object(map) => Some(map),
+            _ => None,
+        }) {
+            for (id, entry) in by_model {
+                match serde_json::from_value::<Model>(entry) {
+                    Ok(model) => {
+                        self.models
+                            .insert((model.provider.clone(), model.id.clone()), model);
+                    }
+                    Err(error) => self.rejected.push(format!("{source}: {id}: {error}")),
+                }
+            }
+        }
+    }
+
+    pub fn rejected(&self) -> &[String] {
+        &self.rejected
     }
 
     pub fn get(&self, provider: &str, id: &str) -> Option<&Model> {

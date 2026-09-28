@@ -2,10 +2,12 @@
 
 use std::error::Error;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use yi_ai::catalog::Catalog;
+use yi_ai::openai::{OpenAiOptions, build_params};
 use yi_ai::refresh::{catalog_from, is_stale, reachable_ids};
 
+use crate::openrouter::history_context;
 use crate::scratch;
 use scratch::Scratch;
 
@@ -13,9 +15,26 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 const MODELS_DEV: &str = include_str!("fixtures/models_dev_2026-09-05.json");
 const OPENROUTER_LIST: &str = include_str!("fixtures/openrouter_models_2026-09-05.json");
+/// models.dev's OpenRouter entries for the three DeepSeek ids and the Claude the 2026-09-27
+/// dogfood fetched, none of them in the bundle.
+const MODELS_DEV_0928: &str = include_str!("fixtures/models_dev_2026-09-28.json");
+
+/// `written` as the next session reads it: the bundled floor under the cache file.
+fn overlay(written: &Value) -> Result<Catalog, Box<dyn Error>> {
+    let dir = Scratch::new("yi-refresh-derived")?;
+    std::fs::write(dir.join("openrouter.json"), written.to_string())?;
+    Ok(Catalog::bundled().with_cache(&dir))
+}
+
+fn fetched_0928() -> Result<(Value, Catalog), Box<dyn Error>> {
+    let models_dev: Value = serde_json::from_str(MODELS_DEV_0928)?;
+    let written = catalog_from(&models_dev, "openrouter", None, &Catalog::bundled());
+    let catalog = overlay(&written)?;
+    Ok((written, catalog))
+}
 
 /// A model the bundled files predate resolves once its cache file exists, with the cost and
-/// limits models.dev published and the compat block OpenRouter ids need.
+/// limits models.dev published and the reasoning shape OpenRouter takes.
 #[test]
 fn a_model_newer_than_the_bundle_resolves_from_the_cache() -> TestResult {
     let models_dev: Value = serde_json::from_str(MODELS_DEV)?;
@@ -40,13 +59,15 @@ fn a_model_newer_than_the_bundle_resolves_from_the_cache() -> TestResult {
     assert_eq!(astra.cost.input.as_f64(), Some(10.0));
     assert_eq!(astra.cost.cache_read.as_f64(), Some(1.0));
     assert!(astra.reasoning);
+    let options = OpenAiOptions {
+        reasoning_effort: Some(yi_types::model::Effort::High),
+        ..OpenAiOptions::default()
+    };
+    let body = build_params(astra, &history_context(), &options);
     assert_eq!(
-        astra
-            .compat
-            .as_ref()
-            .and_then(|c| c.get("thinkingFormat"))
-            .and_then(Value::as_str),
-        Some("openrouter")
+        body["reasoning"],
+        json!({"effort": "high"}),
+        "OpenRouter's shape"
     );
     assert!(
         catalog
@@ -110,11 +131,96 @@ fn staleness_reads_the_file_age() -> TestResult {
         is_stale(&dir, "openai", 24, epoch),
         "no file is stale at any clock"
     );
-    std::fs::write(dir.join("openai.json"), b"{}")?;
+    std::fs::write(
+        dir.join("openai.json"),
+        json!({"schema": yi_ai::catalog::SCHEMA}).to_string(),
+    )?;
     let written = std::fs::metadata(dir.join("openai.json"))?.modified()?;
     let hour = std::time::Duration::from_secs(3600);
     assert!(!is_stale(&dir, "openai", 24, written + hour));
     assert!(is_stale(&dir, "openai", 24, written + 25 * hour));
     assert!(is_stale(&dir, "openai", 0, written));
+    Ok(())
+}
+
+/// Their bundled V4 siblings carry the field; the fetched ids had no flag, so the second turn
+/// went out without it (#749).
+#[test]
+fn a_fetched_deepseek_replays_reasoning_content_on_its_assistant_turns() -> TestResult {
+    let (_, catalog) = fetched_0928()?;
+    for id in [
+        "deepseek/deepseek-v4.1-flash",
+        "~deepseek/deepseek-flash-latest",
+        "~deepseek/deepseek-pro-latest",
+    ] {
+        let model = catalog.get("openrouter", id).ok_or(id)?;
+        let body = build_params(model, &history_context(), &OpenAiOptions::default());
+        let assistant = &body["messages"][2];
+        assert_eq!(assistant["role"], "assistant", "{id}");
+        assert_eq!(assistant["reasoning_content"], "", "{id}: {assistant}");
+    }
+    Ok(())
+}
+
+/// The role is the first byte string of the stable prefix, so a Claude named by the bundle
+/// and one named by the fetch must spell it the same way.
+#[test]
+fn bundled_and_fetched_claude_send_the_same_role() -> TestResult {
+    let (_, catalog) = fetched_0928()?;
+    let role = |id: &str| -> Result<Value, Box<dyn Error>> {
+        let model = catalog.get("openrouter", id).ok_or(id.to_owned())?;
+        let body = build_params(model, &history_context(), &OpenAiOptions::default());
+        Ok(body["messages"][0]["role"].clone())
+    };
+    let bundled = role("anthropic/claude-opus-5")?;
+    let fetched = role("anthropic/claude-opus-5.5")?;
+    assert_eq!(bundled, fetched);
+    assert_eq!(fetched, "system");
+    Ok(())
+}
+
+/// A hand-edited cache entry that no longer parses is named, and the rest of the file loads.
+#[test]
+fn a_malformed_cache_entry_is_reported_not_dropped() -> TestResult {
+    let (mut written, _) = fetched_0928()?;
+    written["openai-completions"]["deepseek/deepseek-v4.1-flash"]["contextWindow"] = json!("1M");
+    let catalog = overlay(&written)?;
+    assert!(
+        catalog
+            .get("openrouter", "deepseek/deepseek-v4.1-flash")
+            .is_none()
+    );
+    assert!(
+        catalog
+            .get("openrouter", "~deepseek/deepseek-pro-latest")
+            .is_some()
+    );
+    let named: Vec<&String> = catalog
+        .rejected()
+        .iter()
+        .filter(|line| line.contains("deepseek/deepseek-v4.1-flash"))
+        .collect();
+    assert_eq!(named.len(), 1, "{:?}", catalog.rejected());
+    assert!(named[0].contains("openrouter"), "{}", named[0]);
+    assert!(Catalog::bundled().rejected().is_empty());
+    Ok(())
+}
+
+/// A file written before the schema existed is stale however young it is, so the next session
+/// rewrites it; the file a refresh writes now is not.
+#[test]
+fn a_cache_file_from_an_older_schema_is_stale() -> TestResult {
+    let dir = Scratch::new("yi-refresh-schema")?;
+    let hour = std::time::Duration::from_secs(3600);
+    std::fs::write(
+        dir.join("openrouter.json"),
+        json!({"openai-completions": {}}).to_string(),
+    )?;
+    let written = std::fs::metadata(dir.join("openrouter.json"))?.modified()?;
+    assert!(is_stale(&dir, "openrouter", 24, written + hour));
+    let (fresh, _) = fetched_0928()?;
+    std::fs::write(dir.join("openrouter.json"), fresh.to_string())?;
+    let written = std::fs::metadata(dir.join("openrouter.json"))?.modified()?;
+    assert!(!is_stale(&dir, "openrouter", 24, written + hour));
     Ok(())
 }
