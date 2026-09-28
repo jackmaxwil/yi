@@ -940,17 +940,18 @@ fn a_wait_not_below_timeout_secs_runs_in_the_turn() -> TestResult {
     let text = text_of(&output.result.content);
     assert_eq!(output.result.details["timedOut"], json!(true), "{text}");
     assert!(
-        text.contains("[wait 1s (clamped to 5s) is not below timeout_secs 5s, so it ran in the turn; pass a wait below timeout_secs to get the turn back]"),
+        text.contains("[wait 1s (clamped to 5s) is not below timeout_secs 5s, so it ran in the turn; to get the turn back, pass a wait below timeout_secs or raise timeout_secs above the wait]"),
         "{text}"
     );
     Ok(())
 }
 
-/// A long line and many lines, per `.ruler/045-loud-caps.md`: the tail is bounded and says so.
+/// A long line and many lines, per `.ruler/045-loud-caps.md`: the tail is bounded and says so,
+/// and the total counts what the command printed, not the 30,000 bytes the live buffer keeps.
 #[test]
 fn the_output_so_far_names_its_cut() -> TestResult {
     let dir = temp_dir("bash-wait-tail")?;
-    let command = "seq 1 30; head -c 20000 /dev/zero | tr '\\0' x; echo; echo last; sleep 6";
+    let command = "seq 1 20000; head -c 20000 /dev/zero | tr '\\0' x; echo; echo last; sleep 6";
     let started = BashTool::default().execute(
         args(&[("command", json!(command)), ("wait", json!(5))]),
         &ToolContext::new(dir.to_path_buf()),
@@ -962,33 +963,71 @@ fn the_output_so_far_names_its_cut() -> TestResult {
     assert!(text.len() < 3_000, "{} bytes", text.len());
     assert!(text.ends_with("last"), "{text}");
     assert!(
-        text.contains(&format!("[the last 2048 of 20087 bytes printed so far (the preview keeps 20 lines, at most 2048 bytes); bash job={job} wait=<s> returns its output once it exits]")),
+        text.contains(&format!("[the last 2048 of 128900 bytes printed so far (the preview keeps 20 lines, at most 2048 bytes); bash job={job} wait=<s> returns its output once it exits]")),
         "{text}"
     );
     Ok(())
 }
 
-/// Esc or a deadline on a later turn fired the session's interrupt, which every job's kill
-/// check read for its whole life; once backgrounded, only `timeout_secs` ends it.
-#[test]
-fn an_interrupt_after_backgrounding_leaves_the_job_running() -> TestResult {
-    let dir = temp_dir("bash-wait-interrupt")?;
+/// A context whose interrupt fires once `fire` is set, as Esc or the deadline fires a session's.
+fn interruptible(dir: &std::path::Path) -> (ToolContext, Arc<std::sync::atomic::AtomicBool>) {
     let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut context = ToolContext::new(dir.to_path_buf());
     let flag = Arc::clone(&fired);
     context.cancelled = Arc::new(move || flag.load(std::sync::atomic::Ordering::SeqCst));
+    (context, fired)
+}
+
+/// Nothing else stops a job: there is no kill verb, and the watchdog dies with yi (#819).
+#[test]
+fn an_interrupt_after_backgrounding_kills_the_job() -> TestResult {
+    let dir = temp_dir("bash-wait-interrupt")?;
+    let (context, fire) = interruptible(&dir);
     let tool = BashTool::default();
     let started = tool.execute(
         args(&[("command", json!("sleep 7; echo kept")), ("wait", json!(5))]),
         &context,
     );
     let job = started.result.details["job"].as_u64().ok_or("no job id")?;
-    fired.store(true, std::sync::atomic::Ordering::SeqCst);
-    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
-    let finished = text_of(&polled.result.content);
+    fire.store(true, std::sync::atomic::Ordering::SeqCst);
+    let poll = ToolContext::new(dir.to_path_buf());
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &poll);
+    let killed = text_of(&polled.result.content);
     assert!(
-        finished.contains("finished (exit 0)") && finished.contains("kept"),
-        "{finished}"
+        killed.contains(&format!(
+            "job {job} killed (timeout_secs or an interrupt): sleep 7; echo kept"
+        )),
+        "{killed}"
+    );
+    Ok(())
+}
+
+/// The text tells the model to end its turn on this poll, so Esc must reach it within a second.
+#[test]
+fn an_interrupt_ends_a_poll_within_a_second() -> TestResult {
+    let dir = temp_dir("bash-wait-poll-interrupt")?;
+    let tool = BashTool::default();
+    let started = tool.execute(
+        args(&[("command", json!("sleep 9")), ("wait", json!(5))]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    let job = started.result.details["job"].as_u64().ok_or("no job id")?;
+    let (poll, fire) = interruptible(&dir);
+    let clock = std::time::Instant::now();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        fire.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(12))]), &poll);
+    let at = clock.elapsed();
+    let text = text_of(&polled.result.content);
+    assert!(
+        text.contains(&format!("job {job} still running: sleep 9")),
+        "{text}"
+    );
+    assert!(
+        at < std::time::Duration::from_secs(3),
+        "returned after {at:?}"
     );
     Ok(())
 }
@@ -998,21 +1037,33 @@ fn an_interrupt_after_backgrounding_leaves_the_job_running() -> TestResult {
 #[test]
 fn a_command_that_finishes_in_the_turn_is_never_announced() -> TestResult {
     let dir = temp_dir("bash-inline")?;
-    let listener = std::thread::spawn(|| {
-        yi_tools::jobs::registry().wait_settle(0);
-        yi_tools::jobs::registry().take_finished()
-    });
-    let output = BashTool::default().execute(
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let listener = {
+        let (dir, stop) = (dir.to_path_buf(), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            let (mut seen, mut taken) = (0, Vec::new());
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                seen = yi_tools::jobs::registry().wait_settle(seen);
+                taken.extend(yi_tools::jobs::registry().take_finished(&dir));
+            }
+            taken
+        })
+    };
+    let tool = BashTool::default();
+    let output = tool.execute(
         args(&[("command", json!("echo inline"))]),
         &ToolContext::new(dir.to_path_buf()),
     );
     assert!(text_of(&output.result.content).contains("inline"));
-    let taken = listener.join().map_err(|_| "the listener panicked")?;
-    assert!(
-        taken.is_empty(),
-        "{:?}",
-        taken.iter().map(|r| r.headline()).collect::<Vec<_>>()
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let elsewhere = temp_dir("bash-inline-wake")?;
+    let _one_more_settle_wakes_the_listener = tool.execute(
+        args(&[("command", json!("true"))]),
+        &ToolContext::new(elsewhere.to_path_buf()),
     );
+    let taken = listener.join().map_err(|_| "the listener panicked")?;
+    let taken: Vec<String> = taken.iter().map(yi_tools::JobReport::headline).collect();
+    assert!(taken.is_empty(), "{taken:?}");
     Ok(())
 }
 
@@ -1028,16 +1079,13 @@ fn a_polled_job_is_not_reported_again() -> TestResult {
     let job = started.result.details["job"].as_u64().ok_or("no job id")?;
     let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
     assert!(text_of(&polled.result.content).contains("finished (exit 0)"));
-    let reported: Vec<u64> = yi_tools::jobs::registry()
-        .take_finished()
-        .iter()
-        .map(|r| r.id.0)
-        .collect();
-    assert!(!reported.contains(&job), "{reported:?}");
+    let reported = yi_tools::jobs::registry().take_finished(&dir);
+    assert!(reported.is_empty(), "{reported:?}");
     Ok(())
 }
 
-/// A poll that gives up hands the job back, so its result is still reported when it exits.
+/// A poll that gives up hands the job back, so its result is still reported when it exits, and
+/// only to a session in the cwd that started it.
 #[test]
 fn a_poll_that_gives_up_leaves_the_job_to_its_report() -> TestResult {
     let dir = temp_dir("bash-wait-gives-up")?;
@@ -1051,8 +1099,14 @@ fn a_poll_that_gives_up_leaves_the_job_to_its_report() -> TestResult {
     assert!(text_of(&polled.result.content).contains("still running"));
     let id = yi_tools::jobs::JobId(job);
     yi_tools::jobs::registry().wait_settled(Some(id), std::time::Duration::from_secs(10));
+    let elsewhere = temp_dir("bash-wait-gives-up-elsewhere")?;
+    let taken_elsewhere = yi_tools::jobs::registry().take_finished(&elsewhere);
+    assert!(
+        taken_elsewhere.is_empty(),
+        "another cwd's loop took it: {taken_elsewhere:?}"
+    );
     let reported: Vec<u64> = yi_tools::jobs::registry()
-        .take_finished()
+        .take_finished(&dir)
         .iter()
         .map(|r| r.id.0)
         .collect();

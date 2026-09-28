@@ -281,12 +281,14 @@ impl Jobs {
         running.into_iter().map(|(_, command)| command).collect()
     }
 
-    /// Marking them keeps the follow-up queue from repeating every poll.
-    pub fn take_finished(&self) -> Vec<JobReport> {
+    /// The unannounced finished jobs a session in `cwd` started, marked so none repeats; another
+    /// session in the same process takes only its own (#820 still shares one cwd's).
+    pub fn take_finished(&self, cwd: &Path) -> Vec<JobReport> {
         let mut jobs = self.lock();
         let mut out = Vec::new();
         for (id, job) in jobs.iter_mut() {
-            if job.capture.is_some() && matches!(job.reaper, Reaper::Poller { reported: false }) {
+            let unannounced = matches!(job.reaper, Reaper::Poller { reported: false });
+            if job.capture.is_some() && unannounced && job.cwd == cwd {
                 job.reaper = Reaper::Poller { reported: true };
                 out.push(render(*id, job));
             }
@@ -486,7 +488,7 @@ pub fn spawn_job(
 }
 
 /// Past `background_after` (a call's `wait`, else `bash.autoBackgroundMs`; `None` holds the turn)
-/// a command keeps running as a job that no interrupt ends: only `timeout`, from its start, does.
+/// a command keeps running as a job, killed by an interrupt or at `timeout` from its start.
 pub fn run_or_background(
     shell_command: &str,
     cwd: &Path,
@@ -497,15 +499,10 @@ pub fn run_or_background(
     sweep: Option<&str>,
 ) -> Result<Run, String> {
     let begun = std::time::Instant::now();
-    let detached = Arc::new(AtomicBool::new(false));
-    let interrupt: CancelFlag = {
-        let (detached, cancelled) = (Arc::clone(&detached), Arc::clone(cancelled));
-        Arc::new(move || !detached.load(Ordering::SeqCst) && cancelled())
-    };
     let (id, receiver) = start(
         shell_command,
         cwd,
-        &interrupt,
+        cancelled,
         sandbox,
         // Invariant: held until the call hands the turn back, or its output is announced twice.
         Reaper::Poller { reported: true },
@@ -516,7 +513,6 @@ pub fn run_or_background(
         Ok(Ok(capture)) => Ok(Run::Finished(Box::new(capture))),
         Ok(Err(message)) => Err(message),
         Err(RecvTimeoutError::Timeout) if background.is_some() => {
-            detached.store(true, Ordering::SeqCst);
             registry().set_reported(id, false);
             let left = timeout.saturating_sub(begun.elapsed());
             std::thread::spawn(move || {
@@ -706,16 +702,13 @@ mod tests {
     /// it replaced reported a finished job up to two seconds late).
     #[test]
     fn a_settle_wakes_the_completion_wait() -> Fallible {
+        // Its own cwd and the count it saw, since `cargo test` shares the registry across tests.
+        let cwd = Path::new("/yi-jobs-test/settle-wakes");
         let reaper = Reaper::Poller { reported: false };
-        let id = registry().insert(
-            "true",
-            Path::new("."),
-            reaper,
-            Arc::default(),
-            Arc::default(),
-        );
+        let id = registry().insert("true", cwd, reaper, Arc::default(), Arc::default());
+        let seen = registry().settles.load(Ordering::SeqCst);
         let (woke, waking) = std::sync::mpsc::channel();
-        std::thread::spawn(move || woke.send(registry().wait_settle(0)));
+        std::thread::spawn(move || woke.send(registry().wait_settle(seen)));
         std::thread::sleep(Duration::from_millis(20));
         let capture = CommandCapture {
             stdout: String::new(),
@@ -726,8 +719,34 @@ mod tests {
             kill_error: None,
         };
         registry().finish(id, capture);
-        assert_eq!(waking.recv_timeout(Duration::from_secs(5))?, 1);
-        assert_eq!(registry().take_finished().len(), 1);
+        assert!(waking.recv_timeout(Duration::from_secs(5))? > seen);
+        assert_eq!(registry().take_finished(cwd).len(), 1);
+        Ok(())
+    }
+
+    /// Dies without the re-announce: a job that settled while a poll held its report was left
+    /// for the completion loop, which had already looked, until some other job settled.
+    #[test]
+    fn a_report_handed_back_after_its_settle_wakes_the_completion_wait() -> Fallible {
+        let cwd = Path::new("/yi-jobs-test/handed-back");
+        let reaper = Reaper::Poller { reported: true };
+        let id = registry().insert("true", cwd, reaper, Arc::default(), Arc::default());
+        let capture = CommandCapture {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            cancelled: false,
+            truncated: false,
+            kill_error: None,
+        };
+        registry().finish(id, capture);
+        let held = registry().settles.load(Ordering::SeqCst);
+        let (woke, waking) = std::sync::mpsc::channel();
+        std::thread::spawn(move || woke.send(registry().wait_settle(held)));
+        std::thread::sleep(Duration::from_millis(20));
+        registry().set_reported(id, false);
+        assert!(waking.recv_timeout(Duration::from_secs(5))? > held);
+        assert_eq!(registry().take_finished(cwd).len(), 1);
         Ok(())
     }
 
