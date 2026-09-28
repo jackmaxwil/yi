@@ -72,7 +72,7 @@ pub(super) fn drain(shared: &Shared) -> Vec<AgentMessage> {
 
 /// The prompt a waking entry or a follow-up is owed, taken under the status lock enqueue takes.
 fn owed(shared: &Shared, follow_ups: bool) -> Option<AgentMessage> {
-    if shared.winding_down() {
+    if shared.winding_down() || shared.held.load(std::sync::atomic::Ordering::SeqCst) {
         return None;
     }
     if let Ok(mut queue) = shared.steer.lock() {
@@ -105,6 +105,20 @@ pub(super) fn enqueue(parts: &RunParts, entry: Queued) -> Delivery {
     drop(status);
     launch(parts.clone(), prompt, None);
     Delivery::Woken
+}
+
+pub(super) fn kick(parts: &RunParts) {
+    let Ok(mut status) = parts.shared.status.lock() else {
+        return;
+    };
+    if *status == Status::Running {
+        return;
+    }
+    if let Some(prompt) = owed(&parts.shared, true) {
+        admit(&parts.shared, &mut status);
+        drop(status);
+        launch(parts.clone(), prompt, None);
+    }
 }
 
 pub(super) fn unsaved_compaction(parts: &RunParts, error: &yi_session::SessionError) {
@@ -227,6 +241,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     let (model, effort) = hooks::settings_of(&shared);
     let mut config = LoopConfig::new(model.clone());
     config.effort = effort;
+    config.guards = crate::levers::get().loop_guards();
     config.tool_execution = tool_execution;
     config.convert_to_llm = Box::new(yi_context::convert_to_llm);
     if let Some(compactor) = compactor.clone() {

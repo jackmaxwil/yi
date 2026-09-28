@@ -68,8 +68,8 @@ levers! {
     plan_spawn_cap: u32 = "plan.spawn_cap", yi_types::plan::doc::SPAWN_CAP.get(), 8..=256, false;
     plan_retry_cap: u8 = "plan.retry_cap", plan::table::RETRY_CAP.0, 1..=16, false;
     plan_stale_turns: u64 = "plan.stale_turns", plan::DEFAULT_STALE_TURNS, 4..=40, true;
-    plan_probe_first_s: u64 = "plan.probe_first_s", plan::probe::FIRST_DELAY.as_secs(), 10..=600, true;
-    plan_probe_max_s: u64 = "plan.probe_max_s", plan::probe::MAX_DELAY.as_secs(), 300..=7200, true;
+    plan_probe_first_s: u64 = "plan.probe_first_s", crate::schedule::clock::PROBE_EVERY_S, 10..=600, true;
+    plan_probe_max_s: u64 = "plan.probe_max_s", crate::schedule::clock::PROBE_MAX_S, 300..=7200, true;
     plan_stop_cap: u32 = "plan.stop_cap", plan_gate::STOP_CAP_PER_CYCLE, 0..=6, true;
     plan_multi_step_score: usize = "plan.multi_step_score", plan_gate::MULTI_STEP_SCORE, 1..=6, true;
     plan_long_prompt_words: usize = "plan.long_prompt_words", plan_gate::LONG_PROMPT_WORDS, 10..=120, true;
@@ -100,11 +100,11 @@ levers! {
     route_oneshot_at: i32 = "route.oneshot_at", route::ONESHOT_AT, -6..=0, true;
     route_tool_calls_per_turn: u32 = "route.tool_calls_per_turn", route::TOOL_CALLS_PER_TURN, 2..=12, true;
     route_files_matched: u32 = "route.files_matched", route::FILES_MATCHED, 2..=20, true;
-    loop_length_stop_at: u32 = "loop.length_stop_at", yi_loop::LENGTH_STOP_AT, 1..=6, false;
-    loop_cut_stop_at: u32 = "loop.cut_stop_at", yi_loop::CUT_STOP_AT, 1..=24, false;
+    loop_length_stop_at: u32 = "loop.length_stop_at", yi_loop::LENGTH_STOP_AT, 1..=6, true;
+    loop_cut_stop_at: u32 = "loop.cut_stop_at", yi_loop::CUT_STOP_AT, 1..=24, true;
     loop_repeat_steer_at: u32 = "loop.repeat_steer_at", yi_loop::REPEAT_STEER_AT, 1..=6, false;
     loop_repeat_stop_at: u32 = "loop.repeat_stop_at", yi_loop::REPEAT_STOP_AT, 2..=12, false;
-    loop_reasoning_cap: usize = "loop.reasoning_cap", yi_loop::REASONING_CHAR_CAP, 8000..=200000, false;
+    loop_reasoning_cap: usize = "loop.reasoning_cap", yi_loop::REASONING_CHAR_CAP, 8000..=200000, true;
     tools_reduce_floor: usize = "tools.reduce_floor", yi_tools::reduce::REDUCE_FLOOR, 2048..=32768, false;
     review_timeout_s: u64 = "review.timeout_s", auto_review::REVIEW_TIMEOUT.as_secs(), 10..=120, true;
     graph_next_lines: usize = "graph.next_lines", crate::todo::text::NEXT_LINES, 1..=5, true;
@@ -117,6 +117,16 @@ impl Default for Levers {
 }
 
 impl Levers {
+    /// The loop's stop guards (D280): yi-loop sits below the runtime and never reads a lever,
+    /// so the session hands it these through `LoopConfig`.
+    pub fn loop_guards(&self) -> yi_loop::LoopGuards {
+        yi_loop::LoopGuards {
+            length_stop_at: self.loop_length_stop_at,
+            cut_stop_at: self.loop_cut_stop_at,
+            reasoning_cap: self.loop_reasoning_cap,
+        }
+    }
+
     /// Invariant: outside an eval run the variable is never asked for, so no file is opened
     /// and nothing is parsed; inside one a refused file is an error, never silent defaults.
     pub fn load(eval: bool, var: impl FnOnce() -> Option<OsString>) -> Result<Self, String> {

@@ -150,6 +150,7 @@ fn parse_specs(value: &Value, what: &str) -> Fallible<Vec<TodoSpec>> {
                 delegation,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }),
             Some(raw) => {
                 let count = raw
@@ -162,6 +163,7 @@ fn parse_specs(value: &Value, what: &str) -> Fallible<Vec<TodoSpec>> {
                         delegation: delegation.clone(),
                         contract: None,
                         children: Vec::new(),
+                        cites: Default::default(),
                     });
                 }
             }
@@ -219,12 +221,14 @@ fn parse_op(name: &str, args: &Map<String, Value>) -> Fallible<(Op, bool)> {
                 label: label("label")?,
                 on: serde_json::from_value::<BlockedOn>(require(args, "on", &what)?.clone())?,
                 note: string("note")?,
+                ask: None,
             }
         }
         "unblock" => {
             reject_unknown(args, &["label"], &what)?;
             Op::Unblock {
                 label: label("label")?,
+                answer: None,
             }
         }
         "reorder" => {
@@ -337,6 +341,7 @@ fn blocked_tag(on: &BlockedOn) -> String {
         BlockedOn::Child(_) => "child".to_owned(),
         BlockedOn::User => "user".to_owned(),
         BlockedOn::External { .. } => "external".to_owned(),
+        BlockedOn::Channel { address, .. } => address.clone(),
         BlockedOn::Other(tag) => tag.clone(),
     }
 }

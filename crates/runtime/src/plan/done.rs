@@ -588,6 +588,7 @@ impl PlanEngine {
                 label: label.clone(),
                 on: BlockedOn::User,
                 note,
+                ask: None,
             };
             self.transact(txn, &prepared.id, &prepared.root, &block)?;
         }
