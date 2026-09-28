@@ -62,8 +62,9 @@ pub struct Routing {
 #[serde(rename_all = "camelCase")]
 pub struct ClassifyRecord {
     pub consumer: String,
-    /// The timestamp of the typed message the decision answers.
-    pub message_timestamp: u64,
+    /// The typed message this answers: the first 12 hex of the sha256 of its bytes with ASCII
+    /// whitespace collapsed and ASCII letters lowered, the id `evals/skill_labels.py` gives it.
+    pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -675,10 +675,10 @@ impl RuleEngine {
             texts.push(self.render_reminder(rule, shown));
         }
         drop(state);
-        if let (Ok(slot), AgentMessage::User { timestamp, .. }) = (self.classifier.lock(), message)
+        if let Ok(slot) = self.classifier.lock()
             && let Some(classifier) = slot.as_ref()
         {
-            classifier.consult(&text, *timestamp, pointed);
+            classifier.consult(&text, pointed);
         }
         if let Some(last) = texts.last_mut()
             && !dropped.is_empty()

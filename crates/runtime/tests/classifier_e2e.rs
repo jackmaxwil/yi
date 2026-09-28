@@ -163,7 +163,10 @@ async fn in_shadow_a_decision_is_recorded_and_nothing_fires() -> TestResult {
         ),
         (Some("land"), Some(0.91), Some("english"), false)
     );
-    assert_eq!(record.message_timestamp, 7);
+    assert_eq!(
+        record.message,
+        yi_runtime::classifier::message_id("land this branch once it is green")
+    );
     assert!(delivered(&rig).is_empty());
     let asked = served.join().map_err(|_| "sidecar thread")?;
     let body = asked.first().ok_or("one request")?;
@@ -173,6 +176,15 @@ async fn in_shadow_a_decision_is_recorded_and_nothing_fires() -> TestResult {
     );
     assert!(body.contains("land this branch"), "{body}");
     Ok(())
+}
+
+/// The join key `evals/skill_labels.py` computes for the same text; its test pins the same value.
+#[test]
+fn a_message_id_matches_the_labelling_tool() {
+    assert_eq!(
+        yi_runtime::classifier::message_id("  Land THIS branch\n\tonce the ÉTÉ gate is green "),
+        "2990f761ef69"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
