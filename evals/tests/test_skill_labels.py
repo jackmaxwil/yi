@@ -69,14 +69,15 @@ class SkillLabels(unittest.TestCase):
         lane = self.dir / "yi" / "odd"
         lane.mkdir()
         rows = [{"type": "message", "message": {"role": "user", "attribution": "user", "content": text}}
-                for text in ["fix it\u3000", "hi \ud800"]]
-        (lane / "s.jsonl").write_text("\n".join(json.dumps(row) for row in rows))
+                for text in ["fix it\u3000", "hi \ud800", "fix\u2028it"]]
+        (lane / "s.jsonl").write_text("\n".join(json.dumps(row, ensure_ascii=index == 1) for index, row in enumerate(rows)))
         skill_labels.corpus(self.dir / "empty", lane, self.corpus)
         ids = [json.loads(line)["id"] for line in self.corpus.read_text().splitlines()]
-        self.assertEqual(ids, [skill_labels.message_id("fix it\u3000"), skill_labels.message_id("hi \ud800")])
+        self.assertEqual(ids, [skill_labels.message_id(text) for text in ["fix it\u3000", "hi \ud800", "fix\u2028it"]])
         out = self.dir / "labels.jsonl"
+        out.write_bytes(b'\xff\n{"id": "%s"}\n' % ids[0].encode())
         skill_labels.label(self.corpus, out, "m", 9.0, None, teacher=lambda text: ('{"skill": "none"}', 0.0))
-        self.assertEqual(skill_labels.freeze(self.corpus, out, self.dir / "frozen.csv", 1, 2, 1), 2)
+        self.assertEqual(skill_labels.freeze(self.corpus, out, self.dir / "frozen.csv", 1, 3, 1), 3)
 
     def test_the_candidates_are_the_shipped_skills_with_a_trigger(self):
         found = dict(skill_labels.skills())
