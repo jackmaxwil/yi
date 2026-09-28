@@ -611,22 +611,32 @@ impl PermissionBroker {
                 contained: false,
             },
             crate::auto_review::ReviewOutcome::Deny { reason } => {
-                let stored = ReviewedAsk {
-                    title: ask.title.to_owned(),
-                    description: ask.description.to_owned(),
-                    patch: ask.patch.map(str::to_owned),
-                    targets: ask.changes.to_vec(),
-                    display: display.to_owned(),
-                    canonical: canonical.to_owned(),
-                    kind: rule_kind,
-                    grants: ask.grants.to_vec(),
-                    evidence: reason.clone(),
-                };
+                let stored = Self::stored(ask, rule_kind, canonical, display, reason.clone());
                 let request = self.open_request(action, stored);
                 self.denied(Self::escalation_text(&reason, request))
             }
         };
         (outcome, Some(Answerer::Reviewer))
+    }
+
+    fn stored(
+        ask: &PermissionAsk<'_>,
+        kind: RuleKind,
+        canonical: &str,
+        display: &str,
+        evidence: String,
+    ) -> ReviewedAsk {
+        ReviewedAsk {
+            title: ask.title.to_owned(),
+            description: ask.description.to_owned(),
+            patch: ask.patch.map(str::to_owned),
+            targets: ask.changes.to_vec(),
+            display: display.to_owned(),
+            canonical: canonical.to_owned(),
+            kind,
+            grants: ask.grants.to_vec(),
+            evidence,
+        }
     }
 
     fn escalation_text(evidence: &str, request: RequestId) -> String {
@@ -847,6 +857,16 @@ impl PermissionBroker {
         };
         let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
         self.settle(tool_call_id, ask, allowed, Answerer::User);
+        if !allowed {
+            let refusal = "the user refused it when asked".to_owned();
+            let stored = Self::stored(ask, rule_kind, canonical, display, refusal);
+            let mut ledger = self
+                .ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let request = ledger.open(ActionId::of(canonical), stored);
+            ledger.resolve(request, UserVerdict::Denied);
+        }
         if let AskOutcome::AllowAlways(index) = outcome {
             self.keep_grant(ask.grants.get(index), rule_kind, canonical, display);
         }
