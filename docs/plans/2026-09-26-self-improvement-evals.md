@@ -775,13 +775,13 @@ The first paid runs replaced four of this plan's estimates. Where a number above
 this section, this section holds.
 
 - **A slice trial costs $0.27, not $0.13.** Row 0055's median was over all 38 sweep tasks, and the
-  cheap ones pulled it down. PAID-0 (row 0061) and N1's first call priced mid-band slice trials at
+  cheap ones pulled it down. PAID-0 (row 0062) and N1's first call priced mid-band slice trials at
   about $0.27. Z.AI bills exactly 2.0x the bundled catalog: PAID-0's catalog price is $0.122,
   billed $0.244. At that rate one candidate through the cascade costs about $23.6: fixtures $0.61,
   one task $0.27, dev $9.72, validation $12.96. The owner's decisions: "13$ is fine" for a stage
   (soft $13 / hard $15, `evals/drivers/trials.py`), and "keep" for the week ($25 / $30), which is
   one candidate to validation per week.
-- **The pin is Z.AI, and the probe needs a warm-up sample** (row 0060). The first session on any
+- **The pin is Z.AI, and the probe needs a warm-up sample** (row 0061). The first session on any
   upstream misses the cache that the later ones hit at 0.97, so `cache_probe.WARMUP = 1`. Z.AI,
   Together and Wafer qualify, and Z.AI's warm turn is the cheapest by 1%. PAID-0 read 93.1% of its
   prompt from cache, against 79.4% in row 0055. Whether another qualifying upstream bills nearer
