@@ -230,7 +230,7 @@ impl AgentSession {
                 has_pending_session_work: is_streaming && queued,
             };
             if crate::schedule::should_defer(job, &activity) {
-                return Ok(crate::schedule::RunOutcome::Skipped);
+                return Ok(crate::schedule::RunOutcome::Deferred);
             }
             let todos = shared
                 .todos

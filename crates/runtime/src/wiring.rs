@@ -211,16 +211,20 @@ fn wire_schedule(
     wiring: &RuntimeWiring,
     registry: &mut crate::kernel::HostRegistry,
 ) {
-    let shared = crate::schedule::shared::intern(wiring.rlm_dir.join("scheduled-jobs.json"));
+    let shared =
+        crate::schedule::shared::intern(wiring.rlm_dir.join("scheduled-jobs.json"), |_| {});
     let heartbeats_cwd = wiring.cwd.to_string_lossy().into_owned();
     let deliver = session.heartbeat_deliverer();
-    let heartbeats = Arc::new(
+    let heartbeats =
         crate::schedule::HeartbeatService::new(Arc::clone(&shared.store), heartbeats_cwd)
             .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver))
             .with_stop(session.halt_hook())
             .with_words(session.store_handle())
-            .interned(),
-    );
+            .interned();
+    let heartbeats = Arc::new(match (&wiring.sessions_dir, wiring.depth) {
+        (Some(sessions), 0) => heartbeats.durable(sessions.join("schedules")),
+        _ => heartbeats,
+    });
     heartbeats.register(registry);
     session.set_schedule(Arc::clone(&heartbeats));
 }

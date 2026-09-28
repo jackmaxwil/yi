@@ -40,7 +40,6 @@ impl DeliveryHub {
         u64::try_from(changed).unwrap_or(u64::MAX)
     }
 
-    #[cfg(test)]
     fn lane_count(&self) -> usize {
         lock_lanes(&self.lanes).len()
     }
@@ -90,15 +89,18 @@ pub(crate) fn halt_all(on: bool, now: u64) -> (u64, u64) {
     })
 }
 
-pub(crate) fn intern(path: PathBuf) -> Arc<SharedSchedule> {
+/// `prime` runs on the hub before a fresh timer starts, so its first claim finds the lane.
+pub(crate) fn intern(path: PathBuf, prime: impl FnOnce(&DeliveryHub)) -> Arc<SharedSchedule> {
     let mut map = intern_map()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(existing) = map.get(&path) {
+        prime(&existing.hub);
         return Arc::clone(existing);
     }
     let store = Arc::new(JobStore::open(path.clone()));
     let hub = Arc::new(DeliveryHub::new());
+    prime(&hub);
     let dispatch = Arc::clone(&hub);
     let scheduler = Scheduler::start(
         Arc::clone(&store),
@@ -117,6 +119,13 @@ pub(crate) fn intern(path: PathBuf) -> Arc<SharedSchedule> {
     });
     map.insert(path, Arc::clone(&shared));
     shared
+}
+
+pub(crate) fn release(store: &Arc<JobStore>) {
+    intern_map()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|_, shared| !Arc::ptr_eq(&shared.store, store) || shared.hub.lane_count() > 0);
 }
 
 #[cfg(test)]
