@@ -58,6 +58,7 @@ fn spec(label: &str, after: &[&str]) -> Result<TodoSpec, Box<dyn Error>> {
         delegation: None,
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     })
 }
 
@@ -127,6 +128,7 @@ fn plan_with(edges: &[(&str, &[&str])]) -> Result<Plan, Box<dyn Error>> {
             contract: None,
             contract_hash: None,
             extra: serde_json::Map::new(),
+            cites: Default::default(),
         });
     }
     Ok(Plan::opening(

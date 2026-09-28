@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use super::canonical::ArtifactRef;
 use super::doc::{
-    AgentId, BlockedOn, Delegation, GoalText, Isolation, Todo, TodoLabel, TodoStateName,
+    AgentId, BlockedOn, Cites, Delegation, GoalText, Isolation, Todo, TodoLabel, TodoStateName,
 };
 use super::ledger::{AttemptId, EffectId};
 use crate::url::Url;
@@ -125,6 +125,8 @@ pub struct TodoSpec {
     pub contract: Option<super::contract::Contract>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Todo>,
+    #[serde(flatten)]
+    pub cites: Cites,
 }
 
 /// The fields of a [`TodoSpec`] before the declaration rule is applied.
@@ -139,6 +141,8 @@ pub struct TodoSpecRepr {
     pub contract: Option<super::contract::Contract>,
     #[serde(default)]
     pub children: Vec<Todo>,
+    #[serde(flatten)]
+    pub cites: Cites,
 }
 
 impl TryFrom<TodoSpecRepr> for TodoSpec {
@@ -158,6 +162,7 @@ impl TryFrom<TodoSpecRepr> for TodoSpec {
             delegation: repr.delegation,
             contract: repr.contract,
             children: repr.children,
+            cites: repr.cites,
         })
     }
 }

@@ -227,6 +227,31 @@ pub struct Delegation {
     pub extra: Map<String, Value>,
 }
 
+/// An owner message the plan deliberately leaves unserved, and why.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Waiver {
+    pub address: Url,
+    pub reason: String,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The owner's words a todo serves (`intent`) or sets aside (`waived`), by address: `intent`
+/// carries no text of its own, so it cannot restate what it points at.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Cites {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intent: Vec<Url>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waived: Vec<Waiver>,
+}
+
+impl Cites {
+    pub fn is_empty(&self) -> bool {
+        self.intent.is_empty() && self.waived.is_empty()
+    }
+}
+
 /// `after` is ordering only — no data rides an edge; sibling-only and
 /// acyclic, enforced by [`Plan::validate`] at every insert.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -252,6 +277,7 @@ pub struct Todo {
     /// The contract's canonical digest as frozen at `start`; a `done` whose contract digests
     /// differently is drift.
     pub contract_hash: Option<Digest>,
+    pub cites: Cites,
     pub extra: Map<String, Value>,
 }
 
@@ -271,6 +297,7 @@ impl Todo {
             refusals: 0,
             contract: None,
             contract_hash: None,
+            cites: Cites::default(),
             extra: Map::new(),
         }
     }
@@ -404,6 +431,8 @@ struct TodoRepr {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolution: Option<Resolution>,
     #[serde(flatten)]
+    cites: Cites,
+    #[serde(flatten)]
     extra: Map<String, Value>,
 }
 
@@ -453,6 +482,7 @@ impl From<Todo> for TodoRepr {
             contract: todo.contract,
             contract_hash: todo.contract_hash,
             resolution,
+            cites: todo.cites,
             extra: todo.extra,
         }
     }
@@ -536,6 +566,7 @@ impl TryFrom<TodoRepr> for Todo {
             refusals: repr.refusals,
             contract: repr.contract,
             contract_hash: repr.contract_hash,
+            cites: repr.cites,
             extra: repr.extra,
         })
     }

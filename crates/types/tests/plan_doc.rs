@@ -64,6 +64,7 @@ fn todo(label: &str, after: &[&str], state: TodoState) -> Result<Todo, DocError>
         contract: None,
         contract_hash: None,
         extra: Map::new(),
+        cites: Default::default(),
     })
 }
 
@@ -386,5 +387,26 @@ fn an_uncontracted_worktree_spec_is_refused_at_parse_and_a_stored_todo_is_not() 
     let mut stored = bare;
     stored["state"] = serde_json::json!("pending");
     assert!(serde_json::from_value::<Todo>(stored).is_ok());
+    Ok(())
+}
+
+/// Dies with `intent` or `waived` dropped on the way through a checkpoint: a plan file the store
+/// wrote with both reads back with both, and writes back the same document.
+#[test]
+fn a_checkpoint_carrying_cites_round_trips() -> TestResult {
+    let raw = include_str!("fixtures/plan-cites-v1.json");
+    let plan: Plan = serde_json::from_str(raw)?;
+    let kept = plan
+        .todo(&TodoLabel::new("delete the old lexer")?)
+        .ok_or("no todo")?;
+    let intent: Vec<String> = kept.cites.intent.iter().map(ToString::to_string).collect();
+    assert_eq!(intent, ["user://2"]);
+    let waiver = kept.cites.waived.first().ok_or("no waiver")?;
+    assert_eq!(waiver.address.to_string(), "user://1");
+    assert_eq!(waiver.reason, "the second ask replaces the first");
+    assert_eq!(
+        serde_json::to_value(&plan)?,
+        serde_json::from_str::<serde_json::Value>(raw)?
+    );
     Ok(())
 }

@@ -24,7 +24,8 @@ use super::snapshot::{Snapshotter, TreeHash};
 use super::state::{self, Decided, KIND_IMPORT, RootState, leaving_running, root_of};
 use super::store::{Loaded, PlanStore, StoreError, draft};
 use super::table::{
-    OpKind, Refusal, admit, check_actor, check_plan_state, in_flight, op_name, ready_labels,
+    OpKind, Refusal, admit, admitted, check_actor, check_plan_state, in_flight, op_name,
+    ready_labels,
 };
 use super::verify::Verifier;
 use yi_types::plan::op::Reaped;
@@ -412,6 +413,7 @@ pub(super) struct Txn {
     pub(super) effect: Option<EffectId>,
     /// The acceptance body a worktree `done` lands as one `accepted` record with the transition.
     pub(super) accepted: Option<Value>,
+    pub(super) asked: super::trace::Asked,
 }
 
 impl Txn {
@@ -420,11 +422,7 @@ impl Txn {
     }
 
     pub(super) fn derived(&self, suffix: &str) -> Result<RequestId, PlanOpError> {
-        RequestId::new(format!("{}/{suffix}", self.request)).map_err(|error| {
-            PlanOpError::Doc(DocError::AgentIdWhitespace {
-                id: error.to_string(),
-            })
-        })
+        minted(format!("{}/{suffix}", self.request))
     }
 }
 
@@ -451,6 +449,7 @@ pub struct PlanEngine {
     pub(super) refused: super::schedule::Refused,
     pub(super) previewed: super::covers::Previewed,
     pub(super) host: super::ledger::Host,
+    pub(super) owner_words: Option<crate::goal::StoreHandle>,
 }
 
 impl PlanEngine {
@@ -474,6 +473,7 @@ impl PlanEngine {
             refused: super::schedule::Refused::default(),
             previewed: super::covers::Previewed::default(),
             host: super::ledger::Host::Bare,
+            owner_words: None,
         }
     }
 
@@ -544,18 +544,13 @@ impl PlanEngine {
             expected_revision,
         } = request;
         check_actor(&actor, &op)?;
+        let (op, asked) = self.cite_default(op, plan.as_ref());
         if let Op::View { full } = op {
             return self.view(plan, full);
         }
         let request = match request_id {
             Some(id) => id,
-            None => {
-                RequestId::new(format!("auto-{}", self.store.request_nonce())).map_err(|error| {
-                    PlanOpError::Doc(DocError::AgentIdWhitespace {
-                        id: error.to_string(),
-                    })
-                })?
-            }
+            None => minted(format!("auto-{}", self.store.request_nonce()))?,
         };
         // Done and a worktree submit take their own leases around the verifier (sections 6.3
         // and 6.6); the probe holds one too, and a read that fails refuses the op outright.
@@ -575,7 +570,7 @@ impl PlanEngine {
         }
         let _lease = self.lease_waiting()?;
         match op {
-            Op::Init { goal, todos } => self.init(goal, todos, &actor, request),
+            Op::Init { goal, todos } => self.init(goal, todos, &actor, request, asked),
             Op::Import { source } => self.import(&source, &actor, request),
             Op::Repair { resolutions } => {
                 self.repair(plan, resolutions, &actor, request, expected_revision)
@@ -587,22 +582,18 @@ impl PlanEngine {
                 // Invariant: the caller's id names the Set, so a retry after a crash between
                 // the two commits replays or finishes the Set instead of hitting the init.
                 let specs = rows.iter().map(|row| row.spec.clone()).collect();
-                let opening = RequestId::new(format!("{request}/init")).map_err(|error| {
-                    PlanOpError::Doc(DocError::AgentIdWhitespace {
-                        id: error.to_string(),
-                    })
-                })?;
-                let opened = self.init(goal.clone(), specs, &actor, opening)?;
+                let opening = minted(format!("{request}/init"))?;
+                let opened = self.init(goal.clone(), specs, &actor, opening, asked.clone())?;
                 let set = Op::Set {
                     goal: Some(goal),
                     rows,
                 };
-                self.framed(Some(opened.plan.id), &actor, set, request, None)
+                self.framed(Some(opened.plan.id), &actor, set, request, None, asked)
             }
             program @ Op::Program { .. } => {
                 self.program(plan, &actor, program, request, expected_revision)
             }
-            other => self.framed(plan, &actor, other, request, expected_revision),
+            other => self.framed(plan, &actor, other, request, expected_revision, asked),
         }
     }
 
@@ -629,6 +620,7 @@ impl PlanEngine {
             verdict: None,
             effect: None,
             accepted: None,
+            asked: super::trace::Asked::new(),
         })
     }
 
@@ -657,6 +649,7 @@ impl PlanEngine {
         specs: Vec<TodoSpec>,
         actor: &Actor,
         request: RequestId,
+        asked: super::trace::Asked,
     ) -> Result<Outcome, PlanOpError> {
         let op = Op::Init { goal, todos: specs };
         for id in self.roots()? {
@@ -684,6 +677,7 @@ impl PlanEngine {
         };
         let id = self.store.allocate(goal)?;
         let mut txn = self.begin(&id, actor, request, None, false)?;
+        txn.asked = asked;
         let mut probe = txn.state.clone();
         state::apply_op(&mut probe, &id, &op, &Decided::default())?;
         let record = self.record_for(&txn, &id, &op, &probe, Decided::default(), None)?;
@@ -693,7 +687,8 @@ impl PlanEngine {
         let committed = self.commit(&mut txn, record)?;
         self.store.checkpoint_family(&txn.state)?;
         self.emit(&committed);
-        self.conclude(&id, &txn.state, &[], Delta::default())
+        let delta = Delta::default().noticed(&committed.record);
+        self.conclude(&id, &txn.state, &[], delta)
     }
 
     pub(super) fn view(&self, plan: Option<PlanId>, _full: bool) -> Result<Outcome, PlanOpError> {
@@ -795,10 +790,12 @@ impl PlanEngine {
         op: Op,
         request: RequestId,
         expected: Option<TouchCount>,
+        asked: super::trace::Asked,
     ) -> Result<Outcome, PlanOpError> {
         let id = self.resolve(plan)?;
         let root = root_of(&id)?;
         let mut txn = self.begin(&root, actor, request, expected, false)?;
+        txn.asked = asked;
         if let Some(replayed) = self.replay(&txn, &op)? {
             return Ok(replayed);
         }
@@ -930,6 +927,7 @@ impl PlanEngine {
         let committed = self.commit(txn, record)?;
         self.store.checkpoint_family(&txn.state)?;
         self.emit(&committed);
+        delta = delta.noticed(&committed.record);
         delta.subplan = applied.subplan;
         Ok(delta)
     }
@@ -1002,6 +1000,7 @@ impl PlanEngine {
                 .extra
                 .insert("prior".to_owned(), Value::from(prior));
         }
+        self.trace_into(txn, op, plan, &mut record.record.extra);
         Ok(record)
     }
 
@@ -1139,12 +1138,12 @@ impl PlanEngine {
     }
 }
 
-/// The ready labels `admit` does not refuse at `slots`; the rest are the held list.
-pub(super) fn admitted(plan: &Plan, slots: usize) -> Vec<TodoLabel> {
-    ready_labels(plan)
-        .into_iter()
-        .filter(|label| admit(plan, label, slots).is_ok())
-        .collect()
+fn minted(text: String) -> Result<RequestId, PlanOpError> {
+    RequestId::new(text).map_err(|error| {
+        PlanOpError::Doc(DocError::AgentIdWhitespace {
+            id: error.to_string(),
+        })
+    })
 }
 
 /// Invariant: `by` is compared to the actor, not its word: a child named `main` is no owner.
