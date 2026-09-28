@@ -9,8 +9,8 @@ use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, SharedSes
 use yi_runtime::todo::tool::{TodoTool, unleak};
 use yi_runtime::todo::{Op, Target, TodoError, TodoStore, latest_record, text};
 use yi_tools::{Tool, ToolContext};
-use yi_types::plan::doc::{TodoLabel, TodoStateName};
-use yi_types::todo::{BlockedOn, PhaseName, TodoItem, TodoList};
+use yi_types::plan::doc::{AgentId, BlockedOn, Todo, TodoLabel, TodoState, TodoStateName};
+use yi_types::todo::{PhaseName, TodoList};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -34,8 +34,8 @@ fn label(text: &str) -> Result<TodoLabel, Box<dyn Error>> {
     Ok(TodoLabel::new(text)?)
 }
 
-fn item(text: &str) -> Result<TodoItem, Box<dyn Error>> {
-    Ok(TodoItem::from_text(text)?)
+fn item(text: &str) -> Result<Todo, Box<dyn Error>> {
+    Ok(Todo::from_text(text)?)
 }
 
 fn call(tool: &TodoTool, args: Value) -> (bool, String) {
@@ -64,7 +64,7 @@ fn ids(list: &TodoList) -> Vec<(String, String)> {
 
 fn states(list: &TodoList) -> Vec<(String, TodoStateName)> {
     list.items()
-        .map(|item| (item.label.to_string(), item.state.clone()))
+        .map(|item| (item.label.to_string(), TodoStateName::of(&item.state)))
         .collect()
 }
 
@@ -143,9 +143,13 @@ fn the_list_rehydrates_from_the_session_on_a_fresh_store() -> TestResult {
         .items()
         .find(|item| item.label.as_str() == "two")
         .ok_or("two missing")?;
-    assert_eq!(two.state, TodoStateName::Blocked);
-    assert_eq!(two.on, Some(BlockedOn::User));
-    assert_eq!(two.note.as_deref(), Some("which branch to land on"));
+    assert_eq!(
+        two.state,
+        TodoState::Blocked {
+            on: BlockedOn::User,
+            note: "which branch to land on".to_owned()
+        }
+    );
     assert_eq!(list.progress().blocked, 1);
     Ok(())
 }
@@ -229,7 +233,7 @@ fn done_refuses_a_done_item_and_done_all_leaves_closed_ones_alone() -> TestResul
         .map(|item| {
             (
                 item.label.to_string(),
-                item.state.clone(),
+                TodoStateName::of(&item.state),
                 item.evidence.clone(),
             )
         })
@@ -269,7 +273,7 @@ fn set_keeps_a_blocker_the_rewrite_did_not_mention() -> TestResult {
     store.apply(
         Op::Block {
             label: label("b")?,
-            on: BlockedOn::External,
+            on: BlockedOn::External { probe: None },
             note: "CI is down".to_owned(),
             ask: None,
         },
@@ -286,8 +290,13 @@ fn set_keeps_a_blocker_the_rewrite_did_not_mention() -> TestResult {
         .items()
         .find(|item| item.label.as_str() == "b")
         .ok_or("b missing")?;
-    assert_eq!(b.on, Some(BlockedOn::External));
-    assert_eq!(b.note.as_deref(), Some("CI is down"));
+    assert_eq!(
+        b.state,
+        TodoState::Blocked {
+            on: BlockedOn::External { probe: None },
+            note: "CI is down".to_owned()
+        }
+    );
     assert_eq!(
         applied.list.running().map(|item| item.label.to_string()),
         Some("c".to_owned())
@@ -624,7 +633,7 @@ fn an_id_names_an_item_across_a_set() -> TestResult {
         .items()
         .find(|item| item.label.as_str() == "beta")
         .ok_or("beta missing")?;
-    assert_eq!(beta.state, TodoStateName::Done);
+    assert_eq!(TodoStateName::of(&beta.state), TodoStateName::Done);
     store.apply(
         Op::Rm {
             target: Target::All,
@@ -712,7 +721,7 @@ fn a_long_label_is_cut_into_its_note_not_refused() -> TestResult {
     let list = latest_record(&session).ok_or("no record")?.list;
     let first = list.items().next().ok_or("no items")?;
     assert_eq!(first.label.as_str().chars().count(), 80);
-    assert_eq!(first.note.as_deref(), Some(long));
+    assert_eq!(first.note.as_ref().map(|note| note.as_str()), Some(long));
     let (is_error, text) = call(
         &tool,
         json!({"op": "done", "label": long, "evidence": "`pytest fixtures` 12 passed in 1s"}),
@@ -1023,7 +1032,7 @@ fn a_done_call_with_leaked_glm_markup_lands_as_done() -> TestResult {
         let (is_error, text) = call(&tool, decode(args));
         let list = store.list();
         let item = list.items().next().ok_or("the item")?;
-        let landed = item.state == TodoStateName::Done
+        let landed = TodoStateName::of(&item.state) == TodoStateName::Done
             && item.evidence.as_deref() == case["evidence"].as_str()
             && text.starts_with("(op inferred: done)\n");
         if is_error || !landed {
@@ -1060,8 +1069,10 @@ fn unleak_leaves_every_call_without_the_markup_byte_identical() -> TestResult {
 #[test]
 fn the_header_marks_a_cut_running_label() -> TestResult {
     let long = "read the record (architecture, design doc, git log, changelog, gate recipe, last merges, guardrail script)";
-    let mut running = TodoItem::from_text(long)?;
-    running.state = TodoStateName::Running;
+    let mut running = Todo::from_text(long)?;
+    running.state = TodoState::Running {
+        by: AgentId::owner(),
+    };
     assert!(running.is_cut(), "the label is cut to the max");
     let list = TodoList {
         phases: vec![yi_types::todo::TodoPhase {
@@ -1139,7 +1150,7 @@ fn an_op_passed_as_a_key_lands_as_that_op() -> TestResult {
     assert!(!is_error, "{text}");
     let list = latest_record(&session).ok_or("no record")?.list;
     let first = list.items().next().ok_or("no items")?;
-    assert_eq!(first.state, TodoStateName::Done);
+    assert_eq!(TodoStateName::of(&first.state), TodoStateName::Done);
     // A set's own argument is not an id, so the repair stays off the ops that take a list.
     let (is_error, text) = call(&tool, json!({"set": "- [ ] rebuilt"}));
     assert!(
@@ -1168,12 +1179,17 @@ fn a_done_naming_no_item_lands_on_the_running_one() -> TestResult {
     assert!(!is_error, "{text}");
     let list = store.list();
     let done = |name: &str| {
-        list.items()
-            .any(|item| item.label.as_str() == name && item.state == TodoStateName::Done)
+        list.items().any(|item| {
+            item.label.as_str() == name && TodoStateName::of(&item.state) == TodoStateName::Done
+        })
     };
     assert!(done("b") && !done("c"), "{:?}", states(&list));
     let mut two = list.clone();
-    two.for_each_mut(|item| item.state = TodoStateName::Running);
+    two.for_each_mut(|item| {
+        item.state = TodoState::Running {
+            by: AgentId::owner(),
+        }
+    });
     store.replace_with(|_| Some(two), "engine");
     let (is_error, text) = call(&tool, json!({"op": "done", "evidence": "`make` ok"}));
     assert!(
@@ -1219,6 +1235,11 @@ fn a_session_todos_ask_waits_for_the_reply_and_records_the_pick() -> TestResult 
         answer.map(|answer| (answer.address.to_string(), answer.option.clone())),
         Some(("user://2".to_owned(), Some("b".to_owned().try_into()?)))
     );
-    assert!(item.intent.iter().any(|url| url.to_string() == "user://2"));
+    assert!(
+        item.cites
+            .intent
+            .iter()
+            .any(|url| url.to_string() == "user://2")
+    );
     Ok(())
 }

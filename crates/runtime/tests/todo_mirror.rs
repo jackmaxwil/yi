@@ -19,9 +19,10 @@ use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, Attribution, StopReason, UserContent};
 use yi_types::model::{Model, ModelCost};
 use yi_types::plan::doc::{
-    AgentId, Check, Delegation, GoalText, SpawnSpec, TodoAddr, TodoLabel, TodoStateName,
+    AgentId, BlockedOn, Check, Delegation, GoalText, Plan, PlanId, PlanTier, ProbeCommand,
+    SpawnSpec, Todo, TodoAddr, TodoLabel, TodoState, TodoStateName,
 };
-use yi_types::todo::{PhaseName, TodoItem};
+use yi_types::todo::{PhaseName, TodoList};
 use yi_types::url::Url;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -142,7 +143,7 @@ fn mirrored(dir: &Scratch) -> Result<(AgentSession, Arc<TodoStore>, PlanEngine),
         TodoOp::Init {
             phases: vec![(
                 PhaseName::new("Tasks")?,
-                vec![TodoItem::from_text("first")?, TodoItem::from_text("gate")?],
+                vec![Todo::from_text("first")?, Todo::from_text("gate")?],
             )],
         },
         None,
@@ -173,7 +174,7 @@ fn ids(todos: &TodoStore) -> Vec<(String, String, TodoStateName)> {
                     .map(ToString::to_string)
                     .unwrap_or_default(),
                 item.label.to_string(),
-                item.state.clone(),
+                TodoStateName::of(&item.state),
             )
         })
         .collect()
@@ -205,7 +206,12 @@ fn a_plan_op_replaces_the_list_and_keeps_ids() -> TestResult {
         "gate keeps its id, the new label takes the next one"
     );
     let running = list.items().nth(2).ok_or("no third item")?;
-    assert_eq!(running.extra.get("by"), Some(&json!("child-0")));
+    assert_eq!(
+        running.state,
+        TodoState::Running {
+            by: AgentId::new("child-0")?
+        }
+    );
     assert_eq!(running.extra.get("plan"), Some(&json!(plan)));
     let record =
         latest_record(&session.store_handle()().ok_or("no store")?).ok_or("no todo record")?;
@@ -241,7 +247,7 @@ fn a_plan_op_racing_an_owner_row_write_never_undoes_it() -> TestResult {
     let state_of = |todos: &TodoStore| {
         let list = todos.list();
         let item = list.items().find(|item| item.label == first).cloned();
-        item.map(|item| item.state)
+        item.map(|item| TodoStateName::of(&item.state))
     };
     let lost = std::thread::scope(|scope| {
         scope.spawn(|| {
@@ -263,7 +269,7 @@ fn a_plan_op_racing_an_owner_row_write_never_undoes_it() -> TestResult {
         });
         let mut lost = 0;
         for _ in 0..100 {
-            let on = yi_types::todo::BlockedOn::User;
+            let on = yi_types::plan::doc::BlockedOn::User;
             let (label, note) = (first.clone(), "wait".to_owned());
             let blocked = todos
                 .apply(
@@ -478,7 +484,7 @@ fn a_list_whose_plan_another_engine_finished_is_released() -> TestResult {
     assert!(plan_of(&todos.list()).is_some(), "no op reached the mirror");
     todos.apply(
         TodoOp::Init {
-            phases: vec![(PhaseName::new("Next")?, vec![TodoItem::from_text("after")?])],
+            phases: vec![(PhaseName::new("Next")?, vec![Todo::from_text("after")?])],
         },
         None,
     )?;
@@ -639,7 +645,7 @@ fn an_owner_row_is_not_promoted_to_running_while_the_plan_is_open() -> TestResul
     let dir = Scratch::new("yi-todo-mirror-promote")?;
     let (_session, todos, _engine) = mirrored(&dir)?;
     let (label, note) = (TodoLabel::new("first")?, "wait".to_owned());
-    let on = yi_types::todo::BlockedOn::User;
+    let on = yi_types::plan::doc::BlockedOn::User;
     todos.apply(
         TodoOp::Block {
             label,
@@ -674,7 +680,7 @@ fn a_todo_set_or_init_under_a_plan_writes_the_owners_rows_beside_it() -> TestRes
     let (_session, todos, _engine) = mirrored(&dir)?;
     let plan_rows = |todos: &TodoStore| {
         let list = todos.list();
-        let rows: Vec<TodoItem> = list
+        let rows: Vec<Todo> = list
             .items()
             .filter(|item| item.extra.contains_key("plan"))
             .cloned()
@@ -688,10 +694,7 @@ fn a_todo_set_or_init_under_a_plan_writes_the_owners_rows_beside_it() -> TestRes
         },
         None,
     )?;
-    let phases = vec![(
-        PhaseName::new("Mine")?,
-        vec![TodoItem::from_text("verify it")?],
-    )];
+    let phases = vec![(PhaseName::new("Mine")?, vec![Todo::from_text("verify it")?])];
     todos.apply(TodoOp::Init { phases }, None)?;
     assert_eq!(plan_rows(&todos), before, "the plan's rows never move");
     let list = todos.list();
@@ -742,5 +745,54 @@ fn a_todo_done_on_an_inline_plan_item_is_carried_to_the_plan_tool() -> TestResul
         TodoStateName::Done,
         "{text}"
     );
+    Ok(())
+}
+
+/// Dies with the mirror flattening a blocker: a plan todo waiting on a child or on an external
+/// probe reads back from the session's list naming the agent and the probe command it waits on.
+#[test]
+fn a_mirrored_blocker_keeps_its_child_and_its_probe() -> TestResult {
+    let mut child = Todo::pending(TodoLabel::new("delegated")?);
+    child.state = TodoState::Blocked {
+        on: BlockedOn::Child(AgentId::new("child-0")?),
+        note: "running".to_owned(),
+    };
+    let mut ci = Todo::pending(TodoLabel::new("wait for ci")?);
+    ci.state = TodoState::Blocked {
+        on: BlockedOn::External {
+            probe: Some(ProbeCommand::new("gh run view 7")?),
+        },
+        note: "ci is red".to_owned(),
+    };
+    let plan = Plan::opening(
+        PlanId::new("ship")?,
+        GoalText::new("ship it")?,
+        PlanTier::Root,
+        vec![child.clone(), ci.clone()],
+    );
+    let list = yi_runtime::todo::mirror::projected(&plan, &TodoList::default());
+    let read: TodoList = serde_json::from_str(&serde_json::to_string(&list)?)?;
+    let states: Vec<&TodoState> = read.items().map(|item| &item.state).collect();
+    assert_eq!(states, [&child.state, &ci.state]);
+    Ok(())
+}
+
+/// Dies with every session todo record carrying the plan's delegation and note: the list is
+/// written whole per plan op, and those facts already live in the plan journal.
+#[test]
+fn a_mirrored_row_leaves_the_delegation_and_note_to_the_plan() -> TestResult {
+    let mut delegated = Todo::pending(TodoLabel::new("delegated")?);
+    delegated.delegation = spec("delegated", true)?.delegation;
+    delegated.note = Some(yi_types::plan::doc::Note::new("x".repeat(4000))?);
+    let plan = Plan::opening(
+        PlanId::new("ship")?,
+        GoalText::new("ship it")?,
+        PlanTier::Root,
+        vec![delegated.clone()],
+    );
+    let list = yi_runtime::todo::mirror::projected(&plan, &TodoList::default());
+    let row = list.items().next().ok_or("no mirrored row")?;
+    assert_eq!(row.label, delegated.label);
+    assert!(row.delegation.is_none() && row.note.is_none(), "{row:?}");
     Ok(())
 }

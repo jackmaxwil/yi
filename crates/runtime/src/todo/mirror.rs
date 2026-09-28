@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use yi_types::plan::doc::{self, Plan, PlanState, Todo, TodoState, TodoStateName};
+use yi_types::plan::doc::{self, Plan, PlanState, Todo};
 use yi_types::plan::ledger::PlanOpRecord;
-use yi_types::todo::{BlockedOn, PhaseName, TodoItem, TodoList, TodoPhase};
+use yi_types::todo::{PhaseName, TodoList, TodoPhase};
 
 use super::TodoStore;
 use crate::plan::ops::{Actor, Op, OpRequest, OpSink, PlanEngine};
@@ -44,36 +44,14 @@ impl OpSink for Mirror {
     }
 }
 
-fn blocked_on(on: &doc::BlockedOn) -> BlockedOn {
-    match on {
-        doc::BlockedOn::User => BlockedOn::User,
-        doc::BlockedOn::External { .. } => BlockedOn::External,
-        doc::BlockedOn::Child(_) => BlockedOn::Child,
-        doc::BlockedOn::Other(tag) => BlockedOn::Other(tag.clone()),
-    }
-}
-
-fn row(todo: &Todo, plan: &Plan, was: Option<&TodoItem>) -> TodoItem {
-    let mut item = TodoItem::pending(todo.label.clone());
+fn row(todo: &Todo, plan: &Plan, was: Option<&Todo>) -> Todo {
+    let mut item = todo.clone();
+    // Invariant: the plan journal holds these; the list rides every session record, per op.
+    item.delegation = None;
+    item.contract = None;
+    item.contract_hash = None;
+    item.note = None;
     item.id = was.and_then(|seen| seen.id.clone());
-    item.state = TodoStateName::of(&todo.state);
-    item.intent = todo.cites.intent.clone();
-    item.ask = todo.ask.clone();
-    match &todo.state {
-        TodoState::Blocked { on, note } => {
-            item.on = Some(blocked_on(on));
-            item.note = Some(note.clone());
-        }
-        TodoState::Failed { cause, .. } => item.note = Some(cause.clone()),
-        TodoState::Running { by } => {
-            item.extra
-                .insert("by".to_owned(), Value::String(by.as_str().to_owned()));
-        }
-        TodoState::Pending
-        | TodoState::Done { .. }
-        | TodoState::Abandoned
-        | TodoState::Other(_) => {}
-    }
     item.extra.insert(
         PLAN_KEY.to_owned(),
         Value::String(plan.id.as_str().to_owned()),
@@ -155,15 +133,11 @@ pub fn projected(plan: &Plan, current: &TodoList) -> TodoList {
                 .flat_map(|phase| &phase.items)
                 .find(|seen| seen.label == todo.label);
             let mut item = row(todo, plan, was);
-            item.children = todo
-                .children
-                .iter()
-                .map(|child| {
-                    let seen = was
-                        .and_then(|was| was.children.iter().find(|seen| seen.label == child.label));
-                    row(child, plan, seen)
-                })
-                .collect();
+            for child in &mut item.children {
+                let seen =
+                    was.and_then(|was| was.children.iter().find(|seen| seen.label == child.label));
+                *child = row(child, plan, seen);
+            }
             item
         })
         .collect();

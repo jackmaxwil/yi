@@ -3,9 +3,9 @@
 use serde_json::Value;
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content};
-use yi_types::plan::doc::TodoStateName;
+use yi_types::plan::doc::{BlockedOn, TodoState};
 use yi_types::subagent::{ChildExit, ChildFlag, ChildStatus, ChildUpdate, LoopSignal};
-use yi_types::todo::{BlockedOn, TodoRecord};
+use yi_types::todo::TodoRecord;
 
 /// A running member with no new record for this long is `stuck` with note `idle Ns`.
 pub const STUCK_IDLE_MS: u64 = 300_000;
@@ -179,10 +179,15 @@ fn asked_of(recent: &[Entry]) -> Option<(MemberState, String)> {
         _ => None,
     })?;
     let record = serde_json::from_value::<TodoRecord>(data.clone()).ok()?;
-    let asked = record
-        .list
-        .items()
-        .find(|item| item.state == TodoStateName::Blocked && item.on == Some(BlockedOn::User))?;
+    let asked = record.list.items().find(|item| {
+        matches!(
+            item.state,
+            TodoState::Blocked {
+                on: BlockedOn::User,
+                ..
+            }
+        )
+    })?;
     let (suffix, options) = (
         crate::todo::text::suffix(asked),
         crate::todo::text::asked(asked),

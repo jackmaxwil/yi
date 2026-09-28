@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use serde_json::Map;
 use yi_types::plan::doc::{
     AgentId, Plan, PlanIssue, PlanState, RetryCount, Todo, TodoLabel, TodoState, TodoStateName,
     terminal_durability,
@@ -342,21 +341,12 @@ pub(super) fn locate_step(
 
 pub(super) fn new_todo(spec: TodoSpec) -> Todo {
     Todo {
-        label: spec.label,
         after: spec.after,
-        state: TodoState::Pending,
         delegation: spec.delegation,
-        subplan: None,
-        retries: RetryCount::default(),
         children: spec.children,
-        note: None,
-        attempt: yi_types::plan::doc::AttemptId::FIRST,
-        refusals: 0,
         contract: spec.contract,
-        contract_hash: None,
         cites: spec.cites,
-        ask: None,
-        extra: Map::new(),
+        ..Todo::pending(spec.label)
     }
 }
 
@@ -414,6 +404,7 @@ pub(super) fn add_edge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Map;
     use yi_types::plan::doc::{AgentId, BlockedOn};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;

@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
-use yi_types::plan::doc::TodoLabel;
-use yi_types::todo::{BlockedOn, PhaseName, TodoItem};
+use yi_types::plan::doc::{BlockedOn, Todo, TodoLabel};
+use yi_types::todo::PhaseName;
 
 use super::{Op, Target, TodoError, TodoStore, mirror, text};
 
@@ -105,7 +105,7 @@ fn named(args: &Map<String, Value>) -> Option<String> {
 
 fn label(args: &Map<String, Value>, op: &'static str) -> Result<TodoLabel, ArgError> {
     let needle = named(args).ok_or(ArgError::Missing { op, field: "label" })?;
-    TodoItem::from_text(&needle)
+    Todo::from_text(&needle)
         .map(|item| item.label)
         .map_err(|cause| ArgError::Malformed {
             op,
@@ -121,7 +121,7 @@ fn item_list(args: &Map<String, Value>) -> Option<&Vec<Value>> {
         .and_then(Value::as_array)
 }
 
-fn items(args: &Map<String, Value>, op: &'static str) -> Result<Vec<TodoItem>, ArgError> {
+fn items(args: &Map<String, Value>, op: &'static str) -> Result<Vec<Todo>, ArgError> {
     let field = "items";
     let raw = item_list(args).ok_or(ArgError::Missing { op, field })?;
     raw.iter()
@@ -135,7 +135,7 @@ fn items(args: &Map<String, Value>, op: &'static str) -> Result<Vec<TodoItem>, A
                     cause: "every item is a string".to_owned(),
                 })
                 .and_then(|text| {
-                    TodoItem::from_text(text).map_err(|cause| ArgError::Malformed {
+                    Todo::from_text(text).map_err(|cause| ArgError::Malformed {
                         op,
                         field,
                         cause: cause.to_string(),
@@ -304,12 +304,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         },
         "block" => Op::Block {
             label: label(args, "block")?,
-            on: match string(args, "on").as_deref() {
-                None | Some("user") => BlockedOn::User,
-                Some("external") => BlockedOn::External,
-                Some("child") => BlockedOn::Child,
-                Some(other) => BlockedOn::Other(other.to_owned()),
-            },
+            on: BlockedOn::from_word(string(args, "on").as_deref()),
             note: need_string(args, "block", "note")?,
             ask: crate::plan::ask::parse(
                 args.get("options"),
@@ -379,7 +374,7 @@ impl TodoTool {
         } else {
             text::render(&applied.list)
         };
-        let gone: Vec<&TodoItem> = applied
+        let gone: Vec<&Todo> = applied
             .before
             .items()
             .filter(|item| !applied.list.items().any(|kept| kept.label == item.label))

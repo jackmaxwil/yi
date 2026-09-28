@@ -2,11 +2,9 @@ use std::sync::{Arc, Mutex};
 
 use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
 use yi_types::model::{ForcedTool, ToolChoice};
-use yi_types::plan::doc::TodoStateName;
+use yi_types::plan::doc::{BlockedOn, Todo, TodoState, TodoStateName};
 use yi_types::todo::PhaseName;
-use yi_types::todo::{
-    BlockedOn, TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord, TodoItem, TodoList,
-};
+use yi_types::todo::{TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord, TodoList};
 
 use super::{DEFAULT_PHASE, Op, TodoStore, text, tool};
 use crate::goal::StoreHandle;
@@ -142,17 +140,17 @@ pub fn stop_posture(list: &TodoList, children_running: bool) -> StopPosture {
     let mut open = false;
     let mut cadence = false;
     for item in list.items() {
-        match item.state {
-            TodoStateName::Blocked => match item.on {
-                Some(BlockedOn::User) => return StopPosture::Ask,
-                Some(BlockedOn::Child) => return StopPosture::Quiet,
-                Some(BlockedOn::External) | Some(BlockedOn::Other(_)) | None => cadence = true,
+        match &item.state {
+            TodoState::Blocked { on, .. } => match on {
+                BlockedOn::User => return StopPosture::Ask,
+                BlockedOn::Child(_) => return StopPosture::Quiet,
+                BlockedOn::External { .. } | BlockedOn::Other(_) => cadence = true,
             },
-            TodoStateName::Pending | TodoStateName::Running => open = true,
-            TodoStateName::Done
-            | TodoStateName::Failed
-            | TodoStateName::Abandoned
-            | TodoStateName::Other(_) => {}
+            TodoState::Pending | TodoState::Running { .. } => open = true,
+            TodoState::Done { .. }
+            | TodoState::Failed { .. }
+            | TodoState::Abandoned
+            | TodoState::Other(_) => {}
         }
     }
     if open {
@@ -176,16 +174,17 @@ pub fn custom(custom_type: &str, text: String, display: bool) -> AgentMessage {
 
 fn open_moves(list: &TodoList) -> String {
     let mut lines = Vec::new();
-    for item in list.items().filter(|item| !item.is_closed()) {
+    for item in list.items().filter(|item| !item.state.is_terminal()) {
         let name = text::name(item);
         let moves = match item.state {
-            TodoStateName::Running => format!(
+            TodoState::Running { .. } => format!(
                 "done {name} evidence=`<command>` <output line> · block {name} on user note=<what would unblock it> · drop {name} reason=<why>"
             ),
-            TodoStateName::Pending => format!("start {name} · drop {name} reason=<why>"),
+            TodoState::Pending => format!("start {name} · drop {name} reason=<why>"),
             _ => format!("unblock {name} · drop {name} reason=<why>"),
         };
-        lines.push(format!("- [{}] {}: {moves}", item.state, item.label));
+        let state = TodoStateName::of(&item.state);
+        lines.push(format!("- [{state}] {}: {moves}", item.label));
     }
     lines.join("\n")
 }
@@ -211,9 +210,9 @@ pub fn first_list_text() -> String {
 /// A numbered request is the list: one pending item per enumerated line, cut to the label
 /// max with the line as its note, under the default phase.
 pub fn seed(todos: &TodoStore, prompt: &str) -> bool {
-    let mut items: Vec<TodoItem> = Vec::new();
+    let mut items: Vec<Todo> = Vec::new();
     for line in prompt.lines().filter_map(enumerated) {
-        let Ok(item) = TodoItem::from_text(line) else {
+        let Ok(item) = Todo::from_text(line) else {
             continue;
         };
         if !items.iter().any(|seen| seen.label == item.label) {
