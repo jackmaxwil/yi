@@ -15,7 +15,7 @@ use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::plan::PlanVersion;
 use yi_types::plan::doc::{
-    GoalText, Plan, PlanId, PlanTier, RetryCount, Todo, TodoLabel, TodoState, TouchCount,
+    GoalText, Plan, PlanId, PlanTier, Todo, TodoLabel, TodoState, TouchCount,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -36,19 +36,8 @@ fn memory_store() -> yi_session::SharedSession {
 
 fn todo(label: &str, state: TodoState) -> Result<Todo, Box<dyn Error>> {
     Ok(Todo {
-        label: TodoLabel::new(label)?,
-        after: Vec::new(),
         state,
-        delegation: None,
-        subplan: None,
-        retries: RetryCount::default(),
-        children: Vec::new(),
-        note: None,
-        attempt: yi_types::plan::doc::AttemptId::FIRST,
-        refusals: 0,
-        contract: None,
-        contract_hash: None,
-        extra: serde_json::Map::new(),
+        ..Todo::pending(TodoLabel::new(label)?)
     })
 }
 
@@ -331,7 +320,7 @@ fn plan_get_serializes_the_document_with_ready_and_finished() -> TestResult {
     Ok(())
 }
 
-struct NoChildren;
+pub(crate) struct NoChildren;
 
 impl Delegate for NoChildren {
     fn spawn(
@@ -410,6 +399,7 @@ fn delegated(label: &str) -> Result<yi_runtime::plan::ops::TodoSpec, Box<dyn Err
         }),
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     })
 }
 
@@ -928,6 +918,7 @@ fn an_engine_never_resolves_or_conflicts_over_another_sessions_plan() -> TestRes
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         })
     };
@@ -984,6 +975,7 @@ fn a_lost_ledger_write_does_not_orphan_the_plan_it_opened() -> TestResult {
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         })
     };

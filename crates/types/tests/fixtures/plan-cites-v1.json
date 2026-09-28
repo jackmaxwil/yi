@@ -1,0 +1,42 @@
+{
+  "constraints": [],
+  "examples": [],
+  "format": 2,
+  "goal": "replace the lexer",
+  "intent": null,
+  "journal_digest": "sha256:805a7a1fc4c95da9ff012c3a76bfe10e196c0a232adb9a1abc6d4f8576239061",
+  "journal_seq": 1,
+  "placement": null,
+  "plan": "replace-the-lexer",
+  "shape": null,
+  "state": "active",
+  "tier": "root",
+  "todos": [
+    {
+      "attempt": 1,
+      "intent": [
+        "user://2"
+      ],
+      "label": "write the new lexer",
+      "refusals": 0,
+      "state": "pending"
+    },
+    {
+      "attempt": 1,
+      "intent": [
+        "user://2"
+      ],
+      "label": "delete the old lexer",
+      "refusals": 0,
+      "state": "pending",
+      "waived": [
+        {
+          "address": "user://1",
+          "reason": "the second ask replaces the first"
+        }
+      ]
+    }
+  ],
+  "touched": 1,
+  "version": 1
+}

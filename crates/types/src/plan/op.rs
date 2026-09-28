@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use super::canonical::ArtifactRef;
 use super::doc::{
-    AgentId, BlockedOn, Delegation, GoalText, Isolation, Todo, TodoLabel, TodoStateName,
+    AgentId, BlockedOn, Cites, Delegation, GoalText, Isolation, Todo, TodoLabel, TodoStateName,
 };
 use super::ledger::{AttemptId, EffectId};
 use crate::url::Url;
@@ -125,6 +125,8 @@ pub struct TodoSpec {
     pub contract: Option<super::contract::Contract>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Todo>,
+    #[serde(flatten)]
+    pub cites: Cites,
 }
 
 /// The fields of a [`TodoSpec`] before the declaration rule is applied.
@@ -139,16 +141,21 @@ pub struct TodoSpecRepr {
     pub contract: Option<super::contract::Contract>,
     #[serde(default)]
     pub children: Vec<Todo>,
+    #[serde(flatten)]
+    pub cites: Cites,
 }
 
 impl TryFrom<TodoSpecRepr> for TodoSpec {
     type Error = SpecError;
 
     fn try_from(repr: TodoSpecRepr) -> Result<Self, Self::Error> {
-        let worktree = repr
-            .delegation
-            .as_ref()
-            .is_some_and(|delegation| delegation.spec.isolation == Some(Isolation::Worktree));
+        let worktree = repr.delegation.as_ref().is_some_and(|delegation| {
+            delegation
+                .spec
+                .isolation
+                .as_ref()
+                .is_some_and(Isolation::lanes)
+        });
         if worktree && repr.contract.is_none() {
             return Err(SpecError::UncontractedWorktree { label: repr.label });
         }
@@ -158,6 +165,7 @@ impl TryFrom<TodoSpecRepr> for TodoSpec {
             delegation: repr.delegation,
             contract: repr.contract,
             children: repr.children,
+            cites: repr.cites,
         })
     }
 }
@@ -220,9 +228,13 @@ pub enum Op {
         label: TodoLabel,
         on: BlockedOn,
         note: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ask: Option<Box<super::ask::Ask>>,
     },
     Unblock {
         label: TodoLabel,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answer: Option<Box<super::ask::Answer>>,
     },
     Reorder {
         labels: Vec<TodoLabel>,
@@ -314,7 +326,7 @@ impl Op {
         match self {
             Self::Drop { label, .. }
             | Self::Block { label, .. }
-            | Self::Unblock { label }
+            | Self::Unblock { label, .. }
             | Self::Start { label }
             | Self::Done { label, .. }
             | Self::Fail { label, .. }

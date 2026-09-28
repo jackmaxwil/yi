@@ -826,6 +826,29 @@ mod tests {
     }
 
     #[test]
+    fn a_torn_tail_behind_a_cut_short_line_keeps_every_whole_record()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = temp("torn-behind");
+        let store = Store::new(dir.join("store"));
+        store.save(note("alpha", "hook"))?;
+        let journal = store.dir().join("ops.jsonl");
+        let first = fs::read_to_string(&journal)?;
+        store.save(note("beta", "hook"))?;
+        let whole = fs::read_to_string(&journal)?;
+        let second = whole
+            .strip_prefix(&first)
+            .ok_or("the journal was rewritten")?;
+        let cut: String = first.chars().take(24).collect();
+        fs::write(&journal, format!("{first}{cut}\n{second}{{\"at\":1,\"na"))?;
+        store.save(note("gamma", "hook"))?;
+        let replay = store.journal().replay()?;
+        let names: Vec<&str> = replay.records.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["alpha", "beta", "gamma"]);
+        assert_eq!(replay.broken, Some(2));
+        Ok(())
+    }
+
+    #[test]
     fn a_hand_edited_index_line_survives_reconcile() {
         let dir = temp("hand");
         let store = Store::new(dir.join("store"));
