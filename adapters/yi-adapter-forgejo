@@ -54,7 +54,8 @@ def heads(host, repo, seen):
             "sha": pr["head"]["sha"],
             "branch": pr["head"]["ref"],
             "title": pr["title"],
-            "draft": pr["title"].upper().startswith(("WIP:", "[WIP]")),
+            # The draft marker `just pr open` writes and the title rule accepts (D288).
+            "draft": pr["title"].startswith("WIP: "),
         }
         print(json.dumps({"id": key, "at": int(time.time() * 1000), "data": data}), flush=True)
 
