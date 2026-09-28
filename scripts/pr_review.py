@@ -331,20 +331,6 @@ def yi_bin():
         (str(p) for p in (ROOT / "target/dist/yi", ROOT / "target/release/yi", ROOT / "target/debug/yi") if p.exists()), "yi")
 
 
-KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "openrouter": "OPENROUTER_API_KEY", "google": "GEMINI_API_KEY"}
-
-
-def key_env():
-    """`yi ask` reads a provider key from the environment or `yi login`'s store, not from
-    config.json's `keys`, which only the TUI applies; hand those over the same way it does,
-    as environment, never argv."""
-    try:
-        keys = json.loads((pathlib.Path.home() / ".yi/config.json").read_text()).get("keys") or {}
-    except (OSError, json.JSONDecodeError):
-        keys = {}
-    return {KEY_ENV[p]: k for p, k in keys.items() if p in KEY_ENV and not os.environ.get(KEY_ENV[p])}
-
-
 class Unanswered(Exception):
     """A model call that did not answer. A round missing a lens is not a clean round."""
 
@@ -360,10 +346,9 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900):
     command += ["--auto"] if write else ["--confirm"]
     if os.environ.get("YI_REVIEW_MODEL"):
         command += ["--model", os.environ["YI_REVIEW_MODEL"]]
-    env = {**os.environ, **key_env()}
     for _ in range(2):
         out = subprocess.run(command + [prompt], stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                             timeout=deadline + 120, check=False, env=env)
+                             timeout=deadline + 120, check=False)
         if out.returncode == 0:
             return json.loads(out.stdout)
         if out.returncode != 3:
