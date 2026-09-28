@@ -273,6 +273,7 @@ edited by hand.
 - [D290](adr/d290.md) - the catalog lists home-root skills only by name
 - [D299](adr/d299.md) - the last word forces no tool choice (amends D235)
 - [D300](adr/d300.md) - a new user is set up by `yi setup`, offered once on the first terminal launch
+- [D301](adr/d301.md) - the classifier may approve an auto-mode ask, and settles one nobody answers,...
 - [D305](adr/d305.md) - a bash call's `wait` backgrounds its command, and `timeout_secs` bounds a...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

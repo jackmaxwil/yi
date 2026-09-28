@@ -28,6 +28,7 @@ const INSTRUCTIONS: &str =
 pub type Record = Arc<dyn Fn(ClassifyRecord) + Send + Sync>;
 pub type Deliver = Arc<dyn Fn(AgentMessage) + Send + Sync>;
 
+#[derive(Clone)]
 pub struct Sidecar {
     pub url: String,
     pub key: Option<String>,
@@ -40,6 +41,39 @@ pub struct Sidecar {
 struct Breaker {
     failures: u32,
     paused_until: Option<Instant>,
+}
+
+fn paused(breaker: &Mutex<Breaker>) -> bool {
+    let Ok(mut breaker) = breaker.lock() else {
+        return true;
+    };
+    match breaker.paused_until {
+        Some(until) if Instant::now() < until => true,
+        Some(_) => {
+            breaker.paused_until = None;
+            false
+        }
+        None => false,
+    }
+}
+
+fn fail(breaker: &Mutex<Breaker>) -> bool {
+    let Ok(mut breaker) = breaker.lock() else {
+        return false;
+    };
+    breaker.failures = breaker.failures.saturating_add(1);
+    if breaker.failures < TRIP_AFTER {
+        return false;
+    }
+    breaker.failures = 0;
+    breaker.paused_until = Instant::now().checked_add(PAUSE);
+    true
+}
+
+fn succeed(breaker: &Mutex<Breaker>) {
+    if let Ok(mut breaker) = breaker.lock() {
+        breaker.failures = 0;
+    }
 }
 
 pub struct SkillClassifier {
@@ -80,7 +114,7 @@ impl SkillClassifier {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        if self.candidates.is_empty() || self.paused() {
+        if self.candidates.is_empty() || paused(&self.breaker) {
             return;
         }
         let this = Arc::clone(self);
@@ -141,7 +175,7 @@ impl SkillClassifier {
         let response = match outcome {
             Ok(response) => response,
             Err(error) => {
-                if self.fail() {
+                if fail(&self.breaker) {
                     (self.deliver)(self.notice(&error));
                 }
                 record.error = Some(error);
@@ -149,7 +183,7 @@ impl SkillClassifier {
                 return;
             }
         };
-        self.succeed();
+        succeed(&self.breaker);
         let answer = response.answers.get(QUESTION);
         record.answer = answer.and_then(|answer| answer.choice.clone());
         record.confidence = answer.and_then(|answer| answer.answer_confidence);
@@ -170,39 +204,6 @@ impl SkillClassifier {
         (self.record)(record);
     }
 
-    fn paused(&self) -> bool {
-        let Ok(mut breaker) = self.breaker.lock() else {
-            return true;
-        };
-        match breaker.paused_until {
-            Some(until) if Instant::now() < until => true,
-            Some(_) => {
-                breaker.paused_until = None;
-                false
-            }
-            None => false,
-        }
-    }
-
-    fn fail(&self) -> bool {
-        let Ok(mut breaker) = self.breaker.lock() else {
-            return false;
-        };
-        breaker.failures = breaker.failures.saturating_add(1);
-        if breaker.failures < TRIP_AFTER {
-            return false;
-        }
-        breaker.failures = 0;
-        breaker.paused_until = Instant::now().checked_add(PAUSE);
-        true
-    }
-
-    fn succeed(&self) {
-        if let Ok(mut breaker) = self.breaker.lock() {
-            breaker.failures = 0;
-        }
-    }
-
     fn notice(&self, error: &str) -> AgentMessage {
         AgentMessage::Custom {
             custom_type: NOTICE_TYPE.to_owned(),
@@ -215,6 +216,167 @@ impl SkillClassifier {
             details: None,
             timestamp: yi_session::now_ms(),
         }
+    }
+}
+
+const SAFE: &str = "safe";
+const SAFE_INSTRUCTIONS: &str = "Is it safe for a coding agent to run this without asking the user? Safe means it cannot destroy work a checkpoint would not restore, leak a secret, or act outside the project.";
+const DEFAULT_ALLOW_AT: f64 = 0.9;
+const DEFAULT_ALLOW_DESTRUCTIVE_AT: f64 = 0.98;
+const DEFAULT_ASK_AT: f64 = 0.05;
+const DEFAULT_ASK_TIMEOUT_SECS: u64 = 120;
+
+pub struct Thresholds {
+    pub allow_at: f64,
+    pub allow_destructive_at: f64,
+    pub ask_at: f64,
+}
+
+pub struct Call<'a> {
+    pub tool: &'a str,
+    pub display: &'a str,
+    pub command: Option<&'a str>,
+    pub reason: &'a str,
+    pub cwd: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Judgement {
+    Allow(f64),
+    AskUser(f64),
+    Undecided,
+}
+
+pub struct Approver {
+    sidecar: Sidecar,
+    thresholds: Thresholds,
+    ask_timeout: Option<Duration>,
+    breaker: Mutex<Breaker>,
+    record: Record,
+}
+
+impl Approver {
+    pub fn new(
+        sidecar: Sidecar,
+        thresholds: Thresholds,
+        ask_timeout: Option<Duration>,
+        record: Record,
+    ) -> Self {
+        Self {
+            sidecar,
+            thresholds,
+            ask_timeout,
+            breaker: Mutex::new(Breaker::default()),
+            record,
+        }
+    }
+
+    pub fn ask_timeout(&self) -> Option<Duration> {
+        self.ask_timeout
+    }
+
+    pub fn judge(&self, call: &Call<'_>) -> Judgement {
+        if paused(&self.breaker) {
+            return Judgement::Undecided;
+        }
+        let class = class(call.command);
+        let state = [
+            ("tool", call.tool),
+            ("command", call.display),
+            ("cwd", call.cwd),
+            (
+                "why Yi asks",
+                call.reason
+                    .strip_suffix(call.display)
+                    .and_then(|reason| reason.strip_suffix(": "))
+                    .unwrap_or(call.reason),
+            ),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), serde_json::json!(value)))
+        .collect();
+        let request = DecisionRequest {
+            state,
+            questions: [(
+                SAFE.to_owned(),
+                Question::Noul {
+                    instructions: SAFE_INSTRUCTIONS.to_owned(),
+                },
+            )]
+            .into(),
+            model: Some(self.sidecar.model.clone()),
+        };
+        let started = Instant::now();
+        let outcome = yi_ai::decide::decide(
+            &self.sidecar.url,
+            self.sidecar.key.as_deref(),
+            self.sidecar.timeout,
+            &request,
+        );
+        let mut record = ClassifyRecord {
+            consumer: "approve".to_owned(),
+            message: message_id(call.display),
+            answer: None,
+            confidence: None,
+            model: None,
+            latency_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            fired: false,
+            error: None,
+            extra: [("verdictClass".to_owned(), serde_json::json!(class))].into(),
+        };
+        let safe = match outcome {
+            Ok(response) => {
+                succeed(&self.breaker);
+                record.model = response.routing.map(|routing| routing.model);
+                response.answers.get(SAFE).and_then(|answer| answer.noul)
+            }
+            Err(error) => {
+                fail(&self.breaker);
+                record.error = Some(error);
+                None
+            }
+        };
+        let allow_at = if class != "ordinary" {
+            self.thresholds.allow_destructive_at
+        } else {
+            self.thresholds.allow_at
+        };
+        let judgement = match safe {
+            Some(p) if p >= allow_at => Judgement::Allow(p),
+            Some(p) if p <= self.thresholds.ask_at => Judgement::AskUser(p),
+            _ => Judgement::Undecided,
+        };
+        record.confidence = safe;
+        record.answer = Some(
+            match judgement {
+                Judgement::Allow(_) => "allow",
+                Judgement::AskUser(_) => "ask",
+                Judgement::Undecided => "undecided",
+            }
+            .to_owned(),
+        );
+        record.fired = matches!(judgement, Judgement::Allow(_));
+        (self.record)(record);
+        judgement
+    }
+}
+
+fn class(command: Option<&str>) -> &'static str {
+    let Some(yi_permission::Parsed::Segments(segments)) = command.map(yi_permission::parse) else {
+        return "unproven";
+    };
+    let classes: Vec<_> = segments
+        .iter()
+        .map(|argv| yi_permission::classify(argv))
+        .collect();
+    if classes.contains(&yi_permission::Class::Destructive) {
+        "destructive"
+    } else if classes.contains(&yi_permission::Class::Egress) {
+        "egress"
+    } else if segments.iter().flatten().any(|word| word.starts_with('#')) {
+        "unproven"
+    } else {
+        "ordinary"
     }
 }
 
@@ -258,23 +420,27 @@ pub fn probe(url: &str, checkpoint: &str) -> Result<(), String> {
     }
 }
 
-pub fn attach(
-    session: &AgentSession,
-    cwd: &Path,
-    home: &Path,
-    config: &UserConfig,
-) -> Result<(), String> {
+pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConfig) -> Vec<String> {
     let Some(model) = config
         .models
         .as_ref()
         .and_then(|roles| roles.classifier.clone())
     else {
-        return Ok(());
-    };
-    let Some(rules) = session.rules_engine() else {
-        return Ok(());
+        return Vec::new();
     };
     let block = config.classifier.clone().unwrap_or_default();
+    let number = |value: &Option<serde_json::Number>, default: f64| {
+        value
+            .as_ref()
+            .and_then(serde_json::Number::as_f64)
+            .unwrap_or(default)
+    };
+    let thresholds = Thresholds {
+        allow_at: number(&block.allow_at, DEFAULT_ALLOW_AT),
+        allow_destructive_at: number(&block.allow_destructive_at, DEFAULT_ALLOW_DESTRUCTIVE_AT),
+        ask_at: number(&block.ask_at, DEFAULT_ASK_AT),
+    };
+    let approve = block.approve == Some(true);
     let sidecar = Sidecar {
         url: block.url.unwrap_or_else(|| DEFAULT_URL.to_owned()),
         key: yi_ai::auth::api_key("laya").map(|secret| secret.expose().to_owned()),
@@ -285,23 +451,49 @@ pub fn attach(
             .as_ref()
             .and_then(serde_json::Number::as_f64),
     };
+    let mut warnings = Vec::new();
+    if approve {
+        match (&sidecar.key, session.permission_broker()) {
+            (None, _) => warnings.push(
+                "classifier.approve is on but LAYA_API_KEY is not set, so the classifier approves nothing"
+                    .to_owned(),
+            ),
+            (Some(_), Some(broker)) => broker.set_approver(Arc::new(Approver::new(
+                sidecar.clone(),
+                thresholds,
+                match block.ask_timeout_secs {
+                    Some(0) => None,
+                    secs => Some(Duration::from_secs(secs.unwrap_or(DEFAULT_ASK_TIMEOUT_SECS))),
+                },
+                journal(session),
+            ))),
+            (Some(_), None) => {}
+        }
+    }
+    let Some(rules) = session.rules_engine() else {
+        return warnings;
+    };
     let skills = crate::skills::discover(cwd, home)
         .into_iter()
         .filter(|skill| skill.frontmatter.contains_key("trigger"))
         .map(|skill| (skill.name, skill.description))
         .collect();
+    let queue = session.deliver_hook();
+    let deliver: Deliver = Arc::new(move |message| queue(message, false));
+    match SkillClassifier::new(sidecar, skills, journal(session), deliver) {
+        Ok(classifier) => rules.set_classifier(Arc::new(classifier)),
+        Err(why) => warnings.push(why),
+    }
+    warnings
+}
+
+fn journal(session: &AgentSession) -> Record {
     let store = session.store_handle();
-    let record: Record = Arc::new(move |record| {
+    Arc::new(move |record| {
         let (Some(store), Ok(data)) = (store(), serde_json::to_value(&record)) else {
             return;
         };
         let _journaled =
             yi_session::lock_session(&store).append_custom("main", CLASSIFY_ENTRY, Some(data));
-    });
-    let queue = session.deliver_hook();
-    let deliver: Deliver = Arc::new(move |message| queue(message, false));
-    rules.set_classifier(Arc::new(SkillClassifier::new(
-        sidecar, skills, record, deliver,
-    )?));
-    Ok(())
+    })
 }
