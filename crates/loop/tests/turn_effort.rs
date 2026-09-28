@@ -254,6 +254,7 @@ impl yi_loop::run::StreamFn for Recorder {
     ) -> Receiver<AssistantMessageEvent> {
         if let Ok(mut seen) = self.0.lock() {
             seen.push(context.messages.clone());
+            seen.push(context.transient.clone());
         }
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
         let message = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
@@ -265,8 +266,8 @@ impl yi_loop::run::StreamFn for Recorder {
     }
 }
 
-/// The per-request tail (the environment block) trails the request and never enters the
-/// history; it used to be appended to a full copy of the history on every request.
+/// The per-request tail (the environment block) rides the request's `transient`, never its
+/// history: the recorder sees the history and the tail as two lists per request.
 #[tokio::test]
 async fn the_request_tail_trails_each_request_and_stays_out_of_the_history() {
     let text = |value: &str| {
@@ -286,7 +287,7 @@ async fn the_request_tail_trails_each_request_and_stays_out_of_the_history() {
     let prompt = vec![text("hi")];
     run_loop(&mut context, prompt, &config, &signal, &mut emit, &stream).await;
     let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
-    assert_eq!(seen, vec![vec![text("hi"), text("tail")]]);
+    assert_eq!(seen, vec![vec![text("hi")], vec![text("tail")]]);
     assert!(
         !context.messages.contains(&text("tail")),
         "{:?}",

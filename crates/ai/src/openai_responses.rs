@@ -4,11 +4,12 @@ use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
 use yi_types::model::{LlmContext, Model, ToolChoice, ToolDef};
 
+use crate::cache::{CachePlan, Dialect, Purpose, Route, encode};
 use crate::catalog::calculate_cost;
 use crate::compat::compat_bool;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
 use crate::openai::{OpenAiOptions, mapped_effort};
-use crate::transform::transform_messages;
+use crate::transform::{system_text, transform_messages};
 
 pub fn normalize_responses_tool_call_id(id: &str) -> String {
     id.chars()
@@ -214,11 +215,6 @@ fn freeform_names(context: &LlmContext) -> std::collections::BTreeSet<String> {
 
 fn convert_input(model: &Model, context: &LlmContext) -> Vec<Value> {
     let _span = yi_types::trace::span("ai.convert_messages");
-    let transformed = transform_messages(
-        &context.messages,
-        model,
-        Some(normalize_responses_tool_call_id),
-    );
     let mut input = Vec::new();
     // The `openai-codex` backend takes the system text as top-level `instructions`;
     // sending it as an input message too would bill it twice.
@@ -229,11 +225,22 @@ fn convert_input(model: &Model, context: &LlmContext) -> Vec<Value> {
         } else {
             "system"
         };
-        input.push(json!({"role": role, "content": context.system_prompt}));
+        input.push(json!({"role": role, "content": system_text(&context.system_prompt)}));
     }
     let vision = model.input.iter().any(|kind| kind == "image");
     let freeform = freeform_names(context);
-    for message in &transformed {
+    // History first, the per-request facts last; this wire's dialect spells no mark (D295).
+    let history = transform_messages(
+        &context.messages,
+        model,
+        Some(normalize_responses_tool_call_id),
+    );
+    let transient = transform_messages(
+        &context.transient,
+        model,
+        Some(normalize_responses_tool_call_id),
+    );
+    for message in history.iter().chain(&transient) {
         match message {
             AgentMessage::User { content, .. } => {
                 if let Some(item) = convert_user(content) {
@@ -348,8 +355,15 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         "store": false,
     });
     if model.provider == "openai-codex" {
-        params["instructions"] = json!(context.system_prompt);
+        params["instructions"] = json!(system_text(&context.system_prompt));
     }
+    // Every request carries a plan; this wire spells none of it (design §11).
+    let plan = CachePlan::build(
+        &Route::of(model, false),
+        &context.messages,
+        Purpose::of(context),
+    );
+    encode(&plan, Dialect::Automatic, &mut params, &[]);
     if let Some(session_id) = &options.session_id {
         params["prompt_cache_key"] = json!(session_id);
     }

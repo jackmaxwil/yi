@@ -41,6 +41,8 @@ fn context() -> LlmContext {
             UserContent::Text("hi".to_owned()),
             0,
         )],
+        transient: Vec::new(),
+        schema: None,
         tools: Some(vec![ToolDef {
             name: "bash".to_owned(),
             description: "run".to_owned(),
@@ -646,6 +648,29 @@ fn a_tool_result_image_is_an_input_image_in_the_output() -> TestResult {
             {"type": "input_text", "text": "attached"},
             {"type": "input_image", "detail": "auto", "image_url": "data:image/png;base64,iVBORw0KGgo="},
         ]})
+    );
+    Ok(())
+}
+
+/// The system prompt's block separator reaches the Responses wire as a paragraph break, in
+/// the `input` system message and in codex's top-level `instructions`, never as a raw
+/// `\u{1d}` (#743, the #771 follow-up).
+#[test]
+fn the_responses_wire_carries_no_raw_block_separator() -> TestResult {
+    use yi_types::model::SYSTEM_BLOCK_SEPARATOR;
+    let mut ctx = context();
+    ctx.system_prompt = ["identity", "mode", "yard"].join(SYSTEM_BLOCK_SEPARATOR);
+    let params = build_params(&model(true), &ctx, &OpenAiOptions::default());
+    assert_eq!(params["input"][0]["content"], "identity\n\nmode\n\nyard");
+    let codex = Model {
+        provider: "openai-codex".to_owned(),
+        ..model(true)
+    };
+    let params = build_params(&codex, &ctx, &OpenAiOptions::default());
+    assert_eq!(params["instructions"], "identity\n\nmode\n\nyard");
+    assert!(
+        !params.to_string().contains(SYSTEM_BLOCK_SEPARATOR),
+        "{params}"
     );
     Ok(())
 }

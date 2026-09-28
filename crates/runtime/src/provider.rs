@@ -249,7 +249,6 @@ impl ProviderStream {
             ProviderApi::AnthropicMessages => {
                 let options = AnthropicOptions {
                     thinking: anthropic_thinking(model, effort),
-                    cache: true,
                     cache_1h: self.long_cache,
                     proxy: self.proxy.clone(),
                     stop: Some(signal.cut_flag()),

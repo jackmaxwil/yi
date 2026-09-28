@@ -2,6 +2,7 @@
 
 pub mod anthropic;
 pub mod auth;
+pub mod cache;
 pub mod catalog;
 mod compat;
 pub mod faux;

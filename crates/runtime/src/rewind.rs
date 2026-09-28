@@ -100,6 +100,8 @@ pub async fn summarize_branch(session: &AgentSession, stub: BranchStub) {
             UserContent::Text(yi_context::serialize_conversation(&stub.messages)),
             0,
         )],
+        transient: Vec::new(),
+        schema: None,
         tools: None,
         tool_choice: None,
     };

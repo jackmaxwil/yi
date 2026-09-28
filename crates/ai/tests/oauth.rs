@@ -77,6 +77,8 @@ fn context() -> LlmContext {
     LlmContext {
         system_prompt: String::new(),
         messages: vec![],
+        transient: Vec::new(),
+        schema: None,
         tools: None,
         tool_choice: None,
     }
