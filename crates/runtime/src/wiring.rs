@@ -12,6 +12,16 @@ use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOption
 /// and shares the universal cached prefix with its parent.
 fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
     Arc::new(move |build: ChildBuild<'_>| {
+        if let Some(reader) = build.reader.clone() {
+            let cwd = build
+                .cwd
+                .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
+            let (provider, broker) = (Arc::clone(&wiring.provider), wiring.broker.clone());
+            let tools = (wiring.tools)();
+            return Ok(crate::subagent::reader::session(
+                provider, build, &reader, tools, cwd, broker,
+            ));
+        }
         let mut child = AgentSession::new(
             crate::session::SessionConfig {
                 system_prompt: wiring.system_prompt.clone(),
@@ -291,6 +301,7 @@ fn wire_fetch(
         resolver = resolver.with_mcp_read(read);
     }
     let resolver = Arc::new(resolver);
+    host.set_resolver(Arc::clone(&resolver));
     let handler = Arc::clone(&resolver);
     registry.register("fetch", move |payload| {
         let resolver = Arc::clone(&handler);

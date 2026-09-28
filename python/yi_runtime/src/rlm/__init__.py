@@ -557,12 +557,42 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     ``deadline_s`` and ``tokens`` are the child's lease, drawn from this session's own: an
     ask past what is left here is refused with both numbers, never clamped. ``parent_close``
     is ``"terminate"`` (default, 30 s grace) or ``"request_cancel"``; work is kept either way.
+    ``role="reader"`` makes a question-child: a short reader prompt instead of this session's,
+    ``tools`` from ``["read", "grep"]`` (both by default, ``[]`` for one request), at most
+    ``turns`` requests (3; the last has tools off), writes walled off, and no kernel. It stands
+    outside the child cap and sends no finish notice: read it with ``result``. ``partition`` is
+    a list of URLs (``local://path#L1-40@TAG``, ``history://…``, ``plan://…``) resolved now and
+    inlined into its brief as numbered, fenced lines, for any role; a kernel value rides
+    ``context_keys``.
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
     kwargs = _resolve_context(kwargs)
     payload = await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs})
     return _spawn_handle_from_payload(payload)
+
+
+@_public
+async def ask(
+    question: str,
+    partition: "list[str] | tuple[str, ...]" = (),
+    *,
+    schema: dict[str, Any] | None = None,
+    timeout: float = 540.0,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Ask one question-child and return its answer; it is reaped either way.
+
+        answers = await asyncio.gather(*(
+            rlm.ask("Can this function panic? Quote the line.", [url], schema=PANIC) for url in urls))
+
+    ``kwargs`` are ``run``'s (``tools``, ``turns``, ``model``, ``thinking``, ``context_keys``).
+    """
+    handle = await run(question, role="reader", partition=list(partition), **kwargs)
+    try:
+        return await handle.result(schema=schema, timeout=timeout)
+    finally:
+        await delete_subagent(handle)
 
 
 @_public

@@ -14,6 +14,7 @@ use crate::session::AgentSession;
 
 mod build;
 pub mod models;
+pub mod reader;
 mod record;
 mod runs;
 pub(crate) mod service;
@@ -169,6 +170,7 @@ pub struct ChildBuild<'a> {
     /// The child's lease: its own clock and the tokens its own children may draw on.
     pub deadline: Option<std::time::Duration>,
     pub tokens: Option<u64>,
+    pub reader: Option<reader::Reader>,
 }
 
 pub type ChildFactory = dyn Fn(ChildBuild<'_>) -> Result<AgentSession, String> + Send + Sync;
@@ -228,6 +230,7 @@ pub struct SubagentHost {
     pub(crate) stuck: Mutex<std::collections::HashSet<String>>,
     /// The board a long reply is kept on: the wiring's, set once after construction (D242).
     pub(crate) family: std::sync::OnceLock<PathBuf>,
+    pub(crate) resolver: std::sync::OnceLock<Arc<crate::fetch::Resolver>>,
 }
 
 impl SubagentHost {
@@ -415,6 +418,10 @@ fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
                     | "deadline_s"
                     | "tokens"
                     | "parent_close"
+                    | "role"
+                    | "partition"
+                    | "tools"
+                    | "turns"
             )
         })
         .collect();
@@ -504,10 +511,15 @@ impl SubagentHost {
             told: Mutex::new(None),
             stuck: Mutex::default(),
             family: std::sync::OnceLock::new(),
+            resolver: std::sync::OnceLock::new(),
         }
     }
 
     /// The lane split, shared with the plan engine so verification and workers count one pool.
+    pub fn set_resolver(&self, resolver: Arc<crate::fetch::Resolver>) {
+        let _first_wins = self.resolver.set(resolver);
+    }
+
     pub fn capacity(&self) -> Arc<crate::plan::capacity::Capacity> {
         Arc::clone(&self.capacity)
     }
@@ -644,10 +656,19 @@ impl SubagentHost {
         standing: Standing,
     ) -> Result<Map<String, Value>, String> {
         let (juror, family_cap) = (
-            matches!(standing, Standing::Juror),
+            matches!(standing, Standing::Juror | Standing::Reader),
             crate::levers::get().family_cap,
         );
         require_kwargs(&kwargs)?;
+        let reader = reader::parse(&kwargs)?;
+        let mut kwargs = kwargs;
+        let standing = match (&reader, standing) {
+            (Some(_), Standing::Worker) => Standing::Reader,
+            (_, standing) => standing,
+        };
+        if reader.is_some() {
+            reader::walls_writes(&mut kwargs);
+        }
         let requested_name = optional_string(&kwargs, "name")?;
         let fork = parse_fork(&kwargs)?;
         let isolation = parse_isolation(&kwargs)?;
@@ -656,6 +677,11 @@ impl SubagentHost {
         let ask = crate::lease::Ask::from_kwargs(&kwargs)?;
         let overrides =
             optional_string(&kwargs, "model")?.or(optional_string(&kwargs, "thinking")?);
+        if reader.is_some() && (fork != Fork::None || isolation != Isolation::None) {
+            return Err(
+                "a reader gets a partition, not a fork, and writes nothing to isolate".to_owned(),
+            );
+        }
         if fork == Fork::All && overrides.is_some() {
             return Err(
                 "fork=all inherits the parent's model and thinking; drop the override".to_owned(),
@@ -673,6 +699,13 @@ impl SubagentHost {
             ));
         }
         let mut cast = self.cast(&kwargs)?;
+        let prompt = reader::brief(
+            self.resolver.get(),
+            &kwargs,
+            prompt,
+            &cast.2,
+            &self.options.cwd,
+        )?;
         let model = cast.0.clone();
         let (session_dir, child_id) = self.create_child_dir(&self.options.parent_session_dir)?;
         let session_name =

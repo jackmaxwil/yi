@@ -150,15 +150,7 @@ impl PromptState {
             if !out.is_empty() {
                 out.push_str("\n\n");
             }
-            // Invariant: the fence id is the text's own hash, which the text cannot contain, so
-            // two sessions over the same text share the bytes and the cache behind them.
-            let digest = crate::fetch::content_hash(text);
-            let id = digest.get(..16).unwrap_or(&digest);
-            out.push_str(&format!(
-                "{FENCE_SENTINEL}yi-external {id} source=\"{}\" trust=\"{}\">>>\n{text}\n{FENCE_SENTINEL}end-yi-external {id}>>>",
-                sanitize(source),
-                trust.label(),
-            ));
+            out.push_str(&fence(source, trust.label(), text));
         }
         out
     }
@@ -232,6 +224,17 @@ pub(crate) fn sanitize(text: &str) -> std::borrow::Cow<'_, str> {
     } else {
         std::borrow::Cow::Borrowed(text)
     }
+}
+
+/// Invariant: the fence id is the text's own hash, which the text cannot contain, so two
+/// sessions over the same text share the bytes and the cache behind them.
+pub(crate) fn fence(source: &str, trust: &str, text: &str) -> String {
+    let digest = crate::fetch::content_hash(text);
+    let id = digest.get(..16).unwrap_or(&digest);
+    format!(
+        "{FENCE_SENTINEL}yi-external {id} source=\"{}\" trust=\"{trust}\">>>\n{text}\n{FENCE_SENTINEL}end-yi-external {id}>>>",
+        sanitize(source),
+    )
 }
 
 /// Incident: `replace` does not overlap and the escape ends in `<<`, so `<<<<yi-external` became
