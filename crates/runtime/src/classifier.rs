@@ -279,7 +279,7 @@ impl Approver {
         if paused(&self.breaker) {
             return Judgement::Undecided;
         }
-        let destructive = call.command.is_some_and(destructive);
+        let class = class(call.command);
         let state = [
             ("tool", call.tool),
             ("command", call.display),
@@ -316,11 +316,7 @@ impl Approver {
             latency_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             fired: false,
             error: None,
-            extra: [(
-                "verdictClass".to_owned(),
-                serde_json::json!(if destructive { "destructive" } else { "other" }),
-            )]
-            .into(),
+            extra: [("verdictClass".to_owned(), serde_json::json!(class))].into(),
         };
         let safe = match outcome {
             Ok(response) => {
@@ -334,7 +330,7 @@ impl Approver {
                 None
             }
         };
-        let allow_at = if destructive {
+        let allow_at = if class != "ordinary" {
             self.thresholds.allow_destructive_at
         } else {
             self.thresholds.allow_at
@@ -359,12 +355,17 @@ impl Approver {
     }
 }
 
-fn destructive(command: &str) -> bool {
-    match yi_permission::parse(command) {
-        yi_permission::Parsed::Segments(segments) => segments
-            .iter()
-            .any(|argv| yi_permission::classify(argv) == yi_permission::Class::Destructive),
-        yi_permission::Parsed::Unparsed => false,
+fn class(command: Option<&str>) -> &'static str {
+    match command.map(yi_permission::parse) {
+        Some(yi_permission::Parsed::Segments(segments))
+            if segments
+                .iter()
+                .any(|argv| yi_permission::classify(argv) == yi_permission::Class::Destructive) =>
+        {
+            "destructive"
+        }
+        Some(yi_permission::Parsed::Segments(_)) => "ordinary",
+        Some(yi_permission::Parsed::Unparsed) | None => "unproven",
     }
 }
 
