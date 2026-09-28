@@ -678,7 +678,12 @@ def cmd_fix(args):
 def cmd_sweep(args):
     """One pass over the open drafts: review a head no round has read, fix a blocked one."""
     repo, allowed = forge_pr.repo(), authors()
-    for pr in forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50") or []:
+    pulls = forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=open&limit=50")
+    # Incident: an unsigned fgj answered the list with an error object and the loop died indexing it.
+    if not isinstance(pulls, list):
+        print(f"sweep: the forge did not list the pull requests: {(pulls or {}).get('message')}")
+        return 1
+    for pr in pulls:
         if not pr["title"].startswith(DRAFT):
             continue
         rounds = rounds_of(comments(repo, pr["number"]), allowed)
@@ -845,6 +850,8 @@ def selfcheck():
         os.environ["PATH"] = f"{fakes}{os.pathsep}{real_path}"
         try:
             assert raw_diff.__wrapped__("apex/yi", 1) == "+x\ufffdy\n", "a byte that is not UTF-8 is replaced, not fatal"
+            (fakes / "fgj").write_bytes(b"#!/bin/sh\necho '{\"message\":\"token is required\"}'\n")
+            assert cmd_sweep(None) == 1, "a refused list is said, not indexed"
         finally:
             os.environ["PATH"] = real_path
     finally:
