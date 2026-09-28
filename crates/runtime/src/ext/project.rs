@@ -122,6 +122,7 @@ pub struct ProjectResources {
     gate: TrustGate,
     budget: yi_context::Bytes,
     catalog: yi_context::Bytes,
+    global_skills: Vec<String>,
 }
 
 impl ProjectResources {
@@ -133,7 +134,14 @@ impl ProjectResources {
             gate,
             budget: yi_context::SourceBudgets::default().project_instructions,
             catalog: yi_context::SourceBudgets::default().skills_meta,
+            global_skills: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_global_skills(mut self, names: Vec<String>) -> Self {
+        self.global_skills = names;
+        self
     }
 
     #[must_use]
@@ -184,7 +192,8 @@ impl ProjectResources {
     }
 
     fn catalogs(&self, out: &mut Vec<Effect>) {
-        let (global, project) = crate::skills::discover_split(&self.cwd, &self.home);
+        let (mut global, project) = crate::skills::discover_split(&self.cwd, &self.home);
+        global.retain(|skill| self.global_skills.contains(&skill.name));
         if let Some(catalog) = crate::skills::catalog_text(&global, self.catalog) {
             out.push(Effect::AttachFragment {
                 slot: Slot::new(Rank::Catalog, "skills"),
