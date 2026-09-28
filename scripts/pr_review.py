@@ -42,7 +42,9 @@ MAX_ROUNDS = 3
 SEVERITIES = ("high", "medium", "low")
 DIFF_MAX = 150_000
 # The fixer may not touch what judges it: the gates, the workflows and the baselines.
-WALL = (".forgejo/", "scripts/guardrails/", ".github/", "skills/yi/pr-review/")
+# Incident: round 3 on #765 found the hooks outside the wall, and the commit hook is the
+# fixer's accept, so a fixer could weaken its own judge before the host committed.
+WALL = (".forgejo/", "scripts/guardrails/", "scripts/hooks/", "justfile", ".github/", "skills/yi/pr-review/")
 # Rows every PR adds and baselines every PR moves are unique text, not a sign of a twin.
 DUP_SKIP = re.compile(r"^(docs/CHANGELOG\.md|docs/ARCHITECTURE\.md|docs/solutions/|scripts/guardrails/baselines/)")
 DUP_WINDOW = 6
@@ -876,6 +878,7 @@ def selfcheck():
         shutil.rmtree(fakes)
     assert walled(["crates/a.rs", "scripts/guardrails/baselines/src_loc.json", ".forgejo/workflows/pr.yml"]) == [
         "scripts/guardrails/baselines/src_loc.json", ".forgejo/workflows/pr.yml"]
+    assert walled(["scripts/hooks/pre-commit", "justfile"]) == ["scripts/hooks/pre-commit", "justfile"], "the fixer's accept is walled"
     assert "Do not touch" in fix_prompt({"number": 1, "title": "t"}, [finding])
     print("ok   pr_review selfcheck")
 
