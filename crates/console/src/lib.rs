@@ -35,7 +35,8 @@ use yi_tui::drive::{Step, WaitPoll, key_event, poll_condition, typed_events};
 
 use crate::app::{App, MouseKind};
 use crate::client::{ClientEvent, Outbound};
-use crate::model::{Link, SessionStatus};
+use crate::layout::PaneId;
+use crate::model::{Link, SessionId, SessionStatus};
 
 pub struct ConsoleOptions {
     pub socket: PathBuf,
@@ -127,6 +128,9 @@ fn draw<B: Backend>(
         return Ok(());
     }
     app.dirty = false;
+    if std::mem::take(&mut app.clear) {
+        terminal.clear()?;
+    }
     let _span = yi_types::trace::span("console.draw");
     terminal.draw(|frame| {
         let computing = yi_types::trace::span("console.compute_view");
@@ -245,6 +249,7 @@ fn run_interactive(
     // (payload length, rect) of the placed image; unchanged frames skip the
     // retransmit entirely.
     let mut placed: Option<(usize, ratatui::layout::Rect)> = None;
+    let mut orb_owners = std::collections::HashMap::new();
     let mut scheduler = yi_tui::frame::FrameScheduler::default();
     while !app.state.quit {
         drain(app, outbound, events);
@@ -298,7 +303,7 @@ fn run_interactive(
         if kitty_ok {
             use std::io::Write;
             let mut out = std::io::stdout();
-            place_chat_orbs(app, &mut out);
+            place_chat_orbs(app, &mut orb_owners, &mut out);
             app.avatars.animate(&mut out);
             let _ = out.flush();
         }
@@ -343,17 +348,43 @@ fn orb_wake(app: &App) -> Duration {
         .unwrap_or(IDLE_POLL)
 }
 
-/// One orb per chat pane, each on its own image ids; only the focused pane animates.
-fn place_chat_orbs(app: &mut App, out: &mut std::io::Stdout) {
+/// One orb per chat pane on its own image ids; only the focused pane animates. Incident: a
+/// closed or switched pane kept its orb, as the next chat's `Tick` deletes only what it placed.
+fn place_chat_orbs(
+    app: &mut App,
+    owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
+    out: &mut std::io::Stdout,
+) {
     use crate::model::PaneContent;
+    owners.retain(|pane, owner| {
+        let kept = app
+            .state
+            .panes
+            .get(pane)
+            .is_some_and(|pane| match &pane.content {
+                PaneContent::Session {
+                    session,
+                    chat: Some(_),
+                } => session == owner,
+                _ => false,
+            });
+        if !kept {
+            for id in crate::app::orb_ids(*pane) {
+                let _ = yi_tui::orb::kitty::delete_id(out, id);
+            }
+        }
+        kept
+    });
     let focused = app.state.focused_pane_id();
     for (id, pane) in &mut app.state.panes {
         let PaneContent::Session {
-            chat: Some(chat), ..
+            session,
+            chat: Some(chat),
         } = &mut pane.content
         else {
             continue;
         };
+        owners.entry(*id).or_insert_with(|| session.clone());
         if Some(*id) == focused {
             yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb);
             yi_tui::logos::tick(&chat.app, out, &mut chat.logos);
@@ -554,6 +585,11 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
 
         app.dirty = true;
         if draw(&mut app, &mut terminal, &theme).is_err() {
+            exit_code = 1;
+            break;
+        }
+        if let Some(cell) = terminal.backend().control_cell() {
+            eprintln!("error: a control character reached a cell: {cell}");
             exit_code = 1;
             break;
         }
