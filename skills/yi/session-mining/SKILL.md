@@ -8,7 +8,6 @@ description: >
   points, or analyze past runs. User-run only, never scheduled. Never applies
   fixes; it reports.
 trigger: mine sessions, session mining, pain points, extract.py
-scope: text
 ---
 
 # Session mining
