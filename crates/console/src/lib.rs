@@ -317,7 +317,7 @@ fn set_window_title(app: &mut App) {
         .and_then(|id| app.state.sessions.get(&id))
         .map_or_else(|| "yi".to_owned(), |row| format!("yi · {}", row.label()));
     if title != app.window_title {
-        app.osc_out.push(format!("\x1b]2;{title}\x07"));
+        app.osc_out.push(yi_tui::term::window_title_osc(&title));
         app.window_title = title;
     }
 }
@@ -644,6 +644,41 @@ mod tests {
         outbound.shutdown();
         draw(&mut app, &mut terminal, &theme)?;
         assert!(placed(&mut app), "placed again after the clear");
+        Ok(())
+    }
+
+    /// Incident: the daemon names a session from its first prompt, so `BEL ESC]52;…` in it
+    /// ended the title early and made the terminal write the clipboard.
+    #[test]
+    fn a_session_name_cannot_end_the_window_title() -> Result<(), Box<dyn std::error::Error>> {
+        let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
+        let id = SessionId("s-evil".to_owned());
+        app.state.upsert_row(crate::model::SessionRow {
+            id: id.clone(),
+            root: "/repo".to_owned(),
+            status: SessionStatus::Idle,
+            attached: true,
+            name: Some("Fix bug\u{7}\u{1b}]52;c;ZWNobyBwd25lZA==\u{7} now".to_owned()),
+            created_ms: 0,
+            last_ms: 0,
+        });
+        let home = app.state.focused_pane_id().ok_or("a pane")?;
+        if let Some(pane) = app.state.panes.get_mut(&home) {
+            pane.content = crate::model::PaneContent::Session {
+                session: Some(id),
+                chat: None,
+            };
+        }
+        set_window_title(&mut app);
+        let osc = app.osc_out.first().ok_or("no title written")?;
+        let inner = osc
+            .strip_prefix("\u{1b}]2;")
+            .and_then(|rest| rest.strip_suffix('\u{7}'));
+        assert_eq!(
+            inner,
+            Some("yi · Fix bug]52;c;ZWNobyBwd25lZA== now"),
+            "{osc:?}"
+        );
         Ok(())
     }
 }
