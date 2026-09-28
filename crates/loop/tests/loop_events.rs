@@ -922,11 +922,20 @@ fn openrouter_body(model: &Model, effort: yi_types::model::Effort, context: &Llm
 }
 
 fn last_message(body: &Value) -> Value {
-    body["messages"]
+    let mut last = body["messages"]
         .as_array()
         .and_then(|messages| messages.last())
         .cloned()
-        .unwrap_or(Value::Null)
+        .unwrap_or(Value::Null);
+    let marked_text = last["content"]
+        .as_array()
+        .filter(|parts| parts.len() == 1 && parts[0]["cache_control"].is_object())
+        .and_then(|parts| parts[0]["text"].as_str())
+        .map(str::to_owned);
+    if let Some(text) = marked_text {
+        last["content"] = Value::String(text);
+    }
+    last
 }
 
 async fn run_on_glm(
