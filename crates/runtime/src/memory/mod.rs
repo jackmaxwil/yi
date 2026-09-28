@@ -1,6 +1,7 @@
 mod doc;
 mod ext;
 mod journal;
+mod rank;
 mod store;
 
 use std::path::PathBuf;
@@ -14,7 +15,28 @@ use yi_types::plan::canonical::Digest;
 pub use doc::Note;
 use doc::Scope;
 pub use ext::{MemoryExt, block};
+pub use rank::tokens;
 pub use store::{Store, global_dir, repo_dir};
+
+const SEARCH_LIMIT: usize = 5;
+
+pub fn ranked(stores: &[&Store], query: &str) -> Vec<(usize, Note)> {
+    let notes: Vec<(usize, Note)> = stores
+        .iter()
+        .enumerate()
+        .flat_map(|(at, store)| store.notes().into_iter().map(move |note| (at, note)))
+        .collect();
+    let texts: Vec<String> = notes
+        .iter()
+        .map(|(_, note)| format!("{} {} {}", note.name, note.hook, note.body))
+        .collect();
+    let index = rank::Bm25::new(texts.iter().map(String::as_str));
+    index
+        .rank(query)
+        .into_iter()
+        .filter_map(|(at, _)| notes.get(at).cloned())
+        .collect()
+}
 
 const SAVE_CAP: usize = 3;
 
@@ -76,6 +98,17 @@ fn scope_of(payload: &Map<String, Value>, verb: &str) -> Result<Vec<Scope>, Stri
             .map(|scope| vec![scope])
             .ok_or_else(|| format!("{verb}: scope is {raw:?}; it must be repo or global")),
     }
+}
+
+fn search_call(query: &str, payload: &Map<String, Value>, limit: usize) -> String {
+    let scope = payload
+        .get("scope")
+        .and_then(Value::as_str)
+        .map_or_else(String::new, |raw| format!(", scope={}", Value::from(raw)));
+    format!(
+        "memory.search({}{scope}, limit={limit})",
+        Value::from(query)
+    )
 }
 
 impl Verbs {
@@ -183,6 +216,61 @@ impl Verbs {
         Ok(reply)
     }
 
+    fn search(&self, payload: &Map<String, Value>) -> Reply {
+        self.root_only("memory.search")?;
+        let query = text(payload, "query", "memory.search")?;
+        let limit = payload
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map_or(SEARCH_LIMIT, |n| usize::try_from(n).unwrap_or(SEARCH_LIMIT))
+            .max(1);
+        let scopes = scope_of(payload, "memory.search")?;
+        let stores: Vec<Store> = scopes.iter().map(|scope| self.store(*scope)).collect();
+        let hits = ranked(&stores.iter().collect::<Vec<_>>(), &query);
+        let total = hits.len();
+        let listed: Vec<Value> = hits
+            .into_iter()
+            .take(limit)
+            .filter_map(|(at, note)| {
+                let scope = scopes.get(at)?;
+                let mut item = Map::new();
+                item.insert("name".to_owned(), Value::from(note.name.as_str()));
+                item.insert("description".to_owned(), Value::from(note.hook));
+                item.insert("scope".to_owned(), Value::from(scope.as_str()));
+                Some(Value::Object(item))
+            })
+            .collect();
+        let mut reply = Map::new();
+        if listed.len() < total {
+            reply.insert(
+                "notice".to_owned(),
+                Value::from(format!(
+                    "[{} of {total} notes · limit {limit} · {} for all]",
+                    listed.len(),
+                    search_call(&query, payload, total)
+                )),
+            );
+        }
+        reply.insert("hits".to_owned(), Value::from(listed));
+        reply.insert("total".to_owned(), Value::from(total));
+        Ok(reply)
+    }
+
+    fn closest(&self, payload: &Map<String, Value>) -> Option<(Scope, Note, String)> {
+        let query = payload.get("name").and_then(Value::as_str)?;
+        let scopes = scope_of(payload, "memory.read").ok()?;
+        let stores: Vec<Store> = scopes.iter().map(|scope| self.store(*scope)).collect();
+        let hits = ranked(&stores.iter().collect::<Vec<_>>(), query);
+        let total = hits.len();
+        let (at, note) = hits.into_iter().next()?;
+        let row = format!(
+            "[no note has that name or hook · opened {}, the closest of {total} by memory.search · {} for the ranking]",
+            note.name,
+            search_call(query, payload, total)
+        );
+        Some((*scopes.get(at)?, note, row))
+    }
+
     fn find(&self, payload: &Map<String, Value>, verb: &str) -> Result<(Scope, Note), String> {
         let query = text(payload, "name", verb)?;
         scope_of(payload, verb)?
@@ -193,12 +281,19 @@ impl Verbs {
 
     fn read(&self, payload: &Map<String, Value>) -> Reply {
         self.root_only("memory.read")?;
-        let (scope, note) = self.find(payload, "memory.read")?;
+        let (scope, note, searched) = match self.find(payload, "memory.read") {
+            Ok((scope, note)) => (scope, note, None),
+            Err(missed) => match self.closest(payload) {
+                Some((scope, note, row)) => (scope, note, Some(row)),
+                None => return Err(missed),
+            },
+        };
         let mut warnings: Vec<String> = note
             .trouble
             .iter()
             .map(|trouble| format!("{trouble}; indexed by its first line"))
             .collect();
+        warnings.extend(searched);
         match self.store(scope).mark_read(&note.name) {
             Ok(hash) => warnings.extend(self.point("read", note.name.as_str(), scope, hash)),
             Err(error) => warnings.push(format!("the read was not counted: {error}")),
@@ -288,6 +383,7 @@ pub fn attach(
     register_verb(registry, &verbs, "memory.save", Verbs::save);
     register_verb(registry, &verbs, "memory.read", Verbs::read);
     register_verb(registry, &verbs, "memory.forget", Verbs::forget);
+    register_verb(registry, &verbs, "memory.search", Verbs::search);
 }
 
 #[cfg(test)]
@@ -383,6 +479,72 @@ mod tests {
         assert!(!dumped.contains("hook for alpha"), "{dumped}");
         let replay = verbs.store(Scope::Repo).journal_sessions();
         assert_eq!(replay, vec![Some("s1".to_owned()); 3]);
+    }
+
+    fn seed(verbs: &Verbs, name: &str, hook: &str, body: &str) {
+        let text = format!("---\nname: {name}\ndescription: {hook}\ntype: feedback\n---\n{body}\n");
+        let memory = doc::draft(&text, &[]).unwrap().memory;
+        verbs.store(Scope::Repo).save(memory).unwrap();
+    }
+
+    #[test]
+    fn search_ranks_notes_by_their_words_and_names_its_cap() {
+        let (_base, verbs) = verbs("search", true);
+        seed(
+            &verbs,
+            "never-git-reset",
+            "never git reset in the shared tree",
+            "sync main another way",
+        );
+        for i in 0..6 {
+            seed(
+                &verbs,
+                &format!("main-{i}"),
+                "a note that says main",
+                "main",
+            );
+        }
+        let mut query = Map::new();
+        query.insert("query".to_owned(), Value::from("sync main"));
+        let reply = verbs.search(&query).unwrap();
+        assert_eq!(reply["hits"][0]["name"], "never-git-reset");
+        assert_eq!(reply["hits"].as_array().map(Vec::len), Some(5));
+        assert_eq!(reply["total"], 7);
+        assert_eq!(
+            reply["notice"],
+            "[5 of 7 notes · limit 5 · memory.search(\"sync main\", limit=7) for all]"
+        );
+        query.insert("scope".to_owned(), Value::from("repo"));
+        assert_eq!(
+            verbs.search(&query).unwrap()["notice"],
+            "[5 of 7 notes · limit 5 · memory.search(\"sync main\", scope=\"repo\", limit=7) for all]"
+        );
+        query.insert("limit".to_owned(), Value::from(7));
+        assert!(verbs.search(&query).unwrap().get("notice").is_none());
+    }
+
+    #[test]
+    fn a_read_that_names_no_note_opens_the_closest_and_a_forget_does_not() {
+        let (_base, verbs) = verbs("closest", true);
+        seed(
+            &verbs,
+            "never-git-reset",
+            "never git reset in the shared tree",
+            "sync main another way",
+        );
+        seed(&verbs, "orb-motion", "orb motion taste", "least movement");
+        seed(&verbs, "lane-main", "a lane merges main", "lanes");
+        let mut query = Map::new();
+        query.insert("name".to_owned(), Value::from("how do I sync main"));
+        let reply = verbs.read(&query).unwrap();
+        assert_eq!(reply["name"], "never-git-reset");
+        assert_eq!(
+            reply["warnings"][0],
+            "[no note has that name or hook · opened never-git-reset, the closest of 2 by memory.search · memory.search(\"how do I sync main\", limit=2) for the ranking]"
+        );
+        assert!(verbs.forget(&query).is_err());
+        query.insert("name".to_owned(), Value::from("zebra"));
+        assert!(verbs.read(&query).is_err());
     }
 
     #[test]

@@ -262,5 +262,6 @@ edited by hand.
 - [D286](adr/d286.md) - a child may run on a local container
 - [D287](adr/d287.md) - a channel is a named, durable, append-only buffer on this machine, and an...
 - [D277](adr/d277.md) - a memory store journals its ops and keeps bodies as objects
+- [D278](adr/d278.md) - notes are ranked by BM25 behind `memory.search`
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
