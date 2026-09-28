@@ -136,9 +136,38 @@ impl Tool for WriteTool {
     }
 }
 
+pub fn wall_refusal(tool_name: &str, path: &str, list: &str) -> String {
+    format!(
+        "Denied by the reviewer wall: {tool_name} targets {path}, which this agent's {list} covers. \
+         The standard is fixed for the run: report the mismatch instead of changing it."
+    )
+}
+
+pub(crate) fn walled(deny: &[PathBuf], path: &Path) -> bool {
+    if deny.is_empty() {
+        return false;
+    }
+    let normalized = yi_permission::lexical_normalize(path);
+    deny.iter()
+        .any(|denied| normalized.starts_with(yi_permission::lexical_normalize(denied)))
+}
+
+pub(crate) fn walled_notice(left_out: usize) -> Option<String> {
+    (left_out > 0).then(|| {
+        format!(
+            "[{left_out} paths left out: the reviewer wall's deny_read covers them, and no call reaches them this run]"
+        )
+    })
+}
+
 /// Name order within each directory: the filesystem's own order differs between machines, and
-/// every cap and page over this walk would keep a different set.
-pub(crate) fn walk_files(root: &Path, visit: &mut dyn FnMut(&Path) -> bool) {
+/// every cap and page over this walk would keep a different set. Returns the walled entries.
+pub(crate) fn walk_files(
+    root: &Path,
+    deny: &[PathBuf],
+    visit: &mut dyn FnMut(&Path) -> bool,
+) -> usize {
+    let mut left_out = 0_usize;
     let mut ignore = crate::ignore::Ignore::default();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -154,16 +183,19 @@ pub(crate) fn walk_files(root: &Path, visit: &mut dyn FnMut(&Path) -> bool) {
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            if file_type.is_dir() {
+            if walled(deny, &path) {
+                left_out = left_out.saturating_add(1);
+            } else if file_type.is_dir() {
                 if !ignore.ignored(&path, true) {
                     subdirs.push(path);
                 }
             } else if file_type.is_file() && !ignore.ignored(&path, false) && !visit(&path) {
-                return;
+                return left_out;
             }
         }
         stack.extend(subdirs.into_iter().rev());
     }
+    left_out
 }
 
 /// Every other verb keeps the `Exec` default: the flag warns about blast
@@ -795,7 +827,7 @@ fn poll_job(input: &Map<String, Value>) -> ToolOutput {
 /// Gitignore-filtered and sorted, for surfaces offering a file picker.
 pub fn list_files(root: &Path, cap: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    walk_files(root, &mut |path| {
+    walk_files(root, &[], &mut |path| {
         if let Ok(relative) = path.strip_prefix(root) {
             out.push(relative.to_string_lossy().into_owned());
         }

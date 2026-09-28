@@ -81,7 +81,7 @@ impl Wall {
     pub fn check_url(&self, url: &Url, workspace: &Path) -> Option<String> {
         let rendered = url.to_string();
         if let Some(hit) = self.deny_url.iter().find(|prefix| walls(prefix, &rendered)) {
-            return Some(refusal("fetch", hit, "deny_url"));
+            return Some(yi_tools::wall_refusal("fetch", hit, "deny_url"));
         }
         let raw = match url.scheme() {
             Scheme::Local => Path::new(url.path()),
@@ -114,7 +114,7 @@ impl Wall {
                 normalized.starts_with(yi_permission::lexical_normalize(denied))
                     || std::fs::canonicalize(denied).is_ok_and(|real| normalized.starts_with(real))
             })
-            .map(|hit| refusal("fetch", &hit.display().to_string(), "deny_read"))
+            .map(|hit| yi_tools::wall_refusal("fetch", &hit.display().to_string(), "deny_read"))
     }
 
     /// Denies before the call runs, naming the path; not a sandbox, it stops an honest agent.
@@ -142,7 +142,7 @@ impl Wall {
             } else {
                 "deny_write"
             };
-            refusal(tool_name, &hit.display().to_string(), list)
+            yi_tools::wall_refusal(tool_name, &hit.display().to_string(), list)
         };
         if let Some(hit) = under(
             &crate::permission::extract_targets(tool_name, args, cwd),
@@ -198,9 +198,7 @@ fn write_targets(command: &str) -> Vec<String> {
         let words: Vec<&str> = segment
             .split_whitespace()
             .map(|word| word.trim_matches(['\'', '"']))
-            .skip_while(|word| {
-                word.contains('=') || matches!(*word, "sudo" | "env" | "time" | "nohup" | "command")
-            })
+            .skip_while(|word| yi_permission::wraps(word))
             .collect();
         let Some((head, args)) = words.split_first() else {
             continue;
@@ -248,11 +246,4 @@ fn walls(prefix: &str, rendered: &str) -> bool {
         return false;
     };
     rest.is_empty() || prefix.ends_with('/') || rest.starts_with('/') || rest.starts_with('#')
-}
-
-fn refusal(tool_name: &str, path: &str, list: &str) -> String {
-    format!(
-        "Denied by the reviewer wall: {tool_name} targets {path}, which this agent's {list} covers. \
-         The standard is fixed for the run: report the mismatch instead of changing it."
-    )
 }

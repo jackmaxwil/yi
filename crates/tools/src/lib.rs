@@ -22,7 +22,7 @@ mod tool;
 
 use std::sync::Arc;
 
-pub use builtins::{BashTool, WriteTool, list_files};
+pub use builtins::{BashTool, WriteTool, list_files, wall_refusal};
 pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
 pub use document::{Converter, DEFAULT_TIMEOUT, Documents, document_ceiling};

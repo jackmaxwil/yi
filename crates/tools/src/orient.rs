@@ -179,17 +179,6 @@ fn neighborhood(symbol: Option<&str>, context: &ToolContext) -> LayerBody {
     grid(context, &["scope", symbol, "--depth", "1"])
 }
 
-fn hidden(context: &ToolContext, path: &Path) -> bool {
-    if context.deny_read.is_empty() {
-        return false;
-    }
-    let normalized = yi_permission::lexical_normalize(path);
-    context
-        .deny_read
-        .iter()
-        .any(|denied| normalized.starts_with(yi_permission::lexical_normalize(denied)))
-}
-
 fn skeletons(
     root: &Path,
     symbol: Option<&str>,
@@ -197,12 +186,11 @@ fn skeletons(
     context: &ToolContext,
 ) -> LayerBody {
     let mut files: Vec<PathBuf> = Vec::new();
-    crate::builtins::walk_files(root, &mut |path| {
+    let walled = crate::builtins::walk_files(root, &context.deny_read, &mut |path| {
         let interesting = path
             .extension()
             .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| SKELETON_EXTS.contains(&ext))
-            && !hidden(context, path);
+            .is_some_and(|ext| SKELETON_EXTS.contains(&ext));
         if interesting {
             files.push(path.to_path_buf());
         }
@@ -256,6 +244,9 @@ fn skeletons(
             "[skeletons truncated: {shown} of {total} files at {cap}; \
              read a directory for its skeletons, or pass symbol to rank its files first]\n"
         ));
+    }
+    if let Some(notice) = crate::builtins::walled_notice(walled) {
+        out.push_str(&notice);
     }
     Ok(out.trim_end().to_owned())
 }
@@ -394,7 +385,7 @@ fn gates(root: &Path) -> LayerBody {
 
 fn issues(root: &Path, context: &ToolContext) -> LayerBody {
     let path = root.join(ISSUES_PATH);
-    if hidden(context, &path) {
+    if crate::builtins::walled(&context.deny_read, &path) {
         return Err(format!("{ISSUES_PATH} is denied to this agent"));
     }
     let text = std::fs::read_to_string(path)
