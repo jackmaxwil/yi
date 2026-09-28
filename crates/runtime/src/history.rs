@@ -261,7 +261,7 @@ pub fn search_reply(
     let next = offset.saturating_add(hits.len());
     if next < total {
         notices.push(format!(
-            "[{} of {total} hits · limit {limit} (at most {PAGE_MAX}) · history.search({}, limit={limit}, offset={next}) for the next]",
+            "[{} of {total} hits · limit {limit} (at most {PAGE_MAX}) · compact.search({}, limit={limit}, offset={next}) for the next]",
             hits.len(),
             Value::from(query)
         ));
@@ -418,7 +418,7 @@ mod tests {
         let page = search_reply(&units, "tmp", 0, 1, 0);
         assert_eq!(
             page["notice"],
-            "[1 of 2 hits · limit 1 (at most 32) · history.search(\"tmp\", limit=1, offset=1) for the next]"
+            "[1 of 2 hits · limit 1 (at most 32) · compact.search(\"tmp\", limit=1, offset=1) for the next]"
         );
         let file = find_session(&sessions, &repo, "s-lane").unwrap();
         let loaded = yi_session::load_session(&file).unwrap();
