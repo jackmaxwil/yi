@@ -67,7 +67,7 @@ def skills(root=ROOT):
 def typed_claude(path):
     """(text, loaded skill or None) for each typed message of one Claude Code transcript."""
     rows, pending = [], None
-    for line in path.read_text(errors="replace").splitlines():
+    for line in path.read_text(errors="replace").split("\n"):
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
@@ -90,7 +90,7 @@ def typed_claude(path):
 
 def typed_yi(path):
     rows = []
-    for line in path.read_text(errors="replace").splitlines():
+    for line in path.read_text(errors="replace").split("\n"):
         try:
             message = (json.loads(line) or {}).get("message") or {}
         except json.JSONDecodeError:
@@ -170,13 +170,17 @@ def parsed(line):
         return None
 
 
+def whole(row):
+    return isinstance(row, dict) and {"id", "skill"} <= row.keys()
+
+
 def label(corpus_path, out, model, max_usd, limit, teacher=None):
     candidates = skills()
     names = {name for name, _ in candidates}
     done, torn = set(), False
     if out.exists():
         kept = out.read_text(errors="replace")
-        done = {row["id"] for row in map(parsed, kept.splitlines()) if isinstance(row, dict) and "id" in row}
+        done = {row["id"] for row in map(parsed, kept.splitlines()) if whole(row)}
         torn = bool(kept) and not kept.endswith("\n")
     if teacher is None:
         key = os.environ.get("OPENROUTER_API_KEY")
@@ -204,16 +208,14 @@ def label(corpus_path, out, model, max_usd, limit, teacher=None):
 def freeze(corpus_path, labels_path, out, per_skill, none, seed):
     texts = {row["id"]: row for row in map(json.loads, corpus_path.read_text().splitlines())}
     by_skill = {}
-    for row in map(parsed, labels_path.read_text(errors="replace").splitlines()):
-        if not isinstance(row, dict) or not {"id", "skill"} <= row.keys():
-            continue
+    for row in filter(whole, map(parsed, labels_path.read_text(errors="replace").splitlines())):
         if row["skill"] != "invalid" and row["id"] in texts:
             by_skill.setdefault(row["skill"], []).append(row["id"])
     pick = random.Random(seed)
     chosen = []
     for skill, ids in sorted(by_skill.items()):
         chosen += [(skill, item) for item in pick.sample(ids, min(len(ids), none if skill == "none" else per_skill))]
-    with out.open("w", newline="") as sink:
+    with out.open("w", newline="", encoding="utf-8") as sink:
         writer = csv.writer(sink)
         writer.writerow(["id", "source", "teacher", "owner", "text"])
         for skill, item in chosen:
