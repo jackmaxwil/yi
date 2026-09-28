@@ -636,8 +636,13 @@ impl GrepTool {
             }
         }
         if changed == 0 {
-            rows.push(if skipped.is_empty() {
+            rows.push(if collected.total == 0 {
                 "No matches found".to_owned()
+            } else if skipped.is_empty() {
+                format!(
+                    "nothing changed: each of the {} matches is replaced by itself",
+                    collected.total
+                )
             } else {
                 format!(
                     "nothing written: {skipped_hits} of {} matches in files skipped (not UTF-8)",
@@ -670,7 +675,7 @@ impl GrepTool {
     }
 }
 
-/// Every match expanded, and the source line that closed each output `\n`; a written one is `None`.
+/// Every match expanded, with each output `\n`'s source line; a per-line join is its line's, matched or not.
 fn replaced(
     matcher: &regex::Regex,
     text: &str,
@@ -693,7 +698,7 @@ fn replaced(
     (out, origins)
 }
 
-/// `text`'s matches expanded onto `out`, `first` being the source line `text` opens on.
+/// `text`'s matches expanded onto `out` from source line `first`; a `\n` inside a match is the replacement's, `None`.
 fn substitute(
     matcher: &regex::Regex,
     text: &str,
