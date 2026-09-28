@@ -122,6 +122,10 @@ pub enum TodoError {
     NoSuchPhase { phase: String, known: String },
     #[error("todo {label:?} is already in the list; labels are unique")]
     Duplicate { label: String },
+    #[error(
+        "todo {label:?} is a row of plan {plan}, and labels are unique; leave the plan's rows out of a set or init, and give a new todo a label of its own"
+    )]
+    DuplicateOfPlanRow { label: String, plan: String },
     #[error("{op} is not a move for {label:?} in state {from}; legal here: {legal}")]
     Illegal {
         op: &'static str,
@@ -248,7 +252,7 @@ impl TodoStore {
             .collect();
         let target = match running.as_slice() {
             [] => Target::All,
-            [one] => Target::Label(one.label.clone()),
+            [one] => Target::Label(id_needle(one)),
             many => {
                 return Err(TodoError::ManyRunning {
                     running: many
@@ -466,8 +470,20 @@ impl TodoStore {
             .into_iter()
             .find(|label| rows(&list, label) > rows(&before, label))
         {
-            return Err(TodoError::Duplicate {
-                label: label.to_string(),
+            // A finished plan's leftover rows keep their `plan` key; only an open plan owns them.
+            let plan = mirrored.as_ref().and_then(|_| {
+                before
+                    .items()
+                    .filter(|item| item.label == *label)
+                    .find_map(mirror::row_plan)
+            });
+            let label = label.to_string();
+            return Err(match plan {
+                Some(plan) => TodoError::DuplicateOfPlanRow {
+                    label,
+                    plan: plan.to_string(),
+                },
+                None => TodoError::Duplicate { label },
             });
         }
         state.list = list.clone();
@@ -692,7 +708,17 @@ fn resolve<'a>(list: &'a mut TodoList, needle: &TodoLabel) -> Result<&'a mut Tod
     })
 }
 
-/// Every id-less item gets `t{next_id}`; an id a `set` row carried moves the counter past it.
+/// The needle [`locate`] resolves to this row alone: its id, which [`mint`] keeps unique, where
+/// its label may be another row's too on a list an older binary wrote.
+pub fn id_needle(item: &Todo) -> TodoLabel {
+    item.id
+        .as_ref()
+        .and_then(|id| TodoLabel::new(id.as_str()).ok())
+        .unwrap_or_else(|| item.label.clone())
+}
+
+/// Every id-less item gets `t{next_id}`, and so does a repeat of an id a `set` row copied; an
+/// id a `set` row carried moves the counter past it.
 pub fn mint(list: &mut TodoList) {
     let top = list
         .items()
@@ -700,8 +726,9 @@ pub fn mint(list: &mut TodoList) {
         .max()
         .unwrap_or(0);
     let mut next = list.next_id.max(top.saturating_add(1)).max(1);
+    let mut seen = std::collections::HashSet::new();
     list.for_each_mut(|item| {
-        if item.id.is_none() {
+        if item.id.as_ref().is_none_or(|id| !seen.insert(id.clone())) {
             item.id = Some(TodoId::minted(next));
             next = next.saturating_add(1);
         }
@@ -822,6 +849,23 @@ fn add_items(
     Ok(())
 }
 
+/// The list an init replaces may already repeat a label, so the new list's own rows are checked.
+fn init_list(phases: Vec<(PhaseName, Vec<Todo>)>) -> Result<TodoList, TodoError> {
+    let mut fresh = TodoList::default();
+    for (name, items) in phases {
+        add_items(&mut fresh, Some(name), None, items)?;
+    }
+    if fresh.items().next().is_none() {
+        return Err(TodoError::Empty);
+    }
+    if let Some(label) = fresh.duplicates().first() {
+        return Err(TodoError::Duplicate {
+            label: label.to_string(),
+        });
+    }
+    Ok(fresh)
+}
+
 fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
     let done = |item: &Todo| matches!(item.state, TodoState::Done { .. });
     match op {
@@ -853,14 +897,7 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             Ok(())
         }
         Op::Init { phases } => {
-            let mut fresh = TodoList::default();
-            for (name, items) in phases {
-                add_items(&mut fresh, Some(name), None, items)?;
-            }
-            if fresh.items().next().is_none() {
-                return Err(TodoError::Empty);
-            }
-            *list = fresh;
+            *list = init_list(phases)?;
             Ok(())
         }
         Op::Append {
@@ -879,8 +916,8 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
                 by: AgentId::owner(),
             };
             item.note = None;
-            let target = item.label.clone();
-            list.for_each_mut(|other| demote(other, &target));
+            let started = (item.label.clone(), item.id.clone());
+            list.for_each_mut(|other| demote(other, &started));
             Ok(())
         }
         Op::Done { target, evidence } => {
@@ -982,8 +1019,9 @@ fn keep_one_running(row: &mut Todo, seen: &mut bool) {
     }
 }
 
-fn demote(item: &mut Todo, keep: &TodoLabel) {
-    if matches!(item.state, TodoState::Running { .. }) && item.label != *keep {
+/// A list an older binary wrote may repeat a label, so the started row is kept by label and id.
+fn demote(item: &mut Todo, (label, id): &(TodoLabel, Option<TodoId>)) {
+    if matches!(item.state, TodoState::Running { .. }) && (item.label != *label || item.id != *id) {
         item.state = TodoState::Pending;
     }
 }

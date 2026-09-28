@@ -89,7 +89,7 @@ async fn an_unknown_command_runs_contained_then_asks() -> TestResult {
     let escape = home.join("escaped.txt");
     let command = format!("printf x > {}", escape.display());
 
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         bash_call("call-1", &command),
         bash_call("call-2", &command),
@@ -165,7 +165,7 @@ async fn a_refused_program_asks_even_when_the_retry_text_differs() -> TestResult
     let first = format!("mkdir {}", home.join("a").display());
     let second = format!("mkdir {} && ls", home.join("b").display());
 
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         bash_call("call-1", &first),
         bash_call("call-2", &second),

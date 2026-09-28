@@ -28,6 +28,53 @@ pub struct PermissionAsk<'a> {
     pub patch: Option<&'a str>,
     pub changes: &'a [PathBuf],
     pub grants: &'a [yi_permission::Grant],
+    pub tool_call_id: Option<&'a str>,
+}
+
+struct OwnedAsk {
+    title: String,
+    description: String,
+    patch: Option<String>,
+    changes: Vec<PathBuf>,
+    grants: Vec<yi_permission::Grant>,
+    tool_call_id: Option<String>,
+}
+
+impl OwnedAsk {
+    fn of(ask: &PermissionAsk<'_>) -> Self {
+        Self {
+            title: ask.title.to_owned(),
+            description: ask.description.to_owned(),
+            patch: ask.patch.map(str::to_owned),
+            changes: ask.changes.to_vec(),
+            grants: ask.grants.to_vec(),
+            tool_call_id: ask.tool_call_id.map(str::to_owned),
+        }
+    }
+
+    fn ask(&self) -> PermissionAsk<'_> {
+        PermissionAsk {
+            title: &self.title,
+            description: &self.description,
+            patch: self.patch.as_deref(),
+            changes: &self.changes,
+            grants: &self.grants,
+            tool_call_id: self.tool_call_id.as_deref(),
+        }
+    }
+}
+
+fn ask_within(
+    asker: &Asker,
+    ask: &PermissionAsk<'_>,
+    limit: std::time::Duration,
+) -> Option<AskOutcome> {
+    let (owned, asker) = (OwnedAsk::of(ask), Arc::clone(asker));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _gone_if_expired = sender.send(asker(&owned.ask()));
+    });
+    receiver.recv_timeout(limit).ok()
 }
 
 impl PermissionAsk<'_> {
@@ -72,6 +119,8 @@ pub struct PermissionBroker {
     ledger: Mutex<ActionLedger>,
     confirms: AtomicU64,
     journal: std::sync::OnceLock<Journal>,
+    approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
+    prompts_close_on_settle: std::sync::atomic::AtomicBool,
 }
 
 pub struct CallOutcome {
@@ -133,11 +182,21 @@ impl PermissionBroker {
             ledger: Mutex::new(ActionLedger::new()),
             confirms: AtomicU64::new(0),
             journal: std::sync::OnceLock::new(),
+            approver: std::sync::OnceLock::new(),
+            prompts_close_on_settle: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     pub fn set_journal(&self, journal: Journal) {
         let _first_wiring_wins = self.journal.set(journal);
+    }
+
+    pub fn set_approver(&self, approver: Arc<crate::classifier::Approver>) {
+        let _first_wiring_wins = self.approver.set(approver);
+    }
+
+    pub fn prompts_close_on_settle(&self) {
+        self.prompts_close_on_settle.store(true, Ordering::Relaxed);
     }
 
     fn settle(&self, tool_call_id: &str, ask: &PermissionAsk<'_>, allowed: bool, by: Answerer) {
@@ -374,6 +433,7 @@ impl PermissionBroker {
                         patch: preview,
                         changes: &targets,
                         grants: &grants,
+                        tool_call_id: Some(tool_call_id),
                     },
                     Reviewed {
                         reviewable: true,
@@ -403,6 +463,7 @@ impl PermissionBroker {
                     patch: preview,
                     changes: &targets,
                     grants: &grants,
+                    tool_call_id: Some(tool_call_id),
                 },
                 Reviewed {
                     reviewable,
@@ -429,11 +490,48 @@ impl PermissionBroker {
         canonical: &str,
         display: &str,
     ) -> CallOutcome {
-        let Some(reviewer) = self.reviewer.get().cloned() else {
-            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display);
+        let cwd = self.cwd.to_string_lossy();
+        let call = crate::classifier::Call {
+            tool: reviewed.tool_name,
+            display,
+            command: reviewed.command,
+            reason: reviewed.reason,
+            cwd: &cwd,
+        };
+        let approver = self.approver.get().filter(|_| reviewed.reviewable);
+        let mut prior = None;
+        if let Some(approver) = approver
+            && self.mode() == PermissionMode::Auto
+        {
+            let judgement = approver.judge(&call);
+            prior = Some(judgement);
+            match judgement {
+                crate::classifier::Judgement::Allow(safe) => {
+                    let _ = self.events.send(AgentEvent::PermissionRequested {
+                        tool_call_id: tool_call_id.to_owned(),
+                        title: ask.title.to_owned(),
+                        description: ask.text(),
+                    });
+                    self.settle(tool_call_id, ask, true, Answerer::Classifier);
+                    return CallOutcome {
+                        allowed: true,
+                        reason: format!("allowed by the classifier (P(safe) {safe:.2})"),
+                        contained: false,
+                    };
+                }
+                crate::classifier::Judgement::AskUser(_)
+                | crate::classifier::Judgement::Undecided => {}
+            }
+        }
+        let timed = approver
+            .filter(|_| prior.is_some())
+            .and_then(|approver| approver.ask_timeout());
+        let asks_user = matches!(prior, Some(crate::classifier::Judgement::AskUser(_)));
+        let Some(reviewer) = self.reviewer.get().cloned().filter(|_| !asks_user) else {
+            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display, timed);
         };
         if !reviewed.reviewable || self.mode() != PermissionMode::Auto {
-            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display);
+            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display, timed);
         }
         // Invariant: a call the deterministic ladder could not prove is announced and settled
         // whoever answers. The TUI's waiting cell and ACP's RequiresAction read this pair.
@@ -646,6 +744,24 @@ impl PermissionBroker {
         crate::auto_review::resolution_text(&stored.display, verdict)
     }
 
+    fn expired(
+        &self,
+        ask: &PermissionAsk<'_>,
+        tool_call_id: &str,
+        limit: std::time::Duration,
+    ) -> CallOutcome {
+        let waited = limit.as_secs();
+        self.settle(tool_call_id, ask, false, Answerer::Nobody);
+        CallOutcome {
+            allowed: false,
+            reason: format!(
+                "No one answered within {waited} s and the classifier did not clear it. {}",
+                ask.text()
+            ),
+            contained: false,
+        }
+    }
+
     fn keep_grant(
         &self,
         grant: Option<&yi_permission::Grant>,
@@ -681,6 +797,7 @@ impl PermissionBroker {
         rule_kind: RuleKind,
         canonical: &str,
         display: &str,
+        timed: Option<std::time::Duration>,
     ) -> CallOutcome {
         let rendered = ask.text();
         let _ = self.events.send(AgentEvent::PermissionRequested {
@@ -688,9 +805,14 @@ impl PermissionBroker {
             title: ask.title.to_owned(),
             description: rendered.clone(),
         });
-        let outcome = match &self.asker {
-            Some(asker) => asker(ask),
-            None => {
+        let limit = timed.filter(|_| self.prompts_close_on_settle.load(Ordering::Relaxed));
+        let outcome = match (&self.asker, limit) {
+            (Some(asker), Some(limit)) => match ask_within(asker, ask, limit) {
+                Some(outcome) => outcome,
+                None => return self.expired(ask, tool_call_id, limit),
+            },
+            (Some(asker), None) => asker(ask),
+            (None, _) => {
                 self.settle(tool_call_id, ask, false, Answerer::Nobody);
                 let asked = yi_permission::Decision::Ask {
                     title: ask.title.to_owned(),

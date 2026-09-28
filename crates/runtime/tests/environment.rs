@@ -65,7 +65,7 @@ fn the_environment_block_is_one_tagged_user_message() -> TestResult {
 
 #[tokio::test]
 async fn the_environment_block_never_enters_the_persisted_transcript() -> TestResult {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![faux_assistant_message(
         vec![faux_text("hello")],
         StopReason::Stop,
@@ -95,7 +95,7 @@ async fn the_environment_block_never_enters_the_persisted_transcript() -> TestRe
 
 #[tokio::test]
 async fn the_environment_block_is_read_once_per_request_not_per_prompt() -> TestResult {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut call: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
     call.insert("command".to_owned(), serde_json::json!("true"));
     provider.queue_faux(vec![
@@ -132,7 +132,7 @@ async fn the_environment_block_is_read_once_per_request_not_per_prompt() -> Test
 
 #[tokio::test]
 async fn the_session_cost_sums_every_assistant_turn() -> TestResult {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     for total in [0.25, 0.5] {
         let mut message = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
         if let AgentMessage::Assistant { usage, .. } = &mut message {

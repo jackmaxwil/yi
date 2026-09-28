@@ -403,6 +403,7 @@ impl App {
                 .unwrap_or_else(|| "the agent asks for permission".to_owned()),
             grants,
             reply: tx,
+            tool_call_id: None,
         }));
         self.dirty = true;
     }
