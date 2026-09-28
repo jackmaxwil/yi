@@ -89,9 +89,9 @@ EVAL_RUN_ID=<run-id> sh evals/drivers/tbv4_sweep.sh --runner <overrides.json> <t
 ```
 
 Same preflight, dataset, model and binary as the sweep. The tasks run as one harbor job under
-`watch.py` with a hard cap from `trials.py caps` (the smaller of what the stage's $10 and the
-week's $30 leave; the call is refused outright when its predicted cost, tasks x $0.13, would pass
-the stage's $8 or the week's $25 soft cap). `{}` overrides run the defaults; any other file rides
+`watch.py` with a hard cap from `trials.py caps` (the smaller of what the stage's $15 and the
+week's $30 leave; the call is refused outright when its predicted cost, tasks x $0.27, would pass
+the stage's $13 or the week's $25 soft cap). `{}` overrides run the defaults; any other file rides
 into the trial as `YI_LEVERS` (E16). Sessions land under `~/Development/yi-runs/<run-id>/`, one
 row per trial is appended to `evals/trials/<run-id>.jsonl` (trials/README.md) and printed on
 stdout, and harbor's own output goes to stderr. A trial the watcher stops past $1 or 180 turns
