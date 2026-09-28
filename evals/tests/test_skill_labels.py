@@ -41,6 +41,23 @@ class SkillLabels(unittest.TestCase):
         """yi-runtime's classifier_e2e::a_message_id_matches_the_labelling_tool pins the same value."""
         self.assertEqual(skill_labels.message_id("  Land THIS branch\n\tonce the ÉTÉ gate is green "), "2990f761ef69")
 
+    def test_a_message_id_splits_on_the_runtimes_whitespace_only(self):
+        """Rust's is_ascii_whitespace leaves out the vertical tab; a lone surrogate must not crash."""
+        self.assertNotEqual(skill_labels.message_id("a\vb"), skill_labels.message_id("a b"))
+        self.assertEqual(skill_labels.message_id("a\x0cb"), skill_labels.message_id("a b"))
+        self.assertEqual(len(skill_labels.message_id("a \ud800")), 12)
+
+    def test_a_killed_run_resumes_past_its_torn_line_and_odd_answers_are_invalid(self):
+        skill_labels.corpus(self.dir / "claude", self.dir / "yi", self.corpus)
+        out = self.dir / "labels.jsonl"
+        out.write_text('{"id": "torn", "sk')
+        answers = iter(['{"skill": ["land"]}', '["land"]', '{"skill": 3}'])
+        count, _ = skill_labels.label(self.corpus, out, "m", 9.0, None, teacher=lambda text: (next(answers), 0.0))
+        self.assertEqual(count, 3)
+        rows = [skill_labels.parsed(line) for line in out.read_text().splitlines()]
+        self.assertEqual([row and row["skill"] for row in rows], [None, "invalid", "invalid", "invalid"])
+        self.assertEqual(skill_labels.freeze(self.corpus, out, self.dir / "frozen.csv", 1, 1, 1), 0)
+
     def test_the_candidates_are_the_shipped_skills_with_a_trigger(self):
         found = dict(skill_labels.skills())
         self.assertIn("verify", found)
