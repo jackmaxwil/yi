@@ -1,9 +1,14 @@
+pub mod clock;
+mod kernel;
 mod lanes;
 pub(crate) mod shared;
+mod zone;
 
 use std::collections::HashSet;
 
+pub use clock::Firing;
 pub use lanes::Scheduler;
+pub use zone::Zone;
 
 use yi_types::schedule::{
     CronSchedule, DeliveryMode, DispatchRecord, Job, JobStatus, ScheduleKind, ScheduleState,
@@ -13,8 +18,7 @@ pub const ONE_SECOND_MS: u64 = 1_000;
 pub const ONE_MINUTE_MS: u64 = 60_000;
 pub const DEFAULT_HEARTBEAT_SCHEDULE: &str = "every 5m";
 pub const DEFAULT_HEARTBEAT_DELIVERY_MODE: DeliveryMode = DeliveryMode::Steer;
-pub const HEARTBEAT_USAGE: &str =
-    "Usage: /heartbeat [--every <interval>] [--steer|--follow-up] <instruction>";
+pub const HEARTBEAT_USAGE: &str = "Usage: /heartbeat [--every <interval> | <minute hour day month weekday>] [--steer|--follow-up] <instruction>";
 // The exact recovery marker; tests and `/heartbeat status` surface it.
 pub const INTERRUPTED_ERROR: &str = "Interrupted before scheduled operation completion";
 
@@ -101,9 +105,17 @@ fn parse_every_clause(text: &str) -> Option<Result<u64, String>> {
     Some(Ok(interval_ms))
 }
 
-/// `"in 5m"`, `"every 10m"`, `"at <ISO>"`, `@hourly`-style aliases, or a
-/// five-field cron expression, with its first run in epoch ms.
 pub fn parse_schedule(input: &str, now_ms: u64) -> Result<(CronSchedule, u64), String> {
+    parse_schedule_in(input, now_ms, &Zone::local())
+}
+
+/// `"in 5m"`, `"every 10m"`, `"at <ISO>"`, `@hourly`-style aliases, or a five-field cron
+/// expression in `zone`'s wall time, with its first run in epoch ms.
+pub fn parse_schedule_in(
+    input: &str,
+    now_ms: u64,
+    zone: &Zone,
+) -> Result<(CronSchedule, u64), String> {
     let text = strip_matching_quotes(input.trim()).trim();
     if text.is_empty() {
         return Err("Cron schedule cannot be empty".to_owned());
@@ -145,7 +157,7 @@ pub fn parse_schedule(input: &str, now_ms: u64) -> Result<(CronSchedule, u64), S
         ));
     }
     let expression = normalize_cron_alias(text);
-    let next = next_cron_run_after(expression, now_ms)?;
+    let next = next_cron_run_after(expression, now_ms, zone)?;
     Ok((
         CronSchedule {
             kind: ScheduleKind::Cron,
@@ -173,7 +185,11 @@ pub fn next_run_at_for_schedule(
             }
             Ok(Some(after_ms.saturating_add(interval)))
         }
-        ScheduleKind::Cron => Ok(Some(next_cron_run_after(&schedule.expression, after_ms)?)),
+        ScheduleKind::Cron => Ok(Some(next_cron_run_after(
+            &schedule.expression,
+            after_ms,
+            &Zone::local(),
+        )?)),
     }
 }
 
@@ -254,8 +270,6 @@ fn parse_cron_expression(expression: &str) -> Result<CronFields, String> {
     })
 }
 
-// Cron and `at` evaluate in UTC on purpose: std has no tzdata and no date crate is
-// an allowed dependency (§18.3), so local time would need a table Yi does not carry.
 struct Civil {
     minute: u64,
     hour: u64,
@@ -301,13 +315,16 @@ fn matches_cron_fields(civil: &Civil, fields: &CronFields) -> bool {
         && day_matches
 }
 
-fn next_cron_run_after(expression: &str, after_ms: u64) -> Result<u64, String> {
+fn next_cron_run_after(expression: &str, after_ms: u64, zone: &Zone) -> Result<u64, String> {
     let fields = parse_cron_expression(expression)?;
+    let after_wall = zone.wall_ms(after_ms);
     // Truncate to the minute, then step forward one minute at a time.
     let mut candidate = (after_ms / ONE_MINUTE_MS).saturating_add(1) * ONE_MINUTE_MS;
     let deadline = candidate.saturating_add(366 * 24 * 60 * ONE_MINUTE_MS);
     while candidate <= deadline {
-        if matches_cron_fields(&civil_of(candidate), &fields) {
+        let wall = zone.wall_ms(candidate);
+        // Invariant: the hour a fall-back repeats has wall times already passed; each fires once.
+        if wall > after_wall && matches_cron_fields(&civil_of(wall), &fields) {
             return Ok(candidate);
         }
         candidate = candidate.saturating_add(ONE_MINUTE_MS);
@@ -318,7 +335,7 @@ fn next_cron_run_after(expression: &str, after_ms: u64) -> Result<u64, String> {
 }
 
 /// Minimal UTC ISO-8601 parse: `YYYY-MM-DD[THH:MM[:SS]][Z]`. Offsets other
-/// than Z are rejected — Yi schedules in UTC.
+/// than Z are rejected: an `at` is an absolute instant, and only cron fields are local.
 pub fn parse_iso_ms(text: &str) -> Option<u64> {
     let text = text.trim().trim_end_matches('Z');
     let (date, time) = match text.split_once('T') {
@@ -363,6 +380,7 @@ pub enum HeartbeatCommand {
     Pause,
     Resume,
     Clear,
+    Halt,
     Set {
         schedule: String,
         instruction: String,
@@ -394,12 +412,26 @@ fn consume_delivery_option(text: &str) -> (Option<DeliveryMode>, &str) {
     (None, trimmed)
 }
 
+fn leading_cron(text: &str) -> Option<(String, &str)> {
+    let mut rest = text;
+    let mut fields = Vec::with_capacity(5);
+    for _ in 0..5 {
+        let (field, after) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+        fields.push(field);
+        rest = after.trim_start();
+    }
+    let cron = fields.join(" ");
+    parse_cron_expression(&cron).ok()?;
+    Some((cron, rest))
+}
+
 pub fn parse_heartbeat_command(input: &str) -> Result<HeartbeatCommand, String> {
     let text = input.strip_prefix("/heartbeat").unwrap_or(input).trim();
     match text {
         "" | "status" => return Ok(HeartbeatCommand::Status),
         "pause" => return Ok(HeartbeatCommand::Pause),
         "resume" => return Ok(HeartbeatCommand::Resume),
+        "halt" => return Ok(HeartbeatCommand::Halt),
         "clear" | "stop" => return Ok(HeartbeatCommand::Clear),
         _ => {}
     }
@@ -421,6 +453,8 @@ pub fn parse_heartbeat_command(input: &str) -> Result<HeartbeatCommand, String> 
         let amount = words.next().unwrap_or("");
         let rest = words.next().unwrap_or("").trim_start();
         (Some(format!("{every} {amount}")), rest)
+    } else if let Some((cron, rest)) = leading_cron(remaining) {
+        (Some(cron), rest)
     } else {
         (None, remaining)
     };
@@ -458,7 +492,7 @@ pub fn is_heartbeat_job(job: &Job) -> bool {
 /// Holds a due heartbeat back whenever delivering it would stack redundant work or land
 /// mid-operation; steering tolerates plain streaming, a follow-up does not (§15.2).
 pub fn should_defer(job: &Job, activity: &SessionActivity) -> bool {
-    if !is_heartbeat_job(job) {
+    if !is_heartbeat_job(job) && job.unblocks.is_none() {
         return false;
     }
     if activity.is_compacting || activity.has_pending_session_work {
@@ -472,13 +506,18 @@ pub fn should_defer(job: &Job, activity: &SessionActivity) -> bool {
     activity.is_streaming
 }
 
+fn claimable(job: &Job) -> bool {
+    job.status == JobStatus::Active && !job.halted
+}
+
 fn is_due_job(job: &Job, now_ms: u64) -> bool {
-    job.status == JobStatus::Active && job.next_run_at.is_some_and(|at| at <= now_ms)
+    claimable(job) && job.next_run_at.is_some_and(|at| at <= now_ms)
 }
 
 pub struct ClaimedDispatch {
     pub id: String,
     pub job: Job,
+    pub firing: Firing,
 }
 
 /// Design §15.2: advances every due job's schedule and claims a dispatch for each
@@ -504,6 +543,7 @@ pub fn claim_due_in_state(
             continue;
         }
         let scheduled_for = job.next_run_at.unwrap_or(due_ms);
+        let firing = clock::firing(&job.schedule, scheduled_for, claimed_ms);
         job.next_run_at = next_run_at_for_schedule(&job.schedule, claimed_ms)
             .ok()
             .flatten();
@@ -523,6 +563,7 @@ pub fn claim_due_in_state(
         dispatches.push(ClaimedDispatch {
             id: dispatch.id,
             job: job.clone(),
+            firing,
         });
     }
     dispatches
@@ -532,7 +573,13 @@ pub fn claim_due_in_state(
 pub enum RunOutcome {
     Ran,
     Skipped,
+    /// Held back by what the session is doing: the tick is still owed and retries soon.
+    Deferred,
 }
+
+/// Incident: a deferred tick re-armed to its next scheduled time, so a daily clock due while a
+/// turn held queued work made no todo that day; it retries this soon instead.
+pub const DEFER_RETRY_MS: u64 = 30_000;
 
 /// Design §15.2: resolves the claim and advances the job; a clean skip re-arms
 /// without counting a run.
@@ -556,7 +603,19 @@ pub fn record_dispatch_result_in_state(
         if job.id != dispatch.job_id || job.status != JobStatus::Active {
             continue;
         }
-        if job.schedule.kind == ScheduleKind::Once {
+        if outcome == RunOutcome::Deferred && error.is_none() {
+            let retry = now_ms.saturating_add(DEFER_RETRY_MS);
+            let next = next_run_at_for_schedule(&job.schedule, now_ms)
+                .ok()
+                .flatten();
+            job.next_run_at = Some(next.map_or(retry, |next| next.min(retry)));
+            job.last_skipped_at = Some(now_ms);
+            job.updated_at = now_ms;
+            updated = Some(job.clone());
+            continue;
+        }
+        // A wait unblocks its todo once, whatever its schedule's shape.
+        if job.schedule.kind == ScheduleKind::Once || job.unblocks.is_some() {
             job.status = JobStatus::Completed;
         }
         if outcome == RunOutcome::Skipped && error.is_none() {
@@ -618,24 +677,13 @@ pub fn recover_interrupted_in_state(
     recovered
 }
 
-/// The exact text a scheduled job puts in front of the model; the element wrapper is what
-/// tells the model this turn was machine-triggered rather than typed by the user (§15.2).
-pub fn heartbeat_text(job: &Job) -> String {
-    format!(
-        "<heartbeat job=\"{}\" run=\"{}\">{}</heartbeat>",
-        job.label.as_deref().unwrap_or(&job.id),
-        job.run_count.saturating_add(1),
-        job.prompt
-    )
-}
-
 pub struct JobStore {
     path: std::path::PathBuf,
     state: std::sync::Mutex<ScheduleState>,
     changed: std::sync::Arc<tokio::sync::Notify>,
 }
 
-fn lock_state(state: &std::sync::Mutex<ScheduleState>) -> std::sync::MutexGuard<'_, ScheduleState> {
+fn lock_or_poisoned<T>(state: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -661,14 +709,14 @@ impl JobStore {
     }
 
     pub fn snapshot(&self) -> ScheduleState {
-        lock_state(&self.state).clone()
+        lock_or_poisoned(&self.state).clone()
     }
 
     /// Every mutation persists (tmp + fsync + rename) before notifying the
     /// timer — the claim-before-deliver contract (§15.2) rides on this ordering.
     pub fn mutate<R>(&self, action: impl FnOnce(&mut ScheduleState) -> R) -> R {
         let result = {
-            let mut state = lock_state(&self.state);
+            let mut state = lock_or_poisoned(&self.state);
             let result = action(&mut state);
             self.persist(&state);
             result
@@ -727,49 +775,78 @@ pub fn new_job(spec: JobSpec) -> Job {
         last_skipped_at: None,
         last_error: None,
         run_count: 0,
+        intent: Vec::new(),
+        overlap: None,
+        catch_up: None,
+        unblocks: None,
+        halted: false,
         extra: serde_json::Map::new(),
     }
 }
 
-pub type DeliverFn = dyn Fn(&Job) -> RunOutcome + Send + Sync;
-
-/// Design §15.2: the persisted heartbeat message — `custom{heartbeat_prompt}`
-/// with the job's identity in details.
-pub fn heartbeat_message(job: &Job, now_ms: u64) -> yi_types::message::AgentMessage {
-    yi_types::message::AgentMessage::Custom {
-        custom_type: "heartbeat_prompt".to_owned(),
-        content: yi_types::message::UserContent::Text(heartbeat_text(job)),
-        display: false,
-        details: serde_json::to_value(serde_json::json!({
-            "jobId": job.id,
-            "schedule": job.schedule,
-            "runCount": job.run_count,
-            "nextRunAt": job.next_run_at,
-        }))
-        .ok(),
-        timestamp: now_ms,
-    }
-}
+/// An `Err` is a tick that ran and failed; the job records it as its last error.
+pub type DeliverFn = dyn Fn(&Job, &Firing) -> Result<RunOutcome, String> + Send + Sync;
 
 /// Design §15.2 surfaces: the `/heartbeat` verbs and the kernel's
 /// `rlm_heartbeat.*` vocabulary over one store.
 pub struct HeartbeatService {
-    pub store: std::sync::Arc<JobStore>,
+    store: std::sync::Mutex<std::sync::Arc<JobStore>>,
     session_id: std::sync::Mutex<String>,
     pub cwd: String,
-    hub: Option<std::sync::Arc<shared::DeliveryHub>>,
+    hub: std::sync::Mutex<Option<std::sync::Arc<shared::DeliveryHub>>>,
+    /// Incident: jobs lived in `rlm-<pid>/`, so a restart lost every subscription; a root
+    /// session's jobs live in `<root>/<session id>/` and its timer starts when it binds.
+    durable: Option<(std::path::PathBuf, tokio::runtime::Handle)>,
     deliver: Option<std::sync::Arc<DeliverFn>>,
+    stop: Option<std::sync::Arc<shared::StopFn>>,
+    words: Option<crate::goal::StoreHandle>,
+    /// Bound to a store every session of this process shares, so a halt reaches them all.
+    interned: bool,
 }
 
 impl HeartbeatService {
     pub fn new(store: std::sync::Arc<JobStore>, cwd: impl Into<String>) -> Self {
         Self {
-            store,
+            store: std::sync::Mutex::new(store),
             session_id: std::sync::Mutex::new(String::new()),
             cwd: cwd.into(),
-            hub: None,
+            hub: std::sync::Mutex::new(None),
+            durable: None,
             deliver: None,
+            stop: None,
+            words: None,
+            interned: false,
         }
+    }
+
+    pub fn with_words(mut self, words: crate::goal::StoreHandle) -> Self {
+        self.words = Some(words);
+        self
+    }
+
+    pub fn with_stop(mut self, stop: std::sync::Arc<dyn Fn(bool) -> bool + Send + Sync>) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+
+    pub(crate) fn interned(mut self) -> Self {
+        self.interned = true;
+        self
+    }
+
+    pub(crate) fn durable(mut self, root: std::path::PathBuf) -> Self {
+        self.durable = tokio::runtime::Handle::try_current()
+            .ok()
+            .map(|runtime| (root, runtime));
+        self
+    }
+
+    pub fn store(&self) -> std::sync::Arc<JobStore> {
+        std::sync::Arc::clone(&lock_or_poisoned(&self.store))
+    }
+
+    fn hub(&self) -> Option<std::sync::Arc<shared::DeliveryHub>> {
+        lock_or_poisoned(&self.hub).clone()
     }
 
     pub(crate) fn with_lane(
@@ -777,7 +854,7 @@ impl HeartbeatService {
         hub: std::sync::Arc<shared::DeliveryHub>,
         deliver: std::sync::Arc<DeliverFn>,
     ) -> Self {
-        self.hub = Some(hub);
+        self.hub = std::sync::Mutex::new(Some(hub));
         self.deliver = Some(deliver);
         self
     }
@@ -810,30 +887,58 @@ impl HeartbeatService {
         if *bound != session_id {
             self.withdraw(bound.as_str());
         }
-        if let (Some(hub), Some(deliver)) = (&self.hub, &self.deliver) {
-            hub.register(session_id.clone(), std::sync::Arc::clone(deliver));
+        match &self.durable {
+            Some((root, runtime)) if yi_session::validate_session_id(&session_id).is_ok() => {
+                let _timer_spawns_here = runtime.enter();
+                let path = root.join(&session_id).join("scheduled-jobs.json");
+                let shared = shared::intern(path, |hub| self.lane_into(hub, &session_id));
+                *lock_or_poisoned(&self.store) = std::sync::Arc::clone(&shared.store);
+                *lock_or_poisoned(&self.hub) = Some(std::sync::Arc::clone(&shared.hub));
+            }
+            _ => {
+                if let Some(hub) = self.hub() {
+                    self.lane_into(&hub, &session_id);
+                }
+            }
         }
         *bound = session_id;
+    }
+
+    /// Invariant: the lane is in the hub before a fresh timer's first claim, which would
+    /// otherwise find no lane, skip, and re-arm past the tick a restart owes.
+    fn lane_into(&self, hub: &shared::DeliveryHub, session_id: &str) {
+        if let Some(deliver) = &self.deliver {
+            hub.register(session_id.to_owned(), std::sync::Arc::clone(deliver));
+            if let Some(stop) = &self.stop {
+                hub.register_stop(session_id.to_owned(), std::sync::Arc::clone(stop));
+            }
+        }
     }
 
     /// Invariant: the interned timer outlives every session on its ledger, so a departing one
     /// loses its lane and pauses its Active jobs; left claimable they re-arm forever.
     fn withdraw(&self, session_id: &str) {
-        let Some(hub) = &self.hub else { return };
+        let Some(hub) = self.hub() else { return };
         if session_id.is_empty() {
             return;
         }
         hub.unregister(session_id);
+        if self.durable.is_some() {
+            // Its own file keeps the jobs Active for the next process; only its timer stops.
+            shared::release(&self.store());
+            return;
+        }
         // Incident: an unconditional mutate persists, so every session that
         // never armed a heartbeat still seeded `rlm-{pid}/scheduled-jobs.json`.
         let claimable = |job: &Job| {
             job.session_id == session_id && is_heartbeat_job(job) && job.status == JobStatus::Active
         };
-        if !self.store.snapshot().jobs.iter().any(claimable) {
+        let store = self.store();
+        if !store.snapshot().jobs.iter().any(claimable) {
             return;
         }
         let now = yi_session::now_ms();
-        self.store.mutate(|state| {
+        store.mutate(|state| {
             for job in state.jobs.iter_mut().filter(|job| claimable(job)) {
                 job.status = JobStatus::Paused;
                 job.next_run_at = None;
@@ -855,9 +960,22 @@ impl Drop for HeartbeatService {
     }
 }
 
+fn local_time(utc_ms: u64) -> String {
+    let zone = Zone::local();
+    let wall = zone.wall_ms(utc_ms);
+    let (year, month, day) = civil_from_days(wall / 86_400_000);
+    let civil = civil_of(wall);
+    format!(
+        "{year}-{month:02}-{day:02} {:02}:{:02} {}",
+        civil.hour,
+        civil.minute,
+        zone.abbreviation(utc_ms)
+    )
+}
+
 fn render_job_line(job: &Job) -> String {
     format!(
-        "{} [{}] {} — {} (runs: {}, next: {})",
+        "{} [{}{}] {} — {} (runs: {}, next: {})",
         job.id,
         match job.status {
             JobStatus::Active => "active",
@@ -865,11 +983,12 @@ fn render_job_line(job: &Job) -> String {
             JobStatus::Completed => "completed",
             JobStatus::Cancelled => "cancelled",
         },
+        if job.halted { ", halted" } else { "" },
         job.schedule.expression,
         job.prompt,
         job.run_count,
         job.next_run_at
-            .map(|at| at.to_string())
+            .map(local_time)
             .unwrap_or_else(|| "-".to_owned()),
     )
 }
@@ -888,7 +1007,7 @@ impl HeartbeatService {
     pub fn apply(&self, command: &HeartbeatCommand, now_ms: u64) -> Result<String, String> {
         match command {
             HeartbeatCommand::Status => {
-                let state = self.store.snapshot();
+                let state = self.store().snapshot();
                 let jobs: Vec<&Job> = Self::heartbeat_jobs(&state)
                     .into_iter()
                     .filter(|job| self.owns(job))
@@ -902,14 +1021,23 @@ impl HeartbeatService {
                     .collect::<Vec<_>>()
                     .join("\n"))
             }
+            HeartbeatCommand::Halt => Ok(self.halt(true, now_ms)),
             HeartbeatCommand::Pause | HeartbeatCommand::Resume => {
+                // Invariant: the halt's undo restores what it held and nothing more, so a job
+                // paused before the halt stays paused.
+                if matches!(command, HeartbeatCommand::Resume) {
+                    let released = self.halt(false, now_ms);
+                    if !released.is_empty() {
+                        return Ok(released.trim_start().to_owned());
+                    }
+                }
                 let target = if matches!(command, HeartbeatCommand::Pause) {
                     JobStatus::Paused
                 } else {
                     JobStatus::Active
                 };
                 let owner = self.session_id();
-                let changed = self.store.mutate(|state| {
+                let changed = self.store().mutate(|state| {
                     let mut changed = 0_u64;
                     for job in &mut state.jobs {
                         if job.session_id != owner
@@ -940,7 +1068,7 @@ impl HeartbeatService {
             }
             HeartbeatCommand::Clear => {
                 let owner = self.session_id();
-                let cleared = self.store.mutate(|state| {
+                let cleared = self.store().mutate(|state| {
                     let mut cleared = 0_u64;
                     for job in &mut state.jobs {
                         if job.session_id == owner
@@ -962,7 +1090,7 @@ impl HeartbeatService {
                 delivery_mode,
             } => {
                 let (parsed, next_run_at) = parse_schedule(schedule, now_ms)?;
-                let job = new_job(JobSpec {
+                let mut job = new_job(JobSpec {
                     id: format!("hb-{}", crate::subagent::random_suffix()?),
                     session_id: self.bound_session_id()?,
                     cwd: self.cwd.clone(),
@@ -974,8 +1102,9 @@ impl HeartbeatService {
                     next_run_at,
                     now_ms,
                 });
+                job.intent = self.latest_words();
                 let line = render_job_line(&job);
-                self.store.mutate(|state| {
+                self.store().mutate(|state| {
                     // One user heartbeat per session: `/heartbeat <x>` replaces.
                     for existing in &mut state.jobs {
                         if existing.source == Some(yi_types::schedule::JobSource::Heartbeat)
@@ -996,152 +1125,5 @@ impl HeartbeatService {
     /// Parses and applies one `/heartbeat` line, the entry point RPC, ACP and slash share (§15.2).
     pub fn run(&self, line: &str) -> Result<String, String> {
         parse_heartbeat_command(line).and_then(|command| self.apply(&command, yi_session::now_ms()))
-    }
-
-    /// Registers the kernel-side vocabulary (design §15.2): list, create,
-    /// update (pause/resume), delete.
-    pub fn register(self: &std::sync::Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
-        let list = std::sync::Arc::clone(self);
-        registry.register("rlm_heartbeat.list", move |_payload| {
-            let state = list.store.snapshot();
-            let jobs: Vec<_> = state
-                .jobs
-                .iter()
-                .filter(|job| {
-                    job.source == Some(yi_types::schedule::JobSource::RlmHeartbeat)
-                        && list.owns(job)
-                })
-                .collect();
-            let reply = serde_json::json!({"jobs": jobs})
-                .as_object()
-                .cloned()
-                .unwrap_or_default();
-            Box::pin(async move { Ok(reply) })
-        });
-        let create = std::sync::Arc::clone(self);
-        registry.register("rlm_heartbeat.create", move |payload| {
-            let result = (|| {
-                let schedule_text = payload
-                    .get("schedule")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or("rlm_heartbeat.create requires a schedule")?;
-                let prompt = payload
-                    .get("prompt")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or("rlm_heartbeat.create requires a prompt")?;
-                let label = payload
-                    .get("label")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned);
-                let delivery = match payload
-                    .get("deliveryMode")
-                    .and_then(serde_json::Value::as_str)
-                {
-                    None => None,
-                    Some("steer") => Some(DeliveryMode::Steer),
-                    Some("follow_up") => Some(DeliveryMode::FollowUp),
-                    Some(_) => {
-                        return Err(
-                            "Heartbeat delivery mode must be \"steer\" or \"follow_up\"".to_owned()
-                        );
-                    }
-                };
-                let now = yi_session::now_ms();
-                let (parsed, next_run_at) =
-                    parse_schedule(&normalize_heartbeat_schedule(Some(schedule_text)), now)?;
-                let job = new_job(JobSpec {
-                    id: format!("rhb-{}", crate::subagent::random_suffix()?),
-                    session_id: create.bound_session_id()?,
-                    cwd: create.cwd.clone(),
-                    source: yi_types::schedule::JobSource::RlmHeartbeat,
-                    delivery_mode: delivery,
-                    label,
-                    prompt: prompt.to_owned(),
-                    schedule: parsed,
-                    next_run_at,
-                    now_ms: now,
-                });
-                create.store.mutate(|state| state.jobs.push(job.clone()));
-                serde_json::json!({"job": job})
-                    .as_object()
-                    .cloned()
-                    .ok_or_else(|| "serialization failed".to_owned())
-            })();
-            Box::pin(async move { result })
-        });
-        let update = std::sync::Arc::clone(self);
-        registry.register("rlm_heartbeat.update", move |payload| {
-            let result = (|| {
-                let id = payload
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or("rlm_heartbeat.update requires an id")?
-                    .to_owned();
-                let target = match payload.get("status").and_then(serde_json::Value::as_str) {
-                    Some("pause") => JobStatus::Paused,
-                    Some("resume") => JobStatus::Active,
-                    _ => {
-                        return Err(
-                            "rlm_heartbeat.update status must be \"pause\" or \"resume\""
-                                .to_owned(),
-                        );
-                    }
-                };
-                let now = yi_session::now_ms();
-                let owner = update.bound_session_id()?;
-                let updated = update.store.mutate(|state| {
-                    let found = state
-                        .jobs
-                        .iter_mut()
-                        .find(|job| job.id == id && job.session_id == owner);
-                    found.map(|job| {
-                        job.status = target;
-                        if target == JobStatus::Active && job.next_run_at.is_none() {
-                            job.next_run_at =
-                                next_run_at_for_schedule(&job.schedule, now).ok().flatten();
-                        }
-                        job.updated_at = now;
-                        job.clone()
-                    })
-                });
-                let job = updated.ok_or(format!("unknown heartbeat job: {id}"))?;
-                serde_json::json!({"job": job})
-                    .as_object()
-                    .cloned()
-                    .ok_or_else(|| "serialization failed".to_owned())
-            })();
-            Box::pin(async move { result })
-        });
-        let delete = std::sync::Arc::clone(self);
-        registry.register("rlm_heartbeat.delete", move |payload| {
-            let result = (|| {
-                let id = payload
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or("rlm_heartbeat.delete requires an id")?
-                    .to_owned();
-                let now = yi_session::now_ms();
-                let owner = delete.bound_session_id()?;
-                let found = delete.store.mutate(|state| {
-                    let target = state
-                        .jobs
-                        .iter_mut()
-                        .find(|job| job.id == id && job.session_id == owner);
-                    target.map(|job| {
-                        job.status = JobStatus::Cancelled;
-                        job.next_run_at = None;
-                        job.updated_at = now;
-                    })
-                });
-                if found.is_none() {
-                    return Err(format!("unknown heartbeat job: {id}"));
-                }
-                serde_json::json!({"deleted": true})
-                    .as_object()
-                    .cloned()
-                    .ok_or_else(|| "serialization failed".to_owned())
-            })();
-            Box::pin(async move { result })
-        });
     }
 }

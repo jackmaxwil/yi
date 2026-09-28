@@ -95,6 +95,7 @@ fn blocked_text(on: &BlockedOn) -> String {
         BlockedOn::Child(agent) => format!("child {agent}"),
         BlockedOn::User => "user".to_owned(),
         BlockedOn::External { probe: _ } => "external".to_owned(),
+        BlockedOn::Channel { address, .. } => address.clone(),
         BlockedOn::Other(tag) => tag.clone(),
     }
 }
