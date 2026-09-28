@@ -211,13 +211,34 @@ fn wire_schedule(
     wiring: &RuntimeWiring,
     registry: &mut crate::kernel::HostRegistry,
 ) {
-    let shared = crate::schedule::shared::intern(wiring.rlm_dir.join("scheduled-jobs.json"));
+    let shared =
+        crate::schedule::shared::intern(wiring.rlm_dir.join("scheduled-jobs.json"), |_| {});
     let heartbeats_cwd = wiring.cwd.to_string_lossy().into_owned();
     let deliver = session.heartbeat_deliverer();
-    let heartbeats = Arc::new(
+    let heartbeats =
         crate::schedule::HeartbeatService::new(Arc::clone(&shared.store), heartbeats_cwd)
-            .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver)),
-    );
+            .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver))
+            .with_stop(session.halt_hook())
+            .with_words(session.store_handle())
+            .with_channels(
+                wiring
+                    .sessions_dir
+                    .as_ref()
+                    .unwrap_or(&wiring.rlm_dir)
+                    .join("channels"),
+            )
+            .with_gate({
+                let (broker, contained) = (wiring.broker.clone(), wiring.wall.container.is_some());
+                Arc::new(move |command: &str| {
+                    crate::tools::refuse_armed(command, contained, broker.as_deref(), "")
+                })
+            })
+            .interned();
+    crate::schedule::adapter::adapters_home(&wiring.home);
+    let heartbeats = Arc::new(match (&wiring.sessions_dir, wiring.depth) {
+        (Some(sessions), 0) => heartbeats.durable(sessions.join("schedules")),
+        _ => heartbeats,
+    });
     heartbeats.register(registry);
     session.set_schedule(Arc::clone(&heartbeats));
 }
@@ -458,7 +479,8 @@ fn wire_plan_request(
         .with_op_sink(ops)
         .with_liveness(liveness)
         .with_cwd(cwd.clone())
-        .with_owned(owned_roots(session, host));
+        .with_owned(owned_roots(session, host))
+        .with_owner_words(session.store_handle());
     // This session's host seats the juries (plan section 6.4). A verification never outlives
     // the run (D177): the verifier and every lane settle read the session's deadline too.
     let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
@@ -518,10 +540,6 @@ fn wire_plan_engine(
     let Some((engine, actor, todos)) = plan else {
         return;
     };
-    let probe_deliver: crate::goal::DeliverFn = {
-        let hook = session.heartbeat_hook();
-        Arc::new(move |message, mode| hook(message, mode))
-    };
     if let Some(service) = session.plan_service() {
         service.set_engine(Arc::clone(&engine), actor.clone());
     }
@@ -533,6 +551,14 @@ fn wire_plan_engine(
         &todos,
     ))));
     session.set_todos(Arc::clone(&todos));
+    if let Some(clock) = session.heartbeat_service() {
+        let clock = Arc::downgrade(&clock);
+        todos.on_change(Arc::new(move |list| {
+            if let Some(clock) = clock.upgrade() {
+                clock.watch(list);
+            }
+        }));
+    }
     let inner = (wiring.depth == 0).then(|| {
         crate::plan::finish::install(host, &engine, {
             let hook = session.heartbeat_hook();
@@ -540,42 +566,44 @@ fn wire_plan_engine(
         });
         let children = Arc::clone(host);
         let leased = Arc::clone(host);
-        let ladder = Arc::new(
-            crate::plan::probe::ProbeLadder::new(engine, (plans_dir, &wiring.cwd), probe_deliver)
-                .with_children(Arc::new(move || children.states()), {
-                    let (notice, stalled) = (lifecycle_notice(session), Arc::clone(host));
-                    Arc::new(move |text: &str, news| {
-                        notice(text, news);
-                        stalled.publish_all();
-                    })
+        let mut timer = crate::plan::timer::PlanTimer::new(engine)
+            .with_children(Arc::new(move || children.states()), {
+                let (notice, stalled) = (lifecycle_notice(session), Arc::clone(host));
+                Arc::new(move |text: &str, news| {
+                    notice(text, news);
+                    stalled.publish_all();
                 })
-                .with_leases(Arc::new(move || {
-                    let host = Arc::clone(&leased);
-                    tokio::spawn(async move { host.expire().await });
-                }))
-                .with_owned({
-                    let store = session.store_handle();
-                    Arc::new(move || {
-                        store()
-                            .map(|session| crate::plan::ledger::owned_roots(&session))
-                            .unwrap_or_default()
-                    })
-                }),
-        );
+            })
+            .with_leases(Arc::new(move || {
+                let host = Arc::clone(&leased);
+                tokio::spawn(async move { host.expire().await });
+            }))
+            .with_owned({
+                let store = session.store_handle();
+                Arc::new(move || {
+                    store()
+                        .map(|session| crate::plan::ledger::owned_roots(&session))
+                        .unwrap_or_default()
+                })
+            });
+        if let Some(clock) = session.heartbeat_service() {
+            let clock = Arc::downgrade(&clock);
+            timer = timer.with_arm(Arc::new(move |waits| {
+                if let Some(clock) = clock.upgrade() {
+                    clock.arm(waits);
+                }
+            }));
+        }
+        let timer = Arc::new(timer);
         // A grace rides the loop's own due-time set, so an earlier one interrupts its sleep.
-        let timer = Arc::clone(&ladder);
+        let due = Arc::clone(&timer);
         host.set_lease_clock(
             None,
             Some(Arc::new(move |grace| {
-                timer.wake_at(
-                    timer
-                        .now()
-                        .checked_add(grace)
-                        .unwrap_or_else(|| timer.now()),
-                );
+                due.wake_at(due.now().checked_add(grace).unwrap_or_else(|| due.now()));
             })),
         );
-        crate::plan::probe::spawn(ladder);
+        crate::plan::timer::spawn(timer);
         crate::plan::loop_coupling::coupling(
             session,
             crate::plan::loop_coupling::CouplingOptions {

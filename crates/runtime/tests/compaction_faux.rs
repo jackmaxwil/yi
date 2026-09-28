@@ -570,3 +570,97 @@ async fn a_request_that_is_not_due_assembles_nothing() -> Result<(), Box<dyn Err
     assert_eq!(asked.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+/// Dies with a host-written message counted into the index: every `user://` address the
+/// summarizer's key and a produced summary name is fetched and must serve the user's own words.
+#[tokio::test]
+async fn a_summarys_user_addresses_resolve_to_the_users_own_words() -> Result<(), Box<dyn Error>> {
+    let root = Scratch::new("yi-compact-cites")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-cites");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-cites".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let asks = [
+        "first requirement: keep the guardrails green",
+        "second ask with enough characters to keep recent",
+    ];
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        faux_assistant_message(
+            vec![faux_text(
+                "## Goal\n- user://2\n\n## Constraints & Preferences\n- user://1: \"keep the guardrails green\"",
+            )],
+            StopReason::Stop,
+        ),
+        reply_with_usage("second answer", 50, 300),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    for ask in asks {
+        session.prompt_message(yi_runtime::session::user_input(ask))?;
+        session.wait_idle().await;
+        let host = AgentMessage::host_user(UserContent::Text("[host] a reminder".to_owned()), 0);
+        yi_session::lock_session(&store).append_message("main", host)?;
+    }
+
+    let compactions = compaction_entries(&store);
+    let Some(Entry::Compaction { summary, .. }) = compactions.first() else {
+        return Err("expected a compaction entry".into());
+    };
+    let resolver =
+        yi_runtime::fetch::Resolver::new(root.to_path_buf(), yi_runtime::Wall::default())
+            .with_session("main", Arc::clone(&store));
+    let cited: Vec<&str> = summary
+        .split_whitespace()
+        .filter_map(|word| word.strip_suffix(':').or(Some(word)))
+        .filter(|word| word.starts_with("user://"))
+        .collect();
+    assert_eq!(cited, ["user://2", "user://1"], "{summary}");
+    for (address, ask) in cited.iter().zip(asks.iter().rev()) {
+        let served = resolver.fetch(&address.parse()?)?;
+        assert!(
+            served.text.contains(ask),
+            "{address} served {:?}",
+            served.text
+        );
+    }
+    let window = compaction_window(&store)?;
+    let key = yi_context::user_key(&window, &yi_runtime::fetch::user_inputs(&store)?);
+    let keyed: Vec<(&str, &str)> = key
+        .lines()
+        .filter_map(|row| row.split_once(": "))
+        .filter(|(address, _)| address.starts_with("user://"))
+        .collect();
+    assert_eq!(keyed.len(), asks.len(), "{key}");
+    for (address, quote) in keyed {
+        let served = resolver.fetch(&address.parse()?)?;
+        assert!(
+            served.text.contains(quote.trim_matches('"')),
+            "{address} quoted {quote} but served {:?}",
+            served.text
+        );
+    }
+    Ok(())
+}
+
+fn compaction_window(
+    store: &yi_session::SharedSession,
+) -> Result<Vec<AgentMessage>, Box<dyn Error>> {
+    let entries = yi_session::lock_session(store).find_entries_on_branch(
+        "main",
+        &yi_session::EntryQuery {
+            order: yi_session::EntryOrder::OldestFirst,
+            ..yi_session::EntryQuery::default()
+        },
+        &yi_session::BranchBounds::default(),
+    )?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Entry::Message { message, .. } => Some(message),
+            _ => None,
+        })
+        .collect())
+}

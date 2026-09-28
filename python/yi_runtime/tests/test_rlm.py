@@ -342,6 +342,34 @@ class BlackboardTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(rlm, "host_request", text_host_request):
             self.assertEqual(await rlm.fetch("kernel://main/df", as_text=True), "[4, 5]")
 
+    async def test_subscribe_sends_the_address_the_todo_and_seconds_as_milliseconds(self) -> None:
+        calls: list[tuple[str, dict]] = []
+
+        async def fake_host_request(kind, payload):
+            calls.append((kind, payload))
+            return {"job": {"id": "sub-1"}}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            reply = await rlm.subscribe(
+                "exec://just check?every=30s",
+                create={"label": "make main green", "intent": ["user://3"]},
+                filter="ok=false",
+                window=90,
+                retention={"age": 3600},
+            )
+            with self.assertRaises(TypeError):
+                await rlm.subscribe("exec://true", create={"note": "no label"})
+        self.assertEqual(reply, {"job": {"id": "sub-1"}})
+        self.assertEqual(calls, [("rlm_heartbeat.create", {
+            "address": "exec://just check?every=30s",
+            "label": "make main green",
+            "prompt": "make main green",
+            "intent": ["user://3"],
+            "filter": "ok=false",
+            "windowMs": 90_000,
+            "retention": {"ageMs": 3_600_000},
+        })])
+
     async def test_a_paged_fetch_sends_only_the_keys_it_was_given_and_carries_the_next_offset(self) -> None:
         calls: list[dict] = []
 

@@ -75,6 +75,8 @@ struct Shared {
     deadline: OnceLock<Deadline>,
     turn_time: Mutex<(Option<std::time::Instant>, Option<Duration>)>,
     cancelled: std::sync::atomic::AtomicBool,
+    /// The kill switch's hold: no wake starts a turn until it lifts; a typed prompt still does.
+    held: std::sync::atomic::AtomicBool,
     runs: std::sync::atomic::AtomicU64,
 }
 
@@ -183,6 +185,7 @@ impl AgentSession {
                 deadline: OnceLock::new(),
                 turn_time: Mutex::new((None, None)),
                 cancelled: false.into(),
+                held: false.into(),
                 runs: 0.into(),
             }),
             config,
@@ -599,15 +602,19 @@ impl AgentSession {
                 run::push(&mut queue, Queued::new(message, false, None));
             }
         }
-        if let Some(service) = self.heartbeat_service() {
-            let id = yi_session::lock_session(&store).metadata().id.clone();
-            service.bind_session(id);
-        }
+        let id = yi_session::lock_session(&store).metadata().id.clone();
         if let Ok(mut slot) = self.shared.store.lock() {
             *slot = Some(store);
         }
         if let Some(todos) = self.todos() {
             todos.rehydrate();
+        }
+        // Invariant: bound last, so a tick owed since the last process finds the ledger and list.
+        if let Some(service) = self.heartbeat_service() {
+            service.bind_session(id);
+            if let Some(todos) = self.todos() {
+                service.watch(&todos.list());
+            }
         }
         if let (Some(telemetry), Some((file, id))) = (self.telemetry(), sidecar) {
             telemetry.bind(&file, &id);
