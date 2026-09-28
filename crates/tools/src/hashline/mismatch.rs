@@ -45,59 +45,33 @@ pub fn parse_line_ref(reference: &str) -> Result<Anchor, String> {
 /// Pinned prefix: the edit tool classifies a rejection as `stale_tag` by it.
 pub const EDIT_REJECTED_PREFIX: &str = "Edit rejected";
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct MismatchError {
-    pub path: Option<String>,
-    pub expected_file_hash: String,
-    pub actual_file_hash: FileTag,
-    pub rows: Vec<String>,
-    pub footer: String,
-    pub hash_recognized: bool,
-}
-
-impl MismatchError {
-    pub fn rejection_header(&self) -> Vec<String> {
-        let path_text = self
-            .path
-            .as_deref()
-            .map(|path| format!(" for {path}"))
-            .unwrap_or_default();
-        if !self.hash_recognized {
-            return vec![
-                format!(
-                    "{EDIT_REJECTED_PREFIX}{path_text}: hash {HL_FILE_HASH_SEP}{} is not from this session.",
-                    self.expected_file_hash
-                ),
-                format!(
-                    "The current file hashes to {HL_FILE_HASH_SEP}{}. Copy a current {HL_FILE_PREFIX}path{HL_FILE_HASH_SEP}tag{HL_FILE_SUFFIX} header from the read, write or edit result for this file; never invent the tag and never reuse one from a prior session.",
-                    self.actual_file_hash
-                ),
-            ];
-        }
-        vec![
-            format!("{EDIT_REJECTED_PREFIX}{path_text}: file changed between read and edit."),
-            format!(
-                "Section is bound to {HL_FILE_HASH_SEP}{}, but the current file hashes to {HL_FILE_HASH_SEP}{}. If a prior edit in this session modified this file, copy the {HL_FILE_PREFIX}path{HL_FILE_HASH_SEP}newhash{HL_FILE_SUFFIX} header from that edit's response; otherwise re-read the file with `read` to refresh the tag before retrying.",
-                self.expected_file_hash, self.actual_file_hash
-            ),
-        ]
+/// The rejection for a tag that is not the live file's: unknown here, or known but moved.
+pub fn mismatch_message(
+    path: &str,
+    expected: &str,
+    actual: FileTag,
+    hash_recognized: bool,
+    rows: &[String],
+    footer: &str,
+) -> String {
+    let header = if hash_recognized {
+        format!(
+            "{EDIT_REJECTED_PREFIX} for {path}: file changed between read and edit.\n\
+Section is bound to {HL_FILE_HASH_SEP}{expected}, but the current file hashes to {HL_FILE_HASH_SEP}{actual}. If a prior edit in this session modified this file, copy the {HL_FILE_PREFIX}path{HL_FILE_HASH_SEP}newhash{HL_FILE_SUFFIX} header from that edit's response; otherwise re-read the file with `read` to refresh the tag before retrying."
+        )
+    } else {
+        format!(
+            "{EDIT_REJECTED_PREFIX} for {path}: hash {HL_FILE_HASH_SEP}{expected} is not from this session.\n\
+The current file hashes to {HL_FILE_HASH_SEP}{actual}. Copy a current {HL_FILE_PREFIX}path{HL_FILE_HASH_SEP}tag{HL_FILE_SUFFIX} header from the read, write or edit result for this file; never invent the tag and never reuse one from a prior session."
+        )
+    };
+    let mut lines = vec![header];
+    if !rows.is_empty() {
+        lines.push(String::new());
+        lines.extend(rows.iter().cloned());
     }
-
-    pub fn display_message(&self) -> String {
-        let mut lines = self.rejection_header();
-        if !self.rows.is_empty() {
-            lines.push(String::new());
-            lines.extend(self.rows.iter().cloned());
-        }
-        lines.push(self.footer.clone());
-        lines.join("\n")
-    }
-}
-
-impl std::fmt::Display for MismatchError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.display_message())
-    }
+    lines.push(footer.to_owned());
+    lines.join("\n")
 }
 
 pub fn validate_line_ref(anchor: Anchor, file_lines: &[String]) -> Result<(), String> {
