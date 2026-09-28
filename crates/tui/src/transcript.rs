@@ -24,6 +24,15 @@ pub(crate) fn prose_of(content: &[Content]) -> String {
         .join("\n\n")
 }
 
+/// Incident: a raw tab is one cell to ratatui and a tab stop to the terminal, so card rows spilled
+/// past the pane edge. Tabs take a fixed width: a card re-seats a read's `12:` behind its gutter.
+pub fn show_controls(text: &str) -> String {
+    crate::markdown::inline_tabs(text)
+        .chars()
+        .map(crate::term::control_picture)
+        .collect()
+}
+
 /// The head says what ran and the tail how it ended, and a command's error is
 /// in the tail — keeping ten head lines dropped the half worth reading.
 pub(crate) fn preview_lines(text: &str, head: usize, tail: usize) -> Vec<String> {
@@ -35,19 +44,19 @@ pub(crate) fn preview_lines(text: &str, head: usize, tail: usize) -> Vec<String>
     let text = pretty.as_deref().unwrap_or(text);
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() <= head.saturating_add(tail) {
-        return lines.into_iter().map(str::to_owned).collect();
+        return lines.into_iter().map(show_controls).collect();
     }
     let omitted = lines.len().saturating_sub(head.saturating_add(tail));
     lines
         .iter()
         .take(head)
-        .map(|line| (*line).to_owned())
+        .map(|line| show_controls(line))
         .chain(std::iter::once(format!("… {omitted} more lines")))
         .chain(
             lines
                 .iter()
                 .skip(lines.len().saturating_sub(tail))
-                .map(|line| (*line).to_owned()),
+                .map(|line| show_controls(line)),
         )
         .collect()
 }

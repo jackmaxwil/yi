@@ -80,7 +80,7 @@ async fn run_contained(
     sandbox: Sandbox,
     commands: &[&str],
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(
         commands
             .iter()

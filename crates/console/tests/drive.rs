@@ -332,7 +332,11 @@ fn run_frames_with(
         sidebar,
         Some(dir.to_path_buf()),
     )?;
-    let mut names: Vec<PathBuf> = std::fs::read_dir(&dir)?
+    last_frame(&dir)
+}
+
+fn last_frame(dir: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    let mut names: Vec<PathBuf> = std::fs::read_dir(dir)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .collect();
@@ -1345,6 +1349,107 @@ fn untracked_edit_accumulates_without_opening() -> TestResult {
          wait-frame 3000 !Review ·\n\
          quit\n",
     )
+}
+
+/// A finished call as the worker reports it: the start, then the end carrying its result.
+fn tool_run(seq: u64, id: &str, name: &str, args: Value, text: &str, details: Value) -> [Value; 2] {
+    let result = yi_types::event::ToolResult {
+        content: vec![Content::Text {
+            text: text.to_owned(),
+            text_signature: None,
+        }],
+        details,
+        usage: None,
+        added_tool_names: None,
+        terminate: None,
+    };
+    let (tool_call_id, tool_name) = (id.to_owned(), name.to_owned());
+    [
+        event(
+            "s-alpha",
+            seq,
+            &AgentEvent::ToolExecutionStart {
+                tool_call_id: tool_call_id.clone(),
+                tool_name: tool_name.clone(),
+                args,
+            },
+        ),
+        event(
+            "s-alpha",
+            seq + 1,
+            &AgentEvent::ToolExecutionEnd {
+                tool_call_id,
+                tool_name,
+                result,
+                is_error: false,
+            },
+        ),
+    ]
+}
+
+/// Real producers: sha1_smol 1.0.1's Makefile read through `cat`, and `diff -u` of a
+/// one-line recipe edit to it. Make wants its recipes tab-indented.
+fn makefile_push() -> Vec<Value> {
+    let patch = include_str!("fixtures/makefile.diff");
+    let mut frames = Vec::from(tool_run(
+        20,
+        "b1",
+        "bash",
+        json!({"command": "cat Makefile"}),
+        include_str!("fixtures/makefile.txt"),
+        json!({"exitCode": 0}),
+    ));
+    frames.extend(tool_run(
+        22,
+        "e1",
+        "edit",
+        json!({"path": "/tmp/demo-root/Makefile"}),
+        "[Makefile#1]\nupdated; first change at line 13",
+        json!({"path": "/tmp/demo-root/Makefile", "patch": patch}),
+    ));
+    frames.push(update(
+        "s-alpha",
+        json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "e1", "title": "edit", "kind": "edit", "status": "completed",
+        "rawOutput": {"patch": patch, "added": 1, "removed": 0}}),
+    ));
+    frames
+}
+
+/// Incident: a tab is one cell to ratatui and a tab stop to the terminal, so the rest of a card
+/// row, its grey pad included, landed past the pane edge where no later frame repainted it.
+#[test]
+fn tab_indented_cards_put_no_control_character_in_a_cell() -> TestResult {
+    let dir = Scratch::new("yi-console-frames-card-tabs")?;
+    // Read before the exit code: the drive guard fails the run on the frame this asserts.
+    let run = run_opts(
+        "card-tabs",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(makefile_push),
+            Step::Expect("_yi/tracked", tracked_no),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 @cargo build\n\
+         wait-frame 3000 @cargo clippy --all-targets\n\
+         quit\n",
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+    );
+    let frame = last_frame(&dir)?;
+    let control = frame.chars().find(|c| c.is_control() && *c != '\n');
+    assert_eq!(
+        control, None,
+        "a control character reached a cell:\n{frame}"
+    );
+    run
 }
 
 fn why_reply(frame: &Value) -> Vec<Value> {

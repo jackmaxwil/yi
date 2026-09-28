@@ -117,7 +117,7 @@ fn engine_with_sink(rules: Vec<RuleDoc>) -> (Arc<RuleEngine>, Arc<Mutex<Vec<Stri
     (engine, delivered)
 }
 
-fn assistant_saying(text: &str) -> AgentEvent {
+pub(crate) fn assistant_saying(text: &str) -> AgentEvent {
     AgentEvent::MessageEnd {
         message: AgentMessage::Assistant {
             content: vec![Content::Text {
@@ -333,7 +333,7 @@ async fn gate_rule_denies_through_the_real_adapter_before_execution() -> TestRes
         thinking_level_map: None,
         headers: None,
     };
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut call_args = serde_json::Map::new();
     let dir = Scratch::new("yi-rule-gate")?;
     let marker = dir.join("touched");
@@ -907,6 +907,37 @@ fn a_dollar_name_in_the_prompt_points_at_the_skill_with_or_without_a_trigger() -
             "Relevant: skill://assess (matched \"$assess\")",
             "Relevant: skill://quiet (matched \"$quiet\")",
         ]
+    );
+    Ok(())
+}
+
+/// Dies with `$har-api` also pointing at `har`, or re-pointing at a latched `har`: a name that
+/// prefixes another is its own mention only where the typed name ends. A `$` trigger that is not
+/// a name still matches as written.
+#[test]
+fn a_typed_name_does_not_also_name_its_prefix() -> TestResult {
+    let mut har = skill("har", "unwrap", RuleScope::Text, RuleGap::Once);
+    har.needles.push("$har".to_owned());
+    let mut api = skill("har-api", "never typed", RuleScope::Text, RuleGap::Once);
+    api.needles.push("$har-api".to_owned());
+    let npm = skill("npm", "$ npm i", RuleScope::Text, RuleGap::Once);
+    let (engine, _delivered) = engine_with_sink(vec![har, api, npm]);
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("fix this with $har-api"))),
+        ["Relevant: skill://har-api (matched \"$har-api\")"]
+    );
+    assert_eq!(engine.observe_user(&typed("unwrap this")).len(), 1);
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("unwrap with $har-api"))),
+        ["Relevant: skill://har-api (matched \"$har-api\")"]
+    );
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("now $har."))),
+        ["Relevant: skill://har (matched \"$har\")"]
+    );
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("`$ npm install` fails"))),
+        ["Relevant: skill://npm (matched \"$ npm i\")"]
     );
     Ok(())
 }
