@@ -133,6 +133,9 @@ fn carry(old: &TodoList, row: &mut TodoItem) {
     if row.id.is_none() {
         row.id = prior.id.clone();
     }
+    if row.intent.is_empty() {
+        row.intent = prior.intent.clone();
+    }
     if prior.state == row.state {
         row.on = prior.on.clone();
         row.note = row.note.take().or_else(|| prior.note.clone());

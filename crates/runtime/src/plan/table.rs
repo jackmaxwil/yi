@@ -221,6 +221,14 @@ impl std::fmt::Display for Refusal {
     }
 }
 
+/// The ready labels `admit` does not refuse at `slots`; the rest are the held list.
+pub(super) fn admitted(plan: &Plan, slots: usize) -> Vec<TodoLabel> {
+    ready_labels(plan)
+        .into_iter()
+        .filter(|label| admit(plan, label, slots).is_ok())
+        .collect()
+}
+
 pub fn admit(plan: &Plan, label: &TodoLabel, slots: usize) -> Result<(), Refusal> {
     let ready = plan.ready();
     let delegated: Vec<&Todo> = ready
@@ -345,6 +353,7 @@ pub(super) fn new_todo(spec: TodoSpec) -> Todo {
         refusals: 0,
         contract: spec.contract,
         contract_hash: None,
+        cites: spec.cites,
         extra: Map::new(),
     }
 }

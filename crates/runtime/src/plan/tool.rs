@@ -3,8 +3,8 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
 use yi_types::plan::doc::{
-    BlockedOn, Delegation, GoalText, Plan, PlanId, PlanTier, TODO_LABEL_MAX, Todo, TodoLabel,
-    TodoState, TodoStateName,
+    BlockedOn, Cites, Delegation, GoalText, Plan, PlanId, PlanTier, TODO_LABEL_MAX, Todo,
+    TodoLabel, TodoState, TodoStateName, Waiver,
 };
 use yi_types::url::Url;
 
@@ -124,7 +124,14 @@ fn known_keys(kind: OpKind) -> &'static [&'static str] {
     }
 }
 
-const TODO_SPEC_KEYS: [&str; 4] = ["label", "after", "delegation", "contract"];
+const TODO_SPEC_KEYS: [&str; 6] = [
+    "label",
+    "after",
+    "delegation",
+    "contract",
+    "intent",
+    "waived",
+];
 
 /// Invariant: a key no op reads is refused, never dropped: a misspelled `contract` or `output`
 /// would otherwise land a todo on the unverified path with no error.
@@ -187,6 +194,7 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
         }
         // Incident: one F0e session shortened a label three times and never got under 80,
         // because the headline said the row was not a checklist row (#472).
+        let (label, cited) = yi_types::todo::split_cited(label);
         let label = TodoLabel::new(label).map_err(|cause| match cause {
             yi_types::plan::doc::DocError::LabelTooLong { label, max } => ArgError::LabelTooLong {
                 at: format!("set line {line}"),
@@ -198,9 +206,7 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                 text: cause.to_string(),
             },
         })?;
-        let todo = Todo {
-            label,
-            after: Vec::new(),
+        let mut todo = Todo {
             state: match &state {
                 TodoStateName::Running => TodoState::Running {
                     by: yi_types::plan::doc::AgentId::new(super::ops::OWNER_AGENT).map_err(
@@ -220,17 +226,9 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                 | TodoStateName::Abandoned
                 | TodoStateName::Other(_) => TodoState::Pending,
             },
-            delegation: None,
-            subplan: None,
-            retries: yi_types::plan::doc::RetryCount::default(),
-            children: Vec::new(),
-            note: None,
-            attempt: yi_types::plan::doc::AttemptId::FIRST,
-            refusals: 0,
-            contract: None,
-            contract_hash: None,
-            extra: serde_json::Map::new(),
+            ..Todo::pending(label)
         };
+        todo.cites.intent = cited;
         let depth = indent.min(path.len());
         path.truncate(depth);
         if depth == 0 {
@@ -276,6 +274,7 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                 delegation: None,
                 contract: None,
                 children: todo.children,
+                cites: todo.cites,
             },
             state,
         })
@@ -312,6 +311,8 @@ from_arg!(
     Vec<TodoLabel>,
     PlanId,
     Url,
+    Vec<Url>,
+    Vec<Waiver>,
     BlockedOn,
     Delegation,
     yi_types::plan::contract::Contract,
@@ -382,6 +383,10 @@ fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, Ar
             delegation: opt(spec, op, "delegation")?,
             contract: opt(spec, op, "contract")?,
             children: Vec::new(),
+            cites: Cites {
+                intent: opt(spec, op, "intent")?.unwrap_or_default(),
+                waived: opt(spec, op, "waived")?.unwrap_or_default(),
+            },
         })?);
     }
     Ok(specs)
@@ -779,13 +784,13 @@ pub fn schema() -> Value {
                     "enum": ALL_OPS.iter().take(MODEL_OPS).map(|op| op_name(*op)).collect::<Vec<_>>(),
                     "description": "set replaces the whole list from a checklist; init goal+todos; append/drop/reorder/add_edge edit the cut; start/done/fail step a todo; block/unblock park one; retry a failed one; decompose a running one into a sub-plan; supersede replaces the whole cut; view echoes it"
                 },
-                "list": {"type": "string", "description": "set: the checklist, one `- [ ] label` per line (`[>]` running, `[x]` done), nested by two-space indent"},
+                "list": {"type": "string", "description": "set: the checklist, one `- [ ] label` per line (`[>]` running, `[x]` done), nested by two-space indent; trailing `user://<n>` tokens cite the user's messages the row serves"},
                 "plan": {"type": "string", "description": "Sub-plan id; omit for the root plan"},
                 "goal": {"type": "string", "description": "init: the whole deliverable in one line"},
                 "todos": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "init/append/decompose/supersede: [{label (at most 80 chars), after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, covers?: [glob], items: [{id, critical: bool, weight: 1..100, decider: {cmd: \"shell command\"} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract; done runs the contract (an artifact is {digest, media_type, length})",
+                    "description": "init/append/decompose/supersede: [{label (at most 80 chars), intent?: [user://<n> of each user message it serves; default the latest], waived?: [{address, reason}], after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, covers?: [glob], items: [{id, critical: bool, weight: 1..100, decider: {cmd: \"shell command\"} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract; done runs the contract (an artifact is {digest, media_type, length})",
                     "minItems": 1
                 },
                 "label": {"type": "string", "description": "drop/block/unblock/start/done/fail/retry/decompose: the todo"},
@@ -972,6 +977,7 @@ mod tests {
             contract: None,
             contract_hash: None,
             extra: Map::new(),
+            cites: Default::default(),
         })
     }
 

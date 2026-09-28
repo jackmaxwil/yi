@@ -571,6 +571,15 @@ impl Resolver {
 /// Invariant: the one index behind every `user://` reader, so a citation
 /// checked at one seam names the message a fetch serves at another.
 pub fn user_inputs(session: &yi_session::SharedSession) -> Result<Vec<UserContent>, String> {
+    Ok(user_entries(session)?
+        .into_iter()
+        .map(|(_, content)| content)
+        .collect())
+}
+
+pub(crate) fn user_entries(
+    session: &yi_session::SharedSession,
+) -> Result<Vec<(String, UserContent)>, String> {
     let entries = yi_session::lock_session(session)
         .find_entries(&EntryQuery {
             order: EntryOrder::OldestFirst,
@@ -581,6 +590,7 @@ pub fn user_inputs(session: &yi_session::SharedSession) -> Result<Vec<UserConten
         .into_iter()
         .filter_map(|entry| {
             let Entry::Message {
+                id,
                 message:
                     AgentMessage::User {
                         content,
@@ -592,7 +602,7 @@ pub fn user_inputs(session: &yi_session::SharedSession) -> Result<Vec<UserConten
             else {
                 return None;
             };
-            Some(content)
+            Some((id, content))
         })
         .collect())
 }

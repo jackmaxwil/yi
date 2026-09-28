@@ -135,6 +135,7 @@ fn open(rig: &Rig, label: &str, probe: Option<&str>) -> Result<(), Box<dyn Error
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         },
         request_id: None,
@@ -189,6 +190,7 @@ fn a_block_inside_a_sub_plan_is_probed_too() -> TestResult {
                 delegation: None,
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         },
     ))?;
@@ -210,6 +212,7 @@ fn a_block_inside_a_sub_plan_is_probed_too() -> TestResult {
                     delegation: None,
                     contract: None,
                     children: Vec::new(),
+                    cites: Default::default(),
                 }],
             },
         ))?
@@ -310,6 +313,7 @@ fn the_backstop_starts_only_the_roots_this_session_owns() -> TestResult {
                 }),
                 contract: None,
                 children: Vec::new(),
+                cites: Default::default(),
             }],
         },
         request_id: None,

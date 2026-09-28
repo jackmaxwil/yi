@@ -300,6 +300,7 @@ mod tests {
             refusals: 0,
             contract: None,
             contract_hash: None,
+            cites: Default::default(),
             extra: serde_json::Map::new(),
         })
     }

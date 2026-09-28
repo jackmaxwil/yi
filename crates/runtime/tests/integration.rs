@@ -47,6 +47,7 @@ mod plan_ops;
 mod plan_probe;
 mod plan_program;
 mod plan_recovery;
+mod plan_trace;
 mod plan_verify;
 mod plan_walkthrough;
 mod prompt_drift;

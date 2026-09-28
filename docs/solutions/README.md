@@ -253,5 +253,6 @@ edited by hand.
 - [D274](adr/d274.md) - a macOS build of a release-derived profile (`release`, `dist`) links without...
 - [D252](adr/d252.md) - a session's plan and todos are its own
 - [D271](adr/d271.md) - the stack's four gaps close
+- [D284](adr/d284.md) - the user's words travel by address
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

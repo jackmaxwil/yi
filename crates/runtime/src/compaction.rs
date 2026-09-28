@@ -211,8 +211,12 @@ fn merge(standing: Option<String>, once: Option<String>) -> Option<String> {
     }
 }
 
-fn directive_message(prepared: &Preparation, instructions: Option<&str>) -> AgentMessage {
-    let mut text = String::new();
+fn directive_message(
+    prepared: &Preparation,
+    instructions: Option<&str>,
+    key: &str,
+) -> AgentMessage {
+    let mut text = key.to_owned();
     if let Some(previous) = &prepared.previous_summary {
         text.push_str(&format!(
             "<previous-summary>\n{previous}\n</previous-summary>\n\n"
@@ -375,11 +379,13 @@ impl Compactor {
         let Some(prepared) = prepared else {
             return Ok(None);
         };
+        let inputs = store.and_then(|store| crate::fetch::user_inputs(store).ok());
         let request = |window_messages: &[AgentMessage]| LlmContext {
             system_prompt: system_prompt.to_owned(),
             messages: {
                 let mut converted = convert_to_llm(window_messages);
-                converted.push(directive_message(&prepared, instructions.as_deref()));
+                let key = yi_context::user_key(window_messages, inputs.as_deref().unwrap_or(&[]));
+                converted.push(directive_message(&prepared, instructions.as_deref(), &key));
                 converted
             },
             tools: None,
