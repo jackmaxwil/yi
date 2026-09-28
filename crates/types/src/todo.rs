@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
@@ -358,6 +360,15 @@ impl TodoList {
                 .iter()
                 .flat_map(|item| std::iter::once(item).chain(item.children.iter()))
         })
+    }
+
+    /// Labels held by more than one row, children included.
+    pub fn duplicates(&self) -> BTreeSet<&TodoLabel> {
+        let mut seen = BTreeSet::new();
+        self.items()
+            .map(|item| &item.label)
+            .filter(|label| !seen.insert(*label))
+            .collect()
     }
 
     pub fn for_each_mut(&mut self, mut act: impl FnMut(&mut Todo)) {
