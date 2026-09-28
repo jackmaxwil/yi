@@ -117,7 +117,7 @@ fn engine_with_sink(rules: Vec<RuleDoc>) -> (Arc<RuleEngine>, Arc<Mutex<Vec<Stri
     (engine, delivered)
 }
 
-fn assistant_saying(text: &str) -> AgentEvent {
+pub(crate) fn assistant_saying(text: &str) -> AgentEvent {
     AgentEvent::MessageEnd {
         message: AgentMessage::Assistant {
             content: vec![Content::Text {
@@ -922,6 +922,10 @@ fn a_typed_name_does_not_also_name_its_prefix() -> TestResult {
     api.needles.push("$har-api".to_owned());
     let npm = skill("npm", "$ npm i", RuleScope::Text, RuleGap::Once);
     let (engine, _delivered) = engine_with_sink(vec![har, api, npm]);
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("fix this with $har-api"))),
+        ["Relevant: skill://har-api (matched \"$har-api\")"]
+    );
     assert_eq!(engine.observe_user(&typed("unwrap this")).len(), 1);
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("unwrap with $har-api"))),

@@ -48,7 +48,7 @@ pub struct SkillClassifier {
     breaker: Mutex<Breaker>,
     record: Record,
     deliver: Deliver,
-    pointed: Mutex<std::collections::BTreeSet<String>>,
+    pointed: Mutex<BTreeMap<String, bool>>,
 }
 
 impl SkillClassifier {
@@ -74,20 +74,20 @@ impl SkillClassifier {
             breaker: Mutex::new(Breaker::default()),
             record,
             deliver,
-            pointed: Mutex::new(std::collections::BTreeSet::new()),
+            pointed: Mutex::new(BTreeMap::new()),
         })
     }
 
     pub fn has_pointed(&self, name: &str) -> bool {
         self.pointed
             .lock()
-            .is_ok_and(|pointed| pointed.contains(name))
+            .is_ok_and(|pointed| pointed.get(name) == Some(&true))
     }
 
-    pub fn note(&self, name: &str) {
-        if let Ok(mut pointed) = self.pointed.lock() {
-            pointed.insert(name.to_owned());
-        }
+    pub fn claim(&self, name: &str) -> bool {
+        self.pointed
+            .lock()
+            .is_ok_and(|mut pointed| !*pointed.entry(name.to_owned()).or_insert(false))
     }
 
     pub fn rearm(&self) {
@@ -181,10 +181,9 @@ impl SkillClassifier {
         ) && confidence >= threshold
             && self.candidates.contains_key(name)
             && !already.iter().any(|pointed| pointed == name)
-            && self
-                .pointed
-                .lock()
-                .is_ok_and(|mut pointed| pointed.insert(name.to_owned()))
+            && self.pointed.lock().is_ok_and(|mut pointed| {
+                !pointed.contains_key(name) && pointed.insert(name.to_owned(), true).is_none()
+            })
         {
             (self.deliver)(crate::rules::reminder(format!(
                 "Relevant: skill://{name} (the classifier, {confidence:.2})"

@@ -73,10 +73,13 @@ struct Rig {
 }
 
 fn rig(url: String, threshold: Option<f64>) -> Result<Rig, Box<dyn Error>> {
-    let engine = RuleEngine::new(vec![
-        skill("land", "open a pull request"),
-        skill("gate", "cargo nextest"),
-    ]);
+    rig_with(url, threshold, RuleGap::Once)
+}
+
+fn rig_with(url: String, threshold: Option<f64>, gap: RuleGap) -> Result<Rig, Box<dyn Error>> {
+    let mut land = skill("land", "open a pull request");
+    land.gap = gap;
+    let engine = RuleEngine::new(vec![land, skill("gate", "cargo nextest")]);
     let (sender, records) = channel();
     let sender = Mutex::new(sender);
     let record: Record = Arc::new(move |record| {
@@ -309,5 +312,49 @@ async fn a_trigger_word_ahead_of_the_classifiers_answer_wins() -> TestResult {
         assert!(!record.fired, "{record:?}");
     }
     assert!(delivered(&rig).is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_typed_name_is_not_pointed_at_again_by_the_classifier() -> TestResult {
+    let (port, _served) = sidecar(vec![LAND, LAND])?;
+    let rig = rig(format!("http://127.0.0.1:{port}"), Some(0.7))?;
+    assert_eq!(rig.engine.observe_user(&typed("$land please")).len(), 1);
+    let _first = next(&rig, Duration::from_secs(5)).await;
+    assert!(
+        rig.engine
+            .observe_user(&typed("land this branch once it is green"))
+            .is_empty()
+    );
+    let record = next(&rig, Duration::from_secs(5))
+        .await
+        .ok_or("no decision recorded")?;
+    assert!(!record.fired, "{record:?}");
+    assert!(delivered(&rig).is_empty());
+    Ok(())
+}
+
+/// Dies with a trigger word blocked by its own earlier pointer: with a classifier attached, a
+/// skill with `gap: 1` still points again once the gap has passed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_trigger_words_gap_holds_with_a_classifier_attached() -> TestResult {
+    let (port, _served) = sidecar(vec![LAND, LAND])?;
+    let rig = rig_with(
+        format!("http://127.0.0.1:{port}"),
+        None,
+        RuleGap::AfterTurns(1),
+    )?;
+    assert_eq!(
+        rig.engine.observe_user(&typed("open a pull request")).len(),
+        1
+    );
+    rig.engine
+        .observe(&crate::rules_e2e::assistant_saying("done"));
+    assert_eq!(
+        rig.engine
+            .observe_user(&typed("open a pull request again"))
+            .len(),
+        1
+    );
     Ok(())
 }
