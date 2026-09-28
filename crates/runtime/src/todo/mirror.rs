@@ -86,12 +86,16 @@ pub fn rejoin(mirrored: &TodoList, own: TodoList) -> TodoList {
 }
 
 pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
-    Arc::new(move |label, done, pending| {
+    Arc::new(move |label, carried| {
         let engine = engine.upgrade().ok_or("the plan engine is gone")?;
         let apply = |op: Op| {
             let request = OpRequest {
                 plan: None,
-                actor: Actor::Owner,
+                actor: if matches!(op, Op::Unblock { .. }) {
+                    Actor::Host
+                } else {
+                    Actor::Owner
+                },
                 op: op.clone(),
                 request_id: None,
                 expected_revision: None,
@@ -104,9 +108,16 @@ pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
         let start = Op::Start {
             label: label.clone(),
         };
-        if !done {
-            return apply(start);
-        }
+        let pending = match carried {
+            super::Carried::Start => return apply(start),
+            super::Carried::Unblock => {
+                return apply(Op::Unblock {
+                    label: label.clone(),
+                    answer: None,
+                });
+            }
+            super::Carried::Done { pending } => pending,
+        };
         if pending {
             apply(start)?;
         }

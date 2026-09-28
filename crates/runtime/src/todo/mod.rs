@@ -166,7 +166,14 @@ struct State {
 }
 
 pub type ResyncFn = dyn Fn(&TodoList) -> Option<TodoList> + Send + Sync;
-pub type CarryFn = dyn Fn(&TodoLabel, bool, bool) -> Result<String, String> + Send + Sync;
+pub type CarryFn = dyn Fn(&TodoLabel, Carried) -> Result<String, String> + Send + Sync;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Carried {
+    Start,
+    Done { pending: bool },
+    Unblock,
+}
 
 pub struct TodoStore {
     state: Mutex<State>,
@@ -289,11 +296,41 @@ impl TodoStore {
         let item = list.items().nth(index)?;
         item.extra.get(mirror::PLAN_KEY)?;
         let carry = self.carry.lock().ok()?.clone()?;
+        let pending = matches!(item.state, TodoState::Pending);
         Some(carry(
             &item.label,
-            done,
-            matches!(item.state, TodoState::Pending),
+            if done {
+                Carried::Done { pending }
+            } else {
+                Carried::Start
+            },
         ))
+    }
+
+    /// The clock's unblock: a row the plan owns goes to the plan engine as the host's op.
+    pub fn unblock_as(&self, label: &TodoLabel, actor: &str) -> Result<(), String> {
+        self.resync();
+        let planned = self
+            .list()
+            .items()
+            .any(|item| item.label == *label && item.extra.contains_key(mirror::PLAN_KEY));
+        if !planned {
+            let op = Op::Unblock {
+                label: label.clone(),
+                answer: None,
+            };
+            return self
+                .apply_as(op, None, actor)
+                .map(drop)
+                .map_err(|error| error.to_string());
+        }
+        let carry = self
+            .carry
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+            .ok_or("the plan engine that owns this todo is gone")?;
+        carry(label, Carried::Unblock).map(drop)
     }
 
     /// Re-reads a mirrored list's plan: another engine, or a crash before the replace, moved it.
