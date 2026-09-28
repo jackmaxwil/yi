@@ -729,15 +729,12 @@ impl Tool for BashTool {
         if let Some(hint) = document_hint(command) {
             sections.push(hint);
         }
-        if context.sandbox.is_some()
-            && let Some(hint) = crate::sandbox::denial_hint(
-                capture.exit_code,
-                &format!("{}{}", capture.stdout, capture.stderr),
-                command,
-            )
-        {
-            sections.push(hint);
-        }
+        // The raw output, not the reduced text: a refusal line the reducer cut still counts.
+        let refusal = context.sandbox.as_ref().and_then(|sandbox| {
+            let raw = format!("{}{}", capture.stdout, capture.stderr);
+            crate::sandbox::sandbox_refusal(sandbox, &context.cwd, capture.exit_code, &raw, command)
+        });
+        sections.extend(refusal.as_ref().map(crate::sandbox::denial_hint));
         let mut text = if sections.is_empty() {
             "(no output)".to_owned()
         } else {
@@ -771,6 +768,7 @@ impl Tool for BashTool {
             "outBytes": reduced.out_bytes,
             "category": command_category(command),
             "bridge": bridge,
+            "sandboxRefusal": refusal.as_ref().map(crate::sandbox::SandboxRefusal::to_json),
         });
         output.is_error = exit_code != 0 || capture.cancelled;
         output
