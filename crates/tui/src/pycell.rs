@@ -6,7 +6,7 @@ use crate::cell::{ToolCell, ToolStatus, TranscriptMode, spinner_frame};
 use crate::colors::Theme;
 use crate::diffview::{self, DiffBudget};
 use crate::highlight;
-use crate::transcript::printable;
+use crate::transcript::show_controls;
 use crate::wrap::wrap_line;
 
 const PREVIEW_CAP: usize = 64;
@@ -228,7 +228,7 @@ fn gutter_lines(code: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
             let marker = if index == 0 { PROMPT } else { CONTINUATION };
             // The body is redacted on the head's terms: the whole transcript gets shared,
             // and a key is no safer one mode deeper than on the row above.
-            let source = printable(&redact(source));
+            let source = redact(&show_controls(source));
             let mut spans = vec![Span::styled(
                 format!("{BODY_INDENT}{marker}"),
                 theme.dim_style(),
@@ -248,7 +248,7 @@ fn stream_lines(text: &str, style: Style, width: usize) -> Vec<Line<'static>> {
         .flat_map(|row| {
             wrap_line(
                 &Line::from(Span::styled(
-                    format!("{BODY_INDENT}  {}", printable(row)),
+                    format!("{BODY_INDENT}  {}", show_controls(row)),
                     style,
                 )),
                 width,

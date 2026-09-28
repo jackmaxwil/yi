@@ -4,7 +4,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::colors::{DiffRowKind, DiffRowStyle, Theme};
 use crate::highlight::{self, Lang};
-use crate::transcript::printable;
+use crate::transcript::show_controls;
 
 /// Invariant: the gutter never narrows below three digits. Sized from the widest number,
 /// crossing line 100 would re-pad rows already in native scrollback, which cannot be rewritten.
@@ -64,7 +64,7 @@ fn parse(patch: &str) -> Vec<FileDiff> {
     for line in patch.lines() {
         if let Some(path) = line.strip_prefix("+++ ") {
             files.push(FileDiff {
-                path: printable(path.strip_prefix("b/").unwrap_or(path)),
+                path: show_controls(path.strip_prefix("b/").unwrap_or(path)),
                 hunks: Vec::new(),
             });
             continue;
@@ -104,7 +104,7 @@ fn parse(patch: &str) -> Vec<FileDiff> {
         hunk.rows.push(Row {
             kind,
             number,
-            text: printable(line.get(1..).unwrap_or_default()),
+            text: show_controls(line.get(1..).unwrap_or_default()),
         });
     }
     files.retain(|file| !file.hunks.is_empty());

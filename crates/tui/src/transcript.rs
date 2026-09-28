@@ -26,15 +26,10 @@ pub(crate) fn prose_of(content: &[Content]) -> String {
 
 /// Incident: a raw tab is one cell to ratatui and a tab stop to the terminal, so card rows spilled
 /// past the pane edge. Tabs take a fixed width: a card re-seats a read's `12:` behind its gutter.
-pub(crate) fn printable(text: &str) -> String {
+pub fn show_controls(text: &str) -> String {
     crate::markdown::inline_tabs(text)
         .chars()
-        .map(|c| match c {
-            '\0'..='\u{1f}' => char::from_u32(0x2400 + u32::from(c)).unwrap_or('\u{fffd}'),
-            '\u{7f}' => '\u{2421}',
-            c if c.is_control() => '\u{fffd}',
-            c => c,
-        })
+        .map(crate::term::control_picture)
         .collect()
 }
 
@@ -49,19 +44,19 @@ pub(crate) fn preview_lines(text: &str, head: usize, tail: usize) -> Vec<String>
     let text = pretty.as_deref().unwrap_or(text);
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() <= head.saturating_add(tail) {
-        return lines.into_iter().map(printable).collect();
+        return lines.into_iter().map(show_controls).collect();
     }
     let omitted = lines.len().saturating_sub(head.saturating_add(tail));
     lines
         .iter()
         .take(head)
-        .map(|line| printable(line))
+        .map(|line| show_controls(line))
         .chain(std::iter::once(format!("… {omitted} more lines")))
         .chain(
             lines
                 .iter()
                 .skip(lines.len().saturating_sub(tail))
-                .map(|line| printable(line)),
+                .map(|line| show_controls(line)),
         )
         .collect()
 }
@@ -309,14 +304,5 @@ pub(crate) fn fence_tail(tail: &str, rows: usize) -> std::borrow::Cow<'_, str> {
             ))
         }
         _ => std::borrow::Cow::Borrowed(tail),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn a_control_character_prints_as_its_glyph_and_a_tab_as_four_spaces() {
-        let raw = "a\tb\r\u{1b}[1m\u{7f}\u{85}";
-        assert_eq!(super::printable(raw), "a    b␍␛[1m␡\u{fffd}");
     }
 }

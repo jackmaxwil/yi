@@ -647,7 +647,7 @@ impl ToolCell {
                 .find(|line| !line.trim().is_empty())
         };
         if failed {
-            return first().map(strip_hashline).map(str::to_owned);
+            return first().map(|line| crate::transcript::show_controls(strip_hashline(line)));
         }
         let numbered = || {
             text.lines()
@@ -675,7 +675,7 @@ impl ToolCell {
             ),
             _ => first()?.to_owned(),
         };
-        let digest = crate::transcript::printable(digest.trim());
+        let digest = crate::transcript::show_controls(digest.trim());
         (!digest.is_empty()).then_some(digest)
     }
 }

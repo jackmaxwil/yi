@@ -1,6 +1,10 @@
+use std::borrow::Cow;
 use std::fs::OpenOptions;
 use std::io::{IsTerminal, Write};
+use std::ops::Range;
 
+use ratatui::backend::{ClearType, WindowSize};
+use ratatui::buffer::Cell;
 use ratatui::crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -9,6 +13,7 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     BeginSynchronizedUpdate, EndSynchronizedUpdate, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::layout::{Position, Size};
 use ratatui::prelude::CrosstermBackend;
 use ratatui::text::Line;
 
@@ -71,7 +76,106 @@ impl Drop for TerminalGuard {
     }
 }
 
-pub type Backend = CrosstermBackend<Box<dyn Write + Send>>;
+pub type Backend = ControlPictures<CrosstermBackend<Box<dyn Write + Send>>>;
+
+/// A control character as its Control Pictures glyph: U+2400 + c for C0, U+2421 for DEL,
+/// and U+FFFD for a C1 control, which has no picture. Anything else is itself.
+pub fn control_picture(c: char) -> char {
+    match c {
+        '\0'..='\u{1f}' => char::from_u32(0x2400 + u32::from(c)).unwrap_or('\u{fffd}'),
+        '\u{7f}' => '\u{2421}',
+        c if c.is_control() => '\u{fffd}',
+        c => c,
+    }
+}
+
+/// The real terminal's backend. Invariant: a control character in a cell reaches the terminal
+/// as its glyph, one cell for one cell, so no body can move the cursor under ratatui's layout.
+pub struct ControlPictures<B>(pub B);
+
+impl<B: ratatui::backend::Backend> ratatui::backend::Backend for ControlPictures<B> {
+    fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        let cells: Vec<(u16, u16, Cow<'a, Cell>)> = content
+            .map(|(x, y, cell)| {
+                if !cell.symbol().contains(char::is_control) {
+                    return (x, y, Cow::Borrowed(cell));
+                }
+                let mut shown = cell.clone();
+                shown.set_symbol(
+                    &cell
+                        .symbol()
+                        .chars()
+                        .map(control_picture)
+                        .collect::<String>(),
+                );
+                (x, y, Cow::Owned(shown))
+            })
+            .collect();
+        self.0
+            .draw(cells.iter().map(|(x, y, cell)| (*x, *y, cell.as_ref())))
+    }
+
+    fn append_lines(&mut self, n: u16) -> std::io::Result<()> {
+        self.0.append_lines(n)
+    }
+
+    fn hide_cursor(&mut self) -> std::io::Result<()> {
+        self.0.hide_cursor()
+    }
+
+    fn show_cursor(&mut self) -> std::io::Result<()> {
+        self.0.show_cursor()
+    }
+
+    fn get_cursor_position(&mut self) -> std::io::Result<Position> {
+        self.0.get_cursor_position()
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> std::io::Result<()> {
+        self.0.set_cursor_position(position)
+    }
+
+    fn clear(&mut self) -> std::io::Result<()> {
+        self.0.clear()
+    }
+
+    fn clear_region(&mut self, clear_type: ClearType) -> std::io::Result<()> {
+        self.0.clear_region(clear_type)
+    }
+
+    fn size(&self) -> std::io::Result<Size> {
+        self.0.size()
+    }
+
+    fn window_size(&mut self) -> std::io::Result<WindowSize> {
+        self.0.window_size()
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        ratatui::backend::Backend::flush(&mut self.0)
+    }
+
+    fn scroll_region_up(&mut self, region: Range<u16>, count: u16) -> std::io::Result<()> {
+        self.0.scroll_region_up(region, count)
+    }
+
+    fn scroll_region_down(&mut self, region: Range<u16>, count: u16) -> std::io::Result<()> {
+        self.0.scroll_region_down(region, count)
+    }
+}
+
+impl<B: Write> Write for ControlPictures<B> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
 
 /// Inline viewport anchored at the cursor; the height follows the live
 /// region from here on ([`crate::terminal::Terminal::resize_viewport`]).
@@ -79,7 +183,7 @@ pub fn build_terminal(
     writer: Box<dyn Write + Send>,
     height: u16,
 ) -> std::io::Result<Terminal<Backend>> {
-    Terminal::new(CrosstermBackend::new(writer), height)
+    Terminal::new(ControlPictures(CrosstermBackend::new(writer)), height)
 }
 
 /// The synchronized bracket lives on the whole frame ([`sync_frame`]), not here: bracketing
