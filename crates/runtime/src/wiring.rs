@@ -216,7 +216,10 @@ fn wire_schedule(
     let deliver = session.heartbeat_deliverer();
     let heartbeats = Arc::new(
         crate::schedule::HeartbeatService::new(Arc::clone(&shared.store), heartbeats_cwd)
-            .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver)),
+            .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver))
+            .with_stop(session.halt_hook())
+            .with_words(session.store_handle())
+            .interned(),
     );
     heartbeats.register(registry);
     session.set_schedule(Arc::clone(&heartbeats));
@@ -509,6 +512,14 @@ fn wire_plan_engine(
         &todos,
     ))));
     session.set_todos(Arc::clone(&todos));
+    if let Some(clock) = session.heartbeat_service() {
+        let clock = Arc::downgrade(&clock);
+        todos.on_change(Arc::new(move |list| {
+            if let Some(clock) = clock.upgrade() {
+                clock.watch(list);
+            }
+        }));
+    }
     let inner = (wiring.depth == 0).then(|| {
         crate::plan::finish::install(host, &engine, {
             let hook = session.heartbeat_hook();

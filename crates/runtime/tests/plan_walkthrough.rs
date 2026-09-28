@@ -341,6 +341,7 @@ fn blocked_tag(on: &BlockedOn) -> String {
         BlockedOn::Child(_) => "child".to_owned(),
         BlockedOn::User => "user".to_owned(),
         BlockedOn::External { .. } => "external".to_owned(),
+        BlockedOn::Channel { address, .. } => address.clone(),
         BlockedOn::Other(tag) => tag.clone(),
     }
 }

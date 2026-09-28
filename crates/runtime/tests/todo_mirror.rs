@@ -796,3 +796,45 @@ fn a_mirrored_row_leaves_the_delegation_and_note_to_the_plan() -> TestResult {
     assert!(row.delegation.is_none() && row.note.is_none(), "{row:?}");
     Ok(())
 }
+
+/// A plan waiting at $0: its row blocked on a clock address arms a timer from the session's
+/// list, and the tick unblocks the row in the plan itself, as the host.
+#[test]
+fn a_plan_row_waiting_on_the_clock_is_unblocked_in_the_plan() -> TestResult {
+    use yi_runtime::schedule::{Firing, HeartbeatService, JobStore, clock};
+    let dir = Scratch::new("yi-todo-mirror-clock")?;
+    let (_session, todos, engine) = mirrored(&dir)?;
+    let engine = Arc::new(engine);
+    todos.set_carry(yi_runtime::todo::mirror::carry(Arc::downgrade(&engine)));
+    let gate = TodoLabel::new("gate")?;
+    engine.apply(owner(Op::Block {
+        label: gate.clone(),
+        on: BlockedOn::Channel {
+            address: "clock://at 2026-09-29T09:00Z".to_owned(),
+            filter: None,
+        },
+        note: "approve at nine".to_owned(),
+        ask: None,
+    }))?;
+    let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
+    let clock_service = HeartbeatService::new(Arc::clone(&store), "/tmp");
+    clock_service.bind_session("mirror".to_owned());
+    clock_service.watch(&todos.list());
+    let job = store
+        .snapshot()
+        .jobs
+        .into_iter()
+        .find(|job| job.unblocks.as_ref() == Some(&gate))
+        .ok_or("the plan row's wait armed no timer")?;
+
+    let fired = clock::fire(&todos, &job, &Firing::at(job.next_run_at.unwrap_or(0)))?;
+    assert_eq!(fired, clock::Fired::Unblocked(gate.clone()));
+    let plan = engine.store().read(&engine.store().roots()?[0])?;
+    let row = plan.todo(&gate).ok_or("gate")?;
+    assert!(
+        !matches!(row.state, TodoState::Blocked { .. }),
+        "the plan still waits: {:?}",
+        row.state
+    );
+    Ok(())
+}

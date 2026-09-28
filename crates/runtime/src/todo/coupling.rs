@@ -144,6 +144,7 @@ pub fn stop_posture(list: &TodoList, children_running: bool) -> StopPosture {
             TodoState::Blocked { on, .. } => match on {
                 BlockedOn::User => return StopPosture::Ask,
                 BlockedOn::Child(_) => return StopPosture::Quiet,
+                BlockedOn::Channel { .. } => {}
                 BlockedOn::External { .. } | BlockedOn::Other(_) => cadence = true,
             },
             TodoState::Pending | TodoState::Running { .. } => open = true,

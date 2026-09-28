@@ -190,13 +190,34 @@ impl AgentSession {
         })
     }
 
+    pub fn halt_hook(&self) -> Arc<dyn Fn(bool) -> bool + Send + Sync> {
+        let parts = self.parts();
+        Arc::new(move |on| {
+            let held = &parts.shared.held;
+            let was = held.swap(on, std::sync::atomic::Ordering::SeqCst);
+            if !on {
+                if was {
+                    run::kick(&parts);
+                }
+                return was;
+            }
+            let running = parts
+                .shared
+                .status
+                .lock()
+                .is_ok_and(|status| *status == Status::Running);
+            parts.shared.signal.fire();
+            running
+        })
+    }
+
     /// Invariant: an idle queue holds inboxed notices and held follow-ups waiting for another
     /// turn, so only a queue behind a running turn is pending work that defers a heartbeat.
     pub fn heartbeat_deliverer(&self) -> Arc<crate::schedule::DeliverFn> {
         let shared = Arc::clone(&self.shared);
         let compactor = self.compactor.clone();
         let hook = self.heartbeat_hook();
-        Arc::new(move |job| {
+        Arc::new(move |job, firing| {
             let is_streaming = shared
                 .status
                 .lock()
@@ -209,16 +230,25 @@ impl AgentSession {
                 has_pending_session_work: is_streaming && queued,
             };
             if crate::schedule::should_defer(job, &activity) {
-                return crate::schedule::RunOutcome::Skipped;
+                return Ok(crate::schedule::RunOutcome::Skipped);
             }
+            let todos = shared
+                .todos
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().map(Arc::clone))
+                .ok_or("a tick creates a todo, and this session has no todo list")?;
+            let fired = crate::schedule::clock::fire(&todos, job, firing)?;
+            let Some(wake) =
+                crate::schedule::clock::wake_message(job, &fired, yi_session::now_ms())
+            else {
+                return Ok(crate::schedule::RunOutcome::Skipped);
+            };
             let mode = job
                 .delivery_mode
                 .unwrap_or(crate::schedule::DEFAULT_HEARTBEAT_DELIVERY_MODE);
-            hook(
-                crate::schedule::heartbeat_message(job, yi_session::now_ms()),
-                mode,
-            );
-            crate::schedule::RunOutcome::Ran
+            hook(wake, mode);
+            Ok(crate::schedule::RunOutcome::Ran)
         })
     }
 

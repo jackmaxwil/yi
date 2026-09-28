@@ -79,17 +79,28 @@ pub enum BlockedOn {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         probe: Option<ProbeCommand>,
     },
+    /// A wait on a channel address; for now only `clock://<schedule>`, which is not a
+    /// [`Url`] because a cron schedule holds spaces. The clock unblocks it when it ticks.
+    Channel {
+        address: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+    },
     #[serde(untagged)]
     Other(String),
 }
 
 impl BlockedOn {
-    /// The one-word blocker a model or a format-1 list names: absent is the user, and a word
-    /// with no payload to carry (`child` names no agent) stays verbatim.
+    /// The one-word blocker a model or a format-1 list names: absent is the user, an address is
+    /// a channel wait, and a word with no payload to carry (`child` names no agent) stays verbatim.
     pub fn from_word(word: Option<&str>) -> Self {
         match word {
             None | Some("user") => Self::User,
             Some("external") => Self::External { probe: None },
+            Some(address) if address.contains("://") => Self::Channel {
+                address: address.to_owned(),
+                filter: None,
+            },
             Some(other) => Self::Other(other.to_owned()),
         }
     }
@@ -99,6 +110,7 @@ impl BlockedOn {
             Self::Child(_) => "child",
             Self::User => "user",
             Self::External { .. } => "external",
+            Self::Channel { address, .. } => address,
             Self::Other(tag) => tag,
         }
     }

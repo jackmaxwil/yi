@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::plan::doc::TodoLabel;
+use crate::url::Url;
+
 /// Job lifecycle (design §15.2); each status serializes as its lowercase wire string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -47,8 +50,32 @@ pub struct CronSchedule {
     pub interval_ms: Option<u64>,
 }
 
-/// One scheduled job (design §15.2); timestamps are epoch milliseconds and Yi
-/// owns this file format (D39).
+/// What a tick does while an earlier tick's todo is open: `skip` creates none, `buffer_one`
+/// keeps at most one more waiting behind it, `allow` always creates. Absent is `skip`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Overlap {
+    Skip,
+    BufferOne,
+    Allow,
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Ticks that came due while the host slept or was down: `once` creates one todo whose note
+/// counts them, `skip` creates none, `all` creates one per tick. Absent is `once`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatchUp {
+    Once,
+    Skip,
+    All,
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// A clock subscription `clock://<schedule>` (§15.2, D39: epoch ms, Yi's own format): a tick
+/// makes a todo of `label`, `prompt` (its note) and `intent`, or unblocks `unblocks`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Job {
@@ -75,6 +102,47 @@ pub struct Job {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     pub run_count: u64,
+    /// The addresses of the user's words that set the subscription up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intent: Vec<Url>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlap: Option<Overlap>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catch_up: Option<CatchUp>,
+    /// A durable timer: the session todo blocked on this job's `clock://` address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unblocks: Option<TodoLabel>,
+    /// Held by the kill switch, apart from `status`, until `/heartbeat resume`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub halted: bool,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The key a tick's stamp rides under in the todo it creates.
+pub const CLOCK_KEY: &str = "clock";
+
+/// A tick's stamp on its todo: the job that ticked, the tick's time, and how many ticks the
+/// todo stands for, more than one when ticks were missed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClockStamp {
+    pub job: String,
+    pub at: u64,
+    pub ticks: u64,
+}
+
+pub const HALT_ENTRY_TYPE: &str = "halt";
+
+/// The `custom{halt}` entry: the kill switch (`halted`) or its undo, with the clock jobs it held
+/// or released and the sessions whose running turn it interrupted or whose hold it lifted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaltRecord {
+    pub halted: bool,
+    pub at: u64,
+    pub jobs: u64,
+    pub sessions: u64,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

@@ -116,6 +116,7 @@ pub fn stop_posture(plan: &Plan) -> StopPosture {
                     return StopPosture::Cadence;
                 }
                 BlockedOn::Child(_) => blocked_on_child = true,
+                BlockedOn::Channel { .. } => {}
             },
             TodoState::Running { by } => {
                 if by.as_str() == OWNER_AGENT {

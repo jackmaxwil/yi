@@ -1,8 +1,11 @@
+pub mod clock;
+mod kernel;
 mod lanes;
 pub(crate) mod shared;
 
 use std::collections::HashSet;
 
+pub use clock::Firing;
 pub use lanes::Scheduler;
 
 use yi_types::schedule::{
@@ -363,6 +366,7 @@ pub enum HeartbeatCommand {
     Pause,
     Resume,
     Clear,
+    Halt,
     Set {
         schedule: String,
         instruction: String,
@@ -400,6 +404,7 @@ pub fn parse_heartbeat_command(input: &str) -> Result<HeartbeatCommand, String> 
         "" | "status" => return Ok(HeartbeatCommand::Status),
         "pause" => return Ok(HeartbeatCommand::Pause),
         "resume" => return Ok(HeartbeatCommand::Resume),
+        "halt" => return Ok(HeartbeatCommand::Halt),
         "clear" | "stop" => return Ok(HeartbeatCommand::Clear),
         _ => {}
     }
@@ -458,7 +463,7 @@ pub fn is_heartbeat_job(job: &Job) -> bool {
 /// Holds a due heartbeat back whenever delivering it would stack redundant work or land
 /// mid-operation; steering tolerates plain streaming, a follow-up does not (§15.2).
 pub fn should_defer(job: &Job, activity: &SessionActivity) -> bool {
-    if !is_heartbeat_job(job) {
+    if !is_heartbeat_job(job) && job.unblocks.is_none() {
         return false;
     }
     if activity.is_compacting || activity.has_pending_session_work {
@@ -472,13 +477,18 @@ pub fn should_defer(job: &Job, activity: &SessionActivity) -> bool {
     activity.is_streaming
 }
 
+fn claimable(job: &Job) -> bool {
+    job.status == JobStatus::Active && !job.halted
+}
+
 fn is_due_job(job: &Job, now_ms: u64) -> bool {
-    job.status == JobStatus::Active && job.next_run_at.is_some_and(|at| at <= now_ms)
+    claimable(job) && job.next_run_at.is_some_and(|at| at <= now_ms)
 }
 
 pub struct ClaimedDispatch {
     pub id: String,
     pub job: Job,
+    pub firing: Firing,
 }
 
 /// Design §15.2: advances every due job's schedule and claims a dispatch for each
@@ -504,6 +514,7 @@ pub fn claim_due_in_state(
             continue;
         }
         let scheduled_for = job.next_run_at.unwrap_or(due_ms);
+        let firing = clock::firing(&job.schedule, scheduled_for, claimed_ms);
         job.next_run_at = next_run_at_for_schedule(&job.schedule, claimed_ms)
             .ok()
             .flatten();
@@ -523,6 +534,7 @@ pub fn claim_due_in_state(
         dispatches.push(ClaimedDispatch {
             id: dispatch.id,
             job: job.clone(),
+            firing,
         });
     }
     dispatches
@@ -556,7 +568,8 @@ pub fn record_dispatch_result_in_state(
         if job.id != dispatch.job_id || job.status != JobStatus::Active {
             continue;
         }
-        if job.schedule.kind == ScheduleKind::Once {
+        // A wait unblocks its todo once, whatever its schedule's shape.
+        if job.schedule.kind == ScheduleKind::Once || job.unblocks.is_some() {
             job.status = JobStatus::Completed;
         }
         if outcome == RunOutcome::Skipped && error.is_none() {
@@ -616,17 +629,6 @@ pub fn recover_interrupted_in_state(
         recovered.push(job.clone());
     }
     recovered
-}
-
-/// The exact text a scheduled job puts in front of the model; the element wrapper is what
-/// tells the model this turn was machine-triggered rather than typed by the user (§15.2).
-pub fn heartbeat_text(job: &Job) -> String {
-    format!(
-        "<heartbeat job=\"{}\" run=\"{}\">{}</heartbeat>",
-        job.label.as_deref().unwrap_or(&job.id),
-        job.run_count.saturating_add(1),
-        job.prompt
-    )
 }
 
 pub struct JobStore {
@@ -727,29 +729,17 @@ pub fn new_job(spec: JobSpec) -> Job {
         last_skipped_at: None,
         last_error: None,
         run_count: 0,
+        intent: Vec::new(),
+        overlap: None,
+        catch_up: None,
+        unblocks: None,
+        halted: false,
         extra: serde_json::Map::new(),
     }
 }
 
-pub type DeliverFn = dyn Fn(&Job) -> RunOutcome + Send + Sync;
-
-/// Design §15.2: the persisted heartbeat message — `custom{heartbeat_prompt}`
-/// with the job's identity in details.
-pub fn heartbeat_message(job: &Job, now_ms: u64) -> yi_types::message::AgentMessage {
-    yi_types::message::AgentMessage::Custom {
-        custom_type: "heartbeat_prompt".to_owned(),
-        content: yi_types::message::UserContent::Text(heartbeat_text(job)),
-        display: false,
-        details: serde_json::to_value(serde_json::json!({
-            "jobId": job.id,
-            "schedule": job.schedule,
-            "runCount": job.run_count,
-            "nextRunAt": job.next_run_at,
-        }))
-        .ok(),
-        timestamp: now_ms,
-    }
-}
+/// An `Err` is a tick that ran and failed; the job records it as its last error.
+pub type DeliverFn = dyn Fn(&Job, &Firing) -> Result<RunOutcome, String> + Send + Sync;
 
 /// Design §15.2 surfaces: the `/heartbeat` verbs and the kernel's
 /// `rlm_heartbeat.*` vocabulary over one store.
@@ -759,6 +749,10 @@ pub struct HeartbeatService {
     pub cwd: String,
     hub: Option<std::sync::Arc<shared::DeliveryHub>>,
     deliver: Option<std::sync::Arc<DeliverFn>>,
+    stop: Option<std::sync::Arc<shared::StopFn>>,
+    words: Option<crate::goal::StoreHandle>,
+    /// Bound to a store every session of this process shares, so a halt reaches them all.
+    interned: bool,
 }
 
 impl HeartbeatService {
@@ -769,7 +763,25 @@ impl HeartbeatService {
             cwd: cwd.into(),
             hub: None,
             deliver: None,
+            stop: None,
+            words: None,
+            interned: false,
         }
+    }
+
+    pub fn with_words(mut self, words: crate::goal::StoreHandle) -> Self {
+        self.words = Some(words);
+        self
+    }
+
+    pub fn with_stop(mut self, stop: std::sync::Arc<dyn Fn(bool) -> bool + Send + Sync>) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+
+    pub(crate) fn interned(mut self) -> Self {
+        self.interned = true;
+        self
     }
 
     pub(crate) fn with_lane(
@@ -812,6 +824,9 @@ impl HeartbeatService {
         }
         if let (Some(hub), Some(deliver)) = (&self.hub, &self.deliver) {
             hub.register(session_id.clone(), std::sync::Arc::clone(deliver));
+            if let Some(stop) = &self.stop {
+                hub.register_stop(session_id.clone(), std::sync::Arc::clone(stop));
+            }
         }
         *bound = session_id;
     }
@@ -902,6 +917,7 @@ impl HeartbeatService {
                     .collect::<Vec<_>>()
                     .join("\n"))
             }
+            HeartbeatCommand::Halt => Ok(self.halt(true, now_ms)),
             HeartbeatCommand::Pause | HeartbeatCommand::Resume => {
                 let target = if matches!(command, HeartbeatCommand::Pause) {
                     JobStatus::Paused
@@ -929,8 +945,13 @@ impl HeartbeatService {
                     }
                     changed
                 });
+                let released = if target == JobStatus::Active {
+                    self.halt(false, now_ms)
+                } else {
+                    String::new()
+                };
                 Ok(format!(
-                    "{changed} heartbeat job(s) {}.",
+                    "{changed} heartbeat job(s) {}.{released}",
                     if target == JobStatus::Paused {
                         "paused"
                     } else {
@@ -962,7 +983,7 @@ impl HeartbeatService {
                 delivery_mode,
             } => {
                 let (parsed, next_run_at) = parse_schedule(schedule, now_ms)?;
-                let job = new_job(JobSpec {
+                let mut job = new_job(JobSpec {
                     id: format!("hb-{}", crate::subagent::random_suffix()?),
                     session_id: self.bound_session_id()?,
                     cwd: self.cwd.clone(),
@@ -974,6 +995,7 @@ impl HeartbeatService {
                     next_run_at,
                     now_ms,
                 });
+                job.intent = self.latest_words();
                 let line = render_job_line(&job);
                 self.store.mutate(|state| {
                     // One user heartbeat per session: `/heartbeat <x>` replaces.
@@ -996,152 +1018,5 @@ impl HeartbeatService {
     /// Parses and applies one `/heartbeat` line, the entry point RPC, ACP and slash share (§15.2).
     pub fn run(&self, line: &str) -> Result<String, String> {
         parse_heartbeat_command(line).and_then(|command| self.apply(&command, yi_session::now_ms()))
-    }
-
-    /// Registers the kernel-side vocabulary (design §15.2): list, create,
-    /// update (pause/resume), delete.
-    pub fn register(self: &std::sync::Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
-        let list = std::sync::Arc::clone(self);
-        registry.register("rlm_heartbeat.list", move |_payload| {
-            let state = list.store.snapshot();
-            let jobs: Vec<_> = state
-                .jobs
-                .iter()
-                .filter(|job| {
-                    job.source == Some(yi_types::schedule::JobSource::RlmHeartbeat)
-                        && list.owns(job)
-                })
-                .collect();
-            let reply = serde_json::json!({"jobs": jobs})
-                .as_object()
-                .cloned()
-                .unwrap_or_default();
-            Box::pin(async move { Ok(reply) })
-        });
-        let create = std::sync::Arc::clone(self);
-        registry.register("rlm_heartbeat.create", move |payload| {
-            let result = (|| {
-                let schedule_text = payload
-                    .get("schedule")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or("rlm_heartbeat.create requires a schedule")?;
-                let prompt = payload
-                    .get("prompt")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or("rlm_heartbeat.create requires a prompt")?;
-                let label = payload
-                    .get("label")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned);
-                let delivery = match payload
-                    .get("deliveryMode")
-                    .and_then(serde_json::Value::as_str)
-                {
-                    None => None,
-                    Some("steer") => Some(DeliveryMode::Steer),
-                    Some("follow_up") => Some(DeliveryMode::FollowUp),
-                    Some(_) => {
-                        return Err(
-                            "Heartbeat delivery mode must be \"steer\" or \"follow_up\"".to_owned()
-                        );
-                    }
-                };
-                let now = yi_session::now_ms();
-                let (parsed, next_run_at) =
-                    parse_schedule(&normalize_heartbeat_schedule(Some(schedule_text)), now)?;
-                let job = new_job(JobSpec {
-                    id: format!("rhb-{}", crate::subagent::random_suffix()?),
-                    session_id: create.bound_session_id()?,
-                    cwd: create.cwd.clone(),
-                    source: yi_types::schedule::JobSource::RlmHeartbeat,
-                    delivery_mode: delivery,
-                    label,
-                    prompt: prompt.to_owned(),
-                    schedule: parsed,
-                    next_run_at,
-                    now_ms: now,
-                });
-                create.store.mutate(|state| state.jobs.push(job.clone()));
-                serde_json::json!({"job": job})
-                    .as_object()
-                    .cloned()
-                    .ok_or_else(|| "serialization failed".to_owned())
-            })();
-            Box::pin(async move { result })
-        });
-        let update = std::sync::Arc::clone(self);
-        registry.register("rlm_heartbeat.update", move |payload| {
-            let result = (|| {
-                let id = payload
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or("rlm_heartbeat.update requires an id")?
-                    .to_owned();
-                let target = match payload.get("status").and_then(serde_json::Value::as_str) {
-                    Some("pause") => JobStatus::Paused,
-                    Some("resume") => JobStatus::Active,
-                    _ => {
-                        return Err(
-                            "rlm_heartbeat.update status must be \"pause\" or \"resume\""
-                                .to_owned(),
-                        );
-                    }
-                };
-                let now = yi_session::now_ms();
-                let owner = update.bound_session_id()?;
-                let updated = update.store.mutate(|state| {
-                    let found = state
-                        .jobs
-                        .iter_mut()
-                        .find(|job| job.id == id && job.session_id == owner);
-                    found.map(|job| {
-                        job.status = target;
-                        if target == JobStatus::Active && job.next_run_at.is_none() {
-                            job.next_run_at =
-                                next_run_at_for_schedule(&job.schedule, now).ok().flatten();
-                        }
-                        job.updated_at = now;
-                        job.clone()
-                    })
-                });
-                let job = updated.ok_or(format!("unknown heartbeat job: {id}"))?;
-                serde_json::json!({"job": job})
-                    .as_object()
-                    .cloned()
-                    .ok_or_else(|| "serialization failed".to_owned())
-            })();
-            Box::pin(async move { result })
-        });
-        let delete = std::sync::Arc::clone(self);
-        registry.register("rlm_heartbeat.delete", move |payload| {
-            let result = (|| {
-                let id = payload
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or("rlm_heartbeat.delete requires an id")?
-                    .to_owned();
-                let now = yi_session::now_ms();
-                let owner = delete.bound_session_id()?;
-                let found = delete.store.mutate(|state| {
-                    let target = state
-                        .jobs
-                        .iter_mut()
-                        .find(|job| job.id == id && job.session_id == owner);
-                    target.map(|job| {
-                        job.status = JobStatus::Cancelled;
-                        job.next_run_at = None;
-                        job.updated_at = now;
-                    })
-                });
-                if found.is_none() {
-                    return Err(format!("unknown heartbeat job: {id}"));
-                }
-                serde_json::json!({"deleted": true})
-                    .as_object()
-                    .cloned()
-                    .ok_or_else(|| "serialization failed".to_owned())
-            })();
-            Box::pin(async move { result })
-        });
     }
 }
