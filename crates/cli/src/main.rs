@@ -11,6 +11,7 @@ mod memory;
 mod plan;
 mod rpc;
 mod sessions;
+mod setup;
 mod stats;
 mod todo;
 mod tty;
@@ -72,7 +73,15 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut json = false;
     // Auto is the default: reads and known-safe commands run, destructive ones ask.
     // `--yolo` removes the gate, `--confirm` asks for everything.
-    let mut mode = yi_runtime::PermissionMode::Auto;
+    let mut mode = match config()
+        .permissions
+        .as_ref()
+        .and_then(|permissions| permissions.mode)
+    {
+        Some(yi_types::config::ModeName::Ask) => yi_runtime::PermissionMode::Ask,
+        Some(yi_types::config::ModeName::Yolo) => yi_runtime::PermissionMode::Yolo,
+        Some(yi_types::config::ModeName::Auto) | None => yi_runtime::PermissionMode::Auto,
+    };
     let mut session_dir = None;
     let mut cwd = None;
     let mut here = false;
@@ -266,6 +275,7 @@ fn load_config() -> Result<(), String> {
             home.to_string_lossy()
         ));
     }
+    setup::early();
     yi_runtime::set_catalog_cache_dir(std::path::Path::new(&home).join(".yi/catalog"));
     let (config, migrations) = read_config(std::path::Path::new(&home))?;
     for migration in migrations {
@@ -568,7 +578,7 @@ fn build_session(
         },
     );
     drop(wiring);
-    if let Err(why) = yi_runtime::classifier::attach(&session, &work, &home, config()) {
+    for why in yi_runtime::classifier::attach(&session, &work, &home, config()) {
         eprintln!("warning: {why}");
     }
     if let Some(every) = config()

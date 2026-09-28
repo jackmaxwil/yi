@@ -41,7 +41,8 @@ pub mod transcript;
 pub mod tree;
 pub mod wrap;
 
-pub use app::{AskRequest, Command, TuiOptions, UiEvent, run_tui};
+pub use app::{Command, TuiOptions, UiEvent, run_tui};
 pub use approval::AskChoice;
+pub use approval::AskRequest;
 pub use drive::{DriveOptions, parse_script, run_headless};
 pub use port::{Answer, Reply, SessionPort, tick};
