@@ -57,6 +57,24 @@ fn yi(home: &McpHome, args: &[&str]) -> Result<Output, Box<dyn Error>> {
     })
 }
 
+/// `yi <args>` run from `cwd`, the directory a stored relative command would resolve against.
+fn yi_in(home: &McpHome, cwd: &std::path::Path, args: &[&str]) -> Result<Output, Box<dyn Error>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the contract under test is the spawned binary's stdio"
+    )]
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args(args)
+        .env("HOME", &home.home)
+        .current_dir(cwd)
+        .output()?;
+    Ok(Output {
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
 fn yi_mcp(home: &McpHome, args: &[&str]) -> Result<Output, Box<dyn Error>> {
     let mut full = vec!["mcp"];
     full.extend_from_slice(args);
@@ -254,6 +272,55 @@ fn fetch_resolves_an_mcp_url_through_the_one_shot_cli() -> TestResult {
         addressless.stderr
     );
 
+    Ok(())
+}
+
+/// A stored stdio command that is a relative path is resolved against the server's cwd, the
+/// way `npx` prefers `<cwd>/node_modules/.bin`. The host runs every MCP server from `~/.yi`,
+/// outside every writable root, so a file planted in the workspace is never the one that runs.
+#[test]
+fn a_relative_server_command_is_not_resolved_in_the_workspace() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let home = mcp_home()?;
+    let workspace = Scratch::new("yi-mcp-cwd")?;
+    let bin = workspace.join("node_modules").join(".bin");
+    std::fs::create_dir_all(&bin)?;
+    let marker = home.home.join("yi-mcp-cwd-marker");
+    let script = bin.join("yi-mcp-relative");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )?;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+    let config = home.home.join(".yi/mcp.json");
+    let mut entries: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config)?)?;
+    entries["mcpServers"]["relative"] =
+        serde_json::json!({"command": "node_modules/.bin/yi-mcp-relative"});
+    std::fs::write(&config, entries.to_string())?;
+
+    let connected = yi_in(
+        &home,
+        &workspace,
+        &["mcp", "connect", "relative", "@rel", "--json"],
+    )?;
+    let ran_at_connect = marker.is_file();
+    let _ = std::fs::remove_file(&marker);
+    let fetched = yi_in(&home, &workspace, &["fetch", "mcp://rel/note://alpha"])?;
+    let ran_at_fetch = marker.is_file();
+    assert!(
+        !ran_at_connect && !ran_at_fetch,
+        "the host ran a file planted in the workspace (connect {ran_at_connect}, fetch {ran_at_fetch}): {} {}",
+        connected.stderr,
+        fetched.stderr
+    );
+    assert_ne!(connected.code, 0);
+    assert!(
+        connected
+            .stderr
+            .contains("spawn node_modules/.bin/yi-mcp-relative failed"),
+        "the spawn fails by name, not by running something else: {}",
+        connected.stderr
+    );
     Ok(())
 }
 

@@ -609,24 +609,24 @@ struct McpOneShot;
 
 impl yi_runtime::fetch::McpResourceRead for McpOneShot {
     fn read(&self, server: &str, resource: &str) -> Result<String, String> {
-        yi_mcp(&[&format!("@{server}"), "resources-read", resource])
+        run_yi_mcp(&[&format!("@{server}"), "resources-read", resource])
     }
 
     /// The kernel's connect: the entry is read from `config` by the `<file>:<entry>` form, so
     /// no workspace file, and no other name, is consulted (D296).
-    fn connect(
+    fn connect_server(
         &self,
         config: &std::path::Path,
         entry: &str,
         session: &str,
     ) -> Result<String, String> {
         let reference = format!("{}:{entry}", config.display());
-        yi_mcp(&["connect", &reference, &format!("@{session}")])
+        run_yi_mcp(&["connect", &reference, &format!("@{session}")])
     }
 }
 
 /// `yi mcp --json <args>` as a child of this binary; its `error:` line is the failure text.
-fn yi_mcp(args: &[&str]) -> Result<String, String> {
+fn run_yi_mcp(args: &[&str]) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
     #[expect(
         clippy::disallowed_methods,

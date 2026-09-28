@@ -161,9 +161,8 @@ impl RuntimeWiring {
 
     /// The kernel's own profile, which its `bash()` jobs run under too (D241).
     fn exec_sandbox(&self) -> Option<yi_tools::Sandbox> {
-        self.session_sandbox().map(|sandbox| {
-            crate::kernel::kernel_profile(&sandbox, &self.home, Some(&self.family_dir()))
-        })
+        self.session_sandbox()
+            .map(|sandbox| crate::kernel::kernel_profile(&sandbox, Some(&self.family_dir())))
     }
 
     fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {

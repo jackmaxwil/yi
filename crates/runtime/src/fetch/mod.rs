@@ -48,7 +48,7 @@ pub trait McpResourceRead: Send + Sync {
 
     /// Connects `entry` of `config`, a file no sandbox writes, as `@session` on the host and
     /// returns the connect reply as JSON text (D296).
-    fn connect(&self, config: &Path, entry: &str, session: &str) -> Result<String, String> {
+    fn connect_server(&self, config: &Path, entry: &str, session: &str) -> Result<String, String> {
         let _ = (config, entry, session);
         Err("mcp connect is unavailable in this session".to_owned())
     }
