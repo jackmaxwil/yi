@@ -122,6 +122,7 @@ pub struct ProjectResources {
     gate: TrustGate,
     budget: yi_context::Bytes,
     catalog: yi_context::Bytes,
+    global_skills: Vec<String>,
 }
 
 impl ProjectResources {
@@ -133,7 +134,14 @@ impl ProjectResources {
             gate,
             budget: yi_context::SourceBudgets::default().project_instructions,
             catalog: yi_context::SourceBudgets::default().skills_meta,
+            global_skills: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_global_skills(mut self, names: Vec<String>) -> Self {
+        self.global_skills = names;
+        self
     }
 
     #[must_use]
@@ -163,28 +171,36 @@ impl ProjectResources {
 
     fn instructions(&self, out: &mut Vec<Effect>) {
         let root = git_root(&self.cwd).unwrap_or_else(|| self.cwd.clone());
-        let mut seen = Vec::new();
+        let mut seen: Vec<(String, usize)> = Vec::new();
         for path in Self::instruction_files(&self.cwd) {
             let Ok(content) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let hash = content_hash(&content);
-            if seen.contains(&hash) {
-                continue;
-            }
-            seen.push(hash);
             let source = display_source(&path, &root);
-            let trust = self.gate.trust_of(&root, &source, &content);
-            out.push(Effect::AttachExternal {
+            let trust = match committed(&root, &path, &source) {
+                true => Trust::Granted,
+                false => self.gate.trust_of(&root, &source, &content),
+            };
+            let effect = Effect::AttachExternal {
                 source,
                 trust,
                 text: yi_context::fit(&content, self.budget).text,
-            });
+            };
+            let hash = content_hash(&instruction_text(&content));
+            match seen.iter().find(|(seen_hash, _)| *seen_hash == hash) {
+                Some(&(_, at)) if trust == Trust::Granted => out[at] = effect,
+                Some(_) => {}
+                None => {
+                    seen.push((hash, out.len()));
+                    out.push(effect);
+                }
+            }
         }
     }
 
     fn catalogs(&self, out: &mut Vec<Effect>) {
-        let (global, project) = crate::skills::discover_split(&self.cwd, &self.home);
+        let (mut global, project) = crate::skills::discover_split(&self.cwd, &self.home);
+        global.retain(|skill| listed(skill, &self.home, &self.global_skills));
         if let Some(catalog) = crate::skills::catalog_text(&global, self.catalog) {
             out.push(Effect::AttachFragment {
                 slot: Slot::new(Rank::Catalog, "skills"),
@@ -205,6 +221,29 @@ impl ProjectResources {
             text: catalog.text,
         });
     }
+}
+
+pub fn listed(skill: &crate::skills::Skill, home: &Path, named: &[String]) -> bool {
+    skill.path.starts_with(home.join(".yi/skills")) || named.contains(&skill.name)
+}
+
+fn instruction_text(content: &str) -> String {
+    let is_comment = |line: &&str| {
+        let line = line.trim();
+        line.starts_with("<!--") && line.find("-->") == line.len().checked_sub(3)
+    };
+    content
+        .lines()
+        .filter(|line| !is_comment(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn committed(root: &Path, path: &Path, source: &str) -> bool {
+    let path = path.to_string_lossy();
+    let head = crate::lane::git(root, &["rev-parse", &format!("HEAD:{source}")]);
+    let blob = crate::lane::git(root, &["hash-object", "--", &path]);
+    matches!((head, blob), (Ok(head), Ok(blob)) if head.trim() == blob.trim())
 }
 
 pub fn contributions(cwd: &Path, home: &Path) -> Vec<(String, String)> {
