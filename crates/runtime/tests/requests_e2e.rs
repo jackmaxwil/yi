@@ -20,7 +20,7 @@ fn said(text: &str) -> AgentMessage {
 }
 
 fn session(script: Vec<AgentMessage>) -> AgentSession {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(script);
     let config = SessionConfig {
         system_prompt: "sys".to_owned(),
@@ -46,6 +46,7 @@ fn family(parent: &Arc<AgentSession>, kind: Child) -> std::io::Result<Family> {
     let store = support::memory_store("requests-parent");
     let kept = store.clone();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 8,
