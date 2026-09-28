@@ -776,3 +776,23 @@ fn a_mirrored_blocker_keeps_its_child_and_its_probe() -> TestResult {
     assert_eq!(states, [&child.state, &ci.state]);
     Ok(())
 }
+
+/// Dies with every session todo record carrying the plan's delegation and note: the list is
+/// written whole per plan op, and those facts already live in the plan journal.
+#[test]
+fn a_mirrored_row_leaves_the_delegation_and_note_to_the_plan() -> TestResult {
+    let mut delegated = Todo::pending(TodoLabel::new("delegated")?);
+    delegated.delegation = spec("delegated", true)?.delegation;
+    delegated.note = Some(yi_types::plan::doc::Note::new("x".repeat(4000))?);
+    let plan = Plan::opening(
+        PlanId::new("ship")?,
+        GoalText::new("ship it")?,
+        PlanTier::Root,
+        vec![delegated.clone()],
+    );
+    let list = yi_runtime::todo::mirror::projected(&plan, &TodoList::default());
+    let row = list.items().next().ok_or("no mirrored row")?;
+    assert_eq!(row.label, delegated.label);
+    assert!(row.delegation.is_none() && row.note.is_none(), "{row:?}");
+    Ok(())
+}

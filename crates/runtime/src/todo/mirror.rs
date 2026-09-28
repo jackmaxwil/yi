@@ -46,6 +46,11 @@ impl OpSink for Mirror {
 
 fn row(todo: &Todo, plan: &Plan, was: Option<&Todo>) -> Todo {
     let mut item = todo.clone();
+    // Invariant: the plan journal holds these; the list rides every session record, per op.
+    item.delegation = None;
+    item.contract = None;
+    item.contract_hash = None;
+    item.note = None;
     item.id = was.and_then(|seen| seen.id.clone());
     item.extra.insert(
         PLAN_KEY.to_owned(),

@@ -582,9 +582,9 @@ A worktree todo needs a contract; it is Done only via acceptance or as `Accepted
   `fail` verdict fails the todo `retained`. The owner gets one `plan: accepted|refused|failed`.
 - The `todo` tool keeps a session list of `custom{todo}` entries whose items are plan `Todo`s: a
   session todo is a todo with no edges, with an optional `t<n>` id and `done` evidence. With a plan
-  open at depth 0 the list is the plan's view, each plan todo cloned in by `Mirror` after each op;
-  `todo start|done` on a plan item is the owner's plan op, any other change to one is
-  `TodoError::Mirrored`.
+  open at depth 0 the list is the plan's view, each plan todo cloned in by `Mirror` after each op,
+  less the delegation, contract and note its journal holds; `todo start|done` on a plan item is
+  the owner's plan op, any other change to one is `TodoError::Mirrored`.
 - A done todo's evidence is held against the ledger for display only: it is observed when a span
   it quotes in backticks appears verbatim in a recorded call's arguments or output, and claimed
   otherwise (`todo::claims`). Nothing is refused (D255); the HUD marks claimed rows.

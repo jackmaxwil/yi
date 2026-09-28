@@ -213,3 +213,54 @@ fn a_format_two_record_round_trips_byte_for_byte() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with a list lost to a binary from before the merge: that binary rewrote a format-2 list
+/// in its name-only shape, leaving a stale runner and blocker, and its last moves read back.
+#[test]
+fn a_format_two_list_a_pre_merge_binary_rewrote_reads_its_moves() -> TestResult {
+    let raw = include_str!("fixtures/todo-record-v2-pre-merge-rewrite.json");
+    let record: TodoRecord = serde_json::from_str(raw)?;
+    let list = &record.list;
+    let states: Vec<(&str, &TodoState)> = list
+        .items()
+        .map(|item| (item.label.as_str(), &item.state))
+        .collect();
+    let running = TodoState::Running {
+        by: AgentId::owner(),
+    };
+    let waiting = TodoState::Blocked {
+        on: BlockedOn::External { probe: None },
+        note: "waiting on CI".to_owned(),
+    };
+    let done = TodoState::Done {
+        output: None,
+        resolution: None,
+    };
+    assert_eq!(
+        states,
+        [
+            ("write the parser", &TodoState::Pending),
+            ("read the schema", &running),
+            ("wire the tool", &TodoState::Pending),
+            ("ship it", &done),
+            ("write the docs", &waiting),
+        ]
+    );
+    assert_eq!(
+        item(list, "ship it")?.evidence.as_deref(),
+        Some("`true` exit 0")
+    );
+    let written = serde_json::to_string(&record)?;
+    let items = &serde_json::from_str::<Value>(&written)?["list"]["phases"][0]["items"];
+    for (at, stale) in [(0, "by"), (1, "blocked"), (3, "on")] {
+        assert!(
+            items[at].get(stale).is_none(),
+            "stale {stale} in {}",
+            items[at]
+        );
+    }
+    let again: TodoRecord = serde_json::from_str(&written)?;
+    assert_eq!(again, record);
+    assert_eq!(serde_json::to_string(&again)?, written);
+    Ok(())
+}
