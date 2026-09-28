@@ -97,7 +97,7 @@ fn build_params_honors_the_openrouter_compat_flags() -> TestResult {
 fn tool_loop_context() -> LlmContext {
     let mut context = history_context();
     context.system_prompt = ["identity", "mode", "yard"].join(SYSTEM_BLOCK_SEPARATOR);
-    // A loop request carries its tool table; without one the plan reads it as a one-shot.
+    // A loop request carries its tool table; without one the breakpoints read it as a one-shot.
     context.tools = Some(vec![yi_types::model::ToolDef {
         name: "bash".to_owned(),
         description: "run".to_owned(),
@@ -164,8 +164,8 @@ fn marks(params: &serde_json::Value) -> Vec<(usize, String)> {
 }
 
 /// Row 91 of the dogfood ledger: a Claude id newer than the bundle comes from the fetched
-/// catalog with no cache flag, and with no mark Anthropic caches nothing (#742). The plan
-/// marks the system, the previous request's tail (the user turn ahead of the last reply)
+/// catalog with no cache flag, and with no mark Anthropic caches nothing (#742). The
+/// breakpoints sit on the system, the previous request's tail (the user turn ahead of the last reply)
 /// and the tail, and the environment in `transient` stays bare (#743).
 #[test]
 fn a_claude_newer_than_the_bundle_marks_its_system_and_the_block_before_the_environment()

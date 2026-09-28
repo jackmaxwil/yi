@@ -6,7 +6,7 @@ use yi_types::message::{
 };
 use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 
-use crate::cache::{CachePlan, Dialect, Purpose, Route, encode};
+use crate::breakpoints::{Breakpoints, CacheRoute, Dialect, Reuse, encode};
 use crate::catalog::calculate_cost;
 use crate::compat::{compat_bool, compat_str};
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
@@ -90,7 +90,7 @@ pub fn normalize_openai_tool_call_id(id: &str) -> String {
 }
 
 /// Renders transformed messages onto `params`, recording for each rendered message the index
-/// of the message it came from, which is what a plan's anchor names.
+/// of the message it came from, which is what a breakpoint position names.
 fn convert_messages(
     model: &Model,
     transformed: &[AgentMessage],
@@ -266,7 +266,7 @@ fn push_tool_results(
                 vec![json!({"type": "text", "text": "Attached image(s) from tool result:"})];
             parts.extend(images);
             params.push(json!({"role": "user", "content": parts}));
-            // Synthesized, so no anchor names it: the mark stays on the tool message's text.
+            // Synthesized, so no position names it: the mark stays on the tool message's text.
             origins.push(None);
         }
     }
@@ -318,7 +318,8 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         model,
         Some(normalize_openai_tool_call_id),
     );
-    let plan = CachePlan::build(&Route::of(model, false), &history, Purpose::of(context));
+    let breakpoints =
+        Breakpoints::build(&CacheRoute::of(model, false), &history, Reuse::of(context));
     let mut messages: Vec<Value> = Vec::new();
     let mut origins: Vec<Option<usize>> = Vec::new();
     if !context.system_prompt.is_empty() {
@@ -343,7 +344,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     } else {
         Dialect::Automatic
     };
-    encode(&plan, dialect, &mut params, &origins);
+    encode(&breakpoints, dialect, &mut params, &origins);
     let transient = transform_messages(
         &context.transient,
         model,

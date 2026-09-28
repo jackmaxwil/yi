@@ -4,7 +4,7 @@ use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
 use yi_types::model::{LlmContext, Model, ToolChoice, ToolDef};
 
-use crate::cache::{CachePlan, Dialect, Purpose, Route, encode};
+use crate::breakpoints::{Breakpoints, CacheRoute, Dialect, Reuse, encode};
 use crate::catalog::calculate_cost;
 use crate::compat::compat_bool;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
@@ -357,13 +357,13 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if model.provider == "openai-codex" {
         params["instructions"] = json!(system_text(&context.system_prompt));
     }
-    // Every request carries a plan; this wire spells none of it (design §11).
-    let plan = CachePlan::build(
-        &Route::of(model, false),
+    // Every request carries its breakpoints; this wire spells none of them (design §11).
+    let breakpoints = Breakpoints::build(
+        &CacheRoute::of(model, false),
         &context.messages,
-        Purpose::of(context),
+        Reuse::of(context),
     );
-    encode(&plan, Dialect::Automatic, &mut params, &[]);
+    encode(&breakpoints, Dialect::Automatic, &mut params, &[]);
     if let Some(session_id) = &options.session_id {
         params["prompt_cache_key"] = json!(session_id);
     }
