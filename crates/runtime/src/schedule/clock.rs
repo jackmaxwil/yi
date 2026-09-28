@@ -238,10 +238,7 @@ pub fn wake_message(job: &Job, fired: &Fired, now_ms: u64) -> Option<AgentMessag
         custom_type: "heartbeat_prompt".to_owned(),
         content: UserContent::Text(format!(
             "<heartbeat job=\"{}\" run=\"{}\">{} ticked at {} and {what}.</heartbeat>",
-            job.label
-                .as_deref()
-                .filter(|_| job.unblocks.is_none())
-                .unwrap_or(&job.id),
+            job.id,
             job.run_count.saturating_add(1),
             address(job),
             crate::plan::program::iso(now_ms),
@@ -292,7 +289,7 @@ impl HeartbeatService {
         let (jobs, sessions) = if self.interned {
             shared::halt_all(on, now)
         } else {
-            let (jobs, _) = halt_store(&self.store, None, on, now);
+            let (jobs, _) = halt_store(&self.store(), None, on, now);
             (
                 jobs,
                 self.stop.as_ref().map_or(0, |stop| u64::from(stop(on))),
@@ -361,7 +358,7 @@ impl HeartbeatService {
         if waits.is_empty() {
             return;
         }
-        let state = self.store.snapshot();
+        let state = self.store().snapshot();
         let armed = |label: &TodoLabel, address: &String| {
             state.jobs.iter().any(|job| {
                 job.session_id == session
@@ -394,7 +391,7 @@ impl HeartbeatService {
             })
             .collect();
         if !fresh.is_empty() {
-            self.store.mutate(|state| state.jobs.extend(fresh));
+            self.store().mutate(|state| state.jobs.extend(fresh));
         }
     }
 }

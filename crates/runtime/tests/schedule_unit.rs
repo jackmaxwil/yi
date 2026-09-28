@@ -242,3 +242,33 @@ fn a_recurring_wait_completes_after_its_one_firing() {
         "a spent wait stayed armed and would re-fire every interval"
     );
 }
+
+#[test]
+fn a_deferred_tick_stays_owed_and_retries_before_its_next_tick() {
+    let mut state = ScheduleState::default();
+    let mut job = job_with(Some(yi_types::schedule::JobSource::Heartbeat), None);
+    job.schedule = CronSchedule {
+        kind: ScheduleKind::Cron,
+        expression: "0 9 * * 1-5".to_owned(),
+        interval_ms: None,
+    };
+    job.next_run_at = Some(1_000);
+    state.jobs.push(job);
+    let mut new_id = || "d1".to_owned();
+    let claimed = claim_due_in_state(&mut state, 1_000, 1_000, &mut new_id, &HashSet::new());
+    assert_eq!(claimed.len(), 1);
+
+    let updated =
+        record_dispatch_result_in_state(&mut state, "d1", RunOutcome::Deferred, None, 2_000);
+
+    let updated = updated.map(|job| (job.status, job.run_count, job.next_run_at));
+    assert_eq!(
+        updated,
+        Some((
+            JobStatus::Active,
+            0,
+            Some(2_000 + yi_runtime::schedule::DEFER_RETRY_MS)
+        )),
+        "a deferred weekday tick waited for the next weekday instead of retrying"
+    );
+}

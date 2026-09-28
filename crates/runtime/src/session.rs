@@ -602,16 +602,17 @@ impl AgentSession {
                 run::push(&mut queue, Queued::new(message, false, None));
             }
         }
-        if let Some(service) = self.heartbeat_service() {
-            let id = yi_session::lock_session(&store).metadata().id.clone();
-            service.bind_session(id);
-        }
+        let id = yi_session::lock_session(&store).metadata().id.clone();
         if let Ok(mut slot) = self.shared.store.lock() {
             *slot = Some(store);
         }
         if let Some(todos) = self.todos() {
             todos.rehydrate();
-            if let Some(service) = self.heartbeat_service() {
+        }
+        // Invariant: bound last, so a tick owed since the last process finds the ledger and list.
+        if let Some(service) = self.heartbeat_service() {
+            service.bind_session(id);
+            if let Some(todos) = self.todos() {
                 service.watch(&todos.list());
             }
         }

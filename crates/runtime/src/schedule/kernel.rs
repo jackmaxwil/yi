@@ -42,7 +42,7 @@ impl HeartbeatService {
     pub fn register(self: &std::sync::Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
         let list = std::sync::Arc::clone(self);
         registry.register("rlm_heartbeat.list", move |_payload| {
-            let state = list.store.snapshot();
+            let state = list.store().snapshot();
             let jobs: Vec<_> = state
                 .jobs
                 .iter()
@@ -104,7 +104,7 @@ impl HeartbeatService {
                 if job.intent.is_empty() {
                     job.intent = create.latest_words();
                 }
-                create.store.mutate(|state| state.jobs.push(job.clone()));
+                create.store().mutate(|state| state.jobs.push(job.clone()));
                 serde_json::json!({"job": job})
                     .as_object()
                     .cloned()
@@ -132,7 +132,7 @@ impl HeartbeatService {
                 };
                 let now = yi_session::now_ms();
                 let owner = update.bound_session_id()?;
-                let updated = update.store.mutate(|state| {
+                let updated = update.store().mutate(|state| {
                     let found = state
                         .jobs
                         .iter_mut()
@@ -165,7 +165,7 @@ impl HeartbeatService {
                     .to_owned();
                 let now = yi_session::now_ms();
                 let owner = delete.bound_session_id()?;
-                let found = delete.store.mutate(|state| {
+                let found = delete.store().mutate(|state| {
                     let target = state
                         .jobs
                         .iter_mut()

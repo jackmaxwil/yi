@@ -9,7 +9,7 @@ use crate::AgentSession;
 pub const SPEND_ALERT_TYPE: &str = "spend_alert";
 
 /// Invariant: arithmetic alone decides an alert, never a model: the session's own turns plus
-/// each child's latest token count, announced once per multiple of `every` crossed.
+/// each child's count, both in `total_tokens`, announced once per multiple of `every` crossed.
 pub struct SpendAlarm {
     every: NonZeroU64,
     own: u64,
@@ -38,10 +38,17 @@ impl SpendAlarm {
         match event {
             AgentEvent::MessageEnd {
                 message: AgentMessage::Assistant { usage, .. },
-            } => self.own = self.own.saturating_add(crate::goal::usage_delta(usage)),
+            } => {
+                let spent = u64::try_from(usage.total_tokens).unwrap_or(0);
+                self.own = self.own.saturating_add(spent);
+            }
             AgentEvent::ChildUpdate { update } => {
-                self.children
-                    .insert(update.id.as_str().to_owned(), update.token_count);
+                let id = update.id.as_str().to_owned();
+                let before = self.children.insert(id, update.token_count).unwrap_or(0);
+                // A respawn restarts the child's count; what the last incarnation spent stays spent.
+                if update.token_count < before {
+                    self.own = self.own.saturating_add(before);
+                }
             }
             _ => return None,
         }

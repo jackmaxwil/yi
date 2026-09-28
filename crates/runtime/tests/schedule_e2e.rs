@@ -146,6 +146,7 @@ async fn a_cron_tick_creates_one_todo_with_its_intent_and_wakes_an_idle_session(
         interval_ms: None,
     };
     job.intent = vec!["user://1".parse()?];
+    job.label = Some("nightly build".to_owned());
     store.mutate(|state| state.jobs.push(job));
 
     let scheduler = start_scheduler(&store, session.heartbeat_deliverer());
@@ -165,7 +166,7 @@ async fn a_cron_tick_creates_one_todo_with_its_intent_and_wakes_an_idle_session(
         return Err(format!("one tick, one todo: {items:?}").into());
     };
     assert!(
-        todo.label.as_str().starts_with("check the build @ "),
+        todo.label.as_str().starts_with("nightly build @ "),
         "{}",
         todo.label
     );
@@ -184,7 +185,7 @@ async fn a_cron_tick_creates_one_todo_with_its_intent_and_wakes_an_idle_session(
     );
     let wake = wake_text(&session)?;
     assert!(
-        !wake.contains("check the build"),
+        !wake.contains("check the build") && !wake.contains("nightly build"),
         "the job's text reached the model as a prompt: {wake}"
     );
     assert!(
@@ -244,8 +245,8 @@ async fn a_heartbeat_due_mid_compaction_is_deferred() -> TestResult {
     let outcome = outcome.lock().map_err(|error| error.to_string())?.clone();
     assert_eq!(
         outcome,
-        Some(Ok(RunOutcome::Skipped)),
-        "a heartbeat due while the summarizer runs must wait for the next tick"
+        Some(Ok(RunOutcome::Deferred)),
+        "a heartbeat due while the summarizer runs must wait and stay owed"
     );
     assert!(applied, "the idle compaction still lands");
     assert!(
@@ -896,8 +897,13 @@ async fn a_todo_waiting_on_a_clock_time_unblocks_then_across_a_restart() -> Test
 
     let reopened = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
     let second = start_scheduler(&reopened, session.heartbeat_deliverer());
+    let spent = |store: &JobStore| {
+        let jobs = store.snapshot().jobs;
+        jobs.iter().all(|job| job.status == JobStatus::Completed)
+    };
     let unblocked = wait_until(8_000, || !blocked(&todos)).await;
-    session.wait_idle().await;
+    let settled = wait_until(8_000, || spent(&reopened)).await;
+    let woke = wait_until(8_000, || answered(&session, "woke at the time")).await;
     second.stop();
 
     assert!(unblocked, "the restarted timer never unblocked the todo");
@@ -905,18 +911,8 @@ async fn a_todo_waiting_on_a_clock_time_unblocks_then_across_a_restart() -> Test
         yi_session::now_ms() >= at,
         "the todo unblocked before its time"
     );
-    assert!(
-        reopened
-            .snapshot()
-            .jobs
-            .iter()
-            .all(|job| job.status == JobStatus::Completed),
-        "a spent wait stayed armed"
-    );
-    assert!(
-        answered(&session, "woke at the time"),
-        "the unblock never woke the session"
-    );
+    assert!(settled, "a spent wait stayed armed");
+    assert!(woke, "the unblock never woke the session");
     Ok(())
 }
 
@@ -969,10 +965,11 @@ async fn a_scheduled_jobs_file_from_the_prompt_era_fires_as_a_todo() -> TestResu
     Ok(())
 }
 
-fn turn_of(output: i64) -> yi_types::event::AgentEvent {
+/// A turn whose tokens are all cached input: a child's count is `total_tokens`, so this must be too.
+fn turn_of(total: i64) -> yi_types::event::AgentEvent {
     let mut message = faux_assistant_message(Vec::new(), StopReason::Stop);
     if let AgentMessage::Assistant { usage, .. } = &mut message {
-        usage.output = output;
+        (usage.input, usage.cache_read, usage.total_tokens) = (total, total, total);
     }
     yi_types::event::AgentEvent::MessageEnd { message }
 }
@@ -1022,6 +1019,12 @@ fn a_spend_alert_fires_once_per_crossing() -> TestResult {
         alarm.observe(&child_at(1_500)),
         None,
         "a child's newer count replaced its last one, it did not add to it"
+    );
+    assert!(
+        alarm
+            .observe(&child_at(100))
+            .is_some_and(|text| text.contains("used 3000 tokens")),
+        "a respawned child's restarted count erased what it had spent"
     );
     Ok(())
 }
@@ -1090,6 +1093,8 @@ async fn the_kill_switch_holds_the_clock_and_a_turn_until_resume() -> TestResult
         store.snapshot().jobs.iter().all(|job| job.halted),
         "a clock job stayed live through the halt"
     );
+    let status = service.run("/heartbeat status")?;
+    assert!(status.contains("[active, halted]"), "{status}");
     (session.deliver_hook())(yi_runtime::session::user_input("wake up"), true);
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert!(
@@ -1112,6 +1117,147 @@ async fn the_kill_switch_holds_the_clock_and_a_turn_until_resume() -> TestResult
         records.len(),
         2,
         "the halt and its undo are both in the ledger"
+    );
+    Ok(())
+}
+
+/// A root session wired the way the CLI wires one, over `root/sessions`.
+fn wired_root(root: &std::path::Path, reply: &str) -> Result<AgentSession, Box<dyn Error>> {
+    let (cwd, home) = (root.join("cwd"), root.join("home"));
+    std::fs::create_dir_all(&cwd)?;
+    std::fs::create_dir_all(&home)?;
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![faux_assistant_message(
+        vec![faux_text(reply)],
+        StopReason::Stop,
+    )]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: String::new(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd,
+            home,
+            lane_slots: 1,
+            broker: None,
+            tools: Arc::new(Vec::new),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join(format!("rlm-{}", yi_session::now_ms())),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: Some(root.join("sessions")),
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    Ok(session)
+}
+
+/// The owner's case: a daily clock set in one process, the process gone for three ticks, and the
+/// session resumed in the next one owes exactly one todo that counts them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_clock_set_before_a_restart_owes_one_todo_on_resume() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
+    let root = Scratch::new("yi-clock-restart")?;
+    let mut repo = JsonlRepo::new(root.join("sessions"), "/tmp/yi-clock-restart".to_owned());
+    let id = "clock-restart-1";
+    {
+        let session = wired_root(&root, "unused")?;
+        session.attach_store(repo.create(CreateOptions {
+            id: Some(id.to_owned()),
+            ..CreateOptions::default()
+        })?)?;
+        let clock = session.heartbeat_service().ok_or("no clock wired")?;
+        clock.run("/heartbeat every 1h write the stand-up notes")?;
+    }
+    let path = root
+        .join("sessions/schedules")
+        .join(id)
+        .join("scheduled-jobs.json");
+    let hour = 3_600_000;
+    let mut state: ScheduleState = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    let [job] = state.jobs.as_mut_slice() else {
+        return Err(format!("one clock job on disk: {:?}", state.jobs).into());
+    };
+    assert_eq!(
+        job.status,
+        JobStatus::Active,
+        "the session's end paused its clock"
+    );
+    job.next_run_at = Some(yi_session::now_ms().saturating_sub(hour * 5 / 2));
+    std::fs::write(&path, serde_json::to_string(&state)?)?;
+
+    // Invariant: the timer is interned per path for the process's life, so the next process is
+    // a second spelling of the same directory, which opens the file afresh.
+    let next = Scratch::new("yi-clock-restart-next")?;
+    std::os::unix::fs::symlink(&*root, next.join("root"))?;
+    let session = wired_root(&next.join("root"), "notes written")?;
+    session.attach_store(repo.open(id)?)?;
+    let todos = session.todos().ok_or("no todo list wired")?;
+    let made = wait_until(8_000, || todos.list().items().count() > 0).await;
+    let woke = wait_until(8_000, || answered(&session, "notes written")).await;
+
+    assert!(
+        made,
+        "the resumed session's clock never ticked: {}",
+        std::fs::read_to_string(&path)?
+    );
+    let list = todos.list();
+    let items: Vec<&Todo> = list.items().collect();
+    let [todo] = items.as_slice() else {
+        return Err(format!("three missed ticks, one todo: {items:?}").into());
+    };
+    let note = todo.note.as_ref().map(|note| note.as_str()).unwrap_or("");
+    assert!(
+        note.starts_with("write the stand-up notes\n3 ticks missed while asleep, "),
+        "the todo does not count the missed ticks: {note}"
+    );
+    assert!(woke, "the tick never woke the resumed session");
+    Ok(())
+}
+
+#[test]
+fn resume_after_a_halt_lifts_the_halt_and_leaves_a_paused_job_paused() -> TestResult {
+    let (_dir, store) = temp_store("halt-paused")?;
+    let held = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hold = Arc::clone(&held);
+    let service =
+        HeartbeatService::new(Arc::clone(&store), "/tmp").with_stop(Arc::new(move |on| {
+            hold.swap(on, std::sync::atomic::Ordering::SeqCst) != on
+        }));
+    service.bind_session("s".to_owned());
+    service.run("/heartbeat every 10m watch CI")?;
+    service.run("/heartbeat pause")?;
+    service.run("/heartbeat halt")?;
+
+    let resumed = service.run("/heartbeat resume")?;
+
+    assert!(resumed.contains("The halt is lifted"), "{resumed}");
+    let jobs = store.snapshot().jobs;
+    assert!(
+        jobs.iter()
+            .all(|job| !job.halted && job.status == JobStatus::Paused),
+        "the halt's undo resumed a job the user had paused: {jobs:?}"
     );
     Ok(())
 }

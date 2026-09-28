@@ -639,8 +639,8 @@ A `JobStore` holds jobs and claims; an in-process `Scheduler` delivers due jobs 
 a clock subscription `clock://<schedule>`, the one channel (D283): its tick creates a todo or
 unblocks one and wakes the session, and the woken agent decides what to run.
 
-- One `scheduled-jobs.json` per runtime directory (the root's `rlm-<pid>/`, a child's own),
-  interned by path, so the sessions on it share one store and timer.
+- A root session's `scheduled-jobs.json` is `<sessions>/schedules/<session id>/`, so its clocks
+  survive a restart; a child's is its runtime directory's. Each is interned by path, one timer each.
 - A claim is persisted before delivery and re-arms `next_run_at` from claim time; the ticks it
   stands for are counted, and `catchUp` (`once`, `skip`, `all`) decides their todos. Recovery marks
   open claims `INTERRUPTED_ERROR`. The timer re-reads the wall clock at least every 60 s.
@@ -651,12 +651,12 @@ unblocks one and wakes the session, and the woken agent decides what to run.
   the todo (a plan row through the engine as the host). The todo is the authority: a restart
   re-arms every wait from the rehydrated list.
 - `/heartbeat halt` holds every job of every interned store (`halted`) and every bound session's
-  turn and machine wakes; `/heartbeat resume` lifts it. Both are `custom{halt}` records.
+  turn and machine wakes; `/heartbeat resume` lifts it, and only it while it is in effect. Both are `custom{halt}` records.
   `spend.alertTokens` queues a shown `spend_alert` notice per multiple crossed.
 - Claimed jobs group by `Job.session_id`, serial within and concurrent across groups. The
   deliverer feeds `should_defer` whether the session is streaming, compacting, or has queued
   steer/follow-up work behind a running turn, so a heartbeat due mid-turn or mid-compaction
-  defers to the next boundary instead of interleaving with it.
+  defers to the next boundary instead of interleaving with it; a deferred tick retries within 30 s.
 - Surfaces: RPC `heartbeat`, ACP `_yi/heartbeat` and slash `/heartbeat` (default `every 5m`, one
   per session, reaching the solo TUI, the console and ACP `_yi/slash`); kernel
   `rlm_heartbeat.{list, create, update, delete}`, `create` taking `overlap`, `catchUp`, `intent`.

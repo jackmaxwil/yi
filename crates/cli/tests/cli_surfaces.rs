@@ -213,6 +213,9 @@ fn sessions_rm_removes_the_session() -> TestResult {
     std::fs::create_dir_all(family.join(&id))?;
     std::fs::write(family.join(&id).join("note.json"), "{}")?;
     std::fs::create_dir_all(family.join("other"))?;
+    let clock = workspace.0.join("home/sessions/schedules").join(&id);
+    std::fs::create_dir_all(&clock)?;
+    std::fs::write(clock.join("scheduled-jobs.json"), "{}")?;
     workspace.yi(&["sessions", "rm", &id])?;
     let after: Value =
         serde_json::from_str(&stdout(&workspace.yi(&["sessions", "--json", "list"])?))?;
@@ -225,6 +228,7 @@ fn sessions_rm_removes_the_session() -> TestResult {
         family.join("other").exists(),
         "rm reached another session's board"
     );
+    assert!(!clock.exists(), "a removed session's clocks stayed on disk");
     Ok(())
 }
 
