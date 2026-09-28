@@ -12,6 +12,6 @@ were scored from stay outside the repository, under `~/Development/yi-runs/<run-
 
 The store is also the budget's ledger. `drivers/trials.py caps` sums this ISO
 week's rows and the run's own rows, charging an unpriced trial $1 (the watcher's
-per-trial cap), and refuses a call whose predicted cost (tasks x $0.13) would pass
-the stage's $8 or the week's $25 soft cap. Its hard cap is the smaller of what the
-stage's $10 and the week's $30 leave, and `watch.py` stops the stream there.
+per-trial cap), and refuses a call whose predicted cost (tasks x $0.27) would pass
+the stage's $13 or the week's $25 soft cap. Its hard cap is the smaller of what the
+stage's $15 and the week's $30 leave, and `watch.py` stops the stream there.
