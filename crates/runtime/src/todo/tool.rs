@@ -30,7 +30,8 @@ pub fn schema() -> Value {
             "label": {"type": "string", "description": "start/done/drop/block/unblock/rm: the item, verbatim"},
             "evidence": {"type": "string", "description": "done: the command in backticks and the output line that proves it"},
             "reason": {"type": "string", "description": "drop: why the item no longer applies"},
-            "on": {"type": "string", "description": "block: who it waits on: user, external, child, or `clock://at <ISO time>`, which unblocks it then"},
+            "on": {"type": "string", "description": "block: who it waits on: user, external, child, or an address: `clock://at <ISO time>`, `exec://<command>?every=30s`, `file://<path>`, `channel://<name>`; the first message matching `filter` unblocks it"},
+            "filter": {"type": "string", "description": "block: `key=value&…` matched exactly, or a substring; `ok=true` waits for an exec to pass"},
             "note": {"type": "string", "description": "block: what would unblock it"},
             "options": {"type": "array", "items": {"type": "object"}, "description": "block on user: 3 to 5 answers [{id, label, preview?}] the user picks one of by number, id or label; a preview is light, at most 2048 bytes"},
             "touched": {"type": "integer", "description": "optional: the touched counter you last saw; a stale value is refused so a user edit is never overwritten"}
@@ -305,15 +306,18 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         "block" => Op::Block {
             label: label(args, "block")?,
             on: match BlockedOn::from_word(string(args, "on").as_deref()) {
-                BlockedOn::Channel { address, filter } => {
-                    crate::schedule::clock::wait_schedule(&address, yi_session::now_ms()).map_err(
-                        |cause| ArgError::Malformed {
+                BlockedOn::Channel { address, .. } => {
+                    crate::schedule::channel::check_address(&address).map_err(|cause| {
+                        ArgError::Malformed {
                             op: "block",
                             field: "on",
                             cause,
-                        },
-                    )?;
-                    BlockedOn::Channel { address, filter }
+                        }
+                    })?;
+                    BlockedOn::Channel {
+                        address,
+                        filter: string(args, "filter"),
+                    }
                 }
                 on => on,
             },
@@ -435,6 +439,15 @@ impl Tool for TodoTool {
         parse_op(input)
             .map(|_| ())
             .map_err(|error| error.to_string())
+    }
+
+    fn arms(&self, input: &Map<String, Value>) -> Vec<String> {
+        match parse_op(input) {
+            Ok(Op::Block { on, .. }) => crate::schedule::clock::armed_command(&on)
+                .into_iter()
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     fn execute(&self, input: Map<String, Value>, _context: &ToolContext) -> ToolOutput {

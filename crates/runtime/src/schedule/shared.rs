@@ -89,6 +89,40 @@ pub(crate) fn halt_all(on: bool, now: u64) -> (u64, u64) {
     })
 }
 
+/// A message landed in the buffer at `path`: each subscription reading it comes due now, or one
+/// cadence after its last delivery, so a burst still wakes a session at most once a cadence.
+pub(crate) fn poke(path: &std::path::Path) {
+    let all: Vec<Arc<SharedSchedule>> = intern_map()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .values()
+        .map(Arc::clone)
+        .collect();
+    let reads = |job: &yi_types::schedule::Job| {
+        super::claimable(job)
+            && job
+                .channel
+                .as_ref()
+                .is_some_and(|sub| std::path::Path::new(&sub.path) == path)
+    };
+    let now = yi_session::now_ms();
+    for shared in all {
+        if !shared.store.snapshot().jobs.iter().any(reads) {
+            continue;
+        }
+        shared.store.mutate(|state| {
+            for job in state.jobs.iter_mut().filter(|job| reads(job)) {
+                let cadence = job.schedule.interval_ms.unwrap_or_default();
+                let due = job
+                    .last_run_at
+                    .map_or(now, |last| last.saturating_add(cadence))
+                    .max(now);
+                job.next_run_at = Some(job.next_run_at.map_or(due, |at| at.min(due)));
+            }
+        });
+    }
+}
+
 /// `prime` runs on the hub before a fresh timer starts, so its first claim finds the lane.
 pub(crate) fn intern(path: PathBuf, prime: impl FnOnce(&DeliveryHub)) -> Arc<SharedSchedule> {
     let mut map = intern_map()

@@ -1,3 +1,5 @@
+pub mod adapter;
+pub mod channel;
 pub mod clock;
 mod kernel;
 mod lanes;
@@ -492,7 +494,7 @@ pub fn is_heartbeat_job(job: &Job) -> bool {
 /// Holds a due heartbeat back whenever delivering it would stack redundant work or land
 /// mid-operation; steering tolerates plain streaming, a follow-up does not (§15.2).
 pub fn should_defer(job: &Job, activity: &SessionActivity) -> bool {
-    if !is_heartbeat_job(job) && job.unblocks.is_none() {
+    if !is_heartbeat_job(job) && job.unblocks.is_none() && job.channel.is_none() {
         return false;
     }
     if activity.is_compacting || activity.has_pending_session_work {
@@ -575,6 +577,10 @@ pub enum RunOutcome {
     Skipped,
     /// Held back by what the session is doing: the tick is still owed and retries soon.
     Deferred,
+    /// A channel tick with nothing to hand its target: the subscription keeps waiting.
+    Idle,
+    /// The channel's adapter is past its restart intensity, so the subscription pauses.
+    Paused,
 }
 
 /// Incident: a deferred tick re-armed to its next scheduled time, so a daily clock due while a
@@ -610,6 +616,19 @@ pub fn record_dispatch_result_in_state(
                 .flatten();
             job.next_run_at = Some(next.map_or(retry, |next| next.min(retry)));
             job.last_skipped_at = Some(now_ms);
+            job.updated_at = now_ms;
+            updated = Some(job.clone());
+            continue;
+        }
+        if outcome == RunOutcome::Idle && error.is_none() {
+            job.updated_at = now_ms;
+            updated = Some(job.clone());
+            continue;
+        }
+        if outcome == RunOutcome::Paused {
+            job.status = JobStatus::Paused;
+            job.next_run_at = None;
+            job.last_error = Some("its adapter stopped past its restart intensity".to_owned());
             job.updated_at = now_ms;
             updated = Some(job.clone());
             continue;
@@ -715,12 +734,32 @@ impl JobStore {
     /// Every mutation persists (tmp + fsync + rename) before notifying the
     /// timer — the claim-before-deliver contract (§15.2) rides on this ordering.
     pub fn mutate<R>(&self, action: impl FnOnce(&mut ScheduleState) -> R) -> R {
-        let result = {
+        let reading = |state: &ScheduleState| -> Vec<(String, String)> {
+            state
+                .jobs
+                .iter()
+                .filter(|job| !matches!(job.status, JobStatus::Completed | JobStatus::Cancelled))
+                .filter_map(|job| Some((job.id.clone(), job.channel.as_ref()?.path.clone())))
+                .collect()
+        };
+        let (result, ended) = {
             let mut state = lock_or_poisoned(&self.state);
+            let before = reading(&state);
             let result = action(&mut state);
             self.persist(&state);
-            result
+            let after = reading(&state);
+            let ended: Vec<(String, String)> = before
+                .into_iter()
+                .filter(|job| !after.contains(job))
+                .collect();
+            (result, ended)
         };
+        // Invariant: a channel job that ends by any path drops its ack, so a finished wait or a
+        // cancelled subscription never holds its channel's truncation back.
+        for (id, path) in ended {
+            let _an_unreleased_ack_only_delays_truncation =
+                channel::Channel::at(path).unsubscribe(&id);
+        }
         self.changed.notify_waiters();
         result
     }
@@ -780,12 +819,16 @@ pub fn new_job(spec: JobSpec) -> Job {
         catch_up: None,
         unblocks: None,
         halted: false,
+        channel: None,
+        plan: None,
         extra: serde_json::Map::new(),
     }
 }
 
 /// An `Err` is a tick that ran and failed; the job records it as its last error.
 pub type DeliverFn = dyn Fn(&Job, &Firing) -> Result<RunOutcome, String> + Send + Sync;
+/// `Some` is the refusal of a command a subscription would run on the host.
+pub type GateFn = dyn Fn(&str) -> Option<String> + Send + Sync;
 
 /// Design §15.2 surfaces: the `/heartbeat` verbs and the kernel's
 /// `rlm_heartbeat.*` vocabulary over one store.
@@ -800,6 +843,9 @@ pub struct HeartbeatService {
     deliver: Option<std::sync::Arc<DeliverFn>>,
     stop: Option<std::sync::Arc<shared::StopFn>>,
     words: Option<crate::goal::StoreHandle>,
+    /// The machine's channel buffers, `<sessions>/channels/`.
+    channels: Option<std::path::PathBuf>,
+    gate: Option<std::sync::Arc<GateFn>>,
     /// Bound to a store every session of this process shares, so a halt reaches them all.
     interned: bool,
 }
@@ -815,8 +861,20 @@ impl HeartbeatService {
             deliver: None,
             stop: None,
             words: None,
+            channels: None,
+            gate: None,
             interned: false,
         }
+    }
+
+    pub fn with_channels(mut self, home: std::path::PathBuf) -> Self {
+        self.channels = Some(home);
+        self
+    }
+
+    pub fn with_gate(mut self, gate: std::sync::Arc<GateFn>) -> Self {
+        self.gate = Some(gate);
+        self
     }
 
     pub fn with_words(mut self, words: crate::goal::StoreHandle) -> Self {
@@ -984,7 +1042,9 @@ fn render_job_line(job: &Job) -> String {
             JobStatus::Cancelled => "cancelled",
         },
         if job.halted { ", halted" } else { "" },
-        job.schedule.expression,
+        job.channel
+            .as_ref()
+            .map_or(job.schedule.expression.as_str(), |sub| sub.address.as_str()),
         job.prompt,
         job.run_count,
         job.next_run_at
