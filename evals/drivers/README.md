@@ -75,12 +75,27 @@ counts Time Machine local snapshots as free; 3 GB plain `df` as a floor) stops t
 group and this run's trial containers, exits 2 and writes the reason to
 `<runs>.STOPPED`. It also removes terminal-bench images no container uses:
 harbor's `--rmi local` never removes a pulled image, and these are pulled by
-digest, untagged, so they go by id after two idle polls. `evals/selftest.py` (`check_driver_ceiling`,
+digest, untagged, so they go by id after ten consecutive idle polls (a multi-image task pulls its sidecar minutes before it starts the container; two polls removed one mid-trial), and every unused one goes when harbor exits. `evals/selftest.py` (`check_driver_ceiling`,
 `check_watch_stops`) holds the ceiling and the stop path.
 
 ```sh
 TBV4_RUNS_DIR=runs/tbv4-sweep sh evals/drivers/tbv4_sweep.sh
 ```
+
+## Runner mode — the protocol levers.py calls
+
+```sh
+EVAL_RUN_ID=<run-id> sh evals/drivers/tbv4_sweep.sh --runner <overrides.json> <task>...
+```
+
+Same preflight, dataset, model and binary as the sweep. The tasks run as one harbor job under
+`watch.py` with a hard cap from `trials.py caps` (the smaller of what the stage's $15 and the
+week's $30 leave; the call is refused outright when its predicted cost, tasks x $0.27, would pass
+the stage's $13 or the week's $25 soft cap). `{}` overrides run the defaults; any other file rides
+into the trial as `YI_LEVERS` (E16). Sessions land under `~/Development/yi-runs/<run-id>/`, one
+row per trial is appended to `evals/trials/<run-id>.jsonl` (trials/README.md) and printed on
+stdout, and harbor's own output goes to stderr. A trial the watcher stops past $1 or 180 turns
+is marked `censored`; an unpriced trial counts $1 toward every cap.
 
 ## T1 frontier — no targets, $0 spent (campaign 3)
 

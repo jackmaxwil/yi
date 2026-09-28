@@ -1,0 +1,1 @@
+{"arm": "defaults", "at": 1790549588, "cacheRead": 5219968, "cacheWrite": 0, "censored": false, "costUsd": 0.24398, "errored": false, "input": 389595, "output": 57884, "partialScore": 0.5733, "reward": 0.0, "task": "terminal-bench/freight-dispatch-shift", "timedOut": false, "trial": "freight-dispatch-shift__bNzDFhT", "turns": 90, "wallSec": 1337.36}
