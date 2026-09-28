@@ -26,6 +26,7 @@ judge_replay.py              stage 0 judge replay over recorded sessions, read-o
 rule_fires.py                labelled haystack lanes against what the rule matcher can see
 journeys/ab.py               journey prompts under one prompt ref, scored by the session-mining extractor
 drivers/                     harbor sweep drivers, spend and wall caps (drivers/README.md)
+trials/                      the trial store: one row per paid harbor trial, and the weekly budget it sums (trials/README.md)
 arc/yi_arc.py                ARC-AGI-3 bridge: one `yi ask --json --yolo` per action (arc/README.md)
 fixtures/                    recorded transcripts, v4 session files, runner tasks, live and surface scenarios
 ```
@@ -188,6 +189,12 @@ refusals and rate, the spend, whether a cap stopped it), and the printed report
 is what a human reads: each refusal with its count, its text, the model's own
 words from the turn it was made in, and a blank `correct? ____`. Judging a
 refusal is a reading act; the runner never guesses what a caller meant.
+
+A tool-text candidate is judged against its base with `surface.py compare --base <surface.json>
+… --candidate <surface.json> …`, each side's runs made alternately with the other's (N6, design
+§6.6). It is refused as `refusal_rate_rose:<tool>` when a tool's refusal rate over the side's summed
+calls rises, or as `scenario_unclean:<id>` when a scenario clean on every base run is unclean on a
+candidate run; `surface.json` keeps each rollout's `exit`, `timedOut` and `missingFiles` for that.
 
 `--dry` is faux only and refuses any other provider. `selftest.py::check_surface`
 covers the scenario schema and the census with no binary and no key. A
