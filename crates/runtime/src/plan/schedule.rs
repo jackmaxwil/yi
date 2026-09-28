@@ -9,11 +9,9 @@ use yi_types::plan::doc::{Plan, PlanId, PlanState, Todo, TodoLabel, TodoState};
 use yi_types::plan::ledger::JournalRecord;
 
 use super::artifact::Artifacts;
-use super::ops::{
-    Actor, Delta, ENGINE_AGENT, Op, OpRequest, Outcome, PlanEngine, PlanOpError, admitted,
-};
+use super::ops::{Actor, Delta, ENGINE_AGENT, Op, OpRequest, Outcome, PlanEngine, PlanOpError};
 use super::state::{IntentOutcome, KIND_LEFT, RootState, SUBMITTED_KEY, reduce, root_of};
-use super::table::ready_labels;
+use super::table::{admitted, ready_labels};
 
 /// Invariant: only a contract refusal (per criteria stored) or a fuse refusal is kept.
 #[derive(Default)]

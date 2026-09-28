@@ -24,7 +24,8 @@ use super::snapshot::{Snapshotter, TreeHash};
 use super::state::{self, Decided, KIND_IMPORT, RootState, leaving_running, root_of};
 use super::store::{Loaded, PlanStore, StoreError, draft};
 use super::table::{
-    OpKind, Refusal, admit, check_actor, check_plan_state, in_flight, op_name, ready_labels,
+    OpKind, Refusal, admit, admitted, check_actor, check_plan_state, in_flight, op_name,
+    ready_labels,
 };
 use super::verify::Verifier;
 use yi_types::plan::op::Reaped;
@@ -412,6 +413,7 @@ pub(super) struct Txn {
     pub(super) effect: Option<EffectId>,
     /// The acceptance body a worktree `done` lands as one `accepted` record with the transition.
     pub(super) accepted: Option<Value>,
+    pub(super) asked: super::trace::Asked,
 }
 
 impl Txn {
@@ -542,7 +544,7 @@ impl PlanEngine {
             expected_revision,
         } = request;
         check_actor(&actor, &op)?;
-        let op = self.cite_default(op, plan.as_ref());
+        let (op, asked) = self.cite_default(op, plan.as_ref());
         if let Op::View { full } = op {
             return self.view(plan, full);
         }
@@ -568,7 +570,7 @@ impl PlanEngine {
         }
         let _lease = self.lease_waiting()?;
         match op {
-            Op::Init { goal, todos } => self.init(goal, todos, &actor, request),
+            Op::Init { goal, todos } => self.init(goal, todos, &actor, request, asked),
             Op::Import { source } => self.import(&source, &actor, request),
             Op::Repair { resolutions } => {
                 self.repair(plan, resolutions, &actor, request, expected_revision)
@@ -581,17 +583,17 @@ impl PlanEngine {
                 // the two commits replays or finishes the Set instead of hitting the init.
                 let specs = rows.iter().map(|row| row.spec.clone()).collect();
                 let opening = minted(format!("{request}/init"))?;
-                let opened = self.init(goal.clone(), specs, &actor, opening)?;
+                let opened = self.init(goal.clone(), specs, &actor, opening, asked.clone())?;
                 let set = Op::Set {
                     goal: Some(goal),
                     rows,
                 };
-                self.framed(Some(opened.plan.id), &actor, set, request, None)
+                self.framed(Some(opened.plan.id), &actor, set, request, None, asked)
             }
             program @ Op::Program { .. } => {
                 self.program(plan, &actor, program, request, expected_revision)
             }
-            other => self.framed(plan, &actor, other, request, expected_revision),
+            other => self.framed(plan, &actor, other, request, expected_revision, asked),
         }
     }
 
@@ -618,6 +620,7 @@ impl PlanEngine {
             verdict: None,
             effect: None,
             accepted: None,
+            asked: super::trace::Asked::new(),
         })
     }
 
@@ -646,6 +649,7 @@ impl PlanEngine {
         specs: Vec<TodoSpec>,
         actor: &Actor,
         request: RequestId,
+        asked: super::trace::Asked,
     ) -> Result<Outcome, PlanOpError> {
         let op = Op::Init { goal, todos: specs };
         for id in self.roots()? {
@@ -673,6 +677,7 @@ impl PlanEngine {
         };
         let id = self.store.allocate(goal)?;
         let mut txn = self.begin(&id, actor, request, None, false)?;
+        txn.asked = asked;
         let mut probe = txn.state.clone();
         state::apply_op(&mut probe, &id, &op, &Decided::default())?;
         let record = self.record_for(&txn, &id, &op, &probe, Decided::default(), None)?;
@@ -785,10 +790,12 @@ impl PlanEngine {
         op: Op,
         request: RequestId,
         expected: Option<TouchCount>,
+        asked: super::trace::Asked,
     ) -> Result<Outcome, PlanOpError> {
         let id = self.resolve(plan)?;
         let root = root_of(&id)?;
         let mut txn = self.begin(&root, actor, request, expected, false)?;
+        txn.asked = asked;
         if let Some(replayed) = self.replay(&txn, &op)? {
             return Ok(replayed);
         }
@@ -1129,14 +1136,6 @@ impl PlanEngine {
             tried: CHILD_SUFFIX_MAX,
         }))
     }
-}
-
-/// The ready labels `admit` does not refuse at `slots`; the rest are the held list.
-pub(super) fn admitted(plan: &Plan, slots: usize) -> Vec<TodoLabel> {
-    ready_labels(plan)
-        .into_iter()
-        .filter(|label| admit(plan, label, slots).is_ok())
-        .collect()
 }
 
 fn minted(text: String) -> Result<RequestId, PlanOpError> {
