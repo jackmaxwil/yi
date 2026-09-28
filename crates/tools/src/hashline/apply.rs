@@ -38,26 +38,40 @@ fn validate_line_bounds(edits: &[Edit], file_lines: &[String]) -> Result<(), Str
     Ok(())
 }
 
-fn insert_at_start(file_lines: &mut Vec<String>, lines: Vec<String>) {
+/// A line of the output and the source line it came from, `None` once an edit wrote it.
+#[derive(Debug, Clone, Default)]
+struct Row {
+    origin: Option<usize>,
+    text: String,
+}
+
+fn written(lines: Vec<String>) -> Vec<Row> {
+    lines
+        .into_iter()
+        .map(|text| Row { origin: None, text })
+        .collect()
+}
+
+fn insert_at_start(file_lines: &mut Vec<Row>, lines: Vec<Row>) {
     if lines.is_empty() {
         return;
     }
-    if file_lines.len() == 1 && file_lines[0].is_empty() {
+    if file_lines.len() == 1 && file_lines[0].text.is_empty() {
         *file_lines = lines;
         return;
     }
     file_lines.splice(0..0, lines);
 }
 
-fn insert_at_end(file_lines: &mut Vec<String>, lines: Vec<String>) -> Option<u64> {
+fn insert_at_end(file_lines: &mut Vec<Row>, lines: Vec<Row>) -> Option<u64> {
     if lines.is_empty() {
         return None;
     }
-    if file_lines.len() == 1 && file_lines[0].is_empty() {
+    if file_lines.len() == 1 && file_lines[0].text.is_empty() {
         *file_lines = lines;
         return Some(1);
     }
-    let has_trailing_newline = file_lines.last().is_some_and(String::is_empty);
+    let has_trailing_newline = file_lines.last().is_some_and(|row| row.text.is_empty());
     let insert_index = if has_trailing_newline {
         file_lines.len() - 1
     } else {
@@ -75,11 +89,15 @@ struct Bucketed {
     delete: bool,
 }
 
-fn materialize_edits(
-    original_lines: &[String],
-    edits: &[Edit],
-) -> Result<(String, Option<u64>), String> {
-    let mut file_lines: Vec<String> = original_lines.to_vec();
+fn materialize_edits(original_lines: &[String], edits: &[Edit]) -> Result<ApplyResult, String> {
+    let mut file_lines: Vec<Row> = original_lines
+        .iter()
+        .enumerate()
+        .map(|(origin, text)| Row {
+            origin: Some(origin),
+            text: text.clone(),
+        })
+        .collect();
     let mut first_changed: Option<u64> = None;
     let track = |line: u64, first_changed: &mut Option<u64>| {
         if first_changed.is_none_or(|existing| line < existing) {
@@ -161,13 +179,12 @@ fn materialize_edits(
         }
         let index = (bucket.line - 1) as usize;
         let current = file_lines.get(index).cloned().unwrap_or_default();
-        let mut replacement: Vec<String> = Vec::new();
-        replacement.extend(bucket.before);
-        replacement.extend(bucket.replacement);
+        let mut replacement: Vec<Row> = written(bucket.before);
+        replacement.extend(written(bucket.replacement));
         if !bucket.delete {
             replacement.push(current);
         }
-        replacement.extend(bucket.after);
+        replacement.extend(written(bucket.after));
         if index < file_lines.len() {
             file_lines.splice(index..=index, replacement);
         } else {
@@ -177,14 +194,23 @@ fn materialize_edits(
     }
 
     if !bof_lines.is_empty() {
-        insert_at_start(&mut file_lines, bof_lines);
+        insert_at_start(&mut file_lines, written(bof_lines));
         track(1, &mut first_changed);
     }
-    if let Some(changed) = insert_at_end(&mut file_lines, eof_lines) {
+    if let Some(changed) = insert_at_end(&mut file_lines, written(eof_lines)) {
         track(changed, &mut first_changed);
     }
 
-    Ok((file_lines.join("\n"), first_changed))
+    let (origins, texts): (Vec<Option<usize>>, Vec<String>) = file_lines
+        .into_iter()
+        .map(|row| (row.origin, row.text))
+        .unzip();
+    Ok(ApplyResult {
+        text: texts.join("\n"),
+        origins,
+        first_changed_line: first_changed,
+        warnings: Vec::new(),
+    })
 }
 
 pub fn apply_edits(
@@ -196,6 +222,7 @@ pub fn apply_edits(
     if edits.is_empty() {
         return Ok(ApplyResult {
             text: text.to_owned(),
+            origins: (0..text.split('\n').count()).map(Some).collect(),
             first_changed_line: None,
             warnings: Vec::new(),
         });
@@ -216,10 +243,7 @@ pub fn apply_edits(
         })
         .collect();
     validate_line_bounds(&target_edits, &file_lines)?;
-    let (result_text, first_changed_line) = materialize_edits(&file_lines, &target_edits)?;
-    Ok(ApplyResult {
-        text: result_text,
-        first_changed_line,
-        warnings,
-    })
+    let mut result = materialize_edits(&file_lines, &target_edits)?;
+    result.warnings = warnings;
+    Ok(result)
 }
