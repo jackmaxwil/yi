@@ -100,6 +100,17 @@ fn scope_of(payload: &Map<String, Value>, verb: &str) -> Result<Vec<Scope>, Stri
     }
 }
 
+fn search_call(query: &str, payload: &Map<String, Value>, limit: usize) -> String {
+    let scope = payload
+        .get("scope")
+        .and_then(Value::as_str)
+        .map_or_else(String::new, |raw| format!(", scope={}", Value::from(raw)));
+    format!(
+        "memory.search({}{scope}, limit={limit})",
+        Value::from(query)
+    )
+}
+
 impl Verbs {
     fn store(&self, scope: Scope) -> Store {
         let session = self
@@ -231,12 +242,12 @@ impl Verbs {
             .collect();
         let mut reply = Map::new();
         if listed.len() < total {
-            let quoted = Value::from(query.as_str());
             reply.insert(
                 "notice".to_owned(),
                 Value::from(format!(
-                    "[{} of {total} notes · limit {limit} · memory.search({quoted}, limit={total}) for all]",
-                    listed.len()
+                    "[{} of {total} notes · limit {limit} · {} for all]",
+                    listed.len(),
+                    search_call(&query, payload, total)
                 )),
             );
         }
@@ -245,14 +256,19 @@ impl Verbs {
         Ok(reply)
     }
 
-    fn closest(&self, payload: &Map<String, Value>) -> Option<(Scope, Note)> {
+    fn closest(&self, payload: &Map<String, Value>) -> Option<(Scope, Note, String)> {
         let query = payload.get("name").and_then(Value::as_str)?;
         let scopes = scope_of(payload, "memory.read").ok()?;
         let stores: Vec<Store> = scopes.iter().map(|scope| self.store(*scope)).collect();
-        let (at, note) = ranked(&stores.iter().collect::<Vec<_>>(), query)
-            .into_iter()
-            .next()?;
-        Some((*scopes.get(at)?, note))
+        let hits = ranked(&stores.iter().collect::<Vec<_>>(), query);
+        let total = hits.len();
+        let (at, note) = hits.into_iter().next()?;
+        let row = format!(
+            "[no note has that name or hook · opened {}, the closest of {total} by memory.search · {} for the ranking]",
+            note.name,
+            search_call(query, payload, total)
+        );
+        Some((*scopes.get(at)?, note, row))
     }
 
     fn find(&self, payload: &Map<String, Value>, verb: &str) -> Result<(Scope, Note), String> {
@@ -265,27 +281,19 @@ impl Verbs {
 
     fn read(&self, payload: &Map<String, Value>) -> Reply {
         self.root_only("memory.read")?;
-        let (found, searched) = match self.find(payload, "memory.read") {
-            Ok(found) => (found, None),
+        let (scope, note, searched) = match self.find(payload, "memory.read") {
+            Ok((scope, note)) => (scope, note, None),
             Err(missed) => match self.closest(payload) {
-                Some(found) => {
-                    let name = found.1.name.to_string();
-                    (found, Some(name))
-                }
+                Some((scope, note, row)) => (scope, note, Some(row)),
                 None => return Err(missed),
             },
         };
-        let (scope, note) = found;
         let mut warnings: Vec<String> = note
             .trouble
             .iter()
             .map(|trouble| format!("{trouble}; indexed by its first line"))
             .collect();
-        if let Some(name) = searched {
-            warnings.push(format!(
-                "no note has that name or hook; this is the closest by memory.search: {name}"
-            ));
-        }
+        warnings.extend(searched);
         match self.store(scope).mark_read(&note.name) {
             Ok(hash) => warnings.extend(self.point("read", note.name.as_str(), scope, hash)),
             Err(error) => warnings.push(format!("the read was not counted: {error}")),
@@ -506,6 +514,11 @@ mod tests {
             reply["notice"],
             "[5 of 7 notes · limit 5 · memory.search(\"sync main\", limit=7) for all]"
         );
+        query.insert("scope".to_owned(), Value::from("repo"));
+        assert_eq!(
+            verbs.search(&query).unwrap()["notice"],
+            "[5 of 7 notes · limit 5 · memory.search(\"sync main\", scope=\"repo\", limit=7) for all]"
+        );
         query.insert("limit".to_owned(), Value::from(7));
         assert!(verbs.search(&query).unwrap().get("notice").is_none());
     }
@@ -520,13 +533,14 @@ mod tests {
             "sync main another way",
         );
         seed(&verbs, "orb-motion", "orb motion taste", "least movement");
+        seed(&verbs, "lane-main", "a lane merges main", "lanes");
         let mut query = Map::new();
         query.insert("name".to_owned(), Value::from("how do I sync main"));
         let reply = verbs.read(&query).unwrap();
         assert_eq!(reply["name"], "never-git-reset");
         assert_eq!(
             reply["warnings"][0],
-            "no note has that name or hook; this is the closest by memory.search: never-git-reset"
+            "[no note has that name or hook · opened never-git-reset, the closest of 2 by memory.search · memory.search(\"how do I sync main\", limit=2) for the ranking]"
         );
         assert!(verbs.forget(&query).is_err());
         query.insert("name".to_owned(), Value::from("zebra"));

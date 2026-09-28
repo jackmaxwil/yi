@@ -61,8 +61,9 @@ The kernel imports the `memory` package at startup (§9). Each function is a hos
   `type`, `scope`, `updated`, `warnings`.
 - `memory.read(name, scope=None)`: matches a note by file name or slug. Failing that, it matches
   by index label or description, case-insensitive. It searches repo first, then global, and
-  counts a read in `usage.json`. Failing both, it opens the top `memory.search` hit and says so
-  in `warnings`; `forget` never does. The reply carries the body as `text`.
+  counts a read in `usage.json`. Failing both, it opens the top `memory.search` hit and warns
+  `[no note has that name or hook · opened <name>, the closest of N by memory.search ·
+  memory.search("…", limit=N) for the ranking]`; `forget` never does. The reply carries the body as `text`.
 - `memory.search(query, limit=5, scope=None)`: ranks every note of both stores (or the given one)
   by BM25 (k1 1.2, b 0.75, Lucene's form) over its name, description and body, tokenized as
   lowercase ASCII words with `.`, `/` and `-` joining a path or identifier into one token and 61
