@@ -831,3 +831,120 @@ fn a_grep_apply_displays_only_the_lines_its_diff_shows() -> TestResult {
     assert!(text.contains("never displayed"), "{text}");
     Ok(())
 }
+
+/// The header a refusal or a read minted for `path`: the first `[path#TAG]` in its text.
+fn minted_tag(text: &str, path: &str) -> Result<String, Box<dyn Error>> {
+    Ok(text
+        .split(&format!("[{path}#"))
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .ok_or("no minted header in the text")?
+        .to_owned())
+}
+
+/// Rows of the `N:TEXT` shape a refusal prints, whatever their marker.
+fn numbered_rows(text: &str) -> usize {
+    text.lines()
+        .filter(|line| {
+            line.get(1..)
+                .and_then(|rest| rest.split(':').next())
+                .is_some_and(|number| {
+                    !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        })
+        .count()
+}
+
+/// `.gitignore` as `cargo new` writes it, never shown this session. A tail insert anchors on
+/// no line, so a tag nobody minted used to land it with only a drift warning.
+#[test]
+fn a_tail_insert_under_a_tag_never_minted_is_refused_then_lands_with_the_minted_one() -> TestResult
+{
+    let fixture = Fixture::new("gate-tail")?;
+    fixture.write(".gitignore", "/target\n")?;
+    let blind = fixture.edit("[.gitignore#0000]\nPUT >$:\n+/dist\n");
+    let text = output_text(&blind);
+    assert!(blind.is_error, "{text}");
+    assert!(
+        text.contains("hash #0000 is not from this session"),
+        "{text}"
+    );
+    assert!(text.contains("1:/target"), "{text}");
+    assert_eq!(fixture.content(".gitignore")?, "/target\n");
+
+    let tag = minted_tag(&text, ".gitignore")?;
+    let retry = fixture.edit(&format!("[.gitignore#{tag}]\nPUT >$:\n+/dist\n"));
+    assert!(!retry.is_error, "{}", output_text(&retry));
+    assert_eq!(fixture.content(".gitignore")?, "/target\n/dist\n");
+    Ok(())
+}
+
+/// `Cargo.toml` as `cargo new --lib` (cargo 1.94) writes it.
+const CARGO_TOML: &str = "[package]\nname = \"probe-crate\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\n";
+
+/// Read through one state, edited through a fresh one with that tag, as a resumed session
+/// does: the tag matches the file on disk, but nothing this session showed it.
+#[test]
+fn a_tag_from_a_prior_session_is_refused_until_this_one_shows_the_lines() -> TestResult {
+    let fixture = Fixture::new("gate-resumed")?;
+    fixture.write("Cargo.toml", CARGO_TOML)?;
+    let tag = fixture.tag_of("Cargo.toml")?;
+    let resumed = Fixture {
+        state: shared_hashline_state(),
+        ..fixture
+    };
+    let patch = format!("[Cargo.toml#{tag}]\nPUT 3.=3:\n+version = \"0.2.0\"\n");
+    let blind = resumed.edit(&patch);
+    let text = output_text(&blind);
+    assert!(blind.is_error, "{text}");
+    assert!(
+        text.contains("No version of Cargo.toml was shown this session"),
+        "{text}"
+    );
+    assert!(text.contains("*3:version = \"0.1.0\""), "{text}");
+    assert_eq!(resumed.content("Cargo.toml")?, CARGO_TOML);
+
+    let retry = resumed.edit(&patch);
+    assert!(!retry.is_error, "{}", output_text(&retry));
+    assert!(
+        resumed
+            .content("Cargo.toml")?
+            .contains("version = \"0.2.0\"")
+    );
+    Ok(())
+}
+
+/// `LICENSE-APACHE` as serde 1.0.219 ships it (176 lines), never read. `PUT 1.=100:` names
+/// more lines than one refusal shows; the reveal used to print all 102 and unlock the retry.
+#[test]
+fn a_reveal_past_forty_rows_unlocks_nothing_and_names_the_ranged_read() -> TestResult {
+    let fixture = Fixture::new("gate-cap")?;
+    let license = include_str!("fixtures/gate/LICENSE-APACHE");
+    fixture.write("LICENSE-APACHE", license)?;
+    let patch = |tag: &str| format!("[LICENSE-APACHE{tag}]\nPUT 1.=100:\n+stub\n");
+    let blind = fixture.edit(&patch(""));
+    let text = output_text(&blind);
+    assert!(blind.is_error, "{text}");
+    assert_eq!(numbered_rows(&text), 40, "{text}");
+    let tag = minted_tag(&text, "LICENSE-APACHE")?;
+
+    let retry = fixture.edit(&patch(&format!("#{tag}")));
+    let text = output_text(&retry);
+    assert!(retry.is_error, "{text}");
+    // The remedy is one `read` accepts: `ranges=`, never the `path:selector` form.
+    assert!(text.contains("ranges=[[1,100]]"), "{text}");
+    assert!(!text.contains("LICENSE-APACHE:1"), "{text}");
+    assert_eq!(fixture.content("LICENSE-APACHE")?, license);
+
+    let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
+        args(&[
+            ("path", json!("LICENSE-APACHE")),
+            ("ranges", json!([[1, 100]])),
+        ]),
+        &fixture.context,
+    );
+    let tag = minted_tag(&output_text(&read), "LICENSE-APACHE")?;
+    let landed = fixture.edit(&patch(&format!("#{tag}")));
+    assert!(!landed.is_error, "{}", output_text(&landed));
+    Ok(())
+}

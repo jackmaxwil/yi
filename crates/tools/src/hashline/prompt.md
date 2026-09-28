@@ -1,7 +1,7 @@
 Line-anchored patch language: name original lines/gaps to replace, insert, cut, or paste; then give new content. `:` headers take `+` body rows; colonless paste `PUT`, `CUT`, `REM`, `MV` take none.
 
 <headers>
-Section: `[PATH#TAG]` or `[PATH]`; `TAG`: 4-hex snapshot from the `read`/`grep`/`write`/`edit` output the numbers came from; omitted = the latest one shown. New files: `write`; hashline edits existing files only.
+Section: `[PATH#TAG]` or `[PATH]`; `TAG`: 4-hex snapshot from the `read`/`grep`/`write`/`edit` output the numbers came from; omitted = the latest one shown. A tag never shown for this path is REJECTED. New files: `write`; hashline edits existing files only.
 </headers>
 
 <ops>
@@ -23,7 +23,7 @@ Only below `:` headers. Row: verbatim `+TEXT` (leading whitespace preserved); `+
 
 <rules>
 - Numbers: `LINE:TEXT` from any `read`/`grep`/`edit` output this session; the tool maps them onto the current file (`rebased` in the response). A cited line that itself changed since is rejected with the current text. Within one call numbers are original, never shifted by hunks.
-- Touch only lines a view of this file has displayed (any `read`/`grep`/`edit`/`write` output this session); undisplayed hunks REJECTED. Far from read window: re-`read`; confirm construct.
+- Touch only lines displayed this session by `read`/`grep`/`write`/`edit` output or by an edit refusal that printed them; undisplayed hunks REJECTED. The refusal prints ≤40 such lines and a retry then lands; past 40, `read` with `ranges=[[a,b]]` first.
 - Elisions UNSEEN: `…`, `..`, collapsed `N-M:` rows. NEVER hunk in/across one; `read` first.
 - NEVER start/end range mid-expression or mid-block.
 - Ranges: changed lines only; NEVER widen over keepers. Non-adjacent changes: separate hunks.

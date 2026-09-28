@@ -267,5 +267,6 @@ edited by hand.
 - [D291](adr/d291.md) - an OpenRouter request marks its own cache breakpoints, per block and never...
 - [D292](adr/d292.md) - a skill pointer answers only what the user typed (revises D114, D139 and D196)
 - [D293](adr/d293.md) - a settled permission ask is journaled in the session
+- [D297](adr/d297.md) - a displayed refusal counts as a view
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

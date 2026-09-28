@@ -1,7 +1,6 @@
 use super::format::{
     FileTag, HL_FILE_HASH_EXAMPLES, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX,
 };
-use super::messages::format_anchored_context;
 use super::types::Anchor;
 
 pub fn format_full_anchor_requirement(raw: Option<&str>) -> String {
@@ -51,8 +50,8 @@ pub struct MismatchError {
     pub path: Option<String>,
     pub expected_file_hash: String,
     pub actual_file_hash: FileTag,
-    pub file_lines: Vec<String>,
-    pub anchor_lines: Vec<u64>,
+    pub rows: Vec<String>,
+    pub footer: String,
     pub hash_recognized: bool,
 }
 
@@ -86,11 +85,11 @@ impl MismatchError {
 
     pub fn display_message(&self) -> String {
         let mut lines = self.rejection_header();
-        let context = format_anchored_context(&self.anchor_lines, &self.file_lines);
-        if !context.is_empty() {
+        if !self.rows.is_empty() {
             lines.push(String::new());
-            lines.extend(context);
+            lines.extend(self.rows.iter().cloned());
         }
+        lines.push(self.footer.clone());
         lines.join("\n")
     }
 }
