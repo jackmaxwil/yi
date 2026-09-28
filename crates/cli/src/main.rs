@@ -444,22 +444,6 @@ fn build_session(
             }
         }
     };
-    // Resolved through the session's proxy so an OAuth refresh can reach the token
-    // endpoint from behind the same wall the stream rides through.
-    let auth = yi_types::trace::span("build_session.auth");
-    let resolved = yi_runtime::auth::resolve_with_proxy(&model.provider, proxy.as_ref());
-    drop(auth);
-    if resolved.is_none() && !faux {
-        return Err(login::no_credential(&model.provider));
-    }
-    if !faux {
-        let _span = yi_types::trace::span("build_session.catalog_refresh");
-        catalog::spawn_refresh(
-            &model.provider,
-            resolved.as_ref().map(|f| &f.secret),
-            proxy.as_ref(),
-        );
-    }
     let telemetry = config()
         .telemetry
         .as_ref()
@@ -467,12 +451,23 @@ fn build_session(
         .unwrap_or(false)
         .then(|| Arc::new(yi_runtime::Telemetry::default()));
     let provider = Arc::new(
-        login::stream_for(&model.provider, resolved.as_ref())
+        yi_runtime::ProviderStream::new(None)
             .with_long_cache(interactive)
-            .with_proxy(proxy)
+            .with_proxy(proxy.clone())
             .with_routing(config().routing.clone())
             .with_telemetry(telemetry.clone()),
     );
+    if !faux {
+        // Resolved through the session's proxy so an OAuth refresh can reach the token
+        // endpoint from behind the same wall the stream rides through.
+        let auth = yi_types::trace::span("build_session.auth");
+        let credential = provider
+            .credential(&model.provider)
+            .map_err(|_| login::no_credential(&model.provider))?;
+        drop(auth);
+        let _span = yi_types::trace::span("build_session.catalog_refresh");
+        catalog::spawn_refresh(&model.provider, Some(&credential.secret), proxy.as_ref());
+    }
     if faux {
         provider.queue_faux(shells::faux_replies(args).map_err(|reason| Refused {
             code: 2,

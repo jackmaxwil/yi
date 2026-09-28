@@ -93,7 +93,7 @@ fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> std::io::Result<Harn
         asker,
         events,
     ));
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     if with_reviewer {
         broker.set_reviewer(Arc::new(Reviewer::new(Arc::clone(&provider), faux_model())));
     }
