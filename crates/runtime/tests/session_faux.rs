@@ -503,12 +503,23 @@ async fn a_deadline_kills_a_running_bash_call() -> Result<(), Box<dyn Error>> {
 
 /// The deadline ends the run between turns, never inside one: the call in flight runs to its
 /// own end and no work turn follows. Dies too with a run that ends on that tool call with no
-/// answer (`mbx-service`, `mbx-ask`): one last turn, with tool choice `none`, answers.
+/// answer (`mbx-service`, `mbx-ask`): one last turn answers, and a tool it calls is not run.
 #[tokio::test]
 async fn a_deadline_ends_the_run_after_the_turn_in_flight() -> Result<(), Box<dyn Error>> {
     let root = scratch("deadline-stop")?;
-    // A 4.6 s call ends past a quarter-of-six-seconds margin and before the clock runs out.
-    let session = deadline_session(&root, "sleep 4.6", Duration::from_secs(6));
+    // Invariant: the call ends between the 4.5 s margin and the 4.875 s last word of a 6 s clock,
+    // so it sleeps to an instant: a span also counted the work before it, and git init took 0.3 s.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the command sleeps to a wall-clock instant, so the fixture reads that clock"
+    )]
+    let ends = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs_f64()
+        + 4.7;
+    let command =
+        format!("python3 -c \"import time; time.sleep(max(0, {ends:.3} - time.time()))\"");
+    let session = deadline_session(&root, &command, Duration::from_secs(6));
     let mut events = session.subscribe();
     session.prompt("run it")?;
     session.wait_idle().await;

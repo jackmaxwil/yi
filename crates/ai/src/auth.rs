@@ -44,6 +44,7 @@ fn env_var(provider: &str) -> Option<&'static str> {
         "openai" => "OPENAI_API_KEY",
         "openrouter" => "OPENROUTER_API_KEY",
         "google" => "GEMINI_API_KEY",
+        "laya" => "LAYA_API_KEY",
         _ => return None,
     })
 }
