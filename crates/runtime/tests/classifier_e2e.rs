@@ -185,6 +185,10 @@ fn a_message_id_matches_the_labelling_tool() {
         yi_runtime::classifier::message_id("  Land THIS branch\n\tonce the ÉTÉ gate is green "),
         "2990f761ef69"
     );
+    assert_eq!(
+        yi_runtime::classifier::message_id("a\u{b}b"),
+        "98992d7f2eec"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

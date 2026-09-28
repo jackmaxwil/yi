@@ -43,7 +43,7 @@ class SkillLabels(unittest.TestCase):
 
     def test_a_message_id_splits_on_the_runtimes_whitespace_only(self):
         """Rust's is_ascii_whitespace leaves out the vertical tab; a lone surrogate must not crash."""
-        self.assertNotEqual(skill_labels.message_id("a\vb"), skill_labels.message_id("a b"))
+        self.assertEqual(skill_labels.message_id("a\vb"), "98992d7f2eec")
         self.assertEqual(skill_labels.message_id("a\x0cb"), skill_labels.message_id("a b"))
         self.assertEqual(len(skill_labels.message_id("a \ud800")), 12)
 
@@ -52,11 +52,31 @@ class SkillLabels(unittest.TestCase):
         out = self.dir / "labels.jsonl"
         out.write_text('{"id": "torn", "sk')
         answers = iter(['{"skill": ["land"]}', '["land"]', '{"skill": 3}'])
-        count, _ = skill_labels.label(self.corpus, out, "m", 9.0, None, teacher=lambda text: (next(answers), 0.0))
+        on_disk = []
+
+        def teacher(text):
+            on_disk.append(len(out.read_text().splitlines()))
+            return next(answers), 0.0
+
+        count, _ = skill_labels.label(self.corpus, out, "m", 9.0, None, teacher=teacher)
+        self.assertEqual(on_disk, [1, 2, 3], "each row is on disk before the next call is paid for")
         self.assertEqual(count, 3)
         rows = [skill_labels.parsed(line) for line in out.read_text().splitlines()]
         self.assertEqual([row and row["skill"] for row in rows], [None, "invalid", "invalid", "invalid"])
         self.assertEqual(skill_labels.freeze(self.corpus, out, self.dir / "frozen.csv", 1, 1, 1), 0)
+
+    def test_a_yi_message_keeps_its_edges_and_a_surrogate_reaches_the_sheet(self):
+        lane = self.dir / "yi" / "odd"
+        lane.mkdir()
+        rows = [{"type": "message", "message": {"role": "user", "attribution": "user", "content": text}}
+                for text in ["fix it\u3000", "hi \ud800"]]
+        (lane / "s.jsonl").write_text("\n".join(json.dumps(row) for row in rows))
+        skill_labels.corpus(self.dir / "empty", lane, self.corpus)
+        ids = [json.loads(line)["id"] for line in self.corpus.read_text().splitlines()]
+        self.assertEqual(ids, [skill_labels.message_id("fix it\u3000"), skill_labels.message_id("hi \ud800")])
+        out = self.dir / "labels.jsonl"
+        skill_labels.label(self.corpus, out, "m", 9.0, None, teacher=lambda text: ('{"skill": "none"}', 0.0))
+        self.assertEqual(skill_labels.freeze(self.corpus, out, self.dir / "frozen.csv", 1, 2, 1), 2)
 
     def test_the_candidates_are_the_shipped_skills_with_a_trigger(self):
         found = dict(skill_labels.skills())

@@ -101,7 +101,7 @@ def typed_yi(path):
         if isinstance(content, list):
             content = "\n".join(block.get("text", "") for block in content if isinstance(block, dict))
         if isinstance(content, str) and content.strip():
-            rows.append((content.strip(), None))
+            rows.append((content, None))
     return rows
 
 
@@ -113,7 +113,7 @@ def corpus(claude_dir, yi_dir, out):
     with out.open("w") as sink:
         for source, path, read in sources:
             for text, loaded in read(path):
-                clean = record.scrub(text)[:TEXT_CAP]
+                clean = record.scrub(text.encode(errors="replace").decode())[:TEXT_CAP]
                 key = message_id(text)
                 if key in seen:
                     continue
@@ -175,7 +175,7 @@ def label(corpus_path, out, model, max_usd, limit, teacher=None):
     names = {name for name, _ in candidates}
     done, torn = set(), False
     if out.exists():
-        kept = out.read_text()
+        kept = out.read_text(errors="replace")
         done = {row["id"] for row in map(parsed, kept.splitlines()) if isinstance(row, dict) and "id" in row}
         torn = bool(kept) and not kept.endswith("\n")
     if teacher is None:
@@ -187,7 +187,7 @@ def label(corpus_path, out, model, max_usd, limit, teacher=None):
     with out.open("a") as sink:
         if torn:
             sink.write("\n")
-        for line in corpus_path.read_text().splitlines():
+        for line in corpus_path.read_text(errors="replace").splitlines():
             row = json.loads(line)
             if row["id"] in done:
                 continue
@@ -204,7 +204,9 @@ def label(corpus_path, out, model, max_usd, limit, teacher=None):
 def freeze(corpus_path, labels_path, out, per_skill, none, seed):
     texts = {row["id"]: row for row in map(json.loads, corpus_path.read_text().splitlines())}
     by_skill = {}
-    for row in filter(None, map(parsed, labels_path.read_text().splitlines())):
+    for row in map(parsed, labels_path.read_text(errors="replace").splitlines()):
+        if not isinstance(row, dict) or not {"id", "skill"} <= row.keys():
+            continue
         if row["skill"] != "invalid" and row["id"] in texts:
             by_skill.setdefault(row["skill"], []).append(row["id"])
     pick = random.Random(seed)
