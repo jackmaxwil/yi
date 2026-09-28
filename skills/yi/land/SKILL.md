@@ -6,7 +6,6 @@ description: >
   when the user asks to commit, push, open a pull request, land, or merge.
   Do NOT commit, push or open anything the user did not ask for.
 trigger: git commit, git push, fgj pr, just land, open a pull request
-scope: tool:bash
 ---
 
 # land

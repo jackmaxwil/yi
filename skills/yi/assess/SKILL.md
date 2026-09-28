@@ -7,7 +7,6 @@ description: >
   "review the codebase". Do NOT use for a diff or a pull request (that is
   the review skill) or for a bug ("why does X fail" is a diagnosis).
 trigger: rate it, assess, audit, evaluate, comprehensive analysis, how good is, review the codebase
-scope: text
 ---
 
 # assess
