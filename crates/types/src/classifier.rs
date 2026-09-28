@@ -27,6 +27,8 @@ pub enum Question {
         instructions: String,
         criteria: BTreeMap<String, String>,
     },
+    /// Yes or no; the answer's `noul` is P(yes).
+    Noul { instructions: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,6 +44,8 @@ pub struct DecisionResponse {
 pub struct Answer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub choice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub noul: Option<f64>,
     /// The calibrated probability of the reported answer; the number to gate on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer_confidence: Option<f64>,
