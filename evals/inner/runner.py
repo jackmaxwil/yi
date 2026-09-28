@@ -54,6 +54,7 @@ def one(task_id, binary, levers, keep):
         passed, total = module.check(seed, workspace, level)
     row = {"task": task_id, "family": family, "seed": seed, "level": level, "reward": float(passed == total),
            "testsPassed": passed, "testsTotal": total, "traceScored": False, "partialScore": None,
+           "verifierUnmeasured": passed is None,
            "timedOut": timed_out, "errored": code not in (0, None) and not timed_out, "exit": code,
            "wallSec": round(time.monotonic() - started, 2)}
     row.update(yi_usage.parse_events(events))
