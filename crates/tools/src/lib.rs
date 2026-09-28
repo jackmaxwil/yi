@@ -34,7 +34,7 @@ pub use jobs::{JobId, JobReport, MAX_TIMEOUT_SECS, Run, clamp_timeout, run_or_ba
 pub use orient::GetContextTool;
 pub use process::{CommandCapture, OUTPUT_CAP, command, edit_file, run_captured};
 pub use reduce::{Reduced, reduce};
-pub use sandbox::{Sandbox, denial_hint};
+pub use sandbox::{Sandbox, SandboxRefusal, denial_hint, sandbox_refusal};
 pub use tool::{
     CancelFlag, DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output,
     error_output_kind, text_output,

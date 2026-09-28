@@ -365,8 +365,10 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   decided per segment; an unparseable command is its own input.
 - `git_dirs` reads `.git`, `gitdir:` and `commondir` with bounded reads, trusting a pointer only
   to a `HEAD`; catastrophic matching covers every spelling and reads through wrappers.
-- `refused_scopes` records a contained failure by program and verb; a later use asks. "Always
-  allow" keeps a `Grant` (directory, tree root, program+verb), in memory, ≤ 1024 rules.
+- A contained failure is remembered by the path the sandbox denied, and a later write under its
+  directory asks (in home, any mention); with no path, `refused_scopes` remembers the program and
+  verb and a later use asks. "Always allow" keeps a `Grant` (directory, tree root, program+verb),
+  in memory, ≤ 1024 rules.
 - Sandbox: Seatbelt `/usr/bin/sandbox-exec`, macOS only; writable cwd, git dirs minus
   `hooks config commondir gitdir`, session dir, tmp; reads deny `~/.ssh ~/.gnupg ~/.aws ~/.kube
   ~/.docker`; no network. Without it, `Contain` becomes a reviewable `Ask`.
