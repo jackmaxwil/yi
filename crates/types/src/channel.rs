@@ -58,6 +58,8 @@ pub struct ChannelSub {
     pub filter: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch: Option<u32>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 /// The key a delivery's stamp rides under in the todo it creates.
@@ -69,4 +71,6 @@ pub const CHANNEL_KEY: &str = "channel";
 pub struct ChannelStamp {
     pub job: String,
     pub ids: Vec<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }

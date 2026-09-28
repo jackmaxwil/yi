@@ -118,6 +118,10 @@ pub struct Job {
     /// A channel subscription: each tick reads the buffer past its ack instead of the clock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<crate::channel::ChannelSub>,
+    /// The plan owning the todo `unblocks` names, which unblocks through that plan's engine
+    /// whether or not the session's list shows the row: a sub-plan's is never shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<crate::plan::doc::PlanId>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

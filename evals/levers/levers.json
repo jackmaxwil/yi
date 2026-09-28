@@ -5,6 +5,7 @@
   {"name": "plan.retry_cap", "home": "crates/runtime/src/plan/table.rs", "symbol": "RETRY_CAP", "kind": "fuse", "default": 8, "min": 1, "max": 16, "tunable": false, "why": "a fuse against a control-flow bug, not a policy"},
   {"name": "plan.stale_turns", "home": "crates/runtime/src/plan/mod.rs", "symbol": "DEFAULT_STALE_TURNS", "kind": "nudge", "default": 12, "min": 4, "max": 40, "tunable": true},
   {"name": "plan.probe_first_s", "home": "crates/runtime/src/schedule/clock.rs", "symbol": "PROBE_EVERY_S", "kind": "timer", "default": 60, "min": 10, "max": 600, "tunable": true},
+  {"name": "plan.probe_max_s", "home": "crates/runtime/src/schedule/clock.rs", "symbol": "PROBE_MAX_S", "kind": "timer", "default": 1800, "min": 300, "max": 7200, "tunable": true},
   {"name": "plan.stop_cap", "home": "crates/runtime/src/plan/loop_coupling.rs", "symbol": "gate::STOP_CAP_PER_CYCLE", "kind": "loop", "default": 2, "min": 0, "max": 6, "tunable": true},
   {"name": "plan.multi_step_score", "home": "crates/runtime/src/plan/loop_coupling.rs", "symbol": "gate::MULTI_STEP_SCORE", "kind": "gate", "default": 2, "min": 1, "max": 6, "tunable": true},
   {"name": "plan.long_prompt_words", "home": "crates/runtime/src/plan/loop_coupling.rs", "symbol": "gate::LONG_PROMPT_WORDS", "kind": "gate", "default": 30, "min": 10, "max": 120, "tunable": true},

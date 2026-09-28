@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use yi_types::plan::doc::{
-    AgentId, BlockedOn, DocError, Note, Todo, TodoLabel, TodoState, TodoStateName,
+    AgentId, BlockedOn, DocError, Note, PlanId, Todo, TodoLabel, TodoState, TodoStateName,
 };
 use yi_types::todo::{
     PhaseName, TODO_ENTRY_TYPE, TodoId, TodoList, TodoPhase, TodoProgress, TodoRecord,
@@ -166,13 +166,20 @@ struct State {
 }
 
 pub type ResyncFn = dyn Fn(&TodoList) -> Option<TodoList> + Send + Sync;
-pub type CarryFn = dyn Fn(&TodoLabel, Carried) -> Result<String, String> + Send + Sync;
+/// `Ok(None)` is a [`Carried::Wait`] whose row no longer waits on its address.
+pub type CarryFn = dyn Fn(&TodoLabel, Carried) -> Result<Option<String>, String> + Send + Sync;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Carried {
     Start,
-    Done { pending: bool },
-    Unblock,
+    Done {
+        pending: bool,
+    },
+    /// A channel wait's match, applied only while the row in `plan` still waits on `address`.
+    Wait {
+        plan: PlanId,
+        address: String,
+    },
 }
 
 pub struct TodoStore {
@@ -297,40 +304,49 @@ impl TodoStore {
         item.extra.get(mirror::PLAN_KEY)?;
         let carry = self.carry.lock().ok()?.clone()?;
         let pending = matches!(item.state, TodoState::Pending);
-        Some(carry(
-            &item.label,
-            if done {
-                Carried::Done { pending }
-            } else {
-                Carried::Start
-            },
-        ))
+        Some(
+            carry(
+                &item.label,
+                if done {
+                    Carried::Done { pending }
+                } else {
+                    Carried::Start
+                },
+            )
+            .map(Option::unwrap_or_default),
+        )
     }
 
-    /// The clock's unblock: a row the plan owns goes to the plan engine as the host's op.
+    /// The clock's unblock of the session's own row; a plan's is [`TodoStore::unblock_in`]'s.
     pub fn unblock_as(&self, label: &TodoLabel, actor: &str) -> Result<(), String> {
-        self.resync();
-        let planned = self
-            .list()
-            .items()
-            .any(|item| item.label == *label && item.extra.contains_key(mirror::PLAN_KEY));
-        if !planned {
-            let op = Op::Unblock {
-                label: label.clone(),
-                answer: None,
-            };
-            return self
-                .apply_as(op, None, actor)
-                .map(drop)
-                .map_err(|error| error.to_string());
-        }
+        let op = Op::Unblock {
+            label: label.clone(),
+            answer: None,
+        };
+        self.apply_as(op, None, actor)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    /// A wait in `plan`, shown in this list or not (a sub-plan's never is), unblocked by the
+    /// engine as the host; `false` when the row no longer waits on `address`.
+    pub fn unblock_in(
+        &self,
+        plan: &PlanId,
+        label: &TodoLabel,
+        address: &str,
+    ) -> Result<bool, String> {
         let carry = self
             .carry
             .lock()
             .ok()
             .and_then(|slot| slot.clone())
             .ok_or("the plan engine that owns this todo is gone")?;
-        carry(label, Carried::Unblock).map(drop)
+        let wait = Carried::Wait {
+            plan: plan.clone(),
+            address: address.to_owned(),
+        };
+        carry(label, wait).map(|done| done.is_some())
     }
 
     /// Re-reads a mirrored list's plan: another engine, or a crash before the replace, moved it.

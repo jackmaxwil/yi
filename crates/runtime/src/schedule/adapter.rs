@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,11 +14,16 @@ use super::channel::{Appended, Channel};
 const PREFIX: &str = "yi-adapter-";
 const NAP: Duration = Duration::from_millis(250);
 const EXEC_TIMEOUT_MS: u64 = 30_000;
+const LINE_MAX_BYTES: u64 = 64 * 1024;
+const LOG_MAX_BYTES: u64 = 1024 * 1024;
 
 /// One adapter per channel per process, alive while a subscription ticks within its lease;
 /// `dead` holds why it stopped past its restart intensity until a resume revives it.
 struct Supervisor {
     deadline: Mutex<Instant>,
+    /// Until then a subscription that creates todos reads the channel, so a built-in source
+    /// keeps its own cadence; past it only waits read, and an unchanged level backs off.
+    eager_until: Mutex<Instant>,
     stop: AtomicBool,
     dead: Mutex<Option<String>>,
 }
@@ -84,6 +89,10 @@ fn command_of(uri: &str, scheme: &str) -> String {
     .to_owned()
 }
 
+pub fn exec_command(address: &str) -> Option<String> {
+    (scheme(address) == Some("exec")).then(|| command_of(address, "exec"))
+}
+
 pub fn find(scheme: &str) -> Option<PathBuf> {
     let name = format!("{PREFIX}{scheme}");
     let home = registry().home.clone().or_else(|| {
@@ -116,11 +125,17 @@ pub fn check(uri: &str) -> Result<(), String> {
 
 /// Starts the channel's adapter unless one runs, or extends its lease; an adapter past its
 /// restart intensity answers why. Nothing starts while the kill switch holds.
-pub fn ensure(uri: &str, channel: &Channel, cwd: &Path, cadence_ms: u64) -> Result<(), String> {
+pub fn ensure(
+    uri: &str,
+    channel: &Channel,
+    cwd: &Path,
+    cadence_ms: u64,
+    eager: bool,
+) -> Result<(), String> {
     let lease = Duration::from_millis(cadence_ms.saturating_mul(3)).max(Duration::from_secs(30));
-    let deadline = Instant::now()
-        .checked_add(lease)
-        .unwrap_or_else(Instant::now);
+    let now = Instant::now();
+    let deadline = now.checked_add(lease).unwrap_or(now);
+    let eager_until = if eager { deadline } else { now };
     let mut registry = registry();
     if registry.halted
         || uri.starts_with(super::clock::CLOCK_SCHEME)
@@ -133,10 +148,14 @@ pub fn ensure(uri: &str, channel: &Channel, cwd: &Path, cadence_ms: u64) -> Resu
             return Err(why);
         }
         *held(&running.deadline) = deadline;
+        if eager {
+            *held(&running.eager_until) = eager_until;
+        }
         return Ok(());
     }
     let supervisor = Arc::new(Supervisor {
         deadline: Mutex::new(deadline),
+        eager_until: Mutex::new(eager_until),
         stop: AtomicBool::new(false),
         dead: Mutex::new(None),
     });
@@ -251,8 +270,8 @@ fn nap(supervisor: &Supervisor, span: Duration) -> bool {
     lapsed(supervisor)
 }
 
-/// A built-in source reads a level each cadence and emits only when it changes; the last level
-/// is the channel's newest entry, so a restart does not re-emit an unchanged one.
+/// Invariant: a source emits only a changed level (its last is the channel's newest entry), and
+/// read only by waits it doubles its cadence up to `plan.probe_max_s` until the level changes.
 fn poll(
     uri: &str,
     channel: &Channel,
@@ -260,7 +279,9 @@ fn poll(
     mut level: impl FnMut() -> Value,
     key: impl Fn(&Value) -> Value,
 ) -> Ended {
-    let span = Duration::from_millis(every(uri).unwrap_or(super::channel::DEFAULT_CADENCE_MS));
+    let base = Duration::from_millis(every(uri).unwrap_or(super::channel::DEFAULT_CADENCE_MS));
+    let cap = base.max(Duration::from_secs(crate::levers::get().plan_probe_max_s));
+    let mut span = base;
     let mut last = channel.last().map(|entry| key(&entry.data));
     loop {
         if lapsed(supervisor) {
@@ -268,11 +289,18 @@ fn poll(
         }
         let data = level();
         let now = key(&data);
+        let eager = Instant::now() < *held(&supervisor.eager_until);
+        span = if eager {
+            base
+        } else {
+            span.saturating_mul(2).min(cap)
+        };
         if last.as_ref() != Some(&now) {
             let at = yi_session::now_ms();
             if let Ok(appended) = channel.append(&at.to_string(), at, data) {
                 landed(channel, &appended);
                 last = Some(now);
+                span = base;
             }
         }
         if nap(supervisor, span) {
@@ -328,10 +356,15 @@ fn external(uri: &str, channel: &Channel, cwd: &Path, supervisor: &Supervisor) -
     let Some(program) = find(scheme) else {
         return Ended::Missing(format!("no {PREFIX}{scheme} in ~/.yi/adapters/ or on PATH"));
     };
+    let log_path = channel.path().with_extension("log");
+    // ponytail: capped per start; an adapter that spews without exiting grows it until then.
+    let full = std::fs::metadata(&log_path).is_ok_and(|meta| meta.len() > LOG_MAX_BYTES);
     let log = std::fs::OpenOptions::new()
         .create(true)
-        .append(true)
-        .open(channel.path().with_extension("log"));
+        .write(true)
+        .append(!full)
+        .truncate(full)
+        .open(&log_path);
     let spawned = yi_tools::command(&program)
         .arg(uri)
         .current_dir(cwd)
@@ -350,7 +383,8 @@ fn external(uri: &str, channel: &Channel, cwd: &Path, supervisor: &Supervisor) -
     };
     let (lines, read) = mpsc::channel();
     std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        let mut reader = BufReader::new(stdout);
+        while let Some(line) = read_line(&mut reader) {
             if lines.send(line).is_err() {
                 break;
             }
@@ -373,6 +407,25 @@ fn external(uri: &str, channel: &Channel, cwd: &Path, supervisor: &Supervisor) -
             Err(RecvTimeoutError::Disconnected) => return reap(child, "closed its stdout"),
         }
     }
+}
+
+/// Invariant: a line holds at most [`LINE_MAX_BYTES`]; the rest of a longer one is read and
+/// dropped, so the cut line fails to parse and is kept as `{malformed}` rather than filling memory.
+fn read_line(reader: &mut impl BufRead) -> Option<String> {
+    let mut line = Vec::new();
+    match reader.take(LINE_MAX_BYTES).read_until(b'\n', &mut line) {
+        Ok(0) | Err(_) => return None,
+        Ok(_) => {}
+    }
+    let mut rest = Vec::new();
+    while !line.ends_with(b"\n") && !rest.ends_with(b"\n") {
+        rest.clear();
+        match reader.take(LINE_MAX_BYTES).read_until(b'\n', &mut rest) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
+    Some(String::from_utf8_lossy(&line).trim_end().to_owned())
 }
 
 fn reap(mut child: Child, why: &str) -> Ended {

@@ -82,6 +82,12 @@ pub trait Tool: Send + Sync {
         Ok(())
     }
 
+    /// Shell commands this call arms to run later on the host, outside any sandbox (a todo
+    /// blocked on `exec://`); the gate judges each as the bash call it amounts to.
+    fn arms(&self, _input: &Map<String, Value>) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The approval prompt judges a mutation by what it changes, and only the
     /// tool can render that: the patch language and snapshot store are its own.
     fn preview(&self, _input: &Map<String, Value>, _cwd: &std::path::Path) -> Option<String> {
