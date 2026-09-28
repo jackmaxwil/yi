@@ -373,7 +373,10 @@ regressions, performance drains, etc"
 ## 10. Open questions
 
 1. Settled by stage 0 (D288): stripping `WIP:` leaves the subject the `title` job already
-   judged, so no rerun is needed.
+   judged, so no rerun is needed for the title edit. A body edit reruns nothing: the
+   workflow deliberately omits the `edited` event, so a body fixed by `just pr edit
+   --body` is re-judged only by the next push's synchronize (or locally by `edit`, which
+   runs the same template check `pr open` does).
 2. Whether Forgejo 15's merge API refuses a `WIP:` PR as its UI does is unverified;
    `just pr merge` stops on a draft either way (D288).
 3. The duplicate thresholds: `grid diff` overlap and window-hash matches. Set them from

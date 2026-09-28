@@ -18,6 +18,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -143,7 +144,7 @@ def decide(pr, jobs, required, behind):
     if pr.get("title", "").startswith(DRAFT):
         return "draft"
     if all(jobs.get(job) == "success" for job in required):
-        return "ready"
+        return "green"
     return "pending"
 
 
@@ -163,12 +164,6 @@ def ratchet_subject(parts, topic):
 
 
 # --- the verbs --------------------------------------------------------------------
-
-
-def subject_problems(subject):
-    from check_commit_style import subject_errors
-
-    return subject_errors(subject.strip())
 
 
 def baseline_paths():
@@ -222,7 +217,9 @@ def cmd_ratchet(args):
 
 
 def cmd_commit(args):
-    errs = subject_problems(args.subject)
+    from check_commit_style import subject_errors
+
+    errs = subject_errors(args.subject.strip())
     if errs:
         for err in errs:
             print(f"subject: {err}")
@@ -395,7 +392,14 @@ def cmd_edit(args):
             return 1
         payload["title"] = args.title
     if args.body:
-        payload["body"] = pathlib.Path(args.body).read_text().strip()
+        body = pathlib.Path(args.body).read_text().strip()
+        errs = check_problems(payload.get("title", pull(args.number)["title"]), body)
+        if errs:
+            for err in errs:
+                print(err)
+            print("edit: refused — the title job would fail; fix the above first")
+            return 1
+        payload["body"] = body
     if not payload:
         print("edit: nothing to change (--title, --body)")
         return 1
@@ -420,7 +424,10 @@ def cmd_ready(args):
     if errs and pr_review.MODE == "blocking" and not getattr(args, "force", False):
         print(f"ready: refused — #{number} stays a draft")
         return 1
-    fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
+    answer = fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
+    if not answer or answer.get("message"):
+        print(f"#{number} not readied: {(answer or {}).get('message', 'the forge answered 404')}")
+        return 1
     print(f"#{number} is ready: {title.removeprefix(DRAFT)}")
     return 0
 
@@ -459,7 +466,7 @@ def report(pr, jobs, need, verdict):
         "behind": f"main moved under it — just pr update {pr['number']}",
         "failed:title": f"the title job refused — just pr check {pr['number']} prints why",
         "pending": "the gate is still running",
-        "ready": f"green — just pr merge {pr['number']}",
+        "green": f"green — just pr merge {pr['number']}",
         "merged": "landed",
         "closed": "closed without merging",
     }
@@ -513,7 +520,7 @@ def cmd_merge(args):
         if verdict == "behind":
             print(f"#{number} is behind main; updating")
             cmd_update(argparse.Namespace(number=number))
-        elif verdict == "ready":
+        elif verdict == "green":
             answer = fgj_api("POST", f"repos/{repo()}/pulls/{number}/merge", {"Do": "merge"})
             if answer and answer.get("message"):
                 print(f"merge refused: {answer['message']}")
@@ -622,7 +629,8 @@ def cmd_land(args):
         return code
     # `just land` is the owner asking for this merge now, so it readies its own draft.
     args.number, args.force = None, True
-    cmd_ready(args)
+    if cmd_ready(args):
+        return 1
     args.wait = True
     return cmd_merge(args)
 
@@ -646,7 +654,7 @@ def selfcheck():
     open_pr = {"state": "open", "merged": False}
     assert decide({"merged": True}, {}, need, False) == "merged"
     assert decide(open_pr, jobs, need, True) == "behind", "behind is judged before the jobs"
-    assert decide(open_pr, jobs, need, False) == "ready"
+    assert decide(open_pr, jobs, need, False) == "green"
     assert decide(open_pr, {"title": "success"}, need, False) == "pending"
     assert decide(open_pr, {"title": "failure", "gate (test)": "failure"}, need, False) == "failed:title"
     assert decide(open_pr, {"title": "success", "gate (test)": "failure"}, need, False) == "failed:gate (test)"
@@ -654,7 +662,8 @@ def selfcheck():
     draft = dict(open_pr, title=DRAFT + "Keep the gate")
     assert decide(draft, jobs, need, False) == "draft", "a green draft is still a draft"
     assert decide(draft, {"title": "success", "gate (test)": "failure"}, need, False) == "failed:gate (test)", "a red job outranks the draft"
-    assert decide(dict(open_pr, title="Keep the WIP: marker out"), jobs, need, False) == "ready"
+    assert decide(draft, {}, need, False) == "draft", "a pending draft is still a draft: the forge refuses a draft merge, so polling waits on nothing"
+    assert decide(dict(open_pr, title="Keep the WIP: marker out"), jobs, need, False) == "green"
     short = ratchet_subject(["test LOC 1 -> 2"], "the rail")
     assert short == "Ratchet: test LOC 1 -> 2 for the rail", short
     long = ratchet_subject(["test LOC 36636 -> 36696", "tui crate 10922 -> 10984", "dist binary 5696512 -> 5696544"], "the console pane and its avatars")
@@ -699,13 +708,43 @@ def selfcheck():
     finally:
         subprocess.run = real_run
     assert stopped == 1, "a hard-cap breach stops the push lane"
+    import pr_review
+
+    real_fgj, real_pull = globals()["fgj_api"], globals()["pull"]
+    real_rounds = pr_review.comments, pr_review.authors
+    globals()["pull"] = lambda n: {"number": n, "title": DRAFT + "Keep the gate", "head": {"sha": "abc1234"}}
+    globals()["fgj_api"] = lambda method, path, payload=None: {"message": "edits are forbidden"}
+    pr_review.comments, pr_review.authors = (lambda repo, number: []), (lambda: set())
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            stopped = cmd_ready(argparse.Namespace(number=7))
+    finally:
+        globals()["fgj_api"], globals()["pull"] = real_fgj, real_pull
+        pr_review.comments, pr_review.authors = real_rounds
+    assert stopped == 1, "a refused title PATCH stops the ready verb"
+    assert "0 review round(s)" in said.getvalue(), "ready says what the rounds still owe"
+    real_measure = gate.measure
+    gate.measure = lambda: (([], [], 0, ([], [])), None)
+    body_file = pathlib.Path(tempfile.gettempdir()) / "forge_pr_selfcheck_body.md"
+    body_file.write_text("## Summary\n\nwords\n")
+    globals()["pull"] = lambda n: {"number": n, "title": "Keep the gate"}
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as seen:
+            stopped = cmd_edit(argparse.Namespace(number=7, title=None, body=str(body_file)))
+    finally:
+        gate.measure = real_measure
+        globals()["pull"] = real_pull
+        body_file.unlink()
+    assert stopped == 1, "an incomplete body is refused by edit"
+    assert any("no `## Why needed`" in line for line in seen.getvalue().splitlines()), seen.getvalue()
+    # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green,
+    # because nothing here built the verbs; a name the parser wires that no longer exists
+    # now fails this flag instead of the next `just commit`.
+    build_parser()
     print("ok   forge_pr selfcheck")
 
 
-def main(argv):
-    if "--selfcheck" in argv:
-        selfcheck()
-        return 0
+def build_parser():
     parser = argparse.ArgumentParser(prog="just")
     verbs = parser.add_subparsers(dest="verb", required=True)
     ratchet = verbs.add_parser("ratchet")
@@ -760,6 +799,14 @@ def main(argv):
     merge.add_argument("--no-wait", dest="wait", action="store_false")
     merge.add_argument("--timeout", type=int, default=40)
     merge.set_defaults(run=cmd_merge)
+    return parser
+
+
+def main(argv):
+    if "--selfcheck" in argv:
+        selfcheck()
+        return 0
+    parser = build_parser()
     args = parser.parse_args(argv)
     return args.run(args)
 
