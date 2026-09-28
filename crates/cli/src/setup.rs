@@ -24,7 +24,7 @@ pub(crate) fn early() {
     let terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     if !offers(
         std::env::args().nth(1).as_deref(),
-        config_path(&home).exists(),
+        config_path(&home).symlink_metadata().is_ok(),
         terminal,
     ) {
         return;
@@ -72,6 +72,19 @@ fn config_path(home: &Path) -> PathBuf {
 }
 
 fn flow(home: &Path, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<(), String> {
+    let path = config_path(home);
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => {
+            yi_types::config::parse(&raw).map_err(|error| {
+                format!(
+                    "{}: {error}; fix it, then run `yi setup` again",
+                    path.display()
+                )
+            })?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("{}: {error}", path.display())),
+    }
     yi_runtime::set_catalog_cache_dir(home.join(".yi/catalog"));
     let mut edits: Vec<Edit> = Vec::new();
     let provider = ask(
@@ -169,8 +182,10 @@ fn classifier_step(
             venv.display()
         ),
     )?;
-    if yes(&install) {
-        install_laya(&venv)?;
+    if yes(&install)
+        && let Err(error) = install_laya(&venv)
+    {
+        say(out, &format!("laya-serve did not install: {error}"))?;
     }
     say(
         out,
@@ -261,7 +276,11 @@ fn write_config(home: &Path, edits: &[Edit]) -> Result<PathBuf, String> {
     let text = serde_json::to_string_pretty(&root).map_err(|error| error.to_string())? + "\n";
     yi_types::config::parse(&text)
         .map_err(|error| format!("setup would write a config Yi cannot load: {error}"))?;
-    let target = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let target = match (std::fs::canonicalize(&path), std::fs::read_link(&path)) {
+        (Ok(target), _) => target,
+        (Err(_), Ok(link)) => path.parent().ok_or("config path has no parent")?.join(link),
+        (Err(_), Err(_)) => path.clone(),
+    };
     let dir = target.parent().ok_or("config path has no parent")?;
     std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     let mode = std::fs::metadata(&target).map_or(0o600, |meta| {

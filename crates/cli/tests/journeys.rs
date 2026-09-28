@@ -634,8 +634,11 @@ fn the_agents_own_words_fire_no_skill() -> TestResult {
 
 /// `yi setup` fed its answers on stdin, as a person at the prompts would type them.
 fn setup(journey: &Journey, answers: &str) -> Result<Output, Box<dyn Error>> {
-    let mut child = journey
-        .command(&["setup"])
+    feed(journey.command(&["setup"]), answers)
+}
+
+fn feed(mut command: Command, answers: &str) -> Result<Output, Box<dyn Error>> {
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -771,6 +774,68 @@ fn setup_writes_the_model_where_the_config_reads_it() -> TestResult {
         "openrouter/anthropic/claude-sonnet-5"
     );
     assert!(config.get("model").is_none(), "{config}");
+    journey.reclaim();
+    Ok(())
+}
+
+/// A config Yi cannot load is refused before the first question, not after an install.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_refuses_a_bad_config_before_asking_anything() -> TestResult {
+    let journey = Journey::new("setup-bad")?;
+    let file = journey.root.join("home/.yi/config.json");
+    std::fs::write(&file, r#"{"modle":"x"}"#)?;
+    let refused = setup(&journey, "openrouter\n\nask\nn\n")?;
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success(), "{refused:?}");
+    assert!(said.contains("fix it, then run `yi setup` again"), "{said}");
+    assert!(!said.contains("Provider"), "nothing was asked: {said}");
+    assert_eq!(std::fs::read_to_string(&file)?, r#"{"modle":"x"}"#);
+    journey.reclaim();
+    Ok(())
+}
+
+/// A config that is a link to a file not yet made stays a link, and the file gets the config.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_writes_through_a_dangling_config_link() -> TestResult {
+    let journey = Journey::new("setup-link")?;
+    let file = journey.root.join("home/.yi/config.json");
+    std::fs::remove_file(&file)?;
+    std::os::unix::fs::symlink("../dotfiles/yi.json", &file)?;
+    let saved = setup(&journey, "\nask\nn\n")?;
+    assert!(saved.status.success(), "{saved:?}");
+    assert!(std::fs::symlink_metadata(&file)?.file_type().is_symlink());
+    let config: Value = serde_json::from_str(&std::fs::read_to_string(
+        journey.root.join("home/dotfiles/yi.json"),
+    )?)?;
+    assert_eq!(config["permissions"]["mode"], "ask");
+    journey.reclaim();
+    Ok(())
+}
+
+/// A failed laya install still saves the answers given before it.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_keeps_the_earlier_answers_when_the_install_fails() -> TestResult {
+    let journey = Journey::new("setup-install")?;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let mut command = journey.command(&["setup"]);
+    command.env("PATH", "");
+    let saved = feed(
+        command,
+        &format!("\nask\ny\ny\nhttp://127.0.0.1:{closed}\n"),
+    )?;
+    assert!(saved.status.success(), "{saved:?}");
+    assert!(
+        String::from_utf8_lossy(&saved.stderr).contains("laya-serve did not install"),
+        "{saved:?}"
+    );
+    let config = config_of(&journey)?;
+    assert_eq!(config["permissions"]["mode"], "ask");
+    assert!(config.get("models").is_none(), "{config}");
     journey.reclaim();
     Ok(())
 }
