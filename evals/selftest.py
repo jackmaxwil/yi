@@ -518,10 +518,10 @@ def check_trials():
         put("old", 50.0, at=now - 8 * 86400)
         put("r1", 20.0, None)
         assert trials.spend(store, now) == (0.0, 21.0), "last week is not this week; an unpriced trial costs $1"
-        assert trials.caps("r2", 12, store, now) == (9.0, None), "hard: the smaller of the stage's $10 and the week's $30 left"
-        assert trials.caps("r2", 40, store, now)[1].startswith("week soft cap"), "21 + 40 x 0.13 passes the $25 soft cap"
-        put("r2", 7.95)
-        assert trials.caps("r2", 1, store, now)[1].startswith("stage soft cap"), "7.95 + 0.13 passes the stage's $8"
+        assert trials.caps("r2", 12, store, now) == (9.0, None), "hard: the smaller of the stage's $15 and the week's $30 left"
+        assert trials.caps("r2", 16, store, now)[1].startswith("week soft cap"), "21 + 16 x 0.27 passes the $25 soft cap"
+        put("r2", 12.9)
+        assert trials.caps("r2", 1, store, now)[1].startswith("stage soft cap"), "12.9 + 0.27 passes the stage's $13"
 
 
 def check_record():

@@ -21,10 +21,12 @@ import axes  # noqa: E402
 from watch import PER_TRIAL_USD as UNPRICED_USD  # noqa: E402
 
 STORE = ROOT / "trials"
-# Owner, 2026-09-27: per stage soft $8 / hard $10; per week soft $25 / hard $30.
-STAGE_SOFT, STAGE_HARD, WEEK_SOFT, WEEK_HARD = 8.0, 10.0, 25.0, 30.0
-# Row 0055's median priced trial; a call is predicted at this per task before it starts.
-TRIAL_USD = 0.13
+# Owner, 2026-09-27: per week soft $25 / hard $30; per stage "13$ is fine" once N1 measured a
+# slice trial at twice the sweep's median (a 12-task, k=2 paired validation stage is about $13).
+STAGE_SOFT, STAGE_HARD, WEEK_SOFT, WEEK_HARD = 13.0, 15.0, 25.0, 30.0
+# N1's first call: mid-band slice trials cost $0.27 each, not row 0055's $0.13 sweep median
+# (which the cheap tasks pulled down); a call is predicted at this per task before it starts.
+TRIAL_USD = 0.27
 SUMMED = ("input", "cacheRead", "cacheWrite", "output", "turns")
 KEPT = ("task", "trial", "reward", "partialScore", "censored", "errored", "timedOut", "wallSec")
 
