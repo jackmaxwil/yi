@@ -82,6 +82,14 @@ def check_command():
     assert "--continue" in shlex.split(
         yi_usage.run_command("anthropic/claude-opus-4-5", "hi", resume=True)
     ), "resume must pass --continue"
+    # E16: the binary reads YI_LEVERS only under --eval (crates/runtime/src/levers.rs), so a
+    # trial with levers carries both, and a trial without them is byte-identical to before.
+    assert "--eval" not in argv and yi_usage.LEVERS_ENV not in command, "no levers, no --eval"
+    levered = yi_usage.run_command("anthropic/claude-opus-4-5", "hi", levers=True)
+    assert "--eval" in shlex.split(levered), "E16: a levers trial must pass --eval"
+    assert f"{yi_usage.LEVERS_ENV}={yi_usage.REMOTE_LEVERS_PATH} yi ask " in levered, \
+        "E16: the binary must be told where the uploaded levers file is"
+    assert yi_usage.REMOTE_LEVERS_PATH.startswith("/logs/agent/"), "levers ride the synced logs"
     assert "--deadline" not in argv, "the deadline is the driver's to name"
     timed = shlex.split(yi_usage.run_command("anthropic/claude-opus-4-5", "hi", deadline_sec=3600))
     assert timed[timed.index("--deadline") + 1] == "3600", "the model must learn its wall clock"
@@ -99,6 +107,11 @@ def check_install():
     source = (ROOT / "adapters" / "yi_harbor" / "agent.py").read_text()
     assert "doctor --fix --json" in source and "warm_kernel" in source, "install must warm the kernel"
     assert "cannot boot in this image" not in source, "a dead kernel is reported, not a refusal"
+    # E16: the host's YI_LEVERS file reaches the container, the run asks for it, and the
+    # fingerprint names it, so a levers row never shares a config column with the defaults.
+    assert "REMOTE_LEVERS_PATH" in source and "upload_levers" in source, "E16: levers must be uploaded"
+    assert "levers=bool(" in source, "E16: the run must pass the levers flag"
+    assert "levers_label(os.environ)" in source, "E16: the harbor fingerprint must name the levers"
     green = json.dumps([{"name": "kernel-toolchain", "status": "ok", "detail": "uv /usr/bin/uv"},
                         {"name": "kernel-boot", "status": "fixed", "detail": "built 20000 ms"}])
     assert yi_usage.kernel_problems(green) == []
