@@ -6,7 +6,7 @@ use yi_ai::request::{ProxyConfig, send_with_retry};
 
 /// A transport probe, not a model request: nothing to mark, so it takes the constructor for
 /// wires without explicit breakpoints and reaches ureq the only way a body can.
-fn probe() -> yi_ai::breakpoints::Encoded {
+fn transport_probe() -> yi_ai::breakpoints::Encoded {
     yi_ai::breakpoints::Encoded::provider_prefix(json!({"model": "probe"}), "messages", Vec::new())
 }
 
@@ -132,7 +132,7 @@ fn a_provider_request_reaches_the_configured_proxy() -> Res {
     let sent = send_with_retry(
         "http://yi.invalid/v1/messages",
         &[],
-        &probe(),
+        &transport_probe(),
         Some(&config),
         &|_| {},
     );
@@ -193,7 +193,7 @@ fn back_to_back_requests_share_one_connection() -> Res {
         }
     });
     for _ in 0..3 {
-        let response = send_with_retry(&url, &[], &probe(), None, &|_| {})?;
+        let response = send_with_retry(&url, &[], &transport_probe(), None, &|_| {})?;
         assert_eq!(response.into_string()?, "ok");
     }
     assert_eq!(
@@ -239,7 +239,7 @@ fn a_retried_request_says_which_attempt_and_how_long_it_waits() -> Res {
     let sent = send_with_retry(
         &format!("http://127.0.0.1:{port}/v1/messages"),
         &[],
-        &probe(),
+        &transport_probe(),
         None,
         &|wait| seen.lock().map(|mut seen| seen.push(wait)).unwrap_or(()),
     );
@@ -297,7 +297,7 @@ fn a_dropped_connection_retry_names_the_reason_not_the_url() -> Res {
             "http://127.0.0.1:{port}/api/v1/openai-compatible/chat/completions/with/a/long/deployment/path"
         ),
         &[],
-        &probe(),
+        &transport_probe(),
         None,
         &|wait| seen.lock().map(|mut seen| seen.push(wait)).unwrap_or(()),
     );
