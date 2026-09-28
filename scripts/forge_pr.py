@@ -797,6 +797,7 @@ def build_parser():
         sub.add_argument("number", nargs="?")
         sub.set_defaults(run=run)
     pr.choices["review"].add_argument("--dry-run", action="store_true", help="print the round, post nothing")
+    pr.choices["review"].add_argument("--again", action="store_true", help="read a head the rule says is read enough")
     pr.add_parser("sweep").set_defaults(run=pr_review.cmd_sweep)
     replay = pr.add_parser("replay")
     replay.add_argument("numbers", nargs="+", type=int)

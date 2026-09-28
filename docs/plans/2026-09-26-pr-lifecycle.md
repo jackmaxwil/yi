@@ -37,12 +37,20 @@ the tree turned out to hold:
   | kept (#491, #518, #520, #524, #525) | 5 | 4 | 0 | 4 |
 
   #346 and #525 lost a lens to malformed answers twice (a third try is now allowed). One
-  round costs about $0.28 and eight minutes on a 900-line diff. The flip to blocking waits
+  round costs about $0.28 and eight and a half minutes (510 s) on a 293-line change (#733 at `0813a8ef`: 232 insertions, 61 deletions); the cost and time come from the session logs under `~/.yi/sessions/pr-rounds`, and the rows from `~/Development/yi-ergo/replay/2026-09-28.jsonl`. The flip to blocking waits
   on the owner: the sample is ten PRs, and "bad" meant merged without being asked for, which
   a code review can only partly see.
 - **The channel runs a verb, not the lifecycle plan.** A subscription creates a todo and
   wakes the session; it cannot start a plan or run a command. So the todo's note is
   `just pr sweep`, which is idempotent on the rounds already posted.
+
+- **The script is the product for now; the exam comes later.** A redesign as seven-primitives'
+  exam (probes verified against external attempts) was reviewed on 2026-09-28 and does not hold
+  on main without core verification changes: the submit path merges what it verifies, attempts
+  move only on a retry from failed, the writer floor needs a critical command, and the jury
+  answers one vote rather than findings. The owner chose "Script now, exam later". So the probes
+  are already files in the shape the exam reads (`skills/yi/pr-review/probes/`), and the exam
+  gets its own plan when it is built on its merits.
 
 ## 0. Summary
 
