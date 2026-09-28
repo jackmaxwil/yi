@@ -12,7 +12,9 @@ use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome};
 pub use crate::kernel_bootstrap::{
     BootFn, RLM_BOOTSTRAP_CODE, restore_notice_text, rlm_bootstrap_code,
 };
-use crate::kernel_variables::{dump_variable_code, parse_variable_reply, read_variable_code};
+use crate::kernel_variables::{
+    VariableReply, dump_variable_code, parse_variable_reply, read_variable_code, render_value,
+};
 
 pub type HostHandlerFn = dyn Fn(Map<String, Value>) -> HostFuture + Send + Sync;
 
@@ -245,6 +247,7 @@ pub struct KernelService {
     surface: Mutex<Option<String>>,
     surface_shown: std::sync::atomic::AtomicBool,
     snapshot_lock: Mutex<Option<(PathBuf, Option<std::fs::File>)>>,
+    waited: Mutex<Option<String>>,
 }
 
 impl KernelService {
@@ -261,6 +264,7 @@ impl KernelService {
             surface: Mutex::new(None),
             surface_shown: std::sync::atomic::AtomicBool::new(false),
             snapshot_lock: Mutex::new(None),
+            waited: Mutex::new(None),
         }
     }
 
@@ -372,21 +376,21 @@ impl KernelService {
         env
     }
 
-    /// Boot the kernel now so the first cell pays execution only. A failed
-    /// prewarm stays quiet: the next cell repeats [`Self::ensure`] and reports it.
+    /// Boot the kernel now so the first cell pays execution only. A failed prewarm, or one a
+    /// full node turned away, stays quiet: the next cell repeats [`Self::ensure`] and reports it.
     pub async fn prewarm(&self) {
-        let _first_cell_will_report = self.ensure().await;
+        let _first_cell_will_report = self.ensure(&(Arc::new(|| true) as CancelFlag)).await;
     }
 
-    async fn ensure(&self) -> Result<Arc<KernelManager>, String> {
-        let outcome = self.ensure_inner().await;
+    async fn ensure(&self, cancelled: &CancelFlag) -> Result<Arc<KernelManager>, String> {
+        let outcome = self.ensure_inner(cancelled).await;
         if let Ok(mut slot) = self.last_error.lock() {
             *slot = outcome.as_ref().err().cloned();
         }
         outcome
     }
 
-    async fn ensure_inner(&self) -> Result<Arc<KernelManager>, String> {
+    async fn ensure_inner(&self, cancelled: &CancelFlag) -> Result<Arc<KernelManager>, String> {
         let _span = yi_types::trace::span("kernel.ensure");
         // Only an on-disk session is revivable (§9). Incident: `/new`, `switch_session` and
         // `fork` swap the store under a live kernel, which kept writing under the old id.
@@ -431,6 +435,13 @@ impl KernelService {
             .as_ref()
             .is_some_and(|config| config.path.is_file());
         let booting = crate::kernel_bootstrap::Booting::new(self.options.on_boot.clone());
+        let holder = format!(
+            "pid {} in {}",
+            std::process::id(),
+            self.options.cwd.display()
+        );
+        let (home, progress) = (&self.options.home, booting.progress());
+        let admitted = crate::node::admit(home, &holder, &*progress, cancelled).await?;
         let manager = Arc::new(KernelManager::new(KernelOptions {
             python: None,
             cwd: Some(self.options.cwd.clone()),
@@ -443,6 +454,8 @@ impl KernelService {
             snapshot,
             wrap,
         })?);
+        manager.hold_until_exit(admitted.slot);
+        *self.waited.lock().map_err(|error| error.to_string())? = admitted.waited;
         manager.start().await?;
         // Revive before the bootstrap cell, so the bootstrap overwrites live
         // handles (rlm, skills) on top of anything restored.
@@ -634,10 +647,11 @@ impl KernelService {
             .cell_ceiling
             .unwrap_or(std::time::Duration::from_secs(yi_tools::MAX_TIMEOUT_SECS));
         loop {
-            let manager = self.ensure().await?;
+            let manager = self.ensure(cancelled).await?;
             if kernel_restarted && notes.is_empty() {
                 notes.push(self.restart_note(&manager).await);
             }
+            notes.extend(self.waited.lock().ok().and_then(|mut waited| waited.take()));
             let abort = AbortFlag::default();
             let watcher = {
                 let abort = abort.clone();
@@ -773,21 +787,6 @@ pub enum VariableReadError {
     Busy,
     #[error("repr({name}) raised {python}")]
     Unreadable { name: VariableName, python: String },
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum VariableReply {
-    Missing,
-    Value { text: String, chars: usize },
-    Unreadable { python: String },
-}
-
-fn render_value(text: String, chars: usize) -> String {
-    let shown = text.chars().count();
-    if chars <= shown {
-        return text;
-    }
-    format!("{text}\n[... truncated: {shown} of {chars} chars ...]")
 }
 
 impl KernelService {
@@ -1178,7 +1177,7 @@ mod tests {
     #[ignore = "tier-2 journey: `just journeys`"]
     async fn a_live_kernel_answers_one_name_and_admits_the_rest() -> TestResult {
         let service = service();
-        let manager = service.ensure().await?;
+        let manager = service.ensure(&(Arc::new(|| false) as CancelFlag)).await?;
         manager
             .execute("answer = 6 * 7", ExecuteOptions::default())
             .await?;

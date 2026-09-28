@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
+use crate::jobs::MAX_TIMEOUT_SECS;
 use crate::tool::{
     DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, resolve_path,
     text_output,
@@ -553,22 +554,21 @@ impl Tool for BashTool {
         let timeout = crate::jobs::clamp_timeout(requested_timeout);
         let started = std::time::Instant::now();
         let mut sections = Vec::new();
-        if let Some(asked) =
-            requested_timeout.filter(|asked| *asked > crate::jobs::MAX_TIMEOUT_SECS)
-        {
+        if let Some(asked) = requested_timeout.filter(|asked| *asked > MAX_TIMEOUT_SECS) {
             sections.push(format!(
-                "[timeout_secs {asked} capped at {}]",
-                crate::jobs::MAX_TIMEOUT_SECS
+                "[timeout_secs {asked} capped at {MAX_TIMEOUT_SECS}]"
             ));
         }
         let running = yi_types::trace::span("bash.run");
+        let placed = (context.container.as_deref())
+            .map(|name| crate::jobs::in_container(name, &context.cwd, command));
         let (capture, timed_out) = match crate::jobs::run_or_background(
-            command,
+            placed.as_deref().unwrap_or(command),
             &context.cwd,
             &context.cancelled,
             context.auto_background,
             timeout,
-            context.sandbox.as_ref(),
+            context.sandbox.as_ref().filter(|_| placed.is_none()),
         ) {
             Ok(crate::jobs::Run::Finished(capture)) => (*capture, false),
             Ok(crate::jobs::Run::TimedOut(capture)) => (*capture, true),

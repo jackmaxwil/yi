@@ -180,6 +180,8 @@ pub(crate) struct Inner {
     pub(crate) snapshot_timer: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub(crate) checkpoints: crate::snapshot::Checkpoints,
     pub(crate) wrap: Option<(String, Vec<String>)>,
+    /// A lock the kernel process holds for as long as it lives, a node slot (D285).
+    pub(crate) held: Mutex<Option<std::fs::File>>,
 }
 
 pub struct KernelManager {
@@ -584,8 +586,16 @@ impl KernelManager {
                 snapshot_timer: Mutex::new(None),
                 checkpoints: crate::snapshot::Checkpoints::default(),
                 wrap: options.wrap,
+                held: Mutex::new(None),
             }),
         })
+    }
+
+    /// Invariant: dropped when the process is reaped, a crash included, or with the manager.
+    pub fn hold_until_exit(&self, lock: std::fs::File) {
+        if let Ok(mut held) = self.inner.held.lock() {
+            *held = Some(lock);
+        }
     }
 
     pub fn is_running(&self) -> bool {

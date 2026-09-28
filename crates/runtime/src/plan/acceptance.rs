@@ -193,9 +193,13 @@ pub(super) fn refuse_plain_done(
 }
 
 pub fn is_worktree(todo: &Todo) -> bool {
-    todo.delegation
-        .as_ref()
-        .is_some_and(|delegation| delegation.spec.isolation == Some(Isolation::Worktree))
+    todo.delegation.as_ref().is_some_and(|delegation| {
+        delegation
+            .spec
+            .isolation
+            .as_ref()
+            .is_some_and(Isolation::lanes)
+    })
 }
 
 /// Typestate markers: what the journal proves about the candidate or the integration.
