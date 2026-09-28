@@ -2,11 +2,13 @@ pub mod clock;
 mod kernel;
 mod lanes;
 pub(crate) mod shared;
+mod zone;
 
 use std::collections::HashSet;
 
 pub use clock::Firing;
 pub use lanes::Scheduler;
+pub use zone::Zone;
 
 use yi_types::schedule::{
     CronSchedule, DeliveryMode, DispatchRecord, Job, JobStatus, ScheduleKind, ScheduleState,
@@ -16,8 +18,7 @@ pub const ONE_SECOND_MS: u64 = 1_000;
 pub const ONE_MINUTE_MS: u64 = 60_000;
 pub const DEFAULT_HEARTBEAT_SCHEDULE: &str = "every 5m";
 pub const DEFAULT_HEARTBEAT_DELIVERY_MODE: DeliveryMode = DeliveryMode::Steer;
-pub const HEARTBEAT_USAGE: &str =
-    "Usage: /heartbeat [--every <interval>] [--steer|--follow-up] <instruction>";
+pub const HEARTBEAT_USAGE: &str = "Usage: /heartbeat [--every <interval> | <minute hour day month weekday>] [--steer|--follow-up] <instruction>";
 // The exact recovery marker; tests and `/heartbeat status` surface it.
 pub const INTERRUPTED_ERROR: &str = "Interrupted before scheduled operation completion";
 
@@ -104,9 +105,17 @@ fn parse_every_clause(text: &str) -> Option<Result<u64, String>> {
     Some(Ok(interval_ms))
 }
 
-/// `"in 5m"`, `"every 10m"`, `"at <ISO>"`, `@hourly`-style aliases, or a
-/// five-field cron expression, with its first run in epoch ms.
 pub fn parse_schedule(input: &str, now_ms: u64) -> Result<(CronSchedule, u64), String> {
+    parse_schedule_in(input, now_ms, &Zone::local())
+}
+
+/// `"in 5m"`, `"every 10m"`, `"at <ISO>"`, `@hourly`-style aliases, or a five-field cron
+/// expression in `zone`'s wall time, with its first run in epoch ms.
+pub fn parse_schedule_in(
+    input: &str,
+    now_ms: u64,
+    zone: &Zone,
+) -> Result<(CronSchedule, u64), String> {
     let text = strip_matching_quotes(input.trim()).trim();
     if text.is_empty() {
         return Err("Cron schedule cannot be empty".to_owned());
@@ -148,7 +157,7 @@ pub fn parse_schedule(input: &str, now_ms: u64) -> Result<(CronSchedule, u64), S
         ));
     }
     let expression = normalize_cron_alias(text);
-    let next = next_cron_run_after(expression, now_ms)?;
+    let next = next_cron_run_after(expression, now_ms, zone)?;
     Ok((
         CronSchedule {
             kind: ScheduleKind::Cron,
@@ -176,7 +185,11 @@ pub fn next_run_at_for_schedule(
             }
             Ok(Some(after_ms.saturating_add(interval)))
         }
-        ScheduleKind::Cron => Ok(Some(next_cron_run_after(&schedule.expression, after_ms)?)),
+        ScheduleKind::Cron => Ok(Some(next_cron_run_after(
+            &schedule.expression,
+            after_ms,
+            &Zone::local(),
+        )?)),
     }
 }
 
@@ -257,8 +270,6 @@ fn parse_cron_expression(expression: &str) -> Result<CronFields, String> {
     })
 }
 
-// Cron and `at` evaluate in UTC on purpose: std has no tzdata and no date crate is
-// an allowed dependency (§18.3), so local time would need a table Yi does not carry.
 struct Civil {
     minute: u64,
     hour: u64,
@@ -304,13 +315,16 @@ fn matches_cron_fields(civil: &Civil, fields: &CronFields) -> bool {
         && day_matches
 }
 
-fn next_cron_run_after(expression: &str, after_ms: u64) -> Result<u64, String> {
+fn next_cron_run_after(expression: &str, after_ms: u64, zone: &Zone) -> Result<u64, String> {
     let fields = parse_cron_expression(expression)?;
+    let after_wall = zone.wall_ms(after_ms);
     // Truncate to the minute, then step forward one minute at a time.
     let mut candidate = (after_ms / ONE_MINUTE_MS).saturating_add(1) * ONE_MINUTE_MS;
     let deadline = candidate.saturating_add(366 * 24 * 60 * ONE_MINUTE_MS);
     while candidate <= deadline {
-        if matches_cron_fields(&civil_of(candidate), &fields) {
+        let wall = zone.wall_ms(candidate);
+        // Invariant: the hour a fall-back repeats has wall times already passed; each fires once.
+        if wall > after_wall && matches_cron_fields(&civil_of(wall), &fields) {
             return Ok(candidate);
         }
         candidate = candidate.saturating_add(ONE_MINUTE_MS);
@@ -321,7 +335,7 @@ fn next_cron_run_after(expression: &str, after_ms: u64) -> Result<u64, String> {
 }
 
 /// Minimal UTC ISO-8601 parse: `YYYY-MM-DD[THH:MM[:SS]][Z]`. Offsets other
-/// than Z are rejected — Yi schedules in UTC.
+/// than Z are rejected: an `at` is an absolute instant, and only cron fields are local.
 pub fn parse_iso_ms(text: &str) -> Option<u64> {
     let text = text.trim().trim_end_matches('Z');
     let (date, time) = match text.split_once('T') {
@@ -398,6 +412,19 @@ fn consume_delivery_option(text: &str) -> (Option<DeliveryMode>, &str) {
     (None, trimmed)
 }
 
+fn leading_cron(text: &str) -> Option<(String, &str)> {
+    let mut rest = text;
+    let mut fields = Vec::with_capacity(5);
+    for _ in 0..5 {
+        let (field, after) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+        fields.push(field);
+        rest = after.trim_start();
+    }
+    let cron = fields.join(" ");
+    parse_cron_expression(&cron).ok()?;
+    Some((cron, rest))
+}
+
 pub fn parse_heartbeat_command(input: &str) -> Result<HeartbeatCommand, String> {
     let text = input.strip_prefix("/heartbeat").unwrap_or(input).trim();
     match text {
@@ -426,6 +453,8 @@ pub fn parse_heartbeat_command(input: &str) -> Result<HeartbeatCommand, String> 
         let amount = words.next().unwrap_or("");
         let rest = words.next().unwrap_or("").trim_start();
         (Some(format!("{every} {amount}")), rest)
+    } else if let Some((cron, rest)) = leading_cron(remaining) {
+        (Some(cron), rest)
     } else {
         (None, remaining)
     };
@@ -931,6 +960,19 @@ impl Drop for HeartbeatService {
     }
 }
 
+fn local_time(utc_ms: u64) -> String {
+    let zone = Zone::local();
+    let wall = zone.wall_ms(utc_ms);
+    let (year, month, day) = civil_from_days(wall / 86_400_000);
+    let civil = civil_of(wall);
+    format!(
+        "{year}-{month:02}-{day:02} {:02}:{:02} {}",
+        civil.hour,
+        civil.minute,
+        zone.abbreviation(utc_ms)
+    )
+}
+
 fn render_job_line(job: &Job) -> String {
     format!(
         "{} [{}{}] {} — {} (runs: {}, next: {})",
@@ -946,7 +988,7 @@ fn render_job_line(job: &Job) -> String {
         job.prompt,
         job.run_count,
         job.next_run_at
-            .map(|at| at.to_string())
+            .map(local_time)
             .unwrap_or_else(|| "-".to_owned()),
     )
 }
