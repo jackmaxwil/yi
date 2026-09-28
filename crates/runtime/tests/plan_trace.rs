@@ -228,3 +228,58 @@ fn the_trace_cap_names_its_cut_only_past_the_cap() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with a declaring op reading the owner's messages twice (its citing default, then its
+/// trace) or a non-declaring op reading them at all: each read walks the whole session.
+#[test]
+fn a_plan_op_reads_the_owners_messages_at_most_once() -> TestResult {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use yi_runtime::plan::ops::{Actor, Op, OpRequest, PlanEngine, TodoSpec};
+
+    let root = Scratch::new("yi-plan-trace-reads")?;
+    let store = memory_store();
+    yi_session::lock_session(&store)
+        .append_message("main", yi_runtime::session::user_input("ship the parser"))?;
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&reads);
+    let engine = PlanEngine::new(
+        PlanStore::open(root.join("plans"))?,
+        Arc::new(crate::plan_e2e::NoChildren),
+    )
+    .with_owner_words(Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        Some(Arc::clone(&store))
+    }));
+    let spec = |label: &str| -> Result<TodoSpec, Box<dyn Error>> {
+        Ok(serde_json::from_value(json!({"label": label}))?)
+    };
+    let ops = [
+        Op::Init {
+            goal: GoalText::new("ship the parser")?,
+            todos: vec![spec("wire the parser")?],
+        },
+        Op::Start {
+            label: TodoLabel::new("wire the parser")?,
+        },
+        Op::Append {
+            todos: vec![spec("polish the docs")?],
+        },
+    ];
+    let mut seen = Vec::new();
+    for op in ops {
+        engine.apply(OpRequest {
+            plan: None,
+            actor: Actor::Owner,
+            op,
+            request_id: None,
+            expected_revision: None,
+        })?;
+        seen.push(reads.load(Ordering::SeqCst));
+    }
+    assert_eq!(
+        seen,
+        [1, 1, 2],
+        "cumulative reads after init, start, append"
+    );
+    Ok(())
+}
