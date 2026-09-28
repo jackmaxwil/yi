@@ -3,14 +3,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
+use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
 use yi_types::schedule::DeliveryMode;
 
 use crate::fetch::FetchLog;
 use crate::goal::DeliverFn;
 
-// Incident: always-on skill bodies were the cost regression; two pointers is the budget.
-// It caps `skill://` pointers only — a user's own rule is their words and is never dropped.
+// Incident: always-on skill bodies were the cost regression; two pointers a message is the budget.
+// It caps `skill://` pointers only: a user's rule is their words, and a typed `$name` a request.
 const POINTER_CAP: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,15 +94,17 @@ pub fn discover_armed(cwd: &Path, home: &Path) -> RuleSet {
     for compiled in skill_rules(cwd, home) {
         match compiled {
             Err(reason) => set.warnings.push(reason),
-            Ok(None) => {}
-            Ok(Some(rule)) if names.contains(&rule.name) => {}
-            Ok(Some(rule)) => set.rules.push(rule),
+            Ok((rule, _)) if names.contains(&rule.name) => {}
+            Ok((rule, ignored)) => {
+                set.warnings.extend(ignored);
+                set.rules.push(rule);
+            }
         }
     }
     set
 }
 
-fn skill_rules(cwd: &Path, home: &Path) -> Vec<Result<Option<RuleDoc>, String>> {
+fn skill_rules(cwd: &Path, home: &Path) -> Vec<Result<(RuleDoc, Vec<String>), String>> {
     crate::skills::discover(cwd, home)
         .into_iter()
         .map(|skill| {
@@ -113,12 +115,24 @@ fn skill_rules(cwd: &Path, home: &Path) -> Vec<Result<Option<RuleDoc>, String>> 
         .collect()
 }
 
-/// Discovery already parsed the frontmatter, so an armed skill costs no second read.
-fn skill_as_rule(skill: &crate::skills::Skill) -> Result<Option<RuleDoc>, String> {
+/// Keys that aim a rule at tools drop; only a lost deny is announced, as the model reads notices.
+fn skill_as_rule(skill: &crate::skills::Skill) -> Result<(RuleDoc, Vec<String>), String> {
     let mention = format!("${}", skill.name);
     let body = format!("skill://{}", skill.name);
-    let mut rule = if skill.frontmatter.contains_key("trigger") {
-        fields_to_rule(&skill.path, &skill.frontmatter, &body)?
+    let mut fields = skill.frontmatter.clone();
+    fields.remove("scope");
+    fields.remove("paths");
+    let mut ignored = Vec::new();
+    if let Some(mode) = fields.remove("mode")
+        && mode != "remind"
+    {
+        ignored.push(format!(
+            "skill {}: `mode: {mode}` ignored: a skill only points; a deny belongs in .yi/rules",
+            skill.path.display()
+        ));
+    }
+    let mut rule = if fields.contains_key("trigger") {
+        fields_to_rule(&skill.path, &fields, &body)?
     } else {
         RuleDoc {
             name: skill.name.clone(),
@@ -133,10 +147,11 @@ fn skill_as_rule(skill: &crate::skills::Skill) -> Result<Option<RuleDoc>, String
         }
     };
     rule.name = skill.name.clone();
+    rule.scope = RuleScope::Text;
     if !rule.needles.contains(&mention) {
         rule.needles.push(mention);
     }
-    Ok(Some(rule))
+    Ok((rule, ignored))
 }
 
 pub(crate) fn read_rule(path: &Path) -> Result<RuleDoc, String> {
@@ -272,6 +287,14 @@ impl Evidence {
             path: path.to_owned(),
         }
     }
+
+    fn skill(rule: &RuleDoc) -> Self {
+        Self {
+            rule: rule.name.clone(),
+            needle: String::new(),
+            path: String::new(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -281,10 +304,6 @@ struct FireState {
     fired_once: BTreeMap<Evidence, bool>,
     seen: BTreeMap<Evidence, u64>,
     loaded: BTreeSet<String>,
-    /// An edit or write since the prompt: a skill is a method for work, and a turn
-    /// that only read has none to apply it to.
-    mutated: bool,
-    pointers: usize,
 }
 
 impl FireState {
@@ -322,7 +341,7 @@ impl FireState {
     }
 }
 
-/// Literal substring matcher over args, tool results, and assistant prose.
+/// Literal substring matcher: a user's rule reads tool text and prose, a skill only typed input.
 pub struct RuleEngine {
     rules: std::sync::RwLock<Vec<RuleDoc>>,
     state: Mutex<FireState>,
@@ -382,24 +401,44 @@ fn skill_name(rule: &RuleDoc) -> Option<&str> {
     rule.body.strip_prefix("skill://")
 }
 
-/// A read, a search or a fetch quotes text; only a run produces a failure.
-fn quotes_not_runs(tool: &str) -> bool {
-    matches!(
-        tool,
-        "read" | "grep" | "glob" | "find" | "fetch" | "web_search" | "document"
-    )
+/// ASCII case folds on both sides: a capital at the start of a sentence is the same request.
+fn typed_needle<'a>(rule: &'a RuleDoc, folded: &str) -> Option<&'a str> {
+    rule.needles
+        .iter()
+        .find(|needle| folded.contains(&needle.to_ascii_lowercase()))
+        .map(String::as_str)
 }
 
-/// A dropped pointer is not latched, so the next scan that matches it delivers.
-fn take_pointer_slot(rule: &RuleDoc, pointers: &mut usize) -> bool {
-    if skill_name(rule).is_none() {
-        return true;
+fn typed_text(message: &AgentMessage) -> Option<String> {
+    let AgentMessage::User {
+        content,
+        attribution: Attribution::User,
+        ..
+    } = message
+    else {
+        return None;
+    };
+    Some(match content {
+        UserContent::Text(text) => text.clone(),
+        UserContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                Content::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    })
+}
+
+fn reminder(text: String) -> AgentMessage {
+    AgentMessage::Custom {
+        custom_type: "reminder".to_owned(),
+        content: UserContent::Text(text),
+        display: true,
+        details: None,
+        timestamp: yi_session::now_ms(),
     }
-    if *pointers >= POINTER_CAP {
-        return false;
-    }
-    *pointers += 1;
-    true
 }
 
 impl RuleEngine {
@@ -495,9 +534,6 @@ impl RuleEngine {
         };
         let mut denial = None;
         let mut reminders = Vec::new();
-        if pre && matches!(tool, "edit" | "write") {
-            state.mutated = true;
-        }
         let path = call_path(args_json);
         let rules = self.snapshot();
         for rule in &rules {
@@ -506,18 +542,16 @@ impl RuleEngine {
             } else {
                 result_scope(rule, is_error)
             };
-            if !in_scope || !paths_ok(rule, &path) || !matches(rule, haystack) {
-                continue;
-            }
-            if !pre && quotes_not_runs(tool) && skill_name(rule).is_some() {
+            if skill_name(rule).is_some()
+                || !in_scope
+                || !paths_ok(rule, &path)
+                || !matches(rule, haystack)
+            {
                 continue;
             }
             let evidence = Evidence::of(rule, haystack, &path);
             let n = state.bump(&evidence);
             if n < rule.after.max(1) || !state.eligible(rule, &evidence) {
-                continue;
-            }
-            if self.skill_already_loaded(&state, rule) {
                 continue;
             }
             match rule.mode {
@@ -532,10 +566,6 @@ impl RuleEngine {
                 }
                 RuleMode::Gate => {}
                 RuleMode::Remind => {
-                    if !take_pointer_slot(rule, &mut state.pointers) {
-                        continue;
-                    }
-                    // Incident: the cap ran after the latch, so a marked rule could be dropped unheard.
                     state.mark(&evidence);
                     reminders.push(self.render_reminder(rule, &evidence.needle));
                 }
@@ -588,26 +618,65 @@ impl RuleEngine {
         };
         // Incident: the advisor's session-scoped dedupe would override a user-chosen re-arm gap.
         for text in reminders {
-            deliver(
-                AgentMessage::Custom {
-                    custom_type: "reminder".to_owned(),
-                    content: UserContent::Text(text),
-                    display: true,
-                    details: None,
-                    timestamp: yi_session::now_ms(),
-                },
-                DeliveryMode::Steer,
-            );
+            deliver(reminder(text), DeliveryMode::Steer);
         }
     }
 
-    pub fn observe(&self, event: &AgentEvent) {
-        if matches!(event, AgentEvent::AgentEnd { .. })
-            && let Ok(mut state) = self.state.lock()
-        {
-            state.mutated = false;
-            return;
+    /// Only a message the user typed points at a skill; the pointers are placed right behind it.
+    pub fn observe_user(&self, message: &AgentMessage) -> Vec<AgentMessage> {
+        let Some(text) = typed_text(message) else {
+            return Vec::new();
+        };
+        let folded = text.to_ascii_lowercase();
+        let rules = self.snapshot();
+        let Ok(mut state) = self.state.lock() else {
+            return Vec::new();
+        };
+        let mut texts = Vec::new();
+        let mut counted = 0_usize;
+        let mut dropped = Vec::new();
+        for rule in &rules {
+            let Some(name) = skill_name(rule) else {
+                continue;
+            };
+            let Some(needle) = typed_needle(rule, &folded) else {
+                continue;
+            };
+            let mention = format!("${name}");
+            let named = folded.contains(&mention.to_ascii_lowercase());
+            let evidence = Evidence::skill(rule);
+            let n = state.bump(&evidence);
+            if !named && (n < rule.after.max(1) || !state.eligible(rule, &evidence)) {
+                continue;
+            }
+            if self.skill_already_loaded(&state, rule) {
+                continue;
+            }
+            if !named {
+                // A dropped pointer is not latched, so the next message that matches it delivers.
+                if counted >= POINTER_CAP {
+                    dropped.push(format!("skill://{name}"));
+                    continue;
+                }
+                counted += 1;
+            }
+            state.mark(&evidence);
+            let shown = if named { mention.as_str() } else { needle };
+            texts.push(self.render_reminder(rule, shown));
         }
+        if let Some(last) = texts.last_mut()
+            && !dropped.is_empty()
+        {
+            last.push_str(&format!(
+                " [+{} past the cap of {POINTER_CAP}: {}]",
+                dropped.len(),
+                dropped.join(", ")
+            ));
+        }
+        texts.into_iter().map(reminder).collect()
+    }
+
+    pub fn observe(&self, event: &AgentEvent) {
         let AgentEvent::MessageEnd {
             message:
                 AgentMessage::Assistant {
@@ -632,10 +701,11 @@ impl RuleEngine {
         if let Ok(mut state) = self.state.lock() {
             if !text.is_empty() {
                 for rule in &rules {
-                    if rule.mode != RuleMode::Remind || rule.scope != RuleScope::Text {
-                        continue;
-                    }
-                    if !matches(rule, &text) || (skill_name(rule).is_some() && !state.mutated) {
+                    if rule.mode != RuleMode::Remind
+                        || rule.scope != RuleScope::Text
+                        || skill_name(rule).is_some()
+                        || !matches(rule, &text)
+                    {
                         continue;
                     }
                     let evidence = Evidence::of(rule, &text, "");
@@ -643,18 +713,11 @@ impl RuleEngine {
                     if n < rule.after.max(1) || !state.eligible(rule, &evidence) {
                         continue;
                     }
-                    if self.skill_already_loaded(&state, rule) {
-                        continue;
-                    }
-                    if !take_pointer_slot(rule, &mut state.pointers) {
-                        continue;
-                    }
                     state.mark(&evidence);
                     reminders.push(self.render_reminder(rule, &evidence.needle));
                 }
             }
             state.turn = state.turn.saturating_add(1);
-            state.pointers = 0;
         }
         self.deliver_reminders(reminders);
     }
