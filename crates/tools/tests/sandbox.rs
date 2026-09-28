@@ -160,6 +160,31 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
 }
 
 #[cfg(target_os = "macos")]
+/// MCP OAuth tokens sit under `~/.yi/mcp/tokens`. The base profile hides them from every
+/// contained command, the bash tool's and the document converter's included, not only the kernel's.
+#[test]
+fn a_contained_command_cannot_read_the_mcp_tokens() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home) = workspace("tokens")?;
+    let tokens = home.join(".yi").join("mcp").join("tokens");
+    std::fs::create_dir_all(&tokens)?;
+    let token = tokens.join("default_mcp.example.com.json");
+    std::fs::write(&token, "BEARER SECRET")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+
+    let ordinary = format!("cat {}", home.join("notes.md").display());
+    let (code, output) = run(&ordinary, &project, Some(&sandbox))?;
+    assert_eq!(code, 0, "an ordinary read still works: {output}");
+
+    let secret = format!("cat {}", token.display());
+    let (code, output) = run(&secret, &project, Some(&sandbox))?;
+    assert_ne!(code, 0, "a token file must not be readable: {output}");
+    assert!(!output.contains("BEARER SECRET"), "{output}");
+    Ok(())
+}
+
 #[test]
 fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
     if !Sandbox::available() {
