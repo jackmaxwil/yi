@@ -285,6 +285,7 @@ fn todo_specs(
                     _ => None,
                 },
                 children: Vec::new(),
+                cites: Default::default(),
             })
         })
         .collect()
@@ -918,6 +919,7 @@ fn act_verified(case: &mut Case, passes: bool) -> Result<(), TestCaseError> {
         delegation: None,
         contract: Some(contract_for(case, &id, passes)?),
         children: Vec::new(),
+        cites: Default::default(),
     };
     let inserted = match opening {
         Some(goal) => case.apply(
@@ -1091,6 +1093,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                     delegation: None,
                     contract: None,
                     children: Vec::new(),
+                    cites: Default::default(),
                 });
             }
             let _refused = case.apply(owner(None, Op::Append { todos }), Bump::Touch)?;
@@ -1125,6 +1128,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                         label: label(*slot)?,
                         on: BlockedOn::User,
                         note: "x".repeat(usize::from(*note_len)),
+                        ask: None,
                     },
                 ),
                 Bump::Touch,
@@ -1147,6 +1151,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                     actor,
                     op: Op::Unblock {
                         label: label(*slot)?,
+                        answer: None,
                     },
                     request_id: None,
                     expected_revision: None,

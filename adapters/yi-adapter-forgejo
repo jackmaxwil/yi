@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""Yi channel adapter: forgejo://<host>/<owner>/<repo>?every=60s emits each finished run.
+
+Polls `fgj api --hostname <host> repos/<owner>/<repo>/actions/tasks` (one record per job)
+and emits a run once every job in it has ended: `failure` if any job failed, `cancelled`
+if any was cancelled, else `success`. The protocol is adapters/README.md.
+"""
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+
+UNITS = {"s": 1, "m": 60, "h": 3600}
+ENDED = {"success", "failure", "cancelled", "skipped"}
+
+
+def seconds(text):
+    return int(text[:-1]) * UNITS[text[-1]] if text and text[-1] in UNITS else 60
+
+
+def hang_up_with_the_host():
+    for _ack in sys.stdin:
+        pass
+    os._exit(0)
+
+
+def conclusion(jobs):
+    statuses = {job["status"] for job in jobs}
+    for word in ("failure", "cancelled"):
+        if word in statuses:
+            return word
+    return "success"
+
+
+def main():
+    target, _, every = sys.argv[1].removeprefix("forgejo://").partition("?every=")
+    host, _, repo = target.partition("/")
+    threading.Thread(target=hang_up_with_the_host, daemon=True).start()
+    seen = set()
+    while True:
+        done = subprocess.run(
+            ["fgj", "api", "--hostname", host, f"repos/{repo}/actions/tasks?limit=50"],
+            capture_output=True, text=True,
+        )
+        if done.returncode != 0:
+            sys.stderr.write(done.stderr)
+            sys.exit(1)
+        runs = {}
+        for task in json.loads(done.stdout).get("workflow_runs", []):
+            runs.setdefault(task["run_number"], []).append(task)
+        for number in sorted(runs):
+            jobs = runs[number]
+            if f"run-{number}" in seen or any(job["status"] not in ENDED for job in jobs):
+                continue
+            seen.add(f"run-{number}")
+            data = {
+                "run": number,
+                "conclusion": conclusion(jobs),
+                "branch": jobs[0].get("head_branch"),
+                "sha": jobs[0].get("head_sha"),
+                "title": jobs[0].get("display_title"),
+                "jobs": {job["name"]: job["status"] for job in jobs},
+            }
+            print(json.dumps({"id": f"run-{number}", "at": int(time.time() * 1000), "data": data}), flush=True)
+        time.sleep(seconds(every))
+
+
+if __name__ == "__main__":
+    main()

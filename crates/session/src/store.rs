@@ -290,34 +290,40 @@ impl SessionStore {
     }
 
     pub fn grep(&self, needle: &str, limit: usize) -> Vec<HistoryHit> {
+        self.grep_page(needle, 0, limit).0
+    }
+
+    pub fn grep_page(&self, needle: &str, offset: usize, limit: usize) -> (Vec<HistoryHit>, usize) {
         let needle = needle.trim();
         if needle.is_empty() {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
-        let limit = limit.clamp(1, 32);
+        let limit = limit.clamp(1, GREP_PAGE_MAX);
         let lowered_needle = needle.to_lowercase();
         let query = EntryQuery {
             order: EntryOrder::OldestFirst,
             ..EntryQuery::default()
         };
         let Ok(entries) = self.find_entries(&query) else {
-            return Vec::new();
+            return (Vec::new(), 0);
         };
-        entries
-            .iter()
-            .filter_map(|entry| {
-                let lowered = searchable_text(entry).to_lowercase();
-                if !lowered.contains(&lowered_needle) {
-                    return None;
-                }
-                Some(HistoryHit {
+        let mut total = 0usize;
+        let mut hits = Vec::new();
+        for entry in &entries {
+            let lowered = searchable_text(entry).to_lowercase();
+            if !lowered.contains(&lowered_needle) {
+                continue;
+            }
+            total = total.saturating_add(1);
+            if total > offset && hits.len() < limit {
+                hits.push(HistoryHit {
                     entry_id: entry.id().to_owned(),
                     entry_type: entry.type_name().to_owned(),
                     snippet: snippet(&lowered, &lowered_needle),
-                })
-            })
-            .take(limit)
-            .collect()
+                });
+            }
+        }
+        (hits, total)
     }
 
     pub fn find_entries_on_branch(
@@ -371,6 +377,7 @@ impl SessionStore {
 }
 
 const SNIPPET_CHARS: usize = 160;
+pub const GREP_PAGE_MAX: usize = 32;
 
 fn searchable_text(entry: &Entry) -> String {
     match entry {
