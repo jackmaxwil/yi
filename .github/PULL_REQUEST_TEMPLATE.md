@@ -1,8 +1,14 @@
 <!-- Cold-reader narrative. Every section is prose a reviewer who was not in
      the session can follow. No checkboxes; gate proof is the CI checks tab,
-     never pasted output. Delete a section only if it is truly empty
-     (e.g. no UI change), and say so in Summary when it matters.
-     `just pr-body` prefills the mechanical halves from the diff. -->
+     never pasted output. Every section is required and read by the title
+     job: replace each comment with prose, or with "None" and why. A comment
+     left in a section fails the job. `just pr-body` prefills the mechanical
+     halves from the diff, and `just pr open` opens the PR as a `WIP:` draft. -->
+
+## Why needed
+<!-- The ask this answers: `Closes #N` or `Refs #N`, the owner's words or the
+     issue line quoted, and what stays broken or missing if it does not land.
+     A reviewer tests the PR against this first: is it needed at all? -->
 
 ## Summary
 <!-- What changed and why, in a few sentences a cold reader can follow
@@ -22,8 +28,9 @@
      unfixed code is rewritten, not shipped. "No tests changed" if none. -->
 
 ## UI changes
-<!-- TUI/ACP-visible changes. For TUI: the headless frame dump or PTY
-     evidence lives in the repo's test output; describe what moved. -->
+<!-- TUI/ACP-visible changes, and the frames or rendered output that show
+     them: the headless frame dump or PTY evidence lives in the repo's test
+     output; describe what moved. "None" if none. -->
 
 ## Files edited
 <!-- A map, not a list: group by crate/area, one line each on why that
@@ -33,15 +40,19 @@
 <!-- yi-types diffs, schemas.lock movement, fixtures added (never edited).
      "None" if none. -->
 
-## LOC and justification
-<!-- Net src LOC, measured. Over +150: this is the growth memo's home in
-     PR form — what was weighed for deletion, why the bytes earn their
-     place. -->
+## Deleted / alternatives
+<!-- Net src LOC, measured, and what the change removes. The simpler options
+     weighed and why each lost. Over +150 this is the growth memo's home in
+     PR form: what was weighed for deletion, why the bytes earn their place. -->
+
+## Risk and rollback
+<!-- What could regress, how you would notice, and how to revert. Name any
+     durable data or schema a revert would have to carry back. -->
+
+## Performance
+<!-- The hot path touched and a measured number (command and result), or
+     "No hot path touched" and why. -->
 
 ## Architecture notes
 <!-- Version bump, changelog row, D-rows claimed or revised, feature-ledger
      rows touched (each names its journey test). -->
-
-## Screenshots
-<!-- Where a picture is the evidence (TUI frames, rendered output).
-     "None" if none. -->
