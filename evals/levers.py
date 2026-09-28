@@ -232,8 +232,9 @@ def per_task(rows):
 
 
 def usable(row):
-    """A trial the watcher stopped or that errored scored nothing it can be credited with."""
-    return not (row.get("censored") or row.get("errored"))
+    """A trial the watcher stopped, that errored, or whose verifier never judged it (N1: verifier
+    timeouts under load) scored nothing it can be credited with."""
+    return not (row.get("censored") or row.get("errored") or row.get("verifierUnmeasured"))
 
 
 def unpriced(row):
@@ -293,10 +294,11 @@ def judge(baseline, runs, floors, accesses=1, delta=DELTA):
     if reason == "no_efficiency_gain":
         reason = None
 
-    def passes(rows):
-        return sum(1 for row in rows if usable(row) and value(row, "reward") > 0)
-
-    hard = reason or ("pass_lost" if passes(flat) < passes(base_flat) else None)
+    # Binary passes are judged like everything else, one difference per task: `pass_lost` needs the
+    # whole pass interval below zero. Incident: a zero-tolerance count rejected an inner A/A whose
+    # second arm fully solved one task fewer of 60.
+    lost = intervals["reward"]
+    hard = reason or ("pass_lost" if lost["high"] < 0 and lost["confidence"] >= target else None)
     soft = ("unmeasured" if sum(1 for row in base_flat + flat if unpriced(row)) > 1
             else "pairs_dropped" if seen and dropped / seen > MAX_DROPPED else None)
     sure = {key: row["confidence"] >= target for key, row in intervals.items()}
