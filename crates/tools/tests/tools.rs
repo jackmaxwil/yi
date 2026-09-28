@@ -1346,6 +1346,102 @@ fn a_bash_view_of_one_file_carries_an_edit_anchor() -> TestResult {
     Ok(())
 }
 
+/// Runs `command` through a bridged bash, then a one-line PUT at `line`; returns the edit's text
+/// and whether it was refused as never displayed.
+fn bash_then_put(
+    dir: &Scratch,
+    context: &ToolContext,
+    command: &str,
+    path: &str,
+    line: u64,
+) -> Result<(bool, String), Box<dyn Error>> {
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let mut bash = BashTool::default();
+    bash.hashline = Some(Arc::clone(&state));
+    let viewed = bash.execute(args(&[("command", json!(command))]), context);
+    let text = output_text(&viewed);
+    let tag = text
+        .lines()
+        .next()
+        .and_then(|header| header.rsplit_once('#'))
+        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
+        .ok_or_else(|| format!("no tag in {text}"))?;
+    let old = fs::read_to_string(dir.join(path))?;
+    let current = old
+        .split('\n')
+        .nth(usize::try_from(line)?.saturating_sub(1))
+        .ok_or("line past the end")?
+        .to_owned();
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state,
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[(
+            "patch",
+            json!(format!(
+                "[{path}#{tag}]\nPUT {line}.={line}:\n+{current} // x\n"
+            )),
+        )]),
+        context,
+    );
+    let message = output_text(&edit);
+    Ok((
+        edit.is_error && message.contains("never displayed"),
+        message,
+    ))
+}
+
+/// A bare `cat` whose output was cut at the capture ceiling showed its head and tail, yet marked
+/// every line seen, so an edit anchored in the cut middle went through blind.
+#[test]
+fn a_truncated_cat_leaves_the_cut_lines_unseen() -> TestResult {
+    let dir = temp_dir("bash-cat-truncated")?;
+    let body: String = (1..=4000).map(|n| format!("row {n:05}\n")).collect();
+    fs::write(dir.join("big.txt"), &body)?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let (refused, message) = bash_then_put(&dir, &context, "cat big.txt", "big.txt", 2000)?;
+    assert!(refused, "{message}");
+    let (refused, message) = bash_then_put(&dir, &context, "cat big.txt", "big.txt", 5)?;
+    assert!(!refused, "{message}");
+    Ok(())
+}
+
+/// The reducer replaced the middle of a bare `cat` with an omitted-lines marker; those lines
+/// were counted seen from the raw capture the model never got.
+#[test]
+fn a_reduced_cat_leaves_the_omitted_lines_unseen() -> TestResult {
+    let dir = temp_dir("bash-cat-reduced")?;
+    let body: String = (1..=1500).map(|n| format!("row {n:05}\n")).collect();
+    fs::write(dir.join("mid.txt"), &body)?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    let recovery = dir.join("recovery");
+    fs::create_dir_all(&recovery)?;
+    context.recovery_dir = Some(recovery);
+    let (refused, message) = bash_then_put(&dir, &context, "cat mid.txt", "mid.txt", 700)?;
+    assert!(refused, "{message}");
+    let (refused, message) = bash_then_put(&dir, &context, "cat mid.txt", "mid.txt", 10)?;
+    assert!(!refused, "{message}");
+    Ok(())
+}
+
+/// A `}` shown by sed between two lines it belongs with was seen; alone it stays unseen,
+/// because a bare `}` is in almost any output.
+#[test]
+fn a_short_line_shown_beside_its_neighbour_is_seen() -> TestResult {
+    let dir = temp_dir("bash-short-line")?;
+    fs::write(
+        dir.join("f.rs"),
+        "fn a() {\n    one();\n}\nfn b() {\n    two();\n}\n",
+    )?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let (refused, message) = bash_then_put(&dir, &context, "sed -n '6p' f.rs", "f.rs", 6)?;
+    assert!(refused, "a lone brace counted as seen: {message}");
+    let (refused, message) = bash_then_put(&dir, &context, "sed -n '5,6p' f.rs", "f.rs", 6)?;
+    assert!(!refused, "{message}");
+    Ok(())
+}
+
 #[test]
 fn a_read_only_command_is_a_read_kind_call() {
     let bash = BashTool::default();

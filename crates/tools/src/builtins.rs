@@ -414,8 +414,14 @@ fn bridge_target(command: &str, cwd: &Path) -> Bridge {
     }
 }
 
-/// Bare `cat` shows every row; any other view shows the rows whose text is in the output.
-fn viewed_lines(command: &str, content: &str, output: &str) -> Vec<u64> {
+/// What a bash view put in front of the model.
+enum Shown<'a> {
+    /// A bare `cat` whose output reached the model uncut.
+    Whole,
+    Text(&'a str),
+}
+
+fn shown<'a>(command: &str, reduced: &'a crate::reduce::Reduced, truncated: bool) -> Shown<'a> {
     let bare_cat = command
         .split_whitespace()
         .next()
@@ -423,12 +429,57 @@ fn viewed_lines(command: &str, content: &str, output: &str) -> Vec<u64> {
         && !command
             .split_whitespace()
             .any(|token| token.starts_with('-'));
-    content
-        .split('\n')
+    if bare_cat && !truncated && reduced.out_bytes == reduced.raw_bytes {
+        Shown::Whole
+    } else {
+        Shown::Text(&reduced.text)
+    }
+}
+
+/// Records the view against the file as it is now and returns its `[path#TAG]` header.
+fn tagged_header(
+    state: &crate::hashline::tool::SharedHashline,
+    typed: &str,
+    path: &Path,
+    view: &Shown<'_>,
+) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    let seen = viewed_lines(&content, view);
+    let tag = crate::hashline::tool::record_view_snapshot(state, path, &content, &seen);
+    Some(crate::hashline::format::format_hashline_header(typed, tag))
+}
+
+/// A line under three characters (`}`, `x`) is in almost any output, so it counts as seen only
+/// when the output shows it beside a neighbour that counts on its own.
+fn viewed_lines(content: &str, shown: &Shown<'_>) -> Vec<u64> {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let output = match shown {
+        Shown::Whole => "",
+        Shown::Text(output) => output,
+    };
+    let rows: Vec<&str> = output.split('\n').collect();
+    let pairs: std::collections::HashSet<(&str, &str)> = rows
+        .iter()
+        .copied()
+        .zip(rows.iter().copied().skip(1))
+        .collect();
+    let alone = |line: &str| line.trim().len() >= 3 && output.contains(line.trim());
+    let beside = |index: usize, line: &str| {
+        let before = index
+            .checked_sub(1)
+            .and_then(|prev| lines.get(prev))
+            .is_some_and(|&prev| alone(prev) && pairs.contains(&(prev, line)));
+        before
+            || lines
+                .get(index.saturating_add(1))
+                .is_some_and(|&next| alone(next) && pairs.contains(&(line, next)))
+    };
+    lines
+        .iter()
         .enumerate()
-        .filter(|(_, line)| {
-            let trimmed = line.trim();
-            bare_cat || (trimmed.len() >= 3 && output.contains(trimmed))
+        .filter(|&(index, &line)| match shown {
+            Shown::Whole => true,
+            Shown::Text(_) => alone(line) || beside(index, line),
         })
         .filter_map(|(index, _)| u64::try_from(index).ok()?.checked_add(1))
         .collect()
@@ -662,19 +713,16 @@ impl Tool for BashTool {
         let bridge = match &self.hashline {
             Some(state) if exit_code == 0 && !capture.cancelled => {
                 match bridge_target(command, &context.cwd) {
-                    Bridge::Tag { typed, path } => match fs::read_to_string(&path) {
-                        Ok(content) => {
-                            let seen = viewed_lines(command, &content, &capture.stdout);
-                            let tag = crate::hashline::tool::record_view_snapshot(
-                                state, &path, &content, &seen,
-                            );
-                            let header =
-                                crate::hashline::format::format_hashline_header(&typed, tag);
-                            text = format!("{header}\n{text}");
-                            "tag"
+                    Bridge::Tag { typed, path } => {
+                        let view = shown(command, &reduced, capture.truncated);
+                        match tagged_header(state, &typed, &path, &view) {
+                            Some(header) => {
+                                text = format!("{header}\n{text}");
+                                "tag"
+                            }
+                            None => SkipReason::NotOneFile.name(),
                         }
-                        Err(_) => SkipReason::NotOneFile.name(),
-                    },
+                    }
                     Bridge::Skip(reason) => reason.name(),
                 }
             }
