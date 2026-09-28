@@ -27,6 +27,7 @@ drain() {
 run "$PY" scripts/guardrails/check_manifests.py
 run "$PY" scripts/guardrails/check_boundaries.py
 run "$PY" scripts/guardrails/check_filenames.py
+run "$PY" scripts/guardrails/check_agents_md.py
 run "$PY" scripts/guardrails/check_commit_style.py
 run "$PY" scripts/guardrails/check_glob_reexport.py
 run "$PY" scripts/guardrails/check_orphans.py
