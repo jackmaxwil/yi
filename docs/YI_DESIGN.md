@@ -347,11 +347,13 @@ with no paired end restores unscoped and says so. Turn start and end capture int
 
 ### 7.8 Skills
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
-`<name>/SKILL.md` walked 2 levels. Frontmatter at discovery, body via `read`; `$name` or a
+`<name>/SKILL.md` walked 2 levels. The catalog lists every repository skill and every
+`~/.yi/skills` skill, but another home-root skill only when config `skills.global` names it; a
+child's lists none of those. Frontmatter at discovery, body via `read`; `$name` or a
 `trigger:` needle in a message the user typed points at the skill. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.
 
-- Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D292.
+- Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D290, D292.
 
 ## 8. Permission
 A pure `decide` over the call, mode, rules, grants, holds and catastrophic context.
