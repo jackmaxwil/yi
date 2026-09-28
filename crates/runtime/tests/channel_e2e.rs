@@ -798,6 +798,66 @@ fn the_plan_tools_channel_spelling_carries_its_filter_to_the_wait() -> TestResul
     Ok(())
 }
 
+/// Dies with a filter term without `=` read as anything but a substring of the message: the
+/// todo tool's `filter` promises "or a substring", and a failed run must not unblock the fix.
+#[test]
+fn a_substring_filter_unblocks_on_the_message_containing_it_only() -> TestResult {
+    let dir = Scratch::new("yi-channel-substring")?;
+    let (_session, todos) = session(&[])?;
+    let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
+    let service = Arc::new(
+        HeartbeatService::new(Arc::clone(&store), dir.to_string_lossy())
+            .with_channels(dir.join("channels")),
+    );
+    service.bind_session("test".to_owned());
+    let channel = Channel::at(dir.join("channels/ci.jsonl"));
+    channel.open("channel://ci", None)?;
+    let tool = TodoTool::new(Arc::clone(&todos));
+    let context = ToolContext::new(dir.to_path_buf());
+    let call = |args: serde_json::Value| {
+        tool.execute(args.as_object().cloned().unwrap_or_default(), &context)
+    };
+    let added = call(serde_json::json!({"op": "append", "items": ["ship the fix"]}));
+    assert!(!added.is_error, "{added:?}");
+    let blocked = call(serde_json::json!({"op": "block", "label": "ship the fix",
+        "on": "channel://ci", "filter": "widget ... ok", "note": "until the widget test passes"}));
+    assert!(!blocked.is_error, "{blocked:?}");
+    service.watch(&todos.list());
+    let label = TodoLabel::new("ship the fix")?;
+    let job = waiting_on(&store, &label)
+        .into_iter()
+        .next()
+        .ok_or("the block armed no wait")?;
+    let waiting = || {
+        todos
+            .list()
+            .items()
+            .any(|item| item.label == label && matches!(item.state, TodoState::Blocked { .. }))
+    };
+
+    channel.append(
+        "run-1",
+        1,
+        serde_json::json!({"output": "test widget ... FAILED"}),
+    )?;
+    clock::fire(&todos, &job, &Firing::at(0))?;
+    assert!(
+        waiting(),
+        "a message without the substring unblocked the fix"
+    );
+    channel.append(
+        "run-2",
+        2,
+        serde_json::json!({"output": "test widget ... ok"}),
+    )?;
+    clock::fire(&todos, &job, &Firing::at(0))?;
+    assert!(
+        !waiting(),
+        "the message containing the substring left the fix blocked"
+    );
+    Ok(())
+}
+
 fn runs(dir: &Path) -> usize {
     std::fs::read_to_string(dir.join("runs")).map_or(0, |text| text.lines().count())
 }

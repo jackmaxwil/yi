@@ -144,3 +144,15 @@ export OPENROUTER_API_KEY=...          # env-only: crates/ai/src/auth.rs:19
 cargo build -p yi-cli
 sh evals/drivers/cache_probe.sh        # CACHE_PROBE_MODELS / EVAL_BINARY / CACHE_PROBE_RUNS override
 ```
+
+Pin mode (N4, design §6.4): with `CACHE_PROBE_UPSTREAMS` set, the first model is probed
+`CACHE_PROBE_SAMPLES` times (default 3) per OpenRouter upstream. Each sample gets its own HOME, whose
+config pins that upstream (`{"order": [u], "allow_fallbacks": false}`) and skips the kernel prewarm.
+`cache_probe.py pin` prints the verdict: the cheapest upstream whose every warm turn hit at least
+0.9 and that never answered 429, or, when none qualifies, the best mean hit rate with fallbacks
+allowed. Its `routing` object is what `EVAL_ROUTING` takes.
+
+```sh
+CACHE_PROBE_MODELS=openrouter/z-ai/glm-5.3-flash \
+CACHE_PROBE_UPSTREAMS="together relace parasail wafer z-ai" sh evals/drivers/cache_probe.sh
+```
