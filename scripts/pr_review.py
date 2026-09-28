@@ -14,6 +14,7 @@ accept. Nothing here merges.
 Transport and the model are parameters where the decisions are, so the selfcheck walks them
 without a forge or a model; the verbs are `just pr review|fix|sweep`.
 """
+import functools
 import hashlib
 import json
 import os
@@ -142,13 +143,21 @@ def parse_round(comment, authors):
 
 
 def rounds_of(comments, authors):
-    return sorted((r for r in (parse_round(c, authors) for c in comments) if r), key=lambda r: (r["n"], r["id"]))
+    """The rounds in order, each blocked one that an allowed `/override` answered before the
+    next round was posted read as `override`."""
+    rounds = sorted((r for r in (parse_round(c, authors) for c in comments) if r), key=lambda r: (r["n"], r["id"]))
+    for r, later in zip(rounds, rounds[1:] + [None]):
+        reason = override_of(comments, authors, r["id"], later["id"] if later else None)
+        if r["verdict"] == "blocked" and reason:
+            r.update(verdict="override", override=reason)
+    return rounds
 
 
-def override_of(comments, authors, after_id):
+def override_of(comments, authors, after_id, before_id=None):
     """The owner's `/override <reason>` posted after the round it clears, newest first."""
     for comment in sorted(comments, key=lambda c: -c.get("id", 0)):
-        if comment.get("id", 0) <= after_id or (comment.get("user") or {}).get("login") not in authors:
+        cid = comment.get("id", 0)
+        if cid <= after_id or (before_id and cid >= before_id) or (comment.get("user") or {}).get("login") not in authors:
             continue
         found = OVERRIDE.search(comment.get("body") or "")
         if found:
@@ -391,6 +400,7 @@ def authors():
     return {me.get("login"), "forgejo-actions"} - {None}
 
 
+@functools.lru_cache(maxsize=None)
 def raw_diff(repo, number):
     out = subprocess.run(["fgj", "api", "--hostname", forge_pr.HOST, f"repos/{repo}/pulls/{number}.diff"],
                          capture_output=True, text=True, check=False)
@@ -409,9 +419,10 @@ def discard(tree):
     shutil.rmtree(tree, ignore_errors=True)
 
 
-def cmd_review(args):
-    repo, number = forge_pr.repo(), forge_pr.pull_number(args.number)
-    pr, allowed = forge_pr.pull(number), authors()
+def read_pr(repo, number, allowed):
+    """One round's reading of a PR, posted nowhere: the number it would take, its range and
+    its findings. Raises Unanswered when a lens or refuter stays silent."""
+    pr = forge_pr.pull(number)
     notes = comments(repo, number)
     rounds, sha = rounds_of(notes, allowed), pr["head"]["sha"]
     tree = checkout(sha, f"refs/pull/{number}/head")
@@ -425,14 +436,22 @@ def cmd_review(args):
                  (forge_pr.fgj_api("GET", f"repos/{repo}/pulls?state=closed&sort=recentupdate&limit=30") or [])
         found = intake(pr, raw_diff(repo, number), others, lambda n: raw_diff(repo, n), repo)
         kept, dropped = read_round(pr, diff, base, sha, tree, lambda p, s, cwd: ask(p, s, cwd))
-    except Unanswered as err:
-        print(f"#{number}: no round — a lens or refuter did not answer ({err})")
-        return 1
     finally:
         discard(tree)
     # A second round on an unchanged head is a second independent read, which a draft needs.
-    n = rounds[-1]["n"] + 1 if rounds else 1
-    body = render(n, number, sha, base, found + kept, dropped, None, MODE)
+    return {"pr": pr, "n": rounds[-1]["n"] + 1 if rounds else 1, "sha": sha, "base": base,
+            "intake": found, "kept": kept, "dropped": dropped}
+
+
+def cmd_review(args):
+    repo, number = forge_pr.repo(), forge_pr.pull_number(args.number)
+    try:
+        read = read_pr(repo, number, authors())
+    except Unanswered as err:
+        print(f"#{number}: no round — a lens or refuter did not answer ({err})")
+        return 1
+    n, sha, base, findings, dropped = read["n"], read["sha"], read["base"], read["intake"] + read["kept"], read["dropped"]
+    body = render(n, number, sha, base, findings, dropped, None, MODE)
     if args.dry_run:
         print(body)
         return 0
@@ -440,7 +459,32 @@ def cmd_review(args):
 
     forgejo_pr_comment.upsert(lambda m, url, p: forge_pr.fgj_api(m, url.split("/api/v1/", 1)[-1], p),
                               f"{forge_pr.WEB}/api/v1", repo, number, body)
-    print(f"#{number} round {n}: {verdict(found + kept, None)} ({len(found + kept)} finding(s), {dropped} dropped)")
+    print(f"#{number} round {n}: {verdict(findings, None)} ({len(findings)} finding(s), {dropped} dropped)")
+    return 0
+
+
+def replay_row(read, label):
+    """One labelled PR's reading for the calibration table. Intake is counted apart: a PR
+    written before the v2 template fails it whatever its code is worth."""
+    lens = {s: sum(f["severity"] == s for f in read["kept"]) for s in SEVERITIES}
+    return {"pr": read["pr"]["number"], "label": label, "sha": read["sha"], "lens": lens,
+            "intake": sorted({f["lens"] for f in read["intake"]}), "dropped": read["dropped"],
+            "findings": [{k: f[k] for k in ("lens", "severity", "claim", "path", "line")} for f in read["kept"]]}
+
+
+def cmd_replay(args):
+    """Read labelled PRs as a round would and append one JSON line each to --out; nothing
+    is posted. This is the evidence the flip from shadow to blocking waits on."""
+    repo, allowed = forge_pr.repo(), authors()
+    with open(args.out, "a") as out:
+        for number in args.numbers:
+            try:
+                row = replay_row(read_pr(repo, number, allowed), args.label)
+            except Unanswered as err:
+                row = {"pr": number, "label": args.label, "unanswered": str(err)}
+            out.write(json.dumps(row) + "\n")
+            out.flush()
+            print(json.dumps({k: row.get(k) for k in ("pr", "label", "lens", "intake", "unanswered")}))
     return 0
 
 
@@ -550,6 +594,10 @@ def selfcheck():
     notes.append({"id": 13, "user": {"login": "jack"}, "body": "/override the anchor is dropped on purpose"})
     assert override_of(notes, me, 9) == "the anchor is dropped on purpose"
     assert override_of(notes, me, 13) is None, "an override clears only the round before it"
+    assert rounds_of(notes, me)[1]["verdict"] == "override", "an answered block reads as override"
+    assert rounds_of(notes, me)[0]["verdict"] == "clean"
+    early = [notes[0], {"id": 5, "user": {"login": "jack"}, "body": "/override too soon"}, notes[1]]
+    assert rounds_of(early, me)[1]["verdict"] == "blocked", "an override before a round does not clear it"
 
     assert verdict([dict(finding, severity="medium")], None) == "clean"
     assert verdict([finding], None) == "blocked" and verdict([finding], "why") == "override"
@@ -617,6 +665,11 @@ def selfcheck():
     assert [f["claim"].split(" ")[0] for f in found] == ["#6", "#7"], found
     assert "15 of the same" in found[0]["claim"] and "also closes #4" in found[1]["claim"]
     assert intake(dict(pr, body=""), "", [], diffs.get, "apex/yi")[0]["lens"] == "template"
+
+    read = {"pr": {"number": 340}, "sha": "abc", "intake": [{"lens": "template", "severity": "high"}],
+            "kept": [finding, dict(finding, severity="low")], "dropped": 2}
+    row = replay_row(read, "bad")
+    assert row["lens"] == {"high": 1, "medium": 0, "low": 1} and row["intake"] == ["template"], row
 
     assert walled(["crates/a.rs", "scripts/guardrails/baselines/src_loc.json", ".forgejo/workflows/pr.yml"]) == [
         "scripts/guardrails/baselines/src_loc.json", ".forgejo/workflows/pr.yml"]
