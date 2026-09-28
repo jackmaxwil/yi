@@ -1346,6 +1346,102 @@ fn a_bash_view_of_one_file_carries_an_edit_anchor() -> TestResult {
     Ok(())
 }
 
+/// Runs `command` through a bridged bash, then a one-line PUT at `line`; returns the edit's text
+/// and whether it was refused as never displayed.
+fn bash_then_put(
+    dir: &Scratch,
+    context: &ToolContext,
+    command: &str,
+    path: &str,
+    line: u64,
+) -> Result<(bool, String), Box<dyn Error>> {
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let mut bash = BashTool::default();
+    bash.hashline = Some(Arc::clone(&state));
+    let viewed = bash.execute(args(&[("command", json!(command))]), context);
+    let text = output_text(&viewed);
+    let tag = text
+        .lines()
+        .next()
+        .and_then(|header| header.rsplit_once('#'))
+        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
+        .ok_or_else(|| format!("no tag in {text}"))?;
+    let old = fs::read_to_string(dir.join(path))?;
+    let current = old
+        .split('\n')
+        .nth(usize::try_from(line)?.saturating_sub(1))
+        .ok_or("line past the end")?
+        .to_owned();
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state,
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[(
+            "patch",
+            json!(format!(
+                "[{path}#{tag}]\nPUT {line}.={line}:\n+{current} // x\n"
+            )),
+        )]),
+        context,
+    );
+    let message = output_text(&edit);
+    Ok((
+        edit.is_error && message.contains("never displayed"),
+        message,
+    ))
+}
+
+/// A bare `cat` whose output was cut at the capture ceiling showed its head and tail, yet marked
+/// every line seen, so an edit anchored in the cut middle went through blind.
+#[test]
+fn a_truncated_cat_leaves_the_cut_lines_unseen() -> TestResult {
+    let dir = temp_dir("bash-cat-truncated")?;
+    let body: String = (1..=4000).map(|n| format!("row {n:05}\n")).collect();
+    fs::write(dir.join("big.txt"), &body)?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let (refused, message) = bash_then_put(&dir, &context, "cat big.txt", "big.txt", 2000)?;
+    assert!(refused, "{message}");
+    let (refused, message) = bash_then_put(&dir, &context, "cat big.txt", "big.txt", 5)?;
+    assert!(!refused, "{message}");
+    Ok(())
+}
+
+/// The reducer replaced the middle of a bare `cat` with an omitted-lines marker; those lines
+/// were counted seen from the raw capture the model never got.
+#[test]
+fn a_reduced_cat_leaves_the_omitted_lines_unseen() -> TestResult {
+    let dir = temp_dir("bash-cat-reduced")?;
+    let body: String = (1..=1500).map(|n| format!("row {n:05}\n")).collect();
+    fs::write(dir.join("mid.txt"), &body)?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    let recovery = dir.join("recovery");
+    fs::create_dir_all(&recovery)?;
+    context.recovery_dir = Some(recovery);
+    let (refused, message) = bash_then_put(&dir, &context, "cat mid.txt", "mid.txt", 700)?;
+    assert!(refused, "{message}");
+    let (refused, message) = bash_then_put(&dir, &context, "cat mid.txt", "mid.txt", 10)?;
+    assert!(!refused, "{message}");
+    Ok(())
+}
+
+/// A `}` shown by sed between two lines it belongs with was seen; alone it stays unseen,
+/// because a bare `}` is in almost any output.
+#[test]
+fn a_short_line_shown_beside_its_neighbour_is_seen() -> TestResult {
+    let dir = temp_dir("bash-short-line")?;
+    fs::write(
+        dir.join("f.rs"),
+        "fn a() {\n    one();\n}\nfn b() {\n    two();\n}\n",
+    )?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let (refused, message) = bash_then_put(&dir, &context, "sed -n '6p' f.rs", "f.rs", 6)?;
+    assert!(refused, "a lone brace counted as seen: {message}");
+    let (refused, message) = bash_then_put(&dir, &context, "sed -n '5,6p' f.rs", "f.rs", 6)?;
+    assert!(!refused, "{message}");
+    Ok(())
+}
+
 #[test]
 fn a_read_only_command_is_a_read_kind_call() {
     let bash = BashTool::default();
@@ -1383,6 +1479,111 @@ fn a_directory_reads_as_a_listing_with_skeletons() -> TestResult {
         text.contains("[skeleton: 1 of 1 source files, up to 8 heads each — read a file for the rest]\na.rs: pub fn alpha() {}; struct Beta;"),
         "{text}"
     );
+    Ok(())
+}
+
+/// A read of a build or dataset directory listed every entry with no cap and no count.
+#[test]
+fn a_large_directory_listing_names_its_cut() -> TestResult {
+    let dir = temp_dir("read-dir-cap")?;
+    fs::create_dir_all(dir.join("big/sub"))?;
+    for index in 0..250 {
+        fs::write(dir.join(format!("big/f{index:03}.bin")), "x")?;
+    }
+    let context = ToolContext::new(dir.to_path_buf());
+    let text = output_text(&read_tool().execute(args(&[("path", json!("big"))]), &context));
+    let rows: Vec<&str> = text.lines().collect();
+    assert_eq!(rows.get(1), Some(&"sub/"), "{text}");
+    assert_eq!(rows.get(200), Some(&"f198.bin  1 B"), "{text}");
+    assert_eq!(
+        rows.get(201),
+        Some(&"[showing 200 of 251 entries — read a narrower path]"),
+        "{text}"
+    );
+    assert!(!text.contains("f199.bin"), "{text}");
+    Ok(())
+}
+
+/// The clip hint named only the first clipped line and left the path unquoted, so a path with a
+/// space or an apostrophe broke the command it suggested.
+#[test]
+fn every_clipped_line_is_named_in_one_runnable_sed() -> TestResult {
+    let dir = temp_dir("read-clip-all")?;
+    let wide = "x".repeat(5_000);
+    fs::write(
+        dir.join("it's notes.txt"),
+        format!("short\n{wide}\nmid\n{wide}\n{wide}\nend\n"),
+    )?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let text =
+        output_text(&read_tool().execute(args(&[("path", json!("it's notes.txt"))]), &context));
+    let command = r"sed -n '2p;4,5p' 'it'\''s notes.txt'";
+    assert!(text.contains(command), "{text}");
+    let shown =
+        output_text(&BashTool::default().execute(args(&[("command", json!(command))]), &context));
+    assert_eq!(shown.matches(&wide).count(), 3, "{shown}");
+    Ok(())
+}
+
+/// An edit between two grep pages moved the next offset onto different matches with no notice.
+#[test]
+fn a_grep_page_after_the_matches_changed_says_so() -> TestResult {
+    let dir = temp_dir("grep-sweep")?;
+    let hits = |count: usize| -> String { (0..count).map(|n| format!("hit {n}\n")).collect() };
+    fs::write(dir.join("a.txt"), hits(5))?;
+    fs::write(dir.join("b.txt"), hits(300))?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let grep = GrepTool {
+        hashline: Some(yi_tools::hashline::tool::shared_hashline_state()),
+    };
+    let page = |offset: usize| {
+        output_text(&grep.execute(
+            args(&[("pattern", json!("hit")), ("offset", json!(offset))]),
+            &context,
+        ))
+    };
+    let first = page(0);
+    assert!(first.contains("continue with offset=200"), "{first}");
+    let steady = page(200);
+    assert!(!steady.contains("matches changed"), "{steady}");
+    page(0);
+    fs::write(dir.join("a.txt"), hits(1))?;
+    let moved = page(200);
+    assert!(
+        moved
+            .contains("[matches changed since the last page; offsets now count the current sweep]"),
+        "{moved}"
+    );
+    Ok(())
+}
+
+/// Grep listed files in the filesystem's order, which differs between machines and after a rename.
+#[test]
+fn grep_lists_files_in_name_order() -> TestResult {
+    let dir = temp_dir("grep-order")?;
+    let names = [
+        "q.txt", "c.txt", "x.txt", "a.txt", "m.txt", "b.txt", "z.txt", "k.txt",
+    ];
+    for name in names {
+        fs::write(dir.join(name), "needle\n")?;
+    }
+    let context = ToolContext::new(dir.to_path_buf());
+    let text = output_text(&GrepTool::default().execute(
+        args(&[
+            ("pattern", json!("needle")),
+            ("files_with_matches", json!(true)),
+        ]),
+        &context,
+    ));
+    let listed: Vec<&str> = names
+        .iter()
+        .filter_map(|name| text.find(name).map(|at| (at, *name)))
+        .collect::<std::collections::BTreeMap<_, _>>()
+        .into_values()
+        .collect();
+    let mut sorted = names.to_vec();
+    sorted.sort_unstable();
+    assert_eq!(listed, sorted, "{text}");
     Ok(())
 }
 
