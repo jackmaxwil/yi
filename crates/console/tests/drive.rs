@@ -12,8 +12,8 @@ use yi_console::model::SidebarMode;
 use yi_console::{ConsoleOptions, DriveOptions, parse_script, run_headless};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
-use yi_types::plan::doc::{TodoLabel, TodoStateName};
-use yi_types::todo::{PhaseName, TodoItem, TodoList, TodoPhase};
+use yi_types::plan::doc::{AgentId, Todo, TodoLabel, TodoState};
+use yi_types::todo::{PhaseName, TodoList, TodoPhase};
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
@@ -2699,9 +2699,9 @@ fn the_rail_reads_from_the_top() -> TestResult {
 }
 
 fn todo_update() -> Vec<Value> {
-    let item = |label: &str, state: TodoStateName| {
+    let item = |label: &str, state: TodoState| {
         TodoLabel::new(label).ok().map(|label| {
-            let mut item = TodoItem::pending(label);
+            let mut item = Todo::pending(label);
             item.state = state;
             item
         })
@@ -2713,8 +2713,19 @@ fn todo_update() -> Vec<Value> {
         phases: vec![TodoPhase {
             name: phase,
             items: [
-                item("read the record", TodoStateName::Done),
-                item("write the plan", TodoStateName::Running),
+                item(
+                    "read the record",
+                    TodoState::Done {
+                        output: None,
+                        resolution: None,
+                    },
+                ),
+                item(
+                    "write the plan",
+                    TodoState::Running {
+                        by: AgentId::owner(),
+                    },
+                ),
             ]
             .into_iter()
             .flatten()

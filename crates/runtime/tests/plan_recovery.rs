@@ -103,6 +103,7 @@ fn delegated(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
         }),
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     })
 }
 
@@ -113,6 +114,7 @@ fn plain(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
         delegation: None,
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     })
 }
 

@@ -11,9 +11,20 @@ use super::{Step, SubagentHost};
 
 /// OTP's intensity: restarts are counted inside this window, and past `max` it stays failed.
 const RESTART_WINDOW_MS: u64 = 600_000;
-const DEFAULT_RESTARTS: u64 = 3;
+pub(crate) const DEFAULT_RESTARTS: u64 = 3;
 /// The ceiling on the intensity a caller may ask for: past this a crash loop is the bound.
 const MAX_RESTARTS: usize = 10;
+
+/// Takes one restart from the intensity, or says it is spent; a service and an adapter share it.
+pub(crate) fn spend_restart(restarts: &mut Vec<u64>, max: usize, now: u64) -> Result<(), String> {
+    restarts.retain(|at| now.saturating_sub(*at) < RESTART_WINDOW_MS);
+    if restarts.len() >= max {
+        let window = RESTART_WINDOW_MS / 1_000;
+        return Err(format!("{max} restarts within {window} s are spent"));
+    }
+    restarts.push(now);
+    Ok(())
+}
 
 /// Why a record stands outside the worker cap and the owner's lifecycle notice, if it does.
 pub(crate) enum Standing {
@@ -107,7 +118,7 @@ impl SubagentHost {
                 "restart asks for {restart} respawns and this host allows {MAX_RESTARTS} within {window} s; nothing is clamped, ask for less"
             ));
         }
-        if super::parse_isolation(&kwargs)? == super::Isolation::Worktree {
+        if super::parse_isolation(&kwargs)? != super::Isolation::None {
             return Err("a service runs in the parent's tree: a respawn has no lane to settle the last incarnation's worktree into".to_owned());
         }
         // An ordinary child holding the name falls through to the spawn's own refusal.
@@ -165,17 +176,9 @@ impl SubagentHost {
             if !crashed || service.stopped {
                 return Some((exit, error));
             }
-            service
-                .restarts
-                .retain(|at| now.saturating_sub(*at) < RESTART_WINDOW_MS);
-            if service.restarts.len() >= service.max {
-                let window = RESTART_WINDOW_MS / 1_000;
-                return refused(format!(
-                    "{} restarts within {window} s are spent",
-                    service.max
-                ));
+            if let Err(spent) = spend_restart(&mut service.restarts, service.max, now) {
+                return refused(spent);
             }
-            service.restarts.push(now);
             let (prompt, kwargs) = (service.prompt.clone(), service.kwargs.clone());
             let next = service.incarnation.saturating_add(1);
             let (name, dir) = (record.session_name.clone(), record.session_dir.clone());

@@ -1,0 +1,13 @@
+Todos 9/9
+## record
+- [x] t1 read the record: design §1, git log, changelog head, gate recipe
+- [x] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri
+- [x] t3 counts with named scope
+- [x] t4 write the assessment with evidence
+## dimensions
+- [x] t5 architecture and dependency discipline
+- [x] t6 correctness and error handling
+- [x] t7 testing and verification
+- [x] t8 guardrails and process
+- [x] t9 size and efficiency
+touched: 13 · last op: done by main

@@ -857,6 +857,7 @@ mod tests {
                     delegation: None,
                     contract: None,
                     children: Vec::new(),
+                    cites: Default::default(),
                 }],
             },
             request_id: None,

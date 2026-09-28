@@ -543,7 +543,9 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     (inherits the parent model, so ``model``/``thinking`` are refused with it), or a
     positive turn count for the last N turns.
     ``isolation='worktree'`` gives the child its own checkout; hand it back with
-    ``merge_worktree`` or ``discard_worktree``.
+    ``merge_worktree`` or ``discard_worktree``. ``isolation='container:<image>'`` is the
+    same checkout and hand-back, with the child's bash run in a container of that image
+    that mounts the checkout at the same path; its kernel stays on this machine.
     ``deny_write`` (and ``deny_read``) are lists of paths the child may not touch —
     the wall that keeps an implementer out of the standard it is measured against.
     ``deny_url`` is the same wall in URL space: a list of literal prefixes the
@@ -720,6 +722,52 @@ async def request(target: "str | RLMSubagent", message: str, timeout: float = 30
     came within ``timeout`` seconds; a late reply still lands in your history.
     """
     return await host_request("agent_message.request", _mail(target, message, timeout_ms=_ms(timeout)))
+
+
+@_public
+async def subscribe(
+    address: str,
+    create: dict[str, Any],
+    *,
+    filter: str | None = None,
+    batch: int | None = None,
+    window: float | None = None,
+    min_interval: float | None = None,
+    retention: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Make a todo from what arrives at ``address``; returns ``{job}``.
+
+    ``address`` is ``clock://<schedule>``, ``channel://<name>`` or a source URI:
+    ``exec://<command>?every=30s`` (its exit, ``{ok, exit, output}``, when it changes),
+    ``file://<path>`` (its ``{exists, size, mtimeMs}``), or ``<scheme>://…`` for an
+    installed ``yi-adapter-<scheme>``. ``create`` is ``{label, note, intent?}``: a match
+    appends one todo and wakes you with the messages as data, never as a prompt.
+    ``filter`` is ``key=value`` terms joined by ``&``, or a substring. At most ``batch``
+    messages (20) ride one todo, at most one a ``window``/``min_interval`` (60 s).
+    ``retention`` (``{count}`` or ``{age}`` seconds; 256 messages) is set by the first
+    subscription to a source. To wait instead, block a todo ``on`` the address.
+    """
+    if not isinstance(create, dict) or not isinstance(create.get("label"), str):
+        raise TypeError("create must be a dict with a label")
+    payload: dict[str, Any] = {
+        "address": address,
+        "label": create["label"],
+        "prompt": create.get("note") or create["label"],
+    }
+    if "intent" in create:
+        payload["intent"] = create["intent"]
+    for key, value in (("filter", filter), ("batch", batch)):
+        if value is not None:
+            payload[key] = value
+    for key, seconds in (("windowMs", window), ("minIntervalMs", min_interval)):
+        if seconds is not None:
+            payload[key] = _ms(seconds)
+    if retention is not None:
+        kept = {"count": retention.get("count")}
+        if retention.get("age") is not None:
+            kept["ageMs"] = _ms(retention["age"])
+        payload["retention"] = {key: value for key, value in kept.items() if value is not None}
+    return await host_request("rlm_heartbeat.create", payload)
 
 
 @_public

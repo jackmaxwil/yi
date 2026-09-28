@@ -100,6 +100,7 @@ async fn the_wall_denies_a_write_to_the_instrument_before_it_runs() -> TestResul
         deny_write: vec![instrument.to_path_buf()],
         deny_read: Vec::new(),
         deny_url: Vec::new(),
+        container: None,
     };
 
     let (denial, is_error) =
@@ -138,6 +139,7 @@ async fn a_read_deny_keeps_the_orientation_packet_out_of_the_denied_tree() -> Te
         deny_write: Vec::new(),
         deny_read: vec![root.join("secret")],
         deny_url: Vec::new(),
+        container: None,
     };
 
     let (packet, is_error) =
@@ -168,6 +170,7 @@ fn a_bash_read_of_a_write_denied_path_runs_and_a_write_to_it_is_refused() -> Tes
         deny_write: vec![root.join("check.py"), root.join("spec")],
         deny_read: Vec::new(),
         deny_url: Vec::new(),
+        container: None,
     };
     let bash = |command: String| {
         let mut args = serde_json::Map::new();
@@ -209,6 +212,7 @@ fn a_read_deny_binds_reads_and_a_write_deny_does_not() -> TestResult {
         deny_write: vec![root.clone()],
         deny_read: Vec::new(),
         deny_url: Vec::new(),
+        container: None,
     };
     assert!(
         write_only
@@ -225,6 +229,7 @@ fn a_read_deny_binds_reads_and_a_write_deny_does_not() -> TestResult {
         deny_write: Vec::new(),
         deny_read: vec![root.clone()],
         deny_url: Vec::new(),
+        container: None,
     };
     assert!(
         read_too
