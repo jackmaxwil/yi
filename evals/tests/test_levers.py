@@ -196,8 +196,13 @@ class TaskLevel(unittest.TestCase):
         two = self.judge(*arms(SLICE, 2, lambda t, r: trial(t, 0.5), cand({"t00", "t01"})), accesses=4)
         self.assertEqual(two["verdict"], "inconclusive")
 
-    def test_the_graded_score_never_reads_the_ctrf_tally(self):
-        wrapper = {"task": "t00", "reward": 0.0, "partialScore": None, "testsPassed": 1, "testsTotal": 1}
+    def test_the_ctrf_tally_counts_only_where_no_trace_scores_the_task(self):
+        # N1: most slice tasks score by ctrf test tally (production-planning 16/20), with no trace.
+        self.assertEqual(levers.graded({"task": "t00", "reward": 0.0, "testsPassed": 16, "testsTotal": 20,
+                                        "traceScored": False}), 0.8)
+        # freight-dispatch-shift and vba-userform-port: a wrapper ctrf test passes beside a trace.
+        wrapper = {"task": "t00", "reward": 0.0, "partialScore": None, "testsPassed": 1, "testsTotal": 1,
+                   "traceScored": True}
         self.assertEqual(levers.graded(wrapper), 0.0, "a passing wrapper test is not a solved trace")
         self.assertEqual(levers.graded({"task": "t00", "reward": 0.0, "partialScore": 0.5603}), 0.5603)
         self.assertEqual(levers.graded({"task": "t00", "reward": 1.0}), 1.0)
