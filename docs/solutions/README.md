@@ -270,5 +270,6 @@ edited by hand.
 - [D298](adr/d298.md) - a displayed refusal counts as a view
 - [D297](adr/d297.md) - an optional `classifier` model role asks a local sidecar which skill a typed...
 - [D289](adr/d289.md) - the project rules load whole and once, lanes included
+- [D290](adr/d290.md) - the catalog lists home-root skills only by name
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
