@@ -246,7 +246,7 @@ fn a_draft_answers_the_question_open_when_it_started() -> TestResult {
 }
 
 fn faux_session(replies: Vec<AgentMessage>) -> AgentSession {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(replies);
     AgentSession::new(
         SessionConfig {
@@ -269,6 +269,7 @@ fn said(text: &str) -> AgentMessage {
 /// A family whose one child asks its parent a question through `ask_user`.
 fn asking_host(dir: &Scratch, parent: &Arc<AgentSession>) -> Arc<SubagentHost> {
     Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 4,

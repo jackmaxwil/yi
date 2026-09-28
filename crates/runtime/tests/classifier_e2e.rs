@@ -188,6 +188,10 @@ fn a_message_id_matches_the_labelling_tool() {
         yi_runtime::classifier::message_id("  Land THIS branch\n\tonce the ÉTÉ gate is green "),
         "2990f761ef69"
     );
+    assert_eq!(
+        yi_runtime::classifier::message_id("a\u{b}b"),
+        "98992d7f2eec"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -541,7 +545,7 @@ fn a_shell_comment_needs_the_stricter_bar_and_stays_out_of_the_reason() -> TestR
 async fn an_unsafe_answer_goes_straight_to_the_user() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.05)])?;
     let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
-    let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None));
     provider.queue_faux(vec![yi_ai::faux::faux_assistant_message(
         vec![yi_ai::faux::faux_text("allow")],
         yi_types::message::StopReason::Stop,
@@ -699,7 +703,7 @@ fn a_prompt_that_cannot_close_is_never_timed_out() -> TestResult {
 async fn a_call_the_user_refused_is_not_reopened_by_the_classifier() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.5), safe(0.99)])?;
     let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
-    let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None));
     provider.queue_faux(vec![yi_ai::faux::faux_assistant_message(
         vec![yi_ai::faux::faux_text("deny unprovable")],
         yi_types::message::StopReason::Stop,
@@ -742,7 +746,7 @@ fn a_refusal_at_the_prompt_is_not_reopened_by_the_classifier() -> TestResult {
 async fn a_call_the_reviewer_refused_is_not_reopened_by_the_classifier() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.5), safe(0.99)])?;
     let gate = gate(port, None);
-    let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None));
     provider.queue_faux(vec![yi_ai::faux::faux_assistant_message(
         vec![yi_ai::faux::faux_text("deny unprovable")],
         yi_types::message::StopReason::Stop,
@@ -781,7 +785,7 @@ fn a_later_yes_clears_an_earlier_refusal() -> TestResult {
 async fn a_refusal_at_the_prompt_stands_with_a_reviewer_wired() -> TestResult {
     let (port, _served) = sidecar(vec![safe(0.1)])?;
     let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
-    let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None));
     provider.queue_faux(vec![yi_ai::faux::faux_assistant_message(
         vec![yi_ai::faux::faux_text("allow")],
         yi_types::message::StopReason::Stop,
