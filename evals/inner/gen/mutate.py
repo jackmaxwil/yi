@@ -211,21 +211,29 @@ def _plan(seed, level):
             visible = {t for t, outcome in _suite(work, spec).items() if outcome != "ok"} & passing
             if hidden is None or visible:
                 raise RuntimeError(f"the tests {name} seed {seed} breaks cannot all be hidden: {sorted(visible)[:3]}")
-    # A test module none of whose tests pass on the pristine repo (an import it cannot satisfy, as
-    # Markdown's test_apis needs PyYAML) stays out of the workspace: the agent is asked to make the
-    # whole suite pass, and those were never its to fix.
+    plan = {"repo": name, "sites": chosen, "f2p": broken, "p2p": sorted(passing - set(broken)), "drop": _dead(pristine),
+            "notes": {t: notes.get(t, "") for t in broken}}
+    CACHE.mkdir(parents=True, exist_ok=True)
+    cached.write_text(json.dumps(plan))
+    return plan
+
+
+def _dead(pristine):
+    """Test modules none of whose tests pass on the pristine repo (an import it cannot satisfy, as
+    Markdown's test_apis needs PyYAML). They stay out of the workspace: the agent is asked to make
+    the whole suite pass, and those were never its to fix."""
     modules = {}
     for test, outcome in pristine.items():
         # An import failure is reported as `unittest.loader._FailedTest.<module>`.
         failed = test.startswith("unittest.loader._FailedTest.")
         module = test.removeprefix("unittest.loader._FailedTest.") if failed else test.rsplit(".", 2)[0]
         modules.setdefault(module, set()).add(outcome)
-    dead = sorted(m for m, outcomes in modules.items() if "ok" not in outcomes and "skip" not in outcomes)
-    plan = {"repo": name, "sites": chosen, "f2p": broken, "p2p": sorted(passing - set(broken)), "drop": dead,
-            "notes": {t: notes.get(t, "") for t in broken}}
-    CACHE.mkdir(parents=True, exist_ok=True)
-    cached.write_text(json.dumps(plan))
-    return plan
+    return sorted(m for m, outcomes in modules.items() if "ok" not in outcomes and "skip" not in outcomes)
+
+
+def _runner(spec):
+    return (f"#!/bin/sh\ncd \"$(dirname \"$0\")\" && PYTHONPATH={spec.get('pythonpath', '.')} exec {PYTHON} "
+            f"-m unittest discover -s {spec['tests']} -t . \"$@\"\n")
 
 
 def make(seed, level=1):
@@ -246,11 +254,9 @@ def make(seed, level=1):
         reports = "\n".join(f"- {t}: {plan['notes'][t]}" for t in shown)
         prompt = (f"This directory is the {plan['repo']} library. Bugs were introduced in the library code under "
                   f"{spec['src']}/. Its maintainers' tests caught them with these failures:\n{reports}\nThose tests "
-                  "are not in this directory, so ./run_tests.sh passes as it is. Reproduce the failures, then fix "
+                  "are not in this directory, so ./run_tests.sh does not show them. Reproduce the failures, then fix "
                   "the library code. Do not modify the tests.")
-    runner = (f"#!/bin/sh\ncd \"$(dirname \"$0\")\" && PYTHONPATH={spec.get('pythonpath', '.')} exec {PYTHON} "
-              f"-m unittest discover -s {spec['tests']} -t . \"$@\"\n")
-    return {"prompt": prompt, "tree": str(repo), "patch": patch, "files": {"run_tests.sh": runner},
+    return {"prompt": prompt, "tree": str(repo), "patch": patch, "files": {"run_tests.sh": _runner(spec)},
             "drop": [_module_path(m, spec) for m in plan.get("drop", []) if _module_path(m, spec)],
             "timeoutSec": 600}
 
@@ -266,18 +272,24 @@ def check(seed, workspace, level=1):
     the pristine repo's, whatever the workspace did to its own."""
     plan = _plan(seed, level)
     spec = REPOS[plan["repo"]]
-    total = len(plan["f2p"]) + 1
+    return grade(spec["path"], workspace, spec, plan["f2p"], plan["p2p"])
+
+
+def grade(base, workspace, spec, f2p, p2p):
+    """The workspace's library dropped into a copy of `base` (the tree whose tests judge it), then
+    the suite: each of `f2p` passing is a point, and all of `p2p` passing is one more."""
+    total = len(f2p) + 1
     library = Path(workspace) / spec["src"]
     if not library.is_dir():
         return 0, total
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp) / "repo"
-        shutil.copytree(spec["path"], work, ignore=IGNORE)
-        shutil.rmtree(work / spec["src"])
+        shutil.copytree(base, work, ignore=IGNORE)
+        shutil.rmtree(work / spec["src"], ignore_errors=True)
         shutil.copytree(library, work / spec["src"], ignore=IGNORE)
         results = _suite(work, spec)
-    fixed = sum(1 for t in plan["f2p"] if results.get(t) == "ok")
-    clean = all(results.get(t) == "ok" for t in plan["p2p"])
+    fixed = sum(1 for t in f2p if results.get(t) == "ok")
+    clean = all(results.get(t) == "ok" for t in p2p)
     return fixed + int(clean and bool(results)), total
 
 
