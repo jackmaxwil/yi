@@ -576,10 +576,10 @@ impl PermissionBroker {
                 };
                 return (allowed, None);
             }
-            Some((request, ActionState::UserDenied)) => {
-                let denied = self.denied(format!(
-                    "The user denied request {request} for this exact call. It stays denied; take another approach."
-                ));
+            Some((_, ActionState::UserDenied)) => {
+                let denied = self.denied(
+                    "The user refused this exact call. It stays denied; take another approach rather than re-issuing it.".to_owned(),
+                );
                 return (denied, None);
             }
             // Idempotent by action: a retry of an identical denied call gets the same request
@@ -857,16 +857,19 @@ impl PermissionBroker {
         };
         let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
         self.settle(tool_call_id, ask, allowed, Answerer::User);
-        if !allowed {
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if allowed {
+            ledger.forget(ActionId::of(canonical));
+        } else {
             let refusal = "the user refused it when asked".to_owned();
             let stored = Self::stored(ask, rule_kind, canonical, display, refusal);
-            let mut ledger = self
-                .ledger
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let request = ledger.open(ActionId::of(canonical), stored);
             ledger.resolve(request, UserVerdict::Denied);
         }
+        drop(ledger);
         if let AskOutcome::AllowAlways(index) = outcome {
             self.keep_grant(ask.grants.get(index), rule_kind, canonical, display);
         }

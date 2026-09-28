@@ -370,6 +370,7 @@ struct Gate {
     broker: yi_runtime::PermissionBroker,
     records: Receiver<ClassifyRecord>,
     asked: Arc<Mutex<u32>>,
+    script: Arc<Mutex<Vec<yi_runtime::AskOutcome>>>,
 }
 
 /// A broker in auto mode with no sandbox, so an unknown command is a reviewable ask.
@@ -392,13 +393,19 @@ fn gate_in(
     use yi_runtime::classifier::{Approver, Thresholds};
     let asked = Arc::new(Mutex::new(0u32));
     let count = Arc::clone(&asked);
+    let script = Arc::new(Mutex::new(Vec::new()));
+    let scripted = Arc::clone(&script);
     let asker: Option<yi_runtime::Asker> = answer_user.map(|outcome| {
         let asker: yi_runtime::Asker = Arc::new(move |_| {
             if let Ok(mut count) = count.lock() {
                 *count += 1;
             }
             std::thread::sleep(thinking);
-            outcome
+            scripted
+                .lock()
+                .ok()
+                .and_then(|mut script| script.pop())
+                .unwrap_or(outcome)
         });
         asker
     });
@@ -437,6 +444,7 @@ fn gate_in(
         broker,
         records,
         asked,
+        script,
     }
 }
 
@@ -748,5 +756,49 @@ async fn a_call_the_reviewer_refused_is_not_reopened_by_the_classifier() -> Test
     let again = tokio::task::block_in_place(|| run(&gate, "make deploy"));
     assert!(!again.allowed, "{}", again.reason);
     assert_eq!(first.reason, again.reason);
+    Ok(())
+}
+
+/// Dies with a stale refusal: the user refused, then said yes to the same call, and the call
+/// must reach the classifier again rather than be held to the old no.
+#[test]
+fn a_later_yes_clears_an_earlier_refusal() -> TestResult {
+    let (port, _served) = sidecar(vec![safe(0.5), safe(0.99)])?;
+    let gate = gate(port, Some(yi_runtime::AskOutcome::AllowOnce));
+    if let Ok(mut script) = gate.script.lock() {
+        script.push(yi_runtime::AskOutcome::Reject);
+    }
+    assert!(!run(&gate, "make deploy").allowed);
+    assert!(run(&gate, "make deploy").allowed, "the user says yes");
+    let third = run(&gate, "make deploy");
+    assert!(third.reason.contains("classifier"), "{}", third.reason);
+    Ok(())
+}
+
+/// Dies with the reviewer asked, or the user asked twice: with a reviewer wired, a call the
+/// classifier sent straight to the user and the user refused replays that refusal.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_at_the_prompt_stands_with_a_reviewer_wired() -> TestResult {
+    let (port, _served) = sidecar(vec![safe(0.1)])?;
+    let gate = gate(port, Some(yi_runtime::AskOutcome::Reject));
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+    provider.queue_faux(vec![yi_ai::faux::faux_assistant_message(
+        vec![yi_ai::faux::faux_text("allow")],
+        yi_types::message::StopReason::Stop,
+    )]);
+    gate.broker
+        .set_reviewer(Arc::new(yi_runtime::auto_review::Reviewer::new(
+            Arc::clone(&provider),
+            crate::support::faux_model(),
+        )));
+    assert!(!tokio::task::block_in_place(|| run(&gate, "make deploy")).allowed);
+    let again = tokio::task::block_in_place(|| run(&gate, "make deploy"));
+    assert!(again.reason.contains("stays denied"), "{}", again.reason);
+    assert_eq!(*gate.asked.lock().map_err(|_| "lock")?, 1);
+    assert_eq!(
+        provider.faux.lock().map(|faux| faux.call_count).ok(),
+        Some(0),
+        "the reviewer was not consulted"
+    );
     Ok(())
 }
