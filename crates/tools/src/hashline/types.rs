@@ -103,6 +103,8 @@ pub enum FileOp {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApplyResult {
     pub text: String,
+    /// Which source line each line of `text` came from; `None` for one the edit wrote.
+    pub origins: Vec<Option<usize>>,
     pub first_changed_line: Option<u64>,
     pub warnings: Vec<String>,
 }
