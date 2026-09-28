@@ -2992,17 +2992,13 @@ async fn a_sibling_receives_its_mail_instead_of_polling() -> TestResult {
 /// named todo's delegation carries the runnable acceptance.
 fn write_canonical_plan(cwd: &std::path::Path, todos: &[(&str, &str)]) -> TestResult {
     use yi_types::plan::doc::{
-        Check, Delegation, GoalText, Plan, PlanId, PlanTier, RetryCount, SpawnSpec, Todo,
-        TodoLabel, TodoState,
+        Check, Delegation, GoalText, Plan, PlanId, PlanTier, SpawnSpec, Todo, TodoLabel,
     };
     let store = yi_runtime::plan::store::PlanStore::open(cwd.join(".yi/plans"))?;
     let todos = todos
         .iter()
         .map(|(label, check)| {
             Ok(Todo {
-                label: TodoLabel::new(*label)?,
-                after: Vec::new(),
-                state: TodoState::Pending,
                 delegation: Some(Delegation {
                     spec: SpawnSpec {
                         role: None,
@@ -3021,15 +3017,7 @@ fn write_canonical_plan(cwd: &std::path::Path, todos: &[(&str, &str)]) -> TestRe
                     note: None,
                     extra: Map::new(),
                 }),
-                subplan: None,
-                retries: RetryCount::default(),
-                children: Vec::new(),
-                note: None,
-                attempt: yi_types::plan::doc::AttemptId::FIRST,
-                refusals: 0,
-                contract: None,
-                contract_hash: None,
-                extra: Map::new(),
+                ..Todo::pending(TodoLabel::new(*label)?)
             })
         })
         .collect::<Result<Vec<_>, yi_types::plan::doc::DocError>>()?;

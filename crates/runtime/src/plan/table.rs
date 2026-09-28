@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use serde_json::Map;
 use yi_types::plan::doc::{
     AgentId, Plan, PlanIssue, PlanState, RetryCount, Todo, TodoLabel, TodoState, TodoStateName,
     terminal_durability,
@@ -221,6 +220,14 @@ impl std::fmt::Display for Refusal {
     }
 }
 
+/// The ready labels `admit` does not refuse at `slots`; the rest are the held list.
+pub(super) fn admitted(plan: &Plan, slots: usize) -> Vec<TodoLabel> {
+    ready_labels(plan)
+        .into_iter()
+        .filter(|label| admit(plan, label, slots).is_ok())
+        .collect()
+}
+
 pub fn admit(plan: &Plan, label: &TodoLabel, slots: usize) -> Result<(), Refusal> {
     let ready = plan.ready();
     let delegated: Vec<&Todo> = ready
@@ -268,7 +275,8 @@ pub(super) fn validate_plan(plan: &Plan) -> Result<(), PlanOpError> {
         Some(
             issue @ (PlanIssue::UnresolvedEdge { .. }
             | PlanIssue::Cycle { .. }
-            | PlanIssue::Contract { .. }),
+            | PlanIssue::Contract { .. }
+            | PlanIssue::Unanswered { .. }),
         ) => Err(PlanOpError::Invalid { issue }),
     }
 }
@@ -333,19 +341,12 @@ pub(super) fn locate_step(
 
 pub(super) fn new_todo(spec: TodoSpec) -> Todo {
     Todo {
-        label: spec.label,
         after: spec.after,
-        state: TodoState::Pending,
         delegation: spec.delegation,
-        subplan: None,
-        retries: RetryCount::default(),
         children: spec.children,
-        note: None,
-        attempt: yi_types::plan::doc::AttemptId::FIRST,
-        refusals: 0,
         contract: spec.contract,
-        contract_hash: None,
-        extra: Map::new(),
+        cites: spec.cites,
+        ..Todo::pending(spec.label)
     }
 }
 
@@ -403,6 +404,7 @@ pub(super) fn add_edge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Map;
     use yi_types::plan::doc::{AgentId, BlockedOn};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;

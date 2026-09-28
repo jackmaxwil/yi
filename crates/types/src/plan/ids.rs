@@ -268,6 +268,9 @@ impl From<InlineNote> for String {
     }
 }
 
+/// The session's own agent: a todo it runs inline, not through a child.
+pub const OWNER_AGENT: &str = "main";
+
 /// Host-internal id of a live agent; the durable address of a child stays the
 /// todo label, so this never appears in a terminal record.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -275,6 +278,10 @@ impl From<InlineNote> for String {
 pub struct AgentId(String);
 
 impl AgentId {
+    pub fn owner() -> Self {
+        Self(OWNER_AGENT.to_owned())
+    }
+
     pub fn new(id: impl Into<String>) -> Result<Self, DocError> {
         let id = id.into();
         if id.is_empty() {

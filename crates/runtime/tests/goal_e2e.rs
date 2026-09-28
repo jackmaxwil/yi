@@ -366,8 +366,7 @@ fn seed_plan(root: &std::path::Path, check: &str) -> TestResult {
 /// the runnable acceptance a discovery row can name.
 fn seed_plan_of(root: &std::path::Path, label: &str, check: &str) -> TestResult {
     use yi_types::plan::doc::{
-        Check, Delegation, GoalText, Plan, PlanId, PlanTier, RetryCount, SpawnSpec, Todo,
-        TodoLabel, TodoState,
+        Check, Delegation, GoalText, Plan, PlanId, PlanTier, SpawnSpec, Todo, TodoLabel, TodoState,
     };
     let store = yi_runtime::plan::store::PlanStore::open(root.join("plans"))?;
     let plan = Plan::opening(
@@ -375,8 +374,6 @@ fn seed_plan_of(root: &std::path::Path, label: &str, check: &str) -> TestResult 
         GoalText::new("hold the invariant")?,
         PlanTier::Root,
         vec![Todo {
-            label: TodoLabel::new(label)?,
-            after: Vec::new(),
             state: TodoState::Done {
                 output: None,
                 resolution: None,
@@ -399,15 +396,7 @@ fn seed_plan_of(root: &std::path::Path, label: &str, check: &str) -> TestResult 
                 note: None,
                 extra: serde_json::Map::new(),
             }),
-            subplan: None,
-            retries: RetryCount::default(),
-            children: Vec::new(),
-            note: None,
-            attempt: yi_types::plan::doc::AttemptId::FIRST,
-            refusals: 0,
-            contract: None,
-            contract_hash: None,
-            extra: serde_json::Map::new(),
+            ..Todo::pending(TodoLabel::new(label)?)
         }],
     );
     store.write(&plan)?;

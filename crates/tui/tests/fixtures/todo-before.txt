@@ -1,0 +1,458 @@
+== 01a0d6e4 #0
+Todos 0/9 · running: read the record: design §1, git log, changelog head, gate recipe
+## record
+- [>] t1 read the record: design §1, git log, changelog head, gate recipe
+- [ ] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri…
+- [ ] t3 counts with named scope
+- [ ] t4 write the assessment with evidence
+## dimensions
+- [ ] t5 architecture and dependency discipline
+- [ ] t6 correctness and error handling
+- [ ] t7 testing and verification
+- [ ] t8 guardrails and process
+- [ ] t9 size and efficiency
+next: done t1 evidence=`<command>` <output line> · block t1 on user · drop t1 <reason>
+next: start t2 · drop t2 <reason>
+next: start t3 · drop t3 <reason>
+-- hud full=true: Todos 0/9
+record
+  1. ▶ read the record: design §1, git log, changelog head, gate recipe
+  2. ○ read the code: boundary crate, hottest module, one test file, one guardrail scri…
+  3. ○ counts with named scope
+  4. ○ write the assessment with evidence
+dimensions
+  5. ○ architecture and dependency discipline
+  6. ○ correctness and error handling
+  7. ○ testing and verification
+  8. ○ guardrails and process
+  9. ○ size and efficiency
+-- hud full=false: Todos 0/9
+1. ▶ read the record: design §1, git log, changelog head, gate recipe
+2. ○ read the code: boundary crate, hottest module, one test file, one guardrail scri…
+3. ○ counts with named scope
+4. ○ write the assessment with evidence
+== 01a0d6e4 #1
+Todos 1/9 · running: read the code: boundary crate, hottest module, one test file, one guardrail scri…
+## record
+- [x] t1 read the record: design §1, git log, changelog head, gate recipe
+- [>] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri…
+- [ ] t3 counts with named scope
+- [ ] t4 write the assessment with evidence
+## dimensions
+- [ ] t5 architecture and dependency discipline
+- [ ] t6 correctness and error handling
+- [ ] t7 testing and verification
+- [ ] t8 guardrails and process
+- [ ] t9 size and efficiency
+next: done t2 evidence=`<command>` <output line> · block t2 on user · drop t2 <reason>
+next: start t3 · drop t3 <reason>
+next: start t4 · drop t4 <reason>
+-- hud full=true: Todos 1/9
+record
+  1. ✓ read the record: design §1, git log, changelog head, gate recipe
+  2. ▶ read the code: boundary crate, hottest module, one test file, one guardrail scri…
+  3. ○ counts with named scope
+  4. ○ write the assessment with evidence
+dimensions
+  5. ○ architecture and dependency discipline
+  6. ○ correctness and error handling
+  7. ○ testing and verification
+  8. ○ guardrails and process
+  9. ○ size and efficiency
+-- hud full=false: Todos 1/9
+1. ✓ read the record: design §1, git log, changelog head, gate recipe
+2. ▶ read the code: boundary crate, hottest module, one test file, one guardrail scri…
+3. ○ counts with named scope
+4. ○ write the assessment with evidence
+== 01a0d6e4 #2
+Todos 1/9 · running: read the code: boundary crate, hottest module, one test file, one guardrail scri
+## record
+- [x] t1 read the record: design §1, git log, changelog head, gate recipe
+- [>] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri
+- [ ] t3 counts with named scope
+- [ ] t4 write the assessment with evidence
+## dimensions
+- [ ] t5 architecture and dependency discipline
+- [ ] t6 correctness and error handling
+- [ ] t7 testing and verification
+- [ ] t8 guardrails and process
+- [ ] t9 size and efficiency
+next: done t2 evidence=`<command>` <output line> · block t2 on user · drop t2 <reason>
+next: start t3 · drop t3 <reason>
+next: start t4 · drop t4 <reason>
+-- hud full=true: Todos 1/9
+record
+  1. ✓ read the record: design §1, git log, changelog head, gate recipe
+  2. ▶ read the code: boundary crate, hottest module, one test file, one guardrail scri
+  3. ○ counts with named scope
+  4. ○ write the assessment with evidence
+dimensions
+  5. ○ architecture and dependency discipline
+  6. ○ correctness and error handling
+  7. ○ testing and verification
+  8. ○ guardrails and process
+  9. ○ size and efficiency
+-- hud full=false: Todos 1/9
+1. ✓ read the record: design §1, git log, changelog head, gate recipe
+2. ▶ read the code: boundary crate, hottest module, one test file, one guardrail scri
+3. ○ counts with named scope
+4. ○ write the assessment with evidence
+== 01a0d6e4 #3
+Todos 2/9 · running: counts with named scope
+## record
+- [x] t1 read the record: design §1, git log, changelog head, gate recipe
+- [x] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri
+- [>] t3 counts with named scope
+- [ ] t4 write the assessment with evidence
+## dimensions
+- [ ] t5 architecture and dependency discipline
+- [ ] t6 correctness and error handling
+- [ ] t7 testing and verification
+- [ ] t8 guardrails and process
+- [ ] t9 size and efficiency
+next: done t3 evidence=`<command>` <output line> · block t3 on user · drop t3 <reason>
+next: start t4 · drop t4 <reason>
+next: start t5 · drop t5 <reason>
+-- hud full=true: Todos 2/9
+record
+  1. ✓ read the record: design §1, git log, changelog head, gate recipe
+  2. ✓ read the code: boundary crate, hottest module, one test file, one guardrail scri
+  3. ▶ counts with named scope
+  4. ○ write the assessment with evidence
+dimensions
+  5. ○ architecture and dependency discipline
+  6. ○ correctness and error handling
+  7. ○ testing and verification
+  8. ○ guardrails and process
+  9. ○ size and efficiency
+-- hud full=false: Todos 2/9
+2. ✓ read the code: boundary crate, hottest module, one test file, one guardrail scri
+3. ▶ counts with named scope
+4. ○ write the assessment with evidence
+5. ○ architecture and dependency discipline
+== 01a0d6e4 #4
+Todos 2/9 · running: counts with named scope
+## record
+- [x] t1 read the record: design §1, git log, changelog head, gate recipe
+- [x] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri
+- [>] t3 counts with named scope
+- [ ] t4 write the assessment with evidence
+## dimensions
+- [ ] t5 architecture and dependency discipline
+- [ ] t6 correctness and error handling
+- [ ] t7 testing and verification
+- [ ] t8 guardrails and process
+- [ ] t9 size and efficiency
+next: done t3 evidence=`<command>` <output line> · block t3 on user · drop t3 <reason>
+next: start t4 · drop t4 <reason>
+next: start t5 · drop t5 <reason>
+-- hud full=true: Todos 2/9
+record
+  1. ✓ read the record: design §1, git log, changelog head, gate recipe
+  2. ✓ read the code: boundary crate, hottest module, one test file, one guardrail scri
+  3. ▶ counts with named scope
+  4. ○ write the assessment with evidence
+dimensions
+  5. ○ architecture and dependency discipline
+  6. ○ correctness and error handling
+  7. ○ testing and verification
+  8. ○ guardrails and process
+  9. ○ size and efficiency
+-- hud full=false: Todos 2/9
+2. ✓ read the code: boundary crate, hottest module, one test file, one guardrail scri
+3. ▶ counts with named scope
+4. ○ write the assessment with evidence
+5. ○ architecture and dependency discipline
+== 01a0d6e4 #5
+Todos 3/9 · running: write the assessment with evidence
+## record
+- [x] t1 read the record: design §1, git log, changelog head, gate recipe
+- [x] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri
+- [x] t3 counts with named scope
+- [>] t4 write the assessment with evidence
+## dimensions
+- [ ] t5 architecture and dependency discipline
+- [ ] t6 correctness and error handling
+- [ ] t7 testing and verification
+- [ ] t8 guardrails and process
+- [ ] t9 size and efficiency
+next: done t4 evidence=`<command>` <output line> · block t4 on user · drop t4 <reason>
+next: start t5 · drop t5 <reason>
+next: start t6 · drop t6 <reason>
+-- hud full=true: Todos 3/9
+record
+  1. ✓ read the record: design §1, git log, changelog head, gate recipe
+  2. ✓ read the code: boundary crate, hottest module, one test file, one guardrail scri
+  3. ✓ counts with named scope
+  4. ▶ write the assessment with evidence
+dimensions
+  5. ○ architecture and dependency discipline
+  6. ○ correctness and error handling
+  7. ○ testing and verification
+  8. ○ guardrails and process
+  9. ○ size and efficiency
+-- hud full=false: Todos 3/9
+3. ✓ counts with named scope
+4. ▶ write the assessment with evidence
+5. ○ architecture and dependency discipline
+6. ○ correctness and error handling
+== 01a0d6e4 #6
+Todos 3/9 · running: write the assessment with evidence
+## record
+- [x] t1 read the record: design §1, git log, changelog head, gate recipe
+- [x] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri
+- [x] t3 counts with named scope
+- [>] t4 write the assessment with evidence
+## dimensions
+- [ ] t5 architecture and dependency discipline
+- [ ] t6 correctness and error handling
+- [ ] t7 testing and verification
+- [ ] t8 guardrails and process
+- [ ] t9 size and efficiency
+next: done t4 evidence=`<command>` <output line> · block t4 on user · drop t4 <reason>
+next: start t5 · drop t5 <reason>
+next: start t6 · drop t6 <reason>
+-- hud full=true: Todos 3/9
+record
+  1. ✓ read the record: design §1, git log, changelog head, gate recipe
+  2. ✓ read the code: boundary crate, hottest module, one test file, one guardrail scri
+  3. ✓ counts with named scope
+  4. ▶ write the assessment with evidence
+dimensions
+  5. ○ architecture and dependency discipline
+  6. ○ correctness and error handling
+  7. ○ testing and verification
+  8. ○ guardrails and process
+  9. ○ size and efficiency
+-- hud full=false: Todos 3/9
+3. ✓ counts with named scope
+4. ▶ write the assessment with evidence
+5. ○ architecture and dependency discipline
+6. ○ correctness and error handling
+== 01a0d6e4 #7
+Todos 4/9 · running: architecture and dependency discipline
+## record
+- [x] t1 read the record: design §1, git log, changelog head, gate recipe
+- [x] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri
+- [x] t3 counts with named scope
+- [x] t4 write the assessment with evidence
+## dimensions
+- [>] t5 architecture and dependency discipline
+- [ ] t6 correctness and error handling
+- [ ] t7 testing and verification
+- [ ] t8 guardrails and process
+- [ ] t9 size and efficiency
+next: done t5 evidence=`<command>` <output line> · block t5 on user · drop t5 <reason>
+next: start t6 · drop t6 <reason>
+next: start t7 · drop t7 <reason>
+-- hud full=true: Todos 4/9
+record
+  1. ✓ read the record: design §1, git log, changelog head, gate recipe
+  2. ✓ read the code: boundary crate, hottest module, one test file, one guardrail scri
+  3. ✓ counts with named scope
+  4. ✓ write the assessment with evidence
+dimensions
+  5. ▶ architecture and dependency discipline
+  6. ○ correctness and error handling
+  7. ○ testing and verification
+  8. ○ guardrails and process
+  9. ○ size and efficiency
+-- hud full=false: Todos 4/9
+4. ✓ write the assessment with evidence
+5. ▶ architecture and dependency discipline
+6. ○ correctness and error handling
+7. ○ testing and verification
+== 01a0d6e4 #8
+Todos 5/9 · running: correctness and error handling
+## record
+- [x] t1 read the record: design §1, git log, changelog head, gate recipe
+- [x] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri
+- [x] t3 counts with named scope
+- [x] t4 write the assessment with evidence
+## dimensions
+- [x] t5 architecture and dependency discipline
+- [>] t6 correctness and error handling
+- [ ] t7 testing and verification
+- [ ] t8 guardrails and process
+- [ ] t9 size and efficiency
+next: done t6 evidence=`<command>` <output line> · block t6 on user · drop t6 <reason>
+next: start t7 · drop t7 <reason>
+next: start t8 · drop t8 <reason>
+-- hud full=true: Todos 5/9
+record
+  1. ✓ read the record: design §1, git log, changelog head, gate recipe
+  2. ✓ read the code: boundary crate, hottest module, one test file, one guardrail scri
+  3. ✓ counts with named scope
+  4. ✓ write the assessment with evidence
+dimensions
+  5. ✓ architecture and dependency discipline
+  6. ▶ correctness and error handling
+  7. ○ testing and verification
+  8. ○ guardrails and process
+  9. ○ size and efficiency
+-- hud full=false: Todos 5/9
+5. ✓ architecture and dependency discipline
+6. ▶ correctness and error handling
+7. ○ testing and verification
+8. ○ guardrails and process
+== 01a0d6e4 #9
+Todos 6/9 · running: testing and verification
+## record
+- [x] t1 read the record: design §1, git log, changelog head, gate recipe
+- [x] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri
+- [x] t3 counts with named scope
+- [x] t4 write the assessment with evidence
+## dimensions
+- [x] t5 architecture and dependency discipline
+- [x] t6 correctness and error handling
+- [>] t7 testing and verification
+- [ ] t8 guardrails and process
+- [ ] t9 size and efficiency
+next: done t7 evidence=`<command>` <output line> · block t7 on user · drop t7 <reason>
+next: start t8 · drop t8 <reason>
+next: start t9 · drop t9 <reason>
+-- hud full=true: Todos 6/9
+record
+  1. ✓ read the record: design §1, git log, changelog head, gate recipe
+  2. ✓ read the code: boundary crate, hottest module, one test file, one guardrail scri
+  3. ✓ counts with named scope
+  4. ✓ write the assessment with evidence
+dimensions
+  5. ✓ architecture and dependency discipline
+  6. ✓ correctness and error handling
+  7. ▶ testing and verification
+  8. ○ guardrails and process
+  9. ○ size and efficiency
+-- hud full=false: Todos 6/9
+6. ✓ correctness and error handling
+7. ▶ testing and verification
+8. ○ guardrails and process
+9. ○ size and efficiency
+== 01a0d6e4 #10
+Todos 7/9 · running: guardrails and process
+## record
+- [x] t1 read the record: design §1, git log, changelog head, gate recipe
+- [x] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri
+- [x] t3 counts with named scope
+- [x] t4 write the assessment with evidence
+## dimensions
+- [x] t5 architecture and dependency discipline
+- [x] t6 correctness and error handling
+- [x] t7 testing and verification
+- [>] t8 guardrails and process
+- [ ] t9 size and efficiency
+next: done t8 evidence=`<command>` <output line> · block t8 on user · drop t8 <reason>
+next: start t9 · drop t9 <reason>
+-- hud full=true: Todos 7/9
+record
+  1. ✓ read the record: design §1, git log, changelog head, gate recipe
+  2. ✓ read the code: boundary crate, hottest module, one test file, one guardrail scri
+  3. ✓ counts with named scope
+  4. ✓ write the assessment with evidence
+dimensions
+  5. ✓ architecture and dependency discipline
+  6. ✓ correctness and error handling
+  7. ✓ testing and verification
+  8. ▶ guardrails and process
+  9. ○ size and efficiency
+-- hud full=false: Todos 7/9
+7. ✓ testing and verification
+8. ▶ guardrails and process
+9. ○ size and efficiency
+== 01a0d6e4 #11
+Todos 8/9 · running: size and efficiency
+## record
+- [x] t1 read the record: design §1, git log, changelog head, gate recipe
+- [x] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri
+- [x] t3 counts with named scope
+- [x] t4 write the assessment with evidence
+## dimensions
+- [x] t5 architecture and dependency discipline
+- [x] t6 correctness and error handling
+- [x] t7 testing and verification
+- [x] t8 guardrails and process
+- [>] t9 size and efficiency
+next: done t9 evidence=`<command>` <output line> · block t9 on user · drop t9 <reason>
+-- hud full=true: Todos 8/9
+record
+  1. ✓ read the record: design §1, git log, changelog head, gate recipe
+  2. ✓ read the code: boundary crate, hottest module, one test file, one guardrail scri
+  3. ✓ counts with named scope
+  4. ✓ write the assessment with evidence
+dimensions
+  5. ✓ architecture and dependency discipline
+  6. ✓ correctness and error handling
+  7. ✓ testing and verification
+  8. ✓ guardrails and process
+  9. ▶ size and efficiency
+-- hud full=false: Todos 8/9
+8. ✓ guardrails and process
+9. ▶ size and efficiency
+== 01a0d6e4 #12
+Todos 9/9
+## record
+- [x] t1 read the record: design §1, git log, changelog head, gate recipe
+- [x] t2 read the code: boundary crate, hottest module, one test file, one guardrail scri
+- [x] t3 counts with named scope
+- [x] t4 write the assessment with evidence
+## dimensions
+- [x] t5 architecture and dependency discipline
+- [x] t6 correctness and error handling
+- [x] t7 testing and verification
+- [x] t8 guardrails and process
+- [x] t9 size and efficiency
+-- hud full=true: hidden
+-- hud full=false: hidden
+== v1 #13
+Todos 2/6 · running: write the fix · 1 blocked
+## Build
+- [x] read the code
+- [>] write the fix
+  - [x] parser
+  - [ ] tool
+## Land
+- [!] land the branch (blocked on user: which base branch)
+- [-] old idea (dropped: superseded)
+next: done "write the fix" evidence=`<command>` <output line> · block "write the fix" on user · drop "write the fix" <reason>
+next: start "tool" · drop "tool" <reason>
+-- hud full=true: Todos 2/6 · 1 blocked
+Build
+  1. ✓ read the code
+  2. ▶ write the fix
+    3. ✓ parser
+    4. ○ tool
+Land
+  5. ! land the branch (blocked on user: which base branch)
+  6. − old idea (dropped: superseded)
+-- hud full=false: Todos 2/6 · 1 blocked
+1. ✓ read the code
+2. ▶ write the fix
+  3. ✓ parser
+  4. ○ tool
+== intent #14
+Todos 0/2
+## replace-the-lexer
+- [ ] t1 write the new lexer
+- [ ] t2 delete the old lexer
+-- hud full=true: Todos 0/2
+replace-the-lexer
+  1. ○ write the new lexer
+  2. ○ delete the old lexer
+-- hud full=false: Todos 0/2
+1. ○ write the new lexer
+2. ○ delete the old lexer
+== ask #15
+Todos 0/1 · 1 blocked
+## land-the-page
+- [!] t1 hero style (blocked on user: which hero?) — 1. Calm · 2. Bold · 3. Dense
+-- hud full=true: Todos 0/1 · 1 blocked
+land-the-page
+  1. ! hero style (blocked on user: which hero?)
+       1. Calm · soft grey hero, one line of copy
+       2. Bold · graph TD; Hero-->CTA
+       3. Dense · store://hero-dense
+-- hud full=false: Todos 0/1 · 1 blocked
+1. ! hero style (blocked on user: which hero?)
+     1. Calm · soft grey hero, one line of copy
+     2. Bold · graph TD; Hero-->CTA
+     3. Dense · store://hero-dense

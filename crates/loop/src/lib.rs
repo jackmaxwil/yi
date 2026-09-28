@@ -8,7 +8,7 @@ pub mod repair;
 pub mod run;
 pub mod tool;
 
-pub use config::{ExecutionMode, LoopConfig, NextTurn, TurnSnapshot};
+pub use config::{ExecutionMode, LoopConfig, LoopGuards, NextTurn, TurnSnapshot};
 pub use reasoning::REASONING_CHAR_CAP;
 pub use repair::repair_tool_name;
 pub use run::{
