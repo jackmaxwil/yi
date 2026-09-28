@@ -426,3 +426,36 @@ fn a_hidden_custom_message_stays_out_of_the_transcript() -> TestResult {
     assert!(rows.contains("⚑ reminder Relevant: skill://plan"), "{rows}");
     Ok(())
 }
+
+/// Incident: a failed call's digest returned before the sanitizer, so the tab `diff -u` puts
+/// before a header's timestamp reached the card. Producer: Apple diff (FreeBSD), exit 1.
+#[test]
+fn a_failed_digest_shows_no_control_character() {
+    let digest = ToolCell::digest_of("bash", include_str!("fixtures/diff-u.txt"), true);
+    assert_eq!(digest.as_deref(), Some("--- a.txt    2026-09-28 10:00:00"));
+}
+
+#[test]
+fn a_control_character_shows_as_its_glyph_and_a_tab_as_four_spaces() {
+    let raw = "a\tb\r\u{1b}[1m\u{7f}\u{85}";
+    assert_eq!(
+        yi_tui::transcript::show_controls(raw),
+        "a    b␍␛[1m␡\u{fffd}"
+    );
+}
+
+/// Invariant: whatever a body's text missed, the real terminal gets one visible cell and
+/// never a control it would obey.
+#[test]
+fn a_control_character_in_a_cell_reaches_the_terminal_as_its_glyph() -> TestResult {
+    use ratatui::backend::Backend;
+    let [tab, carriage, plain] = ["\t", "\r", "x"].map(|symbol| {
+        let mut cell = ratatui::buffer::Cell::default();
+        cell.set_symbol(symbol);
+        cell
+    });
+    let mut backend = yi_tui::term::ControlPictures(ratatui::backend::TestBackend::new(3, 1));
+    backend.draw([(0, 0, &tab), (1, 0, &carriage), (2, 0, &plain)].into_iter())?;
+    backend.0.assert_buffer_lines(["␉␍x"]);
+    Ok(())
+}

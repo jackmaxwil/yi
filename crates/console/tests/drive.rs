@@ -332,7 +332,11 @@ fn run_frames_with(
         sidebar,
         Some(dir.to_path_buf()),
     )?;
-    let mut names: Vec<PathBuf> = std::fs::read_dir(&dir)?
+    last_frame(&dir)
+}
+
+fn last_frame(dir: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    let mut names: Vec<PathBuf> = std::fs::read_dir(dir)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .collect();
@@ -1416,7 +1420,9 @@ fn makefile_push() -> Vec<Value> {
 /// row, its grey pad included, landed past the pane edge where no later frame repainted it.
 #[test]
 fn tab_indented_cards_put_no_control_character_in_a_cell() -> TestResult {
-    let frame = run_frames(
+    let dir = Scratch::new("yi-console-frames-card-tabs")?;
+    // Read before the exit code: the drive guard fails the run on the frame this asserts.
+    let run = run_opts(
         "card-tabs",
         vec![
             Step::Expect("initialize", init_reply),
@@ -1433,13 +1439,17 @@ fn tab_indented_cards_put_no_control_character_in_a_cell() -> TestResult {
          wait-frame 3000 @cargo build\n\
          wait-frame 3000 @cargo clippy --all-targets\n\
          quit\n",
-    )?;
+        false,
+        SidebarMode::Full,
+        Some(dir.to_path_buf()),
+    );
+    let frame = last_frame(&dir)?;
     let control = frame.chars().find(|c| c.is_control() && *c != '\n');
     assert_eq!(
         control, None,
         "a control character reached a cell:\n{frame}"
     );
-    Ok(())
+    run
 }
 
 fn why_reply(frame: &Value) -> Vec<Value> {

@@ -79,7 +79,10 @@ pub struct App {
     pub dirty: bool,
     /// Incident: a W1→W2→W1 flip inside one frame left ratatui's size unchanged, so it drew
     /// no clear over a screen the terminal had reflowed; every resize event now asks for one.
-    pub clear: bool,
+    pub pending_clear: bool,
+    /// (payload length, rect) of the placed notebook image; unchanged frames skip the
+    /// retransmit, and a drawn clear empties it, since the clear took the image with it.
+    pub notebook_image: Option<(usize, ratatui::layout::Rect)>,
     animations: Vec<Anim>,
     pub animate: bool,
     pub cmd_hints: bool,
@@ -141,7 +144,8 @@ impl App {
             next_request: 0,
             next_list_poll: Instant::now() + LIST_POLL,
             dirty: true,
-            clear: false,
+            pending_clear: false,
+            notebook_image: None,
             animations: Vec::new(),
             cmd_hints: false,
             autostart: false,
@@ -1014,7 +1018,7 @@ impl App {
                     }
                 }
                 self.avatars.forget();
-                self.clear = true;
+                self.pending_clear = true;
                 self.dirty = true;
             }
             CtEvent::Mouse(mouse) => {

@@ -130,7 +130,7 @@ pub struct RecordingBackend {
     inner: TestBackend,
     cast: Option<CrosstermBackend<CastWriter>>,
     cursor_hidden: bool,
-    control: Option<String>,
+    first_control: Option<(u16, u16, String)>,
 }
 
 impl RecordingBackend {
@@ -146,7 +146,7 @@ impl RecordingBackend {
             inner: TestBackend::new(width, height),
             cast,
             cursor_hidden: false,
-            control: None,
+            first_control: None,
         })
     }
 
@@ -162,8 +162,9 @@ impl RecordingBackend {
 
     /// The first control character drawn into a cell. Incident: a tab is one cell here and a tab
     /// stop in a terminal, so a card row spilled past its pane while every frame dump read fine.
-    pub fn control_cell(&self) -> Option<&str> {
-        self.control.as_deref()
+    pub fn first_control_cell(&self) -> Option<(u16, u16, &str)> {
+        let (x, y, symbol) = self.first_control.as_ref()?;
+        Some((*x, *y, symbol.as_str()))
     }
 }
 
@@ -191,11 +192,11 @@ impl Backend for RecordingBackend {
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
         let updates: Vec<(u16, u16, &Cell)> = content.collect();
-        if self.control.is_none() {
-            self.control = updates
+        if self.first_control.is_none() {
+            self.first_control = updates
                 .iter()
                 .find(|(_, _, cell)| cell.symbol().contains(char::is_control))
-                .map(|(x, y, cell)| format!("{:?} at ({x}, {y})", cell.symbol()));
+                .map(|(x, y, cell)| (*x, *y, cell.symbol().to_owned()));
         }
         self.inner.draw(updates.iter().copied())?;
         // Crossterm ends even an empty `draw` with a reset triple, and the

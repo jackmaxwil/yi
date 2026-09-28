@@ -32,6 +32,7 @@ use ratatui::crossterm::{ExecutableCommand, execute};
 use yi_tui::capture::RecordingBackend;
 use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier};
 use yi_tui::drive::{Step, WaitPoll, key_event, poll_condition, typed_events};
+use yi_tui::term::ControlPictures;
 
 use crate::app::{App, MouseKind};
 use crate::client::{ClientEvent, Outbound};
@@ -128,8 +129,9 @@ fn draw<B: Backend>(
         return Ok(());
     }
     app.dirty = false;
-    if std::mem::take(&mut app.clear) {
+    if std::mem::take(&mut app.pending_clear) {
         terminal.clear()?;
+        app.notebook_image = None;
     }
     let _span = yi_types::trace::span("console.draw");
     terminal.draw(|frame| {
@@ -215,7 +217,7 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
                 | ratatui::crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
         )
     );
-    let backend = CrosstermBackend::new(stdout);
+    let backend = ControlPictures(CrosstermBackend::new(stdout));
     let mut terminal = match Terminal::new(backend) {
         Ok(terminal) => terminal,
         Err(error) => {
@@ -240,15 +242,12 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
 
 fn run_interactive(
     app: &mut App,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut Terminal<ControlPictures<CrosstermBackend<Stdout>>>,
     events: &std::sync::mpsc::Receiver<ClientEvent>,
     outbound: &Outbound,
     theme: &Theme,
 ) -> i32 {
     let kitty_ok = app.kitty;
-    // (payload length, rect) of the placed image; unchanged frames skip the
-    // retransmit entirely.
-    let mut placed: Option<(usize, ratatui::layout::Rect)> = None;
     let mut orb_owners = std::collections::HashMap::new();
     let mut scheduler = yi_tui::frame::FrameScheduler::default();
     while !app.state.quit {
@@ -295,7 +294,7 @@ fn run_interactive(
             if kitty_ok {
                 use std::io::Write;
                 place_avatars(app, &mut out);
-                place_notebook_image(app, &mut out, &mut placed);
+                place_notebook_image(app, &mut out);
                 let _ = out.flush();
             }
             scheduler.mark_drawn(start, Instant::now());
@@ -397,13 +396,10 @@ fn place_chat_orbs(
 
 /// The focused notebook pane's newest image rides the kitty protocol over
 /// the top half of the pane; text placeholders stay for every other terminal.
-fn place_notebook_image(
-    app: &App,
-    out: &mut std::io::Stdout,
-    placed: &mut Option<(usize, ratatui::layout::Rect)>,
-) {
+fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     use crate::model::PaneContent;
-    let clear = |out: &mut std::io::Stdout, placed: &mut Option<(usize, ratatui::layout::Rect)>| {
+    let placed = &mut app.notebook_image;
+    let clear = |out: &mut _, placed: &mut Option<(usize, ratatui::layout::Rect)>| {
         if placed.take().is_some() {
             let _ = crate::kitty::delete(out);
         }
@@ -588,11 +584,6 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
             exit_code = 1;
             break;
         }
-        if let Some(cell) = terminal.backend().control_cell() {
-            eprintln!("error: a control character reached a cell: {cell}");
-            exit_code = 1;
-            break;
-        }
         if let Some(dir) = &drive.frames_dir {
             let frame = terminal.backend().screen();
             if frame != last_frame {
@@ -603,10 +594,56 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                 }
             }
         }
+        if let Some((x, y, symbol)) = terminal.backend().first_control_cell() {
+            eprintln!("error: a control character reached a cell: {symbol:?} at ({x}, {y})");
+            exit_code = 1;
+            break;
+        }
     }
 
     outbound.shutdown();
     drop(events);
     join_with_deadline(threads);
     exit_code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Incident: a same-size resize now draws a clear, which takes the kitty image with it,
+    /// while the cache still said placed, so the notebook image never came back.
+    #[test]
+    fn a_resize_places_the_notebook_image_again() -> Result<(), Box<dyn std::error::Error>> {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        let home = app.state.focused_pane_id().ok_or("a pane")?;
+        if let Some(pane) = app.state.panes.get_mut(&home) {
+            pane.content = crate::model::PaneContent::Notebook {
+                session: None,
+                cells: vec![crate::model::NbCell {
+                    images: vec!["iVBORw0KGgo=".to_owned()],
+                    ..crate::model::NbCell::default()
+                }],
+                input: Box::default(),
+            };
+        }
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+        let placed = |app: &mut App| {
+            let mut out = Vec::new();
+            place_notebook_image(app, &mut out);
+            String::from_utf8_lossy(&out).contains("a=p,")
+        };
+        draw(&mut app, &mut terminal, &theme)?;
+        assert!(placed(&mut app), "placed once drawn");
+        assert!(!placed(&mut app), "an unchanged frame writes nothing");
+        let (events, _received) = client::events();
+        let socket = std::env::temp_dir().join("yi-notebook-resize-no-daemon.sock");
+        let (outbound, _threads) = client::spawn(socket, events);
+        app.handle_event(&outbound, CtEvent::Resize(100, 30));
+        outbound.shutdown();
+        draw(&mut app, &mut terminal, &theme)?;
+        assert!(placed(&mut app), "placed again after the clear");
+        Ok(())
+    }
 }

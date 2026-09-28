@@ -283,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn a_forgotten_ledger_places_again_after_a_clear() {
+    fn a_forgotten_ledger_deletes_what_it_placed() {
         let place = Placement {
             col: 2,
             row: 0,
