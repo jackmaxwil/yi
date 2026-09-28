@@ -483,8 +483,9 @@ def as_bot(token):
 
 @functools.lru_cache(maxsize=None)
 def raw_diff(repo, number):
+    # Incident: one open PR's diff held a Latin-1 byte and every round died decoding it.
     out = subprocess.run(["fgj", "api", "--hostname", forge_pr.HOST, f"repos/{repo}/pulls/{number}.diff"],
-                         capture_output=True, text=True, check=False)
+                         capture_output=True, text=True, errors="replace", check=False)
     if out.returncode:
         # An empty diff would read as "no twin" and the round would post as if it had looked.
         raise Unanswered(f"the forge did not serve #{number}'s diff: {out.stderr.strip()[-200:]}")
@@ -861,6 +862,18 @@ def selfcheck():
         assert walled(changed_paths(repo_dir)) == ["scripts/guardrails/a.rs"], "a rename into the wall is seen"
     finally:
         shutil.rmtree(repo_dir)
+    fakes = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-fgj-"))
+    try:
+        (fakes / "fgj").write_bytes(b"#!/bin/sh\nprintf '+x\\351y\\n'\n")
+        (fakes / "fgj").chmod(0o755)
+        real_path = os.environ["PATH"]
+        os.environ["PATH"] = f"{fakes}{os.pathsep}{real_path}"
+        try:
+            assert raw_diff.__wrapped__("apex/yi", 1) == "+x\ufffdy\n", "a byte that is not UTF-8 is replaced, not fatal"
+        finally:
+            os.environ["PATH"] = real_path
+    finally:
+        shutil.rmtree(fakes)
     assert walled(["crates/a.rs", "scripts/guardrails/baselines/src_loc.json", ".forgejo/workflows/pr.yml"]) == [
         "scripts/guardrails/baselines/src_loc.json", ".forgejo/workflows/pr.yml"]
     assert "Do not touch" in fix_prompt({"number": 1, "title": "t"}, [finding])
