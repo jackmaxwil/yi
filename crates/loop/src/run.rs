@@ -345,8 +345,12 @@ async fn execute_tool_calls(
     (finalized, terminate)
 }
 
-fn fail_truncated_calls(
+const TRUNCATED: &str = "the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.";
+const AFTER_LAST_WORD: &str = "time is up and the run has ended.";
+
+fn fail_calls(
     calls: Vec<ExtractedCall>,
+    why: &str,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> Vec<Finalized> {
     calls
@@ -357,10 +361,7 @@ fn fail_truncated_calls(
                 tool_name: call.name.clone(),
                 args: Value::Object(call.arguments.clone()),
             });
-            let text = format!(
-                "Tool call \"{}\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.",
-                call.name
-            );
+            let text = format!("Tool call \"{}\" was not executed: {why}", call.name);
             let item = Finalized {
                 call,
                 result: error_tool_result(&text),
@@ -847,7 +848,6 @@ pub async fn run_loop<S: StreamFn>(
                 };
                 if let Some(word) = config.last_word.as_ref().and_then(|word| word(&snapshot)) {
                     last_word_said = true;
-                    tool_choice = Some(ToolChoice::None);
                     pending = vec![word];
                     has_more_tool_calls = false;
                     continue;
@@ -887,7 +887,9 @@ pub async fn run_loop<S: StreamFn>(
             if !calls.is_empty() {
                 let (finalized, terminate) = if reason == StopReason::Length {
                     length_stops = length_stops.saturating_add(1);
-                    (fail_truncated_calls(calls, emit), false)
+                    (fail_calls(calls, TRUNCATED, emit), false)
+                } else if last_word_said {
+                    (fail_calls(calls, AFTER_LAST_WORD, emit), true)
                 } else {
                     length_stops = 0;
                     side_work(config).await;
@@ -960,7 +962,6 @@ pub async fn run_loop<S: StreamFn>(
                     .and_then(|word| word(&snapshot))
                 {
                     last_word_said = true;
-                    tool_choice = Some(ToolChoice::None);
                     pending = vec![word];
                     continue;
                 }
