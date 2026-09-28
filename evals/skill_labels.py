@@ -114,13 +114,19 @@ def corpus(claude_dir, yi_dir, out):
         for source, path, read in sources:
             for text, loaded in read(path):
                 clean = record.scrub(text)[:TEXT_CAP]
-                key = hashlib.sha256(" ".join(clean.split()).lower().encode()).hexdigest()[:12]
+                key = message_id(text)
                 if key in seen:
                     continue
                 seen.add(key)
                 sink.write(json.dumps({"id": key, "source": source, "text": clean, "loaded": loaded}) + "\n")
                 written += 1
     return written
+
+
+def message_id(text):
+    """The classifier's key for a message (yi-runtime `classifier::message_id`): the first 12 hex
+    of the sha256 of its bytes with ASCII whitespace collapsed and ASCII letters lowered."""
+    return hashlib.sha256(b" ".join(text.encode().split()).lower()).hexdigest()[:12]
 
 
 def prompt(text, candidates):
