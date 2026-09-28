@@ -79,6 +79,13 @@ pub struct ClassifierConfig {
     pub url: Option<String>,
     pub timeout_ms: Option<u64>,
     pub threshold: Option<serde_json::Number>,
+    /// Command approval in auto mode, a separate switch; it needs `LAYA_API_KEY` to arm.
+    pub approve: Option<bool>,
+    pub allow_at: Option<serde_json::Number>,
+    pub allow_destructive_at: Option<serde_json::Number>,
+    pub ask_at: Option<serde_json::Number>,
+    /// With approval on, an ask unanswered this long gets the classifier's decision; 0 waits.
+    pub ask_timeout_secs: Option<u64>,
 }
 
 /// `node`: overrides `~/.yi/node.json` field by field; `slots` bounds the kernels this
