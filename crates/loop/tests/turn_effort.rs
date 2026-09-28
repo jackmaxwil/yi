@@ -294,3 +294,62 @@ async fn the_request_tail_trails_each_request_and_stays_out_of_the_history() {
         context.messages
     );
 }
+
+/// Records the `reuse` each request carries and answers `done`.
+struct ReuseRecorder(Arc<Mutex<Vec<yi_types::model::Reuse>>>);
+
+impl yi_loop::run::StreamFn for ReuseRecorder {
+    fn stream(
+        &self,
+        _model: &Model,
+        context: &LlmContext,
+        _effort: Effort,
+        _signal: &InterruptSignal,
+    ) -> Receiver<AssistantMessageEvent> {
+        if let Ok(mut seen) = self.0.lock() {
+            seen.push(context.reuse);
+        }
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let message = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+        let _ = sender.try_send(AssistantMessageEvent::Done {
+            reason: StopReason::Stop,
+            message,
+        });
+        receiver
+    }
+}
+
+/// The request says what its config says about reuse (D295): a session that will never be
+/// continued, the auto-reviewer's, sets `OneShot` and the loop passes it through; the
+/// default is `Loop`, the side whose failure is one spare write.
+#[tokio::test]
+async fn the_request_carries_the_configured_reuse() {
+    for (configured, expected) in [
+        (None, yi_types::model::Reuse::Loop),
+        (
+            Some(yi_types::model::Reuse::OneShot),
+            yi_types::model::Reuse::OneShot,
+        ),
+    ] {
+        let mut config = LoopConfig::new(faux_model());
+        if let Some(reuse) = configured {
+            config.reuse = reuse;
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut context = LoopContext {
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        let mut emit = |_: AgentEvent| {};
+        let stream = ReuseRecorder(Arc::clone(&seen));
+        let signal = InterruptSignal::default();
+        let prompt = vec![AgentMessage::host_user(
+            yi_types::message::UserContent::Text("hi".to_owned()),
+            0,
+        )];
+        run_loop(&mut context, prompt, &config, &signal, &mut emit, &stream).await;
+        let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
+        assert_eq!(seen, vec![expected], "configured {configured:?}");
+    }
+}
