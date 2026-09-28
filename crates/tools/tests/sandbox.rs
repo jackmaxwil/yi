@@ -104,20 +104,45 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
 
 #[test]
 fn a_denial_is_only_claimed_when_the_output_says_so() {
-    assert!(denial_hint(Some(0), "operation not permitted", "touch x").is_none());
-    assert!(denial_hint(Some(127), "command not found", "nope").is_none());
-    assert!(denial_hint(Some(1), "assertion failed", "cargo nextest run").is_none());
-    let hint = denial_hint(
-        Some(1),
+    let cwd = Path::new("/work");
+    let sandbox = Sandbox {
+        writable: vec![cwd.to_path_buf()],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        loopback: false,
+    };
+    let hint = |code, output: &str, command: &str| {
+        denial_hint(&sandbox, cwd, Some(code), output, command).unwrap_or_default()
+    };
+    assert!(hint(0, "operation not permitted", "touch x").is_empty());
+    assert!(hint(127, "command not found", "nope").is_empty());
+    assert!(hint(1, "assertion failed", "cargo nextest run").is_empty());
+    let scoped = hint(
+        1,
         "sh: cannot create out.txt: Operation not permitted",
         "cd /x && cargo fmt 2>&1 | head",
-    )
-    .unwrap_or_default();
-    assert!(hint.starts_with("next: "), "{hint}");
-    assert!(
-        hint.contains("`cargo fmt` now needs permission") && !hint.contains("same command"),
-        "the hint names the refused scope and promises only what the broker does: {hint}"
     );
+    assert!(scoped.starts_with("next: "), "{scoped}");
+    assert!(
+        scoped.contains("`cargo fmt` now needs permission") && !scoped.contains("same command"),
+        "no denied path: the hint names the refused scope, as the broker remembers it: {scoped}"
+    );
+    // `/dev/null` is the base policy's to grant, and a path inside the tree is no sandbox denial.
+    let redirected = hint(
+        1,
+        "bash: /outside/y: Operation not permitted",
+        "ls 2>/dev/null; echo y > /outside/y",
+    );
+    assert!(
+        redirected.contains("refused writing `/outside/y`"),
+        "{redirected}"
+    );
+    let inside = hint(
+        1,
+        "chmod: /work/x: Operation not permitted",
+        "chmod 0 /work/x",
+    );
+    assert!(!inside.contains("refused writing"), "{inside}");
 }
 
 /// The live half. Everything above describes the policy; this runs it.
@@ -152,7 +177,7 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
         "the file must not exist"
     );
     assert!(
-        denial_hint(Some(code), &output, &escape).is_some(),
+        denial_hint(&sandbox, &project, Some(code), &output, &escape).is_some(),
         "the failure must read as a sandbox denial: {output}"
     );
 

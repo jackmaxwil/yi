@@ -697,8 +697,10 @@ impl Tool for BashTool {
         if let Some(hint) = document_hint(command) {
             sections.push(hint);
         }
-        if context.sandbox.is_some()
+        if let Some(sandbox) = &context.sandbox
             && let Some(hint) = crate::sandbox::denial_hint(
+                sandbox,
+                &context.cwd,
                 capture.exit_code,
                 &format!("{}{}", capture.stdout, capture.stderr),
                 command,

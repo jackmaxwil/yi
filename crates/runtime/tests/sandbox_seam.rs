@@ -1,9 +1,11 @@
 #![cfg(target_os = "macos")]
 
+use crate::kernel_sandbox::uncovered;
 use crate::scratch;
 use scratch::Scratch;
 
 use std::error::Error;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Map, json};
@@ -12,6 +14,7 @@ use yi_loop::ExecutionMode;
 use yi_runtime::{
     AgentSession, PermissionBroker, PermissionMode, ProviderStream, SessionConfig, builtin_tools,
 };
+use yi_tools::Sandbox;
 use yi_types::message::{AgentMessage, Content, StopReason};
 use yi_types::model::{Model, ModelCost};
 
@@ -71,29 +74,20 @@ fn results(session: &AgentSession) -> Vec<String> {
         .collect()
 }
 
-/// The seam, end to end: the broker contains an unknown command, the adapter
-/// hands the sandbox to the tool, the command runs with no prompt and cannot
-/// reach past the working tree, and the same command asks the second time
-/// because containment already refused it once.
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn an_unknown_command_runs_contained_then_asks() -> TestResult {
-    if !yi_tools::Sandbox::available() {
-        return Ok(());
-    }
-    let root = Scratch::new("yi-seam")?;
-    let project = root.join("project");
-    let home = root.join("home");
-    std::fs::create_dir_all(&project)?;
-    std::fs::create_dir_all(&home)?;
-    let escape = home.join("escaped.txt");
-    let command = format!("printf x > {}", escape.display());
-
+/// One turn of queued bash calls under `sandbox`, with no asker: a question reads as a denial.
+async fn run_contained(
+    project: &Path,
+    sandbox: Sandbox,
+    commands: &[&str],
+) -> Result<Vec<String>, Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None, None));
-    provider.queue_faux(vec![
-        bash_call("call-1", &command),
-        bash_call("call-2", &command),
-    ]);
+    provider.queue_faux(
+        commands
+            .iter()
+            .enumerate()
+            .map(|(index, command)| bash_call(&format!("call-{index}"), command))
+            .collect(),
+    );
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
@@ -103,41 +97,88 @@ async fn an_unknown_command_runs_contained_then_asks() -> TestResult {
         },
         provider,
     );
-    let sandbox = yi_tools::Sandbox {
-        writable: vec![project.clone()],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        loopback: false,
-    };
     let broker = Arc::new(
         PermissionBroker::new(
             PermissionMode::Auto,
-            project.clone(),
+            project.to_path_buf(),
             Vec::new(),
             None,
             session.events_sender(),
         )
         .with_sandbox(Some(sandbox)),
     );
-    session.use_tools(builtin_tools(), project.clone(), Some(broker));
-
-    // One turn runs both calls: the loop answers the first tool result with the
-    // next queued message, which repeats the same command.
+    session.use_tools(builtin_tools(), project.to_path_buf(), Some(broker));
+    // One turn runs every call: the loop answers each tool result with the next queued message.
     session.prompt("do the thing")?;
     session.wait_idle().await;
     let results = results(&session);
+    assert_eq!(results.len(), commands.len(), "{results:?}");
+    Ok(results)
+}
+
+fn confined_to(project: &Path) -> Sandbox {
+    Sandbox {
+        writable: vec![project.to_path_buf()],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+        loopback: false,
+    }
+}
+
+/// The production profile over a scratch tree, and a directory it does not cover: tmp is
+/// writable there, so a probe under it would pass vacuously.
+fn workspace(tag: &str) -> Result<(Scratch, PathBuf, Sandbox, PathBuf), Box<dyn Error>> {
+    let root = Scratch::new(tag)?;
+    let project = root.join("project");
+    std::fs::create_dir_all(&project)?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let probe = uncovered(&sandbox, &home).ok_or("no writable directory outside the sandbox")?;
+    Ok((root, project, sandbox, probe))
+}
+
+/// The dogfood command of 2026-09-27, its two paths moved to a writable dir and the probe dir.
+fn dogfood(tmp: &Path, refused: &Path) -> String {
+    format!(
+        "yes | head -5; echo x > {}/sandbox_probe && echo wrote-tmp; echo y > {} && echo wrote-home",
+        tmp.display(),
+        refused.display()
+    )
+}
+
+/// The seam, end to end: the broker contains an unknown command, the adapter
+/// hands the sandbox to the tool, the command runs with no prompt and cannot
+/// reach past the working tree, and the same command asks the second time
+/// because containment already refused it once.
+#[tokio::test]
+async fn an_unknown_command_runs_contained_then_asks() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let root = Scratch::new("yi-seam")?;
+    let project = root.join("project");
+    let home = root.join("home");
+    std::fs::create_dir_all(&project)?;
+    std::fs::create_dir_all(&home)?;
+    let escape = home.join("escaped.txt");
+    let command = format!("printf x > {}", escape.display());
+    let results = run_contained(&project, confined_to(&project), &[&command, &command]).await?;
     assert!(
         !escape.exists(),
         "the contained command must not write outside the tree"
     );
-    assert_eq!(results.len(), 2, "{results:?}");
     assert!(
         !results[0].contains("Permission denied"),
         "containment runs instead of asking: {}",
         results[0]
     );
     assert!(
-        results[0].contains("the sandbox refused this"),
+        results[0].contains(&format!(
+            "the sandbox refused writing `{}`",
+            escape.display()
+        )),
         "a denial explains itself: {}",
         results[0]
     );
@@ -151,10 +192,9 @@ async fn an_unknown_command_runs_contained_then_asks() -> TestResult {
 
 /// The incident: the retry appended `&& git status | wc -l`, so an exact-text memory of the
 /// refusal never matched and the second attempt was contained again instead of asking.
-#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn a_refused_program_asks_even_when_the_retry_text_differs() -> TestResult {
-    if !yi_tools::Sandbox::available() {
+    if !Sandbox::available() {
         return Ok(());
     }
     let root = Scratch::new("yi-seam-scope")?;
@@ -164,51 +204,89 @@ async fn a_refused_program_asks_even_when_the_retry_text_differs() -> TestResult
     std::fs::create_dir_all(&home)?;
     let first = format!("mkdir {}", home.join("a").display());
     let second = format!("mkdir {} && ls", home.join("b").display());
-
-    let provider = Arc::new(ProviderStream::new(None, None));
-    provider.queue_faux(vec![
-        bash_call("call-1", &first),
-        bash_call("call-2", &second),
-    ]);
-    let mut session = AgentSession::new(
-        SessionConfig {
-            system_prompt: String::new(),
-            model: faux_model(),
-            thinking_level: None,
-            tool_execution: ExecutionMode::Sequential,
-        },
-        provider,
-    );
-    let sandbox = yi_tools::Sandbox {
-        writable: vec![project.clone()],
-        deny_read: Vec::new(),
-        deny_write: Vec::new(),
-        loopback: false,
-    };
-    let broker = Arc::new(
-        PermissionBroker::new(
-            PermissionMode::Auto,
-            project.clone(),
-            Vec::new(),
-            None,
-            session.events_sender(),
-        )
-        .with_sandbox(Some(sandbox)),
-    );
-    session.use_tools(builtin_tools(), project.clone(), Some(broker));
-    session.prompt("make the dirs")?;
-    session.wait_idle().await;
-    let results = results(&session);
-    assert_eq!(results.len(), 2, "{results:?}");
+    let results = run_contained(&project, confined_to(&project), &[&first, &second]).await?;
     assert!(
-        results[0].contains("`mkdir` now needs permission"),
-        "the hint names the scope that will ask: {}",
+        results[0].contains(&format!("naming a path under `{}`", home.display())),
+        "the hint names what will ask: {}",
         results[0]
     );
     assert!(
         results[1].contains("Permission denied") && !home.join("b").exists(),
-        "a different command using the refused program asks: {}",
+        "a different command writing beside the refused path asks: {}",
         results[1]
+    );
+    Ok(())
+}
+
+/// The dogfood refusal: `yes` led the command, so the hint blamed `yes`, while the sandbox had
+/// refused the redirect into the home directory.
+#[tokio::test]
+async fn the_hint_names_the_refused_path_not_the_first_program() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, sandbox, probe) = workspace("yi-seam-path")?;
+    let tmp = root.join("yidog");
+    std::fs::create_dir_all(&tmp)?;
+    let refused = probe.join(format!("yidog_probe-{}", std::process::id()));
+    let results = run_contained(&project, sandbox, &[&dogfood(&tmp, &refused)]).await?;
+    assert!(!refused.exists(), "the home write must be refused");
+    assert!(
+        results[0].contains(&format!("refused writing `{}`", refused.display()))
+            && !results[0].contains("`yes`"),
+        "the hint names the path the sandbox refused, not the first program: {}",
+        results[0]
+    );
+    Ok(())
+}
+
+/// Remembering `yes` made the next harmless `yes` ask while the failing write ran contained
+/// again; the memory follows the refused path instead.
+#[tokio::test]
+async fn a_retry_of_the_refused_write_asks_and_an_unrelated_echo_does_not() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, sandbox, probe) = workspace("yi-seam-retry")?;
+    let tmp = root.join("yidog");
+    std::fs::create_dir_all(&tmp)?;
+    let refused = probe.join(format!("yidog_retry-{}", std::process::id()));
+    let unrelated = format!("yes | head -1 && echo hi > {}/unrelated", tmp.display());
+    let retry = format!("echo y > {}", refused.display());
+    let results = run_contained(
+        &project,
+        sandbox,
+        &[&dogfood(&tmp, &refused), &unrelated, &retry],
+    )
+    .await?;
+    assert!(
+        !results[1].contains("Permission denied") && tmp.join("unrelated").exists(),
+        "a call writing nowhere near the refused path still runs contained: {}",
+        results[1]
+    );
+    assert!(
+        results[2].contains("Permission denied") && !refused.exists(),
+        "the retry of the refused write asks instead of failing contained again: {}",
+        results[2]
+    );
+    Ok(())
+}
+
+/// `tail` exits 0, so the refusal of `touch` before it hid behind the pipe's exit code.
+#[tokio::test]
+async fn a_refusal_under_a_zero_exit_pipe_is_detected() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, probe) = workspace("yi-seam-pipe")?;
+    let refused = probe.join(format!("yidog_touch-{}", std::process::id()));
+    let command = format!("touch {} | tail -1", refused.display());
+    let results = run_contained(&project, sandbox, &[&command]).await?;
+    assert!(!refused.exists(), "the touch must be refused");
+    assert!(
+        results[0].contains(&format!("refused writing `{}`", refused.display())),
+        "a refusal behind a zero exit still explains itself: {}",
+        results[0]
     );
     Ok(())
 }

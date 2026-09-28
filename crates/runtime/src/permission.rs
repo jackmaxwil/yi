@@ -56,7 +56,7 @@ struct Reviewed<'a> {
 
 pub struct PermissionBroker {
     sandbox: Option<yi_tools::Sandbox>,
-    contained_failures: Mutex<std::collections::BTreeSet<String>>,
+    contained_failures: Mutex<std::collections::BTreeSet<yi_tools::Refusal>>,
     mode: Mutex<PermissionMode>,
     config_rules: Vec<ConfigRule>,
     session_rules: Mutex<SessionRules>,
@@ -155,21 +155,24 @@ impl PermissionBroker {
         self.sandbox.as_ref()
     }
 
-    /// The sandbox is the first attempt and the question the second, remembered by program and
-    /// verb: a retry that only reshapes the refused command must not be contained again.
-    pub fn note_containment_failure(&self, command: &str) {
-        if let Ok(mut failures) = self.contained_failures.lock() {
-            failures.extend(yi_permission::refused_scopes(command));
+    /// The sandbox is the first attempt and the question the second, remembered by the refused
+    /// path so unrelated work stays contained, or by program and verb when none was found.
+    pub fn note_containment_failure(&self, command: &str, exit_code: Option<i32>, output: &str) {
+        if let Some(sandbox) = &self.sandbox
+            && let Some(refusal) = yi_tools::refusal(sandbox, &self.cwd, exit_code, output, command)
+            && let Ok(mut failures) = self.contained_failures.lock()
+        {
+            failures.insert(refusal);
         }
     }
 
-    fn contained_and_failed(&self, command: Option<&str>) -> bool {
-        let scopes = command
-            .map(yi_permission::refused_scopes)
-            .unwrap_or_default();
+    fn contained_and_failed(&self, sandbox: &yi_tools::Sandbox, command: Option<&str>) -> bool {
+        let covers = |refusal: &yi_tools::Refusal| {
+            command.is_some_and(|command| refusal.covers(sandbox, &self.cwd, command))
+        };
         self.contained_failures
             .lock()
-            .is_ok_and(|failures| scopes.iter().any(|scope| failures.contains(scope)))
+            .is_ok_and(|failures| failures.iter().any(covers))
     }
 
     /// A question with no tool call behind it, asked once and answered once: an allow-always
@@ -333,7 +336,7 @@ impl PermissionBroker {
             // Containment is an allowance the sandbox enforces; without one
             // there is nothing to enforce it, so the question stands.
             Decision::Contain { reason } => match &self.sandbox {
-                Some(_) if !self.contained_and_failed(command) => CallOutcome {
+                Some(sandbox) if !self.contained_and_failed(sandbox, command) => CallOutcome {
                     allowed: true,
                     reason,
                     contained: true,

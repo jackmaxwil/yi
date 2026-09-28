@@ -1,6 +1,8 @@
 use std::error::Error;
 
-use yi_permission::{Class, Parsed, Verdict, classify, parse, refused_scopes, verdict};
+use yi_permission::{
+    Class, Parsed, Verdict, classify, parse, refused_scopes, verdict, write_targets,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -407,5 +409,25 @@ fn scope_names_program_and_subcommand() {
     ];
     for (command, expected) in cases {
         assert_eq!(refused_scopes(command), expected, "{command:?}");
+    }
+}
+
+/// Where a refused write went: the splitter skips redirect targets, which is how the dogfood
+/// hint blamed `yes` for `echo y > ~/yidog_probe`.
+#[test]
+fn write_targets_keep_what_the_splitter_skips() {
+    let cases: [(&str, &[&str]); 6] = [
+        (
+            "yes | head -5; echo y > ~/yidog_probe && echo wrote-home",
+            &["~/yidog_probe"],
+        ),
+        ("cargo fmt 2>&1 | tee -a log >>out.txt", &["out.txt"]),
+        ("make 2>err.log &>'all.log'", &["err.log", "all.log"]),
+        ("echo x >/outside/f; echo y >| g", &["/outside/f", "g"]),
+        ("cmd >&2 2> /dev/null", &["/dev/null"]),
+        ("git log --oneline | head", &[]),
+    ];
+    for (command, expected) in cases {
+        assert_eq!(write_targets(command), expected, "{command:?}");
     }
 }

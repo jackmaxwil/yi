@@ -55,6 +55,18 @@ impl Sandbox {
         cfg!(target_os = "macos") && Path::new(SEATBELT).is_file()
     }
 
+    /// Outside every writable root, or under a denied one. `/dev` is the base policy's, which
+    /// grants `/dev/null` and the ttys, so no device is claimed refused.
+    pub fn denies_write(&self, path: &Path) -> bool {
+        let path = resolve_aliases(path);
+        let under = |roots: &[PathBuf]| {
+            roots
+                .iter()
+                .any(|root| path.starts_with(resolve_aliases(root)))
+        };
+        !path.starts_with("/dev") && (!under(&self.writable) || under(&self.deny_write))
+    }
+
     /// `-D` bindings keep paths out of the policy text. A denied path binds twice, logical
     /// and resolved: macOS `/tmp` and `/var` are symlinks and the kernel checks the target.
     pub fn params(&self) -> Vec<(String, PathBuf)> {
@@ -203,32 +215,121 @@ fn temp_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// Seatbelt reports a denial as an ordinary errno, so the caller cannot know it was the
-/// sandbox: a non-zero exit that is no known shell failure, plus output naming a denial.
-pub fn denial_hint(exit_code: Option<i32>, output: &str, command: &str) -> Option<String> {
-    const QUICK_REJECT: [i32; 3] = [2, 126, 127];
-    const KEYWORDS: [&str; 5] = [
-        "operation not permitted",
-        "permission denied",
-        "read-only file system",
-        "sandbox",
-        "deny file-write",
-    ];
-    let code = exit_code?;
-    if code == 0 || QUICK_REJECT.contains(&code) {
-        return None;
+/// Why a contained command failed, as the hint words it and the broker remembers it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Refusal {
+    /// A write this profile denies.
+    Path(PathBuf),
+    /// No denied path found, so likely the network: the programs that ran.
+    Scopes(Vec<String>),
+}
+
+impl Refusal {
+    /// Whether `command` retries this refusal: it names a path the profile denies in the refused
+    /// path's directory or, when no path was found, runs a refused program.
+    pub fn covers(&self, sandbox: &Sandbox, cwd: &Path, command: &str) -> bool {
+        match self {
+            Self::Path(refused) => {
+                let dir = refused.parent().unwrap_or(refused);
+                let targets = yi_permission::write_targets(command);
+                targets
+                    .iter()
+                    .map(String::as_str)
+                    .chain(named_paths(command))
+                    .map(|raw| resolved(raw, cwd))
+                    .any(|path| path.starts_with(dir) && sandbox.denies_write(&path))
+            }
+            Self::Scopes(refused) => yi_permission::refused_scopes(command)
+                .iter()
+                .any(|scope| refused.contains(scope)),
+        }
     }
-    let lower = output.to_lowercase();
-    if !KEYWORDS.iter().any(|needle| lower.contains(needle)) {
-        return None;
-    }
-    let scopes: Vec<String> = yi_permission::refused_scopes(command)
-        .iter()
-        .map(|scope| format!("`{scope}`"))
+}
+
+const REFUSED: [&str; 3] = [
+    "operation not permitted",
+    "permission denied",
+    "read-only file system",
+];
+
+fn resolved(raw: &str, cwd: &Path) -> PathBuf {
+    yi_permission::lexical_normalize(&yi_permission::resolve_target(raw, cwd))
+}
+
+/// Absolute and `~` words in `text`, without the quotes and colons error lines wrap them in.
+fn named_paths(text: &str) -> impl Iterator<Item = &str> {
+    text.split_whitespace()
+        .map(|word| word.trim_matches(['\'', '"', '`', ':', ';', ',', '(', ')']))
+        .filter(|word| word.starts_with('/') || word.starts_with('~'))
+}
+
+/// Once an output line reports a refusal: the first redirect target, else path on such a line,
+/// that this profile denies, so a real permission error inside the tree is not blamed on it.
+fn refused_path(sandbox: &Sandbox, cwd: &Path, command: &str, output: &str) -> Option<PathBuf> {
+    let lines: Vec<&str> = output
+        .lines()
+        .filter(|line| {
+            let lower = line.to_lowercase();
+            REFUSED.iter().any(|needle| lower.contains(needle))
+        })
         .collect();
-    let needs = if scopes.len() == 1 { "needs" } else { "need" };
-    Some(format!(
-        "next: the sandbox refused this (a contained run writes only the working tree, its git dirs and tmp, and has no network); {} now {needs} permission: the next call using it asks instead of running contained, and is refused where nobody can answer",
-        scopes.join(", ")
-    ))
+    if lines.is_empty() {
+        return None;
+    }
+    let targets = yi_permission::write_targets(command);
+    targets
+        .iter()
+        .map(String::as_str)
+        .chain(lines.into_iter().flat_map(named_paths))
+        .map(|raw| resolved(raw, cwd))
+        .find(|path| sandbox.denies_write(path))
+}
+
+/// Seatbelt denies with a plain errno. A denied path counts at any exit (`touch x | tail -1` is 0);
+/// without one, a non-zero exit that is no known shell failure, plus output naming a denial.
+pub fn refusal(
+    sandbox: &Sandbox,
+    cwd: &Path,
+    exit_code: Option<i32>,
+    output: &str,
+    command: &str,
+) -> Option<Refusal> {
+    const QUICK_REJECT: [i32; 3] = [2, 126, 127];
+    if let Some(path) = refused_path(sandbox, cwd, command, output) {
+        return Some(Refusal::Path(path));
+    }
+    let code = exit_code?;
+    let lower = output.to_lowercase();
+    let named = ["sandbox", "deny file-write"]
+        .iter()
+        .chain(&REFUSED)
+        .any(|needle| lower.contains(needle));
+    (code != 0 && !QUICK_REJECT.contains(&code) && named)
+        .then(|| Refusal::Scopes(yi_permission::refused_scopes(command)))
+}
+
+pub fn denial_hint(
+    sandbox: &Sandbox,
+    cwd: &Path,
+    exit_code: Option<i32>,
+    output: &str,
+    command: &str,
+) -> Option<String> {
+    const CONTAINED: &str =
+        "a contained run writes only the working tree, its git dirs and tmp, and has no network";
+    Some(match refusal(sandbox, cwd, exit_code, output, command)? {
+        Refusal::Path(path) => format!(
+            "next: the sandbox refused writing `{}` ({CONTAINED}); the next call naming a path under `{}` outside those asks instead of running contained, and is refused where nobody can answer",
+            path.display(),
+            path.parent().unwrap_or(&path).display()
+        ),
+        Refusal::Scopes(scopes) => {
+            let needs = if scopes.len() == 1 { "needs" } else { "need" };
+            let scopes: Vec<String> = scopes.iter().map(|scope| format!("`{scope}`")).collect();
+            format!(
+                "next: the sandbox refused this ({CONTAINED}); {} now {needs} permission: the next call using it asks instead of running contained, and is refused where nobody can answer",
+                scopes.join(", ")
+            )
+        }
+    })
 }
