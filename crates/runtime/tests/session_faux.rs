@@ -673,6 +673,92 @@ async fn the_end_capture_follows_a_slow_start_capture() -> Result<(), Box<dyn Er
     Ok(())
 }
 
+/// Every settled ask of a session run with `asker`, read back from its journal.
+async fn journaled(
+    root: &std::path::Path,
+    asker: Option<yi_runtime::Asker>,
+) -> Result<Vec<yi_types::permission::PermissionRecord>, Box<dyn Error>> {
+    let mut repo = JsonlRepo::new(root.join("sessions"), "/tmp/yi-perm-journal");
+    let store = repo.create(CreateOptions::default())?;
+    let mut session = tool_call_session("echo journaled");
+    session.attach_store(Arc::clone(&store))?;
+    let broker = Arc::new(yi_runtime::PermissionBroker::new(
+        yi_runtime::PermissionMode::Ask,
+        root.to_path_buf(),
+        Vec::new(),
+        asker,
+        session.events_sender(),
+    ));
+    let provider = Arc::clone(session.provider_arc());
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: "sys".to_owned(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: root.to_path_buf(),
+            home: root.join("home"),
+            lane_slots: 1,
+            broker: Some(broker),
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    session.prompt("run it")?;
+    session.wait_idle().await;
+    let entries = yi_session::lock_session(&store).find_entries(&yi_session::EntryQuery {
+        order: yi_session::EntryOrder::OldestFirst,
+        ..yi_session::EntryQuery::default()
+    })?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            yi_types::entry::Entry::Custom {
+                custom_type, data, ..
+            } if custom_type == yi_types::permission::PERMISSION_ENTRY => data,
+            _ => None,
+        })
+        .map(serde_json::from_value)
+        .collect::<Result<_, _>>()?)
+}
+
+/// Approvals are the labels a classifier fits its thresholds on, so each settled ask is journaled
+/// in the session, not only broadcast. Dies with the record missing, or naming the wrong answerer.
+#[tokio::test]
+async fn a_settled_ask_is_journaled_in_the_session() -> Result<(), Box<dyn Error>> {
+    use yi_types::permission::Answerer;
+    let approve: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::AllowOnce);
+    for (asker, want) in [
+        (None, (false, Answerer::Nobody)),
+        (Some(approve), (true, Answerer::User)),
+    ] {
+        let root = scratch("perm-journal")?;
+        let records = journaled(&root, asker).await?;
+        let [record] = records.as_slice() else {
+            return Err(format!("one settled ask, one record: {records:?}").into());
+        };
+        assert_eq!((record.allowed, record.by.clone()), want, "{record:?}");
+        assert!(record.description.contains("echo journaled"), "{record:?}");
+    }
+    Ok(())
+}
+
 /// What the model was sent, in order: user text, reminder text, or `assistant`.
 fn transcript(session: &AgentSession) -> Vec<String> {
     use yi_types::message::UserContent;
