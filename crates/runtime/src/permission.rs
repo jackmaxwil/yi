@@ -72,6 +72,7 @@ pub struct PermissionBroker {
     ledger: Mutex<ActionLedger>,
     confirms: AtomicU64,
     journal: std::sync::OnceLock<Journal>,
+    approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
 }
 
 pub struct CallOutcome {
@@ -133,11 +134,16 @@ impl PermissionBroker {
             ledger: Mutex::new(ActionLedger::new()),
             confirms: AtomicU64::new(0),
             journal: std::sync::OnceLock::new(),
+            approver: std::sync::OnceLock::new(),
         }
     }
 
     pub fn set_journal(&self, journal: Journal) {
         let _first_wiring_wins = self.journal.set(journal);
+    }
+
+    pub fn set_approver(&self, approver: Arc<crate::classifier::Approver>) {
+        let _first_wiring_wins = self.approver.set(approver);
     }
 
     fn settle(&self, tool_call_id: &str, ask: &PermissionAsk<'_>, allowed: bool, by: Answerer) {
@@ -429,6 +435,38 @@ impl PermissionBroker {
         canonical: &str,
         display: &str,
     ) -> CallOutcome {
+        if reviewed.reviewable
+            && self.mode() == PermissionMode::Auto
+            && let Some(approver) = self.approver.get()
+        {
+            let cwd = self.cwd.to_string_lossy();
+            let call = crate::classifier::Call {
+                tool: reviewed.tool_name,
+                display,
+                command: reviewed.command,
+                reason: reviewed.reason,
+                cwd: &cwd,
+            };
+            match approver.judge(&call) {
+                crate::classifier::Judgement::Allow(safe) => {
+                    let _ = self.events.send(AgentEvent::PermissionRequested {
+                        tool_call_id: tool_call_id.to_owned(),
+                        title: ask.title.to_owned(),
+                        description: ask.text(),
+                    });
+                    self.settle(tool_call_id, ask, true, Answerer::Classifier);
+                    return CallOutcome {
+                        allowed: true,
+                        reason: format!("allowed by the classifier (P(safe) {safe:.2})"),
+                        contained: false,
+                    };
+                }
+                crate::classifier::Judgement::AskUser(_) => {
+                    return self.run_ask(ask, tool_call_id, rule_kind, canonical, display);
+                }
+                crate::classifier::Judgement::Undecided => {}
+            }
+        }
         let Some(reviewer) = self.reviewer.get().cloned() else {
             return self.run_ask(ask, tool_call_id, rule_kind, canonical, display);
         };
