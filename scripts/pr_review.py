@@ -59,9 +59,8 @@ PROBES = ROOT / "skills/yi/pr-review/probes"
 AVOID_FAMILIES = ("anthropic",)
 # The fixer pushes to someone's branch, so it runs from the sweep only when the owner turns it on.
 FIXER = os.environ.get("YI_REVIEW_FIX") == "1"
-# The bot's rounds post under its own account; its token file is written by the owner's setup
-# script (mode 600), read here and handed to curl on stdin, never argv.
-BOT, BOT_ENV = "yi-bot", pathlib.Path.home() / ".config/yi-bot/forge.env"
+# The review job's fgj is signed in as this account; its rounds count wherever the sweep runs.
+BOT = "yi-bot"
 
 
 def load_probes(directory=PROBES):
@@ -459,30 +458,6 @@ def authors():
     return {me.get("login"), "forgejo-actions", BOT} - {None}
 
 
-def bot_token():
-    try:
-        line = next(l for l in BOT_ENV.read_text().splitlines() if l.startswith("FORGE_TOKEN="))
-    except (OSError, StopIteration):
-        return None
-    return line.split("=", 1)[1].strip() or None
-
-
-def as_bot(token):
-    """A transport shaped like forge_pr.fgj_api that writes as the bot: curl reads the token from
-    its config on stdin, so it is never an argument."""
-    def send(method, path, payload=None):
-        config = f'header = "Authorization: token {token}"\nheader = "Content-Type: application/json"\n'
-        command = ["curl", "-sS", "-K", "-", "-X", method, f"{forge_pr.WEB}/api/v1/{path.lstrip('/')}"]
-        if payload is not None:
-            config += "data = " + json.dumps(json.dumps(payload)) + "\n"
-        out = subprocess.run(command, input=config, capture_output=True, text=True, check=False)
-        try:
-            return json.loads(out.stdout)
-        except json.JSONDecodeError:
-            return {"message": (out.stdout or out.stderr).strip()}
-    return send
-
-
 @functools.lru_cache(maxsize=None)
 def raw_diff(repo, number):
     # Incident: one open PR's diff held a Latin-1 byte and every round died decoding it.
@@ -578,9 +553,7 @@ def cmd_review(args):
             return 0
         import forgejo_pr_comment
 
-        token = bot_token()
-        post = as_bot(token) if token else forge_pr.fgj_api
-        answer = forgejo_pr_comment.upsert(lambda m, url, p: post(m, url.split("/api/v1/", 1)[-1], p),
+        answer = forgejo_pr_comment.upsert(lambda m, url, p: forge_pr.fgj_api(m, url.split("/api/v1/", 1)[-1], p),
                                            f"{forge_pr.WEB}/api/v1", repo, number, body)
         if not (answer or {}).get("id"):
             print(f"#{number}: the forge refused the round: {(answer or {}).get('message')}")
