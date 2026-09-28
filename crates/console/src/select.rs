@@ -39,7 +39,7 @@ impl Selection {
 }
 
 /// A drag held against a pane's content, so it outlives a scroll: a content row is its screen
-/// row minus the pane's `scroll_from_bottom`, and rows are kept as they pass through the view.
+/// row minus [`crate::model::Pane::scroll_from_bottom`]; rows are kept as they pass the view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Drag {
     pub pane: PaneId,
