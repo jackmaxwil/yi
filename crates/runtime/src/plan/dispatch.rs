@@ -107,6 +107,7 @@ fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
 fn kwargs_of(agent: &AgentId, delegation: &Delegation) -> Result<Map<String, Value>, String> {
     let mut kwargs = Map::new();
     kwargs.insert("name".to_owned(), Value::String(agent.as_str().to_owned()));
+    kwargs.insert("role".to_owned(), Value::from("root"));
     if let Some(model) = &delegation.spec.model {
         kwargs.insert("model".to_owned(), Value::String(model.clone()));
     }

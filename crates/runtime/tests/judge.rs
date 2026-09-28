@@ -576,13 +576,17 @@ fn evidence_carrying_instructions_is_data() -> TestResult {
 async fn full_capacity_still_adjudicates_through_the_reservation() -> TestResult {
     let rig = rig(catalog("anthropic", "claude-haiku-4-5")?, 2)?;
     for name in ["w1", "w2"] {
-        let kwargs = json!({"name": name})
+        let kwargs = json!({"name": name, "role": "root"})
             .as_object()
             .cloned()
             .unwrap_or_default();
         rig.host.spawn("work".to_owned(), kwargs)?;
     }
-    let third = rig.host.spawn("work".to_owned(), Map::new());
+    let root = json!({"role": "root"})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let third = rig.host.spawn("work".to_owned(), root);
     assert!(third.is_err_and(|refusal| refusal.contains("child limit")));
 
     let (item, url) = rig.item(3)?;

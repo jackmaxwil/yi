@@ -557,7 +557,8 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     ``deadline_s`` and ``tokens`` are the child's lease, drawn from this session's own: an
     ask past what is left here is refused with both numbers, never clamped. ``parent_close``
     is ``"terminate"`` (default, 30 s grace) or ``"request_cancel"``; work is kept either way.
-    ``role="reader"`` makes a question-child: a short reader prompt instead of this session's,
+    A bare call makes a question-child (``role="reader"``, the default; ``role="root"`` is a
+    full child with this session's prompt and tools): a short reader prompt instead of this session's,
     ``tools`` from ``["read", "grep"]`` (both by default, ``[]`` for one request), at most
     ``turns`` requests (3; the last has tools off), writes walled off, and no kernel. It stands
     outside the child cap and sends no finish notice: read it with ``result``. ``partition`` is

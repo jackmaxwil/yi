@@ -149,8 +149,9 @@ throughput and rewritten every week.
 ## Subagents
 
 Subagents are function calls, not protocol. Each session can own a
-persistent Python kernel; from inside it, `rlm.run("prompt")` asks the host
-to spawn a child agent. State survives between calls, snapshots to disk,
+persistent Python kernel; from inside it, `rlm.ask("question", [url])` asks a
+reader child one question over the lines it is handed, and `rlm.run("prompt",
+role="root")` spawns a full child agent. State survives between calls, snapshots to disk,
 revives across restarts. Recursion is a language feature.
 
 Child authority only shrinks: a spawn spec can fork none, all, or the last N

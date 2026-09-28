@@ -660,8 +660,11 @@ impl SubagentHost {
             crate::levers::get().family_cap,
         );
         require_kwargs(&kwargs)?;
-        let reader = reader::parse(&kwargs)?;
         let mut kwargs = kwargs;
+        if matches!(standing, Standing::Worker) && !kwargs.contains_key("role") {
+            kwargs.insert("role".to_owned(), Value::from("reader"));
+        }
+        let reader = reader::parse(&kwargs)?;
         let standing = match (&reader, standing) {
             (Some(_), Standing::Worker) => Standing::Reader,
             (_, standing) => standing,

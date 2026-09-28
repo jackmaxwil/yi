@@ -242,7 +242,8 @@ async fn a_reader_is_refused_what_a_reader_cannot_use() -> TestResult {
     let kernel = refused(json!({"role": "reader", "partition": ["kernel://main/x"]}))
         .ok_or("kernel partition admitted")?;
     assert!(kernel.contains("context_keys"), "{kernel}");
-    let turns = refused(json!({"turns": 2})).ok_or("turns without a reader admitted")?;
+    let turns =
+        refused(json!({"role": "root", "turns": 2})).ok_or("turns without a reader admitted")?;
     assert!(turns.contains("role=\"reader\""), "{turns}");
     Ok(())
 }
@@ -251,18 +252,20 @@ async fn a_reader_is_refused_what_a_reader_cannot_use() -> TestResult {
 async fn readers_stand_outside_the_worker_cap() -> TestResult {
     let script: Script = Arc::new(Mutex::new(vec![reply("a"), reply("b"), reply("c")]));
     let family = family(1, script)?;
-    family
-        .host
-        .spawn("work".to_owned(), kwargs(json!({"name": "w"})))?;
+    family.host.spawn(
+        "work".to_owned(),
+        kwargs(json!({"name": "w", "role": "root"})),
+    )?;
     for name in ["r1", "r2"] {
         family.host.spawn(
             "ask".to_owned(),
             kwargs(json!({"name": name, "role": "reader"})),
         )?;
     }
-    let refused = family
-        .host
-        .spawn("work".to_owned(), kwargs(json!({"name": "w2"})));
+    let refused = family.host.spawn(
+        "work".to_owned(),
+        kwargs(json!({"name": "w2", "role": "root"})),
+    );
     assert!(refused.is_err_and(|error| error.contains("child limit")));
     Ok(())
 }
