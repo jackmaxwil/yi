@@ -52,6 +52,23 @@ pub struct UserConfig {
     pub node: Option<NodeConfig>,
     pub skills: Option<SkillsConfig>,
     pub classifier: Option<ClassifierConfig>,
+    pub permissions: Option<PermissionsConfig>,
+}
+
+/// `permissions.mode`: the mode a run starts in when no `--auto`, `--confirm` or `--yolo` is
+/// given; unset is `auto`. `yi setup` writes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PermissionsConfig {
+    pub mode: Option<ModeName>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModeName {
+    Auto,
+    Ask,
+    Yolo,
 }
 
 /// `classifier`: the sidecar's URL, one decision's deadline, and the confidence it points at;
