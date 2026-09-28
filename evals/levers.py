@@ -207,10 +207,15 @@ def interval(differences, confidence=CONFIDENCE):
 
 
 def graded(row):
-    """Partial credit as `axes.py` fills it (a trace's own score), else the reward. Never the
-    ctrf tally: v4 verifiers ship wrapper tests that pass beside a failing trace
-    (`selftest.py` pins freight-dispatch-shift and vba-userform-port)."""
-    return value(row, "reward") if row.get("partialScore") is None else value(row, "partialScore")
+    """Partial credit: a trace's own score when `axes.py` found one; else, for a task no trace
+    scores, its ctrf test tally (N1: most slice tasks, e.g. production-planning 16/20); else the
+    reward. A trace-scored task's ctrf can be a wrapper test that passes beside a failing trace
+    (`selftest.py` pins freight-dispatch-shift and vba-userform-port), so it is never read there."""
+    if row.get("partialScore") is not None:
+        return value(row, "partialScore")
+    if not row.get("traceScored") and row.get("testsTotal"):
+        return value(row, "testsPassed") / value(row, "testsTotal")
+    return value(row, "reward")
 
 
 def per_task(rows):
