@@ -78,6 +78,13 @@ impl Drop for TerminalGuard {
 
 pub type Backend = ControlPictures<CrosstermBackend<Box<dyn Write + Send>>>;
 
+/// OSC 2 with every control character dropped. Incident: a session named from its first prompt
+/// held `BEL ESC]52;…`, which ended the title early and had the terminal write the clipboard.
+pub fn window_title_osc(title: &str) -> String {
+    let title: String = title.chars().filter(|c| !c.is_control()).collect();
+    format!("\x1b]2;{title}\x07")
+}
+
 /// A control character as its Control Pictures glyph: U+2400 + c for C0, U+2421 for DEL,
 /// and U+FFFD for a C1 control, which has no picture. Anything else is itself.
 pub fn control_picture(c: char) -> char {
@@ -100,17 +107,12 @@ impl<B: ratatui::backend::Backend> ratatui::backend::Backend for ControlPictures
     {
         let cells: Vec<(u16, u16, Cow<'a, Cell>)> = content
             .map(|(x, y, cell)| {
-                if !cell.symbol().contains(char::is_control) {
+                // One glyph for the cell: ratatui gives the CRLF grapheme one cell, not two.
+                let Some(control) = cell.symbol().chars().find(|c| c.is_control()) else {
                     return (x, y, Cow::Borrowed(cell));
-                }
+                };
                 let mut shown = cell.clone();
-                shown.set_symbol(
-                    &cell
-                        .symbol()
-                        .chars()
-                        .map(control_picture)
-                        .collect::<String>(),
-                );
+                shown.set_symbol(control_picture(control).encode_utf8(&mut [0; 4]));
                 (x, y, Cow::Owned(shown))
             })
             .collect();

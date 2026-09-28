@@ -449,13 +449,20 @@ fn a_control_character_shows_as_its_glyph_and_a_tab_as_four_spaces() {
 #[test]
 fn a_control_character_in_a_cell_reaches_the_terminal_as_its_glyph() -> TestResult {
     use ratatui::backend::Backend;
-    let [tab, carriage, plain] = ["\t", "\r", "x"].map(|symbol| {
+    // ratatui keeps CRLF as one grapheme in one cell, so it must stay one glyph wide.
+    let [tab, carriage, crlf, plain] = ["\t", "\r", "\r\n", "x"].map(|symbol| {
         let mut cell = ratatui::buffer::Cell::default();
         cell.set_symbol(symbol);
         cell
     });
-    let mut backend = yi_tui::term::ControlPictures(ratatui::backend::TestBackend::new(3, 1));
-    backend.draw([(0, 0, &tab), (1, 0, &carriage), (2, 0, &plain)].into_iter())?;
-    backend.0.assert_buffer_lines(["␉␍x"]);
+    let cells = [
+        (0, 0, &tab),
+        (1, 0, &carriage),
+        (2, 0, &crlf),
+        (3, 0, &plain),
+    ];
+    let mut backend = yi_tui::term::ControlPictures(ratatui::backend::TestBackend::new(4, 1));
+    backend.draw(cells.into_iter())?;
+    backend.0.assert_buffer_lines(["␉␍␍x"]);
     Ok(())
 }
