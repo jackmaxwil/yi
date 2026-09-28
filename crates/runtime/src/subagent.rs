@@ -710,8 +710,7 @@ impl SubagentHost {
         let (session_dir, child_id) = self.create_child_dir(&self.options.parent_session_dir)?;
         let session_name =
             requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
-        let capped = matches!(standing, Standing::Worker);
-        let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask, capped)?;
+        let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask, &standing)?;
         if let Isolation::Container(image) = &isolation {
             crate::node::placeable(&self.options.home, image)?;
         }

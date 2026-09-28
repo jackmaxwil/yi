@@ -479,7 +479,8 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   question-child: `prompts/reader.md` is its whole system prompt, `tools` a subset of `read` and
   `grep` (both by default), `turns` its request cap (3, at most 10; the last is sent with tools off
   and a `[turns]` note), `deny_write` gains `.`, and it has no extension, kernel, plan, schedule,
-  checkpoint or environment block; a fork or an isolation refuses. `rlm.ask(question, partition,
+  checkpoint or environment block; a fork or an isolation refuses; 64 held readers refuse the next
+  until one is reaped. `rlm.ask(question, partition,
   schema=…)` runs one, reads its result and reaps it.
 - `isolation` is `none`, `worktree` or `container:<image>` (D286), from `rlm.run` or a plan
   delegation's `spec.isolation`. A container child claims the same lane, branch and merge as a

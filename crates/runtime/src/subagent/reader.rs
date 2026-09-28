@@ -11,6 +11,7 @@ const READER_TOOLS: [&str; 2] = ["read", "grep"];
 const DEFAULT_TURNS: u32 = 3;
 const MAX_TURNS: u32 = 10;
 pub(crate) const PARTITION_CAP: usize = 65_536;
+pub const HELD_CAP: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reader {
