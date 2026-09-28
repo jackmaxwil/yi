@@ -257,6 +257,45 @@ fn show_json_carries_the_name_a_session_file_sets() -> TestResult {
     Ok(())
 }
 
+/// Dies with an old session's list reading differently after the todo merge: `yi todo` over a
+/// recorded session prints what the pre-merge binary printed for it, byte for byte.
+#[test]
+fn yi_todo_reads_a_recorded_session_as_before_the_merge() -> TestResult {
+    let workspace = Workspace::new("todo-before")?;
+    let cwd = workspace.project().display().to_string();
+    let session_dir = workspace
+        .0
+        .join("home/sessions")
+        .join(yi_runtime::session_store::session_directory_name(&cwd));
+    std::fs::create_dir_all(&session_dir)?;
+    // The scrub masked every id and the loader refuses duplicates, so they are re-minted as a chain.
+    let mut rows = Vec::new();
+    let mut parent = Value::Null;
+    for (index, line) in include_str!("../../tui/tests/fixtures/sessions/01a0d6e4.jsonl")
+        .lines()
+        .enumerate()
+    {
+        let mut row: Value = serde_json::from_str(line)?;
+        let id = if index == 0 {
+            json!("recorded")
+        } else {
+            json!(format!("e{index}"))
+        };
+        row["id"] = id.clone();
+        if row.get("parentId").is_some() {
+            row["parentId"] = std::mem::replace(&mut parent, id);
+        } else if index > 0 {
+            parent = id;
+        }
+        rows.push(row.to_string());
+    }
+    std::fs::write(session_dir.join("1_recorded.jsonl"), rows.join("\n") + "\n")?;
+    let output = workspace.yi(&["todo"])?;
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout(&output), include_str!("fixtures/todo-before.txt"));
+    Ok(())
+}
+
 #[test]
 fn schema_validates_the_answer() -> TestResult {
     let workspace = Workspace::new("schema")?;

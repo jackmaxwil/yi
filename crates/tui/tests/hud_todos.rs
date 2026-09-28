@@ -3,18 +3,34 @@ use std::time::{Duration, Instant};
 
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::hud::{TODO_FULL_FOR, TodoClock, todo_rows};
-use yi_types::plan::doc::{TodoLabel, TodoStateName};
-use yi_types::todo::{BlockedOn, PhaseName, TodoItem, TodoList, TodoPhase};
+use yi_types::plan::doc::{AgentId, BlockedOn, Todo, TodoLabel, TodoState, TodoStateName};
+use yi_types::todo::{PhaseName, TodoList, TodoPhase};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn item(label: &str, state: TodoStateName) -> Result<TodoItem, Box<dyn Error>> {
-    let mut item = TodoItem::pending(TodoLabel::new(label)?);
-    item.state = state;
+fn item(label: &str, state: TodoStateName) -> Result<Todo, Box<dyn Error>> {
+    let mut item = Todo::pending(TodoLabel::new(label)?);
+    item.state = match state {
+        TodoStateName::Running => TodoState::Running {
+            by: AgentId::owner(),
+        },
+        TodoStateName::Done => TodoState::Done {
+            output: None,
+            resolution: None,
+        },
+        TodoStateName::Blocked => TodoState::Blocked {
+            on: BlockedOn::User,
+            note: String::new(),
+        },
+        TodoStateName::Pending
+        | TodoStateName::Failed
+        | TodoStateName::Abandoned
+        | TodoStateName::Other(_) => TodoState::Pending,
+    };
     Ok(item)
 }
 
-fn phase(name: &str, items: Vec<TodoItem>) -> Result<TodoPhase, Box<dyn Error>> {
+fn phase(name: &str, items: Vec<Todo>) -> Result<TodoPhase, Box<dyn Error>> {
     Ok(TodoPhase {
         name: PhaseName::new(name)?,
         items,
@@ -22,7 +38,7 @@ fn phase(name: &str, items: Vec<TodoItem>) -> Result<TodoPhase, Box<dyn Error>> 
     })
 }
 
-fn list(items: Vec<TodoItem>) -> Result<TodoList, Box<dyn Error>> {
+fn list(items: Vec<Todo>) -> Result<TodoList, Box<dyn Error>> {
     Ok(TodoList {
         phases: vec![phase("Tasks", items)?],
         ..TodoList::default()
@@ -66,8 +82,10 @@ fn rows(list: &TodoList, full: bool) -> Result<(String, Vec<String>), Box<dyn Er
 #[test]
 fn the_block_numbers_open_work_and_hides_a_finished_list() -> TestResult {
     let mut blocked = item("land it", TodoStateName::Blocked)?;
-    blocked.on = Some(BlockedOn::User);
-    blocked.note = Some("which branch".to_owned());
+    blocked.state = TodoState::Blocked {
+        on: BlockedOn::User,
+        note: "which branch".to_owned(),
+    };
     let mut open = list(vec![
         item("read", TodoStateName::Done)?,
         item("write", TodoStateName::Running)?,
@@ -308,7 +326,7 @@ fn a_question_to_the_user_lists_its_options_one_per_row() -> TestResult {
         ]
     );
     let mut answered = record.list;
-    answered.for_each_mut(|row| row.state = TodoStateName::Pending);
+    answered.for_each_mut(|row| row.state = TodoState::Pending);
     let (_, shown) = rows(&answered, true)?;
     assert_eq!(shown, ["land-the-page", "  1. ○ hero style"]);
     Ok(())
@@ -331,5 +349,58 @@ fn a_preview_longer_than_its_row_says_how_many_lines_it_hides() -> TestResult {
         shown.get(3).map(String::as_str),
         Some("       2. Bold · graph TD (+2 lines)")
     );
+    Ok(())
+}
+
+/// Every todo record the recorded session wrote, then the three session fixtures: its checklist
+/// as `yi todo` renders it, then the HUD, full and folded.
+fn before_and_after() -> Result<String, Box<dyn Error>> {
+    let mut sources: Vec<(&str, serde_json::Value)> = Vec::new();
+    for line in include_str!("fixtures/sessions/01a0d6e4.jsonl").lines() {
+        let row: serde_json::Value = serde_json::from_str(line)?;
+        if row.get("customType").and_then(serde_json::Value::as_str) == Some("todo") {
+            sources.push(("01a0d6e4", row.get("data").cloned().ok_or("no data")?));
+        }
+    }
+    for (name, raw) in [
+        (
+            "v1",
+            include_str!("../../types/tests/fixtures/todo-record-v1.json"),
+        ),
+        (
+            "intent",
+            include_str!("../../types/tests/fixtures/todo-record-intent-v1.json"),
+        ),
+        (
+            "ask",
+            include_str!("../../types/tests/fixtures/todo-record-ask-v1.json"),
+        ),
+    ] {
+        sources.push((name, serde_json::from_str(raw)?));
+    }
+    let mut out = Vec::new();
+    for (index, (source, data)) in sources.into_iter().enumerate() {
+        let list = serde_json::from_value::<yi_types::todo::TodoRecord>(data)?.list;
+        out.push(format!("== {source} #{index}"));
+        out.push(yi_runtime::todo::text::render(&list));
+        for full in [true, false] {
+            match todo_rows(Some(&list), full, true, &[], &theme()) {
+                Some((title, rows)) => {
+                    out.push(format!("-- hud full={full}: {title}"));
+                    out.extend(rows.iter().map(text));
+                }
+                None => out.push(format!("-- hud full={full}: hidden")),
+            }
+        }
+    }
+    Ok(out.join("\n") + "\n")
+}
+
+/// Dies with an old session's list reading differently after the todo merge: the reference is
+/// what the pre-merge code printed for the same records, byte for byte.
+#[test]
+fn old_session_lists_read_as_they_did_before_the_merge() -> TestResult {
+    let now = before_and_after()?;
+    assert_eq!(now, include_str!("fixtures/todo-before.txt"));
     Ok(())
 }

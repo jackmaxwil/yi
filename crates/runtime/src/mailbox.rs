@@ -985,8 +985,7 @@ mod tests {
 
     fn write_canonical_plan(cwd: &std::path::Path, check: &str) -> TestResult {
         use yi_types::plan::doc::{
-            Check, Delegation, GoalText, Plan, PlanId, PlanTier, RetryCount, SpawnSpec, Todo,
-            TodoLabel, TodoState,
+            Check, Delegation, GoalText, Plan, PlanId, PlanTier, SpawnSpec, Todo, TodoLabel,
         };
         let store = crate::plan::store::PlanStore::open(cwd.join(crate::plan::PLANS_DIR))?;
         let plan = Plan::opening(
@@ -994,9 +993,6 @@ mod tests {
             GoalText::new("adjudicate discoveries")?,
             PlanTier::Root,
             vec![Todo {
-                label: TodoLabel::new("t1")?,
-                after: Vec::new(),
-                state: TodoState::Pending,
                 delegation: Some(Delegation {
                     spec: SpawnSpec {
                         role: None,
@@ -1015,17 +1011,7 @@ mod tests {
                     note: None,
                     extra: Map::new(),
                 }),
-                subplan: None,
-                retries: RetryCount::default(),
-                children: Vec::new(),
-                note: None,
-                attempt: yi_types::plan::doc::AttemptId::FIRST,
-                refusals: 0,
-                contract: None,
-                contract_hash: None,
-                cites: Default::default(),
-                extra: Map::new(),
-                ask: None,
+                ..Todo::pending(TodoLabel::new("t1")?)
             }],
         );
         store.write(&plan)?;

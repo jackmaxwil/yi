@@ -963,21 +963,8 @@ mod tests {
 
     fn todo(label: &str, state: TodoState) -> Result<Todo, yi_types::plan::doc::DocError> {
         Ok(Todo {
-            label: TodoLabel::new(label)?,
-            after: Vec::new(),
             state,
-            delegation: None,
-            subplan: None,
-            retries: yi_types::plan::doc::RetryCount::default(),
-            children: Vec::new(),
-            note: None,
-            attempt: yi_types::plan::doc::AttemptId::FIRST,
-            refusals: 0,
-            contract: None,
-            contract_hash: None,
-            extra: Map::new(),
-            cites: Default::default(),
-            ask: None,
+            ..Todo::pending(TodoLabel::new(label)?)
         })
     }
 

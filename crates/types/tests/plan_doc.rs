@@ -2,8 +2,7 @@ use serde_json::Map;
 use yi_types::plan::ask::{Ask, AskError, AskOption, OptionId, PREVIEW_MAX_BYTES};
 use yi_types::plan::doc::{
     AgentId, BlockedOn, Check, DocError, GoalText, Isolation, Plan, PlanId, PlanIssue, PlanState,
-    PlanTier, ProbeCommand, RetryCount, SPAWN_CAP, Todo, TodoAddr, TodoLabel, TodoState,
-    terminal_durability,
+    PlanTier, ProbeCommand, SPAWN_CAP, Todo, TodoAddr, TodoLabel, TodoState, terminal_durability,
 };
 use yi_types::url::{Durability, Url};
 
@@ -49,24 +48,12 @@ fn plan_with(todos: Vec<Todo>) -> Result<Plan, DocError> {
 
 fn todo(label: &str, after: &[&str], state: TodoState) -> Result<Todo, DocError> {
     Ok(Todo {
-        label: TodoLabel::new(label)?,
         after: after
             .iter()
             .map(|name| TodoLabel::new(*name))
             .collect::<Result<_, _>>()?,
         state,
-        delegation: None,
-        subplan: None,
-        retries: RetryCount::default(),
-        children: Vec::new(),
-        note: None,
-        attempt: yi_types::plan::doc::AttemptId::FIRST,
-        refusals: 0,
-        contract: None,
-        contract_hash: None,
-        extra: Map::new(),
-        cites: Default::default(),
-        ask: None,
+        ..Todo::pending(TodoLabel::new(label)?)
     })
 }
 

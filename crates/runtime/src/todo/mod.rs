@@ -1,9 +1,10 @@
 use std::sync::{Arc, Mutex};
 
-use yi_types::plan::doc::{DocError, TodoLabel, TodoStateName};
+use yi_types::plan::doc::{
+    AgentId, BlockedOn, DocError, Note, Todo, TodoLabel, TodoState, TodoStateName,
+};
 use yi_types::todo::{
-    BlockedOn, PhaseName, TODO_ENTRY_TYPE, TodoId, TodoItem, TodoList, TodoPhase, TodoProgress,
-    TodoRecord,
+    PhaseName, TODO_ENTRY_TYPE, TodoId, TodoList, TodoPhase, TodoProgress, TodoRecord,
 };
 
 use crate::goal::StoreHandle;
@@ -32,12 +33,12 @@ pub enum Op {
         list: String,
     },
     Init {
-        phases: Vec<(PhaseName, Vec<TodoItem>)>,
+        phases: Vec<(PhaseName, Vec<Todo>)>,
     },
     Append {
         phase: Option<PhaseName>,
         under: Option<TodoLabel>,
-        items: Vec<TodoItem>,
+        items: Vec<Todo>,
     },
     Start {
         label: TodoLabel,
@@ -227,9 +228,9 @@ impl TodoStore {
         };
         self.resync();
         let list = self.list();
-        let running: Vec<&TodoItem> = list
+        let running: Vec<&Todo> = list
             .items()
-            .filter(|item| item.state == TodoStateName::Running)
+            .filter(|item| matches!(item.state, TodoState::Running { .. }))
             .collect();
         let target = match running.as_slice() {
             [] => Target::All,
@@ -260,7 +261,8 @@ impl TodoStore {
                 let list = self.list();
                 let at = locate(&list, label.as_str()).ok();
                 let item = at.and_then(|at| list.items().nth(at));
-                if let Some(item) = item.filter(|item| item.state == TodoStateName::Blocked)
+                if let Some(item) =
+                    item.filter(|item| matches!(item.state, TodoState::Blocked { .. }))
                     && let Some(ask) = item.ask.as_ref().filter(|ask| ask.answer.is_none())
                 {
                     *answer = crate::plan::ask::reply_to(ask, &item.label, &said())?.map(Box::new);
@@ -290,7 +292,7 @@ impl TodoStore {
         Some(carry(
             &item.label,
             done,
-            item.state == TodoStateName::Pending,
+            matches!(item.state, TodoState::Pending),
         ))
     }
 
@@ -487,7 +489,7 @@ pub fn latest_record(session: &yi_session::SharedSession) -> Option<TodoRecord> 
     })
 }
 
-fn named(item: &TodoItem) -> String {
+fn named(item: &Todo) -> String {
     match &item.id {
         Some(id) => format!("{id} {:?}", item.label.as_str()),
         None => format!("{:?}", item.label.as_str()),
@@ -516,7 +518,7 @@ fn known_phases(list: &TodoList) -> String {
     }
 }
 
-fn find_mut<'a>(list: &'a mut TodoList, label: &TodoLabel) -> Option<&'a mut TodoItem> {
+fn find_mut<'a>(list: &'a mut TodoList, label: &TodoLabel) -> Option<&'a mut Todo> {
     for phase in &mut list.phases {
         for item in &mut phase.items {
             if item.label == *label {
@@ -530,7 +532,7 @@ fn find_mut<'a>(list: &'a mut TodoList, label: &TodoLabel) -> Option<&'a mut Tod
     None
 }
 
-fn nth_mut(list: &mut TodoList, index: usize) -> Option<&mut TodoItem> {
+fn nth_mut(list: &mut TodoList, index: usize) -> Option<&mut Todo> {
     let mut at = 0_usize;
     for phase in &mut list.phases {
         for item in &mut phase.items {
@@ -568,7 +570,7 @@ fn normalized(text: &str) -> String {
 /// Exact label; label or id with backticks stripped; an id and its own label (`t1 read the
 /// spec`); the same label [`normalized`]; a unique case-insensitive prefix of [`PREFIX_MIN`].
 fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
-    let items: Vec<&TodoItem> = list.items().collect();
+    let items: Vec<&Todo> = list.items().collect();
     if let Some(index) = items.iter().position(|item| item.label.as_str() == needle) {
         return Ok(index);
     }
@@ -628,7 +630,7 @@ fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
     }
 }
 
-fn resolve<'a>(list: &'a mut TodoList, needle: &TodoLabel) -> Result<&'a mut TodoItem, TodoError> {
+fn resolve<'a>(list: &'a mut TodoList, needle: &TodoLabel) -> Result<&'a mut Todo, TodoError> {
     let index = locate(list, needle.as_str())?;
     let known = known_labels(list);
     nth_mut(list, index).ok_or(TodoError::NoSuchLabel {
@@ -683,42 +685,37 @@ fn block(
     ask: Option<Box<yi_types::plan::ask::Ask>>,
 ) -> Result<(), TodoError> {
     let item = resolve(list, label)?;
-    if item.is_closed() {
+    if item.state.is_terminal() {
         return Err(illegal("block", item));
     }
-    item.state = TodoStateName::Blocked;
-    item.on = Some(on);
-    item.note = Some(note);
+    item.state = TodoState::Blocked { on, note };
     item.ask = ask.map(|ask| *ask);
     Ok(())
 }
 
-fn illegal(op: &'static str, item: &TodoItem) -> TodoError {
+fn abandon(list: &mut TodoList, target: &Target, reason: &Note) -> Result<(), TodoError> {
+    each_target(list, target, |item| {
+        if !matches!(item.state, TodoState::Done { .. }) {
+            item.state = TodoState::Abandoned;
+            item.note = Some(reason.clone());
+        }
+        Ok(())
+    })
+}
+
+fn illegal(op: &'static str, item: &Todo) -> TodoError {
+    let from = TodoStateName::of(&item.state);
     TodoError::Illegal {
         op,
         label: item.label.to_string(),
-        from: item.state.clone(),
-        legal: legal_moves(&item.state).to_owned(),
-    }
-}
-
-fn close(
-    item: &mut TodoItem,
-    state: TodoStateName,
-    note: Option<String>,
-    evidence: Option<String>,
-) {
-    item.state = state;
-    item.on = None;
-    item.note = note;
-    if evidence.is_some() {
-        item.evidence = evidence;
+        legal: legal_moves(&from).to_owned(),
+        from,
     }
 }
 
 fn each_target<F>(list: &mut TodoList, target: &Target, mut act: F) -> Result<(), TodoError>
 where
-    F: FnMut(&mut TodoItem) -> Result<(), TodoError>,
+    F: FnMut(&mut Todo) -> Result<(), TodoError>,
 {
     match target {
         Target::Label(label) => act(resolve(list, label)?),
@@ -747,7 +744,7 @@ fn add_items(
     list: &mut TodoList,
     phase: Option<PhaseName>,
     under: Option<TodoLabel>,
-    items: Vec<TodoItem>,
+    items: Vec<Todo>,
 ) -> Result<(), TodoError> {
     for item in &items {
         if find_mut(list, &item.label).is_some() {
@@ -780,6 +777,7 @@ fn add_items(
 }
 
 fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
+    let done = |item: &Todo| matches!(item.state, TodoState::Done { .. });
     match op {
         Op::View => Ok(()),
         Op::Set { list: source } => {
@@ -788,11 +786,10 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             // A set may not move an item to done; a new `[x]` row only records history.
             let closed: Vec<String> = merged
                 .items()
-                .filter(|item| item.state == TodoStateName::Done)
+                .filter(|item| done(item))
                 .filter(|item| {
-                    list.items().any(|prior| {
-                        prior.label == item.label && prior.state != TodoStateName::Done
-                    })
+                    list.items()
+                        .any(|prior| prior.label == item.label && !done(prior))
                 })
                 .map(|item| format!("{:?}", item.label.as_str()))
                 .collect();
@@ -832,8 +829,9 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
         }
         Op::Start { label } => {
             let item = resolve(list, &label)?;
-            item.state = TodoStateName::Running;
-            item.on = None;
+            item.state = TodoState::Running {
+                by: AgentId::owner(),
+            };
             item.note = None;
             let target = item.label.clone();
             list.for_each_mut(|other| demote(other, &target));
@@ -848,7 +846,7 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
                 let open: Vec<String> = item
                     .children
                     .iter()
-                    .filter(|child| !child.is_closed())
+                    .filter(|child| !child.state.is_terminal())
                     .map(|child| format!("{:?}", child.label.as_str()))
                     .collect();
                 if !open.is_empty() {
@@ -860,10 +858,11 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             }
             let named = matches!(target, Target::Label(_));
             each_target(list, &target, |item| {
-                if matches!(item.state, TodoStateName::Other(_)) || (named && item.is_closed()) {
+                let closed = item.state.is_terminal();
+                if matches!(item.state, TodoState::Other(_)) || (named && closed) {
                     return Err(illegal("done", item));
                 }
-                if item.is_closed() {
+                if closed {
                     return Ok(());
                 }
                 if evidence.is_none() {
@@ -871,17 +870,16 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
                         label: item.label.to_string(),
                     });
                 }
-                close(item, TodoStateName::Done, None, evidence.clone());
+                item.state = TodoState::Done {
+                    output: None,
+                    resolution: None,
+                };
+                item.note = None;
+                item.evidence.clone_from(&evidence);
                 Ok(())
             })
         }
-        Op::Drop { target, reason } => each_target(list, &target, |item| {
-            if item.state == TodoStateName::Done {
-                return Ok(());
-            }
-            close(item, TodoStateName::Abandoned, Some(reason.clone()), None);
-            Ok(())
-        }),
+        Op::Drop { target, reason } => abandon(list, &target, &Note::new(reason)?),
         Op::Block {
             label,
             on,
@@ -890,15 +888,14 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
         } => block(list, &label, on, note, ask),
         Op::Unblock { label, answer } => {
             let item = resolve(list, &label)?;
-            if item.state != TodoStateName::Blocked {
+            if !matches!(item.state, TodoState::Blocked { .. }) {
                 return Err(illegal("unblock", item));
             }
-            item.state = TodoStateName::Pending;
-            item.on = None;
+            item.state = TodoState::Pending;
             item.note = None;
             if let (Some(answer), Some(ask)) = (answer, item.ask.as_mut()) {
-                if !item.intent.contains(&answer.address) {
-                    item.intent.push(answer.address.clone());
+                if !item.cites.intent.contains(&answer.address) {
+                    item.cites.intent.push(answer.address.clone());
                 }
                 ask.answer = Some(*answer);
             }
@@ -928,23 +925,29 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
     }
 }
 
-fn keep_one_running(row: &mut TodoItem, seen: &mut bool) {
-    if row.state == TodoStateName::Running {
+fn keep_one_running(row: &mut Todo, seen: &mut bool) {
+    if matches!(row.state, TodoState::Running { .. }) {
         if *seen {
-            row.state = TodoStateName::Pending;
+            row.state = TodoState::Pending;
         }
         *seen = true;
     }
 }
 
-fn demote(item: &mut TodoItem, keep: &TodoLabel) {
-    if item.state == TodoStateName::Running && item.label != *keep {
-        item.state = TodoStateName::Pending;
+fn demote(item: &mut Todo, keep: &TodoLabel) {
+    if matches!(item.state, TodoState::Running { .. }) && item.label != *keep {
+        item.state = TodoState::Pending;
     }
 }
 
 /// `promote` is off while a plan owns the list: its rows are the running work, not the owner's.
 pub fn normalize(list: &mut TodoList, promote: bool) {
+    let pending = |item: &Todo| matches!(item.state, TodoState::Pending);
+    let run = |item: &mut Todo| {
+        item.state = TodoState::Running {
+            by: AgentId::owner(),
+        }
+    };
     let mut seen_running = false;
     for phase in &mut list.phases {
         for item in &mut phase.items {
@@ -959,18 +962,18 @@ pub fn normalize(list: &mut TodoList, promote: bool) {
     }
     for phase in &mut list.phases {
         for item in &mut phase.items {
-            if item.state == TodoStateName::Pending && item.children.is_empty() {
-                item.state = TodoStateName::Running;
+            if pending(item) && item.children.is_empty() {
+                run(item);
                 return;
             }
             for child in &mut item.children {
-                if child.state == TodoStateName::Pending {
-                    child.state = TodoStateName::Running;
+                if pending(child) {
+                    run(child);
                     return;
                 }
             }
-            if item.state == TodoStateName::Pending {
-                item.state = TodoStateName::Running;
+            if pending(item) {
+                run(item);
                 return;
             }
         }

@@ -437,7 +437,8 @@ def signals(entries):
         if open_items and assistants and assistants[-1]["stop"] == "stop":
             out["stopped_with_open_todos"] = 1
         running = any(i.get("state") == "running" for i in _open_items(last))
-        blocked_user = any(i.get("state") == "blocked" and i.get("on") == "user" for i in _open_items(last))
+        # A format-2 list nests the blocker under `blocked`; format 1 kept it on the item.
+        blocked_user = any(i.get("state") == "blocked" and (i.get("blocked") or i).get("on") == "user" for i in _open_items(last))
         last_line = final.strip().splitlines()[-1] if final.strip() else ""
         # Incident: three rollouts asked the key name mid-paragraph and ended on the follow-up
         # sentence; the final line alone read every one as never asked (issue #275).

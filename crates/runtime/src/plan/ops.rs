@@ -29,7 +29,7 @@ use super::table::{
 use super::verify::Verifier;
 use yi_types::plan::op::Reaped;
 
-pub(crate) const OWNER_AGENT: &str = "main";
+pub(crate) use yi_types::plan::doc::OWNER_AGENT;
 pub(crate) const ENGINE_AGENT: &str = "engine";
 
 const CHILD_SUFFIX_MAX: u32 = 9_999;
