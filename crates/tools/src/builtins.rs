@@ -602,7 +602,7 @@ impl Tool for BashTool {
             .and_then(Value::as_str)
             .unwrap_or_default();
         if command.trim().is_empty() {
-            return poll_job(&input);
+            return poll_job(&input, &context.cancelled);
         }
         if let Some(refusal) = broad_search(command) {
             return error_output(refusal);
@@ -750,10 +750,10 @@ fn backgrounded_output(
     const TAIL_BYTES: usize = 2_048;
     let timeout = timeout.as_secs();
     sections.push(format!(
-        "[still running after {after:?}: now job {id}, killed {timeout}s after it started (timeout_secs). Its result reaches you on its own only if it exits while this turn is still running; before you end the turn, wait for it with bash job={id} wait=<s>.]"
+        "[still running after {after:?}: now job {id}, killed {timeout}s after it started (timeout_secs) or by an interrupt (Esc, the deadline). Its result reaches you on its own only if it exits while this turn is still running; before you end the turn, wait for it with bash job={id} wait=<s>.]"
     ));
-    let so_far = crate::jobs::registry().output_since(id, 0);
-    let so_far = so_far.map(|chunk| chunk.text).unwrap_or_default();
+    let chunk = crate::jobs::registry().output_since(id, 0);
+    let (so_far, printed) = chunk.map_or((String::new(), 0), |chunk| (chunk.text, chunk.next));
     let lines: Vec<&str> = so_far.lines().collect();
     let tail = lines.get(lines.len().saturating_sub(TAIL_LINES)..);
     let tail = tail.unwrap_or_default().join("\n");
@@ -764,7 +764,7 @@ fn backgrounded_output(
         sections.push(format!(
             "[the last {} of {} bytes printed so far (the preview keeps {TAIL_LINES} lines, at most {TAIL_BYTES} bytes); bash job={id} wait=<s> returns its output once it exits]",
             tail.len().saturating_sub(from),
-            so_far.len()
+            printed
         ));
     }
     sections.extend(
@@ -799,14 +799,14 @@ fn timed_out_notes(timeout: std::time::Duration, nudged: bool, asked: Option<u64
             format!(" (clamped to {wait}s)")
         };
         notes.push(format!(
-            "[wait {asked}s{clamped} is not below timeout_secs {secs}s, so it ran in the turn; pass a wait below timeout_secs to get the turn back]"
+            "[wait {asked}s{clamped} is not below timeout_secs {secs}s, so it ran in the turn; to get the turn back, pass a wait below timeout_secs or raise timeout_secs above the wait]"
         ));
     }
     notes
 }
 
 /// The same tool with no command; it holds the job's report so what it returns is not resent.
-fn poll_job(input: &Map<String, Value>) -> ToolOutput {
+fn poll_job(input: &Map<String, Value>, cancelled: &crate::CancelFlag) -> ToolOutput {
     let jobs = crate::jobs::registry();
     let requested = input
         .get("job")
@@ -834,8 +834,10 @@ fn poll_job(input: &Map<String, Value>) -> ToolOutput {
             return output;
         }
         match deadline {
-            Some(limit) if started.elapsed() < limit => {
-                jobs.wait_settled(Some(id), limit.saturating_sub(started.elapsed()));
+            // In slices, so an interrupt (Esc, the deadline) ends the wait within a second.
+            Some(limit) if started.elapsed() < limit && !cancelled() => {
+                let left = limit.saturating_sub(started.elapsed());
+                jobs.wait_settled(Some(id), left.min(std::time::Duration::from_secs(1)));
             }
             _ => {
                 jobs.set_reported(id, false);

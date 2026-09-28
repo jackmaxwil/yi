@@ -864,8 +864,14 @@ async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), 
 }
 
 /// A session wired like `yi ask` whose faux model makes `calls` (bash arguments) in order and
-/// then says each of `replies`.
-fn bash_session(root: &Scratch, calls: &[serde_json::Value], replies: &[&str]) -> AgentSession {
+/// then says each of `replies`. Each test's scratch root is its own cwd, so another session's
+/// completion loop in the same process never takes its jobs.
+fn bash_session(
+    root: &Scratch,
+    calls: &[serde_json::Value],
+    replies: &[&str],
+    deadline: Option<Duration>,
+) -> AgentSession {
     let provider = Arc::new(ProviderStream::new(None, None));
     let calls = calls.iter().enumerate().map(|(n, args)| {
         let args = args.as_object().cloned().unwrap_or_default();
@@ -883,8 +889,20 @@ fn bash_session(root: &Scratch, calls: &[serde_json::Value], replies: &[&str]) -
         tool_execution: ExecutionMode::Sequential,
     };
     let mut session = AgentSession::new(config, provider);
-    attach_like_yi_ask(&mut session, root, None);
+    attach_like_yi_ask(&mut session, root, deadline);
     session
+}
+
+/// The job a transcript's first backgrounded call became, by the id its result names, since the
+/// registry is shared by every test in a `cargo test` process.
+fn job_in(said: &str) -> Result<yi_tools::jobs::JobId, Box<dyn Error>> {
+    let id = said
+        .split("now job ")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|id| id.parse().ok())
+        .ok_or_else(|| format!("no job in {said}"))?;
+    Ok(yi_tools::jobs::JobId(id))
 }
 
 /// Issue #758: a command still running at its `wait` hands the turn back as a job, and a job that
@@ -896,7 +914,7 @@ async fn a_job_that_exits_mid_turn_reports_into_that_turn() -> Result<(), Box<dy
         serde_json::json!({"command": "sleep 6; echo w$((1+1))ke", "wait": 5}),
         serde_json::json!({"command": "sleep 4"}),
     ];
-    let session = bash_session(&root, &calls, &["done", "seen"]);
+    let session = bash_session(&root, &calls, &["done", "seen"], None);
     session.prompt("run it")?;
     tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
     let said = serde_json::to_string(&session.messages())?;
@@ -915,11 +933,13 @@ async fn a_job_that_exits_mid_turn_reports_into_that_turn() -> Result<(), Box<dy
 async fn a_job_that_exits_after_the_turn_waits_for_the_next_one() -> Result<(), Box<dyn Error>> {
     let root = scratch("job-idle")?;
     let calls = [serde_json::json!({"command": "sleep 6; echo w$((1+1))ke", "wait": 5})];
-    let session = bash_session(&root, &calls, &["done", "seen", "after"]);
+    let session = bash_session(&root, &calls, &["done", "seen", "after"], None);
     session.prompt("run it")?;
     tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let job = job_in(&serde_json::to_string(&session.messages())?)?;
     let jobs = yi_tools::jobs::registry();
-    tokio::task::spawn_blocking(|| jobs.wait_settled(None, Duration::from_secs(20))).await?;
+    tokio::task::spawn_blocking(move || jobs.wait_settled(Some(job), Duration::from_secs(20)))
+        .await?;
     tokio::time::sleep(Duration::from_secs(1)).await;
     let idle = serde_json::to_string(&session.messages())?;
     assert!(!idle.contains("<async_result"), "{idle}");
@@ -940,7 +960,7 @@ async fn a_killed_job_reports_that_timeout_secs_killed_it() -> Result<(), Box<dy
         serde_json::json!({"command": "echo started; sleep 30", "wait": 5, "timeout_secs": 7}),
         serde_json::json!({"command": "sleep 5"}),
     ];
-    let session = bash_session(&root, &calls, &["done", "seen"]);
+    let session = bash_session(&root, &calls, &["done", "seen"], None);
     session.prompt("run it")?;
     tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
     let said = serde_json::to_string(&session.messages())?;
@@ -952,5 +972,29 @@ async fn a_killed_job_reports_that_timeout_secs_killed_it() -> Result<(), Box<dy
         report.contains("killed (timeout_secs or an interrupt): echo started; sleep 30"),
         "{said}"
     );
+    Ok(())
+}
+
+/// `--deadline` ends a job the turn handed back, as it ends a command in the turn: once yi exits
+/// nothing else would, since the watchdog is a thread of yi (#819).
+#[tokio::test]
+async fn a_deadline_kills_a_backgrounded_job() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-deadline")?;
+    let calls = [
+        serde_json::json!({"command": "sleep 40", "wait": 5}),
+        serde_json::json!({"command": "sleep 30"}),
+    ];
+    let deadline = Some(Duration::from_secs(12));
+    let session = bash_session(&root, &calls, &["done", "late"], deadline);
+    session.prompt("run it")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = serde_json::to_string(&session.messages())?;
+    let job = job_in(&said)?;
+    let jobs = yi_tools::jobs::registry();
+    tokio::task::spawn_blocking(move || jobs.wait_settled(Some(job), Duration::from_secs(5)))
+        .await?;
+    let state = jobs.report(job).map(|report| report.state);
+    let killed = yi_tools::jobs::JobState::Settled(yi_tools::jobs::Outcome::Killed);
+    assert_eq!(state, Some(killed), "{said}");
     Ok(())
 }
