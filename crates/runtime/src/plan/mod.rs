@@ -13,6 +13,7 @@ use crate::goal::{DeliverFn, StoreHandle};
 
 pub mod acceptance;
 pub mod artifact;
+pub(crate) mod ask;
 pub mod authority;
 mod brief;
 pub mod capacity;
@@ -28,7 +29,6 @@ pub mod ledger;
 pub mod loop_coupling;
 pub mod ops;
 pub mod output;
-pub mod probe;
 pub mod program;
 pub mod recovery;
 pub mod request;
@@ -38,7 +38,9 @@ pub mod state;
 pub mod store;
 pub mod submit;
 pub mod table;
+pub mod timer;
 pub mod tool;
+pub mod trace;
 pub mod verify;
 pub mod why;
 

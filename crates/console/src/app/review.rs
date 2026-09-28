@@ -363,8 +363,6 @@ impl App {
 
     pub(super) fn serving(&self, session: &SessionId) -> Option<String> {
         let list = self.state.chat(session)?.port.todo_list()?;
-        list.items()
-            .find(|item| item.state == yi_types::plan::doc::TodoStateName::Running)
-            .map(|item| item.label.as_str().to_owned())
+        list.running().map(|item| item.label.as_str().to_owned())
     }
 }

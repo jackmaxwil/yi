@@ -18,6 +18,17 @@ Invariants:
 - A note file that does not parse is never refused on disk. It is indexed by its first body line
   and counted as unparsed.
 - Every write holds the store's `.lock` file lock and replaces files by staged rename.
+- Each store keeps `ops.jsonl`, a journal of `save`, `edit`, `adopt`, `forget` and `read` records
+  appended under that lock in the same critical section as the file change, each carrying
+  `sha256(previous digest ‖ canonical record)` as the plan journal does. It names versions by
+  hash and never holds a body; append order is the one order across lanes.
+- Every version's text is `objects/<sha256 hex>`. `memory.forget` deletes all of a note's objects,
+  so no copy stays in the store. The save call's own arguments stay in the transcript of the
+  session that made it, where `history.grep` still finds them.
+- Reconcile at session start journals a note that predates the journal (`adopt`), a hand edit
+  (`edit`) and a hand deletion (`forget` with `by: hand`, its objects deleted too).
+- Each verb also appends a `custom{memory}` entry `{op, name, scope, hash}` to the root session.
+  It never carries the body.
 - Replies never carry a filesystem path; the kernel sandbox cannot read `~/.yi`.
 
 Owner: [`crates/runtime/src/memory/`](../crates/runtime/src/memory/mod.rs) (`mod.rs` verbs,
@@ -37,7 +48,8 @@ Shapes (on disk):
   of the git common dir, so every worktree and lane of one repository shares it (§14). Outside
   a repository the key is the canonical cwd.
 - Global store: `~/.yi/memory/`. Each store holds `<name>.md` per note, `MEMORY.md` (the index, one
-  `- [name](name.md) — description` line per note, hand-editable), `usage.json` and `.lock`.
+  `- [name](name.md) — description` line per note, hand-editable), `usage.json`, `.lock`, the
+  journal `ops.jsonl` ([`MemoryRecord`](../crates/types/src/memory.rs)) and `objects/`.
 
 ## Verbs
 
@@ -72,9 +84,12 @@ and one line per save or forget as footer cells; the HUD shows `saved N`.
 
 ## CLI
 
-`yi memory [list | show <name> | forget <name> | import <dir> | stats | check]` works on both
-stores of the cwd. `import` copies a directory of notes into the repo store, skips identical
+`yi memory [list | show <name> | forget <name> | import <dir> | stats | check | rebuild]` works
+on both stores of the cwd. `import` copies a directory of notes into the repo store, skips identical
 files, merges index lines and reconciles. `stats` prints saves and reads per session per store.
-`check` prints `path:line: reason` per unparsed note and exits 1 if there is any.
+`check` prints `path:line: reason` per unparsed note and exits 1 if there is any. `rebuild`
+restores every note the journal holds and has not forgotten, recounts `usage.json` from the
+journal, names a file that differs from its journal head and a version with no object, and
+exits 1 on a missing object or a broken chain.
 
-Settled by: D169.
+Settled by: D169, D277.

@@ -323,6 +323,7 @@ def signals(entries):
             intercepts.append(message)
         elif role == "custom" and message.get("customType") == "length_redrive":
             out["length_redrive"] += 1
+            # Historical: the forced-bash redrive was removed in be90b814, so a live session reads 0.
             if (message.get("details") or {}).get("forced"):
                 out["length_forced"] += 1
             if (message.get("details") or {}).get("cut"):
@@ -416,7 +417,8 @@ def signals(entries):
             out["kernel_dead"] += 1
         if tool == "ipython" and "is not installed in the kernel. Run `%pip install" in result["text"]:
             out["module_missing"] += 1
-        if tool == "todo" and ("done needs evidence shaped" in result["text"] or "`set` cannot close" in result["text"]):
+        # "done needs evidence shaped" until the refusal was reworded to "done needs evidence:".
+        if tool == "todo" and ("done needs evidence" in result["text"] or "`set` cannot close" in result["text"]):
             out["evidence_shape_refused"] += 1
         if "PermissionDenied" in result["text"] and "PermissionDenied" in final:
             out["sandbox_denial_as_finding"] += 1
@@ -437,7 +439,8 @@ def signals(entries):
         if open_items and assistants and assistants[-1]["stop"] == "stop":
             out["stopped_with_open_todos"] = 1
         running = any(i.get("state") == "running" for i in _open_items(last))
-        blocked_user = any(i.get("state") == "blocked" and i.get("on") == "user" for i in _open_items(last))
+        # Format 2 nests the blocker under `blocked`; format 1 and a pre-merge rewrite keep `on`.
+        blocked_user = any(i.get("state") == "blocked" and (i.get("on") or (i.get("blocked") or {}).get("on")) == "user" for i in _open_items(last))
         last_line = final.strip().splitlines()[-1] if final.strip() else ""
         # Incident: three rollouts asked the key name mid-paragraph and ended on the follow-up
         # sentence; the final line alone read every one as never asked (issue #275).

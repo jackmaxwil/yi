@@ -1,6 +1,6 @@
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content};
-use yi_types::plan::doc::TodoStateName;
+use yi_types::plan::doc::TodoState;
 use yi_types::todo::{Claim, TodoList};
 
 use crate::AgentSession;
@@ -15,7 +15,7 @@ pub fn claims(list: &TodoList, entries: &[Entry]) -> Vec<Claim> {
         .flat_map(records_of)
         .collect();
     list.items()
-        .filter(|item| item.state == TodoStateName::Done)
+        .filter(|item| matches!(item.state, TodoState::Done { .. }))
         .map(|item| {
             let spans = quoted(item.evidence.as_deref().unwrap_or(""));
             let observed = records
