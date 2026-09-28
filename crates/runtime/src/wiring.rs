@@ -333,6 +333,9 @@ fn wire_fetch(
         })
     });
     register_history_grep(registry, session.store_handle());
+    if let Some(dir) = wiring.sessions_dir.clone().filter(|_| wiring.depth == 0) {
+        crate::history::register(registry, dir, wiring.cwd.clone());
+    }
     crate::memory::attach(
         Some(session),
         registry,
@@ -688,6 +691,21 @@ fn wire_job_completions(session: &AgentSession) {
     });
 }
 
+fn journal_into(
+    store: Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>,
+) -> crate::permission::Journal {
+    Arc::new(move |record| {
+        let (Some(store), Ok(data)) = (store(), serde_json::to_value(&record)) else {
+            return;
+        };
+        let _journaled = yi_session::lock_session(&store).append_custom(
+            "main",
+            yi_types::permission::PERMISSION_ENTRY,
+            Some(data),
+        );
+    })
+}
+
 /// One thread turns the job registry's settles into a wake the per-session loops can await.
 fn job_settled() -> &'static tokio::sync::Notify {
     static SETTLED: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
@@ -823,6 +841,9 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::fetch::route_urls(&mut tools, &resolver);
     tools.push(crate::kernel::ipython_tool(Arc::clone(&service)));
     crate::auto_review::wire(session, &wiring, &mut tools);
+    if let Some(broker) = &wiring.broker {
+        broker.set_journal(journal_into(session.store_handle()));
+    }
     let fetch_for_rules = Arc::clone(&fetch_log);
     wire_plan_engine(session, &wiring, &plans_dir, &host, &mut tools, plan);
     if let (Some(plan), Some(advisor)) = (session.plan_service(), session.advisor()) {
