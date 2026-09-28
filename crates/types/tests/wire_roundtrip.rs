@@ -319,9 +319,13 @@ fn permission_records_round_trip_with_an_unknown_answerer_and_field()
             &Answerer::User,
             &Answerer::Reviewer,
             &Answerer::Nobody,
-            &Answerer::Other("classifier".to_owned())
+            &Answerer::Classifier
         ]
     );
     assert_eq!(serde_json::to_value(&records)?, stored);
+    let later = serde_json::json!({"toolCallId": "c", "title": "t", "description": "d", "allowed": false, "by": "timeout"});
+    let record: PermissionRecord = serde_json::from_value(later.clone())?;
+    assert_eq!(record.by, Answerer::Other("timeout".to_owned()));
+    assert_eq!(serde_json::to_value(&record)?, later);
     Ok(())
 }

@@ -2231,6 +2231,7 @@ dependencies = [
  "yi-console",
  "yi-mcp-cli",
  "yi-runtime",
+ "yi-tools",
  "yi-tui",
  "yi-types",
 ]

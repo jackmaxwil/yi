@@ -69,6 +69,7 @@ struct Shared {
     coupling: Mutex<Option<TurnCoupling>>,
     waits: Mutex<Option<Arc<dyn Fn() -> u64 + Send + Sync>>>,
     environment: Mutex<Option<Arc<EnvironmentFn>>>,
+    reuse: Mutex<yi_types::model::Reuse>,
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
@@ -176,6 +177,7 @@ impl AgentSession {
                 signal: InterruptSignal::default(),
                 on_turn_start: Mutex::new(None),
                 environment: Mutex::new(None),
+                reuse: Mutex::new(yi_types::model::Reuse::Loop),
                 lane: Mutex::new(None),
                 telemetry: Mutex::new(None),
                 todos: Mutex::new(None),
@@ -274,6 +276,14 @@ impl AgentSession {
     pub fn set_environment(&self, hook: Arc<EnvironmentFn>) {
         if let Ok(mut slot) = self.shared.environment.lock() {
             *slot = Some(hook);
+        }
+    }
+
+    /// A session whose one prompt is never continued (the auto-reviewer) says so, and its
+    /// tail is never marked (D295).
+    pub fn set_reuse(&self, reuse: yi_types::model::Reuse) {
+        if let Ok(mut slot) = self.shared.reuse.lock() {
+            *slot = reuse;
         }
     }
 

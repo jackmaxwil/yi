@@ -316,7 +316,7 @@ fn goal_service(spec: &Value) -> Result<(Arc<GoalService>, yi_session::SharedSes
 async fn drive(cassette: &Value, root: &Path) -> Result<Recorded, Fatal> {
     materialize(cassette.get("workspace"), root)?;
 
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     for turn in items(cassette, "turns") {
         let mut batch = Vec::new();
         for spec in items(turn, "responses") {
