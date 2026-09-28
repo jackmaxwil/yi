@@ -15,10 +15,10 @@ them without a server.
 import argparse
 import json
 import pathlib
-import tempfile
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -216,6 +216,7 @@ def cmd_ratchet(args):
     return binary_ratchet(args.topic) if not args.no_binary else 0
 
 
+def cmd_commit(args):
     from check_commit_style import subject_errors
 
     errs = subject_errors(args.subject.strip())
@@ -414,8 +415,8 @@ def cmd_ready(args):
         print(f"#{number} is not a draft")
         return 0
     answer = fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
-    if answer and answer.get("message"):
-        print(f"#{number} not readied: {answer['message']}")
+    if not answer or answer.get("message"):
+        print(f"#{number} not readied: {(answer or {}).get('message', 'the forge answered 404')}")
         return 1
     print(f"#{number} is ready: {title.removeprefix(DRAFT)}")
     return 0
@@ -618,7 +619,8 @@ def cmd_land(args):
         return code
     # `just land` is the owner asking for this merge now, so it readies its own draft.
     args.number = None
-    cmd_ready(args)
+    if cmd_ready(args):
+        return 1
     args.wait = True
     return cmd_merge(args)
 
@@ -719,13 +721,14 @@ def selfcheck():
         body_file.unlink()
     assert stopped == 1, "an incomplete body is refused by edit"
     assert any("no `## Why needed`" in line for line in seen.getvalue().splitlines()), seen.getvalue()
+    # Incident: review round 1's fixer deleted `def cmd_commit` and every hook stayed green,
+    # because nothing here built the verbs; a name the parser wires that no longer exists
+    # now fails this flag instead of the next `just commit`.
+    build_parser()
     print("ok   forge_pr selfcheck")
 
 
-def main(argv):
-    if "--selfcheck" in argv:
-        selfcheck()
-        return 0
+def build_parser():
     parser = argparse.ArgumentParser(prog="just")
     verbs = parser.add_subparsers(dest="verb", required=True)
     ratchet = verbs.add_parser("ratchet")
@@ -770,6 +773,14 @@ def main(argv):
     merge.add_argument("--no-wait", dest="wait", action="store_false")
     merge.add_argument("--timeout", type=int, default=40)
     merge.set_defaults(run=cmd_merge)
+    return parser
+
+
+def main(argv):
+    if "--selfcheck" in argv:
+        selfcheck()
+        return 0
+    parser = build_parser()
     args = parser.parse_args(argv)
     return args.run(args)
 
