@@ -26,6 +26,8 @@ const BLOCK_PAGE_CAP: usize = 20;
 /// A rename past these is a refactor the model should see file by file.
 const REPLACE_FILES_CAP: usize = 50;
 const REPLACE_HITS_CAP: usize = 500;
+/// Queries whose last sweep is remembered; past this the memory starts over.
+const SWEEPS_KEPT: usize = 64;
 
 /// `type` shorthand for an include glob; a name outside the map fails loudly.
 const TYPES: [(&str, &str); 12] = [
@@ -379,6 +381,42 @@ fn collect(
 }
 
 impl GrepTool {
+    /// Remembers each query's last sweep; a later page over a different one says so, because its
+    /// offset now counts matches the model has not paged through.
+    fn sweep_row(
+        &self,
+        input: &Map<String, Value>,
+        offset: usize,
+        collected: &Collected,
+    ) -> Option<String> {
+        let state = self.hashline.as_ref()?;
+        let query: std::collections::BTreeMap<&str, &Value> = input
+            .iter()
+            .filter(|(key, _)| key.as_str() != "offset")
+            .map(|(key, value)| (key.as_str(), value))
+            .collect();
+        let key = serde_json::to_string(&query).ok()?;
+        let mut bytes: Vec<u8> = Vec::new();
+        for file in &collected.files {
+            let width = u64::try_from(file.display.len()).unwrap_or(u64::MAX);
+            let hits = u64::try_from(file.hits.len()).unwrap_or(u64::MAX);
+            bytes.extend_from_slice(&width.to_le_bytes());
+            bytes.extend_from_slice(file.display.as_bytes());
+            bytes.extend_from_slice(&hits.to_le_bytes());
+        }
+        let print = u64::from(xxhash_rust::xxh32::xxh32(&bytes, 0)) << 32
+            | u64::from(xxhash_rust::xxh32::xxh32(&bytes, 1));
+        let mut guard = crate::hashline::tool::lock_state(state);
+        let sweeps = &mut guard.grep_sweeps;
+        if sweeps.len() >= SWEEPS_KEPT && !sweeps.contains_key(&key) {
+            sweeps.clear();
+        }
+        let kept = sweeps.insert(key, print);
+        (offset > 0 && kept.is_some_and(|kept| kept != print)).then(|| {
+            "[matches changed since the last page; offsets now count the current sweep]".to_owned()
+        })
+    }
+
     /// Windows around each page hit, deduped forward like `rg` output. Rows
     /// shown in full width join the seen set so a hit anchors an edit.
     fn render_file(
@@ -875,6 +913,7 @@ impl Tool for GrepTool {
                 ));
             }
         }
+        rows.extend(self.sweep_row(&input, offset, &collected));
         cut_notices(&collected, context_asked, &mut rows);
         if let Some(asked) = context_ignored {
             rows.push(format!(
