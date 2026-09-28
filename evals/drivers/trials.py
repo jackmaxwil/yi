@@ -29,7 +29,7 @@ STAGE_SOFT, STAGE_HARD, WEEK_SOFT, WEEK_HARD = 13.0, 15.0, 25.0, 30.0
 TRIAL_USD = 0.27
 SUMMED = ("input", "cacheRead", "cacheWrite", "output", "turns")
 KEPT = ("task", "trial", "reward", "partialScore", "testsPassed", "testsTotal", "traceScored", "censored",
-        "errored", "timedOut", "wallSec")
+        "errored", "verifierUnmeasured", "timedOut", "wallSec")
 
 
 def trial_rows(job):
@@ -86,11 +86,12 @@ def spend(store, now, run_id=None):
     return round(run, 6), round(total, 6)
 
 
-def caps(run_id, tasks, store=STORE, now=None):
-    """(hard cap for this call, None) or (0, the soft cap it would cross)."""
+def caps(run_id, tasks, store=STORE, now=None, per_trial=TRIAL_USD):
+    """(hard cap for this call, None) or (0, the soft cap it would cross). `per_trial` is the
+    predicted cost of one trial: a slice trial's by default, an inner-loop runner passes its own."""
     now = time.time() if now is None else now
     run, week = spend(store, now, run_id)
-    predicted = tasks * TRIAL_USD
+    predicted = tasks * per_trial
     if run + predicted > STAGE_SOFT:
         return 0.0, f"stage soft cap ${STAGE_SOFT:g}: {run_id} has spent ${run:.2f}, this call is predicted ${predicted:.2f}"
     if week + predicted > WEEK_SOFT:
