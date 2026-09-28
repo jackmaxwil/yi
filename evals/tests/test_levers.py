@@ -234,9 +234,13 @@ class TaskLevel(unittest.TestCase):
         self.assertEqual((better["verdict"], better["road"]), ("better", "economy"))
 
     def test_a_lost_pass_and_unpriced_trials_have_their_own_reasons(self):
-        base = lambda t, r: trial(t, 0.5, reward=1.0 if t == "t00" else 0.0)
-        lost = self.judge(*arms(SLICE, 2, base, lambda t, r: trial(t, 0.9)))
+        base = lambda t, r: trial(t, 0.5, reward=1.0)
+        lost = self.judge(*arms(SLICE, 2, base, lambda t, r: trial(t, 0.9, reward=0.0 if t != "t00" else 1.0)))
         self.assertEqual((lost["verdict"], lost["reason"]), ("rejected", "pass_lost"))
+        # Inner A/A, 2026-09-28: two same-config arms of 60 tasks, and one arm fully solved one task
+        # fewer; a count of binary passes with no tolerance rejected an A/A. One flip is noise.
+        flip = lambda t, r: trial(t, 0.5, reward=0.0 if t == "t00" and r == 0 else 1.0)
+        self.assertNotEqual(self.judge(*arms(SLICE, 2, base, flip))["reason"], "pass_lost")
         unpriced = lambda t, r: trial(t, 0.9, cost=None if t in {"t00", "t01"} and r == 0 else 1.0)
         got = self.judge(*arms(SLICE, 2, lambda t, r: trial(t, 0.5), unpriced))
         self.assertEqual((got["verdict"], got["reason"]), ("inconclusive", "unmeasured"))
