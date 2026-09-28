@@ -272,6 +272,11 @@ fn error_classes_render_a_closed_vocabulary() {
         ErrorClass::from_provider_text("model went away").to_string(),
         "provider:error"
     );
+    // A child on a provider with no credential is a missing key, not a provider outage.
+    assert_eq!(
+        ErrorClass::from_provider_text(&yi_runtime::auth::missing_message("anthropic")).to_string(),
+        "refusal:no_key"
+    );
     // Ledger row 0017's three dead streams, each its own class (issue #256).
     assert_eq!(
         ErrorClass::from_provider_text("Bad address (os error 14)").to_string(),
