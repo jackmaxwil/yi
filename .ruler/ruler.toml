@@ -4,7 +4,7 @@ default_agents = ["claude", "pi"]
 enabled = false
 
 [gitignore]
-enabled = true
+enabled = false
 
 [backup]
 enabled = false
