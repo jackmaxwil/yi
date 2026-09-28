@@ -166,6 +166,36 @@ fn oversized_skeleton_layer_names_its_truncation() -> TestResult {
     Ok(())
 }
 
+/// The 4 KB layer clamp cut the skeleton layer mid-entry and dropped its own footer, the one
+/// row that says how to see the rest.
+#[test]
+fn a_byte_capped_skeleton_layer_ends_on_whole_rows_with_its_footer() -> TestResult {
+    let dir = fixture("byte-capped")?;
+    let body: String = (0..12)
+        .map(|n| format!("pub fn a_rather_long_generated_function_name_{n:02}() {{}}\n"))
+        .collect();
+    for index in 0..30 {
+        fs::write(dir.join(format!("wide{index:02}.rs")), &body)?;
+    }
+    let packet = run(&dir, Map::new());
+    let layer = skeleton_layer(&packet);
+    assert!(!layer.contains("truncated at 4000 bytes"), "{layer}");
+    let last = layer.trim_end().lines().last().unwrap_or_default();
+    assert!(
+        last.starts_with("[skeletons truncated: ")
+            && last.contains(" of 32 files at the 4000-byte layer budget;"),
+        "{layer}"
+    );
+    assert!(layer.len() <= 4_000, "{}", layer.len());
+    for row in layer
+        .lines()
+        .filter(|row| row.contains("generated_function_name"))
+    {
+        assert!(row.ends_with("() {}"), "a row cut mid-entry: {row:?}");
+    }
+    Ok(())
+}
+
 #[test]
 fn symbol_argument_reaches_the_neighborhood_layer() -> TestResult {
     let dir = fixture("symbol")?;
