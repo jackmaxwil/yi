@@ -24,6 +24,7 @@ graph/refine.py              offline refiner for the procedural graph (D219): pr
 orient_census.py             read-only census of route telemetry and get_context packets in session files
 judge_replay.py              stage 0 judge replay over recorded sessions, read-only (D259); replay/ holds its prompts and schemas
 rule_fires.py                labelled haystack lanes against what the rule matcher can see
+skill_labels.py              typed messages -> teacher labels -> a frozen sample: the skill classifier's training data (#779)
 journeys/ab.py               journey prompts under one prompt ref, scored by the session-mining extractor
 drivers/                     harbor sweep drivers, spend and wall caps (drivers/README.md)
 improve/                     one round's proposer half: a development-only corpus, a history-free snapshot, S0 (round.py, brief.md)
