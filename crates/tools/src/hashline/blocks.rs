@@ -1,8 +1,8 @@
 use super::messages::{
     AbsoluteRangeOp, BLOCK_RESOLVER_UNAVAILABLE, BlockDiagnosticSuggestions,
-    block_single_line_message, block_unresolved_message, insert_after_block_closer_lowered_warning,
-    insert_after_block_unresolved_message, paste_after_block_closer_lowered_warning,
-    paste_after_block_unresolved_message,
+    REPLACE_PAIR_COALESCED_WARNING, block_single_line_message, block_unresolved_message,
+    insert_after_block_closer_lowered_warning, insert_after_block_unresolved_message,
+    paste_after_block_closer_lowered_warning, paste_after_block_unresolved_message,
 };
 use super::types::{
     Anchor, BlockMode, BlockResolution, BlockResolver, BlockSpan, Cursor, Edit, ParsedRange,
@@ -309,6 +309,10 @@ pub fn resolve_block_edits(
                 }
             }
         }
+    }
+    // Block ops became lines just now; two hunks over one line are judged like ranged ones.
+    if super::parser::coalesce_overlapping_ranges(&mut out)? {
+        warnings.push(REPLACE_PAIR_COALESCED_WARNING.to_owned());
     }
     Ok(ResolvedBlocks {
         edits: out,
