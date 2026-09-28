@@ -68,8 +68,7 @@ levers! {
     plan_spawn_cap: u32 = "plan.spawn_cap", yi_types::plan::doc::SPAWN_CAP.get(), 8..=256, false;
     plan_retry_cap: u8 = "plan.retry_cap", plan::table::RETRY_CAP.0, 1..=16, false;
     plan_stale_turns: u64 = "plan.stale_turns", plan::DEFAULT_STALE_TURNS, 4..=40, true;
-    plan_probe_first_s: u64 = "plan.probe_first_s", plan::probe::FIRST_DELAY.as_secs(), 10..=600, true;
-    plan_probe_max_s: u64 = "plan.probe_max_s", plan::probe::MAX_DELAY.as_secs(), 300..=7200, true;
+    plan_probe_first_s: u64 = "plan.probe_first_s", crate::schedule::clock::PROBE_EVERY_S, 10..=600, true;
     plan_stop_cap: u32 = "plan.stop_cap", plan_gate::STOP_CAP_PER_CYCLE, 0..=6, true;
     plan_multi_step_score: usize = "plan.multi_step_score", plan_gate::MULTI_STEP_SCORE, 1..=6, true;
     plan_long_prompt_words: usize = "plan.long_prompt_words", plan_gate::LONG_PROMPT_WORDS, 10..=120, true;

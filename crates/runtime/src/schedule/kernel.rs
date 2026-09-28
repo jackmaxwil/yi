@@ -36,7 +36,97 @@ fn policy(
     Ok(())
 }
 
+fn subscription(
+    address: &str,
+    payload: &serde_json::Map<String, serde_json::Value>,
+    label: Option<String>,
+    prompt: &str,
+) -> Result<super::channel::Subscribe, String> {
+    let ms = |key: &str| payload.get(key).and_then(serde_json::Value::as_u64);
+    let retention = payload
+        .get("retention")
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|error| format!("retention must be {{count, ageMs}}: {error}"))?;
+    Ok(super::channel::Subscribe {
+        address: address.to_owned(),
+        filter: payload
+            .get("filter")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        batch: ms("batch").and_then(|size| u32::try_from(size).ok()),
+        cadence_ms: ms("minIntervalMs").max(ms("windowMs")),
+        retention,
+        label,
+        prompt: prompt.to_owned(),
+    })
+}
+
 impl HeartbeatService {
+    /// A clock job from `schedule` or a `clock://` address, or a channel subscription from any
+    /// other address, with its policy and the words that set it up.
+    fn create_job(
+        &self,
+        payload: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Job, String> {
+        let address = payload.get("address").and_then(serde_json::Value::as_str);
+        let schedule_text = address
+            .and_then(|address| address.strip_prefix(super::clock::CLOCK_SCHEME))
+            .or_else(|| payload.get("schedule").and_then(serde_json::Value::as_str));
+        let prompt = payload
+            .get("prompt")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("rlm_heartbeat.create requires a prompt")?;
+        let label = payload
+            .get("label")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let delivery = match payload
+            .get("deliveryMode")
+            .and_then(serde_json::Value::as_str)
+        {
+            None => None,
+            Some("steer") => Some(DeliveryMode::Steer),
+            Some("follow_up") => Some(DeliveryMode::FollowUp),
+            Some(_) => {
+                return Err("Heartbeat delivery mode must be \"steer\" or \"follow_up\"".to_owned());
+            }
+        };
+        let now = yi_session::now_ms();
+        let mut job = match (schedule_text, address) {
+            (Some(schedule_text), _) => {
+                let (parsed, next_run_at) =
+                    parse_schedule(&normalize_heartbeat_schedule(Some(schedule_text)), now)?;
+                new_job(JobSpec {
+                    id: format!("rhb-{}", crate::subagent::random_suffix()?),
+                    session_id: self.bound_session_id()?,
+                    cwd: self.cwd.clone(),
+                    source: yi_types::schedule::JobSource::RlmHeartbeat,
+                    delivery_mode: delivery,
+                    label,
+                    prompt: prompt.to_owned(),
+                    schedule: parsed,
+                    next_run_at,
+                    now_ms: now,
+                })
+            }
+            (None, Some(address)) => {
+                let spec = subscription(address, payload, label, prompt)?;
+                let mut job = self.channel_job(&self.bound_session_id()?, spec, None, now)?;
+                job.delivery_mode = delivery;
+                job
+            }
+            (None, None) => {
+                return Err("rlm_heartbeat.create requires a schedule or an address".to_owned());
+            }
+        };
+        policy(&mut job, payload)?;
+        if job.intent.is_empty() {
+            job.intent = self.latest_words();
+        }
+        Ok(job)
+    }
+
     /// Registers the kernel-side vocabulary (design §15.2): list, create,
     /// update (pause/resume), delete.
     pub fn register(self: &std::sync::Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
@@ -60,50 +150,7 @@ impl HeartbeatService {
         let create = std::sync::Arc::clone(self);
         registry.register("rlm_heartbeat.create", move |payload| {
             let result = (|| {
-                let schedule_text = payload
-                    .get("schedule")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or("rlm_heartbeat.create requires a schedule")?;
-                let prompt = payload
-                    .get("prompt")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or("rlm_heartbeat.create requires a prompt")?;
-                let label = payload
-                    .get("label")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned);
-                let delivery = match payload
-                    .get("deliveryMode")
-                    .and_then(serde_json::Value::as_str)
-                {
-                    None => None,
-                    Some("steer") => Some(DeliveryMode::Steer),
-                    Some("follow_up") => Some(DeliveryMode::FollowUp),
-                    Some(_) => {
-                        return Err(
-                            "Heartbeat delivery mode must be \"steer\" or \"follow_up\"".to_owned()
-                        );
-                    }
-                };
-                let now = yi_session::now_ms();
-                let (parsed, next_run_at) =
-                    parse_schedule(&normalize_heartbeat_schedule(Some(schedule_text)), now)?;
-                let mut job = new_job(JobSpec {
-                    id: format!("rhb-{}", crate::subagent::random_suffix()?),
-                    session_id: create.bound_session_id()?,
-                    cwd: create.cwd.clone(),
-                    source: yi_types::schedule::JobSource::RlmHeartbeat,
-                    delivery_mode: delivery,
-                    label,
-                    prompt: prompt.to_owned(),
-                    schedule: parsed,
-                    next_run_at,
-                    now_ms: now,
-                });
-                policy(&mut job, &payload)?;
-                if job.intent.is_empty() {
-                    job.intent = create.latest_words();
-                }
+                let job = create.create_job(&payload)?;
                 create.store().mutate(|state| state.jobs.push(job.clone()));
                 serde_json::json!({"job": job})
                     .as_object()
@@ -139,6 +186,9 @@ impl HeartbeatService {
                         .find(|job| job.id == id && job.session_id == owner);
                     found.map(|job| {
                         job.status = target;
+                        if let (JobStatus::Active, Some(sub)) = (target, &job.channel) {
+                            super::adapter::revive(std::path::Path::new(&sub.path));
+                        }
                         if target == JobStatus::Active && job.next_run_at.is_none() {
                             job.next_run_at =
                                 next_run_at_for_schedule(&job.schedule, now).ok().flatten();

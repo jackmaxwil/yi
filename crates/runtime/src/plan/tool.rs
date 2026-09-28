@@ -795,7 +795,7 @@ pub fn schema() -> Value {
                 "labels": {"type": "array", "items": {"type": "string"}, "description": "reorder: every label of the plan, in the new priority order"},
                 "todo": {"type": "string", "description": "add_edge: the todo that waits"},
                 "after": {"type": "string", "description": "add_edge: the sibling it waits on"},
-                "on": {"type": "object", "description": "block: {\"child\": agent} | {\"user\": null} | {\"external\": {\"probe\": command}} | {\"channel\": {\"address\": \"clock://at <ISO time>\"}}, unblocked then"},
+                "on": {"type": "object", "description": "block: {\"child\": agent} | {\"user\": null} | {\"external\": {\"probe\": command}} | {\"channel\": {\"address\": \"clock://at <ISO time>\" or an exec://, file:// or channel:// address as in todo, \"filter\"?}}, unblocked by the first match"},
                 "note": {"type": "string", "description": "block: what would unblock it"},
                 "options": {"type": "array", "items": {"type": "object"}, "description": "block on user: 3 to 5 answers [{id, label, preview?}] the user picks one of by replying with its number, id or label; a preview is light (a line, a small diagram's source, or an address), at most 2048 bytes"},
                 "cause": {"type": "string", "description": "fail: what went wrong"},

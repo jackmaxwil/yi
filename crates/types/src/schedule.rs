@@ -115,6 +115,9 @@ pub struct Job {
     /// Held by the kill switch, apart from `status`, until `/heartbeat resume`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub halted: bool,
+    /// A channel subscription: each tick reads the buffer past its ack instead of the clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<crate::channel::ChannelSub>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

@@ -239,16 +239,16 @@ impl AgentSession {
                 .and_then(|slot| slot.as_ref().map(Arc::clone))
                 .ok_or("a tick creates a todo, and this session has no todo list")?;
             let fired = crate::schedule::clock::fire(&todos, job, firing)?;
-            let Some(wake) =
+            let outcome = crate::schedule::clock::outcome(&fired);
+            if let Some(wake) =
                 crate::schedule::clock::wake_message(job, &fired, yi_session::now_ms())
-            else {
-                return Ok(crate::schedule::RunOutcome::Skipped);
-            };
-            let mode = job
-                .delivery_mode
-                .unwrap_or(crate::schedule::DEFAULT_HEARTBEAT_DELIVERY_MODE);
-            hook(wake, mode);
-            Ok(crate::schedule::RunOutcome::Ran)
+            {
+                let mode = job
+                    .delivery_mode
+                    .unwrap_or(crate::schedule::DEFAULT_HEARTBEAT_DELIVERY_MODE);
+                hook(wake, mode);
+            }
+            Ok(outcome)
         })
     }
 

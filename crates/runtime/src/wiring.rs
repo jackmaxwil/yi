@@ -220,7 +220,15 @@ fn wire_schedule(
             .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver))
             .with_stop(session.halt_hook())
             .with_words(session.store_handle())
+            .with_channels(
+                wiring
+                    .sessions_dir
+                    .as_ref()
+                    .unwrap_or(&wiring.rlm_dir)
+                    .join("channels"),
+            )
             .interned();
+    crate::schedule::adapter::adapters_home(&wiring.home);
     let heartbeats = Arc::new(match (&wiring.sessions_dir, wiring.depth) {
         (Some(sessions), 0) => heartbeats.durable(sessions.join("schedules")),
         _ => heartbeats,
@@ -501,10 +509,6 @@ fn wire_plan_engine(
     let Some((engine, actor, todos)) = plan else {
         return;
     };
-    let probe_deliver: crate::goal::DeliverFn = {
-        let hook = session.heartbeat_hook();
-        Arc::new(move |message, mode| hook(message, mode))
-    };
     if let Some(service) = session.plan_service() {
         service.set_engine(Arc::clone(&engine), actor.clone());
     }
@@ -531,8 +535,8 @@ fn wire_plan_engine(
         });
         let children = Arc::clone(host);
         let leased = Arc::clone(host);
-        let ladder = Arc::new(
-            crate::plan::probe::ProbeLadder::new(engine, (plans_dir, &wiring.cwd), probe_deliver)
+        let timer = Arc::new(
+            crate::plan::timer::PlanTimer::new(engine)
                 .with_children(Arc::new(move || children.states()), {
                     let (notice, stalled) = (lifecycle_notice(session), Arc::clone(host));
                     Arc::new(move |text: &str, news| {
@@ -554,19 +558,14 @@ fn wire_plan_engine(
                 }),
         );
         // A grace rides the loop's own due-time set, so an earlier one interrupts its sleep.
-        let timer = Arc::clone(&ladder);
+        let due = Arc::clone(&timer);
         host.set_lease_clock(
             None,
             Some(Arc::new(move |grace| {
-                timer.wake_at(
-                    timer
-                        .now()
-                        .checked_add(grace)
-                        .unwrap_or_else(|| timer.now()),
-                );
+                due.wake_at(due.now().checked_add(grace).unwrap_or_else(|| due.now()));
             })),
         );
-        crate::plan::probe::spawn(ladder);
+        crate::plan::timer::spawn(timer);
         crate::plan::loop_coupling::coupling(
             session,
             crate::plan::loop_coupling::CouplingOptions {

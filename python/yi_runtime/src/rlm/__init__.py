@@ -725,6 +725,52 @@ async def request(target: "str | RLMSubagent", message: str, timeout: float = 30
 
 
 @_public
+async def subscribe(
+    address: str,
+    create: dict[str, Any],
+    *,
+    filter: str | None = None,
+    batch: int | None = None,
+    window: float | None = None,
+    min_interval: float | None = None,
+    retention: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Make a todo from what arrives at ``address``; returns ``{job}``.
+
+    ``address`` is ``clock://<schedule>``, ``channel://<name>`` or a source URI:
+    ``exec://<command>?every=30s`` (its exit, ``{ok, exit, output}``, when it changes),
+    ``file://<path>`` (its ``{exists, size, mtimeMs}``), or ``<scheme>://…`` for an
+    installed ``yi-adapter-<scheme>``. ``create`` is ``{label, note, intent?}``: a match
+    appends one todo and wakes you with the messages as data, never as a prompt.
+    ``filter`` is ``key=value`` terms joined by ``&``, or a substring. At most ``batch``
+    messages (20) ride one todo, at most one a ``window``/``min_interval`` (60 s).
+    ``retention`` (``{count}`` or ``{age}`` seconds; 256 messages) is set by the first
+    subscription to a source. To wait instead, block a todo ``on`` the address.
+    """
+    if not isinstance(create, dict) or not isinstance(create.get("label"), str):
+        raise TypeError("create must be a dict with a label")
+    payload: dict[str, Any] = {
+        "address": address,
+        "label": create["label"],
+        "prompt": create.get("note") or create["label"],
+    }
+    if "intent" in create:
+        payload["intent"] = create["intent"]
+    for key, value in (("filter", filter), ("batch", batch)):
+        if value is not None:
+            payload[key] = value
+    for key, seconds in (("windowMs", window), ("minIntervalMs", min_interval)):
+        if seconds is not None:
+            payload[key] = _ms(seconds)
+    if retention is not None:
+        kept = {"count": retention.get("count")}
+        if retention.get("age") is not None:
+            kept["ageMs"] = _ms(retention["age"])
+        payload["retention"] = {key: value for key, value in kept.items() if value is not None}
+    return await host_request("rlm_heartbeat.create", payload)
+
+
+@_public
 async def receive(timeout: float = 300.0) -> list[dict[str, Any]]:
     """Block until mail for you arrives; returns every envelope not yet shown to you.
 
