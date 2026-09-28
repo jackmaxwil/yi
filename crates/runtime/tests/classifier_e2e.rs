@@ -204,9 +204,9 @@ async fn at_the_threshold_it_points_and_never_twice() -> TestResult {
         delivered(&rig),
         ["Relevant: skill://land (the classifier, 0.91)"]
     );
-    // A trigger word already pointed at land for this message: the classifier adds nothing.
+    // The classifier pointed at land: its trigger word adds nothing, and neither does it again.
     let pointed = rig.engine.observe_user(&typed("then open a pull request"));
-    assert_eq!(pointed.len(), 1);
+    assert!(pointed.is_empty(), "{pointed:?}");
     let again = next(&rig, Duration::from_secs(5))
         .await
         .ok_or("no second decision")?;
@@ -255,5 +255,26 @@ async fn a_message_the_user_did_not_type_is_never_classified() -> TestResult {
     let delegated = AgentMessage::host_user(UserContent::Text("land this branch".to_owned()), 7);
     assert!(rig.engine.observe_user(&delegated).is_empty());
     assert!(next(&rig, Duration::from_millis(500)).await.is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_skill_a_trigger_word_pointed_at_is_not_pointed_at_again() -> TestResult {
+    let (port, _served) = sidecar(vec![LAND, LAND])?;
+    let rig = rig(format!("http://127.0.0.1:{port}"), Some(0.7))?;
+    assert_eq!(
+        rig.engine.observe_user(&typed("open a pull request")).len(),
+        1
+    );
+    for text in ["", "land this branch once it is green"] {
+        if !text.is_empty() {
+            assert!(rig.engine.observe_user(&typed(text)).is_empty());
+        }
+        let record = next(&rig, Duration::from_secs(5))
+            .await
+            .ok_or("no decision recorded")?;
+        assert!(!record.fired, "{record:?}");
+    }
+    assert!(delivered(&rig).is_empty());
     Ok(())
 }

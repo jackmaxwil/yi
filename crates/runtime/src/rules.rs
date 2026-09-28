@@ -406,8 +406,21 @@ fn skill_name(rule: &RuleDoc) -> Option<&str> {
 fn typed_needle<'a>(rule: &'a RuleDoc, folded: &str) -> Option<&'a str> {
     rule.needles
         .iter()
-        .find(|needle| folded.contains(&needle.to_ascii_lowercase()))
+        .find(|needle| {
+            let needle = needle.to_ascii_lowercase();
+            if needle.starts_with('$') {
+                mentions(folded, &needle)
+            } else {
+                folded.contains(&needle)
+            }
+        })
         .map(String::as_str)
+}
+
+fn mentions(folded: &str, mention: &str) -> bool {
+    folded.split(mention).skip(1).any(|after| {
+        !after.starts_with(|next: char| next.is_ascii_alphanumeric() || next == '-' || next == '_')
+    })
 }
 
 fn typed_text(message: &AgentMessage) -> Option<String> {
@@ -494,6 +507,11 @@ impl RuleEngine {
     pub fn rearm(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.rearm();
+        }
+        if let Ok(slot) = self.classifier.lock()
+            && let Some(classifier) = slot.as_ref()
+        {
+            classifier.rearm();
         }
     }
 
@@ -641,7 +659,16 @@ impl RuleEngine {
             return Vec::new();
         };
         let mut texts = Vec::new();
-        let mut pointed: Vec<String> = state.loaded.iter().cloned().collect();
+        let classifier = self.classifier.lock().ok().and_then(|slot| slot.clone());
+        let mut pointed: Vec<String> = rules
+            .iter()
+            .filter(|rule| {
+                self.skill_already_loaded(&state, rule)
+                    || state.fired_once.contains_key(&Evidence::skill(rule))
+            })
+            .filter_map(skill_name)
+            .map(str::to_owned)
+            .collect();
         let mut counted = 0_usize;
         let mut dropped = Vec::new();
         for rule in &rules {
@@ -652,13 +679,16 @@ impl RuleEngine {
                 continue;
             };
             let mention = format!("${name}");
-            let named = folded.contains(&mention.to_ascii_lowercase());
+            let named = mentions(&folded, &mention.to_ascii_lowercase());
             let evidence = Evidence::skill(rule);
             let n = state.bump(&evidence);
             if !named && (n < rule.after.max(1) || !state.eligible(rule, &evidence)) {
                 continue;
             }
             if self.skill_already_loaded(&state, rule) {
+                continue;
+            }
+            if !named && classifier.as_ref().is_some_and(|c| c.has_pointed(name)) {
                 continue;
             }
             if !named {
@@ -675,9 +705,7 @@ impl RuleEngine {
             texts.push(self.render_reminder(rule, shown));
         }
         drop(state);
-        if let Ok(slot) = self.classifier.lock()
-            && let Some(classifier) = slot.as_ref()
-        {
+        if let Some(classifier) = classifier {
             classifier.consult(&text, pointed);
         }
         if let Some(last) = texts.last_mut()

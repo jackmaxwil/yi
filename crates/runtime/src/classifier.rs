@@ -48,6 +48,7 @@ pub struct SkillClassifier {
     breaker: Mutex<Breaker>,
     record: Record,
     deliver: Deliver,
+    pointed: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl SkillClassifier {
@@ -73,7 +74,20 @@ impl SkillClassifier {
             breaker: Mutex::new(Breaker::default()),
             record,
             deliver,
+            pointed: Mutex::new(std::collections::BTreeSet::new()),
         })
+    }
+
+    pub fn has_pointed(&self, name: &str) -> bool {
+        self.pointed
+            .lock()
+            .is_ok_and(|pointed| pointed.contains(name))
+    }
+
+    pub fn rearm(&self) {
+        if let Ok(mut pointed) = self.pointed.lock() {
+            pointed.clear();
+        }
     }
 
     pub fn consult(self: &Arc<Self>, text: &str, already: Vec<String>) {
@@ -161,6 +175,10 @@ impl SkillClassifier {
         ) && confidence >= threshold
             && self.candidates.contains_key(name)
             && !already.iter().any(|pointed| pointed == name)
+            && self
+                .pointed
+                .lock()
+                .is_ok_and(|mut pointed| pointed.insert(name.to_owned()))
         {
             (self.deliver)(crate::rules::reminder(format!(
                 "Relevant: skill://{name} (the classifier, {confidence:.2})"
