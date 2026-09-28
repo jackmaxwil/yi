@@ -285,7 +285,7 @@ pub const COLONLESS_SPAN_PUT: &str = "Colonless `PUT` is clipboard-backed, and s
 
 pub const EMPTY_PASTE: &str = "Nothing to paste: no unlabeled `CUT` precedes this `PUT` in this call, and the anonymous register never carries across calls. Put `CUT N.=M` / `CUT N*` above it, or use named registers (`CUT … @name` → `PUT … @name`) for cross-call moves.";
 
-pub fn empty_register_paste_warning(name: &str, known: &[String]) -> String {
+pub fn empty_register_paste_warning(name: &str, known: &[(String, usize)]) -> String {
     let base = format!(
         "`@{name}` was empty — no `CUT … @{name}` precedes this op in this call and no persisted register has that name — so nothing was pasted."
     );
@@ -294,14 +294,14 @@ pub fn empty_register_paste_warning(name: &str, known: &[String]) -> String {
     } else {
         let listed = known
             .iter()
-            .map(|k| format!("`@{k}`"))
+            .map(|(k, lines)| format!("`@{k}` ({lines} lines)"))
             .collect::<Vec<_>>()
             .join(", ");
         format!("{base} Available registers: {listed}.")
     }
 }
 
-pub fn empty_register_span_paste_message(name: &str, known: &[String]) -> String {
+pub fn empty_register_span_paste_message(name: &str, known: &[(String, usize)]) -> String {
     let base = format!(
         "`@{name}` is empty — no `CUT … @{name}` precedes this op in this call and no persisted register \
 has that name — so pasting it over a range would delete those lines and write nothing back. \
@@ -312,7 +312,7 @@ Capture the register first (`CUT … @{name}`), or use `CUT` if deleting the ran
     } else {
         let listed = known
             .iter()
-            .map(|k| format!("`@{k}`"))
+            .map(|(k, lines)| format!("`@{k}` ({lines} lines)"))
             .collect::<Vec<_>>()
             .join(", ");
         format!("{base} Available registers: {listed}.")
@@ -382,6 +382,49 @@ pub fn path_recovered_from_tag_message(
 {HL_FILE_HASH_SEP}{tag} to {resolved_path} (read earlier this session). Anchor future edits on \
 {HL_FILE_PREFIX}{resolved_path}{HL_FILE_HASH_SEP}TAG{HL_FILE_SUFFIX}."
     )
+}
+
+/// A minified file can clip thousands of lines; the hint names the first ranges, not all.
+const SED_TERMS: usize = 20;
+
+/// One sed call for every clipped line, runnable as printed.
+pub fn clipped_lines_hint(clipped: &[u64], clip: usize, path: &str) -> Option<String> {
+    let ranges = format_line_ranges(clipped);
+    if ranges.is_empty() {
+        return None;
+    }
+    let terms: Vec<String> = ranges
+        .split(", ")
+        .map(|range| format!("{}p", range.replace('-', ",")))
+        .collect();
+    let script = terms
+        .get(..terms.len().min(SED_TERMS))
+        .unwrap_or(&[])
+        .join(";");
+    let more = if terms.len() > SED_TERMS {
+        format!(" (the first {SED_TERMS} of {} ranges)", terms.len())
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "[{} line(s) exceeded {clip} chars and were clipped (never edit-anchors) — full lines: bash: sed -n '{script}' {}{more}]",
+        clipped.len(),
+        shell_path(path)
+    ))
+}
+
+/// Bare when shell-inert, so the bash bridge still tags the output; else single-quoted with each
+/// `'` closed, escaped and reopened. A leading `-` would read as a sed flag, so it gets `./`.
+fn shell_path(path: &str) -> String {
+    if path.starts_with('-') {
+        return shell_path(&format!("./{path}"));
+    }
+    let inert = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-');
+    if !path.is_empty() && path.chars().all(inert) {
+        path.to_owned()
+    } else {
+        format!("'{}'", path.replace('\'', r"'\''"))
+    }
 }
 
 pub fn format_line_ranges(lines: &[u64]) -> String {

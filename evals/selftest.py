@@ -31,6 +31,7 @@ import orient_census  # noqa: E402
 import rule_fires  # noqa: E402
 import record  # noqa: E402
 import tb21_cost  # noqa: E402
+import cache_probe  # noqa: E402
 import atif  # noqa: E402
 import run  # noqa: E402
 import yi_arc  # noqa: E402
@@ -81,6 +82,14 @@ def check_command():
     assert "--continue" in shlex.split(
         yi_usage.run_command("anthropic/claude-opus-4-5", "hi", resume=True)
     ), "resume must pass --continue"
+    # E16: the binary reads YI_LEVERS only under --eval (crates/runtime/src/levers.rs), so a
+    # trial with levers carries both, and a trial without them is byte-identical to before.
+    assert "--eval" not in argv and yi_usage.LEVERS_ENV not in command, "no levers, no --eval"
+    levered = yi_usage.run_command("anthropic/claude-opus-4-5", "hi", levers=True)
+    assert "--eval" in shlex.split(levered), "E16: a levers trial must pass --eval"
+    assert f"{yi_usage.LEVERS_ENV}={yi_usage.REMOTE_LEVERS_PATH} yi ask " in levered, \
+        "E16: the binary must be told where the uploaded levers file is"
+    assert yi_usage.REMOTE_LEVERS_PATH.startswith("/logs/agent/"), "levers ride the synced logs"
     assert "--deadline" not in argv, "the deadline is the driver's to name"
     timed = shlex.split(yi_usage.run_command("anthropic/claude-opus-4-5", "hi", deadline_sec=3600))
     assert timed[timed.index("--deadline") + 1] == "3600", "the model must learn its wall clock"
@@ -98,6 +107,11 @@ def check_install():
     source = (ROOT / "adapters" / "yi_harbor" / "agent.py").read_text()
     assert "doctor --fix --json" in source and "warm_kernel" in source, "install must warm the kernel"
     assert "cannot boot in this image" not in source, "a dead kernel is reported, not a refusal"
+    # E16: the host's YI_LEVERS file reaches the container, the run asks for it, and the
+    # fingerprint names it, so a levers row never shares a config column with the defaults.
+    assert "REMOTE_LEVERS_PATH" in source and "upload_levers" in source, "E16: levers must be uploaded"
+    assert "levers=bool(" in source, "E16: the run must pass the levers flag"
+    assert "levers_label(os.environ)" in source, "E16: the harbor fingerprint must name the levers"
     green = json.dumps([{"name": "kernel-toolchain", "status": "ok", "detail": "uv /usr/bin/uv"},
                         {"name": "kernel-boot", "status": "fixed", "detail": "built 20000 ms"}])
     assert yi_usage.kernel_problems(green) == []
@@ -420,6 +434,32 @@ def check_watch_stops():
         assert done.returncode == 3, done
 
 
+def check_pin_probe():
+    """N4 (design 6.4): pin the cheapest upstream whose every warm turn hit at least 0.9 and that
+    returned no 429; with none, the best hit rate with fallbacks allowed, and the verdict says so."""
+    def sample(t2_input, t2_read, cost=0.001, error=None):
+        return {"t2": {"input": t2_input, "cacheRead": t2_read, "cacheWrite": 0, "costUsd": cost,
+                       "nAssistantMessages": 1, "costUnknownTurns": 0}, "error": error}
+    probes = {"together": [sample(100, 9900, 0.002)] * 3,
+              "parasail": [sample(500, 9500, 0.001)] * 3,
+              "relace": [sample(100, 9900, 0.0005), sample(100, 9900, 0.0005), sample(100, 9900, error="HTTP 429")],
+              "wafer": [sample(9000, 1000, 0.0001)] * 3}
+    verdict = cache_probe.pin(probes)
+    assert verdict["pin"] == "parasail" and verdict["allowFallbacks"] is False, verdict
+    assert verdict["routing"] == {"order": ["parasail"], "allow_fallbacks": False}, verdict
+    assert verdict["upstreams"]["relace"]["qualifies"] is False, "a 429 disqualifies however cheap"
+    assert verdict["upstreams"]["together"]["qualifies"] is True, verdict
+    # The first session on an upstream writes the cache the later ones read (N4): a cold first
+    # sample does not disqualify, a cold later one does.
+    warm = cache_probe.pin({"z-ai": [sample(13273, 0)] + [sample(345, 12928)] * 2})
+    assert (warm["pin"], warm["allowFallbacks"]) == ("z-ai", False), warm
+    cold = cache_probe.pin({"relace": [sample(13280, 0), sample(13273, 0), sample(342, 12928)]})
+    assert cold["allowFallbacks"] is True, cold
+    none = cache_probe.pin({"wafer": [sample(9000, 1000)] * 3, "together": [sample(5000, 5000)] * 3})
+    assert (none["pin"], none["allowFallbacks"]) == ("together", True), none
+    assert none["routing"] == {"order": ["together"], "allow_fallbacks": True}, none
+
+
 def check_record():
     """J3: a recorder that regroups turns, reorders tool-call arguments,
     reorders stub results or invents zero usage writes a cassette that replays
@@ -557,6 +597,21 @@ def check_rule_fires():
     assert report["comment_fp"] == 2, report
 
 
+def check_surface_compare():
+    """N6 (design 6.6): a tool-text patch is refused when any tool's refusal rate rises or a
+    scenario clean on every base run turns unclean; a candidate no worse passes."""
+    def doc(calls, refusals, rows):
+        return {"toolSurface": {"calls": calls, "refusals": refusals}, "rows": rows}
+    clean = {"scenario": "write-then-edit", "exit": 0, "timedOut": False, "missingFiles": []}
+    base = [doc({"edit": 10, "read": 5}, {"edit": 2}, [clean])] * 2
+    assert surface.compare(base, [doc({"edit": 10, "read": 5}, {"edit": 1}, [clean])] * 2) is None
+    assert surface.compare(base, [doc({"edit": 10}, {"edit": 3}, [clean])] * 2) == "refusal_rate_rose:edit"
+    assert surface.compare(base, [doc({"read": 4}, {"read": 1}, [clean])] * 2) == "refusal_rate_rose:read"
+    lost = dict(clean, missingFiles=["stats.py"])
+    assert surface.compare(base, [doc({"edit": 10}, {}, [clean]), doc({"edit": 10}, {}, [lost])]) \
+        == "scenario_unclean:write-then-edit"
+
+
 def check_surface():
     """The tool-surface loop's schema and its census, with no binary and no key:
     every scenario parses, a malformed one is refused by name, and the per-tool
@@ -616,9 +671,11 @@ def check_judge_replay():
 
 CHECKS = (
     check_surface,
+    check_surface_compare,
     check_judge_replay,
     check_graph_refiner,
     check_levers,
+    check_pin_probe,
     check_cost_cap,
     check_orient_census,
     check_rule_fires,
