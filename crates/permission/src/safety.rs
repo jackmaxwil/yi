@@ -512,6 +512,27 @@ pub fn refused_scopes(command: &str) -> Vec<String> {
     scopes
 }
 
+/// The files a command's `>`, `>>`, `n>` and `&>` redirections name, as typed, which the lenient
+/// splitter skips; `2>&1` names none. Lenient too: a `>` inside quotes reads as a redirect.
+pub fn write_targets(command: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut tokens = command.split_whitespace();
+    while let Some(token) = tokens.next() {
+        let Some((_, attached)) = token.split_once('>') else {
+            continue;
+        };
+        let target = match attached.trim_start_matches(['>', '|']) {
+            "" => tokens.next().unwrap_or_default(),
+            attached => attached,
+        }
+        .trim_matches(['\'', '"', ';', '(', ')']);
+        if !target.is_empty() && !target.starts_with('&') {
+            targets.push(target.to_owned());
+        }
+    }
+    targets
+}
+
 fn lenient_segments(command: &str) -> Vec<Vec<String>> {
     let mut segments = vec![Vec::new()];
     let mut tokens = command.split_whitespace();

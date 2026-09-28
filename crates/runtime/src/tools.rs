@@ -398,15 +398,12 @@ impl AgentTool for ToolAdapter {
                 Ok(mut output) => {
                     let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());
                     // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
-                    if let Some(broker) = &contained
-                        && yi_tools::denial_hint(
+                    if let Some(broker) = &contained {
+                        broker.note_containment_failure(
+                            &command,
                             exit_of(&output.result),
                             &result_text(&output.result),
-                            &command,
-                        )
-                        .is_some()
-                    {
-                        broker.note_containment_failure(&command);
+                        );
                     }
                     let holds = facts_of(&name, &command, &output);
                     let facts = crate::affordance::Facts {
