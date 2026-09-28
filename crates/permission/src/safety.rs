@@ -567,7 +567,14 @@ pub fn write_targets(command: &str) -> Vec<String> {
                 if operands.first().is_some_and(|verb| {
                     matches!(
                         verb.as_str(),
-                        "checkout" | "restore" | "rm" | "mv" | "clean" | "reset" | "apply"
+                        "checkout"
+                            | "restore"
+                            | "rm"
+                            | "mv"
+                            | "clean"
+                            | "reset"
+                            | "apply"
+                            | "worktree"
                     )
                 }) =>
             {

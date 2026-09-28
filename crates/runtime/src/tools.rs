@@ -35,14 +35,6 @@ fn files_matched(name: &str, result: &yi_types::event::ToolResult) -> u32 {
     }
 }
 
-fn exit_of(result: &yi_types::event::ToolResult) -> Option<i32> {
-    result
-        .details
-        .get("exitCode")
-        .and_then(Value::as_i64)
-        .and_then(|code| i32::try_from(code).ok())
-}
-
 fn result_text(result: &yi_types::event::ToolResult) -> String {
     result
         .content
@@ -398,12 +390,11 @@ impl AgentTool for ToolAdapter {
                 Ok(mut output) => {
                     let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());
                     // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
-                    if let Some(broker) = &contained {
-                        broker.note_containment_failure(
-                            &command,
-                            exit_of(&output.result),
-                            &result_text(&output.result),
-                        );
+                    if let Some(broker) = &contained
+                        && let Some(refusal) = (output.result.details.get("sandboxRefusal"))
+                            .and_then(yi_tools::SandboxRefusal::from_json)
+                    {
+                        broker.note_containment_failure(refusal);
                     }
                     let holds = facts_of(&name, &command, &output);
                     let facts = crate::affordance::Facts {
