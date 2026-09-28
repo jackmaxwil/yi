@@ -53,6 +53,12 @@ impl HashlineReadTool {
         };
         let pages = input.get("pages").and_then(Value::as_str);
         let mut hint: Option<String> = None;
+        if pages.is_some() && !crate::document::is_pdf(&bytes) {
+            return crate::tool::error_output_kind(
+                "pages= applies to a PDF".to_owned(),
+                yi_types::event::ToolErrorKind::InvalidArgs,
+            );
+        }
         if crate::document::could_be_document(&bytes) {
             match self.convert(path, &bytes, pages, context) {
                 Some(crate::document::Converted::Markdown(copy)) => {
@@ -75,11 +81,6 @@ impl HashlineReadTool {
                 }
                 Some(crate::document::Converted::NotADocument) | None => {}
             }
-        } else if pages.is_some() {
-            return crate::tool::error_output_kind(
-                "pages= applies to a PDF".to_owned(),
-                yi_types::event::ToolErrorKind::InvalidArgs,
-            );
         }
         if let Some(kind) = crate::document::image_kind(&bytes) {
             return error_output(format!(
