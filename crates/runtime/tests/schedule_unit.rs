@@ -213,3 +213,32 @@ fn iso_parse_accepts_utc_rejects_offsets() {
     assert_eq!(parse_iso_ms("not a date"), None);
     assert_eq!(parse_iso_ms("2026-13-01"), None);
 }
+
+/// A wait on a recurring address (`clock://every 1h`) means the next tick, not every tick.
+#[test]
+fn a_recurring_wait_completes_after_its_one_firing() {
+    let mut job = job_with(None, None);
+    job.unblocks = yi_types::plan::doc::TodoLabel::new("ship it").ok();
+    let mut state = ScheduleState {
+        jobs: vec![job],
+        ..ScheduleState::default()
+    };
+    let claimed = claim_due_in_state(
+        &mut state,
+        MONDAY_MIDNIGHT,
+        MONDAY_MIDNIGHT,
+        || "dsp-1".to_owned(),
+        &HashSet::new(),
+    );
+    let id = claimed
+        .first()
+        .map(|dispatch| dispatch.id.clone())
+        .unwrap_or_default();
+    let job =
+        record_dispatch_result_in_state(&mut state, &id, RunOutcome::Ran, None, MONDAY_MIDNIGHT);
+    assert_eq!(
+        job.map(|job| job.status),
+        Some(JobStatus::Completed),
+        "a spent wait stayed armed and would re-fire every interval"
+    );
+}

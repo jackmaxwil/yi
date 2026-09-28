@@ -1243,3 +1243,46 @@ fn a_session_todos_ask_waits_for_the_reply_and_records_the_pick() -> TestResult 
     );
     Ok(())
 }
+
+/// The tool refuses a clock address no clock ticks, naming why, and keeps one it can.
+#[test]
+fn a_block_on_a_clock_address_is_checked_before_it_waits() -> TestResult {
+    let (_root, session) = session("clock-wait")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(Arc::clone(&store));
+    call(&tool, json!({"op": "set", "list": "- [ ] ship at nine"}));
+
+    let (refused, text) = call(
+        &tool,
+        json!({"op": "block", "id": "t1", "on": "clock://at tomorrow", "note": "wait"}),
+    );
+    assert!(refused, "a clock address with no time was taken: {text}");
+    assert!(text.contains("Invalid one-shot schedule"), "{text}");
+    let (refused, text) = call(
+        &tool,
+        json!({"op": "block", "id": "t1", "on": "ci://apex/main", "note": "wait"}),
+    );
+    assert!(
+        refused && text.contains("not a clock:// address"),
+        "a channel nothing feeds was taken: {text}"
+    );
+
+    let (refused, text) = call(
+        &tool,
+        json!({"op": "block", "id": "t1", "on": "clock://at 2030-01-01T09:00Z", "note": "wait"}),
+    );
+    assert!(!refused, "{text}");
+    let list = store.list();
+    let blocked = list.items().next().map(|todo| todo.state.clone());
+    assert_eq!(
+        blocked,
+        Some(TodoState::Blocked {
+            on: BlockedOn::Channel {
+                address: "clock://at 2030-01-01T09:00Z".to_owned(),
+                filter: None,
+            },
+            note: "wait".to_owned(),
+        })
+    );
+    Ok(())
+}

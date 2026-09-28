@@ -75,6 +75,8 @@ struct Shared {
     deadline: OnceLock<Deadline>,
     turn_time: Mutex<(Option<std::time::Instant>, Option<Duration>)>,
     cancelled: std::sync::atomic::AtomicBool,
+    /// The kill switch's hold: no wake starts a turn until it lifts; a typed prompt still does.
+    held: std::sync::atomic::AtomicBool,
     runs: std::sync::atomic::AtomicU64,
 }
 
@@ -183,6 +185,7 @@ impl AgentSession {
                 deadline: OnceLock::new(),
                 turn_time: Mutex::new((None, None)),
                 cancelled: false.into(),
+                held: false.into(),
                 runs: 0.into(),
             }),
             config,
@@ -608,6 +611,9 @@ impl AgentSession {
         }
         if let Some(todos) = self.todos() {
             todos.rehydrate();
+            if let Some(service) = self.heartbeat_service() {
+                service.watch(&todos.list());
+            }
         }
         if let (Some(telemetry), Some((file, id))) = (self.telemetry(), sidecar) {
             telemetry.bind(&file, &id);

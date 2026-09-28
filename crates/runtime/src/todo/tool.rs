@@ -30,7 +30,7 @@ pub fn schema() -> Value {
             "label": {"type": "string", "description": "start/done/drop/block/unblock/rm: the item, verbatim"},
             "evidence": {"type": "string", "description": "done: the command in backticks and the output line that proves it"},
             "reason": {"type": "string", "description": "drop: why the item no longer applies"},
-            "on": {"type": "string", "enum": ["user", "external", "child"], "description": "block: who it waits on"},
+            "on": {"type": "string", "description": "block: who it waits on: user, external, child, or `clock://at <ISO time>`, which unblocks it then"},
             "note": {"type": "string", "description": "block: what would unblock it"},
             "options": {"type": "array", "items": {"type": "object"}, "description": "block on user: 3 to 5 answers [{id, label, preview?}] the user picks one of by number, id or label; a preview is light, at most 2048 bytes"},
             "touched": {"type": "integer", "description": "optional: the touched counter you last saw; a stale value is refused so a user edit is never overwritten"}
@@ -304,7 +304,19 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         },
         "block" => Op::Block {
             label: label(args, "block")?,
-            on: BlockedOn::from_word(string(args, "on").as_deref()),
+            on: match BlockedOn::from_word(string(args, "on").as_deref()) {
+                BlockedOn::Channel { address, filter } => {
+                    crate::schedule::clock::wait_schedule(&address, yi_session::now_ms()).map_err(
+                        |cause| ArgError::Malformed {
+                            op: "block",
+                            field: "on",
+                            cause,
+                        },
+                    )?;
+                    BlockedOn::Channel { address, filter }
+                }
+                on => on,
+            },
             note: need_string(args, "block", "note")?,
             ask: crate::plan::ask::parse(
                 args.get("options"),

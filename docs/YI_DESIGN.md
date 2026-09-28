@@ -29,7 +29,9 @@ JavaScript runtime or Node sidecar · embedding `yi-runtime` through N-API or WA
 converters compiled into the binary · Windows · dynamically loaded plugins (extensions are
 in-process Rust, §6) · a GUI · browser automation, computer use, email, or any capability that
 is not a coding agent · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
-the console.
+the console · a scheduled job that puts its own text in front of the model or runs saved code
+(a tick creates a todo, §15.2) · a durable channel buffer, external channel adapters and
+consumer groups (the clock is the only channel, D283).
 
 ## 2. Crates and dependency direction
 A folder `crates/x/` is the crate `yi-x` (`scripts/guardrails/check_manifests.py`). The internal
@@ -520,7 +522,7 @@ applies and journals. A todo's contract decides when it is done.
 
 State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/src/plan/op.rs)):
 - `TodoState { Pending, Running{by}, Blocked{on, note}, Done{output, resolution},
-  Failed{cause, last}, Abandoned, Other }`, `BlockedOn { Child, User, External{probe}, Other }`,
+  Failed{cause, last}, Abandoned, Other }`, `BlockedOn { Child, User, External{probe}, Channel{address, filter?}, Other }`,
   `PlanState { Active, Done, Superseded{by}, Abandoned, Other }`.
 - `OpKind`, 23 kinds; the `plan` tool schema shows the first 15 (`MODEL_OPS`): `set, init, append,
   drop, block, unblock, reorder, add_edge, start, done, fail, retry, decompose, supersede, view`.
@@ -633,24 +635,37 @@ One objective per session, stored as `Fact::Goal` outside the transcript.
 - Surfaces: host requests `goal.{get,create,update}`; RPC `goal`, ACP `_yi/goal`. Settled by: D52.
 
 ### 15.2 Schedule
-A `JobStore` holds jobs and claims; an in-process `Scheduler` delivers due jobs to sessions.
+A `JobStore` holds jobs and claims; an in-process `Scheduler` delivers due jobs to sessions. A job is
+a clock subscription `clock://<schedule>`, the one channel (D283): its tick creates a todo or
+unblocks one and wakes the session, and the woken agent decides what to run.
 
 - One `scheduled-jobs.json` per runtime directory (the root's `rlm-<pid>/`, a child's own),
   interned by path, so the sessions on it share one store and timer.
-- A claim is persisted before delivery and re-arms `next_run_at` from claim time, collapsing
-  missed ticks. Recovery marks open claims `INTERRUPTED_ERROR`.
+- A claim is persisted before delivery and re-arms `next_run_at` from claim time; the ticks it
+  stands for are counted, and `catchUp` (`once`, `skip`, `all`) decides their todos. Recovery marks
+  open claims `INTERRUPTED_ERROR`. The timer re-reads the wall clock at least every 60 s.
+- A tick appends one session todo: the label or instruction plus `@ <tick>`, the instruction as
+  its note, the setup's `user://<n>` as intent, a `clock` stamp; `overlap` (`skip`, `buffer_one`,
+  `allow`) bounds the open todos one job may hold. The wake names the address and the todo only.
+- A todo blocked on `Channel{address: clock://…}` arms one job with `unblocks`; its tick unblocks
+  the todo (a plan row through the engine as the host). The todo is the authority: a restart
+  re-arms every wait from the rehydrated list.
+- `/heartbeat halt` holds every job of every interned store (`halted`) and every bound session's
+  turn and machine wakes; `/heartbeat resume` lifts it. Both are `custom{halt}` records.
+  `spend.alertTokens` queues a shown `spend_alert` notice per multiple crossed.
 - Claimed jobs group by `Job.session_id`, serial within and concurrent across groups. The
   deliverer feeds `should_defer` whether the session is streaming, compacting, or has queued
   steer/follow-up work behind a running turn, so a heartbeat due mid-turn or mid-compaction
   defers to the next boundary instead of interleaving with it.
 - Surfaces: RPC `heartbeat`, ACP `_yi/heartbeat` and slash `/heartbeat` (default `every 5m`, one
   per session, reaching the solo TUI, the console and ACP `_yi/slash`); kernel
-  `rlm_heartbeat.{list, create, update, delete}`.
+  `rlm_heartbeat.{list, create, update, delete}`, `create` taking `overlap`, `catchUp`, `intent`.
 
 Owner: [`schedule/mod.rs`](../crates/runtime/src/schedule/mod.rs). Shapes:
 [`schedule.rs`](../crates/types/src/schedule.rs): `CronSchedule{kind: { Once, Cron, Interval }}`,
 `Job`, `JobStatus { Active, Paused, Completed, Cancelled }`, `JobSource { Cron, Heartbeat,
-RlmHeartbeat }`, `DeliveryMode { Steer, FollowUp }`. Settled by: D86, D246.
+RlmHeartbeat }`, `DeliveryMode { Steer, FollowUp }`, `Overlap`, `CatchUp`, `ClockStamp`,
+`HaltRecord`. Settled by: D86, D246, D283.
 
 ## 16. Advisor
 A reviewer that reads a digest of the session's work log and may emit one advice per review.

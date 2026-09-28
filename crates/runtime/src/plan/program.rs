@@ -14,7 +14,7 @@ use super::table::op_name;
 
 pub const PROGRAM_NAME: &str = "program.py";
 
-fn iso(ms: u64) -> String {
+pub(crate) fn iso(ms: u64) -> String {
     let seconds = ms / 1_000;
     let (year, month, day) = yi_kernel::client::civil_from_days(seconds / 86_400);
     let (hour, minute, second) = (

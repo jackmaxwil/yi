@@ -572,6 +572,14 @@ fn build_session(
         },
     );
     drop(wiring);
+    if let Some(every) = config()
+        .spend
+        .as_ref()
+        .and_then(|spend| spend.alert_tokens)
+        .and_then(std::num::NonZeroU64::new)
+    {
+        yi_runtime::spend::attach(&session, every);
+    }
     session.set_lane(yi_runtime::lane::land::LaneHandle::new(
         lane,
         pool,
