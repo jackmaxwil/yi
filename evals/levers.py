@@ -28,6 +28,7 @@ import argparse, itertools, json, math, os, pathlib, re, shlex, statistics, subp
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "evals/graph"))
 sys.path.insert(0, str(ROOT / "evals/adapters"))
+sys.path.insert(0, str(ROOT / "skills/yi/session-mining"))
 from refine import Refused, names  # noqa: E402
 from yi_usage import LEVERS_ENV  # noqa: E402
 
@@ -321,6 +322,42 @@ def screen(baseline, runs, floors):
     return None
 
 
+def max_cut_rung(entries):
+    """The highest `rung` a cut redrive carried: the loop's own cut count (`run.rs`
+    `length_redrive`). The cut that ends a run writes no redrive, so a run stopped at the
+    default's cut left rung `default - 1` behind."""
+    return max((((entry.get("message") or {}).get("details") or {}).get("rung") or 0
+                for entry in entries
+                if (entry.get("message") or {}).get("customType") == "length_redrive"
+                and (((entry.get("message") or {}).get("details") or {}).get("cut"))), default=0)
+
+
+# The levers whose decision can be replayed from what a session records (design section 6.5).
+# loop.length_stop_at is not one: a truncated tool call counts a length stop without a
+# redrive. loop.reasoning_cap is not one: a cut aborts at the cap, so no longer reasoning exists.
+CENSUS = {"loop.cut_stop_at": max_cut_rung}
+
+
+def census(lever, candidate, sessions):
+    """How many recorded sessions would have stopped differently at `candidate`: the S0 screen
+    that refuses, for nothing, a value no session ever met. Below the default a session flips
+    when its cuts reached the candidate; above it, when the default's stop ended it."""
+    if lever not in CENSUS:
+        raise Refused(f"no census for {lever}: its decision is not recorded in a session")
+    import extract
+    default, flips, seen = manifest()[lever]["default"], 0, 0
+    for path in sorted(pathlib.Path(sessions).rglob("*.jsonl")):
+        if path.name.endswith(".telemetry.jsonl"):
+            continue
+        header, entries, _corrupt = extract.read_session(path)
+        if not header:
+            continue
+        seen += 1
+        rung = CENSUS[lever](entries)
+        flips += rung >= candidate if candidate < default else rung >= default - 1 if candidate > default else 0
+    return {"lever": lever, "value": candidate, "default": default, "sessions": seen, "flips": int(flips)}
+
+
 def grid(knobs, tasks, run, floors, listed, k=3, max_runs=MAX_RUNS, accesses=1):
     """Every point of a small grid against one baseline, paired by repetition and interleaved
     so drift in the provider lands on both sides. Bounded before it starts: at most
@@ -366,6 +403,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--selfcheck", action="store_true", help="hold the manifest, the fixture and the floors together")
     verbs = parser.add_subparsers(dest="verb")
+    tally = verbs.add_parser("census", help="sessions a candidate value would have stopped differently")
+    tally.add_argument("--lever", required=True)
+    tally.add_argument("--value", type=int, required=True)
+    tally.add_argument("--sessions", required=True, help="a directory of v4 session files")
     for verb in ("compare", "grid"):
         sub = verbs.add_parser(verb)
         sub.add_argument("--runner", required=True, help="the owner's scoring command; this file starts no model")
@@ -381,6 +422,13 @@ def main(argv=None):
             sub.add_argument("--knob", action="append", required=True, help="name=v1,v2")
             sub.add_argument("--max-runs", type=int, default=MAX_RUNS)
     args = parser.parse_args(argv)
+    if args.verb == "census":
+        try:
+            print(json.dumps(census(args.lever, args.value, args.sessions)))
+        except Refused as refusal:
+            print(f"refused: {refusal}", file=sys.stderr)
+            return 2
+        return 0
     if args.verb:
         return search(args)
     if not args.selfcheck:
