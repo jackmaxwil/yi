@@ -1,24 +1,31 @@
-//! One typed set of cache breakpoints for every request (D295): at most four, none naming
-//! `LlmContext.transient`, which the adapters render only after [`encode`] has run.
+//! One typed set of cache breakpoints per request (D295): at most four, none naming
+//! `LlmContext.transient`; the request paths accept only the [`Encoded`] body made here.
+
+use std::fmt;
+use std::ops::Deref;
 
 use serde_json::{Value, json};
 use yi_types::message::AgentMessage;
-use yi_types::model::{LlmContext, Model, ToolChoice};
+use yi_types::model::{Model, Reuse};
 
-/// How long the entry a mark writes lives. Along the prompt a longer TTL must come first.
+/// How long the entry a breakpoint writes lives. Along the prompt a longer TTL comes first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Ttl {
     Min5,
     Hour1,
 }
 
-/// Where a breakpoint sits: the end of the stable prefix (tools and system), or the last block
-/// of the message at that index of the transformed `messages`. `transient` has no position.
+/// Where a breakpoint sits. A message position is an index into the transformed
+/// `messages`; `transient` has none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Position {
-    Stable,
-    /// The previous request's tail: a free exact-position read that also covers a lookback
-    /// the appended blocks would otherwise overflow.
+    /// The end of the first system block, the universal prefix every session and child of
+    /// the same identity shares; kept until the system prompt is constant (C2, C3).
+    UniversalEnd,
+    /// The end of tools and system: the floor that survives any messages-tier invalidation.
+    SystemEnd,
+    /// The last user-role message ahead of the last reply: where the previous request's
+    /// tail sat, a free read that also covers a lookback the appended blocks would overflow.
     PrevTail(usize),
     /// The last block before `transient`: where the next request reads from.
     Tail(usize),
@@ -27,8 +34,18 @@ pub enum Position {
 impl Position {
     pub fn index(self) -> Option<usize> {
         match self {
-            Self::Stable => None,
+            Self::UniversalEnd | Self::SystemEnd => None,
             Self::PrevTail(index) | Self::Tail(index) => Some(index),
+        }
+    }
+
+    /// Order along the prompt.
+    pub fn rank(self) -> (u8, usize) {
+        match self {
+            Self::UniversalEnd => (0, 0),
+            Self::SystemEnd => (1, 0),
+            Self::PrevTail(index) => (2, index),
+            Self::Tail(index) => (3, index),
         }
     }
 }
@@ -39,39 +56,16 @@ pub struct Breakpoint {
     pub ttl: Ttl,
 }
 
-/// What the request is for. Only a loop request writes a tail: a one-shot's is never read
-/// again and a `tool_choice: none` final has already invalidated the messages tier.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Reuse {
-    Loop,
-    OneShot,
-    Final,
-}
-
-impl Reuse {
-    /// Read from the typed request, not its content: a forced `none` is a final, a request
-    /// with no tool table is a one-shot (title, compaction, branch summary), the rest loop.
-    pub fn of(context: &LlmContext) -> Self {
-        if context.tool_choice == Some(ToolChoice::None) {
-            Self::Final
-        } else if context.tools.as_ref().is_none_or(Vec::is_empty) {
-            Self::OneShot
-        } else {
-            Self::Loop
-        }
-    }
-}
-
 /// The route's cache engine: a prior from the transport and the id (design §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Engine {
-    /// Entries are written only at marks, `slots` of them; `hour` when a 1h TTL is priced.
+    /// Entries are written only at breakpoints, `slots` of them; `hour` when 1h is priced.
     Breakpoint { slots: usize, hour: bool },
-    /// The last mark snapshots the whole prompt (Gemini through OpenRouter), so a moving
-    /// tail would write a new object every request: only the stable prefix is marked.
+    /// The last breakpoint snapshots the whole prompt (Gemini through OpenRouter), so a
+    /// moving tail would write a new object every request: only the system end is marked.
     Snapshot,
-    /// The provider caches its own prefix. Marks change neither price nor hit rate, and
-    /// still go out, so a route learned to be a breakpoint engine needs no new code.
+    /// The provider caches its own prefix. Breakpoints change neither price nor hit rate,
+    /// and still go out, so a route learned to be a breakpoint engine needs no new code.
     Prefix,
 }
 
@@ -90,7 +84,7 @@ impl Engine {
         if id.contains("gemini") {
             return Self::Snapshot;
         }
-        // OpenAI's explicit mode takes three marks beside its automatic one, at one fixed TTL.
+        // OpenAI's explicit mode takes three breakpoints beside its automatic one, at one TTL.
         if id.starts_with("openai/")
             || model.provider == "openai"
             || model.provider == "openai-codex"
@@ -112,15 +106,15 @@ impl Engine {
     }
 }
 
-/// The route as the breakpoints see it.
+/// How a model's route is cached: its engine and the TTL the two system breakpoints carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CacheRoute {
+pub struct CachePolicy {
     pub engine: Engine,
-    /// The stable mark's TTL; the tail marks are always 5m, so the order along the prompt holds.
+    /// The tail breakpoints are always 5m, so the order along the prompt holds.
     pub stable_ttl: Ttl,
 }
 
-impl CacheRoute {
+impl CachePolicy {
     /// `hold_1h`: an interactive session keeps its stable prefix for an hour on an engine that
     /// prices one (D116). The adaptive rule that switches after an expiry miss is a later stage.
     pub fn of(model: &Model, hold_1h: bool) -> Self {
@@ -133,11 +127,11 @@ impl CacheRoute {
     }
 }
 
-/// The most marks any engine takes.
+/// The most breakpoints any engine takes.
 pub const SLOTS: usize = 4;
 
-/// Built only by [`Breakpoints::build`]: at most [`SLOTS`] breakpoints in prompt order, TTL never
-/// rising, every message position inside the slice it was built over.
+/// Built only by [`Breakpoints::build`]: at most [`SLOTS`] breakpoints in prompt order, TTL
+/// never rising, every message position inside the slice it was built over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Breakpoints {
     marks: [Option<Breakpoint>; SLOTS],
@@ -151,42 +145,46 @@ fn is_tail_kind(message: &AgentMessage) -> bool {
 }
 
 impl Breakpoints {
-    /// `messages` is the transformed history the adapter renders, never `transient`; slots
-    /// fill stable, tail, then prev_tail (the last user-role message ahead of the last reply).
-    pub fn build(route: &CacheRoute, messages: &[AgentMessage], reuse: Reuse) -> Self {
-        let stable = Breakpoint {
-            position: Position::Stable,
-            ttl: route.stable_ttl,
-        };
-        let mut marks = [Some(stable), None, None, None];
-        if reuse != Reuse::Loop {
-            return Self { marks };
-        }
-        let slots = route.engine.slots();
-        let tail = messages.iter().rposition(is_tail_kind);
-        let prev_tail = tail
-            .and_then(|tail| {
-                messages
-                    .get(..tail)?
-                    .iter()
-                    .rposition(|message| matches!(message, AgentMessage::Assistant { .. }))
+    /// `messages` is the transformed history, never `transient`; cells are prompt order, and
+    /// under fewer slots the universal end goes first, then the previous tail.
+    pub fn build(policy: &CachePolicy, messages: &[AgentMessage], reuse: Reuse) -> Self {
+        let slots = policy.engine.slots();
+        let stable = |position| {
+            Some(Breakpoint {
+                position,
+                ttl: policy.stable_ttl,
             })
-            .and_then(|reply| messages.get(..reply)?.iter().rposition(is_tail_kind));
+        };
         let five = |position| {
             Some(Breakpoint {
                 position,
                 ttl: Ttl::Min5,
             })
         };
-        match (prev_tail, tail) {
-            (Some(prev), Some(tail)) if slots >= 3 => {
-                marks[1] = five(Position::PrevTail(prev));
-                marks[2] = five(Position::Tail(tail));
+        let mut marks = [None, stable(Position::SystemEnd), None, None];
+        if reuse == Reuse::Loop {
+            let tail = messages.iter().rposition(is_tail_kind);
+            let prev_tail = tail
+                .and_then(|tail| {
+                    messages
+                        .get(..tail)?
+                        .iter()
+                        .rposition(|message| matches!(message, AgentMessage::Assistant { .. }))
+                })
+                .and_then(|reply| messages.get(..reply)?.iter().rposition(is_tail_kind));
+            if let Some(tail) = tail
+                && slots >= 2
+            {
+                marks[3] = five(Position::Tail(tail));
+                if let Some(prev) = prev_tail
+                    && slots >= 3
+                {
+                    marks[2] = five(Position::PrevTail(prev));
+                }
             }
-            (_, Some(tail)) if slots >= 2 => {
-                marks[1] = five(Position::Tail(tail));
-            }
-            _ => {}
+        }
+        if slots >= SLOTS {
+            marks[0] = stable(Position::UniversalEnd);
         }
         Self { marks }
     }
@@ -196,18 +194,54 @@ impl Breakpoints {
     }
 }
 
-/// The wire shape breakpoints are spelled in; every arm is matched, and none is a root mark.
+/// The wires that carry explicit breakpoints; every arm is matched, and none is a root mark.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dialect {
-    /// Anthropic Messages: `cache_control` on the last system block (the last tool when
-    /// there is no system) and on the last block of the message a breakpoint names.
+    /// Anthropic Messages: `cache_control` on the first and last system blocks (the last tool
+    /// when there is no system) and on the last block of the message a breakpoint names.
     AnthropicBlocks,
-    /// openai-completions through OpenRouter: `cache_control` on the last part of the
-    /// system message and of the message a breakpoint names; a string content becomes one text part.
+    /// openai-completions through OpenRouter: `cache_control` on the last part of the system
+    /// message and of a named message; the one-part system has no room for the universal end.
     OpenRouterParts,
-    /// openai-completions elsewhere and the Responses API: the provider places its own
-    /// breakpoint, and no explicit mark is known to be accepted there (design §11).
-    Automatic,
+}
+
+/// A body the request paths accept: it left [`encode`] with its breakpoints spelled and its
+/// per-request facts last, or [`Encoded::provider_prefix`] on a wire with no explicit mark.
+#[derive(Clone, Debug)]
+pub struct Encoded(Value);
+
+impl Deref for Encoded {
+    type Target = Value;
+
+    fn deref(&self) -> &Value {
+        &self.0
+    }
+}
+
+impl fmt::Display for Encoded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Encoded {
+    /// The wires with no explicit breakpoint (openai-completions off OpenRouter, the Responses
+    /// API): the provider caches its own prefix. The per-request facts still render last.
+    pub fn provider_prefix(mut params: Value, list: &str, transient: Vec<Value>) -> Self {
+        append(&mut params, list, transient);
+        Self(params)
+    }
+
+    /// For inspection; the request paths never take a bare body back.
+    pub fn into_value(self) -> Value {
+        self.0
+    }
+}
+
+fn append(params: &mut Value, list: &str, transient: Vec<Value>) {
+    if let Some(items) = params.get_mut(list).and_then(Value::as_array_mut) {
+        items.extend(transient);
+    }
 }
 
 fn ephemeral(ttl: Ttl) -> Value {
@@ -229,19 +263,30 @@ fn mark_last_part(message: &mut Value, control: Value) {
     }
 }
 
-/// Spells the breakpoints into the rendered body: `origins[j]` is the `messages` index rendered as
-/// body message `j` (`None` for the system message and anything synthesized).
+/// Spells the breakpoints into the body, then renders `transient` after them; `origins[j]`
+/// is the `messages` index rendered as body message `j` (`None` for synthesized ones).
 pub fn encode(
     breakpoints: &Breakpoints,
     dialect: Dialect,
-    params: &mut Value,
+    mut params: Value,
     origins: &[Option<usize>],
-) {
+    transient: Vec<Value>,
+) -> Encoded {
     for mark in breakpoints.marks() {
         let control = ephemeral(mark.ttl);
         match (dialect, mark.position) {
-            (Dialect::Automatic, _) => {}
-            (Dialect::AnthropicBlocks, Position::Stable) => {
+            (Dialect::AnthropicBlocks, Position::UniversalEnd) => {
+                // A lone block is the system end's already.
+                if let Some(block) = params
+                    .get_mut("system")
+                    .and_then(Value::as_array_mut)
+                    .filter(|blocks| blocks.len() > 1)
+                    .and_then(|blocks| blocks.first_mut())
+                {
+                    block["cache_control"] = control;
+                }
+            }
+            (Dialect::AnthropicBlocks, Position::SystemEnd) => {
                 let has_system = params
                     .get("system")
                     .and_then(Value::as_array)
@@ -255,7 +300,8 @@ pub fn encode(
                     block["cache_control"] = control;
                 }
             }
-            (Dialect::OpenRouterParts, Position::Stable) => {
+            (Dialect::OpenRouterParts, Position::UniversalEnd) => {}
+            (Dialect::OpenRouterParts, Position::SystemEnd) => {
                 if let Some(system) = params
                     .get_mut("messages")
                     .and_then(Value::as_array_mut)
@@ -284,4 +330,6 @@ pub fn encode(
             }
         }
     }
+    append(&mut params, "messages", transient);
+    Encoded(params)
 }

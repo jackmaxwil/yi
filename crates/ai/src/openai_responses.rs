@@ -4,7 +4,7 @@ use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
 use yi_types::model::{LlmContext, Model, ToolChoice, ToolDef};
 
-use crate::breakpoints::{Breakpoints, CacheRoute, Dialect, Reuse, encode};
+use crate::breakpoints::Encoded;
 use crate::catalog::calculate_cost;
 use crate::compat::compat_bool;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
@@ -213,7 +213,8 @@ fn freeform_names(context: &LlmContext) -> std::collections::BTreeSet<String> {
         .collect()
 }
 
-fn convert_input(model: &Model, context: &LlmContext) -> Vec<Value> {
+/// The system and history items, then the per-request items that render after them.
+fn convert_input(model: &Model, context: &LlmContext) -> (Vec<Value>, Vec<Value>) {
     let _span = yi_types::trace::span("ai.convert_messages");
     let mut input = Vec::new();
     // The `openai-codex` backend takes the system text as top-level `instructions`;
@@ -229,7 +230,6 @@ fn convert_input(model: &Model, context: &LlmContext) -> Vec<Value> {
     }
     let vision = model.input.iter().any(|kind| kind == "image");
     let freeform = freeform_names(context);
-    // History first, the per-request facts last; this wire's dialect spells no mark (D295).
     let history = transform_messages(
         &context.messages,
         model,
@@ -240,31 +240,36 @@ fn convert_input(model: &Model, context: &LlmContext) -> Vec<Value> {
         model,
         Some(normalize_responses_tool_call_id),
     );
-    for message in history.iter().chain(&transient) {
-        match message {
-            AgentMessage::User { content, .. } => {
-                if let Some(item) = convert_user(content) {
-                    input.push(item);
+    let items = |messages: &[AgentMessage]| {
+        let mut out = Vec::new();
+        for message in messages {
+            match message {
+                AgentMessage::User { content, .. } => {
+                    if let Some(item) = convert_user(content) {
+                        out.push(item);
+                    }
                 }
+                AgentMessage::Assistant { content, .. } => {
+                    out.extend(convert_assistant(content, &freeform));
+                }
+                AgentMessage::ToolResult {
+                    tool_call_id,
+                    tool_name,
+                    content,
+                    ..
+                } => out.push(convert_tool_result(
+                    tool_call_id,
+                    content,
+                    vision,
+                    freeform.contains(tool_name),
+                )),
+                _ => {}
             }
-            AgentMessage::Assistant { content, .. } => {
-                input.extend(convert_assistant(content, &freeform));
-            }
-            AgentMessage::ToolResult {
-                tool_call_id,
-                tool_name,
-                content,
-                ..
-            } => input.push(convert_tool_result(
-                tool_call_id,
-                content,
-                vision,
-                freeform.contains(tool_name),
-            )),
-            _ => {}
         }
-    }
-    input
+        out
+    };
+    input.extend(items(&history));
+    (input, items(&transient))
 }
 
 /// A custom tool call's raw text becomes the one argument the tool schema
@@ -344,26 +349,20 @@ fn apply_reasoning(model: &Model, options: &OpenAiOptions, params: &mut Value) {
     }
 }
 
-pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Value {
+pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Encoded {
     let _span = yi_types::trace::span("ai.build_params")
         .arg("api", "responses")
         .arg("messages", context.messages.len());
+    let (input, transient) = convert_input(model, context);
     let mut params = json!({
         "model": model.id,
-        "input": convert_input(model, context),
+        "input": input,
         "stream": true,
         "store": false,
     });
     if model.provider == "openai-codex" {
         params["instructions"] = json!(system_text(&context.system_prompt));
     }
-    // Every request carries its breakpoints; this wire spells none of them (design §11).
-    let breakpoints = Breakpoints::build(
-        &CacheRoute::of(model, false),
-        &context.messages,
-        Reuse::of(context),
-    );
-    encode(&breakpoints, Dialect::Automatic, &mut params, &[]);
     if let Some(session_id) = &options.session_id {
         params["prompt_cache_key"] = json!(session_id);
     }
@@ -385,7 +384,9 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         params["tool_choice"] = convert_tool_choice(choice, context.tools.as_deref());
     }
     apply_reasoning(model, options, &mut params);
-    params
+    // No explicit breakpoint is known to be accepted on this wire; the provider caches its own
+    // prefix, and the per-request facts still render last (design §11).
+    Encoded::provider_prefix(params, "input", transient)
 }
 
 fn parse_usage(raw: &Value, model: &Model) -> yi_types::message::Usage {
@@ -973,7 +974,7 @@ impl EventMapper {
 
 fn run_request(
     model: &Model,
-    body: &Value,
+    body: &Encoded,
     wire: crate::request::Wire<'_>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {

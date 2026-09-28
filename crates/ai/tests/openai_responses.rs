@@ -43,6 +43,7 @@ fn context() -> LlmContext {
         )],
         transient: Vec::new(),
         schema: None,
+        reuse: yi_types::model::Reuse::Loop,
         tools: Some(vec![ToolDef {
             name: "bash".to_owned(),
             description: "run".to_owned(),

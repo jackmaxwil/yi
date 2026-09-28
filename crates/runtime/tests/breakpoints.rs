@@ -1,7 +1,9 @@
 //! The breakpoints' invariants over random requests (D295): at most the engine's slots, a
 //! TTL that never rises along the prompt, no position past the history (so none in
-//! `transient`), and no tail for a one-shot or a final. The same requests are then rendered
-//! through both dialects, and the environment messages come out last and bare.
+//! `transient`), no tail unless the caller said the request loops, and a system breakpoint
+//! on every request. The same requests are then rendered through both dialects: the
+//! environment messages come out last and bare, the system end is marked, and a loop
+//! request's last mark sits on its last user-role message.
 
 use std::error::Error;
 use std::hash::{BuildHasher, RandomState};
@@ -10,11 +12,11 @@ use proptest::prelude::{Just, Strategy, any, prop, prop_oneof};
 use proptest::test_runner::{Config, RngSeed, TestCaseError, TestRunner};
 use serde_json::{Value, json};
 use yi_ai::anthropic::{self, AnthropicOptions};
-use yi_ai::breakpoints::{Breakpoints, CacheRoute, Engine, Position, Reuse, SLOTS, Ttl};
+use yi_ai::breakpoints::{Breakpoints, CachePolicy, Encoded, Engine, Position, SLOTS, Ttl};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_ai::openai::{self, OpenAiOptions};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{LlmContext, Model, ModelCost, ToolChoice, ToolDef};
+use yi_types::model::{LlmContext, Model, ModelCost, Reuse, ToolChoice, ToolDef};
 
 const CASES: u32 = 128;
 
@@ -41,6 +43,24 @@ fn model(api: &str, provider: &str, base_url: &str, id: &str) -> Model {
         thinking_level_map: None,
         headers: None,
     }
+}
+
+fn direct() -> Model {
+    model(
+        "anthropic-messages",
+        "anthropic",
+        "https://api.anthropic.com",
+        "claude-opus-4-5",
+    )
+}
+
+fn routed() -> Model {
+    model(
+        "openai-completions",
+        "openrouter",
+        "https://openrouter.ai/api/v1",
+        "anthropic/claude-haiku-4.5",
+    )
 }
 
 fn user(text: &str) -> AgentMessage {
@@ -80,18 +100,24 @@ fn message(kind: u8, index: usize) -> AgentMessage {
     }
 }
 
-/// A random request: history kinds, environment count, reuse, engine and TTL choices.
+/// A random request: history kinds, environment count, the caller's reuse, whether a tool
+/// table rides (independent of reuse), the engine and the TTL choice.
 #[derive(Clone, Debug)]
 struct Case {
     kinds: Vec<u8>,
     transient: usize,
     reuse: Reuse,
+    tools: bool,
     engine: Engine,
     hold_1h: bool,
 }
 
 fn case_strategy() -> impl Strategy<Value = Case> {
-    let reuse = prop_oneof![Just(Reuse::Loop), Just(Reuse::OneShot), Just(Reuse::Final)];
+    let reuse = prop_oneof![
+        Just(Reuse::Loop),
+        Just(Reuse::OneShot),
+        Just(Reuse::LastTurn)
+    ];
     let engine = prop_oneof![
         (1..=SLOTS, any::<bool>()).prop_map(|(slots, hour)| Engine::Breakpoint { slots, hour }),
         Just(Engine::Snapshot),
@@ -101,30 +127,30 @@ fn case_strategy() -> impl Strategy<Value = Case> {
         prop::collection::vec(0..5u8, 0..12),
         0..3usize,
         reuse,
+        any::<bool>(),
         engine,
         any::<bool>(),
     )
-        .prop_map(|(kinds, transient, reuse, engine, hold_1h)| Case {
+        .prop_map(|(kinds, transient, reuse, tools, engine, hold_1h)| Case {
             kinds,
             transient,
             reuse,
+            tools,
             engine,
             hold_1h,
         })
 }
 
-fn context(case: &Case) -> LlmContext {
-    let tool = ToolDef {
+fn tool() -> ToolDef {
+    ToolDef {
         name: "bash".to_owned(),
         description: "run".to_owned(),
         parameters: json!({"type": "object", "properties": {}}),
         freeform: None,
-    };
-    let (tools, tool_choice) = match case.reuse {
-        Reuse::Loop => (Some(vec![tool]), None),
-        Reuse::OneShot => (None, None),
-        Reuse::Final => (Some(vec![tool]), Some(ToolChoice::None)),
-    };
+    }
+}
+
+fn context(case: &Case) -> LlmContext {
     LlmContext {
         system_prompt: "be terse".to_owned(),
         messages: case
@@ -137,9 +163,17 @@ fn context(case: &Case) -> LlmContext {
             .map(|turn| user(&format!("<environment>\nturn: {turn}\n</environment>")))
             .collect(),
         schema: None,
-        tools,
-        tool_choice,
+        reuse: case.reuse,
+        tools: case.tools.then(|| vec![tool()]),
+        tool_choice: (case.reuse == Reuse::LastTurn).then_some(ToolChoice::None),
     }
+}
+
+fn is_user_role(message: &AgentMessage) -> bool {
+    matches!(
+        message,
+        AgentMessage::User { .. } | AgentMessage::ToolResult { .. }
+    )
 }
 
 fn check_breakpoints(case: &Case, ctx: &LlmContext) -> Result<(), TestCaseError> {
@@ -147,11 +181,11 @@ fn check_breakpoints(case: &Case, ctx: &LlmContext) -> Result<(), TestCaseError>
         Engine::Breakpoint { hour: true, .. } if case.hold_1h => Ttl::Hour1,
         _ => Ttl::Min5,
     };
-    let route = CacheRoute {
+    let policy = CachePolicy {
         engine: case.engine,
         stable_ttl,
     };
-    let breakpoints = Breakpoints::build(&route, &ctx.messages, case.reuse);
+    let breakpoints = Breakpoints::build(&policy, &ctx.messages, case.reuse);
     let marks: Vec<_> = breakpoints.marks().collect();
     let slots = match case.engine {
         Engine::Breakpoint { slots, .. } => slots,
@@ -159,17 +193,24 @@ fn check_breakpoints(case: &Case, ctx: &LlmContext) -> Result<(), TestCaseError>
         Engine::Prefix => SLOTS,
     };
     proptest::prop_assert!(marks.len() <= slots, "{marks:?} over {slots} slots");
-    proptest::prop_assert_eq!(
-        marks.first().map(|mark| mark.position),
-        Some(Position::Stable)
+    proptest::prop_assert!(
+        marks
+            .iter()
+            .any(|mark| mark.position == Position::SystemEnd),
+        "no system breakpoint: {marks:?}"
     );
     for pair in marks.windows(2) {
         proptest::prop_assert!(pair[1].ttl <= pair[0].ttl, "TTL rises: {marks:?}");
         proptest::prop_assert!(
-            pair[1].position.index() > pair[0].position.index(),
+            pair[1].position.rank() > pair[0].position.rank(),
             "positions out of prompt order: {marks:?}"
         );
     }
+    let last_user = ctx.messages.iter().rposition(is_user_role);
+    let tail = marks.iter().find_map(|mark| match mark.position {
+        Position::Tail(index) => Some(index),
+        _ => None,
+    });
     for mark in &marks {
         if let Some(index) = mark.position.index() {
             proptest::prop_assert!(
@@ -180,12 +221,15 @@ fn check_breakpoints(case: &Case, ctx: &LlmContext) -> Result<(), TestCaseError>
             proptest::prop_assert_eq!(case.reuse, Reuse::Loop, "a tail on {:?}", case.reuse);
         }
     }
+    if case.reuse == Reuse::Loop && slots >= 2 {
+        proptest::prop_assert_eq!(tail, last_user, "the tail is the last user-role message");
+    }
     Ok(())
 }
 
-/// The environment count rendered last, none of them marked, and marked history messages
-/// only on a loop request.
-fn check_rendered(case: &Case, body: &Value, dialect: &str) -> Result<(), TestCaseError> {
+/// The environment count rendered last, none of them marked, the system end marked, and
+/// history marks only on a loop request, the last of them on the last user-role message.
+fn check_rendered(case: &Case, body: &Encoded, dialect: &str) -> Result<(), TestCaseError> {
     let messages = body["messages"].as_array().cloned().unwrap_or_default();
     let marked = |message: &Value| {
         message["content"]
@@ -207,17 +251,36 @@ fn check_rendered(case: &Case, body: &Value, dialect: &str) -> Result<(), TestCa
             "{dialect}: a marked environment: {message}"
         );
     }
-    let history_marks = messages
+    let system_marked = match dialect {
+        "anthropic" => body["system"]
+            .as_array()
+            .and_then(|blocks| blocks.last())
+            .is_some_and(|block| block["cache_control"].is_object()),
+        _ => messages.first().is_some_and(marked),
+    };
+    proptest::prop_assert!(system_marked, "{dialect}: no system breakpoint on the wire");
+    let history: Vec<&Value> = messages
         .iter()
         .take(split)
         .filter(|message| !matches!(message["role"].as_str(), Some("system" | "developer")))
-        .filter(|message| marked(message))
-        .count();
-    proptest::prop_assert!(
-        case.reuse == Reuse::Loop || history_marks == 0,
-        "{dialect}: {history_marks} history marks on {:?}",
-        case.reuse
-    );
+        .collect();
+    let last_marked = history.iter().rposition(|message| marked(message));
+    let last_user = history
+        .iter()
+        .rposition(|message| matches!(message["role"].as_str(), Some("user" | "tool")));
+    match case.reuse {
+        Reuse::Loop => proptest::prop_assert_eq!(
+            last_marked,
+            last_user,
+            "{}: the last history mark is not on the last user-role message",
+            dialect
+        ),
+        Reuse::OneShot | Reuse::LastTurn => proptest::prop_assert!(
+            last_marked.is_none(),
+            "{dialect}: a history mark on {:?}",
+            case.reuse
+        ),
+    }
     proptest::prop_assert!(
         body.get("cache_control").is_none(),
         "{dialect}: a root mark"
@@ -241,18 +304,7 @@ fn random_requests_hold_every_breakpoint_invariant_on_both_dialects() -> Result<
     };
     config.rng_seed = RngSeed::Fixed(seed);
     let replay = format!("PROPTEST_RNG_SEED={seed} replays this run");
-    let direct = model(
-        "anthropic-messages",
-        "anthropic",
-        "https://api.anthropic.com",
-        "claude-opus-4-5",
-    );
-    let routed = model(
-        "openai-completions",
-        "openrouter",
-        "https://openrouter.ai/api/v1",
-        "anthropic/claude-haiku-4.5",
-    );
+    let (direct, routed) = (direct(), routed());
     let mut runner = TestRunner::new(config);
     runner
         .run(&case_strategy(), |case| {
@@ -274,5 +326,51 @@ fn random_requests_hold_every_breakpoint_invariant_on_both_dialects() -> Result<
             )
         })
         .map_err(|error| format!("{error}; {replay}"))?;
+    Ok(())
+}
+
+/// The caller says the request loops; an empty tool table does not turn that off (review
+/// of #796, F1): a tool-less conversation still marks its previous tail and its tail.
+#[test]
+fn a_tool_less_loop_still_marks_its_previous_tail_and_tail() -> Result<(), Box<dyn Error>> {
+    let ctx = LlmContext {
+        system_prompt: "be terse".to_owned(),
+        messages: vec![
+            user("first"),
+            faux_assistant_message(vec![faux_text("one")], StopReason::Stop),
+            user("second"),
+            faux_assistant_message(vec![faux_text("two")], StopReason::Stop),
+            user("third"),
+        ],
+        transient: vec![user("<environment>\nturn: 3\n</environment>")],
+        schema: None,
+        reuse: Reuse::Loop,
+        tools: None,
+        tool_choice: None,
+    };
+    let marked = |messages: &[Value]| -> Vec<usize> {
+        messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                message["content"]
+                    .as_array()
+                    .is_some_and(|parts| parts.iter().any(|part| part["cache_control"].is_object()))
+            })
+            .map(|(index, _)| index)
+            .collect()
+    };
+    let anthropic = anthropic::build_params(&direct(), &ctx, &AnthropicOptions::default());
+    assert_eq!(
+        marked(anthropic["messages"].as_array().ok_or("messages")?),
+        [2, 4],
+        "{anthropic}"
+    );
+    let routed = openai::build_params(&routed(), &ctx, &OpenAiOptions::default());
+    assert_eq!(
+        marked(routed["messages"].as_array().ok_or("messages")?),
+        [0, 3, 5],
+        "{routed}"
+    );
     Ok(())
 }

@@ -524,9 +524,14 @@ pub struct WireOwned {
 pub fn spawn_stream(
     fail: impl FnOnce(&Model, &str) -> crate::EventOut + Send + 'static,
     model: &Model,
-    body: Value,
+    body: crate::breakpoints::Encoded,
     owned: WireOwned,
-    run: impl FnOnce(&Model, &Value, Wire<'_>, &Sender<crate::EventOut>) -> Result<(), String>
+    run: impl FnOnce(
+        &Model,
+        &crate::breakpoints::Encoded,
+        Wire<'_>,
+        &Sender<crate::EventOut>,
+    ) -> Result<(), String>
     + Send
     + 'static,
 ) -> Receiver<crate::EventOut> {
