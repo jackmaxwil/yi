@@ -49,6 +49,7 @@ names one gate everywhere in code and tests; a number absent here is not a gate.
 | E13 | the Terminal-Bench dataset is pinned by digest | `drivers/tbv4_baseline.sh` |
 | E14 | cost is the provider's self-reported `usage.cost.total`, never a local price table | `yi_usage.parse_events` |
 | E15 | the adapter uploads harbor's certifi bundle and sets `SSL_CERT_FILE`, since a task image may ship no CA roots | `yi_harbor/agent.py` |
+| E16 | with `YI_LEVERS` set on the host, the harbor adapter uploads that file to `/logs/agent/yi/levers.json`, runs `yi ask --eval` with `YI_LEVERS` naming it, and the fingerprint's mode carries `+levers<hash>`; without it the command is unchanged | `yi_usage.run_command`, `yi_harbor/agent.py` |
 
 ## Emission map
 
@@ -436,7 +437,7 @@ The harness's names, not the binary's. `check_env_surface.py` scans
 | `EVAL_ROUTING` | `run.py`, harbor adapter | OpenRouter provider object, see [Task runner](#task-runner) |
 | `EVAL_TIMEOUT_MULT` | harbor adapter, drivers | the trial's share of the task timeout (E12); rides the fingerprint as `+t<mult>` |
 | `EVAL_SUITE_REV` | harbor adapter, drivers | the dataset digest in the fingerprint |
-| `YI_LEVERS` | the binary, under `--eval` only | lever overrides (D220); declared in `scripts/guardrails/baselines/env_vars.json` |
+| `YI_LEVERS` | the binary, under `--eval` only; `run.py`, `surface.py` and the harbor adapter (E16) pass it on | lever overrides (D220); declared in `scripts/guardrails/baselines/env_vars.json` |
 
 Build the local musl binary with `just package-musl <version>` (target defaults
 to `x86_64-unknown-linux-musl`). It cross-compiles via `zig cc`/`zig ar` and
