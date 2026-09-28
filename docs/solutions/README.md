@@ -267,6 +267,7 @@ edited by hand.
 - [D291](adr/d291.md) - an OpenRouter request marks its own cache breakpoints, per block and never...
 - [D292](adr/d292.md) - a skill pointer answers only what the user typed (revises D114, D139 and D196)
 - [D293](adr/d293.md) - a settled permission ask is journaled in the session
+- [D296](adr/d296.md) - the MCP session store is host-only
 - [D297](adr/d297.md) - an optional `classifier` model role asks a local sidecar which skill a typed...
 - [D289](adr/d289.md) - the project rules load whole and once, lanes included
 - [D290](adr/d290.md) - the catalog lists home-root skills only by name
