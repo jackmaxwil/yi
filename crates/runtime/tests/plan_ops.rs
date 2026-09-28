@@ -383,6 +383,7 @@ fn a_blocked_todo_is_not_started() -> TestResult {
         label: label("delegated job")?,
         on: BlockedOn::User,
         note: "hold it until the design is agreed".to_owned(),
+        ask: None,
     }))?;
     engine.apply(owner(Op::Start {
         label: label("gate")?,
@@ -400,6 +401,7 @@ fn a_blocked_todo_is_not_started() -> TestResult {
     assert_eq!(stub.next.load(Ordering::SeqCst), 0);
     let out = engine.apply(owner(Op::Unblock {
         label: label("delegated job")?,
+        answer: None,
     }))?;
     assert_eq!(out.spawned.len(), 1, "the release starts it");
     let released = out
@@ -767,12 +769,14 @@ fn mutation_is_owner_gated_and_unblock_is_open_to_user_and_host() -> TestResult 
         label: label("first job")?,
         on: BlockedOn::User,
         note: "needs a decision".to_owned(),
+        ask: None,
     }))?;
     let out = engine.apply(OpRequest {
         plan: None,
         actor: Actor::User("user://3".parse::<Url>()?),
         op: Op::Unblock {
             label: label("first job")?,
+            answer: None,
         },
         request_id: None,
         expected_revision: None,
@@ -826,6 +830,7 @@ fn blocking_a_running_delegated_todo_reaps_the_child() -> TestResult {
         label: label("first job")?,
         on: BlockedOn::User,
         note: "waiting on a decision".to_owned(),
+        ask: None,
     }))?;
     assert_eq!(out.reaped.len(), 1, "the block exit from Running must reap");
     assert_eq!(stub.reaps.load(Ordering::SeqCst), 1);
@@ -1484,6 +1489,7 @@ fn row(text: &str, state: TodoStateName, children: &[&str]) -> Result<SetRow, Bo
             contract_hash: None,
             extra: Map::new(),
             cites: Default::default(),
+            ask: None,
         });
     }
     let mut spec = spec(text)?;

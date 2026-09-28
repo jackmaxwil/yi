@@ -248,19 +248,47 @@ fn a_plan_op_racing_an_owner_row_write_never_undoes_it() -> TestResult {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 let on = yi_types::plan::doc::BlockedOn::User;
                 let (label, note) = (gate.clone(), "wait".to_owned());
-                let _ = engine.apply(owner(Op::Block { label, on, note }));
+                let _ = engine.apply(owner(Op::Block {
+                    label,
+                    on,
+                    note,
+                    ask: None,
+                }));
                 let label = gate.clone();
-                let _ = engine.apply(owner(Op::Unblock { label }));
+                let _ = engine.apply(owner(Op::Unblock {
+                    label,
+                    answer: None,
+                }));
             }
         });
         let mut lost = 0;
         for _ in 0..100 {
             let on = yi_types::todo::BlockedOn::User;
             let (label, note) = (first.clone(), "wait".to_owned());
-            let blocked = todos.apply(TodoOp::Block { label, on, note }, None).is_ok();
+            let blocked = todos
+                .apply(
+                    TodoOp::Block {
+                        label,
+                        on,
+                        note,
+                        ask: None,
+                    },
+                    None,
+                )
+                .is_ok();
             lost += usize::from(!blocked || state_of(&todos) != Some(TodoStateName::Blocked));
             let label = first.clone();
-            lost += usize::from(todos.apply(TodoOp::Unblock { label }, None).is_err());
+            lost += usize::from(
+                todos
+                    .apply(
+                        TodoOp::Unblock {
+                            label,
+                            answer: None,
+                        },
+                        None,
+                    )
+                    .is_err(),
+            );
         }
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         lost
@@ -612,9 +640,23 @@ fn an_owner_row_is_not_promoted_to_running_while_the_plan_is_open() -> TestResul
     let (_session, todos, _engine) = mirrored(&dir)?;
     let (label, note) = (TodoLabel::new("first")?, "wait".to_owned());
     let on = yi_types::todo::BlockedOn::User;
-    todos.apply(TodoOp::Block { label, on, note }, None)?;
+    todos.apply(
+        TodoOp::Block {
+            label,
+            on,
+            note,
+            ask: None,
+        },
+        None,
+    )?;
     let label = TodoLabel::new("first")?;
-    todos.apply(TodoOp::Unblock { label }, None)?;
+    todos.apply(
+        TodoOp::Unblock {
+            label,
+            answer: None,
+        },
+        None,
+    )?;
     let rows = ids(&todos);
     assert_eq!(rows[0].2, TodoStateName::Pending, "{rows:?}");
     assert_eq!(

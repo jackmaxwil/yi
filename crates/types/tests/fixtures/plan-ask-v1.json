@@ -1,0 +1,52 @@
+{
+  "constraints": [],
+  "examples": [],
+  "format": 2,
+  "goal": "land the page",
+  "intent": null,
+  "journal_digest": "sha256:a2d010841c965c2c583483143b417af6cb2e2dae07e2a0e1f1c6f6a852568258",
+  "journal_seq": 5,
+  "placement": null,
+  "plan": "land-the-page",
+  "shape": null,
+  "state": "done",
+  "tier": "root",
+  "todos": [
+    {
+      "ask": {
+        "after": "user://1",
+        "answer": {
+          "address": "user://2",
+          "option": "b"
+        },
+        "options": [
+          {
+            "id": "a",
+            "label": "Calm",
+            "preview": "soft grey hero, one line of copy"
+          },
+          {
+            "id": "b",
+            "label": "Bold",
+            "preview": "graph TD; Hero-->CTA"
+          },
+          {
+            "id": "c",
+            "label": "Dense",
+            "preview": "store://hero-dense"
+          }
+        ]
+      },
+      "attempt": 1,
+      "intent": [
+        "user://1",
+        "user://2"
+      ],
+      "label": "hero style",
+      "refusals": 0,
+      "state": "done"
+    }
+  ],
+  "touched": 5,
+  "version": 1
+}

@@ -409,6 +409,7 @@ fn seed_plan_of(root: &std::path::Path, label: &str, check: &str) -> TestResult 
             contract_hash: None,
             extra: serde_json::Map::new(),
             cites: Default::default(),
+            ask: None,
         }],
     );
     store.write(&plan)?;

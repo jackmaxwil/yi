@@ -57,6 +57,7 @@ fn todo(label: &str, state: TodoState, after: &[&str]) -> Result<Todo, Box<dyn E
         contract_hash: None,
         extra: serde_json::Map::new(),
         cites: Default::default(),
+        ask: None,
     })
 }
 
