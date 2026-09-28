@@ -70,6 +70,22 @@ pub(super) fn drain(shared: &Shared) -> Vec<AgentMessage> {
         .collect()
 }
 
+/// Matched once admitted: at intake a prompt may be refused as busy, and a pointer would wake it.
+fn pointers_for(shared: &Shared, message: &AgentMessage) -> Vec<AgentMessage> {
+    let rules = shared.rules.lock().ok().and_then(|slot| slot.clone());
+    rules.map_or_else(Vec::new, |rules| rules.observe_user(message))
+}
+
+fn with_pointers(shared: &Shared, messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
+    let mut placed = Vec::with_capacity(messages.len());
+    for message in messages {
+        let pointers = pointers_for(shared, &message);
+        placed.push(message);
+        placed.extend(pointers);
+    }
+    placed
+}
+
 /// The prompt a waking entry or a follow-up is owed, taken under the status lock enqueue takes.
 fn owed(shared: &Shared, follow_ups: bool) -> Option<AgentMessage> {
     if shared.winding_down() || shared.held.load(std::sync::atomic::Ordering::SeqCst) {
@@ -389,13 +405,23 @@ fn wire_environment(config: &mut LoopConfig, shared: &Arc<Shared>) {
 fn wire_queues_and_coupling(config: &mut LoopConfig, shared: &Arc<Shared>, prompt: &AgentMessage) {
     let steer = Arc::clone(shared);
     let follow = Arc::clone(shared);
-    config.get_steering_messages = Some(Box::new(move || drain(&steer)));
+    // The loop reads steering once before its first request: the prompt's pointers ride that read.
+    let opening = std::sync::Mutex::new(pointers_for(shared, prompt));
+    config.get_steering_messages = Some(Box::new(move || {
+        let mut taken = opening
+            .lock()
+            .map(|mut pointers| std::mem::take(&mut *pointers))
+            .unwrap_or_default();
+        taken.extend(with_pointers(&steer, drain(&steer)));
+        taken
+    }));
     config.get_follow_up_messages = Some(Box::new(move || {
-        follow
+        let taken = follow
             .follow_up
             .lock()
             .map(|mut queue| std::mem::take(&mut *queue))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        with_pointers(&follow, taken)
     }));
     let coupling = shared
         .coupling

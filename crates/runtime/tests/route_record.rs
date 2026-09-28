@@ -38,6 +38,7 @@ fn host_for(cwd: &std::path::Path) -> Host {
         user_system: String::new(),
         schema_instruction: None,
         context_window: 128_000,
+        global_skills: Vec::new(),
     })
 }
 

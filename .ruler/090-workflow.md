@@ -8,9 +8,9 @@
 - Feature cuts are discussed before being written into the docs.
 - One-in-one-out: adding a top-level feature deletes or demotes one and edits YI_DESIGN.md §1.2
   in the same commit.
-- Instruction source of truth is .ruler/; generated AGENTS.md, CLAUDE.md, and propagated skill
-  directories are untracked — edit .ruler and run `npx @intellectronica/ruler apply`, never the
-  generated files.
+- Instruction source of truth is .ruler/; edit .ruler and run `npx @intellectronica/ruler apply`,
+  never the generated files. AGENTS.md is tracked so a lane checkout carries the rules (commit it
+  with the rule; `check_agents_md.py` fails when it lags); CLAUDE.md and skill copies are not.
 - A commit subject and a PR title are the same thing: one plain imperative sentence, at most 72
   characters, first word capitalized, no terminal period, and self-evident to a cold reader —
   "Refuse the next done-claim on a rung-refused task", never "Close N14" or "Address feedback".

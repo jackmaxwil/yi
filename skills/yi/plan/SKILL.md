@@ -8,7 +8,6 @@ description: >
   several subsystems and several constraints. Do NOT use for a three-step
   task; the todo list is the list.
 trigger: plan this, create a plan, write a plan
-scope: text
 ---
 
 # plan

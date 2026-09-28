@@ -501,3 +501,133 @@ fn doctor_fix_reaps_an_orphaned_lane() -> TestResult {
     assert!(String::from_utf8_lossy(&journey.yi(&["lanes"])?.stdout).contains("idle"));
     Ok(())
 }
+
+fn write_skill(journey: &Journey, name: &str, frontmatter: &str) -> TestResult {
+    let dir = journey.project().join(".yi/skills").join(name);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: The {name} method.\n{frontmatter}\n---\nBody.\n"),
+    )?;
+    Ok(())
+}
+
+/// The session file in order: `user`, `assistant`, and each skill pointer as `reminder: <text>`.
+fn trace(journey: &Journey) -> Result<Vec<String>, Box<dyn Error>> {
+    let sessions = journey.root.join("home/sessions");
+    let file = std::fs::read_dir(&sessions)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| std::fs::read_dir(entry.path()).ok())
+        .flat_map(|files| files.filter_map(Result::ok))
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .ok_or("no session file")?;
+    let mut seen = Vec::new();
+    for line in std::fs::read_to_string(file)?.lines() {
+        let entry: Value = serde_json::from_str(line)?;
+        let message = &entry["message"];
+        match (message["role"].as_str(), message["customType"].as_str()) {
+            (Some("user"), _) => seen.push("user".to_owned()),
+            (Some("assistant"), _) => seen.push("assistant".to_owned()),
+            (Some("custom"), Some("reminder")) => seen.push(format!(
+                "reminder: {}",
+                message["content"].as_str().unwrap_or_default()
+            )),
+            _ => {}
+        }
+    }
+    Ok(seen)
+}
+
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_typed_dollar_name_points_at_the_skill_before_the_first_reply() -> TestResult {
+    let journey = Journey::new("skill-name")?;
+    write_skill(&journey, "gate", "trigger: cargo nextest")?;
+    write_skill(&journey, "review", "trigger: review the work")?;
+    succeeded(
+        &journey.yi(&["ask", "$gate run the focused tests"])?,
+        "the named ask",
+    )?;
+    succeeded(
+        &journey.yi(&["ask", "--continue", "Review the work"])?,
+        "the plain-words ask",
+    )?;
+    assert_eq!(
+        trace(&journey)?,
+        [
+            "user",
+            "reminder: Relevant: skill://gate (matched \"$gate\")",
+            "assistant",
+            "user",
+            "reminder: Relevant: skill://review (matched \"review the work\")",
+            "assistant",
+        ],
+        "each pointer sits between the message that asked for it and the first reply"
+    );
+    journey.reclaim();
+    Ok(())
+}
+
+/// #587: a probe session was pointed at skills by its own "verified" and `cargo nextest`.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn the_agents_own_words_fire_no_skill() -> TestResult {
+    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_types::message::StopReason;
+    let journey = Journey::new("own-words")?;
+    write_skill(&journey, "verify", "trigger: verified")?;
+    write_skill(&journey, "gate", "trigger: cargo nextest\nscope: tool:bash")?;
+    let call = |id: &str, name: &str, args: Value| {
+        faux_tool_call(id, name, args.as_object().cloned().unwrap_or_default())
+    };
+    let turns = [
+        faux_assistant_message(
+            vec![
+                faux_text("verified the plan; writing the note"),
+                call(
+                    "c1",
+                    "write",
+                    json!({"path": "note.txt", "content": "tidy\n"}),
+                ),
+            ],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(
+            vec![
+                faux_text("verified; running cargo nextest"),
+                call("c2", "bash", json!({"command": "echo cargo nextest run"})),
+            ],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("verified, complete")], StopReason::Stop),
+    ];
+    let lines = turns
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()?;
+    let script = journey.project().join("script.jsonl");
+    std::fs::write(&script, lines.join("\n"))?;
+    succeeded(
+        &journey.yi(&[
+            "ask",
+            "--faux",
+            &script.display().to_string(),
+            "tidy the note",
+        ])?,
+        "the ask",
+    )?;
+    assert_eq!(
+        std::fs::read_to_string(journey.project().join("note.txt"))?,
+        "tidy\n",
+        "the script ran: the write and the bash call happened"
+    );
+    assert_eq!(
+        trace(&journey)?,
+        ["user", "assistant", "assistant", "assistant"],
+        "prose, a command and its output are the agent's own words, and a dropped scope says nothing"
+    );
+    journey.reclaim();
+    Ok(())
+}

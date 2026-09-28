@@ -54,13 +54,13 @@ fn openai_model() -> Model {
     }
 }
 
-/// The catalog flag, not the provider, is what earns a root breakpoint.
+/// The fetched-catalog shape (#742): no cache flag exists, and the route alone earns the marks.
 fn openrouter_model() -> Model {
     Model {
         id: "anthropic/claude-haiku-4.5".to_owned(),
         provider: "openrouter".to_owned(),
         base_url: "https://openrouter.ai/api/v1".to_owned(),
-        compat: Some(json!({"cacheControlFormat": "anthropic", "thinkingFormat": "openrouter"})),
+        compat: Some(json!({"thinkingFormat": "openrouter"})),
         ..openai_model()
     }
 }
@@ -266,14 +266,24 @@ fn prefix_bytes(params: &Value) -> Result<usize, Box<dyn Error>> {
     Ok(system.len().saturating_add(tools.len()))
 }
 
-/// The breakpoint moves to the newest message every turn and is not part of
-/// the prefix hash, so it is the one key a stability check must ignore.
+/// The breakpoint moves to the newest message every turn and is not part of the prefix hash;
+/// the one text part a mark needs renders as the same block as the plain string it replaced.
 fn strip_cache_control(value: &mut Value) {
     match value {
         Value::Object(map) => {
             map.remove("cache_control");
             for nested in map.values_mut() {
                 strip_cache_control(nested);
+            }
+            let text = map
+                .get("content")
+                .and_then(Value::as_array)
+                .filter(|parts| parts.len() == 1 && parts[0]["type"] == "text")
+                .and_then(|parts| parts[0].as_object())
+                .filter(|part| part.len() == 2)
+                .and_then(|part| part.get("text").cloned());
+            if let Some(text) = text {
+                map.insert("content".to_owned(), text);
             }
         }
         Value::Array(items) => {
@@ -357,9 +367,8 @@ fn the_openai_cached_prefix_survives_a_turn() -> TestResult {
     )
 }
 
-/// An Anthropic model behind OpenRouter gets one root breakpoint that OpenRouter
-/// moves to the newest block itself, so the check is the same as OpenAI's plus
-/// the marker being present on both turns and no OpenAI-only key leaking in.
+/// An Anthropic model behind OpenRouter marks its system block and newest message, never the
+/// root, so the check is OpenAI's plus both marks on both turns and no OpenAI-only key.
 #[test]
 fn the_openrouter_cached_prefix_survives_a_turn() -> TestResult {
     let model = openrouter_model();
@@ -370,7 +379,11 @@ fn the_openrouter_cached_prefix_survives_a_turn() -> TestResult {
     let first = openai::build_params(&model, &context(first_turn())?, &options);
     let second = openai::build_params(&model, &context(second_turn())?, &options);
     for params in [&first, &second] {
-        assert_eq!(params["cache_control"], json!({"type": "ephemeral"}));
+        let messages = params["messages"].as_array().ok_or("messages")?;
+        let marked = |message: &Value| message["content"][0]["cache_control"].is_object();
+        assert!(params.get("cache_control").is_none(), "{params}");
+        assert!(messages.first().is_some_and(marked), "{params}");
+        assert!(messages.last().is_some_and(marked), "{params}");
         assert!(params.get("prompt_cache_key").is_none());
     }
     assert_prefix_survives_a_turn(&first, &second)
@@ -505,6 +518,7 @@ fn frozen_block(cwd: &std::path::Path, home: &std::path::Path) -> Result<String,
         user_system: String::new(),
         schema_instruction: None,
         context_window: 128_000,
+        global_skills: Vec::new(),
     });
     host.start(None, false);
     Ok(host
@@ -622,6 +636,7 @@ fn two_fresh_sessions_send_the_same_system_prompt_and_tools() -> TestResult {
             user_system: String::new(),
             schema_instruction: None,
             context_window: 128_000,
+            global_skills: Vec::new(),
         });
         host.start(None, false);
         std::thread::sleep(std::time::Duration::from_millis(2));
