@@ -2,7 +2,7 @@
 changed the library and its tests, with the library change undone. The commit's message is the
 request and the commit's tests grade the redo: each test it turned green is a point, plus one when
 nothing else regressed. The repos and their history stay outside this repository (INNER_REPOS,
-the same clones as `mutate`, unshallowed); the workspace has no .git to read the fix back out of.
+full clones); the workspace has no .git to read the fix back out of.
 
 Levels: 1 keeps the commit's tests in the workspace and names the failing ones; 2 hides them and
 shows their failure lines; 3 is a bigger change on level 2's terms. Showing nothing but the message
@@ -17,20 +17,23 @@ import tempfile
 from pathlib import Path
 
 from . import mutate
-from .mutate import REPOS, _dead, _hide, _module_path, _runner, _suite, grade
+from .mutate import _dead, _hide, _module_path, _runner, _suite, grade
 
 CACHE = mutate.CACHE.parent / "revert"
 DEPTH = 600  # commits back from the pinned one
 SIZES = {1: (2, 80), 2: (2, 80), 3: (40, 300)}  # library lines the commit changed, by level
 FIXED = (1, 20)  # tests the commit turned green
-# A repo whose later release the agent can import answers its own history. Probe, 2026-09-28: yi's
-# kernel venv ships tomli 2.4.1, and a level-3 rollout called it to read the error it had to write.
-ORACLES = {"tomli": "yi's kernel venv installs tomli 2.4.1"}
+# mutate's repos less tomli, whose slot pyparsing takes: a repo whose later release the agent can
+# import answers its own history, and yi's kernel venv ships tomli 2.4.1 (probe, 2026-09-28: a
+# level-3 rollout called it to read the error it had to write). None of these is in that venv.
+REPOS = {name: spec for name, spec in mutate.REPOS.items() if name != "tomli"} | {
+    "pyparsing": {"path": mutate.HOME / "pyparsing", "commit": "f803ae8", "src": "pyparsing", "tests": "tests"},
+}
 
 
 def available():
-    return mutate.available() and all(
-        _git(spec["path"], "rev-parse", "--is-shallow-repository").strip() == "false" for spec in REPOS.values())
+    return all(Path(spec["path"]).is_dir() and _git(spec["path"], "rev-parse", "--is-shallow-repository").strip()
+               == "false" for spec in REPOS.values())
 
 
 def _git(repo, *args):
@@ -108,9 +111,8 @@ def _judge(name, commit):
             (work / path).unlink()
         results, notes = _suite(work, spec, notes=True)
         f2p = sorted(t for t in passing if results.get(t) != "ok")
-        hideable = bool(f2p) and _hide(_tree(name, commit), spec, f2p) is not None
     verdict = {"repo": name, "commit": commit, "ok": FIXED[0] <= len(f2p) <= FIXED[1], "f2p": f2p,
-               "p2p": sorted(passing - set(f2p)), "drop": _dead(after), "hideable": hideable,
+               "p2p": sorted(passing - set(f2p)), "drop": _dead(after),
                "notes": {t: notes.get(t, "") for t in f2p}}
     cached.write_text(json.dumps(verdict))
     return verdict
@@ -120,15 +122,13 @@ def _plan(seed, level):
     """Seed n takes repo n mod 3 and that repo's (n div 3)-th usable commit of the level's size, in a
     fixed shuffle of its candidates; levels 2-3 skip a commit whose tests cannot be cut out."""
     name = sorted(REPOS)[seed % len(REPOS)]
-    if name in ORACLES:
-        raise RuntimeError(f"{name} seeds are refused: {ORACLES[name]}, which answers its own history")
     low, high = SIZES[level]
     candidates = [commit for commit, lines in _candidates(name) if low <= lines <= high]
     random.Random(f"revert:{name}").shuffle(candidates)
     want = seed // len(REPOS)
     for commit in candidates:
         verdict = _judge(name, commit)
-        if verdict["ok"] and (level == 1 or verdict["hideable"]):
+        if verdict["ok"] and (level == 1 or _hide(_tree(name, commit), REPOS[name], verdict["f2p"]) is not None):
             if want == 0:
                 return verdict
             want -= 1
