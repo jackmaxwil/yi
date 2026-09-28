@@ -1475,21 +1475,7 @@ fn row(text: &str, state: TodoStateName, children: &[&str]) -> Result<SetRow, Bo
     let mut kids = Vec::new();
     for child in children {
         kids.push(Todo {
-            label: label(child)?,
-            after: Vec::new(),
-            state: TodoState::Pending,
-            delegation: None,
-            subplan: None,
-            retries: RetryCount::default(),
-            children: Vec::new(),
-            note: None,
-            attempt: yi_types::plan::doc::AttemptId::FIRST,
-            refusals: 0,
-            contract: None,
-            contract_hash: None,
-            extra: Map::new(),
-            cites: Default::default(),
-            ask: None,
+            ..Todo::pending(label(child)?)
         });
     }
     let mut spec = spec(text)?;

@@ -43,21 +43,10 @@ fn todo(label: &str, state: TodoState, after: &[&str]) -> Result<Todo, Box<dyn E
         after_labels.push(TodoLabel::new(*label)?);
     }
     Ok(Todo {
-        label: TodoLabel::new(label)?,
         after: after_labels,
         state,
-        delegation: None,
-        subplan: None,
         retries: RetryCount(0),
-        children: Vec::new(),
-        note: None,
-        attempt: yi_types::plan::doc::AttemptId::FIRST,
-        refusals: 0,
-        contract: None,
-        contract_hash: None,
-        extra: serde_json::Map::new(),
-        cites: Default::default(),
-        ask: None,
+        ..Todo::pending(TodoLabel::new(label)?)
     })
 }
 

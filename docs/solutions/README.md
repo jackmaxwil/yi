@@ -255,5 +255,6 @@ edited by hand.
 - [D271](adr/d271.md) - the stack's four gaps close
 - [D278](adr/d278.md) - the user's words travel by address
 - [D281](adr/d281.md) - a todo blocked on the user may carry 3 to 5 options to pick from
+- [D282](adr/d282.md) - the two todo types merge
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

@@ -15,7 +15,7 @@ use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::plan::PlanVersion;
 use yi_types::plan::doc::{
-    GoalText, Plan, PlanId, PlanTier, RetryCount, Todo, TodoLabel, TodoState, TouchCount,
+    GoalText, Plan, PlanId, PlanTier, Todo, TodoLabel, TodoState, TouchCount,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -36,21 +36,8 @@ fn memory_store() -> yi_session::SharedSession {
 
 fn todo(label: &str, state: TodoState) -> Result<Todo, Box<dyn Error>> {
     Ok(Todo {
-        label: TodoLabel::new(label)?,
-        after: Vec::new(),
         state,
-        delegation: None,
-        subplan: None,
-        retries: RetryCount::default(),
-        children: Vec::new(),
-        note: None,
-        attempt: yi_types::plan::doc::AttemptId::FIRST,
-        refusals: 0,
-        contract: None,
-        contract_hash: None,
-        extra: serde_json::Map::new(),
-        cites: Default::default(),
-        ask: None,
+        ..Todo::pending(TodoLabel::new(label)?)
     })
 }
 

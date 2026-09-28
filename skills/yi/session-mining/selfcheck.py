@@ -239,6 +239,8 @@ def selfcheck():
         assert piped_row["signals"]["regression_seen_red"] == 1, "a red run piped through tail must still be seen red"
         blocked_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals-blocked")
         assert blocked_row["signals"]["blocked_on_user_without_question"] == 1, blocked_row["signals"]
+        nested = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals-blocked-v2")
+        assert nested["signals"]["blocked_on_user_without_question"] == 1, "a format-2 blocker is nested"
         assert blocked_row["signals"]["evidence_shape_refused"] == 1, blocked_row["signals"]
         assert blocked_row["signals"]["waiting_without_block"] == 0 and "?" not in (blocked_row.get("final") or ""), "the blocked fixture asks nothing in its last paragraph"
         assert blocked_row["signals"]["waiting_without_block"] == 0, blocked_row["signals"]

@@ -1,16 +1,30 @@
-use yi_types::plan::doc::TodoStateName;
-use yi_types::todo::{BlockedOn, TodoInterceptRecord, TodoRecord};
+use serde_json::Value;
+use yi_types::plan::doc::{AgentId, BlockedOn, Todo, TodoState};
+use yi_types::todo::{TodoInterceptRecord, TodoList, TodoRecord};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+const FORMAT_ONE: [&str; 3] = [
+    include_str!("fixtures/todo-record-v1.json"),
+    include_str!("fixtures/todo-record-intent-v1.json"),
+    include_str!("fixtures/todo-record-ask-v1.json"),
+];
+
+fn item<'a>(list: &'a TodoList, label: &str) -> Result<&'a Todo, String> {
+    list.items()
+        .find(|item| item.label.as_str() == label)
+        .ok_or(format!("no item {label:?}"))
+}
+
+/// Dies with a format-1 item losing its payload in the merge: the blocker, the runner, the drop
+/// reason, the evidence and every unknown field of the list and the record survive the read.
 #[test]
-fn the_v1_record_fixture_deserializes_and_keeps_unknown_fields() -> TestResult {
-    let raw = include_str!("fixtures/todo-record-v1.json");
-    let record: TodoRecord = serde_json::from_str(raw)?;
+fn the_v1_record_fixture_migrates_and_keeps_unknown_fields() -> TestResult {
+    let record: TodoRecord = serde_json::from_str(FORMAT_ONE[0])?;
     assert_eq!(record.op, "block");
     assert_eq!(record.touched, 3);
-    assert_eq!(record.list.phases.len(), 2);
-    let progress = record.list.progress();
+    let list = &record.list;
+    let progress = list.progress();
     assert_eq!(
         (
             progress.done,
@@ -20,34 +34,97 @@ fn the_v1_record_fixture_deserializes_and_keeps_unknown_fields() -> TestResult {
         ),
         (2, 6, 2, 1)
     );
-    let blocked = record
-        .list
-        .items()
-        .find(|item| item.state == TodoStateName::Blocked)
-        .ok_or("no blocked item")?;
-    assert_eq!(blocked.on, Some(BlockedOn::User));
     assert_eq!(
-        record.list.fingerprint(),
+        item(list, "land the branch")?.state,
+        TodoState::Blocked {
+            on: BlockedOn::User,
+            note: "which base branch".to_owned()
+        }
+    );
+    assert_eq!(
+        item(list, "write the fix")?.state,
+        TodoState::Running {
+            by: AgentId::owner()
+        }
+    );
+    let dropped = item(list, "old idea")?;
+    assert_eq!(dropped.state, TodoState::Abandoned);
+    assert_eq!(
+        dropped.note.as_ref().map(|note| note.as_str()),
+        Some("superseded")
+    );
+    assert_eq!(
+        item(list, "read the code")?.evidence.as_deref(),
+        Some("read crates/runtime/src/todo/mod.rs")
+    );
+    assert_eq!(
+        list.fingerprint(),
         "land the branch=blocked\ntool=pending\nwrite the fix=running"
     );
     let again = serde_json::to_value(&record)?;
     assert_eq!(again["futureTop"], "kept");
     assert_eq!(again["list"]["futureField"]["kept"], true);
-    let first: Vec<&str> = again["list"]["phases"][0]["items"][0]
-        .as_object()
-        .ok_or("item")?
-        .keys()
-        .map(String::as_str)
-        .collect();
-    assert_eq!(first, vec!["label", "state", "evidence"]);
+    assert_eq!(again["list"]["format"], 2);
     Ok(())
 }
 
+fn recorded() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tui/tests/fixtures/sessions/01a0d6e4.jsonl"
+    );
+    let mut records = Vec::new();
+    for line in std::fs::read_to_string(path)?.lines() {
+        let row: Value = serde_json::from_str(line)?;
+        if row.get("customType").and_then(Value::as_str) == Some("todo") {
+            records.push(row.get("data").ok_or("no data")?.to_string());
+        }
+    }
+    Ok(records)
+}
+
+/// Dies with a migration that is not a fixed point: every format-1 record, the fixtures and a
+/// recorded session's thirteen, reads back the same after one write, and a second write
+/// changes no byte.
 #[test]
-fn an_unknown_blocker_and_an_intercept_record_round_trip() -> TestResult {
-    let on: BlockedOn = serde_json::from_str("\"oracle\"")?;
-    assert_eq!(on, BlockedOn::Other("oracle".to_owned()));
-    assert_eq!(serde_json::to_string(&on)?, "\"oracle\"");
+fn migrating_a_record_twice_is_a_no_op() -> TestResult {
+    let recorded = recorded()?;
+    assert_eq!(recorded.len(), 13);
+    for raw in FORMAT_ONE
+        .iter()
+        .copied()
+        .chain(recorded.iter().map(String::as_str))
+    {
+        let once: TodoRecord = serde_json::from_str(raw)?;
+        let written = serde_json::to_string(&once)?;
+        let twice: TodoRecord = serde_json::from_str(&written)?;
+        assert_eq!(twice, once, "{raw}");
+        assert_eq!(serde_json::to_string(&twice)?, written);
+    }
+    Ok(())
+}
+
+/// Dies with data another version wrote being dropped: an unknown item field, state tag and
+/// blocker survive the format-1 read and then a format-2 round trip.
+#[test]
+fn unknown_item_fields_and_tags_survive_both_formats() -> TestResult {
+    let legacy = r#"{"phases":[{"name":"Tasks","items":[{"label":"a","state":"paused","futureItem":1},{"label":"b","state":"blocked","on":"oracle","note":"n"}]}]}"#;
+    let list: TodoList = serde_json::from_str(legacy)?;
+    let paused = item(&list, "a")?;
+    assert_eq!(paused.state, TodoState::Other("paused".to_owned()));
+    assert_eq!(paused.extra.get("futureItem"), Some(&Value::from(1)));
+    assert_eq!(
+        item(&list, "b")?.state,
+        TodoState::Blocked {
+            on: BlockedOn::Other("oracle".to_owned()),
+            note: "n".to_owned()
+        }
+    );
+    let written = serde_json::to_string(&list)?;
+    assert_eq!(serde_json::from_str::<TodoList>(&written)?, list);
+    for kept in ["\"futureItem\":1", "\"paused\"", "\"on\":\"oracle\""] {
+        assert!(written.contains(kept), "{kept} in {written}");
+    }
     let record = TodoInterceptRecord {
         at: 5,
         rung: 2,
@@ -65,48 +142,74 @@ fn an_unknown_blocker_and_an_intercept_record_round_trip() -> TestResult {
     Ok(())
 }
 
-/// Dies with the intent dropped, renamed or reordered: a session file written with it must read
-/// back and re-serialize to the same bytes, and one written before it (v1 above) is unchanged.
+/// Dies with stage 1's intent or stage 2's ask dropped by the migration: the format-1 records
+/// the engine wrote keep both on the item that carried them.
 #[test]
-fn a_record_carrying_intent_round_trips_byte_for_byte() -> TestResult {
-    let raw = include_str!("fixtures/todo-record-intent-v1.json");
-    let record: TodoRecord = serde_json::from_str(raw)?;
-    let intents: Vec<Vec<String>> = record
+fn a_format_one_intent_and_ask_survive_the_migration() -> TestResult {
+    let cited: TodoRecord = serde_json::from_str(FORMAT_ONE[1])?;
+    let intents: Vec<Vec<String>> = cited
         .list
         .items()
-        .map(|item| item.intent.iter().map(ToString::to_string).collect())
+        .map(|item| item.cites.intent.iter().map(ToString::to_string).collect())
         .collect();
     assert_eq!(intents, [["user://2"], ["user://2"]]);
-    assert_eq!(serde_json::to_string(&record)?, raw);
+    let asked: TodoRecord = serde_json::from_str(FORMAT_ONE[2])?;
+    let hero = item(&asked.list, "hero style")?;
+    let ask = hero.ask.as_ref().ok_or("no ask")?;
+    assert_eq!(ask.to_string(), "1. Calm · 2. Bold · 3. Dense");
+    assert!(ask.answer.is_none());
+    assert_eq!(hero.extra.get("plan"), Some(&Value::from("land-the-page")));
     Ok(())
 }
 
 /// Dies with a trailing citation left in the label, or a label word mistaken for one.
 #[test]
 fn trailing_user_addresses_on_a_row_are_its_intent() -> TestResult {
-    let item = yi_types::todo::TodoItem::from_text("wire the parser user://1 user://3")?;
+    let item = Todo::from_text("wire the parser user://1 user://3")?;
     assert_eq!(item.label.as_str(), "wire the parser");
-    let cited: Vec<String> = item.intent.iter().map(ToString::to_string).collect();
+    let cited: Vec<String> = item.cites.intent.iter().map(ToString::to_string).collect();
     assert_eq!(cited, ["user://1", "user://3"]);
-    let plain = yi_types::todo::TodoItem::from_text("read the notes at user://notes")?;
+    let plain = Todo::from_text("read the notes at user://notes")?;
     assert_eq!(plain.label.as_str(), "read the notes at user://notes");
-    assert!(plain.intent.is_empty());
+    assert!(plain.cites.intent.is_empty());
     Ok(())
 }
 
-/// Dies with the ask dropped, renamed or reordered on a session's list: the record the engine
-/// wrote when a todo asked reads back with its options and re-serializes to the same bytes.
+/// Dies with the format-2 write shape moving: a record the merged binary wrote in a faux run
+/// reads back and re-serializes byte for byte, its runner, blocker, ask and intent intact.
 #[test]
-fn a_record_carrying_an_ask_round_trips_byte_for_byte() -> TestResult {
-    let raw = include_str!("fixtures/todo-record-ask-v1.json");
+fn a_format_two_record_round_trips_byte_for_byte() -> TestResult {
+    let raw = include_str!("fixtures/todo-record-v2.json");
     let record: TodoRecord = serde_json::from_str(raw)?;
-    let asked = record
-        .list
-        .items()
-        .find_map(|item| item.ask.as_ref())
-        .ok_or("no ask")?;
-    assert_eq!(asked.to_string(), "1. Calm · 2. Bold · 3. Dense");
-    assert!(asked.answer.is_none());
     assert_eq!(serde_json::to_string(&record)?, raw);
+    let list = &record.list;
+    assert_eq!(
+        item(list, "read the schema")?.state,
+        TodoState::Running {
+            by: AgentId::owner()
+        }
+    );
+    let tool = item(list, "wire the tool")?;
+    assert_eq!(
+        tool.state,
+        TodoState::Blocked {
+            on: BlockedOn::User,
+            note: "which transport?".to_owned()
+        }
+    );
+    let ask = tool.ask.as_ref().ok_or("no ask")?;
+    assert_eq!(ask.to_string(), "1. Stdio · 2. Socket · 3. HTTP");
+    let parser = item(list, "write the parser")?;
+    let cited: Vec<String> = parser
+        .cites
+        .intent
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(cited, ["user://1"]);
+    assert_eq!(
+        parser.evidence.as_deref(),
+        Some("`cargo test -p parser` 12 passed")
+    );
     Ok(())
 }

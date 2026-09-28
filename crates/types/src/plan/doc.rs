@@ -8,8 +8,9 @@ pub use super::canonical::Digest;
 pub use super::contract::{Contract, Resolution};
 pub use super::ids::{
     AgentId, GOAL_TEXT_MAX, GoalText, INLINE_NOTE_MAX_BYTES, INTENT_MAX_BYTES, InlineNote, Intent,
-    LEGACY_PLAN_FORMAT, NOTE_MAX_BYTES, Note, PLAN_FORMAT, PLAN_ID_MAX, PlanId, ProbeCommand,
-    RetryCount, SLUG_MAX, SPAWN_CAP, Spawns, TODO_LABEL_MAX, TodoAddr, TodoLabel, TouchCount,
+    LEGACY_PLAN_FORMAT, NOTE_MAX_BYTES, Note, OWNER_AGENT, PLAN_FORMAT, PLAN_ID_MAX, PlanId,
+    ProbeCommand, RetryCount, SLUG_MAX, SPAWN_CAP, Spawns, TODO_LABEL_MAX, TodoAddr, TodoLabel,
+    TouchCount,
 };
 pub use super::ledger::{AttemptId, Seq};
 
@@ -80,6 +81,27 @@ pub enum BlockedOn {
     },
     #[serde(untagged)]
     Other(String),
+}
+
+impl BlockedOn {
+    /// The one-word blocker a model or a format-1 list names: absent is the user, and a word
+    /// with no payload to carry (`child` names no agent) stays verbatim.
+    pub fn from_word(word: Option<&str>) -> Self {
+        match word {
+            None | Some("user") => Self::User,
+            Some("external") => Self::External { probe: None },
+            Some(other) => Self::Other(other.to_owned()),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Child(_) => "child",
+            Self::User => "user",
+            Self::External { .. } => "external",
+            Self::Other(tag) => tag,
+        }
+    }
 }
 
 /// Ready is never a variant: it is derived from `after` plus states at read
@@ -257,6 +279,8 @@ impl Cites {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "TodoRepr", into = "TodoRepr")]
 pub struct Todo {
+    /// A session list's `t<n>` handle; plan todos are addressed by label and carry none.
+    pub id: Option<crate::todo::TodoId>,
     pub label: TodoLabel,
     pub after: Vec<TodoLabel>,
     pub state: TodoState,
@@ -268,6 +292,8 @@ pub struct Todo {
     pub children: Vec<Todo>,
     /// Prose imported from a format-1 body section; larger sections are artifact references.
     pub note: Option<Note>,
+    /// The check a session todo quoted at `done`.
+    pub evidence: Option<String>,
     /// A retry is a new attempt; verdicts and tokens name the attempt.
     pub attempt: AttemptId,
     /// Refused transitions on this todo, saturating at the cap the reducer names.
@@ -287,6 +313,7 @@ impl Todo {
     /// A plain pending todo: no edges, no delegation, first attempt.
     pub fn pending(label: TodoLabel) -> Self {
         Self {
+            id: None,
             label,
             after: Vec::new(),
             state: TodoState::Pending,
@@ -295,6 +322,7 @@ impl Todo {
             retries: RetryCount::default(),
             children: Vec::new(),
             note: None,
+            evidence: None,
             attempt: AttemptId::FIRST,
             refusals: 0,
             contract: None,
@@ -398,6 +426,8 @@ struct BlockedRepr {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct TodoRepr {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<crate::todo::TodoId>,
     label: TodoLabel,
     state: TodoStateName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -422,6 +452,8 @@ struct TodoRepr {
     children: Vec<TodoRepr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     note: Option<Note>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    evidence: Option<String>,
     /// Defaults exist for the format-1 reader alone; the format-2 schema requires both.
     #[serde(default)]
     attempt: AttemptId,
@@ -469,6 +501,7 @@ impl From<Todo> for TodoRepr {
             TodoState::Other(tag) => (TodoStateName::Other(tag), None, None, None, None, None),
         };
         Self {
+            id: todo.id,
             label: todo.label,
             state,
             by,
@@ -482,6 +515,7 @@ impl From<Todo> for TodoRepr {
             retries: todo.retries,
             children: todo.children.into_iter().map(Self::from).collect(),
             note: todo.note,
+            evidence: todo.evidence,
             attempt: todo.attempt,
             refusals: todo.refusals,
             contract: todo.contract,
@@ -560,6 +594,7 @@ impl TryFrom<TodoRepr> for Todo {
             .map(Self::try_from)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
+            id: repr.id,
             label: repr.label,
             after: repr.after,
             state,
@@ -568,6 +603,7 @@ impl TryFrom<TodoRepr> for Todo {
             retries: repr.retries,
             children,
             note: repr.note,
+            evidence: repr.evidence,
             attempt: repr.attempt,
             refusals: repr.refusals,
             contract: repr.contract,
