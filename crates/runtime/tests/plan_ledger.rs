@@ -58,6 +58,7 @@ fn spec(label: &str, after: &[&str]) -> Result<TodoSpec, Box<dyn Error>> {
         delegation: None,
         contract: None,
         children: Vec::new(),
+        cites: Default::default(),
     })
 }
 
@@ -111,22 +112,12 @@ fn plan_with(edges: &[(&str, &[&str])]) -> Result<Plan, Box<dyn Error>> {
     let mut todos = Vec::new();
     for (label, after) in edges {
         todos.push(Todo {
-            label: TodoLabel::new(*label)?,
             after: after
                 .iter()
                 .map(|edge| TodoLabel::new(*edge))
                 .collect::<Result<Vec<_>, _>>()?,
-            state: TodoState::Pending,
-            delegation: None,
-            subplan: None,
             retries: yi_types::plan::doc::RetryCount(0),
-            children: Vec::new(),
-            note: None,
-            attempt: yi_types::plan::doc::AttemptId::FIRST,
-            refusals: 0,
-            contract: None,
-            contract_hash: None,
-            extra: serde_json::Map::new(),
+            ..Todo::pending(TodoLabel::new(*label)?)
         });
     }
     Ok(Plan::opening(

@@ -36,6 +36,21 @@ async def read(name: str, scope: str | None = None) -> dict[str, Any]:
     return await host_request("memory.read", payload)
 
 
+async def search(query: str, limit: int | None = None, scope: str | None = None) -> dict[str, Any]:
+    """Rank notes by the words of `query` (BM25 over name, description and body).
+
+    Returns `{"hits": [{"name", "description", "scope"}], "total": N}`, best
+    first, five hits unless `limit` says otherwise; a cut list carries a
+    `notice` naming the call for all of them. Open a hit with `read`.
+    """
+    payload: dict[str, Any] = {"query": query}
+    if limit is not None:
+        payload["limit"] = limit
+    if scope is not None:
+        payload["scope"] = scope
+    return await host_request("memory.search", payload)
+
+
 async def forget(name: str, scope: str | None = None) -> dict[str, Any]:
     """Delete a wrong note and its index line."""
     payload: dict[str, Any] = {"name": name}

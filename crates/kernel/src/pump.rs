@@ -46,9 +46,11 @@ pub(crate) fn spawn_child_tasks(
         })
     };
     let (kill_tx, mut kill_rx) = mpsc::unbounded_channel::<()>();
+    let held = inner.held.lock().ok().and_then(|mut held| held.take());
     let monitor = {
         let inner = Arc::clone(inner);
         tokio::spawn(async move {
+            let _held_until_the_child_is_reaped = held;
             let mut kill_confirmed = false;
             loop {
                 tokio::select! {

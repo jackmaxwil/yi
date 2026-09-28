@@ -193,6 +193,7 @@ async fn a_child_cannot_spawn_with_a_smaller_wall_than_its_parent() -> TestResul
         deny_write: vec!["/repo/spec.md".into()],
         deny_read: vec!["/repo/secrets".into()],
         deny_url: vec!["kernel://".to_owned()],
+        container: None,
     };
     family.host.set_grant(held.clone(), None);
     family

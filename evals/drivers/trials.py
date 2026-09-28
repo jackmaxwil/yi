@@ -51,6 +51,20 @@ def trial_rows(job):
     return list(merged.values())
 
 
+def unstarted(job):
+    """Tasks whose trial finished (a `result.json`) without an agent session: the environment
+    failed before the agent ran, so there is no result to keep."""
+    tasks = []
+    for result in sorted(Path(job).rglob("result.json")):
+        trial = result.parent
+        if "__" not in trial.name:
+            continue
+        if not any(trial.glob("agent/yi/sessions/*.jsonl")):
+            task = (json.loads(result.read_text()).get("task_name") or trial.name.split("__")[0])
+            tasks.append(task.rsplit("/", 1)[-1])
+    return tasks
+
+
 def cost(row):
     return UNPRICED_USD if row.get("costUsd") is None else row["costUsd"]
 
@@ -92,10 +106,15 @@ def main(argv=None):
     rows.add_argument("--run-id", required=True)
     rows.add_argument("--arm", default="")
     rows.add_argument("--dry", action="store_true", help="print the rows, file nothing (rebuilding a store)")
+    unstarted_verb = verbs.add_parser("unstarted", help="tasks whose trial ran no agent (no session file)")
+    unstarted_verb.add_argument("job", type=Path)
     cap = verbs.add_parser("caps")
     cap.add_argument("--run-id", required=True)
     cap.add_argument("--tasks", type=int, required=True)
     args = parser.parse_args(argv)
+    if args.verb == "unstarted":
+        print(" ".join(unstarted(args.job)))
+        return 0
     if args.verb == "caps":
         hard, refused = caps(args.run_id, args.tasks)
         if refused:

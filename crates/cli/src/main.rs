@@ -398,6 +398,7 @@ fn build_session(
         class: yi_types::telemetry::ErrorClass::RefusalConfig,
     })?;
     drop(levers);
+    yi_runtime::node::configure(config().node.clone().unwrap_or_default());
     if args.model.is_empty() {
         return Err(Refused {
             code: 2,
@@ -572,6 +573,14 @@ fn build_session(
         },
     );
     drop(wiring);
+    if let Some(every) = config()
+        .spend
+        .as_ref()
+        .and_then(|spend| spend.alert_tokens)
+        .and_then(std::num::NonZeroU64::new)
+    {
+        yi_runtime::spend::attach(&session, every);
+    }
     session.set_lane(yi_runtime::lane::land::LaneHandle::new(
         lane,
         pool,
