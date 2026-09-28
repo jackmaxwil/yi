@@ -58,15 +58,11 @@ pub fn refusal_rows(display: &[u64], anchors: &[u64], lines: &[impl AsRef<str>])
         let marker = if anchors.contains(&line) { "*" } else { " " };
         rows.push(format!("{marker}{}", format_numbered_line(line, &text)));
     }
-    let seen = if cut_rows {
-        Vec::new()
-    } else {
-        display
-            .iter()
-            .copied()
-            .filter(|line| !clipped.contains(line))
-            .collect()
-    };
+    let seen = display
+        .iter()
+        .copied()
+        .filter(|line| !cut_rows && !clipped.contains(line))
+        .collect();
     RefusalRows {
         rows,
         seen,
@@ -83,7 +79,7 @@ pub fn refusal_footer(
     anchors: &[u64],
     total: u64,
 ) -> String {
-    if shown.rows.is_empty() {
+    if !anchors.is_empty() && shown.rows.is_empty() {
         return format!(
             "Lines {} are past the end (the file has {total} lines).",
             format_line_ranges(anchors)
@@ -103,8 +99,9 @@ Read them whole with `read` on {section_path} with {}, then re-issue the edit wi
         .collect();
     if !wide.is_empty() {
         return format!(
-            "Line(s) {} exceed {SEEN_LINE_REVEAL_MAX_COLUMNS} columns and are never edit anchors: change them with \
-`grep` `replace` and `apply`, or rewrite the file with `write`.",
+            "Line(s) {} exceed {SEEN_LINE_REVEAL_MAX_COLUMNS} columns, and a read or a refusal never anchors one: \
+change them with `grep` on this file (path={section_path}, `replace` shows the rewrite, `apply` then writes it), \
+or rewrite the file with `write` (`sed -n 'Np' {section_path}` shows a whole line).",
             format_line_ranges(&wide)
         );
     }
