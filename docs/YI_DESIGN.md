@@ -248,7 +248,8 @@ extension `Host` whose synchronous extensions turn session events into effects.
   `host::probe_at` (DMI, cpuinfo, container markers, SSH, WSL), probed once; SSH is re-read.
 - Reminders fire on evidence: `orchestrate` attaches silently at turn end only after an edit and
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
-  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in); ≤ 2 `skill://` hints a turn.
+  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `skill://` hint answers
+  only a message the user typed, placed right behind it: ≤ 2 a message, a typed `$name` always.
 - Next-step lines: `affordance::render` over the compiled-in `graph.json` walks 2 hops from the
   last call over edges whose condition is `always` or a host-asserted fact from the closed
   `PREDICATES`, by weight, ≤ 2 `next:` lines (3 for `todo`). `Graph::check` bounds edges (400),
@@ -341,11 +342,11 @@ with no paired end restores unscoped and says so. Turn start and end capture int
 
 ### 7.8 Skills
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
-`<name>/SKILL.md` walked 2 levels. Frontmatter at discovery, body via `read`; `$name` arms the
-skill as a rule. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
+`<name>/SKILL.md` walked 2 levels. Frontmatter at discovery, body via `read`; `$name` or a
+`trigger:` needle in a message the user typed points at the skill. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.
 
-- Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139.
+- Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D292.
 
 ## 8. Permission
 A pure `decide` over the call, mode, rules, grants, holds and catastrophic context.
