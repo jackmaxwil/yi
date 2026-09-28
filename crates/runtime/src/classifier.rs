@@ -3,6 +3,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use sha2::{Digest, Sha256};
+
 use yi_types::classifier::{
     CLASSIFY_ENTRY, ClassifyRecord, DecisionRequest, DecisionResponse, Question,
 };
@@ -74,7 +76,7 @@ impl SkillClassifier {
         })
     }
 
-    pub fn consult(self: &Arc<Self>, text: &str, message_timestamp: u64, already: Vec<String>) {
+    pub fn consult(self: &Arc<Self>, text: &str, already: Vec<String>) {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
@@ -83,6 +85,7 @@ impl SkillClassifier {
         }
         let this = Arc::clone(self);
         let request = self.request(text);
+        let message = message_id(text);
         runtime.spawn(async move {
             let started = Instant::now();
             let (url, key, deadline) = (
@@ -96,7 +99,7 @@ impl SkillClassifier {
             .await
             .unwrap_or_else(|error| Err(error.to_string()));
             let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-            this.settle(outcome, latency_ms, message_timestamp, &already);
+            this.settle(outcome, latency_ms, message, &already);
         });
     }
 
@@ -121,12 +124,12 @@ impl SkillClassifier {
         &self,
         outcome: Result<DecisionResponse, String>,
         latency_ms: u64,
-        message_timestamp: u64,
+        message: String,
         already: &[String],
     ) {
         let mut record = ClassifyRecord {
             consumer: QUESTION.to_owned(),
-            message_timestamp,
+            message,
             answer: None,
             confidence: None,
             model: None,
@@ -213,6 +216,19 @@ impl SkillClassifier {
             timestamp: yi_session::now_ms(),
         }
     }
+}
+
+pub fn message_id(text: &str) -> String {
+    let normal = text
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    Sha256::digest(normal.as_bytes())
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 pub fn attach(
