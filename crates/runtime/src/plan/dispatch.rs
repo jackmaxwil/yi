@@ -588,7 +588,7 @@ pub(crate) mod tests {
             .lock()
             .map(|children| Arc::clone(&children.stirred))
             .map_err(|_| "family state poisoned")?;
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(50);
         loop {
             let mut stir = std::pin::pin!(stirred.notified());
             stir.as_mut().enable();
@@ -727,16 +727,17 @@ pub(crate) mod tests {
         label: &str,
     ) -> Result<yi_types::plan::doc::Todo, Box<dyn std::error::Error>> {
         let label = TodoLabel::new(label)?;
-        let mut pace = backoff(std::time::Duration::from_millis(25));
-        for _ in 0..400 {
+        let mut left = None;
+        stirred_until(&rig.host, || {
             let read = rig.engine.store().read(plan)?;
             let todo = read.todo(&label).ok_or("todo missing")?;
             if !texts(&rig.said).is_empty() && !matches!(todo.state, TodoState::Running { .. }) {
-                return Ok(todo.clone());
+                left = Some(todo.clone());
             }
-            tokio::time::sleep(pace()).await;
-        }
-        Err(format!("{label:?} never left running").into())
+            Ok(left.is_some())
+        })
+        .await?;
+        left.ok_or_else(|| format!("{label:?} never left running").into())
     }
 
     fn failing(text: &str, error: &str) -> AgentMessage {

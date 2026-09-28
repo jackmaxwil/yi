@@ -2787,6 +2787,45 @@ fn a_drag_over_the_transcript_flashes_what_it_copied() -> TestResult {
     )
 }
 
+/// A drag stopped at the screen's edge: holding it on the pane's last text row now scrolls
+/// the transcript, and the copy keeps the rows that scrolled past, more than a screen of them.
+#[test]
+fn a_drag_held_at_the_bottom_edge_scrolls_and_copies_past_the_screen() -> TestResult {
+    let frame = run_frames(
+        "copy-scroll",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_long),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 row 59\n\
+         mouse scrollup 50 5\nmouse scrollup 50 5\nmouse scrollup 50 5\n\
+         mouse scrollup 50 5\nmouse scrollup 50 5\nmouse scrollup 50 5\n\
+         wait-frame 2000 !row 59\n\
+         mouse down 40 3\n\
+         mouse drag 40 29\n\
+         wait-frame 5000 row 59\n\
+         mouse up 40 29\n\
+         wait-frame 3000 copied\n\
+         quit\n",
+    )?;
+    let copied = frame
+        .split("copied ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|count| count.parse::<usize>().ok())
+        .ok_or_else(|| format!("no copy flash in:\n{frame}"))?;
+    assert!(
+        copied > 30,
+        "copied {copied} lines, less than a screen:\n{frame}"
+    );
+    Ok(())
+}
+
 fn resume_long(frame: &Value) -> Vec<Value> {
     let text: String = (0..60).map(|row| format!("row {row}\n\n")).collect();
     vec![

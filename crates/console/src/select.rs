@@ -1,5 +1,7 @@
 //! Drag-to-copy inside one pane, prose as its markdown source, handed out over OSC 52.
 
+use std::collections::BTreeMap;
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Color;
@@ -7,6 +9,7 @@ use yi_tui::card::RAIL;
 use yi_tui::cell::{CALLOUT_RAIL, GUTTER, USER_BAR};
 
 use crate::app::App;
+use crate::layout::PaneId;
 use crate::model::PaneContent;
 use crate::render::{ViewState, pane_margin};
 
@@ -32,6 +35,108 @@ impl Selection {
         } else {
             (self.head, self.anchor)
         }
+    }
+}
+
+/// A drag held against a pane's content, so it outlives a scroll: a content row is its screen
+/// row minus [`crate::model::Pane::scroll_from_bottom`]; rows are kept as they pass the view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Drag {
+    pub pane: PaneId,
+    /// Column and content row of the press.
+    pub anchor: (u16, i32),
+    /// The screen cell under the mouse; the content under it moves when the pane scrolls.
+    pub head: (u16, u16),
+    pub moved: bool,
+    /// The pane's text rows at the last draw, which the edge autoscroll measures from.
+    pub clip: Rect,
+    /// Content row to (text read, owning transcript cell).
+    rows: BTreeMap<i32, (String, Option<usize>)>,
+}
+
+fn signed(scroll: usize) -> i32 {
+    i32::try_from(scroll).unwrap_or(i32::MAX)
+}
+
+impl Drag {
+    pub fn new(pane: PaneId, x: u16, y: u16, scroll: usize) -> Self {
+        Self {
+            pane,
+            anchor: (x, i32::from(y).saturating_sub(signed(scroll))),
+            head: (x, y),
+            moved: false,
+            clip: Rect::default(),
+            rows: BTreeMap::new(),
+        }
+    }
+
+    /// The pane moved its content under a fixed screen by `rows` (a held view grew below).
+    pub fn shift(&mut self, rows: usize) {
+        let rows = signed(rows);
+        self.anchor.1 = self.anchor.1.saturating_sub(rows);
+        self.rows = std::mem::take(&mut self.rows)
+            .into_iter()
+            .map(|(row, read)| (row.saturating_sub(rows), read))
+            .collect();
+    }
+
+    /// Rows to scroll while the mouse sits past the text's top (+) or bottom (-) edge, faster
+    /// the farther past; on the edge row itself a drag is still choosing within that line.
+    pub fn edge_step(&self) -> isize {
+        let (_, y) = self.head;
+        let (top, bottom) = (self.clip.top(), self.clip.bottom().saturating_sub(1));
+        let cap = usize::from(self.clip.height / 2).max(1);
+        let step = |past: u16| isize::try_from(usize::from(past).min(cap));
+        if !self.moved || self.clip.is_empty() {
+            0
+        } else if y < top {
+            step(top - y).unwrap_or(1)
+        } else if y > bottom {
+            -step(y - bottom).unwrap_or(1)
+        } else {
+            0
+        }
+    }
+
+    /// Read what `clip` shows of the drag at `scroll`, painting it, and keep it by content row.
+    fn read(
+        &mut self,
+        buffer: &mut Buffer,
+        clip: Rect,
+        scroll: usize,
+        bg: Color,
+        owner: impl Fn(u16) -> Option<usize>,
+    ) -> (i32, i32) {
+        self.clip = clip;
+        let scroll = signed(scroll);
+        let (top, bottom) = (clip.top(), clip.bottom().saturating_sub(1));
+        let (hx, hy) = self.head;
+        let head = if hy < top {
+            (clip.left(), top)
+        } else if hy > bottom {
+            (clip.right().saturating_sub(1), bottom)
+        } else {
+            (hx, hy)
+        };
+        let head_row = i32::from(head.1).saturating_sub(scroll);
+        let (ax, anchor_row) = self.anchor;
+        let at = anchor_row.saturating_add(scroll);
+        let anchor = if at < i32::from(top) {
+            (clip.left(), top)
+        } else if at > i32::from(bottom) {
+            (clip.right().saturating_sub(1), bottom)
+        } else {
+            (ax, u16::try_from(at).unwrap_or(top))
+        };
+        let (low, high) = (anchor_row.min(head_row), anchor_row.max(head_row));
+        self.rows.retain(|row, _| (low..=high).contains(row));
+        if !clip.is_empty() {
+            for (y, text) in paint(buffer, clip, Selection { anchor, head }, bg) {
+                let row = i32::from(y).saturating_sub(scroll);
+                self.rows.insert(row, (text, owner(y)));
+            }
+        }
+        (low, high)
     }
 }
 
@@ -185,9 +290,9 @@ pub fn source_span(source: &str, shown: &str) -> Option<String> {
 }
 
 /// Rows grouped by cell: a cell with a source copies it, others their words, one blank between.
-pub fn copy<'s>(
-    rows: &[(u16, String)],
-    owner: impl Fn(u16) -> (Option<usize>, Option<&'s str>),
+pub fn copy<'s, K: Copy>(
+    rows: &[(K, String)],
+    owner: impl Fn(K) -> (Option<usize>, Option<&'s str>),
 ) -> String {
     let mut blocks: Vec<String> = Vec::new();
     let mut group: Vec<String> = Vec::new();
@@ -239,46 +344,54 @@ pub fn selected(
     app: &App,
     view: &ViewState,
     buffer: &mut Buffer,
-    selection: Selection,
+    drag: &mut Drag,
     bg: Color,
 ) -> String {
-    let (x, y) = selection.anchor;
-    let Some(pane) = view
-        .panes
-        .iter()
-        .find(|pane| pane.rect.contains(Position::new(x, y)))
-    else {
+    let Some(pane) = view.panes.iter().find(|pane| pane.id == drag.pane) else {
+        return String::new();
+    };
+    let Some(state) = app.state.panes.get(&pane.id) else {
         return String::new();
     };
     let inner = pane.rect.inner(pane_margin(view.framed));
-    match app.state.panes.get(&pane.id).map(|pane| &pane.content) {
-        Some(PaneContent::Session {
+    let chat = match &state.content {
+        PaneContent::Session {
             chat: Some(chat), ..
-        }) => {
+        } => Some(&chat.app),
+        _ => None,
+    };
+    let clip = match chat {
+        Some(chat) => {
             let rows: Vec<u16> = (inner.top()..inner.bottom())
-                .filter(|&y| chat.app.pane_row(y).is_some())
+                .filter(|&y| chat.pane_row(y).is_some())
                 .collect();
-            let (Some(&top), Some(&bottom)) = (rows.first(), rows.last()) else {
-                return String::new();
-            };
-            let clip = Rect {
-                y: top,
-                height: bottom.saturating_sub(top).saturating_add(1),
-                ..inner
-            };
-            let rows = paint(buffer, clip, selection, bg);
-            copy(&rows, |y| match chat.app.pane_row(y).flatten() {
-                Some((cell, source)) => (Some(cell), source),
-                None => (None, None),
-            })
+            match (rows.first(), rows.last()) {
+                (Some(&top), Some(&bottom)) => Rect {
+                    y: top,
+                    height: bottom.saturating_sub(top).saturating_add(1),
+                    ..inner
+                },
+                _ => Rect::default(),
+            }
         }
-        Some(PaneContent::Markdown { source, .. }) => {
-            copy(&paint(buffer, inner, selection, bg), |_| {
-                (None, Some(source))
-            })
+        None => inner,
+    };
+    let (low, high) = drag.read(buffer, clip, state.scroll_from_bottom, bg, |y| {
+        chat.and_then(|chat| chat.pane_row(y).flatten().map(|(cell, _)| cell))
+    });
+    let rows: Vec<(i32, String)> = drag
+        .rows
+        .range(low..=high)
+        .map(|(row, (text, _))| (*row, text.clone()))
+        .collect();
+    copy(&rows, |row| {
+        let cell = drag.rows.get(&row).and_then(|(_, cell)| *cell);
+        match (&state.content, chat) {
+            (_, Some(chat)) => (cell, cell.and_then(|cell| chat.cell_source(cell))),
+            (PaneContent::Markdown { source, .. }, None) => (None, Some(source.as_str())),
+            _ => (None, None),
         }
-        _ => copy(&paint(buffer, inner, selection, bg), |_| (None, None)),
-    }
+    })
 }
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

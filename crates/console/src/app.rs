@@ -88,7 +88,7 @@ pub struct App {
     pub osc_out: Vec<String>,
     pub hits: Option<crate::render::Hits>,
     /// The live drag over the frame, and the text the last draw read under it.
-    pub selection: Option<crate::select::Selection>,
+    pub selection: Option<crate::select::Drag>,
     pub selected: String,
     pub flash: Option<(String, Instant)>,
     pub avatars: crate::avatar::Avatars,
@@ -253,6 +253,7 @@ impl App {
             self.send_request(outbound, RequestKind::ListDaemon, "session/list", json!({}));
         }
         self.tick_animations(now);
+        self.scroll_drag();
         if self
             .flash
             .as_ref()
