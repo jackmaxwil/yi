@@ -390,6 +390,7 @@ impl Compactor {
             },
             transient: Vec::new(),
             schema: None,
+            reuse: yi_types::model::Reuse::OneShot,
             tools: None,
             tool_choice: None,
         };

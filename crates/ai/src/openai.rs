@@ -6,7 +6,7 @@ use yi_types::message::{
 };
 use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 
-use crate::breakpoints::{Breakpoints, CacheRoute, Dialect, Reuse, encode};
+use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, encode};
 use crate::catalog::calculate_cost;
 use crate::compat::{compat_bool, compat_str};
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
@@ -309,7 +309,7 @@ pub(crate) fn prompt_cache_retention(model: &Model) -> Option<&'static str> {
     .then_some("24h")
 }
 
-pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Value {
+pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Encoded {
     let _span = yi_types::trace::span("ai.build_params")
         .arg("api", "openai")
         .arg("messages", context.messages.len());
@@ -318,8 +318,6 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         model,
         Some(normalize_openai_tool_call_id),
     );
-    let breakpoints =
-        Breakpoints::build(&CacheRoute::of(model, false), &history, Reuse::of(context));
     let mut messages: Vec<Value> = Vec::new();
     let mut origins: Vec<Option<usize>> = Vec::new();
     if !context.system_prompt.is_empty() {
@@ -338,21 +336,13 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         "stream": true,
         "stream_options": {"include_usage": true},
     });
-    // OpenRouter passes per-part marks to every upstream; elsewhere the provider places its own.
-    let dialect = if model.base_url.contains("openrouter.ai") {
-        Dialect::OpenRouterParts
-    } else {
-        Dialect::Automatic
-    };
-    encode(&breakpoints, dialect, &mut params, &origins);
     let transient = transform_messages(
         &context.transient,
         model,
         Some(normalize_openai_tool_call_id),
     );
-    if let Some(list) = params.get_mut("messages").and_then(Value::as_array_mut) {
-        convert_messages(model, &transient, list, &mut Vec::new());
-    }
+    let mut tail: Vec<Value> = Vec::new();
+    convert_messages(model, &transient, &mut tail, &mut Vec::new());
     if model.provider == "openai" {
         params["store"] = json!(false);
     }
@@ -384,7 +374,21 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if model.reasoning {
         apply_reasoning_params(model, options, &mut params);
     }
-    params
+    // OpenRouter passes per-part breakpoints to every upstream; elsewhere the provider caches
+    // its own prefix and no explicit breakpoint is known to be accepted (design §11).
+    if model.base_url.contains("openrouter.ai") {
+        let breakpoints =
+            Breakpoints::build(&CachePolicy::of(model, false), &history, context.reuse);
+        encode(
+            &breakpoints,
+            Dialect::OpenRouterParts,
+            params,
+            &origins,
+            tail,
+        )
+    } else {
+        Encoded::provider_prefix(params, "messages", tail)
+    }
 }
 
 /// Invariant: callers clamp through [`Model::clamp_effort`] first, so the `null` arm is
@@ -842,7 +846,7 @@ fn settle_from_record(
 
 fn run_request(
     model: &Model,
-    body: &Value,
+    body: &Encoded,
     wire: crate::request::Wire<'_>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {

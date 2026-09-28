@@ -599,11 +599,18 @@ async fn stream_assistant_response<S: StreamFn>(
         )
     };
     let tool_defs: Vec<ToolDef> = context.tools.iter().map(|tool| tool.definition()).collect();
+    // The loop says whether its tail is read again: the forced-none last word is the end.
+    let reuse = if tool_choice == Some(yi_types::model::ToolChoice::None) {
+        yi_types::model::Reuse::LastTurn
+    } else {
+        yi_types::model::Reuse::Loop
+    };
     let llm_context = LlmContext {
         system_prompt: context.system_prompt.clone(),
         messages: llm_messages,
         transient,
         schema: None,
+        reuse,
         tools: if tool_defs.is_empty() {
             None
         } else {

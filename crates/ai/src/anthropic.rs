@@ -4,7 +4,7 @@ use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 use yi_types::model::{LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolChoice, ToolDef};
 
-use crate::breakpoints::{Breakpoints, CacheRoute, Dialect, Reuse, encode};
+use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, encode};
 use crate::catalog::calculate_cost;
 use crate::compat::compat_bool;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
@@ -248,7 +248,7 @@ fn convert_tool_choice(choice: &ToolChoice) -> Value {
     }
 }
 
-pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOptions) -> Value {
+pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOptions) -> Encoded {
     let _span = yi_types::trace::span("ai.build_params")
         .arg("api", "anthropic")
         .arg("messages", context.messages.len());
@@ -258,9 +258,9 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
         Some(normalize_anthropic_tool_call_id),
     );
     let breakpoints = Breakpoints::build(
-        &CacheRoute::of(model, options.cache_1h),
+        &CachePolicy::of(model, options.cache_1h),
         &history,
-        Reuse::of(context),
+        context.reuse,
     );
     let (messages, origins) = convert_messages(&history);
     let mut params = json!({
@@ -322,22 +322,19 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
             }
         }
     }
-    encode(
-        &breakpoints,
-        Dialect::AnthropicBlocks,
-        &mut params,
-        &origins,
-    );
-    // The per-request facts render after every mark, so none can land on them.
+    // The per-request facts render after every breakpoint, so none can land on them.
     let (transient, _) = convert_messages(&transform_messages(
         &context.transient,
         model,
         Some(normalize_anthropic_tool_call_id),
     ));
-    if let Some(messages) = params.get_mut("messages").and_then(Value::as_array_mut) {
-        messages.extend(transient);
-    }
-    params
+    encode(
+        &breakpoints,
+        Dialect::AnthropicBlocks,
+        params,
+        &origins,
+        transient,
+    )
 }
 
 fn map_stop_reason(reason: &str, stop_details: Option<&Value>) -> (StopReason, Option<String>) {
@@ -751,7 +748,7 @@ const ANTHROPIC_MESSAGE_EVENTS: [&str; 6] = [
 
 fn run_request(
     model: &Model,
-    body: &Value,
+    body: &Encoded,
     wire: crate::request::Wire<'_>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {

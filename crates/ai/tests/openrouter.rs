@@ -50,6 +50,7 @@ fn history_context() -> LlmContext {
         ],
         transient: Vec::new(),
         schema: None,
+        reuse: yi_types::model::Reuse::Loop,
         tools: None,
         tool_choice: None,
     }
@@ -97,7 +98,7 @@ fn build_params_honors_the_openrouter_compat_flags() -> TestResult {
 fn tool_loop_context() -> LlmContext {
     let mut context = history_context();
     context.system_prompt = ["identity", "mode", "yard"].join(SYSTEM_BLOCK_SEPARATOR);
-    // A loop request carries its tool table; without one the breakpoints read it as a one-shot.
+    // A loop request carries its tool table, as the loop sends it.
     context.tools = Some(vec![yi_types::model::ToolDef {
         name: "bash".to_owned(),
         description: "run".to_owned(),

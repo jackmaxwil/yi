@@ -242,6 +242,7 @@ fn context(messages: Vec<AgentMessage>) -> Result<LlmContext, Box<dyn Error>> {
         messages,
         transient: Vec::new(),
         schema: None,
+        reuse: yi_types::model::Reuse::Loop,
         tools: Some(tool_defs()?),
         tool_choice: None,
     })
@@ -688,8 +689,8 @@ fn marked_history(params: &Value) -> Vec<usize> {
 
 /// Pops the environment off a rendered body: it is the last message, and no part of it
 /// carries a mark.
-fn strip_env(params: &Value, turn: u32) -> Result<Value, Box<dyn Error>> {
-    let mut out = params.clone();
+fn strip_env(params: &yi_ai::breakpoints::Encoded, turn: u32) -> Result<Value, Box<dyn Error>> {
+    let mut out = params.clone().into_value();
     let messages = out["messages"].as_array_mut().ok_or("messages")?;
     let last = messages.pop().ok_or("no messages")?;
     let text = last["content"]
@@ -736,11 +737,11 @@ fn a_tool_loop_keeps_its_prefix_and_reads_the_previous_tail_on_both_dialects() -
             Ok::<_, Box<dyn Error>>(ctx)
         })
         .collect::<Result<_, _>>()?;
-    let anthropic: Vec<Value> = requests
+    let anthropic: Vec<yi_ai::breakpoints::Encoded> = requests
         .iter()
         .map(|ctx| build_params(&model(), ctx, &options()))
         .collect();
-    let openrouter: Vec<Value> = requests
+    let openrouter: Vec<yi_ai::breakpoints::Encoded> = requests
         .iter()
         .map(|ctx| openai::build_params(&openrouter_model(), ctx, &OpenAiOptions::default()))
         .collect();

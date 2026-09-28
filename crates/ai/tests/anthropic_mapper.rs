@@ -41,6 +41,7 @@ fn context() -> LlmContext {
         )],
         transient: Vec::new(),
         schema: None,
+        reuse: yi_types::model::Reuse::Loop,
         tools: Some(vec![ToolDef {
             name: "bash".to_owned(),
             description: "run".to_owned(),
@@ -97,7 +98,9 @@ fn system_blocks_split_on_the_separator() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(blocks[0]["text"], "identity");
     assert_eq!(blocks[2]["text"], "yard\n\nextra");
-    assert!(blocks[0].get("cache_control").is_none(), "{blocks:?}");
+    // The universal block keeps its own breakpoint until the system prompt is constant: it is
+    // the entry every session and child of the same identity reads across attaches.
+    assert_eq!(blocks[0]["cache_control"]["ttl"], "1h", "{blocks:?}");
     assert!(blocks[1].get("cache_control").is_none(), "{blocks:?}");
     assert_eq!(blocks[2]["cache_control"]["ttl"], "1h");
     Ok(())
@@ -287,6 +290,7 @@ fn image_turns(count: usize, chars: usize) -> LlmContext {
         messages,
         transient: Vec::new(),
         schema: None,
+        reuse: yi_types::model::Reuse::Loop,
         tools: None,
         tool_choice: None,
     }
