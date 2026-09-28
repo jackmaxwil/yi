@@ -46,6 +46,7 @@ import test_mutate  # noqa: E402
 import test_revert  # noqa: E402
 import test_judge_replay  # noqa: E402
 import test_improve  # noqa: E402
+import test_skill_labels  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 EVENTS = FIXTURES / "ask_events.jsonl"
@@ -810,6 +811,15 @@ def check_levers():
     assert yi_usage.levers_label({}) == "" and len(yi_usage.levers_label(environ)) == len("+levers") + 12
 
 
+def check_skill_labels():
+    """#779: only typed messages enter the classifier's corpus, scrubbed and once; the teacher
+    run resumes and stops at its budget; the frozen sample is stratified for the owner."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_skill_labels)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 4 and result.wasSuccessful(), report.getvalue()
+
+
 def check_judge_replay():
     """D259: the readers on recorded transcripts, blindness, the direct call, quote bytes, the caps
     and the metrics."""
@@ -827,6 +837,7 @@ CHECKS = (
     check_levers,
     check_inner,
     check_mutate,
+    check_skill_labels,
     check_improve,
     check_trials,
     check_watch_prune,
