@@ -5,7 +5,10 @@
 
 harbor bind-mounts each trial's /logs/agent, so every trial's yi.jsonl grows on the host.
 Every poll:
-  - a trial past $1 or 180 turns: stop that trial's containers only (rule 7);
+  - a trial past $1 or 180 turns: stop that trial's containers only (rule 7) and write
+    `<trial>/censored`, so the gate never reads what the stop left as the trial's own result;
+  - a trial with an unpriced turn (D79) counts $1, the per-trial cap it cannot pass, toward
+    the run's total: never $0 and never a local price table (E14);
   - the run's total past --hard, the wall past --wall, or host space under 8 GB free for
     important usage (3 GB plain):
     stop the child's whole process group and this run's trial containers, exit 2;
@@ -33,6 +36,10 @@ PER_TRIAL_USD = 1.0
 TURN_CAP = 180
 MIN_FREE_GB = 8
 MIN_PLAIN_GB = 3
+# Incident (PAID-0, 2026-09-27): freight-dispatch-shift pulls a sidecar image, then its main
+# image for minutes; the sidecar sat unused for two polls, was removed, and the trial died on
+# "No such image". An image goes after this many consecutive unused polls, not two.
+IDLE_POLLS = 10
 IMPORTANT_USAGE = ('ObjC.import("Foundation"); var r = Ref(); $.NSURL.fileURLWithPath("{}")'
                    '.getResourceValueForKeyError(r, $.NSURLVolumeAvailableCapacityForImportantUsageKey, null); r[0].js')
 
@@ -59,9 +66,11 @@ def docker(*args):
 
 
 def trials(runs):
+    """(trial dir, cost, turns); an unpriced trial's cost is PER_TRIAL_USD, its upper bound."""
     for path in runs.rglob("agent/yi.jsonl"):
         usage = yi_usage.parse_events(path)
-        yield path.parents[1].name, usage.get("costUsd") or 0.0, usage.get("nAssistantMessages") or 0
+        cost = PER_TRIAL_USD if usage.get("costUnknownTurns") else usage.get("costUsd") or 0.0
+        yield path.parents[1], cost, usage.get("nAssistantMessages") or 0
 
 
 def stop_containers(trial_names):
@@ -74,9 +83,11 @@ def stop_containers(trial_names):
             docker("stop", "-t", "5", name)
 
 
-def prune(unused_last):
-    """An image goes only after two polls unused: a trial pulls its image seconds before it
-    creates the container. `docker rmi` without -f refuses any image a container references."""
+def prune(idle, ripe_at=IDLE_POLLS):
+    """An image goes only after IDLE_POLLS consecutive polls unused (`idle` counts them per id):
+    a multi-image task pulls its sidecar long before it creates the container.
+    `docker rmi` without -f refuses any image a container references. Once harbor has exited,
+    nothing will create another container, so the final prune takes every unused image."""
     ids = set()
     for line in docker("images", "--format", "{{.Repository}} {{.ID}}").splitlines():
         repo, _, image_id = line.partition(" ")
@@ -84,11 +95,16 @@ def prune(unused_last):
             ids.add(image_id)
     used = {docker("inspect", "--format", "{{.Image}}", cid).strip().removeprefix("sha256:")[:12]
             for cid in docker("ps", "-aq").split()}
-    idle = ids - used
-    removed = sum(not subprocess.run(("docker", "rmi", i), capture_output=True).returncode
-                  for i in idle & unused_last)
-    unused_last.clear()
-    unused_last.update(idle)
+    unused = ids - used
+    for image in list(idle):
+        if image not in unused:
+            del idle[image]
+    for image in unused:
+        idle[image] = idle.get(image, 0) + 1
+    ripe = [image for image, polls in idle.items() if polls >= ripe_at]
+    removed = sum(not subprocess.run(("docker", "rmi", i), capture_output=True).returncode for i in ripe)
+    for image in ripe:
+        idle.pop(image, None)
     return removed
 
 
@@ -106,22 +122,24 @@ def main():
     args.runs.mkdir(parents=True, exist_ok=True)
     stopped = args.runs.parent / (args.runs.name + ".STOPPED")
     child = subprocess.Popen(command, start_new_session=True)
-    started, breached, unused_last = time.monotonic(), set(), set()
+    started, breached, unused_last = time.monotonic(), set(), {}
     while True:
         try:
             code = child.wait(timeout=args.poll)
         except subprocess.TimeoutExpired:
             code = None
         if code is not None:
-            print("child exited", code, "; final prune", prune(unused_last), flush=True)
+            print("child exited", code, "; final prune", prune(unused_last, ripe_at=0), flush=True)
             return code
         total = 0.0
         for trial, cost, turns in trials(args.runs):
             total += cost
-            if trial not in breached and (cost > PER_TRIAL_USD or turns > TURN_CAP):
-                breached.add(trial)
-                print(f"TRIAL STOP {trial}: ${cost:.3f} at {turns} turns", flush=True)
-                stop_containers([trial])
+            if trial.name not in breached and (cost > PER_TRIAL_USD or turns > TURN_CAP):
+                breached.add(trial.name)
+                print(f"TRIAL STOP {trial.name}: ${cost:.3f} at {turns} turns", flush=True)
+                (trial / "censored").write_text(f"stopped past ${PER_TRIAL_USD:g} or {TURN_CAP} turns: "
+                                                f"${cost:.3f} at {turns} turns\n")
+                stop_containers([trial.name])
         free, plain = free_gb(args.runs)
         elapsed = time.monotonic() - started
         print(f"{time.strftime('%H:%M:%S')} total ${total:.3f} free {free:.1f} GB (plain {plain:.1f}) "

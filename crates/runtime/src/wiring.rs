@@ -357,36 +357,61 @@ pub fn register_history_grep(
                 .filter(|pattern| !pattern.is_empty())
                 .ok_or_else(|| "history.grep requires a \"pattern\" argument".to_owned())?
                 .to_owned();
-            let limit = payload
-                .get("limit")
-                .and_then(Value::as_u64)
-                .map_or(8, |n| usize::try_from(n).unwrap_or(8));
-            let hits = tokio::task::spawn_blocking(move || {
+            let number = |key: &str, default: usize| {
+                payload
+                    .get(key)
+                    .and_then(Value::as_u64)
+                    .map_or(default, |n| usize::try_from(n).unwrap_or(default))
+            };
+            let (offset, limit) = (number("offset", 0), number("limit", 8));
+            let page = tokio::task::spawn_blocking(move || {
                 let shared = handle()
                     .ok_or_else(|| "history.grep: missing an attached session store".to_owned())?;
                 let store = yi_session::lock_session(&shared);
-                Ok::<_, String>(store.grep(&pattern, limit))
+                Ok::<_, String>((store.grep_page(&pattern, offset, limit), pattern))
             })
             .await
             .map_err(|error| format!("history.grep task failed: {error}"))??;
-            let mut reply = Map::new();
-            reply.insert(
-                "hits".to_owned(),
-                Value::Array(
-                    hits.iter()
-                        .map(|hit| {
-                            let mut item = Map::new();
-                            item.insert("entryId".to_owned(), Value::String(hit.entry_id.clone()));
-                            item.insert("type".to_owned(), Value::String(hit.entry_type.clone()));
-                            item.insert("snippet".to_owned(), Value::String(hit.snippet.clone()));
-                            Value::Object(item)
-                        })
-                        .collect(),
-                ),
-            );
-            Ok(reply)
+            let ((hits, total), pattern) = page;
+            Ok(grep_reply(&hits, total, &pattern, offset, limit))
         })
     });
+}
+
+fn grep_reply(
+    hits: &[yi_session::HistoryHit],
+    total: usize,
+    pattern: &str,
+    offset: usize,
+    limit: usize,
+) -> Map<String, Value> {
+    let mut reply = Map::new();
+    let items = hits
+        .iter()
+        .map(|hit| {
+            let mut item = Map::new();
+            item.insert("entryId".to_owned(), Value::String(hit.entry_id.clone()));
+            item.insert("type".to_owned(), Value::String(hit.entry_type.clone()));
+            item.insert("snippet".to_owned(), Value::String(hit.snippet.clone()));
+            Value::Object(item)
+        })
+        .collect();
+    reply.insert("hits".to_owned(), Value::Array(items));
+    reply.insert("total".to_owned(), Value::from(total));
+    let next = offset.saturating_add(hits.len());
+    if next < total {
+        let cap = limit.clamp(1, yi_session::GREP_PAGE_MAX);
+        let quoted = Value::from(pattern);
+        reply.insert(
+            "notice".to_owned(),
+            Value::from(format!(
+                "[{} of {total} hits · limit {cap} (at most {}) · compact.recall({quoted}, limit={cap}, offset={next}) for the next]",
+                hits.len(),
+                yi_session::GREP_PAGE_MAX,
+            )),
+        );
+    }
+    reply
 }
 
 /// The engine and `plan.op` with this session's principal; `None` (no plan surface at all)
@@ -941,5 +966,46 @@ fn wire_compacted(
                 }
             });
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cut_grep_page_names_the_call_for_the_next_page() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut store = yi_session::SessionStore::in_memory(yi_types::wire::SessionMetadata {
+            id: "s".to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+            name: None,
+        });
+        for turn in 0..10 {
+            store.append_compaction(
+                "main",
+                format!("the ö needle, turn {turn}"),
+                Vec::new(),
+                1,
+                None,
+            )?;
+        }
+        let (hits, total) = store.grep_page("Needle", 0, 8);
+        let reply = grep_reply(&hits, total, "Needle", 0, 8);
+        assert_eq!(reply["total"], 10);
+        assert_eq!(
+            reply["notice"],
+            "[8 of 10 hits · limit 8 (at most 32) · compact.recall(\"Needle\", limit=8, offset=8) for the next]"
+        );
+        let (rest, total) = store.grep_page("Needle", 8, 8);
+        let last = grep_reply(&rest, total, "Needle", 8, 8);
+        assert_eq!(last["hits"].as_array().map(Vec::len), Some(2));
+        assert!(last.get("notice").is_none(), "{last:?}");
+        let (clamped, total) = store.grep_page("needle", 0, 500);
+        let wide = grep_reply(&clamped, total, "needle", 0, 500);
+        assert_eq!(wide["hits"].as_array().map(Vec::len), Some(10));
+        assert!(wide.get("notice").is_none());
+        Ok(())
     }
 }
