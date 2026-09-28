@@ -328,12 +328,12 @@ fn pane_view_content(
         }
         PaneContent::Markdown { path, source } => {
             let all = yi_tui::markdown::render(source, usize::from(inner.width), theme);
-            let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
+            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (format!("¶ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Diff { path, source } => {
             let all = diffview::render(source, usize::from(inner.width), theme, DiffBudget::FULL);
-            let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
+            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (format!("Δ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Editor(editor) => editor_view(editor, inner, theme),
@@ -350,7 +350,7 @@ fn pane_view_content(
                 usize::from(inner.width),
                 theme,
             );
-            let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
+            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (title, lines, scroll)
         }
         PaneContent::Notebook { session, cells, .. } => {
@@ -359,7 +359,7 @@ fn pane_view_content(
                 |id| format!("▤ nb:{}", label_of(sessions, id, 11)),
             );
             let all = notebook_lines(cells, usize::from(inner.width), theme, close_hint);
-            let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
+            let (lines, scroll) = windowed(all, &mut pane.scroll_from_bottom, visible);
             (title, lines, scroll)
         }
     }
@@ -470,10 +470,13 @@ fn notebook_lines(
 
 fn windowed(
     all: Vec<Line<'static>>,
-    from_bottom: usize,
+    from_bottom: &mut usize,
     visible: usize,
 ) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
     let total = all.len();
+    // Scrolling past the top would bank rows a later scroll down must first spend.
+    *from_bottom = (*from_bottom).min(total.saturating_sub(visible));
+    let from_bottom = *from_bottom;
     let top = total.saturating_sub(from_bottom).saturating_sub(visible);
     let extent = (total > visible).then_some((total, top));
     (window(all, from_bottom, visible), extent)
