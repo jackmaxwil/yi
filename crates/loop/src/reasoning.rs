@@ -30,13 +30,28 @@ pub(crate) fn tail(message: &AgentMessage) -> String {
 }
 
 /// Counts reasoning deltas until text or a tool call disarms it.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ReasoningBudget {
+    cap: usize,
     chars: usize,
     disarmed: bool,
 }
 
+impl Default for ReasoningBudget {
+    fn default() -> Self {
+        Self::new(REASONING_CHAR_CAP)
+    }
+}
+
 impl ReasoningBudget {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            cap,
+            chars: 0,
+            disarmed: false,
+        }
+    }
+
     /// The char count when this delta crossed the cap; `None` while under it or disarmed.
     pub fn push(&mut self, delta: &str) -> Option<usize> {
         if self.disarmed {
@@ -44,7 +59,7 @@ impl ReasoningBudget {
         }
         let before = self.chars;
         self.chars = self.chars.saturating_add(delta.chars().count());
-        (before < REASONING_CHAR_CAP && self.chars >= REASONING_CHAR_CAP).then_some(self.chars)
+        (before < self.cap && self.chars >= self.cap).then_some(self.chars)
     }
 
     pub fn disarm(&mut self) {
@@ -66,5 +81,11 @@ mod tests {
         let mut armed = ReasoningBudget::default();
         armed.disarm();
         assert_eq!(armed.push(&"y".repeat(REASONING_CHAR_CAP)), None);
+    }
+
+    #[test]
+    fn a_budget_trips_at_its_own_cap() {
+        let mut low = ReasoningBudget::new(10);
+        assert_eq!(low.push(&"x".repeat(12)), Some(12));
     }
 }
