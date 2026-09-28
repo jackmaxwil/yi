@@ -910,3 +910,23 @@ fn a_dollar_name_in_the_prompt_points_at_the_skill_with_or_without_a_trigger() -
     );
     Ok(())
 }
+
+/// Dies with `$har-api` also pointing at `har`: a name that prefixes another is its own mention
+/// only where the typed name ends.
+#[test]
+fn a_typed_name_does_not_also_name_its_prefix() -> TestResult {
+    let mut har = skill("har", "never typed", RuleScope::Text, RuleGap::Once);
+    har.needles.push("$har".to_owned());
+    let mut api = skill("har-api", "never typed", RuleScope::Text, RuleGap::Once);
+    api.needles.push("$har-api".to_owned());
+    let (engine, _delivered) = engine_with_sink(vec![har, api]);
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("fix this with $har-api"))),
+        ["Relevant: skill://har-api (matched \"$har-api\")"]
+    );
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("now $har."))),
+        ["Relevant: skill://har (matched \"$har\")"]
+    );
+    Ok(())
+}
