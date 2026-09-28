@@ -126,7 +126,8 @@ def corpus(claude_dir, yi_dir, out):
 def message_id(text):
     """The classifier's key for a message (yi-runtime `classifier::message_id`): the first 12 hex
     of the sha256 of its bytes with ASCII whitespace collapsed and ASCII letters lowered."""
-    return hashlib.sha256(b" ".join(text.encode().split()).lower()).hexdigest()[:12]
+    words = re.split(rb"[ \t\n\f\r]+", text.encode(errors="surrogatepass"))
+    return hashlib.sha256(b" ".join(word for word in words if word).lower()).hexdigest()[:12]
 
 
 def prompt(text, candidates):
@@ -159,15 +160,24 @@ def verdict(content, names):
         skill = json.loads(content).get("skill")
     except (json.JSONDecodeError, AttributeError):
         return "invalid"
-    return skill if skill in names or skill == "none" else "invalid"
+    return skill if isinstance(skill, str) and (skill in names or skill == "none") else "invalid"
+
+
+def parsed(line):
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return None
 
 
 def label(corpus_path, out, model, max_usd, limit, teacher=None):
     candidates = skills()
     names = {name for name, _ in candidates}
-    done = set()
+    done, torn = set(), False
     if out.exists():
-        done = {json.loads(line)["id"] for line in out.read_text().splitlines() if line.strip()}
+        kept = out.read_text()
+        done = {row["id"] for row in map(parsed, kept.splitlines()) if isinstance(row, dict) and "id" in row}
+        torn = bool(kept) and not kept.endswith("\n")
     if teacher is None:
         key = os.environ.get("OPENROUTER_API_KEY")
         if not key:
@@ -175,6 +185,8 @@ def label(corpus_path, out, model, max_usd, limit, teacher=None):
         teacher = lambda text: ask_teacher(text, candidates, model, key)  # noqa: E731
     spent, labelled = 0.0, 0
     with out.open("a") as sink:
+        if torn:
+            sink.write("\n")
         for line in corpus_path.read_text().splitlines():
             row = json.loads(line)
             if row["id"] in done:
@@ -185,13 +197,14 @@ def label(corpus_path, out, model, max_usd, limit, teacher=None):
             spent += cost
             labelled += 1
             sink.write(json.dumps({"id": row["id"], "skill": verdict(content, names), "teacher": model, "cost": cost}) + "\n")
+            sink.flush()
     return labelled, spent
 
 
 def freeze(corpus_path, labels_path, out, per_skill, none, seed):
     texts = {row["id"]: row for row in map(json.loads, corpus_path.read_text().splitlines())}
     by_skill = {}
-    for row in map(json.loads, labels_path.read_text().splitlines()):
+    for row in filter(None, map(parsed, labels_path.read_text().splitlines())):
         if row["skill"] != "invalid" and row["id"] in texts:
             by_skill.setdefault(row["skill"], []).append(row["id"])
     pick = random.Random(seed)
