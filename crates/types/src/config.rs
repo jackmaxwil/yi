@@ -52,6 +52,23 @@ pub struct UserConfig {
     pub node: Option<NodeConfig>,
     pub skills: Option<SkillsConfig>,
     pub classifier: Option<ClassifierConfig>,
+    pub permissions: Option<PermissionsConfig>,
+}
+
+/// `permissions.mode`: the mode a run starts in when no `--auto`, `--confirm` or `--yolo` is
+/// given; unset is `auto`. `yi setup` writes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PermissionsConfig {
+    pub mode: Option<ModeName>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModeName {
+    Auto,
+    Ask,
+    Yolo,
 }
 
 /// `classifier`: the sidecar's URL, one decision's deadline, and the confidence it points at;
@@ -62,6 +79,13 @@ pub struct ClassifierConfig {
     pub url: Option<String>,
     pub timeout_ms: Option<u64>,
     pub threshold: Option<serde_json::Number>,
+    /// Command approval in auto mode, a separate switch; it needs `LAYA_API_KEY` to arm.
+    pub approve: Option<bool>,
+    pub allow_at: Option<serde_json::Number>,
+    pub allow_destructive_at: Option<serde_json::Number>,
+    pub ask_at: Option<serde_json::Number>,
+    /// With approval on, an ask unanswered this long gets the classifier's decision; 0 waits.
+    pub ask_timeout_secs: Option<u64>,
 }
 
 /// `node`: overrides `~/.yi/node.json` field by field; `slots` bounds the kernels this

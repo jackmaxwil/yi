@@ -44,7 +44,7 @@ fn keep_child_row(rows: &mut Vec<ChildUpdate>, child: &ChildUpdate) {
     rows.push(child.clone());
 }
 
-fn orb_ids(pane: PaneId) -> [u32; 2] {
+pub(crate) fn orb_ids(pane: PaneId) -> [u32; 2] {
     let base = ORB_ID_BASE.saturating_add(pane.raw().saturating_mul(2));
     [base, base.saturating_add(1)]
 }
@@ -403,6 +403,7 @@ impl App {
                 .unwrap_or_else(|| "the agent asks for permission".to_owned()),
             grants,
             reply: tx,
+            tool_call_id: None,
         }));
         self.dirty = true;
     }

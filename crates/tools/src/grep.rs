@@ -601,22 +601,15 @@ impl GrepTool {
         let mut written = 0_usize;
         let mut failures: Vec<String> = Vec::new();
         let mut skipped: Vec<String> = Vec::new();
+        let mut skipped_hits = 0_usize;
         for file in &collected.files {
             if !file.utf8 {
                 skipped.push(file.display.clone());
+                skipped_hits = skipped_hits.saturating_add(file.hits.len());
                 continue;
             }
-            let after: String = if options.multiline {
-                matcher
-                    .replace_all(&file.normalized, replacement)
-                    .into_owned()
-            } else {
-                file.normalized
-                    .split('\n')
-                    .map(|line| matcher.replace_all(line, replacement))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
+            let (after, origins) =
+                replaced(matcher, &file.normalized, replacement, options.multiline);
             if after == file.normalized {
                 continue;
             }
@@ -626,9 +619,7 @@ impl GrepTool {
             if !options.apply {
                 continue;
             }
-            let persisted = file
-                .endings
-                .restore(&after, &crate::diff::line_origins(&file.normalized, &after));
+            let persisted = file.endings.restore(&after, &origins);
             match fs::write(&file.canonical, persisted) {
                 Ok(()) => {
                     written = written.saturating_add(1);
@@ -645,7 +636,19 @@ impl GrepTool {
             }
         }
         if changed == 0 {
-            rows.push("No matches found".to_owned());
+            rows.push(if collected.total == 0 {
+                "No matches found".to_owned()
+            } else if skipped.is_empty() {
+                format!(
+                    "nothing changed: each of the {} matches is replaced by itself",
+                    collected.total
+                )
+            } else {
+                format!(
+                    "nothing written: {skipped_hits} of {} matches in files skipped (not UTF-8)",
+                    collected.total
+                )
+            });
         } else if options.apply {
             rows.push(format!("applied to {written} of {changed} files"));
         } else {
@@ -665,9 +668,67 @@ impl GrepTool {
             "files": collected.files.len(),
             "changed": changed,
             "applied": written,
+            "skipped": skipped.len(),
         });
         output.is_error = !failures.is_empty();
         output
+    }
+}
+
+/// Every match expanded, with each output `\n`'s source line; a per-line join is its line's, matched or not.
+fn replaced(
+    matcher: &regex::Regex,
+    text: &str,
+    replacement: &str,
+    multiline: bool,
+) -> (String, Vec<Option<usize>>) {
+    let mut out = String::with_capacity(text.len());
+    let mut origins = Vec::new();
+    if multiline {
+        substitute(matcher, text, replacement, 0, &mut out, &mut origins);
+    } else {
+        for (index, line) in text.split('\n').enumerate() {
+            if index > 0 {
+                out.push('\n');
+                origins.push(index.checked_sub(1));
+            }
+            substitute(matcher, line, replacement, index, &mut out, &mut origins);
+        }
+    }
+    (out, origins)
+}
+
+/// `text`'s matches expanded onto `out` from source line `first`; a `\n` inside a match is the replacement's, `None`.
+fn substitute(
+    matcher: &regex::Regex,
+    text: &str,
+    replacement: &str,
+    first: usize,
+    out: &mut String,
+    origins: &mut Vec<Option<usize>>,
+) {
+    let mut line = first;
+    let mut cursor = 0_usize;
+    let mut matches = matcher.captures_iter(text);
+    loop {
+        let caps = matches.next();
+        let found = caps.as_ref().and_then(|caps| caps.get(0));
+        let gap = text
+            .get(cursor..found.map_or(text.len(), |found| found.start()))
+            .unwrap_or_default();
+        out.push_str(gap);
+        let kept = gap.matches('\n').count();
+        origins.extend((line..line.saturating_add(kept)).map(Some));
+        line = line.saturating_add(kept);
+        let (Some(caps), Some(found)) = (caps.as_ref(), found) else {
+            return;
+        };
+        let start = out.len();
+        caps.expand(replacement, out);
+        let wrote = out.get(start..).unwrap_or_default().matches('\n').count();
+        origins.resize(origins.len().saturating_add(wrote), None);
+        line = line.saturating_add(found.as_str().matches('\n').count());
+        cursor = found.end();
     }
 }
 
