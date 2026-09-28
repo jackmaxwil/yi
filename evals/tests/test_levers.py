@@ -1,5 +1,5 @@
 """The levers gates on synthetic rows: no model, no network, no paid run."""
-import contextlib, io, pathlib, sys, unittest
+import contextlib, io, json, pathlib, sys, tempfile, unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import levers  # noqa: E402
@@ -247,6 +247,34 @@ class TaskLevel(unittest.TestCase):
                                         TASK_FLOORS))
         self.assertEqual(levers.screen(*arms(SLICE[:6], 3, base, lambda t, r: trial(t, 0.4)), TASK_FLOORS),
                          "median_task_worse")
+
+
+
+def cut_session(directory, name, rungs):
+    """A v4 session whose loop wrote one cut redrive per rung, as `run.rs` `length_redrive` does."""
+    lines = [json.dumps({"kind": "header", "version": 4, "id": name, "createdAt": 1, "cwd": "/w"})]
+    for rung in rungs:
+        lines.append(json.dumps({"kind": "entry", "lane": "main", "type": "message", "message": {
+            "role": "custom", "customType": "length_redrive", "content": "act now",
+            "details": {"rung": rung, "cut": True, "reasoningChars": 48000, "signal": "length_redrive"}}}))
+    (directory / f"{name}.jsonl").write_text("\n".join(lines) + "\n")
+
+
+class Census(unittest.TestCase):
+    """S0's $0 screen: a lever value no recorded session would have met is refused unpaid."""
+
+    def test_a_cut_stop_counts_the_sessions_whose_cuts_reach_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            cut_session(tmp, "none", [])
+            cut_session(tmp, "one", [1])
+            cut_session(tmp, "three", [1, 2, 3])
+            cut_session(tmp, "ended", [1, 2, 3, 4, 5])  # the sixth cut ended it: no rung 6 is written
+            got = {value: levers.census("loop.cut_stop_at", value, tmp)["flips"] for value in (1, 2, 4, 6, 8)}
+            self.assertEqual(got, {1: 3, 2: 2, 4: 1, 6: 0, 8: 1})
+            self.assertEqual(levers.census("loop.cut_stop_at", 2, tmp)["sessions"], 4)
+            with self.assertRaisesRegex(levers.Refused, "no census for todo.nudge_work"):
+                levers.census("todo.nudge_work", 8, tmp)
 
 
 if __name__ == "__main__":
