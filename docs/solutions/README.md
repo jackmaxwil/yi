@@ -253,6 +253,7 @@ edited by hand.
 - [D274](adr/d274.md) - a macOS build of a release-derived profile (`release`, `dist`) links without...
 - [D252](adr/d252.md) - a session's plan and todos are its own
 - [D271](adr/d271.md) - the stack's four gaps close
+- [D280](adr/d280.md) - the loop's three stop guards are levers (amends D220)
 - [D281](adr/d281.md) - a todo blocked on the user may carry 3 to 5 options to pick from
 - [D284](adr/d284.md) - the user's words travel by address
 - [D282](adr/d282.md) - the two todo types merge
