@@ -32,6 +32,8 @@ Commands:
   connect <server> [@session]   connect and snapshot tools (<server>: config
                                 entry name, <file>:<entry>, config path, or URL)
                                 [--profile <name> | --no-profile]
+                                (a stdio server starts in ~/.yi: its command is an
+                                absolute path or on PATH)
   login <server-url>            OAuth 2.1 + PKCE login; tokens go to the OS
                                 keychain (mcp.tokenStore config: keychain|file)
                                 [--profile <name>] [--scopes a,b] [--client-id id] [--no-browser]
