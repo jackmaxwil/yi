@@ -11,6 +11,7 @@ mod memory;
 mod plan;
 mod rpc;
 mod sessions;
+mod setup;
 mod stats;
 mod todo;
 mod tty;
@@ -72,7 +73,15 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut json = false;
     // Auto is the default: reads and known-safe commands run, destructive ones ask.
     // `--yolo` removes the gate, `--confirm` asks for everything.
-    let mut mode = yi_runtime::PermissionMode::Auto;
+    let mut mode = match config()
+        .permissions
+        .as_ref()
+        .and_then(|permissions| permissions.mode)
+    {
+        Some(yi_types::config::ModeName::Ask) => yi_runtime::PermissionMode::Ask,
+        Some(yi_types::config::ModeName::Yolo) => yi_runtime::PermissionMode::Yolo,
+        Some(yi_types::config::ModeName::Auto) | None => yi_runtime::PermissionMode::Auto,
+    };
     let mut session_dir = None;
     let mut cwd = None;
     let mut here = false;
@@ -255,6 +264,7 @@ static CONFIG: std::sync::OnceLock<yi_types::config::UserConfig> = std::sync::On
 /// The one config load, strict, before dispatch — a typo that reads as an unset default
 /// is the failure nobody sees. It lives here because no fs or `$HOME` may reach yi-types.
 fn load_config() -> Result<(), String> {
+    setup::early();
     let Some(home) = std::env::var_os("HOME") else {
         return set_config(yi_types::config::UserConfig::default());
     };
