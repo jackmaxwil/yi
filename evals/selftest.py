@@ -424,9 +424,9 @@ def check_driver_ceiling():
         done = subprocess.run(["sh", str(sweep), *argv], capture_output=True, text=True, env=env, timeout=60,
                               cwd=ROOT.parent)
         assert done.returncode == 1 and said in done.stderr, (argv, done.stderr)
-    # N1: a Docker Hub timeout failed a trial's environment before its agent ran; that is not a
-    # result, so the runner retries harbor's RuntimeError (compose, pull) and nothing else.
-    assert "--max-retries 2 --retry-include RuntimeError" in sweep.read_text()
+    # N1: harbor's RuntimeError is both a pull that timed out before the agent ran and an
+    # artifact the agent never wrote, so the runner never retries by exception type.
+    assert "--retry-include" not in sweep.read_text() and "trials.py unstarted" in sweep.read_text()
 
 
 def check_watch_stops():
@@ -527,6 +527,12 @@ def check_trials():
                     "testsPassed", "testsTotal", "traceScored"):
             assert key in rows["fixture-a__x"], key
         assert rows["fixture-b__y"]["traceScored"] and not rows["fixture-a__x"]["traceScored"], rows
+        # A trial that finished without a session ran no agent: its task is the one rerun.
+        unstarted = job / "fixture-c__z"
+        unstarted.mkdir()
+        (unstarted / "result.json").write_text(json.dumps({"task_name": "terminal-bench/fixture-c",
+                                                            "exception_info": {"exception_type": "RuntimeError"}}))
+        assert trials.unstarted(job) == ["fixture-c"], trials.unstarted(job)
         store = Path(tmp) / "store"
         store.mkdir()
         real_store, trials.STORE = trials.STORE, store
