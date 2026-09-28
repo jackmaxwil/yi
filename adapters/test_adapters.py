@@ -97,6 +97,29 @@ class ExampleAdapterTests(unittest.TestCase):
             adapter.calls()[0], ["api", "--hostname", "git.example.invalid", "repos/apex/yi/actions/tasks?limit=50"]
         )
 
+    def test_forgejo_pulls_emits_each_open_head_once_per_sha(self):
+        pulls = [
+            {"number": 733, "title": "WIP: Open PRs as drafts", "head": {"sha": "0813a8ef5b2c77d1", "ref": "claude/x"}},
+            {"number": 700, "title": "Search past sessions", "head": {"sha": "9ab77e1c0ffee000", "ref": "jack/y"}},
+        ]
+        adapter = Adapter(
+            "yi-adapter-forgejo", "forgejo://git.example.invalid/apex/yi/pulls?every=1s",
+            {"fgj": f"print(json.dumps({pulls!r}))\n"},
+        )
+        try:
+            first, second = adapter.next(), adapter.next()
+            self.assertEqual(first["id"], "pr-733-0813a8ef5b2c")
+            self.assertEqual(first["data"], {"pr": 733, "sha": "0813a8ef5b2c77d1", "branch": "claude/x",
+                                             "title": "WIP: Open PRs as drafts", "draft": True})
+            self.assertFalse(second["data"]["draft"])
+            with self.assertRaises(queue.Empty):
+                adapter.lines.get(timeout=1.5)
+        finally:
+            adapter.close()
+        self.assertEqual(
+            adapter.calls()[0], ["api", "--hostname", "git.example.invalid", "repos/apex/yi/pulls?state=open&limit=50"]
+        )
+
     def test_sqs_deletes_a_message_only_after_the_host_acks_it(self):
         messages = {"Messages": [
             {"MessageId": "5fea7756-0ea4-451a-a703-a558b933e274", "ReceiptHandle": "AQEB-one",
