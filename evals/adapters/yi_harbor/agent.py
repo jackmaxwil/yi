@@ -19,10 +19,13 @@ from harbor.models.agent.context import AgentContext
 from yi_usage import (
     ADAPTER_VERSION,
     EVENTS_FILENAME,
+    LEVERS_ENV,
+    REMOTE_LEVERS_PATH,
     SESSIONS_SUBDIR,
     config_fingerprint,
     eval_config,
     kernel_problems,
+    levers_label,
     parse_events,
     routing_label,
     run_command,
@@ -54,11 +57,11 @@ DOCTOR_COMMAND = f"{REMOTE_BINARY} doctor --fix --json || true"
 
 
 def mode_label():
-    """`yolo`, plus the timeout multiplier and the routing when the driver set
-    them: a one-hour row and an eight-hour row, or two routings, must never
-    share a fingerprint (plan §4)."""
+    """`yolo`, plus the timeout multiplier, the routing and the levers when the driver set
+    them: a one-hour row and an eight-hour row, two routings, or a levers trial and the
+    defaults must never share a fingerprint (plan §4, E16)."""
     mult = os.environ.get(TIMEOUT_MULT_ENV)
-    return "yolo" + (f"+t{mult}" if mult else "") + routing_label(os.environ)
+    return "yolo" + (f"+t{mult}" if mult else "") + routing_label(os.environ) + levers_label(os.environ)
 
 
 def config_command():
@@ -97,6 +100,7 @@ class Yi(BaseInstalledAgent):
             await self.exec_as_root(environment, command=install_command(url))
             await self.exec_as_agent(environment, command=config_command())
             await self.upload_ca_bundle(environment)
+            await self.upload_levers(environment)
             await self.warm_kernel(environment)
             return
         local = os.environ.get(BINARY_PATH_ENV)
@@ -112,7 +116,16 @@ class Yi(BaseInstalledAgent):
         )
         await self.exec_as_agent(environment, command=config_command())
         await self.upload_ca_bundle(environment)
+        await self.upload_levers(environment)
         await self.warm_kernel(environment)
+
+    async def upload_levers(self, environment: BaseEnvironment) -> None:
+        """E16: the host's YI_LEVERS file rides into the container; `run` asks for it under --eval."""
+        local = os.environ.get(LEVERS_ENV)
+        if not local:
+            return
+        await self.exec_as_agent(environment, command=f"mkdir -p {Path(REMOTE_LEVERS_PATH).parent}")
+        await environment.upload_file(Path(local), REMOTE_LEVERS_PATH)
 
     async def warm_kernel(self, environment: BaseEnvironment) -> None:
         result = await self.exec_as_agent(environment, command=DOCTOR_COMMAND)
@@ -146,6 +159,7 @@ class Yi(BaseInstalledAgent):
                 self.render_instruction(instruction),
                 resume=self._resume,
                 deadline_sec=self.deadline_sec(),
+                levers=bool(os.environ.get(LEVERS_ENV)),
             ),
             env={**self.model_connection.env, "SSL_CERT_FILE": REMOTE_CA_BUNDLE},
         )
