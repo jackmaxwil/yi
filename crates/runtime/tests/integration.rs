@@ -18,6 +18,7 @@ mod breakpoints;
 mod channel_e2e;
 mod child_transcript;
 mod claims;
+mod classifier_e2e;
 mod compaction_faux;
 mod documents;
 mod effort_session;
