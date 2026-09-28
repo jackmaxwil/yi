@@ -53,7 +53,7 @@ fn session(model: Model, thinking: Option<Effort>, provider: Arc<ProviderStream>
 /// child rewrote the parent's for the rest of its life.
 #[test]
 fn a_child_sharing_the_provider_leaves_the_parent_alone() {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let parent = session(
         model("m", true, None),
         Some(Effort::High),
@@ -66,21 +66,21 @@ fn a_child_sharing_the_provider_leaves_the_parent_alone() {
 
 #[test]
 fn the_default_is_medium() {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let session = session(model("m", true, None), None, provider);
     assert_eq!(session.effort(), Effort::Medium);
 }
 
 #[test]
 fn a_non_reasoning_model_clamps_the_default_to_off() {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let session = session(model("m", false, None), None, provider);
     assert_eq!(session.effort(), Effort::Off);
 }
 
 #[test]
 fn set_effort_returns_what_it_actually_set() {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let session = session(model("m", true, None), None, provider);
     assert_eq!(session.set_effort(Effort::Max), Effort::High);
     assert_eq!(session.effort(), Effort::High);
@@ -88,7 +88,7 @@ fn set_effort_returns_what_it_actually_set() {
 
 #[test]
 fn switching_model_keeps_a_level_the_new_model_advertises() {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let session = session(model("m", true, None), Some(Effort::Low), provider);
     session.set_model(model("n", true, Some(json!({"max": "max"}))));
     assert_eq!(session.effort(), Effort::Low);
@@ -96,7 +96,7 @@ fn switching_model_keeps_a_level_the_new_model_advertises() {
 
 #[test]
 fn switching_model_clamps_a_level_the_new_model_rejects() {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let session = session(
         model("m", true, Some(json!({"max": "max"}))),
         Some(Effort::Max),
@@ -114,7 +114,7 @@ fn setting_the_same_model_records_nothing() -> TestResult {
     let mut repo = JsonlRepo::new(dir.to_path_buf(), "/tmp/yi-effort-test");
     let store = repo.create(CreateOptions::default())?;
 
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let session = session(model("m", true, None), None, provider);
     session.attach_store(store.clone())?;
     let before = entry_kinds(&store)?;
@@ -133,7 +133,7 @@ fn a_set_after_attach_outranks_the_restored_level() -> TestResult {
     let store = repo.create(CreateOptions::default())?;
     let id = yi_session::lock_session(&store).metadata().id.clone();
 
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let first = session(model("m", true, None), None, Arc::clone(&provider));
     first.attach_store(store)?;
     first.set_effort(Effort::Low);
@@ -166,7 +166,7 @@ fn resume_comes_back_on_the_model_and_effort_it_left_on() -> TestResult {
     let store = repo.create(CreateOptions::default())?;
     let id = yi_session::lock_session(&store).metadata().id.clone();
 
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let haiku = yi_runtime::resolve_model("anthropic", "claude-haiku-4-5")
         .ok_or("bundled catalog missing claude-haiku-4-5")?;
     let first = session(model("m", true, None), None, Arc::clone(&provider));

@@ -64,7 +64,7 @@ async fn a_first_turn_is_titled_by_the_model_and_the_name_is_stored() -> Result<
         id: Some("titled".to_owned()),
         ..CreateOptions::default()
     })?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         faux_assistant_message(vec![faux_text("The gauge now counts.")], StopReason::Stop),
         faux_assistant_message(

@@ -50,7 +50,7 @@ async fn run_walled_tool(
     args: serde_json::Map<String, serde_json::Value>,
     cwd: &std::path::Path,
 ) -> Result<(String, bool), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         faux_assistant_message(
             vec![faux_tool_call("call-1", tool, args)],
