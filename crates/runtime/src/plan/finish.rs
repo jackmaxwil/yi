@@ -714,16 +714,17 @@ mod tests {
         rig.engine.apply_with(request, &blobs)?;
         let label = yi_types::plan::doc::TodoLabel::new("read board")?;
         let mut last = None;
-        for _ in 0..400 {
+        stirred_until(&rig.host, || {
             let todo = rig.engine.store().read(&id)?.todo(&label).cloned();
             if let Some(todo) = todo.filter(|todo| todo.attempt.get() == 2)
                 && let TodoState::Failed { last: trace, .. } = &todo.state
             {
                 last = trace.clone();
-                break;
+                return Ok(true);
             }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
+            Ok(false)
+        })
+        .await?;
         let said = texts(&rig.said);
         assert!(
             said.iter().any(|line| line.contains("retried it once")),
@@ -779,12 +780,10 @@ mod tests {
         }))?;
         settled(&rig, &out.plan.id, "cut the seam").await?;
         let label = yi_types::plan::doc::TodoLabel::new("cut the seam")?;
-        for _ in 0..200 {
-            if rig.engine.store().read(&out.plan.id)?.state != PlanState::Active {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        stirred_until(&rig.host, || {
+            Ok(rig.engine.store().read(&out.plan.id)?.state != PlanState::Active)
+        })
+        .await?;
         let said = rig.engine.apply(owner(Op::Done {
             label,
             output: None,
@@ -908,17 +907,11 @@ mod tests {
     }
 
     async fn ended(host: &std::sync::Arc<crate::SubagentHost>) -> bool {
-        for _ in 0..400 {
-            if host
-                .states()
-                .iter()
-                .any(|view| view.state.as_str() == "finished")
-            {
-                return true;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-        false
+        let finished = || {
+            let states = host.states();
+            Ok(states.iter().any(|view| view.state.as_str() == "finished"))
+        };
+        stirred_until(host, finished).await.is_ok()
     }
 
     /// Dies with `refold` reading only a live session: a lagged woken run never concluded.
