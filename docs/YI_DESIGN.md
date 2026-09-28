@@ -327,9 +327,11 @@ MCP is a CLI, never a tool. `yi mcp` runs one-shot: `connect <server> @s`, `clos
 `login`, `logout`, `grep`, `skill`; per session `tools-list|get|call`, `resources-list|read`,
 `prompts-list`, `ping`. It speaks JSON-RPC itself, only yi-cli depends on it, `mcp.enabled` gates
 it. A bare name resolves in `~/.yi/mcp.json`, `.mcp.json`, `.vscode/mcp.json`, `.cursor/mcp.json`.
-The kernel shells out: `rlm.mcp.list_tools|call_tool|reload|close` run `$YI_BIN mcp … --json`.
+The kernel shells out: `rlm.mcp.list_tools|call_tool|reload|close` run `$YI_BIN mcp … --json`;
+`connect` alone goes through the host, from `~/.yi/mcp.json`. A stdio server starts in `~/.yi`,
+outside every sandbox's writable roots, so its command is an absolute path or on `PATH`.
 
-- Owner: [`mcp-cli`](../crates/mcp-cli/src/lib.rs). Settled by: D36, D71.
+- Owner: [`mcp-cli`](../crates/mcp-cli/src/lib.rs). Settled by: D36, D71, D296.
 
 ### 7.7 Checkpoints
 A shadow gitdir `~/.yi/checkpoints/<xxh32 of project>/`, the project as work tree, one lock per

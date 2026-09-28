@@ -24,12 +24,13 @@ fn server_cwd() -> std::path::PathBuf {
 
 impl StdioTransport {
     pub fn spawn(command: &str, args: &[String], env: &Map<String, Value>) -> Result<Self, String> {
+        let cwd = server_cwd();
         #[expect(
             clippy::disallowed_methods,
             reason = "an MCP stdio server is a child process by definition (design §7.6)"
         )]
         let mut builder = Command::new(command);
-        builder.args(args).current_dir(server_cwd());
+        builder.args(args).current_dir(&cwd);
         for (key, value) in env {
             if let Some(text) = value.as_str() {
                 builder.env(key, text);
@@ -40,7 +41,12 @@ impl StdioTransport {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|error| format!("spawn {command} failed: {error}"))?;
+            .map_err(|error| {
+                format!(
+                    "could not start `{command}` (MCP servers start in {}; use an absolute path or one on PATH): {error}",
+                    cwd.display()
+                )
+            })?;
         let stdin = child
             .stdin
             .take()

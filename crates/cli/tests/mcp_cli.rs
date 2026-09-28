@@ -317,8 +317,8 @@ fn a_relative_server_command_is_not_resolved_in_the_workspace() -> TestResult {
     assert!(
         connected
             .stderr
-            .contains("spawn node_modules/.bin/yi-mcp-relative failed"),
-        "the spawn fails by name, not by running something else: {}",
+            .contains("could not start `node_modules/.bin/yi-mcp-relative` (MCP servers start in"),
+        "the spawn fails by name and says where servers start: {}",
         connected.stderr
     );
     Ok(())
