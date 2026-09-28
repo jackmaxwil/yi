@@ -503,7 +503,7 @@ async fn a_deadline_kills_a_running_bash_call() -> Result<(), Box<dyn Error>> {
 
 /// The deadline ends the run between turns, never inside one: the call in flight runs to its
 /// own end and no work turn follows. Dies too with a run that ends on that tool call with no
-/// answer (`mbx-service`, `mbx-ask`): one last turn, with tool choice `none`, answers.
+/// answer (`mbx-service`, `mbx-ask`): one last turn answers, and a tool it calls is not run.
 #[tokio::test]
 async fn a_deadline_ends_the_run_after_the_turn_in_flight() -> Result<(), Box<dyn Error>> {
     let root = scratch("deadline-stop")?;
