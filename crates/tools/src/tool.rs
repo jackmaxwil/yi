@@ -28,6 +28,8 @@ pub struct ToolContext {
     /// Invariant: paths the reviewer wall hides from this agent. A tool reading a tree rather
     /// than a named path shows the wall no target, so it consults this set itself.
     pub deny_read: Vec<PathBuf>,
+    /// Invariant: set, bash runs each command in this docker container, never on the host.
+    pub container: Option<String>,
     /// The id of the call being executed, so a tool that asks the user in its
     /// own right can name the cell that is waiting. Empty when no id exists.
     pub call_id: String,
@@ -42,6 +44,7 @@ impl ToolContext {
             auto_background: None,
             sandbox: None,
             deny_read: Vec::new(),
+            container: None,
             call_id: String::new(),
         }
     }

@@ -398,6 +398,7 @@ fn build_session(
         class: yi_types::telemetry::ErrorClass::RefusalConfig,
     })?;
     drop(levers);
+    yi_runtime::node::configure(config().node.clone().unwrap_or_default());
     if args.model.is_empty() {
         return Err(Refused {
             code: 2,

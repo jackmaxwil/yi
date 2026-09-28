@@ -543,7 +543,9 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     (inherits the parent model, so ``model``/``thinking`` are refused with it), or a
     positive turn count for the last N turns.
     ``isolation='worktree'`` gives the child its own checkout; hand it back with
-    ``merge_worktree`` or ``discard_worktree``.
+    ``merge_worktree`` or ``discard_worktree``. ``isolation='container:<image>'`` is the
+    same checkout and hand-back, with the child's bash run in a container of that image
+    that mounts the checkout at the same path; its kernel stays on this machine.
     ``deny_write`` (and ``deny_read``) are lists of paths the child may not touch —
     the wall that keeps an implementer out of the standard it is measured against.
     ``deny_url`` is the same wall in URL space: a list of literal prefixes the

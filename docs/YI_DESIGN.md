@@ -17,7 +17,7 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 | MCP | A one-shot CLI (`yi mcp`), compiled into every build, refused unless `mcp.enabled` is true; the agent reaches it through `bash` and the kernel, never a registered tool (§7.6) | D36, D71 |
 | Python | A Jupyter kernel over ZeroMQ, its package embedded in the binary, its toolchain a pinned, verified uv (§9) | D156, D238 |
 | Permission | Modes and rules, a per-segment command classifier, a catastrophic denylist, an optional model reviewer, Seatbelt containment on macOS (§8) | D81, D205 |
-| Worktrees | A root session claims a git worktree slot unless `--here`, `lanes.enabled: false` or no repository (§14) | D119, D203 |
+| Worktrees and node | Resource admission: a root session claims a git worktree slot unless `--here`, `lanes.enabled: false` or no repository (§14); one machine is a node card, `~/.yi/node.json`, and every live kernel on it takes one of its slots or shares its family's (§9); a child may run its bash in a local container (§11) | D119, D203, D285, D286 |
 | ACP | v2 only; a lower `protocolVersion` gets a version-mismatch error; the wire is hand-rolled (§17.2) | D1, D40 |
 | Workspace | `yi serve` owns sessions; `yi console` is an ACP client over its socket; bare `yi` on a terminal opens the console, `--solo` the TUI (§17) | D95, D118 |
 
@@ -31,7 +31,9 @@ in-process Rust, §6) · a GUI · browser automation, computer use, email, or an
 is not a coding agent · server-side terminal-frame streaming, per-pane PTYs or blit encoding in
 the console · a scheduled job that puts its own text in front of the model or runs saved code
 (a tick creates a todo, §15.2) · a durable channel buffer, external channel adapters and
-consumer groups (the clock is the only channel, D283).
+consumer groups (the clock is the only channel, D283) · placement on another machine, a VM or a
+cloud, and a kernel or agent loop inside a container (a container child's kernel stays on the
+host, D286).
 
 ## 2. Crates and dependency direction
 A folder `crates/x/` is the crate `yi-x` (`scripts/guardrails/check_manifests.py`). The internal
@@ -375,6 +377,14 @@ A persistent IPython process per session that reaches the host only through host
   `kernel.prewarm` (default true); a failed prewarm is silent and the next cell reports it.
 - It runs under the session Seatbelt profile plus `~/.yi/harness` and `~/.yi/mcp`; a cell's
   wall clock is `cell_ceiling`, default 600 s, started after boot.
+- Admission (D285): a boot first takes one of the node card's `slots` (`~/.yi/node.json`, the
+  cores less one clamped 1..=8 on first use, `node.slots` in config over it), a flock on
+  `~/.yi/node/slots/<n>.held` that the kernel's process monitor holds until the process is
+  reaped, so any exit, a crash or a killed host included, frees it. With every slot held the
+  boot waits, cancellable, and the wait and the cell's result both say `node: N of N slots held
+  (node.slots=N); this kernel waits for one` with each holder's pid and directory; a prewarm
+  never waits. A kernel whose family already holds a slot shares it and never waits, so a parent
+  cell awaiting its child cannot deadlock the node; the family fuses (§11) bound what shares it.
 - A host request is a comm on target `host.request`, dispatched once per comm id; the reply
   rides the control channel as `{status: "ok", ..}` or `{status: "error", error}`. An
   unregistered verb answers `host request type "X" is not available in this session`.
@@ -453,6 +463,15 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   `{rlm_child_id, next, name, session_dir, model}` at admission and the run proceeds detached.
 - kwargs are a whitelist: `name, model, thinking, fork, isolation, deny_write, deny_read,
   deny_url, context, check, deadline_s, tokens, parent_close`; `fork=all` refuses a model.
+- `isolation` is `none`, `worktree` or `container:<image>` (D286), from `rlm.run` or a plan
+  delegation's `spec.isolation`. A container child claims the same lane, branch and merge as a
+  worktree child; `docker run -d --rm` starts one container of the image over it at spawn, the
+  lane bind-mounted at its own path with its git dirs and `.git` pointer read-only, run as the
+  lane's owner, and the wall's `container` sends every bash call through `docker exec`; a killed
+  call's processes in the container are killed before its job settles. It is removed when the child's record
+  drops (reap, repossession, a failed spawn) and by name at the next spawn on that lane. A node
+  whose card lacks `container` refuses before a lane is claimed; a missing image is pulled once
+  with a notice.
 - Admission refuses at lever `family.cap` (16) live sessions, at depth `rlm.maxDepth` (1,
   clamped 1..=3) but for a juror, at `family.max_children` (8) workers, and on a taken name.
 - `Standing { Worker, Juror, Service }`: juror and service stand outside the worker cap; lease,
