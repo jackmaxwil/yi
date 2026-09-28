@@ -580,14 +580,16 @@ A worktree todo needs a contract; it is Done only via acceptance or as `Accepted
   todo admission allows; the probe tick's `dispatch_ready_in` is the backstop.
 - A plan child's end is the engine's: it stores the last answer and applies `submit`, `done`; a
   `fail` verdict fails the todo `retained`. The owner gets one `plan: accepted|refused|failed`.
-- The `todo` tool keeps a session list of `custom{todo}` entries. With a plan open at depth 0 the
-  list is the plan's view, re-projected by `Mirror` after each op; `todo start|done` on a plan item
-  is the owner's plan op, any other change to one is `TodoError::Mirrored`.
+- The `todo` tool keeps a session list of `custom{todo}` entries whose items are plan `Todo`s: a
+  session todo is a todo with no edges, with an optional `t<n>` id and `done` evidence. With a plan
+  open at depth 0 the list is the plan's view, each plan todo cloned in by `Mirror` after each op,
+  less the delegation, contract and note its journal holds; `todo start|done` on a plan item is
+  the owner's plan op, any other change to one is `TodoError::Mirrored`.
 - A done todo's evidence is held against the ledger for display only: it is observed when a span
   it quotes in backticks appears verbatim in a recorded call's arguments or output, and claimed
   otherwise (`todo::claims`). Nothing is refused (D255); the HUD marks claimed rows.
 - Owner: [`schedule.rs`](../crates/runtime/src/plan/schedule.rs). Settled by: D224, D225, D226,
-  D229, D275.
+  D229, D275, D282.
 
 ## 14. Lane
 A lane is a git worktree slot, leased from a per-repository pool and handed back by move.
@@ -895,7 +897,8 @@ The enforced rules for Rust in `crates/`; production lines precede a file's firs
   [`check_schemas_lock.py`](../scripts/guardrails/check_schemas_lock.py)
 
 Versions: the session file is §4.1 (`Entry` is internally tagged, no catch-all); permission state
-`SessionPermissionState.version`, default 2; kernel venv `BOOTSTRAP_SCHEMA = 1` (§9.1); ACP
+`SessionPermissionState.version`, default 2; the session todo list `format`, 2, where an absent
+format is 1 and migrates on read (D282); kernel venv `BOOTSTRAP_SCHEMA = 1` (§9.1); ACP
 `protocolVersion` at `initialize` (§17.2).
 
 ## 21. Guardrails
