@@ -13,6 +13,19 @@ name: pr
 on:
   pull_request:
 
+# A newer push to the same PR supersedes the old run; the old one would only
+# hold runners the queue needs (59 of 451 runs kept going after a newer push).
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Each job is capped at 5 CPUs but sees the runner VM's 16; without these,
+# cargo and nextest start 16 threads apiece and timing-sensitive tests starve
+# (gate (test) failed 41% of runs with 4+ jobs on the runners, 14% with 3 or fewer).
+env:
+  CARGO_BUILD_JOBS: "5"
+  NEXTEST_TEST_THREADS: "5"
+
 jobs:
   gate:
     # `lint`, `guardrails` and `test` are the three lanes of `just check` and
@@ -26,6 +39,7 @@ jobs:
       matrix:
         lane: [lint, guardrails, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       # check_commit_style.py resolves origin/main and refuses to pass blind on
       # a shallow clone, so the full history is the gate's precondition.
@@ -45,6 +59,9 @@ jobs:
         with:
           shared-key: ${{ matrix.lane }}
           cache-on-failure: true
+          # main saves (postmerge `warm`); a PR's own multi-GB save is readable
+          # only by later runs of that PR and costs the shared disk every push.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: just lane ${{ matrix.lane }}
 
   # Title and body, and only CI can see either: neither exists in the tree the
@@ -56,6 +73,7 @@ jobs:
   # one-second python script.
   title:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,14 +89,10 @@ jobs:
           FORGEJO_PR: ${{ github.event.pull_request.number }}
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/guardrails/check_pr_metadata.py
-
-  size-report:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      # Was its own `size-report` job: a whole runner slot and clone for a
+      # few seconds of python. Runs even when the title check above fails.
       - name: post the measured LOC map and growth verdict
+        if: always()
         env:
           FORGEJO_API_URL: ${{ github.api_url }}
           FORGEJO_REPOSITORY: ${{ github.repository }}
@@ -86,7 +100,6 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin main
           python3 scripts/pr_body.py > body.md
           # The narrative is the author's; only the counted sections are
           # machine-truth, so the comment carries those and says so. The first
@@ -105,7 +118,11 @@ jobs:
   # `yi doctor` and bands; capped in code. Advisory until its inconclusive rate has earned
   # a required status. Without the OPENROUTER_API_KEY secret it reports inconclusive.
   live:
+    # Advisory and paid, and 19% of yi's PR runner time: it runs when the PR
+    # carries the `live` label at push time (label, then push or re-run).
+    if: contains(github.event.pull_request.labels.*.name, 'live')
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -118,6 +135,7 @@ jobs:
         with:
           shared-key: test
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build -p yi-cli
       - name: run the live suite, or say why not
         env:
