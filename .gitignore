@@ -8,12 +8,10 @@ __pycache__/
 
 .grid/
 
-# START Ruler Generated Files
+# ruler output; AGENTS.md is tracked so a lane checkout carries the rules
 /.claude/skills
 /.pi/skills
-/AGENTS.md
 /CLAUDE.md
-# END Ruler Generated Files
 
 # a root .env may hold real keys (ARC); never trackable
 .env
