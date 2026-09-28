@@ -33,6 +33,7 @@ pub struct HashlineState {
     noop: std::collections::HashMap<String, (u64, u32)>,
     clipboard: Clipboard,
     pub documents: Option<crate::Documents>,
+    pub(crate) grep_sweeps: std::collections::HashMap<String, u64>,
 }
 
 pub type SharedHashline = Arc<Mutex<HashlineState>>;
@@ -152,6 +153,7 @@ const FIND_CONTEXT: usize = 20;
 const NEAR_MISSES: usize = 5;
 const REFS_CAP: usize = 20;
 pub(super) const SKELETON_ROWS: usize = 40;
+const DIR_ROWS: usize = 200;
 const GLOB_FILES_CAP: usize = 200;
 const DIR_HEADS_PER_FILE: usize = 8;
 const GLOB_HEADS_PER_FILE: usize = 12;
@@ -328,12 +330,19 @@ fn read_dir(display_path: &str, path: &Path) -> ToolOutput {
     dirs.sort();
     files.sort();
     let mut rows = vec![format!("[{}]", display_path.trim_end_matches('/'))];
-    rows.extend(dirs.iter().map(|name| format!("{name}/")));
-    rows.extend(
+    let entries = dirs.len().saturating_add(files.len());
+    let listed = dirs.iter().map(|name| format!("{name}/"));
+    let listed = listed.chain(
         files
             .iter()
             .map(|(name, bytes)| format!("{name}  {bytes} B")),
     );
+    rows.extend(listed.take(DIR_ROWS));
+    if entries > DIR_ROWS {
+        rows.push(format!(
+            "[showing {DIR_ROWS} of {entries} entries — read a narrower path]"
+        ));
+    }
     let mut skeleton: Vec<String> = Vec::new();
     let mut source_files = 0_usize;
     for (name, _) in &files {
@@ -600,12 +609,11 @@ impl HashlineReadTool {
                 "[showing lines {first_shown}-{shown_end} — end of file ({line_count} lines)]"
             ));
         }
-        if let Some(first) = clipped.first() {
-            rendered.push(format!(
-                "[{} line(s) exceeded {READ_LINE_CLIP} chars and were clipped (never edit-anchors) — full line: bash: sed -n '{first}p' {display_path}]",
-                clipped.len()
-            ));
-        }
+        rendered.extend(super::messages::clipped_lines_hint(
+            &clipped,
+            READ_LINE_CLIP,
+            display_path,
+        ));
         let capped = byte_capped_at.is_some()
             || (!explicit_window && found.is_none() && shown_end < line_count);
         if capped && !on_disk {
@@ -951,6 +959,8 @@ impl Tool for HashlineEditTool {
                     "{}\nno changes (the file already contains this content). Re-read the file before issuing another edit.",
                     result.header
                 ));
+                // An empty paste is a no-op whose warning is the only reason it changed nothing.
+                rendered.extend(result.warnings.iter().map(|w| format!("warning: {w}")));
                 continue;
             }
             noop.remove(&result.canonical_path);
