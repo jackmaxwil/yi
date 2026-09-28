@@ -364,10 +364,12 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   ~/.docker`; no network. Without it, `Contain` becomes a reviewable `Ask`.
 - With `models.autoReview` set, a reviewable ask goes to the reviewer (30 s); non-allow denies
   with a request id `ask_user` replays; `ActionLedger` (256) makes an approval single-use.
+- Every settled ask is journaled as a `permission` custom entry: the ask, the verdict, and
+  whether the user, the reviewer or nobody answered.
 - Owner: [`decide`](../crates/permission/src/decide.rs), [`sandbox`](../crates/tools/src/sandbox.rs)
 - State: `PermissionMode { Ask, Auto, Yolo }`, `Decision { Allow, Contain, Deny, Ask { title,
   description, reviewable } }`, `Class { Safe, Destructive, Egress, Unknown }`.
-- Shapes: [`types`](../crates/types/src/permission.rs). Settled by: D15, D26, D81, D205, D206, D207.
+- Shapes: [`types`](../crates/types/src/permission.rs). Settled by: D15, D26, D81, D205, D206, D207, D293.
 
 ## 9. Kernel
 A persistent IPython process per session that reaches the host only through host requests.
