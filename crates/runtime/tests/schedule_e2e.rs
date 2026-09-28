@@ -293,6 +293,21 @@ async fn unresolved_claims_recover_as_interrupted_on_start() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_leading_cron_sets_a_cron_heartbeat_shown_at_its_local_time() -> TestResult {
+    let (_dir, store) = temp_store("cron-slash")?;
+    let service = HeartbeatService::new(Arc::clone(&store), "/tmp");
+    service.bind_session("test".to_owned());
+    let reply = service.run("/heartbeat 0 9 * * 1-5 x")?;
+    let job = store.snapshot().jobs.into_iter().next().ok_or("no job")?;
+    assert_eq!(job.schedule.kind, yi_types::schedule::ScheduleKind::Cron);
+    assert_eq!(job.schedule.expression, "0 9 * * 1-5");
+    assert_eq!(job.prompt, "x");
+    // Whatever zone the runner is in, a 09:00 cron's next run reads 09:00 in it.
+    assert!(reply.contains(" 09:00 "), "{reply}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn heartbeat_surface_set_status_pause_clear_round_trip() -> TestResult {
     let (_dir, store) = temp_store("surface")?;
     let service = HeartbeatService::new(Arc::clone(&store), "/tmp");

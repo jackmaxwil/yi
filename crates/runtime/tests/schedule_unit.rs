@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use yi_runtime::schedule::{
-    JobSpec, ONE_MINUTE_MS, RunOutcome, SessionActivity, claim_due_in_state, new_job, parse_iso_ms,
-    parse_schedule, record_dispatch_result_in_state, should_defer,
+    JobSpec, ONE_MINUTE_MS, RunOutcome, SessionActivity, Zone, claim_due_in_state, new_job,
+    parse_iso_ms, parse_schedule, parse_schedule_in, record_dispatch_result_in_state, should_defer,
 };
 use yi_types::schedule::{CronSchedule, DeliveryMode, Job, JobStatus, ScheduleKind, ScheduleState};
 
@@ -24,11 +24,11 @@ fn parse_covers_in_every_at_alias_and_cron() -> Result<(), String> {
     assert_eq!(schedule.kind, ScheduleKind::Once);
     assert_eq!(next, now + 90 * ONE_MINUTE_MS);
 
-    let (schedule, next) = parse_schedule("@hourly", now)?;
+    let (schedule, next) = parse_schedule_in("@hourly", now, &Zone::default())?;
     assert_eq!(schedule.expression, "0 * * * *");
     assert_eq!(next, now + 60 * ONE_MINUTE_MS);
 
-    let (_, next) = parse_schedule("30 9 * * 1", now)?;
+    let (_, next) = parse_schedule_in("30 9 * * 1", now, &Zone::default())?;
     assert_eq!(
         next,
         now + (9 * 60 + 30) * ONE_MINUTE_MS,
@@ -58,10 +58,10 @@ fn parse_covers_in_every_at_alias_and_cron() -> Result<(), String> {
 #[test]
 fn cron_steps_ranges_and_sunday_alias_match() -> Result<(), String> {
     let now = MONDAY_MIDNIGHT;
-    let (_, next) = parse_schedule("*/15 * * * *", now)?;
+    let (_, next) = parse_schedule_in("*/15 * * * *", now, &Zone::default())?;
     assert_eq!(next, now + 15 * ONE_MINUTE_MS);
     // Weekday 7 must behave as Sunday (weekday 0), six days ahead.
-    let (_, next) = parse_schedule("0 0 * * 7", now)?;
+    let (_, next) = parse_schedule_in("0 0 * * 7", now, &Zone::default())?;
     assert_eq!(next, now + 6 * 24 * 60 * ONE_MINUTE_MS);
     Ok(())
 }
@@ -271,4 +271,55 @@ fn a_deferred_tick_stays_owed_and_retries_before_its_next_tick() {
         )),
         "a deferred weekday tick waited for the next weekday instead of retrying"
     );
+}
+
+fn instant(iso: &str) -> Result<u64, String> {
+    parse_iso_ms(iso).ok_or_else(|| format!("bad instant {iso}"))
+}
+
+/// tzdata 2026c's compiled Los Angeles zone, so no case reads the runner's own zone.
+fn los_angeles() -> Result<Zone, String> {
+    Zone::from_tzif(include_bytes!("fixtures/zoneinfo/America_Los_Angeles"))
+        .ok_or_else(|| "the fixture is not a TZif file".to_owned())
+}
+
+#[test]
+fn a_nine_am_weekday_cron_fires_at_nine_local_on_both_sides_of_a_dst_change() -> Result<(), String>
+{
+    let zone = los_angeles()?;
+    let (_, friday) = parse_schedule_in("0 9 * * 1-5", instant("2026-10-30T12:00Z")?, &zone)?;
+    assert_eq!(friday, instant("2026-10-30T16:00Z")?, "09:00 PDT");
+    let (_, monday) = parse_schedule_in("0 9 * * 1-5", friday, &zone)?;
+    assert_eq!(
+        monday,
+        instant("2026-11-02T17:00Z")?,
+        "09:00 PST after the fall-back"
+    );
+    let (_, spring) = parse_schedule_in("0 9 * * *", instant("2026-03-07T18:00Z")?, &zone)?;
+    assert_eq!(
+        spring,
+        instant("2026-03-08T16:00Z")?,
+        "09:00 PDT the morning DST starts"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_wall_time_dst_skips_waits_a_day_and_one_it_repeats_fires_once() -> Result<(), String> {
+    let zone = los_angeles()?;
+    let (_, gap) = parse_schedule_in("30 2 * * *", instant("2026-03-08T08:00Z")?, &zone)?;
+    assert_eq!(
+        gap,
+        instant("2026-03-09T09:30Z")?,
+        "02:30 does not exist on 03-08"
+    );
+    let (_, first) = parse_schedule_in("30 1 * * *", instant("2026-11-01T07:00Z")?, &zone)?;
+    assert_eq!(first, instant("2026-11-01T08:30Z")?, "01:30 PDT");
+    let (_, next) = parse_schedule_in("30 1 * * *", first, &zone)?;
+    assert_eq!(
+        next,
+        instant("2026-11-02T09:30Z")?,
+        "not again at 01:30 PST"
+    );
+    Ok(())
 }
