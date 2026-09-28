@@ -18,7 +18,7 @@ D-rows in [ARCHITECTURE.md](ARCHITECTURE.md) that settle it.
 | Python | A Jupyter kernel over ZeroMQ, its package embedded in the binary, its toolchain a pinned, verified uv (§9) | D156, D238 |
 | Permission | Modes and rules, a per-segment command classifier, a catastrophic denylist, an optional model reviewer, Seatbelt containment on macOS (§8) | D81, D205 |
 | Worktrees | A root session claims a git worktree slot unless `--here`, `lanes.enabled: false` or no repository (§14) | D119, D203 |
-| Node | One machine is a node card, `~/.yi/node.json`; every live kernel on it holds one of its slots (§9), and a child may run its bash in a local container (§11) | D285, D286 |
+| Node | One machine is a node card, `~/.yi/node.json`; every live kernel on it takes one of its slots or shares its family's (§9), and a child may run its bash in a local container (§11) | D285, D286 |
 | ACP | v2 only; a lower `protocolVersion` gets a version-mismatch error; the wire is hand-rolled (§17.2) | D1, D40 |
 | Workspace | `yi serve` owns sessions; `yi console` is an ACP client over its socket; bare `yi` on a terminal opens the console, `--solo` the TUI (§17) | D95, D118 |
 
@@ -384,7 +384,8 @@ A persistent IPython process per session that reaches the host only through host
   reaped, so any exit, a crash or a killed host included, frees it. With every slot held the
   boot waits, cancellable, and the wait and the cell's result both say `node: N of N slots held
   (node.slots=N); this kernel waits for one` with each holder's pid and directory; a prewarm
-  never waits. The family fuses (§11) still bound a family; the node bounds the machine.
+  never waits. A kernel whose family already holds a slot shares it and never waits, so a parent
+  cell awaiting its child cannot deadlock the node; the family fuses (§11) bound what shares it.
 - A host request is a comm on target `host.request`, dispatched once per comm id; the reply
   rides the control channel as `{status: "ok", ..}` or `{status: "error", error}`. An
   unregistered verb answers `host request type "X" is not available in this session`.
@@ -466,8 +467,9 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - `isolation` is `none`, `worktree` or `container:<image>` (D286), from `rlm.run` or a plan
   delegation's `spec.isolation`. A container child claims the same lane, branch and merge as a
   worktree child; `docker run -d --rm` starts one container of the image over it at spawn, the
-  lane and its git dirs bind-mounted at their own paths, run as the lane's owner, and the wall's
-  `container` sends every bash call through `docker exec`. It is removed when the child's record
+  lane bind-mounted at its own path with its git dirs and `.git` pointer read-only, run as the
+  lane's owner, and the wall's `container` sends every bash call through `docker exec`; a killed
+  call's processes in the container are killed before its job settles. It is removed when the child's record
   drops (reap, repossession, a failed spawn) and by name at the next spawn on that lane. A node
   whose card lacks `container` refuses before a lane is claimed; a missing image is pulled once
   with a notice.

@@ -592,9 +592,9 @@ impl KernelManager {
     }
 
     /// Invariant: dropped when the process is reaped, a crash included, or with the manager.
-    pub fn hold_until_exit(&self, lock: std::fs::File) {
+    pub fn hold_until_exit(&self, lock: Option<std::fs::File>) {
         if let Ok(mut held) = self.inner.held.lock() {
-            *held = Some(lock);
+            *held = lock;
         }
     }
 

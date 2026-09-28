@@ -440,8 +440,9 @@ impl KernelService {
             std::process::id(),
             self.options.cwd.display()
         );
-        let (home, progress) = (&self.options.home, booting.progress());
-        let admitted = crate::node::admit(home, &holder, &*progress, cancelled).await?;
+        let (home, family) = (&self.options.home, self.options.family_dir.as_deref());
+        let progress = booting.progress();
+        let admitted = crate::node::admit(home, &holder, family, &*progress, cancelled).await?;
         let manager = Arc::new(KernelManager::new(KernelOptions {
             python: None,
             cwd: Some(self.options.cwd.clone()),
