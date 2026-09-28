@@ -374,6 +374,7 @@ fn start(
     cancelled: &CancelFlag,
     sandbox: Option<&crate::sandbox::Sandbox>,
     reaper: Reaper,
+    sweep: Option<&str>,
 ) -> (
     JobId,
     std::sync::mpsc::Receiver<Result<CommandCapture, String>>,
@@ -389,6 +390,7 @@ fn start(
         Arc::clone(&kill),
     );
     let text = shell_command.to_owned();
+    let sweep = sweep.map(str::to_owned);
     let dir = cwd.to_path_buf();
     let outer = Arc::clone(cancelled);
     let flag: CancelFlag = Arc::new(move || kill.load(Ordering::SeqCst) || outer());
@@ -408,6 +410,14 @@ fn start(
         };
         process.current_dir(&dir);
         let capture = run_captured_live(process, None, &flag, OUTPUT_CAP, Some(live));
+        // Invariant: before the job settles, so a lane settle never reads a job gone quiet
+        // while what it started in a container still writes the tree.
+        if let (Ok(capture), Some(sweep)) = (&capture, &sweep)
+            && capture.cancelled
+        {
+            let _swept_or_gone_with_the_container =
+                command(interpreter()).arg("-c").arg(sweep).output();
+        }
         if let Ok(capture) = &capture {
             registry().finish(id, capture.clone());
         }
@@ -417,12 +427,26 @@ fn start(
 }
 
 /// `docker exec` of `command` under `sh -c` in `cwd` inside `container`, quoted for the host
-/// shell so the command arrives whole. A time limit kills the host `docker exec` only.
-pub fn in_container(container: &str, cwd: &Path, command: &str) -> String {
+/// shell so the command arrives whole, and the sweep that kills what a killed call left in there.
+pub fn in_container(container: &str, cwd: &Path, command: &str) -> (String, String) {
+    static CALLS: AtomicU64 = AtomicU64::new(0);
     let quote = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
-    let cwd = cwd.to_string_lossy();
-    let (cwd, container, command) = (quote(&cwd), quote(container), quote(command));
-    format!("docker exec -w {cwd} {container} sh -c {command}")
+    // Invariant: a killed host `docker exec` leaves its process running in the container, and
+    // every descendant inherits this mark; the trailing dash keeps call 1's out of call 12's.
+    let mark = format!(
+        "yi_call={}-{}-",
+        std::process::id(),
+        CALLS.fetch_add(1, Ordering::Relaxed)
+    );
+    let (cwd, name) = (quote(&cwd.to_string_lossy()), quote(container));
+    let run = format!(
+        "docker exec -e {mark} -w {cwd} {name} sh -c {}",
+        quote(command)
+    );
+    let sweep = format!(
+        "for p in /proc/[0-9]*; do grep -qsF {mark} $p/environ && kill -9 ${{p#/proc/}}; done"
+    );
+    (run, format!("docker exec {name} sh -c {}", quote(&sweep)))
 }
 
 /// A job owned by its caller's handle: never announced by another session's poller and never
@@ -433,7 +457,7 @@ pub fn spawn_job(
     cancelled: &CancelFlag,
     sandbox: Option<&crate::sandbox::Sandbox>,
 ) -> JobId {
-    start(shell_command, cwd, cancelled, sandbox, Reaper::Handle).0
+    start(shell_command, cwd, cancelled, sandbox, Reaper::Handle, None).0
 }
 
 /// A command outliving `auto_background` keeps running as a job instead of holding the turn
@@ -445,6 +469,7 @@ pub fn run_or_background(
     auto_background: Option<Duration>,
     timeout: Duration,
     sandbox: Option<&crate::sandbox::Sandbox>,
+    sweep: Option<&str>,
 ) -> Result<Run, String> {
     let (id, receiver) = start(
         shell_command,
@@ -452,6 +477,7 @@ pub fn run_or_background(
         cancelled,
         sandbox,
         Reaper::Poller { reported: false },
+        sweep,
     );
     let background = auto_background.filter(|limit| *limit <= timeout);
     match receiver.recv_timeout(background.unwrap_or(timeout)) {
@@ -721,6 +747,7 @@ mod tests {
             None,
             Duration::from_secs(3),
             None,
+            None,
         )?;
         let capture = match run {
             Run::TimedOut(capture) => capture,
@@ -759,13 +786,13 @@ mod tests {
     /// directory reaches the container's `sh -c` split, and runs something else.
     #[test]
     fn a_container_command_arrives_whole() -> Fallible {
-        let fake = r#"docker() { [ "$1|$2|$3|$4|$5|$6" = "exec|-w|/w d|c|sh|-c" ] || exit 9; shift 4; "$@"; }"#;
+        let fake = r#"docker() { [ "$1|$2|$4|$5|$6|$7|$8" = "exec|-e|-w|/w d|c|sh|-c" ] || exit 9; shift 6; "$@"; }"#;
         for command in [
             "echo 'a b'",
             r#"printf '%s\n' "it's" 'x"y'"#,
             "echo $((1+2)) | wc -c",
         ] {
-            let placed = in_container("c", Path::new("/w d"), command);
+            let (placed, _) = in_container("c", Path::new("/w d"), command);
             let run = |text: &str| crate::command("sh").args(["-c", text]).output();
             let (inside, direct) = (run(&format!("{fake}; {placed}"))?, run(command)?);
             assert!(

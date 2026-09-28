@@ -107,8 +107,8 @@ async fn a_third_kernel_waits_for_a_slot_and_proceeds_when_one_exits() -> TestRe
     let dir = Scratch::new("yi-node-admit")?;
     write_card(&dir, 2, &["worktree"])?;
     let quiet = |_: &str| {};
-    let first = node::admit(&dir, "pid 1 first", &quiet, &never()).await?;
-    let second = node::admit(&dir, "pid 2 second", &quiet, &never()).await?;
+    let first = node::admit(&dir, "pid 1 first", None, &quiet, &never()).await?;
+    let second = node::admit(&dir, "pid 2 second", None, &quiet, &never()).await?;
     assert!(first.waited.is_none() && second.waited.is_none());
 
     let seen: Arc<Mutex<Vec<String>>> = Arc::default();
@@ -120,7 +120,7 @@ async fn a_third_kernel_waits_for_a_slot_and_proceeds_when_one_exits() -> TestRe
                 seen.push(text.to_owned());
             }
         };
-        node::admit(&home, "pid 3 third", &progress, &never()).await
+        node::admit(&home, "pid 3 third", None, &progress, &never()).await
     });
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     assert!(
@@ -152,11 +152,21 @@ async fn a_third_kernel_waits_for_a_slot_and_proceeds_when_one_exits() -> TestRe
         waited.contains("It waited") && waited.contains("slot 0"),
         "{waited}"
     );
+    let home = dir.to_path_buf();
+    let fourth =
+        tokio::spawn(
+            async move { node::admit(&home, "pid 4", None, &|_: &str| {}, &never()).await },
+        );
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     assert!(
-        node::admit(&dir, "pid 4", &quiet, &at_once())
-            .await
-            .is_err(),
-        "the third holds slot 0 now, so the node is full again"
+        !fourth.is_finished(),
+        "the third holds slot 0, so the node is full again"
+    );
+    write_card(&dir, 3, &["worktree"])?;
+    let raised = tokio::time::timeout(std::time::Duration::from_secs(10), fourth).await??;
+    assert!(
+        raised.is_ok_and(|admitted| admitted.slot.is_some()),
+        "the notice's remedy, a higher slots in node.json, admits the waiting boot"
     );
     Ok(())
 }
@@ -187,18 +197,41 @@ fn a_crashed_holders_slot_is_reclaimed() -> TestResult {
         .build()?;
     let quiet = |_: &str| {};
     let full = runtime
-        .block_on(node::admit(&dir, "pid parent", &quiet, &at_once()))
+        .block_on(node::admit(&dir, "pid parent", None, &quiet, &at_once()))
         .err()
         .ok_or("the slot was free while the holder lived")?;
     assert!(full.contains(&format!("pid {}", child.id())), "{full}");
     child.kill()?;
     child.wait()?;
-    let reclaimed = runtime.block_on(node::admit(&dir, "pid parent", &quiet, &at_once()));
+    let reclaimed = runtime.block_on(node::admit(&dir, "pid parent", None, &quiet, &at_once()));
     assert!(
         reclaimed.is_ok(),
         "a killed holder's slot is free: {:?}",
         reclaimed.err()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_kernel_whose_family_holds_a_slot_never_waits_and_another_family_does() -> TestResult {
+    let dir = Scratch::new("yi-node-family")?;
+    write_card(&dir, 1, &["worktree"])?;
+    let (quiet, ours, theirs) = (|_: &str| {}, dir.join("family-a"), dir.join("family-b"));
+    let parent = node::admit(&dir, "pid 1 parent", Some(&ours), &quiet, &never()).await?;
+    assert!(parent.slot.is_some(), "a free slot is taken");
+    let child = node::admit(&dir, "pid 1 child", Some(&ours), &quiet, &at_once()).await;
+    let child = child.map_err(|full| format!("the child waited on its own family: {full}"))?;
+    assert!(child.slot.is_none(), "the child shares its family's slot");
+    for (family, who) in [
+        (Some(theirs.as_path()), "another family"),
+        (None, "no family"),
+    ] {
+        let refused = node::admit(&dir, "pid 2", family, &quiet, &at_once()).await;
+        let full = refused
+            .err()
+            .ok_or(format!("{who} rode a slot it does not hold"))?;
+        assert!(full.contains("pid 1 parent"), "{full}");
+    }
     Ok(())
 }
 
@@ -213,7 +246,7 @@ fn node_holder_child() -> TestResult {
         .enable_time()
         .build()?;
     let holder = format!("pid {}", std::process::id());
-    let _held = runtime.block_on(node::admit(&home, &holder, &|_: &str| {}, &never()))?;
+    let _held = runtime.block_on(node::admit(&home, &holder, None, &|_: &str| {}, &never()))?;
     std::fs::write(home.join("held"), "")?;
     std::thread::sleep(std::time::Duration::from_secs(120));
     Ok(())
@@ -358,7 +391,10 @@ async fn a_container_child_runs_bash_in_its_container_and_merges_like_a_worktree
     let repo = git_repo("yi-node-box")?;
     let root = Scratch::new("yi-node-box-root")?;
     let store = support::memory_store("node-box");
-    let hold = "uname -a > container.txt && cat /etc/alpine-release >> container.txt";
+    // The hook and the pointer are what a child would plant to run code under the host's git.
+    let hold = "uname -a > container.txt && cat /etc/alpine-release >> container.txt; \
+        gd=$(sed -n 's/^gitdir: //p' .git); (echo '#!/bin/sh' > \"$gd/../../hooks/post-merge\"); \
+        (echo gitdir: /tmp > .git); true";
     let family = support::family(root.to_path_buf(), repo.to_path_buf(), store, Some(hold));
     family.host.spawn(
         "box".to_owned(),
@@ -382,6 +418,10 @@ async fn a_container_child_runs_bash_in_its_container_and_merges_like_a_worktree
         "the container lives as long as the child's record"
     );
 
+    assert!(
+        !repo.join(".git/hooks/post-merge").exists(),
+        "the container wrote a hook the host's next git runs"
+    );
     let merged = family.host.merge_worktree("boxed")?;
     assert_eq!(merged["merged"], true, "{merged:?}");
     let landed = std::fs::read_to_string(repo.join("container.txt"))?;
@@ -411,6 +451,39 @@ async fn a_container_child_runs_bash_in_its_container_and_merges_like_a_worktree
     Ok(())
 }
 
+/// The scratch home shares the real home's kernel venv, so a test boots kernels, not a venv.
+fn link_kernel_venv(home: &Path) -> TestResult {
+    let real = std::path::PathBuf::from(std::env::var_os("HOME").ok_or("no HOME")?);
+    let venv = yi_kernel::bootstrap::kernel_venv_dir(&real);
+    if venv.is_dir() {
+        std::fs::create_dir_all(home.join(".yi"))?;
+        std::os::unix::fs::symlink(&venv, yi_kernel::bootstrap::kernel_venv_dir(home))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_timed_out_container_call_leaves_nothing_running_in_its_container() -> TestResult {
+    use yi_tools::Tool;
+    if !docker_here("a_timed_out_container_call_leaves_nothing_running") {
+        return Ok(());
+    }
+    let lane = Scratch::new("yi-node-sweep")?;
+    let container = node::Container::up("alpine:3.20", &lane, &|_: &str| {})?;
+    let mut context = yi_tools::ToolContext::new(lane.to_path_buf());
+    context.container = Some(container.name().to_owned());
+    let call = serde_json::json!({"command": "sleep 297 & sleep 298", "timeout_secs": 2});
+    let call = call.as_object().cloned().ok_or("an object")?;
+    let output = yi_tools::BashTool::default().execute(call, &context);
+    assert!(output.is_error, "the call timed out: {:?}", output.result);
+    let left = docker(&["exec", container.name(), "ps", "-o", "args"])?;
+    assert!(
+        !left.contains("sleep 29"),
+        "the killed call still runs in its container: {left}"
+    );
+    Ok(())
+}
+
 struct Demo {
     host: Arc<yi_runtime::SubagentHost>,
     trees: Arc<Mutex<Vec<std::path::PathBuf>>>,
@@ -419,6 +492,7 @@ struct Demo {
 fn kernel_in(
     home: &Path,
     cwd: &Path,
+    family: Option<&Path>,
     on_boot: Option<Arc<yi_runtime::kernel::BootFn>>,
 ) -> Arc<yi_runtime::KernelService> {
     let mut registry = yi_runtime::HostRegistry::default();
@@ -428,7 +502,7 @@ fn kernel_in(
             cwd: cwd.to_path_buf(),
             home: home.to_path_buf(),
             session_dir: None,
-            family_dir: None,
+            family_dir: family.map(Path::to_path_buf),
             host: Arc::new(registry),
             on_restore: None,
             on_boot,
@@ -440,13 +514,14 @@ fn kernel_in(
     ))
 }
 
-/// Each child boots its kernel with one cell, then writes `placed.txt` from its container.
-fn demo_family(root: &Path, repo: &Path, home: &Path) -> Demo {
+/// Each child boots its kernel with `cell`, then writes `placed.txt` through bash.
+fn demo_family(root: &Path, repo: &Path, home: &Path, cell: String) -> Demo {
     use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
     use yi_types::message::StopReason;
     let trees: Arc<Mutex<Vec<std::path::PathBuf>>> = Arc::default();
     let seen = Arc::clone(&trees);
     let kernel_home = home.to_path_buf();
+    let family = root.join("family");
     let (events, _keep) = tokio::sync::broadcast::channel(256);
     let host = Arc::new(yi_runtime::SubagentHost::new(
         yi_runtime::SubagentHostOptions {
@@ -477,7 +552,7 @@ fn demo_family(root: &Path, repo: &Path, home: &Path) -> Demo {
                 };
                 let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
                 provider.queue_faux(vec![
-                    call("c1", "ipython", "code", "import os\nprint(os.getpid())"),
+                    call("c1", "ipython", "code", &cell),
                     call("c2", "bash", "command", "uname -s > placed.txt"),
                     faux_assistant_message(vec![faux_text("placed")], StopReason::Stop),
                 ]);
@@ -488,7 +563,7 @@ fn demo_family(root: &Path, repo: &Path, home: &Path) -> Demo {
                     tool_execution: yi_loop::ExecutionMode::Sequential,
                 };
                 let mut child = yi_runtime::AgentSession::new(config, provider);
-                let service = kernel_in(&kernel_home, &cwd, None);
+                let service = kernel_in(&kernel_home, &cwd, Some(&family), None);
                 child.set_kernel_service(Arc::clone(&service));
                 child.set_wall(build.wall.clone());
                 let mut tools = yi_tools::builtin_tools();
@@ -520,12 +595,13 @@ async fn eight_container_children_fill_the_node_and_a_ninth_kernel_waits() -> Te
     let root = Scratch::new("yi-node-demo-root")?;
     let home = root.join("home");
     write_card(&home, 8, &["worktree", "container"])?;
-    let real = std::path::PathBuf::from(std::env::var_os("HOME").ok_or("no HOME")?);
-    let venv = yi_kernel::bootstrap::kernel_venv_dir(&real);
-    if venv.is_dir() {
-        std::os::unix::fs::symlink(&venv, yi_kernel::bootstrap::kernel_venv_dir(&home))?;
-    }
-    let demo = demo_family(&root, &repo, &home);
+    link_kernel_venv(&home)?;
+    let demo = demo_family(
+        &root,
+        &repo,
+        &home,
+        "import os\nprint(os.getpid())".to_owned(),
+    );
     for index in 0..8 {
         let name = format!("box-{index}");
         let asked = kwargs(&[("name", &name), ("isolation", "container:alpine:3.20")]);
@@ -556,7 +632,7 @@ async fn eight_container_children_fill_the_node_and_a_ninth_kernel_waits() -> Te
             told.push(step.to_owned());
         }
     });
-    let ninth = kernel_in(&home, &repo, Some(on_boot));
+    let ninth = kernel_in(&home, &repo, None, Some(on_boot));
     let cell = tokio::task::spawn_blocking(move || {
         let cancelled: CancelFlag = Arc::new(|| false);
         yi_tools::KernelBridge::execute_cell(ninth.as_ref(), "print(9)", &cancelled)
@@ -595,5 +671,50 @@ async fn eight_container_children_fill_the_node_and_a_ninth_kernel_waits() -> Te
     for index in 1..8 {
         demo.host.delete(&format!("box-{index}")).ok();
     }
+    Ok(())
+}
+
+/// The deadlock D285 first shipped with: one slot, held by a parent kernel whose cell waits
+/// on a child that boots a kernel of its own. The family's slot admits the child.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parent_cell_waiting_on_its_childs_kernel_completes_on_one_slot() -> TestResult {
+    let repo = git_repo("yi-node-family-e2e")?;
+    let root = Scratch::new("yi-node-family-root")?;
+    let home = root.join("home");
+    write_card(&home, 1, &["worktree"])?;
+    link_kernel_venv(&home)?;
+    let (up, booted) = (root.join("parent-up"), root.join("child-booted"));
+    let child_cell = format!(
+        "open({:?}, 'w').write('booted')",
+        booted.display().to_string()
+    );
+    let demo = demo_family(&root, &repo, &home, child_cell);
+    let parent = kernel_in(&home, &repo, Some(&root.join("family")), None);
+    let parent_cell = format!(
+        "import os, time\nopen({up:?}, 'w').close()\ndeadline = time.time() + 90\nwhile not os.path.exists({booted:?}) and time.time() < deadline:\n    time.sleep(0.1)\nprint('child booted' if os.path.exists({booted:?}) else 'child never booted')",
+        up = up.display().to_string(),
+        booted = booted.display().to_string(),
+    );
+    let cell = tokio::task::spawn_blocking(move || {
+        let cancelled: CancelFlag = Arc::new(|| false);
+        yi_tools::KernelBridge::execute_cell(parent.as_ref(), &parent_cell, &cancelled)
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while !up.is_file() {
+        if cell.is_finished() || std::time::Instant::now() > deadline {
+            return Err("the parent kernel never booted".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let asked = kwargs(&[("name", "kid"), ("isolation", "worktree")]);
+    demo.host.spawn("boot a kernel".to_owned(), asked)?;
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(300), cell).await???;
+    demo.host.delete("kid").ok();
+    assert_eq!(
+        outcome.result.stdout.trim(),
+        "child booted",
+        "the parent's cell waited out its child: {:?}",
+        outcome.notes
+    );
     Ok(())
 }

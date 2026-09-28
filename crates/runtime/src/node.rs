@@ -136,35 +136,38 @@ pub fn card(home: &Path) -> Result<NodeCard, String> {
 }
 
 /// A slot held for one kernel: the flock goes with the file, so a process that dies, however
-/// it dies, drops it, and `waited` is the notice a wait for it left, for the call that booted.
+/// it dies, drops it; `None` shares a slot its family holds. `waited` is the wait's notice.
 pub struct Admitted {
-    pub slot: File,
+    pub slot: Option<File>,
     pub waited: Option<String>,
 }
 
-fn full(slots: NonZeroU8, holders: &[String]) -> String {
+fn full(slots: NonZeroU8, holders: &[String], home: &Path) -> String {
     format!(
-        "node: {n} of {n} slots held (node.slots={n}); this kernel waits for one. Held by {}. A reaped child (rlm.delete_subagent) or an ended session frees one; node.slots in config raises the bound.",
+        "node: {n} of {n} slots held (node.slots={n}); this kernel waits for one. Held by {}. A reaped child (rlm.delete_subagent) or an ended session frees one; a higher slots in {}, read on every poll, raises the bound unless node.slots in config pins it.",
         holders.join("; "),
+        home.join(".yi/node.json").display(),
         n = slots
     )
 }
 
-/// Every live kernel on the machine takes a slot, whichever process owns it; past `slots` a
-/// boot waits here, saying so through `progress` once per change in who holds them.
+/// Every live kernel takes a free slot, whichever process owns it, or waits saying who holds them;
+/// one whose family holds a slot shares it, so a parent cell awaiting its child cannot deadlock.
 pub async fn admit(
     home: &Path,
     holder: &str,
+    family: Option<&Path>,
     progress: &(dyn Fn(&str) + Send + Sync),
     cancelled: &yi_tools::CancelFlag,
 ) -> Result<Admitted, String> {
-    let card = card(home)?;
+    let family = family.map(|dir| dir.to_string_lossy().into_owned());
     let dir = home.join(".yi/node/slots");
     std::fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     let started = Instant::now();
     let mut told: Option<String> = None;
     loop {
-        let mut holders = Vec::new();
+        let card = card(home)?;
+        let (mut holders, mut kin) = (Vec::new(), false);
         for index in 0..card.slots.get() {
             let path = dir.join(format!("{index}.held"));
             let io = |error: std::io::Error| format!("{}: {error}", path.display());
@@ -177,8 +180,9 @@ pub async fn admit(
                 .map_err(io)?;
             match file.try_lock() {
                 Ok(()) => {
+                    let text = format!("{holder}\n{}", family.as_deref().unwrap_or_default());
                     file.set_len(0)
-                        .and_then(|()| file.write_all(holder.as_bytes()))
+                        .and_then(|()| file.write_all(text.as_bytes()))
                         .map_err(io)?;
                     let waited = told.map(|notice| {
                         format!(
@@ -186,22 +190,36 @@ pub async fn admit(
                             started.elapsed().as_secs_f64()
                         )
                     });
-                    return Ok(Admitted { slot: file, waited });
+                    return Ok(Admitted {
+                        slot: Some(file),
+                        waited,
+                    });
                 }
                 Err(std::fs::TryLockError::WouldBlock) => {
                     let mut text = String::new();
                     let _a_holder_mid_write_reads_blank = file.read_to_string(&mut text);
-                    holders.push(format!("slot {index}: {}", text.trim()));
+                    let mut lines = text.lines();
+                    holders.push(format!(
+                        "slot {index}: {}",
+                        lines.next().unwrap_or_default()
+                    ));
+                    kin |= family.is_some() && lines.next() == family.as_deref();
                 }
                 Err(std::fs::TryLockError::Error(error)) => return Err(io(error)),
             }
         }
-        let notice = full(card.slots, &holders);
-        if told.as_ref() != Some(&notice) {
-            progress(&notice);
+        if kin {
+            return Ok(Admitted {
+                slot: None,
+                waited: None,
+            });
         }
+        let notice = full(card.slots, &holders, home);
         if cancelled() {
             return Err(format!("{notice} It stopped waiting: cancelled."));
+        }
+        if told.as_ref() != Some(&notice) {
+            progress(&notice);
         }
         told = Some(notice);
         tokio::time::sleep(WAIT_POLL).await;
@@ -276,11 +294,19 @@ impl Container {
             ]);
         }
         args.extend(["-e", "HOME=/tmp", "-w", &lane_text].map(str::to_owned));
-        let mut mounts = vec![lane.to_path_buf()];
-        mounts.extend(yi_permission::git_dirs(lane));
-        for mount in mounts {
+        // Invariant: git dirs and the lane's `.git` pointer are read-only in here: a hook, a
+        // config or a pointer written there runs under the host's next git (the settle's).
+        let pointer = lane.join(".git");
+        let mut mounts = vec![(lane.to_path_buf(), "")];
+        mounts.extend(pointer.is_file().then_some((pointer, ":ro")));
+        mounts.extend(
+            yi_permission::git_dirs(lane)
+                .into_iter()
+                .map(|dir| (dir, ":ro")),
+        );
+        for (mount, mode) in mounts {
             let mount = mount.to_string_lossy();
-            args.extend(["-v".to_owned(), format!("{mount}:{mount}")]);
+            args.extend(["-v".to_owned(), format!("{mount}:{mount}{mode}")]);
         }
         args.extend(["--entrypoint", "tail", image, "-f", "/dev/null"].map(str::to_owned));
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
