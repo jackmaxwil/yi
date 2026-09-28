@@ -30,6 +30,11 @@ pub fn catalog_cache_dir() -> Option<&'static std::path::Path> {
     Catalog::cache_dir()
 }
 
+/// The entries the catalog files under `dir` hold that do not load, one line each.
+pub fn catalog_rejected(dir: &std::path::Path) -> Vec<String> {
+    Catalog::bundled().with_cache(dir).rejected().to_vec()
+}
+
 pub use yi_ai::catalog::PROVIDERS as CATALOG_PROVIDERS;
 pub use yi_ai::refresh::{
     DEFAULT_REFRESH_HOURS, MODELS_DEV, age as catalog_age, is_stale as catalog_is_stale,
@@ -52,19 +57,10 @@ fn provider_api(api: &str) -> Option<ProviderApi> {
     }
 }
 
-fn adaptive(model: &Model) -> bool {
-    model
-        .compat
-        .as_ref()
-        .and_then(|compat| compat.get("forceAdaptiveThinking"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-}
-
 fn anthropic_thinking(model: &Model, effort: Effort) -> Thinking {
     match effort {
         Effort::Off => Thinking::Off,
-        effort if adaptive(model) => Thinking::Adaptive {
+        effort if yi_ai::compat::adaptive_thinking(model) => Thinking::Adaptive {
             effort: Some(effort.to_string()),
         },
         Effort::Minimal | Effort::Low => Thinking::Budget { tokens: 1024 },
