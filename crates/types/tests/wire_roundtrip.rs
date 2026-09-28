@@ -268,3 +268,27 @@ fn an_unknown_tape_mark_kind_survives_a_round_trip() -> Result<(), Box<dyn std::
     assert_eq!(serde_json::to_string(&mark)?, line);
     Ok(())
 }
+
+/// A settled ask journaled by the session: an answerer this build does not know and a field it
+/// does not read both survive, so a later cascade's records load and write back whole.
+#[test]
+fn permission_records_round_trip_with_an_unknown_answerer_and_field()
+-> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::permission::{Answerer, PermissionRecord};
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/permission-record-v1.json");
+    let stored: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)?)?;
+    let records: Vec<PermissionRecord> = serde_json::from_value(stored.clone())?;
+    let by: Vec<&Answerer> = records.iter().map(|record| &record.by).collect();
+    assert_eq!(
+        by,
+        [
+            &Answerer::User,
+            &Answerer::Reviewer,
+            &Answerer::Nobody,
+            &Answerer::Other("classifier".to_owned())
+        ]
+    );
+    assert_eq!(serde_json::to_value(&records)?, stored);
+    Ok(())
+}
