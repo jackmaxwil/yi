@@ -603,7 +603,7 @@ async fn stream_assistant_response<S: StreamFn>(
     let reuse = if tool_choice == Some(yi_types::model::ToolChoice::None) {
         yi_types::model::Reuse::LastTurn
     } else {
-        yi_types::model::Reuse::Loop
+        config.reuse
     };
     let llm_context = LlmContext {
         system_prompt: context.system_prompt.clone(),
