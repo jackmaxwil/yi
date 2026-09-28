@@ -14,7 +14,7 @@ pub struct SourceBudgets {
 impl Default for SourceBudgets {
     fn default() -> Self {
         Self {
-            project_instructions: Bytes(32_768),
+            project_instructions: Bytes(49_152),
             skills_meta: Bytes(16_384),
             ledger: Bytes(16_384),
             memory: Bytes(32_768),
