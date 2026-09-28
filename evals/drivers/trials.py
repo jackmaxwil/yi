@@ -29,7 +29,7 @@ STAGE_SOFT, STAGE_HARD, WEEK_SOFT, WEEK_HARD = 13.0, 15.0, 25.0, 30.0
 TRIAL_USD = 0.27
 SUMMED = ("input", "cacheRead", "cacheWrite", "output", "turns")
 KEPT = ("task", "trial", "reward", "partialScore", "testsPassed", "testsTotal", "traceScored", "censored",
-        "errored", "timedOut", "wallSec")
+        "errored", "verifierUnmeasured", "timedOut", "wallSec")
 
 
 def trial_rows(job):
