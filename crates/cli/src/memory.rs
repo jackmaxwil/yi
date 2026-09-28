@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use yi_runtime::memory::{Note, Store, block, global_dir, repo_dir};
+use yi_runtime::memory::{Note, Store, block, global_dir, ranked, repo_dir};
 
-const USAGE: &str = "usage: yi memory [list | show <name> | forget <name> | import <dir> | stats | check | rebuild]";
+const USAGE: &str = "usage: yi memory [list | show <name> | search <words> | forget <name> | import <dir> | stats | check | rebuild]";
 
 fn find<'a>(
     stores: &'a [(&'static str, Store)],
@@ -129,6 +129,14 @@ pub fn run(args: &crate::Args) -> i32 {
         ("stats", "") => stats(&stores),
         ("check", "") => check(&stores),
         ("rebuild", "") => rebuild(&stores),
+        ("search", query) if !query.is_empty() => {
+            let refs: Vec<&Store> = stores.iter().map(|(_, store)| store).collect();
+            for (at, note) in ranked(&refs, query) {
+                let label = stores.get(at).map_or("", |(label, _)| *label);
+                println!("{:<30} {label:<6} {}", note.name, note.hook);
+            }
+            0
+        }
         ("show", query) if !query.is_empty() => match find(&stores, query) {
             Some((_, store, note)) => {
                 match std::fs::read_to_string(store.dir().join(note.name.file())) {

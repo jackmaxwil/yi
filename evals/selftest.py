@@ -41,8 +41,11 @@ import axes  # noqa: E402
 import yi_usage  # noqa: E402
 import test_refine  # noqa: E402
 import test_levers  # noqa: E402
+import test_inner  # noqa: E402
+import test_mutate  # noqa: E402
 import test_judge_replay  # noqa: E402
 import test_improve  # noqa: E402
+import test_skill_labels  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 EVENTS = FIXTURES / "ask_events.jsonl"
@@ -782,6 +785,20 @@ def check_improve():
     result = unittest.TextTestRunner(stream=report).run(suite)
     assert result.testsRun >= 4 and result.wasSuccessful(), report.getvalue()
 
+def check_inner():
+    """The inner loop's generators: seeded, red untouched, green solved, the grader outside the workspace."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_inner)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 3 and result.wasSuccessful(), report.getvalue()
+
+def check_mutate():
+    """Bug injection on a synthetic repo: a seeded red mutation, graded by the pristine tests."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_mutate)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 2 and result.wasSuccessful(), report.getvalue()
+
 def check_levers():
     """D220: the manifest, the shared default fixture and the floors agree, and the gates hold."""
     report = io.StringIO()
@@ -790,6 +807,15 @@ def check_levers():
     assert result.testsRun >= 5 and result.wasSuccessful(), report.getvalue()
     environ = {yi_usage.LEVERS_ENV: str(ROOT / "levers" / "default.json")}
     assert yi_usage.levers_label({}) == "" and len(yi_usage.levers_label(environ)) == len("+levers") + 12
+
+
+def check_skill_labels():
+    """#779: only typed messages enter the classifier's corpus, scrubbed and once; the teacher
+    run resumes and stops at its budget; the frozen sample is stratified for the owner."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_skill_labels)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 4 and result.wasSuccessful(), report.getvalue()
 
 
 def check_judge_replay():
@@ -807,6 +833,9 @@ CHECKS = (
     check_judge_replay,
     check_graph_refiner,
     check_levers,
+    check_inner,
+    check_mutate,
+    check_skill_labels,
     check_improve,
     check_trials,
     check_watch_prune,

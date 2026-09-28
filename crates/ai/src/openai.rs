@@ -2,9 +2,9 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{
-    AgentMessage, Content, RAW_STOP_IN_BAND_ERROR, StopReason, Usage, UserContent,
+    AgentMessage, Content, ENVIRONMENT_TAG, RAW_STOP_IN_BAND_ERROR, StopReason, Usage, UserContent,
 };
-use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
+use yi_types::model::{Effort, LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolChoice, ToolDef};
 
 use crate::catalog::calculate_cost;
 use crate::compat::{compat_bool, compat_str};
@@ -102,7 +102,12 @@ fn convert_messages(model: &Model, context: &LlmContext) -> Vec<Value> {
         } else {
             "system"
         };
-        params.push(json!({"role": role, "content": context.system_prompt}));
+        let system = context
+            .system_prompt
+            .split(SYSTEM_BLOCK_SEPARATOR)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        params.push(json!({"role": role, "content": system}));
     }
     let mut index = 0;
     while index < transformed.len() {
@@ -309,13 +314,65 @@ pub(crate) fn prompt_cache_retention(model: &Model) -> Option<&'static str> {
     .then_some("24h")
 }
 
+/// Marks end before the per-request environment tail: one there is written each turn and never read.
+/// Gemini keeps only the last mark, so a moving tail would re-snapshot the prompt every turn.
+fn mark_cache_breakpoints(model: &Model, messages: &mut [Value]) {
+    let ephemeral = json!({"type": "ephemeral"});
+    if let Some(system) = messages
+        .first_mut()
+        .filter(|message| matches!(message["role"].as_str(), Some("system" | "developer")))
+    {
+        mark_last_part(system, &ephemeral);
+    }
+    if model.id.contains("gemini") {
+        return;
+    }
+    let tail = messages.iter().rposition(|message| {
+        matches!(message["role"].as_str(), Some("user" | "tool")) && !is_environment(message)
+    });
+    if let Some(message) = tail
+        .filter(|index| *index > 0)
+        .and_then(|index| messages.get_mut(index))
+    {
+        mark_last_part(message, &ephemeral);
+    }
+}
+
+fn mark_last_part(message: &mut Value, mark: &Value) {
+    if let Some(text) = message["content"].as_str() {
+        message["content"] = json!([{"type": "text", "text": text}]);
+    }
+    if let Some(part) = message["content"]
+        .as_array_mut()
+        .and_then(|parts| parts.last_mut())
+    {
+        part["cache_control"] = mark.clone();
+    }
+}
+
+fn is_environment(message: &Value) -> bool {
+    let content = &message["content"];
+    content
+        .as_str()
+        .or_else(|| {
+            content[0]["text"]
+                .as_str()
+                .filter(|_| content.as_array().is_some_and(|parts| parts.len() == 1))
+        })
+        .is_some_and(|text| text.starts_with(ENVIRONMENT_TAG))
+}
+
 pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Value {
     let _span = yi_types::trace::span("ai.build_params")
         .arg("api", "openai")
         .arg("messages", context.messages.len());
+    let mut messages = convert_messages(model, context);
+    if model.base_url.contains("openrouter.ai") {
+        mark_cache_breakpoints(model, &mut messages);
+    }
     let mut params = json!({
         "model": model.id,
-        "messages": convert_messages(model, context),
+        "messages": messages,
         "stream": true,
         "stream_options": {"include_usage": true},
     });
@@ -329,11 +386,6 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     }
     if let Some(ttl) = prompt_cache_retention(model) {
         params["prompt_cache_retention"] = json!(ttl);
-    }
-    // OpenRouter places the breakpoint on the last cacheable block itself; only
-    // the Anthropic-routed models need one, and the catalog marks them.
-    if compat_str(model, "cacheControlFormat") == Some("anthropic") {
-        params["cache_control"] = json!({"type": "ephemeral"});
     }
     if let Some(routing) = routing_params(model, options) {
         params["provider"] = routing;
