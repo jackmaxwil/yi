@@ -238,7 +238,9 @@ extension `Host` whose synchronous extensions turn session events into effects.
   (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `grid`, `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
-  Project instruction files (`AGENTS.md`, `CLAUDE.md`) and project skills render here. Project
+  Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for HTML
+  comment lines rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
+  granted) and project skills render here. Project
   packs load only when `~/.yi/trust.json` (`yi trust`) grants their content hash.
 - The table persists as `custom{ext_state}` on change and is restored on resume.
 - The environment block is a `host_user` message appended per request by `transform_context`,
@@ -267,7 +269,7 @@ extension `Host` whose synchronous extensions turn session events into effects.
   SessionStart, PromptSubmitted, ToolCall, ToolResult, TurnEnd, Usage, Compacted }`, `Effect {
   AttachFragment, DetachFragment, AttachExternal, Remind, Record }`.
 - Shapes: [`graph.rs`](../crates/types/src/graph.rs) (`Graph`, `Edge`, `Relation`, `Predicate`).
-- Settled by: D138, D139, D187, D188, D196, D209, D219, D220, D231.
+- Settled by: D138, D139, D187, D188, D196, D209, D219, D220, D231, D289.
 
 ## 7. Tool
 A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at session build.
@@ -343,11 +345,13 @@ with no paired end restores unscoped and says so. Turn start and end capture int
 
 ### 7.8 Skills
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
-`<name>/SKILL.md` walked 2 levels. Frontmatter at discovery, body via `read`; `$name` or a
+`<name>/SKILL.md` walked 2 levels. The catalog lists every repository skill and every
+`~/.yi/skills` skill, but another home-root skill only when config `skills.global` names it; a
+child's lists none of those. Frontmatter at discovery, body via `read`; `$name` or a
 `trigger:` needle in a message the user typed points at the skill. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.
 
-- Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D292.
+- Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D290, D292.
 
 ## 8. Permission
 A pure `decide` over the call, mode, rules, grants, holds and catastrophic context.

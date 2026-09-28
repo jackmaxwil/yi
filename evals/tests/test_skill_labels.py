@@ -37,6 +37,10 @@ class SkillLabels(unittest.TestCase):
         ]))
         self.corpus = self.dir / "corpus.jsonl"
 
+    def test_a_message_id_matches_the_runtime(self):
+        """yi-runtime's classifier_e2e::a_message_id_matches_the_labelling_tool pins the same value."""
+        self.assertEqual(skill_labels.message_id("  Land THIS branch\n\tonce the ÉTÉ gate is green "), "2990f761ef69")
+
     def test_the_candidates_are_the_shipped_skills_with_a_trigger(self):
         found = dict(skill_labels.skills())
         self.assertIn("verify", found)
