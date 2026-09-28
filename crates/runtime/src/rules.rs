@@ -347,6 +347,7 @@ pub struct RuleEngine {
     state: Mutex<FireState>,
     deliver: Mutex<Option<DeliverFn>>,
     fetch: Mutex<Option<Arc<FetchLog>>>,
+    classifier: Mutex<Option<Arc<crate::classifier::SkillClassifier>>>,
 }
 
 fn matches(rule: &RuleDoc, haystack: &str) -> bool {
@@ -431,7 +432,7 @@ fn typed_text(message: &AgentMessage) -> Option<String> {
     })
 }
 
-fn reminder(text: String) -> AgentMessage {
+pub(crate) fn reminder(text: String) -> AgentMessage {
     AgentMessage::Custom {
         custom_type: "reminder".to_owned(),
         content: UserContent::Text(text),
@@ -448,6 +449,7 @@ impl RuleEngine {
             state: Mutex::new(FireState::default()),
             deliver: Mutex::new(None),
             fetch: Mutex::new(None),
+            classifier: Mutex::new(None),
         }
     }
 
@@ -473,6 +475,12 @@ impl RuleEngine {
     pub fn set_deliver(&self, deliver: DeliverFn) {
         if let Ok(mut slot) = self.deliver.lock() {
             *slot = Some(deliver);
+        }
+    }
+
+    pub fn set_classifier(&self, classifier: Arc<crate::classifier::SkillClassifier>) {
+        if let Ok(mut slot) = self.classifier.lock() {
+            *slot = Some(classifier);
         }
     }
 
@@ -633,6 +641,7 @@ impl RuleEngine {
             return Vec::new();
         };
         let mut texts = Vec::new();
+        let mut pointed: Vec<String> = state.loaded.iter().cloned().collect();
         let mut counted = 0_usize;
         let mut dropped = Vec::new();
         for rule in &rules {
@@ -661,8 +670,15 @@ impl RuleEngine {
                 counted += 1;
             }
             state.mark(&evidence);
+            pointed.push(name.to_owned());
             let shown = if named { mention.as_str() } else { needle };
             texts.push(self.render_reminder(rule, shown));
+        }
+        drop(state);
+        if let (Ok(slot), AgentMessage::User { timestamp, .. }) = (self.classifier.lock(), message)
+            && let Some(classifier) = slot.as_ref()
+        {
+            classifier.consult(&text, *timestamp, pointed);
         }
         if let Some(last) = texts.last_mut()
             && !dropped.is_empty()
