@@ -212,6 +212,12 @@ async fn at_the_threshold_it_points_and_never_twice() -> TestResult {
         .ok_or("no second decision")?;
     assert!(!again.fired, "{again:?}");
     assert_eq!(delivered(&rig).len(), 1);
+    rig.engine.rearm();
+    assert_eq!(
+        rig.engine.observe_user(&typed("open a pull request")).len(),
+        1,
+        "compaction re-arms what the classifier pointed at"
+    );
     Ok(())
 }
 
@@ -270,6 +276,33 @@ async fn a_skill_a_trigger_word_pointed_at_is_not_pointed_at_again() -> TestResu
         if !text.is_empty() {
             assert!(rig.engine.observe_user(&typed(text)).is_empty());
         }
+        let record = next(&rig, Duration::from_secs(5))
+            .await
+            .ok_or("no decision recorded")?;
+        assert!(!record.fired, "{record:?}");
+    }
+    assert!(delivered(&rig).is_empty());
+    Ok(())
+}
+
+/// Dies with two pointers at land: messages queued behind a busy run are observed back to back,
+/// so a trigger word points before the classifier's answer for the message ahead of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_trigger_word_ahead_of_the_classifiers_answer_wins() -> TestResult {
+    let (port, _served) = sidecar(vec![LAND, LAND])?;
+    let rig = rig(format!("http://127.0.0.1:{port}"), Some(0.7))?;
+    assert!(
+        rig.engine
+            .observe_user(&typed("land this branch once it is green"))
+            .is_empty()
+    );
+    assert_eq!(
+        rig.engine
+            .observe_user(&typed("then open a pull request"))
+            .len(),
+        1
+    );
+    for _ in 0..2 {
         let record = next(&rig, Duration::from_secs(5))
             .await
             .ok_or("no decision recorded")?;

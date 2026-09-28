@@ -408,7 +408,7 @@ fn typed_needle<'a>(rule: &'a RuleDoc, folded: &str) -> Option<&'a str> {
         .iter()
         .find(|needle| {
             let needle = needle.to_ascii_lowercase();
-            if needle.starts_with('$') {
+            if needle.strip_prefix('$') == Some(&rule.name.to_ascii_lowercase()) {
                 mentions(folded, &needle)
             } else {
                 folded.contains(&needle)
@@ -418,9 +418,14 @@ fn typed_needle<'a>(rule: &'a RuleDoc, folded: &str) -> Option<&'a str> {
 }
 
 fn mentions(folded: &str, mention: &str) -> bool {
-    folded.split(mention).skip(1).any(|after| {
-        !after.starts_with(|next: char| next.is_ascii_alphanumeric() || next == '-' || next == '_')
-    })
+    folded
+        .split(mention)
+        .skip(1)
+        .any(|after| !after.starts_with(name_char))
+}
+
+fn name_char(next: char) -> bool {
+    next.is_ascii_alphanumeric() || next == '-' || next == '_'
 }
 
 fn typed_text(message: &AgentMessage) -> Option<String> {
@@ -660,15 +665,7 @@ impl RuleEngine {
         };
         let mut texts = Vec::new();
         let classifier = self.classifier.lock().ok().and_then(|slot| slot.clone());
-        let mut pointed: Vec<String> = rules
-            .iter()
-            .filter(|rule| {
-                self.skill_already_loaded(&state, rule)
-                    || state.fired_once.contains_key(&Evidence::skill(rule))
-            })
-            .filter_map(skill_name)
-            .map(str::to_owned)
-            .collect();
+        let mut pointed: Vec<String> = state.loaded.iter().cloned().collect();
         let mut counted = 0_usize;
         let mut dropped = Vec::new();
         for rule in &rules {
@@ -700,6 +697,9 @@ impl RuleEngine {
                 counted += 1;
             }
             state.mark(&evidence);
+            if let Some(classifier) = &classifier {
+                classifier.note(name);
+            }
             pointed.push(name.to_owned());
             let shown = if named { mention.as_str() } else { needle };
             texts.push(self.render_reminder(rule, shown));

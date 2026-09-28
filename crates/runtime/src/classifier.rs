@@ -84,6 +84,12 @@ impl SkillClassifier {
             .is_ok_and(|pointed| pointed.contains(name))
     }
 
+    pub fn note(&self, name: &str) {
+        if let Ok(mut pointed) = self.pointed.lock() {
+            pointed.insert(name.to_owned());
+        }
+    }
+
     pub fn rearm(&self) {
         if let Ok(mut pointed) = self.pointed.lock() {
             pointed.clear();
