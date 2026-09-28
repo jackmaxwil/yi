@@ -9,7 +9,6 @@ description: >
   context pack around an edit, rank refactor candidates by complexity and
   churn.
 trigger: who calls, call graph, grid resolve, grid uses, grid scope
-scope: text
 ---
 
 # grid
