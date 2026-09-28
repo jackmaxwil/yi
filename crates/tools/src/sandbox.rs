@@ -243,7 +243,10 @@ impl SandboxRefusal {
 
     pub fn from_json(value: &Value) -> Option<Self> {
         if let Some(path) = value.get("path").and_then(Value::as_str) {
-            return Some(Self::Path(PathBuf::from(path)));
+            // An empty or relative path would sit above every path it is compared with.
+            return Path::new(path)
+                .is_absolute()
+                .then(|| Self::Path(PathBuf::from(path)));
         }
         let scopes = value.get("scopes")?.as_array()?;
         let scopes = scopes.iter().filter_map(Value::as_str).map(str::to_owned);
@@ -267,8 +270,6 @@ impl SandboxRefusal {
         let written = yi_permission::write_targets(&text)
             .iter()
             .any(|raw| denied(&absolute_path(raw, cwd)));
-        // A read outside home never asks: `cat /etc/hosts` after a refused `/etc` write.
-        let in_home = home.as_deref().is_some_and(|home| dir.starts_with(home));
         // The directory as spelled from `/` or from `~`, found anywhere in the text.
         let dir_text = dir.to_string_lossy();
         let from_tilde = (home.as_deref())
@@ -278,6 +279,20 @@ impl SandboxRefusal {
             .flatten()
             .any(|needle| {
                 text.match_indices(needle.as_str()).any(|(at, _)| {
+                    // A shell expands `~` only at a word's start, or after `=` or `:`, and up to
+                    // a `/` or the word's end: `rm *~` and `s~a~b~` name no home path.
+                    let before = text.get(..at).and_then(|head| head.chars().next_back());
+                    let after = text
+                        .get(at + needle.len()..)
+                        .and_then(|tail| tail.chars().next());
+                    let inside = |c: Option<char>, ends: &str| {
+                        c.is_some_and(|c| !c.is_whitespace() && !ends.contains(c))
+                    };
+                    if needle.starts_with('~')
+                        && (inside(before, "=:;|&()<>") || inside(after, "/;|&)<>"))
+                    {
+                        return false;
+                    }
                     let rest = text.get(at..).unwrap_or_default();
                     let end = rest.find(|c: char| c.is_whitespace() || PATH_END.contains(&c));
                     denied(&absolute_path(
@@ -286,8 +301,14 @@ impl SandboxRefusal {
                     ))
                 })
             });
-        written || (in_home && named)
+        // A read outside home never asks: `cat /etc/hosts` after a refused `/etc` write.
+        written || (in_home(dir) && named)
     }
+}
+
+/// Whether a refusal in `dir` also asks for a call that only names a path there.
+fn in_home(dir: &Path) -> bool {
+    std::env::var_os("HOME").is_some_and(|home| dir.starts_with(home))
 }
 
 /// What ends a path spelled inside a command: a quote, a shell operator, a comma.
@@ -304,22 +325,30 @@ fn absolute_path(raw: &str, cwd: &Path) -> PathBuf {
 }
 
 /// The path of a line in the errno shape a refused write prints, `<prog>: <path>: Operation not
-/// permitted` or Python's `[Errno 1] Operation not permitted: '<path>'`, unquoted.
+/// permitted` (Rust adds ` (os error 1)`), Python's `[Errno 1] …: '<path>'` or node's `EPERM`.
 fn errno_path(line: &str) -> Option<&str> {
     let line = line.trim_end();
+    let line = line.strip_suffix(" (os error 1)").unwrap_or(line);
     let raw = match line.strip_suffix(": Operation not permitted") {
-        // `touch: /x`, or git's `fatal: could not create … '/x/.git'`, quoted.
+        // `touch: /x`, or a quoted path: git's `'/x/.git'`, uv's `` `/x` ``.
         Some(head) => head
             .rsplit_once(": ")
             .map(|(_, path)| path)
             .filter(|path| !path.contains(char::is_whitespace))
             .or_else(|| {
                 let word = head.rsplit(char::is_whitespace).next()?;
-                (word.len() > 2 && word.starts_with('\'') && word.ends_with('\'')).then_some(word)
+                let quote = word.chars().next().filter(|c| matches!(c, '\'' | '`'))?;
+                (word.len() > 2 && word.ends_with(quote)).then_some(word)
             })?,
-        None => line.split_once("[Errno 1] Operation not permitted: ")?.1,
+        None => match line.split_once("[Errno 1] Operation not permitted: ") {
+            Some((_, path)) => path,
+            // `Error: EPERM: operation not permitted, open '/x'`
+            None => (line.split_once("EPERM: operation not permitted, ")?.1)
+                .rsplit(char::is_whitespace)
+                .next()?,
+        },
     };
-    let raw = raw.trim_matches(['\'', '"']);
+    let raw = raw.trim_matches(['\'', '"', '`']);
     (!raw.is_empty() && !raw.contains(char::is_whitespace)).then_some(raw)
 }
 
@@ -378,11 +407,19 @@ pub fn denial_hint(refusal: &SandboxRefusal) -> String {
     const CONTAINED: &str =
         "a contained run writes only the working tree, its git dirs and tmp, and has no network";
     match refusal {
-        SandboxRefusal::Path(path) => format!(
-            "next: the sandbox refused writing `{}` ({CONTAINED}); the next call writing under `{}` outside those asks instead of running contained, and is refused where nobody can answer",
-            path.display(),
-            path.parent().unwrap_or(path).display()
-        ),
+        SandboxRefusal::Path(path) => {
+            let dir = path.parent().unwrap_or(path);
+            let rule = if in_home(dir) {
+                "naming a path"
+            } else {
+                "writing"
+            };
+            format!(
+                "next: the sandbox refused writing `{}` ({CONTAINED}); the next call {rule} under `{}` outside those asks instead of running contained, and is refused where nobody can answer",
+                path.display(),
+                dir.display()
+            )
+        }
         SandboxRefusal::Scopes(scopes) => {
             let needs = if scopes.len() == 1 { "needs" } else { "need" };
             let scopes: Vec<String> = scopes.iter().map(|scope| format!("`{scope}`")).collect();
