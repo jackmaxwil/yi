@@ -42,7 +42,7 @@ use yi_runtime::plan::ops::{
     Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec,
 };
 use yi_runtime::plan::store::{PlanStore, StoreError};
-use yi_types::plan::canonical::{Digest, canonical_bytes, canonical_digest};
+use yi_types::plan::canonical::{Chained, Digest, canonical_bytes, canonical_digest};
 use yi_types::plan::doc::{AgentId, Delegation, GoalText, PlanId, TodoAddr, TodoLabel, TouchCount};
 use yi_types::plan::ledger::{JournalRecord, RequestId};
 use yi_types::url::Url;
