@@ -230,7 +230,7 @@ fn the_slot_table_survives_a_resume() -> TestResult {
     Ok(())
 }
 
-/// D306: the system prompt is constant for a conversation. Once the first request has
+/// D310: the system prompt is constant for a conversation. Once the first request has
 /// rendered it, a trajectory signal leaves its bytes alone and the protocol goes out once,
 /// as a `fragment` message; the slot still lands in the snapshot a resume restores.
 #[test]
@@ -985,7 +985,7 @@ fn the_memory_block_is_present_at_zero_notes() -> TestResult {
     Ok(())
 }
 
-/// D306: a compaction drops every internal message, so each slot attached after the first
+/// D310: a compaction drops every internal message, so each slot attached after the first
 /// request goes out again with its current text, in rank order; a slot whose text the frozen
 /// prompt already carries (a mode that flipped back) is not repeated.
 #[test]

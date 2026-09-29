@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc::Receiver;
-use yi_ai::anthropic::{self, AnthropicOptions, Thinking};
+use yi_ai::anthropic::{self, AnthropicOptions};
 use yi_ai::auth::{AuthKind, Resolved};
 use yi_ai::catalog::Catalog;
 use yi_ai::faux::FauxProvider;
@@ -30,6 +30,11 @@ pub fn catalog_cache_dir() -> Option<&'static std::path::Path> {
     Catalog::cache_dir()
 }
 
+/// The entries the catalog files under `dir` hold that do not load, one line each.
+pub fn catalog_rejected(dir: &std::path::Path) -> Vec<String> {
+    Catalog::bundled().with_cache(dir).rejected().to_vec()
+}
+
 pub use yi_ai::catalog::PROVIDERS as CATALOG_PROVIDERS;
 pub use yi_ai::refresh::{
     DEFAULT_REFRESH_HOURS, MODELS_DEV, age as catalog_age, is_stale as catalog_is_stale,
@@ -49,27 +54,6 @@ fn provider_api(api: &str) -> Option<ProviderApi> {
         "openai-completions" => Some(ProviderApi::OpenAiCompletions),
         "openai-responses" => Some(ProviderApi::OpenAiResponses),
         _ => None,
-    }
-}
-
-fn adaptive(model: &Model) -> bool {
-    model
-        .compat
-        .as_ref()
-        .and_then(|compat| compat.get("forceAdaptiveThinking"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn anthropic_thinking(model: &Model, effort: Effort) -> Thinking {
-    match effort {
-        Effort::Off => Thinking::Off,
-        effort if adaptive(model) => Thinking::Adaptive {
-            effort: Some(effort.to_string()),
-        },
-        Effort::Minimal | Effort::Low => Thinking::Budget { tokens: 1024 },
-        Effort::Medium => Thinking::Budget { tokens: 4096 },
-        Effort::High | Effort::XHigh | Effort::Max => Thinking::Budget { tokens: 16384 },
     }
 }
 
@@ -249,7 +233,7 @@ impl ProviderStream {
         match api {
             ProviderApi::AnthropicMessages => {
                 let options = AnthropicOptions {
-                    thinking: anthropic_thinking(model, effort),
+                    thinking: yi_ai::compat::anthropic_thinking(model, effort),
                     cache_1h: self.long_cache,
                     proxy: self.proxy.clone(),
                     stop: Some(signal.cut_flag()),

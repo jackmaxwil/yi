@@ -25,10 +25,6 @@
         "medium": "medium",
         "high": "high",
         "xhigh": "xhigh"
-      },
-      "compat": {
-        "supportsStrictMode": true,
-        "supportsOpenAIGrammarTools": true
       }
     },
     "gpt-5.4-mini": {
@@ -56,10 +52,6 @@
         "medium": "medium",
         "high": "high",
         "xhigh": "xhigh"
-      },
-      "compat": {
-        "supportsStrictMode": true,
-        "supportsOpenAIGrammarTools": true
       }
     }
   }

@@ -367,7 +367,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     }
 }
 
-/// D306: the first request's bytes are the conversation's. In a debug build a later turn whose
+/// D310: the first request's bytes are the conversation's. In a debug build a later turn whose
 /// bytes differ ends before any request with this errored reply, fast and loud, and the
 /// session still settles idle; a release build rests on `ext::Host::frozen` alone.
 fn first_system_prompt_broken(

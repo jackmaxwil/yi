@@ -136,7 +136,7 @@ const FRAGMENT_ENTRY: &str = "fragment";
 pub struct Host {
     extensions: Vec<Box<dyn Extension>>,
     state: PromptState,
-    /// The bytes the first request sent; every later request sends the same (D306).
+    /// The bytes the first request sent; every later request sends the same (D310).
     frozen: OnceCell<String>,
     /// Slots attached after the freeze: their current text goes out again after a compaction.
     late: BTreeSet<Slot>,
@@ -145,7 +145,7 @@ pub struct Host {
     tool_calls_this_turn: u32,
     mutated: bool,
     /// The one way the host puts a message in the transcript: a reminder line, or a fragment
-    /// attached after the first request (D306). The session presents it at the next boundary.
+    /// attached after the first request (D310). The session presents it at the next boundary.
     deliver: Option<Deliver>,
     cwd: PathBuf,
 }
@@ -224,7 +224,7 @@ impl Host {
         &self.state
     }
 
-    /// The first rendering is the conversation's system prompt (D306): every request sends
+    /// The first rendering is the conversation's system prompt (D310): every request sends
     /// these bytes, and whatever attaches later goes out as a message instead.
     pub fn system_prompt(&self) -> String {
         self.frozen.get_or_init(|| self.state.assemble()).clone()
