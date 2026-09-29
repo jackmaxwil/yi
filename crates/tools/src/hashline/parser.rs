@@ -146,14 +146,7 @@ fn detect_apply_patch_contamination(text: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let preview = |text: &str| {
-        if text.chars().count() > 48 {
-            let clipped: String = text.chars().take(48).collect();
-            format!("{clipped}\u{2026}")
-        } else {
-            text.to_owned()
-        }
-    };
+    let preview = |text: &str| crate::tool::clip(text, 48).0;
     if trimmed.starts_with("*** Update File:")
         || trimmed.starts_with("*** Add File:")
         || trimmed.starts_with("*** Delete File:")
