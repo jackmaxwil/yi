@@ -246,7 +246,7 @@ const PROC_LINKS: [&str; 4] = ["root", "cwd", "fd", "map_files"];
 
 /// What a read may not touch (D180): a key or the workspace `.git`, a directory a walk would
 /// carry into a key store, and a device, which never ends (`/dev/zero`) or waits (`/dev/tty`).
-pub(crate) fn read_is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
+pub fn read_is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
     let path = lexical_normalize(path);
     if path.starts_with("/dev") || HOME_ROOTS.iter().any(|root| path == Path::new(root)) {
         return true;

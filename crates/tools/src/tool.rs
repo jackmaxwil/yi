@@ -193,19 +193,32 @@ impl RootedGlob {
     }
 }
 
-/// Split at the first component holding a glob character; without one, at the last component.
-pub(crate) fn rooted_glob(raw: &str, base: &Path) -> Result<RootedGlob, String> {
+/// The literal head of a glob, the directory its walk starts from, as the path gate must judge
+/// it; None when no component holds a glob character.
+pub fn glob_head(raw: &str) -> Option<String> {
     let parts: Vec<&str> = raw.split('/').collect();
-    let at = (parts.iter())
-        .position(|part| part.contains(['*', '?', '[', '{']))
-        .unwrap_or(parts.len().saturating_sub(1));
-    let (head, rest) = parts.split_at(at);
-    let rest = globset::GlobBuilder::new(&rest.join("/"))
+    let at = (parts.iter()).position(|part| part.contains(['*', '?', '[', '{']))?;
+    Some(rooted(raw, &parts.get(..at).unwrap_or_default().join("/")))
+}
+
+fn rooted(raw: &str, head: &str) -> String {
+    match head.is_empty() && raw.starts_with('/') {
+        true => "/".to_owned(),
+        false => head.to_owned(),
+    }
+}
+
+/// Split at the glob's head; without a glob character, at the last component.
+pub(crate) fn rooted_glob(raw: &str, base: &Path) -> Result<RootedGlob, String> {
+    let head = glob_head(raw)
+        .unwrap_or_else(|| rooted(raw, raw.rsplit_once('/').map_or("", |(head, _)| head)));
+    let rest = raw.get(head.len()..).unwrap_or(raw).trim_start_matches('/');
+    let rest = globset::GlobBuilder::new(rest)
         .literal_separator(false)
         .build()
         .map_err(|error| error.to_string())?
         .compile_matcher();
-    let head = yi_permission::resolve_target(&head.join("/"), base);
+    let head = yi_permission::resolve_target(&head, base);
     Ok(RootedGlob {
         base: yi_permission::lexical_normalize(&head),
         rest,

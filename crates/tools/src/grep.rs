@@ -268,6 +268,27 @@ impl DocumentSearch<'_> {
     }
 }
 
+/// Extensions one language splits its source across, so a header's name is found in its code.
+const LANGUAGES: [&[&str]; 4] = [
+    &["c", "h"],
+    &["cc", "cpp", "cxx", "hpp", "hh", "h"],
+    &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"],
+    &["py", "pyi"],
+];
+
+fn same_language(extension: &str) -> String {
+    let mut family: Vec<&str> = (LANGUAGES.iter())
+        .filter(|family| family.contains(&extension))
+        .flat_map(|family| family.iter().copied())
+        .collect();
+    family.sort_unstable();
+    family.dedup();
+    match family.as_slice() {
+        [] => format!("**/*.{extension}"),
+        extensions => format!("**/*.{{{}}}", extensions.join(",")),
+    }
+}
+
 fn type_glob(name: &str) -> Option<&'static str> {
     TYPES
         .iter()
@@ -560,7 +581,7 @@ impl GrepTool {
             apply: false,
         };
         let kind = skip.and_then(|(path, _)| Path::new(path).extension()?.to_str());
-        let same_kind = kind.and_then(|kind| rooted_glob(&format!("**/*.{kind}"), root).ok());
+        let same_kind = kind.and_then(|kind| rooted_glob(&same_language(kind), root).ok());
         let collected = collect(
             root,
             root,

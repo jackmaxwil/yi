@@ -143,23 +143,35 @@ pub fn wall_refusal(tool_name: &str, path: &str, list: &str) -> String {
     )
 }
 
-/// Invariant: walled when it or an ancestor is a deny entry by spelling or file identity (no
-/// symlink, `..` or letter case around it); a missing tail is judged by its existing head.
+/// Invariant: walled when it or an ancestor is a deny entry by spelling or file identity, so a
+/// symlink (dangling too), `..` or letter case cannot reach around it; hard links can.
 pub fn walled(deny: &[PathBuf], path: &Path) -> bool {
-    if deny.is_empty() {
-        return false;
-    }
+    !deny.is_empty() && walled_via(deny, &identities(deny), path, LINK_HOPS)
+}
+
+/// As many links as the kernel follows before `ELOOP`.
+const LINK_HOPS: u8 = 40;
+
+/// A missing tail is judged by its existing head, and a dangling link just past that head by
+/// where it points, so a refusal never tells a file behind the wall from a missing one.
+fn walled_via(deny: &[PathBuf], ids: &[FileId], path: &Path, hops: u8) -> bool {
     if lexically_walled(deny, path) {
         return true;
     }
-    let ids = identities(deny);
-    let real = path
-        .ancestors()
-        .find_map(|head| fs::canonicalize(head).ok());
-    real.is_some_and(|real| {
-        real.ancestors()
-            .any(|dir| denied_file(&ids, fs::metadata(dir)))
-    })
+    let Some((head, real)) =
+        (path.ancestors()).find_map(|head| Some((head, fs::canonicalize(head).ok()?)))
+    else {
+        return false;
+    };
+    if (real.ancestors()).any(|dir| denied_file(ids, fs::metadata(dir))) {
+        return true;
+    }
+    let mut rest = path.strip_prefix(head).unwrap_or(path).components();
+    let Some(Ok(target)) = rest.next().map(|next| fs::read_link(head.join(next))) else {
+        return false;
+    };
+    let target = real.join(target).join(rest.as_path());
+    hops > 0 && walled_via(deny, ids, &target, hops.saturating_sub(1))
 }
 
 fn lexically_walled(deny: &[PathBuf], path: &Path) -> bool {
@@ -206,7 +218,7 @@ pub(crate) fn walled_notice(left_out: usize) -> Option<String> {
 }
 
 /// Name order: filesystem order differs by machine and every cap would keep a different set.
-/// Links are never followed, so below an open root each entry's own identity is all to check.
+/// Links are never followed, so each entry is judged by its own path and identity alone.
 pub(crate) fn walk_files(
     root: &Path,
     deny: &[PathBuf],
@@ -217,15 +229,14 @@ pub(crate) fn walk_files(
     }
     let root = yi_permission::lexical_normalize(root);
     let ids = identities(deny);
+    let gate = yi_permission::CatastrophicContext::detect(&root);
     let mut left_out = 0_usize;
     let mut ignore = crate::ignore::Ignore::default();
-    // Rules above the root still bind it, up to the repository's top.
-    let above: Vec<&Path> = root.ancestors().skip(1).collect();
+    // Rules above the root bind it, from the nearest repository top down; a root that is one
+    // takes none from above.
+    let above: Vec<&Path> = root.ancestors().collect();
     if let Some(top) = above.iter().position(|dir| dir.join(".git").exists()) {
-        above
-            .iter()
-            .take(top.saturating_add(1))
-            .rev()
+        (above.iter().take(top.saturating_add(1)).skip(1).rev())
             .for_each(|dir| ignore.push_dir(dir));
     }
     let mut stack = vec![root];
@@ -242,7 +253,13 @@ pub(crate) fn walk_files(
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            if lexically_walled(deny, &path) || denied_file(&ids, entry.metadata()) {
+            // ponytail: the read gate per entry re-derives its stores; hoist them if it profiles.
+            if yi_permission::read_is_catastrophic(&path, &gate) {
+                continue;
+            }
+            if lexically_walled(deny, &path)
+                || (!ids.is_empty() && denied_file(&ids, entry.metadata()))
+            {
                 left_out = left_out.saturating_add(1);
             } else if file_type.is_dir() {
                 if !ignore.ignored(&path, true) {

@@ -458,9 +458,9 @@ async fn a_walled_subtree_holds_against_a_rewrite_and_an_env_prefix() -> TestRes
     Ok(())
 }
 
-/// A named path reaches a walled tree through a symlink, a `..` after one, or another letter
-/// case; each is refused with the one message a missing file there also gets, so the refusal
-/// says nothing about what exists behind the wall.
+/// A named path reaches a walled tree through a symlink (dangling too), a `..` after one, or
+/// another letter case; each gets the refusal a missing file there gets, so the refusal says
+/// nothing about what exists behind the wall. A hard link is not covered.
 #[cfg(unix)]
 #[test]
 fn a_named_path_never_reaches_a_walled_tree_by_another_name() -> TestResult {
@@ -469,6 +469,8 @@ fn a_named_path_never_reaches_a_walled_tree_by_another_name() -> TestResult {
     std::fs::write(root.join("secret/k.rs"), "pub fn hidden() {}\n")?;
     std::os::unix::fs::symlink(root.join("secret"), root.join("alias"))?;
     std::os::unix::fs::symlink(root.join("secret/nested"), root.join("deep"))?;
+    std::os::unix::fs::symlink(root.join("secret/k.rs"), root.join("probe_present"))?;
+    std::os::unix::fs::symlink("secret/missing.rs", root.join("probe_missing"))?;
     let mut paths = vec![
         "secret/k.rs",
         "alias/k.rs",
@@ -477,6 +479,8 @@ fn a_named_path_never_reaches_a_walled_tree_by_another_name() -> TestResult {
         "alias/*.rs",
         "deep/../k.rs",
         "deep/../missing.rs",
+        "probe_present",
+        "probe_missing",
     ];
     if root.join("SECRET").exists() {
         paths.extend(["SECRET/k.rs", "SECRET/missing.rs"]);

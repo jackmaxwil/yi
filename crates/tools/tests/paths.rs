@@ -132,6 +132,79 @@ fn a_walk_below_the_repository_root_honours_the_ignore_files_above_it() -> TestR
     Ok(())
 }
 
+/// A `.git` above the repository must not bind it: a dotfiles repository at `~` ignoring `*`
+/// blanked every walk. Between the root and its repository top, the inner file wins.
+#[test]
+fn only_the_nearest_repository_binds_a_walk_and_its_inner_rules_win() -> TestResult {
+    let scratch = Scratch::new("yi-paths-top")?;
+    fs::create_dir_all(scratch.join(".git"))?;
+    fs::write(scratch.join(".gitignore"), "*\n!.gitignore\n")?;
+    let demo = demo(&scratch)?;
+    let listed = read(&demo, &[("path", "**/*.rs")]);
+    assert!(
+        listed.contains("pub fn add"),
+        "the outer `*` hid demo: {listed}"
+    );
+    let found = grep(
+        &ToolContext::new(demo.clone()),
+        &[("pattern", r"left \+ right")],
+    );
+    assert!(
+        found.contains("left + right"),
+        "the outer `*` hid demo: {found}"
+    );
+    fs::write(demo.join(".gitignore"), "*.gen.rs\n")?;
+    fs::write(demo.join("src/.gitignore"), "!keep.gen.rs\n")?;
+    fs::create_dir_all(demo.join("src/sub"))?;
+    fs::write(
+        demo.join("src/sub/keep.gen.rs"),
+        "pub fn kept_marker() {}\n",
+    )?;
+    fs::write(
+        demo.join("src/sub/drop.gen.rs"),
+        "pub fn dropped_marker() {}\n",
+    )?;
+    let listed = read(&demo, &[("path", "src/sub/*.rs")]);
+    assert!(
+        listed.contains("kept_marker") && !listed.contains("dropped_marker"),
+        "src/.gitignore re-includes keep.gen.rs over demo/.gitignore: {listed}"
+    );
+    Ok(())
+}
+
+/// A glob from outside the home walks into it; its key store stays out of every walk.
+#[test]
+fn a_glob_never_walks_into_a_key_store() -> TestResult {
+    let scratch = Scratch::new("yi-paths-keys")?;
+    let home = scratch.join("home");
+    fs::create_dir_all(home.join(".ssh"))?;
+    fs::write(home.join(".ssh/id_rsa"), "FAKE PRIVATE KEY MARKER\n")?;
+    let elsewhere = scratch.join("elsewhere");
+    fs::create_dir_all(&elsewhere)?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let home = home.display();
+    for pattern in [
+        format!("{home}/.ss?/*"),
+        format!("{home}/*/id_*"),
+        format!("{home}/**"),
+        "~/.ss?/*".to_owned(),
+        "~/*/id_*".to_owned(),
+    ] {
+        let listed = read(&elsewhere, &[("path", &pattern)]);
+        assert!(
+            !listed.contains("KEY MARKER"),
+            "read {pattern} leaks: {listed}"
+        );
+    }
+    let found = grep(
+        &ToolContext::new(scratch.to_path_buf()),
+        &[("pattern", "KEY MARKER"), ("path", "home")],
+    );
+    assert!(!found.contains("id_rsa"), "grep leaks: {found}");
+    Ok(())
+}
+
 #[test]
 fn find_lists_references_for_a_definition_in_files_of_its_type() -> TestResult {
     let scratch = Scratch::new("yi-paths-refs")?;
@@ -147,6 +220,76 @@ fn find_lists_references_for_a_definition_in_files_of_its_type() -> TestResult {
         defined.contains("[refs: 1 of 1 for add]") && !defined.contains("README.md"),
         "only the .rs call site is a reference: {defined}"
     );
+    fs::write(
+        demo.join("src/lib.rs"),
+        "// pub fn add is below\npub fn add() {}\n",
+    )?;
+    let comment = read(&demo, &[("path", "src/lib.rs"), ("find", "// pub fn add")]);
+    assert!(
+        !comment.contains("[refs:"),
+        "a comment defines nothing: {comment}"
+    );
+    fs::write(demo.join("run.py"), "result = compute(1)\ncompute(2)\n")?;
+    let call = read(&demo, &[("path", "run.py"), ("find", "result = compute")]);
+    assert!(
+        !call.contains("[refs:"),
+        "an assigned call defines nothing: {call}"
+    );
+    let cases = [
+        (
+            "a.rs",
+            "pub(crate) fn helper_x() {}",
+            "helper_x",
+            "b.rs",
+            "helper_x();",
+        ),
+        (
+            "a.rs",
+            "pub(super) fn helper_y() {}",
+            "helper_y",
+            "b.rs",
+            "helper_y();",
+        ),
+        (
+            "a.ts",
+            "export function greet() {}",
+            "greet",
+            "b.tsx",
+            "greet();",
+        ),
+        (
+            "a.ts",
+            "export const shout = 1;",
+            "shout",
+            "b.tsx",
+            "shout;",
+        ),
+        (
+            "a.c",
+            "static int add2(int a) {}",
+            "add2",
+            "b.c",
+            "add2(1);",
+        ),
+        (
+            "a.h",
+            "struct point { int x; };",
+            "point",
+            "b.c",
+            "struct point p;",
+        ),
+    ];
+    for (file, line, name, user, call) in cases {
+        let dir = scratch.join("langs").join(name);
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join(file), format!("{line}\n"))?;
+        fs::write(dir.join(user), format!("{call}\n"))?;
+        let found = read(&dir, &[("path", file), ("find", line)]);
+        assert!(
+            found.contains(&format!("[refs: 1 of 1 for {name}]")) && found.contains(user),
+            "{line} lists its use in {user}: {found}"
+        );
+    }
     Ok(())
 }
 

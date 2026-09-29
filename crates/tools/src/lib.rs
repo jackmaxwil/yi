@@ -38,7 +38,7 @@ pub use reduce::{Reduced, reduce};
 pub use sandbox::{Sandbox, SandboxRefusal, denial_hint, sandbox_refusal};
 pub use tool::{
     CancelFlag, DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output,
-    error_output_kind, text_output,
+    error_output_kind, glob_head, text_output,
 };
 
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
