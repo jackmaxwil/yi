@@ -286,28 +286,26 @@ pub fn command_reads_credentials(command: &str, context: &CatastrophicContext) -
 }
 
 /// Wrappers that run another command: argv0 alone lets `nice rm -rf .git` past the belt (D205).
-const WRAPPERS: [&str; 9] = [
-    "doas", "env", "ionice", "nice", "stdbuf", "sudo", "time", "timeout", "xargs",
+const WRAPPERS: [&str; 11] = [
+    "command", "doas", "env", "ionice", "nice", "nohup", "stdbuf", "sudo", "time", "timeout",
+    "xargs",
 ];
 
-/// Skipping a wrapper's flags and values can only widen the denial, never narrow it.
+/// Reading past a wrapper, flag, assignment or number only widens what the belt and wall see.
+pub fn wraps(word: &str) -> bool {
+    WRAPPERS.contains(&word.rsplit('/').next().unwrap_or(word))
+        || word.starts_with('-')
+        || word.contains('=')
+        || word.chars().all(|character| character.is_ascii_digit())
+}
+
 fn runs_destructive(command: &str) -> bool {
-    let tokens = command
+    command
         .split_whitespace()
-        .map(|token| token.rsplit('/').next().unwrap_or(token));
-    for token in tokens {
-        if DESTRUCTIVE_COMMANDS.contains(&token) {
-            return true;
-        }
-        let skippable = WRAPPERS.contains(&token)
-            || token.starts_with('-')
-            || token.contains('=')
-            || token.chars().all(|character| character.is_ascii_digit());
-        if !skippable {
-            return false;
-        }
-    }
-    false
+        .find(|token| !wraps(token))
+        .is_some_and(|token| {
+            DESTRUCTIVE_COMMANDS.contains(&token.rsplit('/').next().unwrap_or(token))
+        })
 }
 
 /// A destructive verb sends every path-shaped token through the denylist. No
