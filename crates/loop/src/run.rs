@@ -27,9 +27,16 @@ pub trait StreamFn: Send + Sync {
         effort: Effort,
         signal: &InterruptSignal,
     ) -> Receiver<AssistantMessageEvent>;
+
+    /// The TTL a loop request's history breakpoints carry; a stream with no ledger keeps five
+    /// minutes (D315).
+    fn cache_ttl(&self, _model: &Model) -> yi_types::model::Ttl {
+        yi_types::model::Ttl::Min5
+    }
 }
 
-fn synthesized_error_message(model: &Model, text: &str) -> AgentMessage {
+/// An errored reply carrying `text`, for a turn that fails before or outside a request.
+pub fn synthesized_error_message(model: &Model, text: &str) -> AgentMessage {
     AgentMessage::Assistant {
         content: Vec::new(),
         api: model.api.clone(),
@@ -610,7 +617,8 @@ async fn stream_assistant_response<S: StreamFn>(
         system_prompt: context.system_prompt.clone(),
         messages: llm_messages,
         transient,
-        schema: None,
+        schema: config.schema.clone().filter(|_| tool_defs.is_empty()),
+        shared_through: config.shared_through,
         reuse,
         tools: if tool_defs.is_empty() {
             None
@@ -618,17 +626,24 @@ async fn stream_assistant_response<S: StreamFn>(
             Some(tool_defs)
         },
         tool_choice,
+        cache_ttl: if reuse == yi_types::model::Reuse::Loop {
+            stream.cache_ttl(model)
+        } else {
+            yi_types::model::Ttl::Min5
+        },
     };
     drop(preparing);
 
     signal.clear_cut();
     let requested_us = yi_types::trace::now_us();
+    let mut requested = std::time::Instant::now();
     let mut receiver = if signal.is_fired() {
         tokio::sync::mpsc::channel(1).1
     } else {
         let _span = yi_types::trace::span("loop.stream_open");
         stream.stream(model, &llm_context, effort, signal)
     };
+    let (stable_key, cache_ttl) = (llm_context.stable_key(), llm_context.cache_ttl);
     drop(llm_context);
     let mut first_event = true;
     let mut first_token = true;
@@ -673,9 +688,16 @@ async fn stream_assistant_response<S: StreamFn>(
                 final_message = Some(error.clone());
                 break;
             }
-            AssistantMessageEvent::Waiting { wait } => emit(AgentEvent::Wait {
-                wait: Some(wait.clone()),
-            }),
+            AssistantMessageEvent::Waiting { wait } => {
+                // A retry's backoff is no part of the request the provider saw start (#873).
+                if let yi_types::event::Wait::Retry { delay_ms, .. } = wait {
+                    requested =
+                        std::time::Instant::now() + std::time::Duration::from_millis(*delay_ms);
+                }
+                emit(AgentEvent::Wait {
+                    wait: Some(wait.clone()),
+                });
+            }
             other => {
                 if first_token
                     && matches!(
@@ -722,7 +744,7 @@ async fn stream_assistant_response<S: StreamFn>(
         }
         None => None,
     };
-    let final_message = final_message.unwrap_or_else(|| {
+    let mut final_message = final_message.unwrap_or_else(|| {
         if signal.is_fired() || timed_out {
             aborted_message(
                 added_partial.then(|| context.messages.last()).flatten(),
@@ -732,6 +754,28 @@ async fn stream_assistant_response<S: StreamFn>(
             synthesized_error_message(model, "Provider stream ended without a terminal event")
         }
     });
+    if let AgentMessage::Assistant {
+        diagnostics,
+        timestamp,
+        ..
+    } = &mut final_message
+    {
+        let mut details = Map::new();
+        details.insert("stable".to_owned(), stable_key.into());
+        // A TTL runs from the request's start; the record's timestamp is its end (#873).
+        let elapsed = std::time::Instant::now().saturating_duration_since(requested);
+        let elapsed = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        details.insert("elapsed_ms".to_owned(), elapsed.into());
+        details.insert("ttl".to_owned(), cache_ttl.label().into());
+        diagnostics.get_or_insert_with(Vec::new).push(
+            yi_types::message::AssistantMessageDiagnostic {
+                diagnostic_type: yi_types::model::CACHE_DIAGNOSTIC.to_owned(),
+                timestamp: *timestamp,
+                error: None,
+                details: Some(details),
+            },
+        );
+    }
     if added_partial {
         if let Some(last) = context.messages.last_mut() {
             *last = final_message.clone();

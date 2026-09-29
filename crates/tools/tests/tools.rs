@@ -268,7 +268,7 @@ fn a_capped_timeout_secs_opens_every_result_of_the_call() -> TestResult {
         &context,
     );
     let text = output_text(&output);
-    assert!(text.contains("Backgrounded as job"), "{text}");
+    assert!(text.contains("still running after"), "{text}");
     assert!(text.starts_with(capped), "{text}");
     context.auto_background = None;
     let command = "cd /app && timeout 580 ~/.yi/kernel-venv-8286f6bd/bin/python solve.py";
@@ -344,7 +344,7 @@ fn a_shorter_auto_background_wins_over_the_timeout() -> TestResult {
         &context,
     );
     assert!(!output.is_error);
-    assert!(output_text(&output).contains("Backgrounded as job"));
+    assert!(output_text(&output).contains("still running after"));
     Ok(())
 }
 
@@ -760,10 +760,83 @@ fn a_capped_bash_stream_keeps_the_tail_with_the_verdict() -> TestResult {
     Ok(())
 }
 
+/// Dogfood 2026-09-27: a cut stream named no file, and the reducer's tee kept the cut text under
+/// a `[full output: P]` label. Held in memory, through a file, left unreduced (`--verbose`) or
+/// split over both streams (interleaved as they arrived), every line survives.
+#[test]
+fn a_cut_bash_stream_names_a_file_with_every_byte() -> TestResult {
+    let dir = temp_dir("bash-spill")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    let cases = [
+        ("seq 1 8000", 8_000),
+        ("seq 1 20000", 20_000),
+        ("seq 1 8000 # --verbose", 8_000),
+        ("seq 1 8000; seq 8001 16000 >&2", 16_000),
+    ];
+    for (command, count) in cases {
+        let output = BashTool::default().execute(args(&[("command", json!(command))]), &context);
+        let text = output_text(&output);
+        let path = (text.lines().last())
+            .and_then(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
+            .ok_or_else(|| format!("{command}: the pointer is not last: {text}"))?;
+        let bytes: usize = (1..=count).map(|n| format!("{n}\n").len()).sum();
+        let whole = fs::read_to_string(path)?;
+        assert_eq!(whole.len(), bytes, "{command}");
+        let mut rows: Vec<u32> = whole.lines().flat_map(str::parse).collect();
+        rows.sort_unstable();
+        assert!(
+            rows.iter().copied().eq(1..=count),
+            "{command}: {} rows",
+            rows.len()
+        );
+        let read = read_tool().execute(args(&[("path", json!(path))]), &context);
+        assert!(
+            !read.is_error && output_text(&read).contains(":100\n"),
+            "{command}"
+        );
+    }
+    // Kept only where a pointer names it: a 13,893-byte output left whole leaves no file.
+    let whole =
+        BashTool::default().execute(args(&[("command", json!("seq 1 3000 # -v"))]), &context);
+    assert!(!output_text(&whole).contains("[full output:"));
+    // `seq 1 8000` twice is one file: equal bytes share their name.
+    assert_eq!(
+        fs::read_dir(dir.join("tool-output"))?.count(),
+        cases.len() - 1
+    );
+    Ok(())
+}
+
+/// A job past its wait reports its cut the same way, once it settles.
+#[test]
+fn a_backgrounded_jobs_report_names_its_spill() -> TestResult {
+    let dir = temp_dir("jobs-spill")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    let after = Some(std::time::Duration::from_millis(100));
+    let limit = std::time::Duration::from_secs(60);
+    let run =
+        yi_tools::run_or_background("sleep 1; seq 1 20000", &context, after, limit, None, None)?;
+    let yi_tools::Run::Backgrounded(id) = run else {
+        return Err("the job finished before its wait".into());
+    };
+    yi_tools::jobs::registry().wait_settled(Some(id), limit);
+    let output = yi_tools::jobs::registry()
+        .report(id)
+        .ok_or("no report")?
+        .output;
+    let path = (output.lines().last())
+        .and_then(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
+        .ok_or("the report names no spill")?;
+    assert_eq!(fs::read_to_string(path)?.lines().count(), 20_000);
+    Ok(())
+}
+
 #[test]
 fn a_lossy_reduction_without_a_tee_returns_raw() -> TestResult {
     let raw: String = (1..4_000).map(|n| format!("line-{n}\n")).collect();
-    let reduced = yi_tools::reduce("ls -R", &raw, "", 0, None, None);
+    let reduced = yi_tools::reduce("ls -R", &raw, "", 0, None, None, None);
     assert_eq!(reduced.text, raw);
     assert!(reduced.recovery.is_none());
     Ok(())
@@ -772,7 +845,7 @@ fn a_lossy_reduction_without_a_tee_returns_raw() -> TestResult {
 #[test]
 fn a_verbose_command_is_left_alone() -> TestResult {
     let raw: String = (1..4_000).map(|n| format!("line-{n}\n")).collect();
-    let reduced = yi_tools::reduce("cargo test -- --nocapture", &raw, "", 0, None, None);
+    let reduced = yi_tools::reduce("cargo test -- --nocapture", &raw, "", 0, None, None, None);
     assert_eq!(reduced.text, raw);
     assert!(reduced.recovery.is_none());
     Ok(())
@@ -788,7 +861,7 @@ fn a_failing_cargo_run_keeps_its_diagnostics() -> TestResult {
     raw.push_str("error[E0425]: cannot find value `nope` in this scope\n");
     raw.push_str("  --> src/lib.rs:3:5\n");
     let dir = temp_dir("reduce-cargo")?;
-    let reduced = yi_tools::reduce("cargo build", &raw, "", 101, Some(&dir), None);
+    let reduced = yi_tools::reduce("cargo build", &raw, "", 101, None, Some(&dir), None);
     assert!(reduced.text.contains("E0425"), "{}", reduced.text);
     assert!(reduced.out_bytes < reduced.raw_bytes);
     Ok(())
@@ -803,7 +876,7 @@ fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
     let started = tool.execute(args(&[("command", json!("sleep 1; echo woke"))]), &context);
     let announcement = text_of(&started.result.content);
     assert!(
-        announcement.contains("Backgrounded as job"),
+        announcement.contains("still running after"),
         "{announcement}"
     );
     let job = started
@@ -856,6 +929,261 @@ fn without_auto_background_a_command_holds_the_turn() -> TestResult {
         &context,
     );
     assert!(text_of(&output.result.content).contains("done"));
+    Ok(())
+}
+
+/// Issue #758: the dogfood's `sleep 20` with `wait=5` held the turn for 20 s, since `wait` was
+/// read only by a poll. `echo began` is the output so far the job announcement carries.
+#[test]
+fn a_wait_backgrounds_a_command_still_running() -> TestResult {
+    let dir = temp_dir("bash-wait")?;
+    let (tool, context) = (BashTool::default(), ToolContext::new(dir.to_path_buf()));
+    let clock = std::time::Instant::now();
+    let command = json!("echo began; sleep 8; echo slept");
+    let started = tool.execute(args(&[("command", command), ("wait", json!(5))]), &context);
+    let text = text_of(&started.result.content);
+    assert!(
+        clock.elapsed() < std::time::Duration::from_secs(7),
+        "{text}"
+    );
+    let details = &started.result.details;
+    assert_eq!(details["backgrounded"], json!(true), "{text}");
+    assert_eq!(
+        (&details["afterMs"], &details["timeoutSecs"]),
+        (&json!(5000), &json!(300))
+    );
+    assert!(text.contains("began") && !text.contains("slept"), "{text}");
+    let job = details["job"].as_u64().ok_or("no job id")?;
+    assert!(
+        text.contains(&format!(
+            "before you end the turn, wait for it with bash job={job} wait="
+        )),
+        "{text}"
+    );
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
+    let finished = text_of(&polled.result.content);
+    assert!(
+        finished.contains("finished (exit 0)") && finished.contains("slept"),
+        "{finished}"
+    );
+    Ok(())
+}
+
+/// The kill counts from the command's start: from the backgrounding it would land at 13 s.
+#[test]
+fn a_backgrounded_job_still_dies_at_timeout_secs() -> TestResult {
+    let dir = temp_dir("bash-wait-timeout")?;
+    let (tool, context) = (BashTool::default(), ToolContext::new(dir.to_path_buf()));
+    let clock = std::time::Instant::now();
+    let started = tool.execute(
+        args(&[
+            ("command", json!("sleep 30")),
+            ("wait", json!(5)),
+            ("timeout_secs", json!(8)),
+        ]),
+        &context,
+    );
+    let text = text_of(&started.result.content);
+    let job = started.result.details["job"].as_u64().ok_or(text)?;
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
+    let killed = text_of(&polled.result.content);
+    assert!(
+        killed.contains(&format!(
+            "job {job} killed (timeout_secs or an interrupt): sleep 30"
+        )),
+        "{killed}"
+    );
+    let at = clock.elapsed();
+    assert!(at < std::time::Duration::from_secs(11), "killed at {at:?}");
+    Ok(())
+}
+
+#[test]
+fn a_wait_not_below_timeout_secs_runs_in_the_turn() -> TestResult {
+    let dir = temp_dir("bash-wait-reaches")?;
+    let context = ToolContext::new(dir.to_path_buf());
+    let output = BashTool::default().execute(
+        args(&[
+            ("command", json!("sleep 30")),
+            ("wait", json!(1)),
+            ("timeout_secs", json!(5)),
+        ]),
+        &context,
+    );
+    let text = text_of(&output.result.content);
+    assert_eq!(output.result.details["timedOut"], json!(true), "{text}");
+    assert!(
+        text.contains("[wait 1s (clamped to 5s) is not below timeout_secs 5s, so it ran in the turn; to get the turn back, pass a wait below timeout_secs or raise timeout_secs above the wait]"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// A long line and many lines, per `.ruler/045-loud-caps.md`: the tail is bounded and says so,
+/// and the total counts what the command printed, not the 30,000 bytes the live buffer keeps.
+#[test]
+fn the_output_so_far_names_its_cut() -> TestResult {
+    let dir = temp_dir("bash-wait-tail")?;
+    let command = "seq 1 20000; head -c 20000 /dev/zero | tr '\\0' x; echo; echo last; sleep 6";
+    let started = BashTool::default().execute(
+        args(&[("command", json!(command)), ("wait", json!(5))]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    let text = text_of(&started.result.content);
+    let job = started.result.details["job"]
+        .as_u64()
+        .ok_or_else(|| text.clone())?;
+    assert!(text.len() < 3_000, "{} bytes", text.len());
+    assert!(text.ends_with("last"), "{text}");
+    assert!(
+        text.contains(&format!("[the last 2048 of 128900 bytes printed so far (the preview keeps 20 lines, at most 2048 bytes); bash job={job} wait=<s> returns its output once it exits]")),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// A context whose interrupt fires once `fire` is set, as Esc or the deadline fires a session's.
+fn interruptible(dir: &std::path::Path) -> (ToolContext, Arc<std::sync::atomic::AtomicBool>) {
+    let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut context = ToolContext::new(dir.to_path_buf());
+    let flag = Arc::clone(&fired);
+    context.cancelled = Arc::new(move || flag.load(std::sync::atomic::Ordering::SeqCst));
+    (context, fired)
+}
+
+/// Nothing else stops a job: there is no kill verb, and the watchdog dies with yi (#819).
+#[test]
+fn an_interrupt_after_backgrounding_kills_the_job() -> TestResult {
+    let dir = temp_dir("bash-wait-interrupt")?;
+    let (context, fire) = interruptible(&dir);
+    let tool = BashTool::default();
+    let started = tool.execute(
+        args(&[("command", json!("sleep 7; echo kept")), ("wait", json!(5))]),
+        &context,
+    );
+    let job = started.result.details["job"].as_u64().ok_or("no job id")?;
+    fire.store(true, std::sync::atomic::Ordering::SeqCst);
+    let poll = ToolContext::new(dir.to_path_buf());
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &poll);
+    let killed = text_of(&polled.result.content);
+    assert!(
+        killed.contains(&format!(
+            "job {job} killed (timeout_secs or an interrupt): sleep 7; echo kept"
+        )),
+        "{killed}"
+    );
+    Ok(())
+}
+
+/// The text tells the model to end its turn on this poll, so Esc must reach it within a second.
+#[test]
+fn an_interrupt_ends_a_poll_within_a_second() -> TestResult {
+    let dir = temp_dir("bash-wait-poll-interrupt")?;
+    let tool = BashTool::default();
+    let started = tool.execute(
+        args(&[("command", json!("sleep 9")), ("wait", json!(5))]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    let job = started.result.details["job"].as_u64().ok_or("no job id")?;
+    let (poll, fire) = interruptible(&dir);
+    let clock = std::time::Instant::now();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        fire.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(12))]), &poll);
+    let at = clock.elapsed();
+    let text = text_of(&polled.result.content);
+    assert!(
+        text.contains(&format!("job {job} still running: sleep 9")),
+        "{text}"
+    );
+    assert!(
+        at < std::time::Duration::from_secs(3),
+        "returned after {at:?}"
+    );
+    Ok(())
+}
+
+/// The completion loop woke on an inline command's settle and could take it before the call
+/// marked it reported, so a command whose output the call returned was announced again.
+#[test]
+fn a_command_that_finishes_in_the_turn_is_never_announced() -> TestResult {
+    let dir = temp_dir("bash-inline")?;
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let listener = {
+        let (dir, stop) = (dir.to_path_buf(), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            let (mut seen, mut taken) = (0, Vec::new());
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                seen = yi_tools::jobs::registry().wait_settle(seen);
+                taken.extend(yi_tools::jobs::registry().take_finished(&dir));
+            }
+            taken
+        })
+    };
+    let tool = BashTool::default();
+    let output = tool.execute(
+        args(&[("command", json!("echo inline"))]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    assert!(text_of(&output.result.content).contains("inline"));
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let elsewhere = temp_dir("bash-inline-wake")?;
+    let _one_more_settle_wakes_the_listener = tool.execute(
+        args(&[("command", json!("true"))]),
+        &ToolContext::new(elsewhere.to_path_buf()),
+    );
+    let taken = listener.join().map_err(|_| "the listener panicked")?;
+    let taken: Vec<String> = taken.iter().map(yi_tools::JobReport::headline).collect();
+    assert!(taken.is_empty(), "{taken:?}");
+    Ok(())
+}
+
+/// A job a poll returned finished is not sent again as an `<async_result>`.
+#[test]
+fn a_polled_job_is_not_reported_again() -> TestResult {
+    let dir = temp_dir("bash-wait-polled")?;
+    let (tool, context) = (BashTool::default(), ToolContext::new(dir.to_path_buf()));
+    let started = tool.execute(
+        args(&[("command", json!("sleep 6")), ("wait", json!(5))]),
+        &context,
+    );
+    let job = started.result.details["job"].as_u64().ok_or("no job id")?;
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(10))]), &context);
+    assert!(text_of(&polled.result.content).contains("finished (exit 0)"));
+    let reported = yi_tools::jobs::registry().take_finished(&dir);
+    assert!(reported.is_empty(), "{reported:?}");
+    Ok(())
+}
+
+/// A poll that gives up hands the job back, so its result is still reported when it exits, and
+/// only to a session in the cwd that started it.
+#[test]
+fn a_poll_that_gives_up_leaves_the_job_to_its_report() -> TestResult {
+    let dir = temp_dir("bash-wait-gives-up")?;
+    let (tool, context) = (BashTool::default(), ToolContext::new(dir.to_path_buf()));
+    let started = tool.execute(
+        args(&[("command", json!("sleep 11")), ("wait", json!(5))]),
+        &context,
+    );
+    let job = started.result.details["job"].as_u64().ok_or("no job id")?;
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(5))]), &context);
+    assert!(text_of(&polled.result.content).contains("still running"));
+    let id = yi_tools::jobs::JobId(job);
+    yi_tools::jobs::registry().wait_settled(Some(id), std::time::Duration::from_secs(10));
+    let elsewhere = temp_dir("bash-wait-gives-up-elsewhere")?;
+    let taken_elsewhere = yi_tools::jobs::registry().take_finished(&elsewhere);
+    assert!(
+        taken_elsewhere.is_empty(),
+        "another cwd's loop took it: {taken_elsewhere:?}"
+    );
+    let reported: Vec<u64> = yi_tools::jobs::registry()
+        .take_finished(&dir)
+        .iter()
+        .map(|r| r.id.0)
+        .collect();
+    assert_eq!(reported, [job]);
     Ok(())
 }
 
@@ -1037,6 +1365,7 @@ impl yi_tools::KernelBridge for OneCell {
         &self,
         _code: &str,
         _cancelled: &yi_tools::CancelFlag,
+        _recovery_dir: Option<&std::path::Path>,
     ) -> Result<yi_tools::KernelCellOutcome, String> {
         Ok(yi_tools::KernelCellOutcome {
             result: self.0.clone(),

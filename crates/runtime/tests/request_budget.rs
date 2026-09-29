@@ -60,7 +60,6 @@ fn openrouter_model() -> Model {
         id: "anthropic/claude-haiku-4.5".to_owned(),
         provider: "openrouter".to_owned(),
         base_url: "https://openrouter.ai/api/v1".to_owned(),
-        compat: Some(json!({"thinkingFormat": "openrouter"})),
         ..openai_model()
     }
 }
@@ -238,10 +237,12 @@ fn tool_result(id: &str, name: &str, text: &str) -> AgentMessage {
 
 fn context(messages: Vec<AgentMessage>) -> Result<LlmContext, Box<dyn Error>> {
     Ok(LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: system_prompt(),
         messages,
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::Loop,
         tools: Some(tool_defs()?),
         tool_choice: None,
@@ -268,24 +269,16 @@ fn prefix_bytes(params: &Value) -> Result<usize, Box<dyn Error>> {
     Ok(system.len().saturating_add(tools.len()))
 }
 
-/// The breakpoint moves to the newest message every turn and is not part of the prefix hash;
-/// the one text part a mark needs renders as the same block as the plain string it replaced.
+/// The breakpoint moves to the newest message every turn and is not part of the prefix hash.
+/// Nothing else is forgiven: a plain string that became a part to carry a mark is a different
+/// prompt once OpenRouter merges it with the user message beside it (#742, live: request 3
+/// read 13,900 of 22,373 tokens).
 fn strip_cache_control(value: &mut Value) {
     match value {
         Value::Object(map) => {
             map.remove("cache_control");
             for nested in map.values_mut() {
                 strip_cache_control(nested);
-            }
-            let text = map
-                .get("content")
-                .and_then(Value::as_array)
-                .filter(|parts| parts.len() == 1 && parts[0]["type"] == "text")
-                .and_then(|parts| parts[0].as_object())
-                .filter(|part| part.len() == 2)
-                .and_then(|part| part.get("text").cloned());
-            if let Some(text) = text {
-                map.insert("content".to_owned(), text);
             }
         }
         Value::Array(items) => {
