@@ -82,3 +82,7 @@ pub struct ClassifyRecord {
     #[serde(default, flatten)]
     pub extra: BTreeMap<String, Value>,
 }
+
+impl crate::entry::CustomRecord for ClassifyRecord {
+    const TYPE: &'static str = CLASSIFY_ENTRY;
+}

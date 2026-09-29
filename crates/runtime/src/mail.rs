@@ -289,9 +289,8 @@ impl Desk {
 
 /// Invariant: the inbox entry is written before any delivery, and a refused write refuses it.
 pub(crate) fn inbox(store: &yi_session::SharedSession, envelope: &Envelope) -> Result<(), String> {
-    let data = serde_json::to_value(envelope).map_err(|error| error.to_string())?;
     yi_session::lock_session(store)
-        .append_custom("main", INBOX_ENTRY, Some(data))
+        .append_custom_record(envelope)
         .map(drop)
         .map_err(|error| {
             format!(

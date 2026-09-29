@@ -158,7 +158,7 @@ pub fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let temp = path.with_file_name(format!(".{name}.{}.tmp", crate::id::nonce()));
-    let staged = fs::File::create(&temp)
+    let staged = fs::File::create_new(&temp)
         .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_data()))
         .and_then(|()| fs::rename(&temp, path));
     if staged.is_err() {
@@ -169,6 +169,35 @@ pub fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         Some(dir) => fs::File::open(dir)?.sync_all(),
         None => Ok(()),
     }
+}
+
+/// Invariant: an OS file lock, so a holder that dies releases it and no pid is ever probed.
+pub fn lock_file(path: &Path) -> std::io::Result<fs::File> {
+    let file = open_lock(path)?;
+    file.lock()?;
+    Ok(file)
+}
+
+/// `Err` hands back the file another holder has locked, so its holder line can be read.
+pub fn try_lock_file(path: &Path) -> std::io::Result<Result<fs::File, fs::File>> {
+    let file = open_lock(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Ok(file)),
+        Err(fs::TryLockError::WouldBlock) => Ok(Err(file)),
+        Err(fs::TryLockError::Error(error)) => Err(error),
+    }
+}
+
+fn open_lock(path: &Path) -> std::io::Result<fs::File> {
+    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        fs::create_dir_all(dir)?;
+    }
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
 }
 
 pub struct JsonlRepo {
