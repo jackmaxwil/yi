@@ -328,8 +328,8 @@ pub struct LlmContext {
 pub const CACHE_DIAGNOSTIC: &str = "cache";
 
 impl LlmContext {
-    /// The prefix every request of a conversation shares, in render order: schema, tools,
-    /// system. A change between two requests is a miss yi caused (design §7, invariant 3).
+    /// A hash of the inputs every request of a conversation shares: schema, tools, system.
+    /// A change between two requests is a miss yi caused (design §7, invariant 3).
     pub fn stable_key(&self) -> String {
         use sha2::{Digest, Sha256};
         let rendered = serde_json::json!([self.schema, self.tools, self.system_prompt]);
@@ -414,5 +414,44 @@ mod tests {
         }
         assert_eq!(serde_json::to_string(&Effort::Medium)?, "\"medium\"");
         Ok(())
+    }
+
+    /// The key moves with each input it covers, and not with the history or the tail.
+    #[test]
+    fn the_stable_key_moves_with_schema_tools_and_system_only() {
+        let base = LlmContext {
+            system_prompt: "s".to_owned(),
+            messages: Vec::new(),
+            transient: Vec::new(),
+            schema: None,
+            reuse: super::Reuse::Loop,
+            tools: Some(vec![super::ToolDef {
+                name: "read".to_owned(),
+                description: "d".to_owned(),
+                parameters: serde_json::json!({}),
+                freeform: None,
+            }]),
+            tool_choice: None,
+        };
+        let key = base.stable_key();
+        let mut system = base.clone();
+        system.system_prompt.push('!');
+        let mut tools = base.clone();
+        if let Some(tool) = tools.tools.iter_mut().flatten().next() {
+            tool.description.push('!');
+        }
+        let mut schema = base.clone();
+        schema.schema = Some(serde_json::json!({"type": "object"}));
+        for moved in [system, tools, schema] {
+            assert_ne!(moved.stable_key(), key);
+        }
+        let mut history = base.clone();
+        history
+            .transient
+            .push(crate::message::AgentMessage::host_user(
+                crate::message::UserContent::Text("<environment>".to_owned()),
+                0,
+            ));
+        assert_eq!(history.stable_key(), key);
     }
 }

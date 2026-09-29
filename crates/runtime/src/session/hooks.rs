@@ -96,6 +96,37 @@ impl AgentSession {
         })
     }
 
+    /// Delivers each text `observe` returns as a shown notice of `custom_type`, never a wake:
+    /// a notice must not buy another turn.
+    pub fn show_notices(
+        &self,
+        custom_type: &'static str,
+        mut observe: impl FnMut(&yi_types::event::AgentEvent) -> Option<String> + Send + 'static,
+    ) {
+        let mut events = self.subscribe();
+        let deliver = self.deliver_hook();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        if let Some(text) = observe(&event) {
+                            let notice = AgentMessage::Custom {
+                                custom_type: custom_type.to_owned(),
+                                content: yi_types::message::UserContent::Text(text),
+                                display: true,
+                                details: None,
+                                timestamp: yi_session::now_ms(),
+                            };
+                            deliver(notice, false);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
     pub fn mail_hook(&self) -> Arc<dyn Fn() -> Vec<serde_json::Value> + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || {

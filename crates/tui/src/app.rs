@@ -212,7 +212,7 @@ pub struct App {
     pub(crate) pen: Option<crate::pen::Pen>,
     turn_tokens: crate::status::TurnTokens,
     /// Requests seen; past the first one a read is expected, so the footer shows `0% cached`.
-    requests: u64,
+    pub(crate) requests: u64,
     turn_cost: f64,
     pub(crate) width: usize,
     pub(crate) rows: usize,
