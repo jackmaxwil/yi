@@ -52,7 +52,7 @@ fn input_hash(input: &str) -> u64 {
     u64::from(xxhash_rust::xxh32::xxh32(input.as_bytes(), 0))
 }
 
-const READ_DESCRIPTION: &str = "Read a file (tagged [path#TAG] header, LINE:TEXT rows that anchor edits), a directory (listing plus skeletons), or a glob (every match). find=\"text\" shows the block around the first match plus its references. A capped read ends with the file's skeleton. offset/limit or ranges ([[10,40],[90,120]]) pick windows. Do not re-read a file you just edited: the edit result carries the new anchors, and a failed edit says so. Prefer one read of a large range to many small ones.";
+const READ_DESCRIPTION: &str = "Read a file (tagged [path#TAG] header, LINE:TEXT rows that anchor edits), a directory (listing plus skeletons), or a glob (every match). find=\"text\" shows the block around the first match; when that line defines a name, the references to it in files of the same type follow. A capped read ends with the file's skeleton. offset/limit or ranges ([[10,40],[90,120]]) pick windows. Do not re-read a file you just edited: the edit result carries the new anchors, and a failed edit says so. Prefer one read of a large range to many small ones.";
 
 /// How one text is shown. `on_disk`: the text is the file itself, so clipping guards its anchors
 /// and code refs apply; a document's copy is neither, and gets a shorter `first_look`.
@@ -112,7 +112,7 @@ impl Tool for HashlineReadTool {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "File, directory, or glob such as src/**/*.rs (relative to the working directory, or absolute)"},
-                "find": {"type": "string", "description": "Show the block around the first line containing this text, then its references; exclusive with offset/ranges"},
+                "find": {"type": "string", "description": "Show the block around the first line containing this text, then, for a definition, its references; exclusive with offset/ranges"},
                 "offset": {"type": "integer", "description": "1-based first line to read"},
                 "limit": {"type": "integer", "description": "Max lines (default 2000; explicit values may exceed it, byte-budgeted)"},
                 "ranges": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}}, "description": "1-based inclusive [start, end] windows; exclusive with offset/limit"},
@@ -158,25 +158,19 @@ const GLOB_FILES_CAP: usize = 200;
 const DIR_HEADS_PER_FILE: usize = 8;
 const GLOB_HEADS_PER_FILE: usize = 12;
 
-fn is_word(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
-}
-
-fn identifier_in(needle: &str, line: &str) -> Option<String> {
-    needle
+/// The name a declaration line defines: the first word after its keyword; any other line
+/// defines nothing, so `find=` lists references only for a definition.
+fn defined_name(line: &str) -> Option<String> {
+    const KEYWORDS: [&str; 11] = [
+        "fn", "struct", "enum", "trait", "type", "const", "static", "mod", "class", "def", "mut",
+    ];
+    let mut words = line
         .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
-        .filter(|word| word.len() >= 3 && !word.as_bytes().first().is_some_and(u8::is_ascii_digit))
-        .filter(|word| {
-            line.match_indices(word).any(|(at, _)| {
-                let before = at
-                    .checked_sub(1)
-                    .and_then(|index| line.as_bytes().get(index));
-                let after = line.as_bytes().get(at.saturating_add(word.len()));
-                !before.is_some_and(|byte| is_word(*byte))
-                    && !after.is_some_and(|byte| is_word(*byte))
-            })
-        })
-        .max_by_key(|word| word.len())
+        .filter(|word| !word.is_empty());
+    crate::orient::is_decl(line).then_some(())?;
+    words.find(|word| KEYWORDS.contains(word))?;
+    words
+        .find(|word| !KEYWORDS.contains(word))
         .map(str::to_owned)
 }
 
@@ -256,9 +250,7 @@ fn locate(
         window,
         index,
         block: span.is_some(),
-        identifier: lines
-            .get(index)
-            .and_then(|line| identifier_in(needle, line)),
+        identifier: lines.get(index).and_then(|line| defined_name(line)),
     })
 }
 
@@ -387,18 +379,14 @@ impl HashlineReadTool {
     /// Every file the glob names: whole and tagged while the byte budget lasts, a skeleton
     /// after it, so one call shows a module's shape without a second.
     fn read_glob(&self, pattern: &str, context: &ToolContext) -> ToolOutput {
-        let matcher = match globset::GlobBuilder::new(pattern)
-            .literal_separator(false)
-            .build()
-        {
-            Ok(glob) => glob.compile_matcher(),
+        let glob = match crate::tool::rooted_glob(pattern, &context.cwd) {
+            Ok(glob) => glob,
             Err(error) => return error_output(format!("invalid glob {pattern:?}: {error}")),
         };
         let root = context.cwd.clone();
         let mut matches: Vec<std::path::PathBuf> = Vec::new();
-        let walled = crate::builtins::walk_files(&root, &context.deny_read, &mut |path| {
-            let relative = path.strip_prefix(&root).unwrap_or(path);
-            if matcher.is_match(relative) {
+        let walled = crate::builtins::walk_files(&glob.base, &context.deny_read, &mut |path| {
+            if glob.matches(path) {
                 matches.push(path.to_path_buf());
             }
             matches.len() < GLOB_FILES_CAP

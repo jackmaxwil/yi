@@ -143,13 +143,58 @@ pub fn wall_refusal(tool_name: &str, path: &str, list: &str) -> String {
     )
 }
 
-pub(crate) fn walled(deny: &[PathBuf], path: &Path) -> bool {
+/// Invariant: walled when it or an ancestor is a deny entry by spelling or file identity (no
+/// symlink, `..` or letter case around it); a missing tail is judged by its existing head.
+pub fn walled(deny: &[PathBuf], path: &Path) -> bool {
     if deny.is_empty() {
         return false;
     }
-    let normalized = yi_permission::lexical_normalize(path);
+    if lexically_walled(deny, path) {
+        return true;
+    }
+    let ids = identities(deny);
+    let real = path
+        .ancestors()
+        .find_map(|head| fs::canonicalize(head).ok());
+    real.is_some_and(|real| {
+        real.ancestors()
+            .any(|dir| denied_file(&ids, fs::metadata(dir)))
+    })
+}
+
+fn lexically_walled(deny: &[PathBuf], path: &Path) -> bool {
+    !deny.is_empty() && {
+        let normalized = yi_permission::lexical_normalize(path);
+        deny.iter()
+            .any(|denied| normalized.starts_with(yi_permission::lexical_normalize(denied)))
+    }
+}
+
+type FileId = (u64, u64);
+
+fn identities(deny: &[PathBuf]) -> Vec<FileId> {
     deny.iter()
-        .any(|denied| normalized.starts_with(yi_permission::lexical_normalize(denied)))
+        .filter_map(|denied| file_id(&fs::metadata(denied).ok()?))
+        .collect()
+}
+
+fn denied_file(ids: &[FileId], meta: std::io::Result<fs::Metadata>) -> bool {
+    !ids.is_empty()
+        && meta
+            .ok()
+            .and_then(|meta| file_id(&meta))
+            .is_some_and(|id| ids.contains(&id))
+}
+
+#[cfg(unix)]
+fn file_id(meta: &fs::Metadata) -> Option<FileId> {
+    use std::os::unix::fs::MetadataExt;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_id(_meta: &fs::Metadata) -> Option<FileId> {
+    None
 }
 
 pub(crate) fn walled_notice(left_out: usize) -> Option<String> {
@@ -160,16 +205,30 @@ pub(crate) fn walled_notice(left_out: usize) -> Option<String> {
     })
 }
 
-/// Name order within each directory: the filesystem's own order differs between machines, and
-/// every cap and page over this walk would keep a different set. Returns the walled entries.
+/// Name order: filesystem order differs by machine and every cap would keep a different set.
+/// Links are never followed, so below an open root each entry's own identity is all to check.
 pub(crate) fn walk_files(
     root: &Path,
     deny: &[PathBuf],
     visit: &mut dyn FnMut(&Path) -> bool,
 ) -> usize {
+    if walled(deny, root) {
+        return 1;
+    }
+    let root = yi_permission::lexical_normalize(root);
+    let ids = identities(deny);
     let mut left_out = 0_usize;
     let mut ignore = crate::ignore::Ignore::default();
-    let mut stack = vec![root.to_path_buf()];
+    // Rules above the root still bind it, up to the repository's top.
+    let above: Vec<&Path> = root.ancestors().skip(1).collect();
+    if let Some(top) = above.iter().position(|dir| dir.join(".git").exists()) {
+        above
+            .iter()
+            .take(top.saturating_add(1))
+            .rev()
+            .for_each(|dir| ignore.push_dir(dir));
+    }
+    let mut stack = vec![root];
     while let Some(dir) = stack.pop() {
         ignore.push_dir(&dir);
         let Ok(entries) = fs::read_dir(&dir) else {
@@ -183,7 +242,7 @@ pub(crate) fn walk_files(
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            if walled(deny, &path) {
+            if lexically_walled(deny, &path) || denied_file(&ids, entry.metadata()) {
                 left_out = left_out.saturating_add(1);
             } else if file_type.is_dir() {
                 if !ignore.ignored(&path, true) {

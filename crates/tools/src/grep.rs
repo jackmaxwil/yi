@@ -7,7 +7,8 @@ use crate::builtins::walk_files;
 use crate::hashline::normalize::{Endings, split};
 use crate::hashline::types::BlockResolverRequest;
 use crate::tool::{
-    Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, resolve_path, text_output,
+    RootedGlob, Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, resolve_path,
+    rooted_glob, text_output,
 };
 
 const PAGE_CAP: usize = 200;
@@ -118,7 +119,8 @@ impl Options {
 fn build_matchers(
     input: &Map<String, Value>,
     options: &Options,
-) -> Result<(regex::Regex, Option<globset::GlobMatcher>), Box<ToolOutput>> {
+    root: &Path,
+) -> Result<(regex::Regex, Option<RootedGlob>), Box<ToolOutput>> {
     let alternatives: Vec<String> = patterns(input)?
         .into_iter()
         .map(|pattern| {
@@ -164,11 +166,8 @@ fn build_matchers(
     };
     let include = match include_source {
         Some(source) => Some(
-            globset::GlobBuilder::new(&source)
-                .literal_separator(false)
-                .build()
-                .map_err(|error| invalid(format!("invalid include glob: {error}")))?
-                .compile_matcher(),
+            rooted_glob(&source, root)
+                .map_err(|error| invalid(format!("invalid include glob: {error}")))?,
         ),
         None => None,
     };
@@ -290,7 +289,7 @@ fn collect(
     root: &Path,
     deny: &[PathBuf],
     matcher: &regex::Regex,
-    include: Option<&globset::GlobMatcher>,
+    include: Option<&RootedGlob>,
     options: &Options,
     mut documents: Option<DocumentSearch<'_>>,
 ) -> Collected {
@@ -302,11 +301,8 @@ fn collect(
     let mut documents_searched = 0_usize;
     let mut documents_unsearched: Vec<String> = Vec::new();
     let mut search_file = |path: &Path| -> bool {
-        if let Some(include) = include {
-            let relative = path.strip_prefix(root).unwrap_or(path);
-            if !include.is_match(relative) {
-                return true;
-            }
+        if include.is_some_and(|include| !include.matches(path)) {
+            return true;
         }
         let Ok(bytes) = fs::read(path) else {
             return true;
@@ -563,7 +559,17 @@ impl GrepTool {
             replace: None,
             apply: false,
         };
-        let collected = collect(root, root, deny, &matcher, None, &options, None);
+        let kind = skip.and_then(|(path, _)| Path::new(path).extension()?.to_str());
+        let same_kind = kind.and_then(|kind| rooted_glob(&format!("**/*.{kind}"), root).ok());
+        let collected = collect(
+            root,
+            root,
+            deny,
+            &matcher,
+            same_kind.as_ref(),
+            &options,
+            None,
+        );
         let mut rows: Vec<String> = Vec::new();
         let mut taken = 0_usize;
         let mut total = 0_usize;
@@ -873,7 +879,7 @@ impl Tool for GrepTool {
                 "path": {"type": "string", "description": "Directory or file to search (default: cwd)"},
                 "literal": {"type": "boolean", "description": "Match the pattern as plain text"},
                 "ignore_case": {"type": "boolean", "description": "Case-insensitive"},
-                "include": {"type": "string", "description": "Relative-path glob filter"},
+                "include": {"type": "string", "description": "Glob on file paths: relative to path, or absolute"},
                 "type": {"type": "string", "description": "Type filter: rust, py, js, ts, md, toml, json, yaml, sh, html, css, c"},
                 "context": {"type": "integer", "description": "Context lines per side (max 10)"},
                 "block": {"type": "boolean", "description": "Show each hit's enclosing block instead of context lines (max 20 hits per page)"},
@@ -904,12 +910,12 @@ impl Tool for GrepTool {
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
         let options = Options::from(&input);
         let files_only = options.files_only;
-        let (matcher, include) = match build_matchers(&input, &options) {
-            Ok(built) => built,
-            Err(output) => return *output,
-        };
         let (context_asked, context_ignored, offset, root) = match page_args(&input, context) {
             Ok(args) => args,
+            Err(output) => return *output,
+        };
+        let (matcher, include) = match build_matchers(&input, &options, &root) {
+            Ok(built) => built,
             Err(output) => return *output,
         };
         let context_lines = context_asked.min(CONTEXT_CAP);

@@ -457,3 +457,44 @@ async fn a_walled_subtree_holds_against_a_rewrite_and_an_env_prefix() -> TestRes
     assert_eq!(std::fs::read_to_string(&file)?, "fn unsafe_thing() {}\n");
     Ok(())
 }
+
+/// A named path reaches a walled tree through a symlink, a `..` after one, or another letter
+/// case; each is refused with the one message a missing file there also gets, so the refusal
+/// says nothing about what exists behind the wall.
+#[cfg(unix)]
+#[test]
+fn a_named_path_never_reaches_a_walled_tree_by_another_name() -> TestResult {
+    let root = Scratch::new("yi-wall-names")?;
+    std::fs::create_dir_all(root.join("secret/nested"))?;
+    std::fs::write(root.join("secret/k.rs"), "pub fn hidden() {}\n")?;
+    std::os::unix::fs::symlink(root.join("secret"), root.join("alias"))?;
+    std::os::unix::fs::symlink(root.join("secret/nested"), root.join("deep"))?;
+    let mut paths = vec![
+        "secret/k.rs",
+        "alias/k.rs",
+        "alias/missing.rs",
+        "alias",
+        "alias/*.rs",
+        "deep/../k.rs",
+        "deep/../missing.rs",
+    ];
+    if root.join("SECRET").exists() {
+        paths.extend(["SECRET/k.rs", "SECRET/missing.rs"]);
+    }
+    let wall = read_walled(&root);
+    let refusal = |path: &str| {
+        wall.check(
+            "read",
+            yi_tools::ToolKind::Read,
+            &args(&[("path", path)]),
+            &root,
+        )
+    };
+    let expected = refusal("secret/k.rs");
+    assert!(expected.is_some(), "the lexical case is refused today");
+    for path in paths {
+        assert_eq!(refusal(path), expected, "read {path}");
+    }
+    assert_eq!(refusal("open.rs"), None, "an unwalled path still reads");
+    Ok(())
+}
