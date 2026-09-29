@@ -313,6 +313,37 @@ def check_warm_share():
     assert short["status"] == "inconclusive" and short["detail"].startswith("2 requests"), short
 
 
+def check_compaction_share():
+    """#746: the compaction scenario judges only the compaction request, the request span no
+    reply's usage matches. The rows are OpenRouter's, from a live run of an earlier five-read
+    shape on Bedrock whose cut found nothing to summarize: fifteen loop requests, no compaction,
+    and that is inconclusive, never a pass on the loop's own warm reads."""
+    usage = [(204, 0, 14496), (237, 14496, 357), (237, 14853, 4763), (242, 19616, 241),
+             (242, 19857, 4812), (237, 24669, 246), (237, 24915, 4763), (242, 29678, 241),
+             (241, 29919, 4812), (236, 34731, 246), (236, 34977, 4763), (236, 39740, 216),
+             (187, 39956, 579), (182, 40535, 194), (175, 40729, 127)]
+    task = run.LIVE / "cache-warm-compaction"
+    spec = json.loads((task / "task.json").read_text())
+    with tempfile.TemporaryDirectory() as directory:
+        fake = Path(directory) / "yi"
+        fake.write_text(
+            "#!/usr/bin/env python3\nimport json, pathlib, sys\n"
+            "rows = json.loads(pathlib.Path(__file__).with_suffix('.json').read_text())\n"
+            "sessions = pathlib.Path(sys.argv[sys.argv.index('--session-dir') + 1]) / 'cwd'\n"
+            "sessions.mkdir(parents=True, exist_ok=True)\n"
+            "with (sessions / 's.telemetry.jsonl').open('w') as sink:\n"
+            "    for i, r, w in rows:\n"
+            "        sink.write(json.dumps({'span': 'request', 'input': i, 'cacheRead': r, 'cacheWrite': w}) + '\\n')\n"
+            "        print(json.dumps({'type': 'message_end', 'message': {'role': 'assistant',"
+            " 'usage': {'input': i, 'cacheRead': r, 'cacheWrite': w, 'output': 1}}}))\n"
+        )
+        fake.chmod(0o755)
+        fake.with_suffix(".json").write_text(json.dumps(usage))
+        row = run.cache_check(spec, task, str(fake), "m", Path(directory) / "never")
+    assert row["status"] == "inconclusive" and row["detail"] == "the session never compacted", row
+    assert "compaction" not in row, row
+
+
 def check_session_extras():
     """Pier's three extra columns, off a committed v4 session fixture."""
     extras = yi_usage.session_extras(SESSIONS)
@@ -889,6 +920,7 @@ CHECKS = (
     check_no_assistant_rows,
     check_unknown_usage_is_not_a_free_turn,
     check_warm_share,
+    check_compaction_share,
     check_session_extras,
     check_fingerprint,
     check_driver_ceiling,

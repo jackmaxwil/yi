@@ -162,7 +162,7 @@ impl Breakpoints {
             })
         };
         let mut marks = [None, stable(Position::SystemEnd), None, None];
-        if reuse == Reuse::Loop {
+        if matches!(reuse, Reuse::Loop | Reuse::ReadOnly) {
             let tail = messages.iter().rposition(is_tail_kind);
             let prev_tail = tail
                 .and_then(|tail| {
@@ -172,15 +172,20 @@ impl Breakpoints {
                         .rposition(|message| matches!(message, AgentMessage::Assistant { .. }))
                 })
                 .and_then(|reply| messages.get(..reply)?.iter().rposition(is_tail_kind));
+            // A read-only request's previous tail takes the slot its own tail would have had.
+            let (prev_slots, tail) = match reuse {
+                Reuse::ReadOnly => (2, None),
+                _ => (3, tail),
+            };
             if let Some(tail) = tail
                 && slots >= 2
             {
                 marks[3] = five(Position::Tail(tail));
-                if let Some(prev) = prev_tail
-                    && slots >= 3
-                {
-                    marks[2] = five(Position::PrevTail(prev));
-                }
+            }
+            if let Some(prev) = prev_tail
+                && slots >= prev_slots
+            {
+                marks[2] = five(Position::PrevTail(prev));
             }
         }
         if slots >= SLOTS {

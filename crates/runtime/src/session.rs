@@ -899,14 +899,16 @@ impl AgentSession {
             return false;
         }
         let messages = self.messages();
-        let model = self.model();
+        let (model, effort) = hooks::settings_of(&self.shared);
+        let request =
+            crate::compaction::LoopRequest::new(self.system_prompt(), &self.tools(), effort);
         let store = self.store();
         let signal = yi_loop::interrupt::InterruptSignal::default();
         let replaced = compactor
             .maybe_compact(
                 &messages,
                 &model,
-                &self.system_prompt(),
+                &request,
                 self.provider.as_ref(),
                 store.as_ref(),
                 &signal,

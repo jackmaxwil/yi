@@ -290,10 +290,13 @@ pub enum Reuse {
     /// The next request continues this conversation: its tail is read again.
     #[default]
     Loop,
-    /// A single call (a title, a compaction, a branch summary): the tail is never read again.
+    /// A single call (a title, a branch summary): the tail is never read again.
     OneShot,
     /// The conversation's last turn (`tool_choice: none`): nothing follows it.
     LastTurn,
+    /// The conversation's own request shape, sent once and then left (a compaction on the
+    /// session's model): the previous tail is read, and no tail of its own is written.
+    ReadOnly,
 }
 
 impl Reuse {
