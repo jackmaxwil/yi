@@ -564,7 +564,10 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     outside the child cap; its finish reaches you like any child's unless ``result`` took it. ``partition`` is
     a list of URLs (``local://path#L1-40@TAG``, ``history://…``, ``plan://…``) resolved now and
     inlined into its brief as numbered, fenced lines, for any role; a kernel value rides
-    ``context_keys``.
+    ``context_keys``. ``schema`` (a reader's) names the answer's shape in its question and, on a
+    reader with ``tools=[]`` or ``turns=1``, asks the provider for it (the capped last turn
+    still carries a reader's tools, so it gets the schema only in its question): strictly where the schema closes every
+    object, as guidance otherwise.
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
@@ -587,8 +590,12 @@ async def ask(
         answers = await asyncio.gather(*(
             rlm.ask("Can this function panic? Quote the line.", [url], schema=PANIC) for url in urls))
 
+    ``schema`` goes to the child too: its question names it and the provider is asked for that
+    shape where it can enforce one; the answer is checked against it here either way.
     ``kwargs`` are ``run``'s (``tools``, ``turns``, ``model``, ``thinking``, ``context_keys``).
     """
+    if schema is not None:
+        kwargs["schema"] = schema
     urls = [partition] if isinstance(partition, str) else list(partition)
     handle = await run(question, role="reader", partition=urls, **kwargs)
     try:

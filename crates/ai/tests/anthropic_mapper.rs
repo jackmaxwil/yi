@@ -41,6 +41,7 @@ fn context() -> LlmContext {
         )],
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::Loop,
         tools: Some(vec![ToolDef {
             name: "bash".to_owned(),
@@ -290,6 +291,7 @@ fn image_turns(count: usize, chars: usize) -> LlmContext {
         messages,
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::Loop,
         tools: None,
         tool_choice: None,

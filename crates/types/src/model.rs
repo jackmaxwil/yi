@@ -321,6 +321,10 @@ pub struct LlmContext {
     /// prefix key hashes it first; read by structured outputs, unread by the adapters yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<serde_json::Value>,
+    /// The last message index siblings share byte for byte, set when a sibling sent the same
+    /// run within the cache's life (D309); no encoder reads it until cache stage C3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_through: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -390,6 +394,7 @@ mod tests {
                 0,
             )],
             schema: Some(serde_json::json!({"type": "object"})),
+            shared_through: None,
             reuse: super::Reuse::OneShot,
             tools: None,
             tool_choice: None,
@@ -427,6 +432,7 @@ mod tests {
             messages: Vec::new(),
             transient: Vec::new(),
             schema: None,
+            shared_through: None,
             reuse: super::Reuse::Loop,
             tools: Some(vec![super::ToolDef {
                 name: "read".to_owned(),

@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{Effort, Model, ModelCost};
+use yi_types::model::{Effort, Model, ModelCost, Reuse};
 
 type TestResult = Result<(), Box<dyn Error>>;
 type Script = Arc<Mutex<Vec<AgentMessage>>>;
@@ -43,7 +43,10 @@ struct Family {
     host: Arc<SubagentHost>,
     children: Arc<Mutex<Vec<Vec<String>>>>,
     notices: Arc<Mutex<Vec<String>>>,
+    shapes: Arc<Mutex<Vec<Shape>>>,
 }
+
+type Shape = (Option<yi_runtime::session::RequestShape>, Reuse);
 
 type Rules = Option<Arc<yi_runtime::rules::RuleEngine>>;
 type Hook = Arc<dyn Fn() + Send + Sync>;
@@ -72,6 +75,8 @@ fn family_with(
     let names_sink = Arc::clone(&tool_names);
     let notices: Arc<Mutex<Vec<String>>> = Arc::default();
     let notice_sink = Arc::clone(&notices);
+    let shapes: Arc<Mutex<Vec<Shape>>> = Arc::default();
+    let shape_sink = Arc::clone(&shapes);
     let cwd = workspace.clone();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
@@ -118,6 +123,9 @@ fn family_with(
             if let Ok(mut sink) = names_sink.lock() {
                 sink.push(names);
             }
+            if let Ok(mut sink) = shape_sink.lock() {
+                sink.push((child.request_shape(), child.reuse()));
+            }
             Ok(child)
         }),
         notice: Arc::new(move |text, _| {
@@ -142,6 +150,7 @@ fn family_with(
         host,
         children: tool_names,
         notices,
+        shapes,
     })
 }
 
@@ -213,19 +222,24 @@ async fn a_reader_brief_carries_its_partition_numbered_and_fenced() -> TestResul
         kwargs(json!({"name": "q1", "role": "reader", "partition": ["local://notes.txt"]})),
     )?;
     let rows = transcript(&family, "q1").await?;
-    let brief = rows
+    let briefs: Vec<&String> = rows
         .iter()
-        .find(|(role, _)| role == "user")
-        .map(|(_, text)| text.clone())
-        .ok_or("no brief")?;
-    assert!(
-        brief.contains("source=\"local://notes.txt\" trust=\"untrusted\""),
-        "{brief}"
+        .filter(|(role, _)| role == "user")
+        .map(|(_, text)| text)
+        .collect();
+    let (partition, question) = (
+        briefs.first().ok_or("no partition")?,
+        briefs.get(1).ok_or("no question")?,
     );
-    assert!(brief.contains("2:blue sky"), "{brief}");
     assert!(
-        brief.trim_end().ends_with("Which line names the sky?"),
-        "{brief}"
+        partition.contains("source=\"local://notes.txt\" trust=\"untrusted\""),
+        "{partition}"
+    );
+    assert!(partition.contains("2:blue sky"), "{partition}");
+    assert!(question.starts_with("[task from parent]"), "{question}");
+    assert!(
+        question.trim_end().ends_with("Which line names the sky?"),
+        "{question}"
     );
     let tools = family.children.lock().map_err(|_| "poisoned")?;
     let names = tools.first().ok_or("no reader built")?.clone();
@@ -385,10 +399,6 @@ async fn a_partition_at_its_cap_is_whole_and_one_byte_over_is_cut_loudly() -> Te
         cut.matches("end-yi-external").count(),
     );
     assert_eq!(fences, 2 * closed, "every fence the cut touched is closed");
-    assert!(
-        cut.trim_end().ends_with("Summarize."),
-        "the brief stays outside every fence"
-    );
     Ok(())
 }
 
@@ -532,5 +542,78 @@ async fn a_partition_of_many_empty_entries_stays_under_its_cap() -> TestResult {
     let brief = first_brief(&family, "q").await?;
     assert!(brief.len() < 65_536 + 1_024, "{} bytes", brief.len());
     assert!(brief.contains("of 2000 partition entries: partition cap 65536 bytes"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_readers_schema_and_a_shared_partition_shape_its_requests() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![reply("{}"), reply("{}")]));
+    let family = family(4, script)?;
+    let schema = json!({"type": "object", "properties": {"line": {"type": "integer"}},
+                        "required": ["line"], "additionalProperties": false});
+    for name in ["s1", "s2"] {
+        family.host.spawn(
+            "Which line names the sky?".to_owned(),
+            kwargs(
+                json!({"name": name, "role": "reader", "partition": ["local://notes.txt"],
+                          "schema": schema}),
+            ),
+        )?;
+    }
+    let shapes = family.shapes.lock().map_err(|_| "poisoned")?.clone();
+    let shape = |shared_through| {
+        let shape = yi_runtime::session::RequestShape {
+            schema: Some(schema.clone()),
+            shared_through,
+        };
+        (Some(shape), Reuse::Loop)
+    };
+    assert_eq!(
+        shapes,
+        vec![shape(None), shape(Some(0))],
+        "the second sibling over the same partition marks it; both ask for the shape"
+    );
+    let rows = transcript(&family, "s1").await?;
+    let asked = rows.iter().any(|(role, text)| {
+        role == "user" && text.contains("Reply with one JSON object matching this schema")
+    });
+    assert!(asked, "{rows:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reader_without_tools_is_one_request() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![reply("a"), reply("b")]));
+    let family = family(4, script)?;
+    for (name, tools) in [("bare", json!([])), ("reads", json!(["read"]))] {
+        family.host.spawn(
+            "Which line names the sky?".to_owned(),
+            kwargs(json!({"name": name, "role": "reader", "tools": tools})),
+        )?;
+    }
+    let shapes = family.shapes.lock().map_err(|_| "poisoned")?.clone();
+    let reuses: Vec<Reuse> = shapes.iter().map(|(_, reuse)| *reuse).collect();
+    assert_eq!(reuses, vec![Reuse::OneShot, Reuse::Loop]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_refused_sibling_marks_no_partition_shared() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![reply("a")]));
+    let family = family(4, script)?;
+    let ask = |name: &str| {
+        family.host.spawn(
+            "q".to_owned(),
+            kwargs(json!({"name": name, "role": "reader", "partition": ["local://notes.txt"]})),
+        )
+    };
+    assert!(ask("host").is_err(), "a reserved name is refused");
+    ask("first")?;
+    let shapes = family.shapes.lock().map_err(|_| "poisoned")?.clone();
+    let marks: Vec<Option<usize>> = shapes
+        .iter()
+        .map(|(shape, _)| shape.as_ref().and_then(|shape| shape.shared_through))
+        .collect();
+    assert_eq!(marks, vec![None], "the refused spawn sent nothing to share");
     Ok(())
 }

@@ -421,6 +421,7 @@ impl Compactor {
             },
             transient: Vec::new(),
             schema: None,
+            shared_through: None,
             reuse: if warm {
                 Reuse::ReadOnly
             } else {

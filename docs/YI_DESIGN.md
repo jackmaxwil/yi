@@ -478,7 +478,8 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - Every child enters through `SubagentHost::admit`; `rlm.run` answers
   `{rlm_child_id, next, name, session_dir, model}` at admission and the run proceeds detached.
 - kwargs are a whitelist: `name, model, thinking, fork, isolation, deny_write, deny_read,
-  deny_url, context, check, deadline_s, tokens, parent_close, role, partition, tools, turns`;
+  deny_url, context, check, deadline_s, tokens, parent_close, role, partition, tools, turns,
+  schema`;
   `fork=all` refuses a model.
 - A child's request is made of its brief (D307). `partition` is a list of Urls resolved at spawn
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
@@ -491,7 +492,9 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   gate rules bind it, and it has no extension, kernel, plan, schedule,
   checkpoint or environment block; a fork or an isolation refuses; 64 held readers refuse the next
   until one is reaped. `rlm.ask(question, partition,
-  schema=…)` runs one, reads its result and reaps it.
+  schema=…)` runs one, reads its result and reaps it. A reader's `schema` is named in its
+  question and sent as structured output only by a reader with `tools=[]` or `turns=1` (the turn cap's last word still carries the tools, so a reader that keeps its tools gets the schema in its question and `result`'s check only), strictly only where it closes every object (D309); its
+  partition is its own first message, marked `shared_through` when a sibling sent it within 300 s.
 - `isolation` is `none`, `worktree` or `container:<image>` (D286), from `rlm.run` or a plan
   delegation's `spec.isolation`. A container child claims the same lane, branch and merge as a
   worktree child; `docker run -d --rm` starts one container of the image over it at spawn, the
@@ -526,7 +529,7 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - Shapes: [`types/src/subagent.rs`](../crates/types/src/subagent.rs) (`ChildUpdate` on
   `_yi/subagent_update`), [`types/src/lease.rs`](../crates/types/src/lease.rs) (`Lease`,
   `LeaseRecord`, `ParentClose`); child dirs `<parent rlm dir>/sub-<8 hex>`
-- Settled by: D165, D210, D215, D216, D218, D234, D307, D308
+- Settled by: D165, D210, D215, D216, D218, D234, D307, D308, D309
 
 ## 12. Mailbox
 A family message: an envelope in the receiver's inbox before delivery, then its one queue.
