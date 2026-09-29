@@ -191,6 +191,14 @@ def upstreams(messages):
     return tally
 
 
+def _failed_empty(message):
+    """A request that failed before delivering any block was not generated, so it costs $0, not an
+    unknown (owner, 2026-09-28: "a failed request that returned nothing count as $0")."""
+    blocks = [b for b in message.get("content") or [] if isinstance(b, dict)]
+    return message.get("stopReason") == "error" and not any(
+        (b.get("text") or b.get("thinking") or "").strip() or b.get("type") == "toolCall" for b in blocks)
+
+
 def parse_events(path):
     """Sum assistant usage over a `yi ask --json` transcript.
 
@@ -219,7 +227,7 @@ def parse_events(path):
         turns.append(message)
         usage = message.get("usage")
         _add_tokens(totals, usage)
-        if isinstance(usage, dict) and usage.get("unknown") is True:
+        if isinstance(usage, dict) and usage.get("unknown") is True and not _failed_empty(message):
             unknown += 1
         if isinstance(usage, dict) and isinstance(usage.get("cost"), dict):
             total = usage["cost"].get("total")
