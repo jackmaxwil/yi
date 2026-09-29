@@ -722,8 +722,7 @@ impl PermissionBroker {
             })
     }
 
-    /// The `ask_user` seam: a request still waiting is put to the human once; an answered one
-    /// is answered from the ledger.
+    /// The `ask_user` seam: a waiting request is asked once; an answered one replies from the ledger.
     pub fn resolve_request(&self, request: u64, tool_call_id: &str) -> String {
         let request = RequestId::new(request);
         let Some(_asking) = InFlight::claim(&self.asking, request) else {
