@@ -33,6 +33,7 @@ fn model(reasoning: bool) -> Model {
 
 fn context() -> LlmContext {
     LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "be terse".to_owned(),
         messages: vec![AgentMessage::host_user(
             UserContent::Text("hi".to_owned()),
@@ -362,6 +363,7 @@ fn a_call_streamed_as_text_finishes_as_a_tool_call() -> Result<(), Box<dyn Error
 #[test]
 fn a_routed_claude_request_keeps_its_newest_twenty_images() {
     let turns = |count: usize| LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: String::new(),
         messages: (0..count)
             .map(|_| {

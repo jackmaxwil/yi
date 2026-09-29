@@ -55,6 +55,7 @@ pub async fn title_session(session: &AgentSession) -> Result<Option<String>, Str
         clip(&answered)
     );
     let context = LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "You name coding sessions.".to_owned(),
         messages: yi_context::convert_to_llm(&[AgentMessage::host_user(
             UserContent::Text(prompt),
