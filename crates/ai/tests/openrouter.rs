@@ -22,7 +22,7 @@ fn target_model() -> Result<Model, Box<dyn Error>> {
         .ok_or_else(|| format!("bundled catalog is missing openrouter/{TARGET}").into())
 }
 
-fn history_context() -> LlmContext {
+pub(crate) fn history_context() -> LlmContext {
     LlmContext {
         system_prompt: "be terse".to_owned(),
         messages: vec![
@@ -173,7 +173,6 @@ fn a_claude_newer_than_the_bundle_marks_its_system_and_the_block_before_the_envi
 -> TestResult {
     let fetched = Model {
         id: "anthropic/claude-opus-5.5".to_owned(),
-        compat: Some(json!({"supportsDeveloperRole": false, "thinkingFormat": "openrouter"})),
         ..model("anthropic/claude-opus-5")?
     };
     let params = build_params(&fetched, &tool_loop_context(), &OpenAiOptions::default());
