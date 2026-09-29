@@ -52,7 +52,6 @@ pub struct SessionConfig {
 pub struct RequestShape {
     pub schema: Option<serde_json::Value>,
     pub shared_through: Option<usize>,
-    pub one_shot: bool,
 }
 
 struct Shared {
@@ -304,6 +303,14 @@ impl AgentSession {
 
     /// A session whose one prompt is never continued (the auto-reviewer) says so, and its
     /// tail is never marked (D295).
+    pub fn reuse(&self) -> yi_types::model::Reuse {
+        self.shared
+            .reuse
+            .lock()
+            .map(|reuse| *reuse)
+            .unwrap_or_default()
+    }
+
     pub fn set_reuse(&self, reuse: yi_types::model::Reuse) {
         if let Ok(mut slot) = self.shared.reuse.lock() {
             *slot = reuse;

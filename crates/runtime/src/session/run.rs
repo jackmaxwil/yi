@@ -261,9 +261,6 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     config.guards = crate::levers::get().loop_guards();
     if let Some(shape) = shared.shape.get() {
         (config.schema, config.shared_through) = (shape.schema.clone(), shape.shared_through);
-        if shape.one_shot {
-            config.reuse = yi_types::model::Reuse::OneShot;
-        }
     }
     config.tool_execution = tool_execution;
     config.reuse = shared.reuse.lock().map(|reuse| *reuse).unwrap_or_default();

@@ -86,3 +86,27 @@ fn an_open_schema_is_guidance_where_strict_mode_would_refuse_it() {
         &json!({"type": "string", "maxLength": 3})
     ));
 }
+
+#[test]
+fn strict_judges_the_schema_nodes_not_the_property_names() {
+    let strict = yi_ai::schema::strict;
+    let open_without_type =
+        json!({"properties": {"line": {"type": "integer"}}, "required": ["line"]});
+    let open_nullable = json!({"type": "object", "properties": {"hit": {
+        "type": ["object", "null"], "properties": {"line": {"type": "integer"}}, "required": ["line"]}},
+        "required": ["hit"], "additionalProperties": false});
+    let array_root = json!({"type": "array", "items": {"type": "string"}});
+    let combined = json!({"type": "object", "properties": {}, "required": [],
+        "additionalProperties": false, "allOf": []});
+    for refused in [&open_without_type, &open_nullable, &array_root, &combined] {
+        assert!(!strict(refused), "{refused}");
+    }
+    let named_like_keywords = json!({"type": "object",
+        "properties": {"pattern": {"type": "string"}, "minimum": {"type": "integer"}},
+        "required": ["pattern", "minimum"], "additionalProperties": false});
+    assert!(strict(&named_like_keywords));
+    let nested = json!({"type": "object", "properties": {"hits": {"type": "array", "items": {
+        "type": "object", "properties": {"line": {"type": "integer"}}, "required": ["line"],
+        "additionalProperties": false}}}, "required": ["hits"], "additionalProperties": false});
+    assert!(strict(&nested));
+}

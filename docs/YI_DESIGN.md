@@ -492,7 +492,7 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   checkpoint or environment block; a fork or an isolation refuses; 64 held readers refuse the next
   until one is reaped. `rlm.ask(question, partition,
   schema=…)` runs one, reads its result and reaps it. A reader's `schema` is named in its
-  question and sent as structured output, strictly only where it closes every object (D309); its
+  question and sent as structured output on a request with no tools, strictly only where it closes every object (D309); its
   partition is its own first message, marked `shared_through` when a sibling sent it within 300 s.
 - `isolation` is `none`, `worktree` or `container:<image>` (D286), from `rlm.run` or a plan
   delegation's `spec.isolation`. A container child claims the same lane, branch and merge as a

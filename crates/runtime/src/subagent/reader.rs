@@ -117,16 +117,18 @@ pub fn session(
     child.set_request_shape(crate::session::RequestShape {
         schema: reader.schema.clone(),
         shared_through: reader.shared_through,
-        one_shot: reader.tools.is_empty(),
     });
     child.set_wall(build.wall);
     if let Some(rules) = rules {
         child.set_rules_engine(rules);
     }
-    let named = tools
+    let named: Vec<_> = tools
         .into_iter()
         .filter(|tool| reader.turns > 1 && reader.tools.iter().any(|name| name == tool.name()))
         .collect();
+    if named.is_empty() {
+        child.set_reuse(yi_types::model::Reuse::OneShot);
+    }
     child.use_tools(named, cwd, broker);
     child
 }
@@ -243,10 +245,17 @@ pub(crate) fn brief(
         }
         None => prompt,
     };
-    if let Some(text) = &fenced {
+    Ok((fenced, question))
+}
+
+pub(crate) fn share(
+    host: &super::SubagentHost,
+    seed: Option<&String>,
+    cast: &mut super::build::Cast,
+) {
+    if let (Some(reader), Some(text)) = (cast.3.as_mut(), seed) {
         reader.shared_through = seen_recently(host, text).then_some(0);
     }
-    Ok((fenced, question))
 }
 
 const SHARED_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
