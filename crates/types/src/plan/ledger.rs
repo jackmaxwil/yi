@@ -282,3 +282,7 @@ impl JournalRecord {
         self.record.extra.contains_key("refusal")
     }
 }
+
+impl crate::entry::CustomRecord for PlanOpRecord {
+    const TYPE: &'static str = PLAN_OP_ENTRY_TYPE;
+}

@@ -1,8 +1,7 @@
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::plan::doc::{BlockedOn, Note, PlanId, TODO_LABEL_MAX, Todo, TodoLabel, TodoState};
 use yi_types::schedule::{
-    CLOCK_KEY, CatchUp, ClockStamp, CronSchedule, HALT_ENTRY_TYPE, HaltRecord, Job, JobStatus,
-    Overlap, ScheduleKind,
+    CLOCK_KEY, CatchUp, ClockStamp, CronSchedule, HaltRecord, Job, JobStatus, Overlap, ScheduleKind,
 };
 use yi_types::todo::TodoList;
 use yi_types::url::Url;
@@ -413,12 +412,9 @@ impl HeartbeatService {
     }
 
     fn record_halt(&self, record: &HaltRecord) {
-        let (Some(words), Ok(payload)) = (&self.words, serde_json::to_value(record)) else {
-            return;
-        };
-        if let Some(session) = words() {
-            let _a_ledger_write_never_fails_the_switch = yi_session::lock_session(&session)
-                .append_custom("main", HALT_ENTRY_TYPE, Some(payload));
+        if let Some(session) = self.words.as_ref().and_then(|words| words()) {
+            let _a_ledger_write_never_fails_the_switch =
+                yi_session::lock_session(&session).append_custom_record(record);
         }
     }
 

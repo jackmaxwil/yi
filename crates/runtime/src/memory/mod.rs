@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
-use yi_types::memory::{MEMORY_ENTRY_TYPE, MemoryPointer};
+use yi_types::memory::MemoryPointer;
 use yi_types::plan::canonical::Digest;
 
 pub use doc::Note;
@@ -134,14 +134,8 @@ impl Verbs {
             hash,
             extra: Map::new(),
         };
-        let appended = serde_json::to_value(&pointer)
-            .map_err(|error| error.to_string())
-            .and_then(|payload| {
-                yi_session::lock_session(&shared)
-                    .append_custom("main", MEMORY_ENTRY_TYPE, Some(payload))
-                    .map_err(|error| error.to_string())
-            });
-        appended
+        yi_session::lock_session(&shared)
+            .append_custom_record(&pointer)
             .err()
             .map(|error| format!("the session did not record the {op}: {error}"))
     }
@@ -457,17 +451,8 @@ mod tests {
                 ..yi_session::EntryQuery::default()
             })
             .unwrap();
-        let pointers: Vec<MemoryPointer> = entries
-            .iter()
-            .filter_map(|entry| match entry {
-                yi_types::entry::Entry::Custom {
-                    custom_type,
-                    data: Some(data),
-                    ..
-                } if custom_type == MEMORY_ENTRY_TYPE => serde_json::from_value(data.clone()).ok(),
-                _ => None,
-            })
-            .collect();
+        let pointers: Vec<MemoryPointer> = yi_session::lock_session(&shared)
+            .custom_records(yi_session::EntryOrder::OldestFirst, None);
         let ops: Vec<&str> = pointers.iter().map(|pointer| pointer.op.as_str()).collect();
         assert_eq!(ops, vec!["save", "read", "forget"]);
         assert!(

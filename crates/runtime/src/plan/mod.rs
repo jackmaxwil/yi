@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, StopReason, UserContent};
+use yi_types::message::{AgentMessage, StopReason};
 use yi_types::plan::doc::{
     Check, DocError, Plan, PlanId, PlanState, TodoState, TodoStateName, TouchCount,
 };
@@ -397,16 +397,7 @@ impl PlanService {
             if let Some(text) = self.stale_reminder(&plan)
                 && !finished
             {
-                (self.deliver)(
-                    AgentMessage::Custom {
-                        custom_type: "reminder".to_owned(),
-                        content: UserContent::Text(text),
-                        display: true,
-                        details: None,
-                        timestamp: yi_session::now_ms(),
-                    },
-                    DeliveryMode::Steer,
-                );
+                (self.deliver)(crate::rules::reminder(text), DeliveryMode::Steer);
             }
         }
     }

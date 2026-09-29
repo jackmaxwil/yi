@@ -189,12 +189,8 @@ pub(crate) fn read_board(path: &Path) -> std::io::Result<String> {
 
 /// A fresh file created exclusively, then renamed over `path`: rename replaces a link.
 pub(crate) fn write_board(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
     refuse_linked_board(path)?;
-    let fresh = path.with_extension("tmp");
-    let _a_stale_file_or_link_is_only_unlinked = std::fs::remove_file(&fresh);
-    std::fs::File::create_new(&fresh)?.write_all(bytes)?;
-    std::fs::rename(&fresh, path)
+    yi_session::replace_file(path, bytes)
 }
 
 impl RuntimeWiring {
@@ -741,14 +737,9 @@ fn journal_into(
     store: Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>,
 ) -> crate::permission::Journal {
     Arc::new(move |record| {
-        let (Some(store), Ok(data)) = (store(), serde_json::to_value(&record)) else {
-            return;
-        };
-        let _journaled = yi_session::lock_session(&store).append_custom(
-            "main",
-            yi_types::permission::PERMISSION_ENTRY,
-            Some(data),
-        );
+        if let Some(store) = store() {
+            let _journaled = yi_session::lock_session(&store).append_custom_record(&record);
+        }
     })
 }
 
