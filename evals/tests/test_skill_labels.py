@@ -41,6 +41,44 @@ class SkillLabels(unittest.TestCase):
         """yi-runtime's classifier_e2e::a_message_id_matches_the_labelling_tool pins the same value."""
         self.assertEqual(skill_labels.message_id("  Land THIS branch\n\tonce the ÉTÉ gate is green "), "2990f761ef69")
 
+    def test_a_message_id_splits_on_the_runtimes_whitespace_only(self):
+        """Rust's is_ascii_whitespace leaves out the vertical tab; a lone surrogate must not crash."""
+        self.assertEqual(skill_labels.message_id("a\vb"), "98992d7f2eec")
+        self.assertEqual(skill_labels.message_id("a\x0cb"), skill_labels.message_id("a b"))
+        self.assertEqual(len(skill_labels.message_id("a \ud800")), 12)
+
+    def test_a_killed_run_resumes_past_its_torn_line_and_odd_answers_are_invalid(self):
+        skill_labels.corpus(self.dir / "claude", self.dir / "yi", self.corpus)
+        out = self.dir / "labels.jsonl"
+        out.write_text('{"id": "torn", "sk')
+        answers = iter(['{"skill": ["land"]}', '["land"]', '{"skill": 3}'])
+        on_disk = []
+
+        def teacher(text):
+            on_disk.append(len(out.read_text().splitlines()))
+            return next(answers), 0.0
+
+        count, _ = skill_labels.label(self.corpus, out, "m", 9.0, None, teacher=teacher)
+        self.assertEqual(on_disk, [1, 2, 3], "each row is on disk before the next call is paid for")
+        self.assertEqual(count, 3)
+        rows = [skill_labels.parsed(line) for line in out.read_text().splitlines()]
+        self.assertEqual([row and row["skill"] for row in rows], [None, "invalid", "invalid", "invalid"])
+        self.assertEqual(skill_labels.freeze(self.corpus, out, self.dir / "frozen.csv", 1, 1, 1), 0)
+
+    def test_a_yi_message_keeps_its_edges_and_a_surrogate_reaches_the_sheet(self):
+        lane = self.dir / "yi" / "odd"
+        lane.mkdir()
+        rows = [{"type": "message", "message": {"role": "user", "attribution": "user", "content": text}}
+                for text in ["fix it\u3000", "hi \ud800", "fix\u2028it"]]
+        (lane / "s.jsonl").write_text("\n".join(json.dumps(row, ensure_ascii=index == 1) for index, row in enumerate(rows)))
+        skill_labels.corpus(self.dir / "empty", lane, self.corpus)
+        ids = [json.loads(line)["id"] for line in self.corpus.read_text().splitlines()]
+        self.assertEqual(ids, [skill_labels.message_id(text) for text in ["fix it\u3000", "hi \ud800", "fix\u2028it"]])
+        out = self.dir / "labels.jsonl"
+        out.write_bytes(b'\xff\n{"id": "%s"}\n' % ids[0].encode())
+        skill_labels.label(self.corpus, out, "m", 9.0, None, teacher=lambda text: ('{"skill": "none"}', 0.0))
+        self.assertEqual(skill_labels.freeze(self.corpus, out, self.dir / "frozen.csv", 1, 3, 1), 3)
+
     def test_the_candidates_are_the_shipped_skills_with_a_trigger(self):
         found = dict(skill_labels.skills())
         self.assertIn("verify", found)

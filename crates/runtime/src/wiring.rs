@@ -894,6 +894,7 @@ fn subagent_host(
         parent_session_dir: wiring.rlm_dir.clone(),
         defaults: session.settings_handle(),
         factory,
+        provider: Arc::clone(&wiring.provider),
         notice: lifecycle_notice(session),
         events: session.events_sender(),
         parent_messages: session.history_handle(),

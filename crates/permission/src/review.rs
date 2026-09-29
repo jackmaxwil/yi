@@ -163,6 +163,10 @@ impl ActionLedger {
         true
     }
 
+    pub fn forget(&mut self, action: ActionId) {
+        self.entries.retain(|entry| entry.action != action);
+    }
+
     /// Single use: an approval is spent by the first identical call, so one yes never becomes
     /// a standing grant. `allow always` goes to the session rules, where those belong.
     pub fn take_approval(&mut self, action: ActionId) -> bool {

@@ -33,8 +33,8 @@ pub fn split(raw: &str) -> (String, Endings) {
 }
 
 impl Endings {
-    /// `after` with the BOM and terminators back: output line `j` ends as source line
-    /// `origin[j]` did; a line the edit wrote (`None`) ends as most lines do (tie: first seen).
+    /// `after` with the BOM and terminators back: output line `j` ends as source line `origin[j]`
+    /// did, or as most lines do (tie: first seen) when `None`, a `\n` an edit or replacement wrote.
     pub fn restore(&self, after: &str, origin: &[Option<usize>]) -> String {
         let mut tally: Vec<(&str, usize)> = Vec::new();
         for end in &self.ends {
