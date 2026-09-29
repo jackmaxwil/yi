@@ -264,8 +264,13 @@ async fn a_reader_is_refused_what_a_reader_cannot_use() -> TestResult {
     let refused = |args: Value| family.host.spawn("q".to_owned(), kwargs(args)).err();
     let fork = refused(json!({"role": "reader", "fork": "all"})).ok_or("fork admitted")?;
     assert!(fork.contains("not a fork"), "{fork}");
+    let bare = refused(json!({"fork": "all"})).ok_or("a bare fork admitted as a reader")?;
+    assert!(bare.contains("role=\"root\" spawns a full child"), "{bare}");
     let bash = refused(json!({"role": "reader", "tools": ["bash"]})).ok_or("bash admitted")?;
-    assert_eq!(bash, "a reader may call read and grep, not bash");
+    assert_eq!(
+        bash,
+        "a reader may call read and grep, not bash; role=\"root\" spawns a full child"
+    );
     let kernel = refused(json!({"role": "reader", "partition": ["kernel://main/x"]}))
         .ok_or("kernel partition admitted")?;
     assert!(kernel.contains("context_keys"), "{kernel}");
