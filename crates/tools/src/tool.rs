@@ -149,12 +149,20 @@ pub fn detail_text(text: &str) -> Value {
     if text.len() <= DETAIL_CAP {
         return Value::String(text.to_owned());
     }
-    let mut end = DETAIL_CAP;
-    while end > 0 && !text.is_char_boundary(end) {
-        end = end.saturating_sub(1);
-    }
-    let head = text.get(..end).unwrap_or_default();
+    let head = text
+        .get(..text.floor_char_boundary(DETAIL_CAP))
+        .unwrap_or_default();
     Value::String(format!("{head}\n… truncated at {DETAIL_CAP} bytes"))
+}
+
+pub(crate) fn clip(line: &str, cols: usize) -> (String, bool) {
+    match line.char_indices().nth(cols) {
+        Some((end, _)) => (
+            format!("{}\u{2026}", line.get(..end).unwrap_or_default()),
+            true,
+        ),
+        None => (line.to_owned(), false),
+    }
 }
 
 pub fn require_str<'a>(input: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {

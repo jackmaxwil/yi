@@ -48,13 +48,10 @@ pub fn refusal_rows(display: &[u64], anchors: &[u64], lines: &[impl AsRef<str>])
             .and_then(|index| index.checked_sub(1))
             .and_then(|index| lines.get(index))
             .map_or("", |text| text.as_ref());
-        let text = if text.chars().count() > SEEN_LINE_REVEAL_MAX_COLUMNS {
+        let (text, cut) = crate::tool::clip(text, SEEN_LINE_REVEAL_MAX_COLUMNS);
+        if cut {
             clipped.push(line);
-            let head: String = text.chars().take(SEEN_LINE_REVEAL_MAX_COLUMNS).collect();
-            format!("{head}\u{2026}")
-        } else {
-            text.to_owned()
-        };
+        }
         let marker = if anchors.contains(&line) { "*" } else { " " };
         rows.push(format!("{marker}{}", format_numbered_line(line, &text)));
     }
