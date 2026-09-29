@@ -5,7 +5,7 @@ name: review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
 
 # A newer head supersedes the rounds on the old one.
 concurrency:
@@ -19,9 +19,12 @@ jobs:
   review:
     # A fork's head never runs with the bot's key, and a PR out of draft is past review.
     # Folded: a plain scalar reads the `: ` inside 'WIP: ' as a mapping, and the forge rejects the file.
+    # Only a draft labelled `review` until the provider enforces the answer shape (#826, #880): three
+    # runs posted nothing, each voided by one of about 26 calls answering outside its JSON shape.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository
       && startsWith(github.event.pull_request.title, 'WIP: ')
+      && contains(github.event.pull_request.labels.*.name, 'review')
     runs-on: ubuntu-latest
     # One round on a 293-line change took 510 s; two rounds and a warm build fit.
     timeout-minutes: 60
@@ -62,3 +65,12 @@ jobs:
           # The second call reads a clean head again for round two and says why when it does not.
           just pr review ${{ github.event.pull_request.number }}
           just pr review ${{ github.event.pull_request.number }}
+      # A void round's reason is one line; the answers that caused it are in these sessions.
+      - name: keep the round's sessions
+        if: failure()
+        run: cp -r ~/.yi/sessions/pr-rounds pr-round-sessions || true
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: pr-round-sessions
+          path: pr-round-sessions
