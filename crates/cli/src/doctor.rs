@@ -62,7 +62,9 @@ fn host_environment(_site: &Site) -> Finding {
 }
 
 fn home_absolute(site: &Site) -> Finding {
-    if site.home.is_absolute() {
+    if site.home.as_os_str().is_empty() {
+        fail("HOME is not set")
+    } else if site.home.is_absolute() {
         ok(site.home.display().to_string())
     } else {
         fail(format!("{} is relative", site.home.display()))

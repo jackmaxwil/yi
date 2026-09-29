@@ -112,11 +112,14 @@ const REMOVED: &[(&str, &str)] = &[("gates", "the artifact and closure stop gate
 /// A key [`migrate`] dropped before the strict parse, and why, so a config that loaded
 /// yesterday still loads and the caller names each drop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConfigMigration(&'static str, &'static str);
+pub struct ConfigMigration {
+    key: &'static str,
+    why: &'static str,
+}
 
 impl std::fmt::Display for ConfigMigration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Self(key, why) = self;
+        let Self { key, why } = self;
         write!(f, "the config's `{key}` key is ignored: {why}; delete it")
     }
 }
@@ -130,7 +133,7 @@ pub fn migrate(config: &mut serde_json::Value) -> Vec<ConfigMigration> {
     REMOVED
         .iter()
         .filter(|(key, _)| keys.remove(*key).is_some())
-        .map(|&(key, why)| ConfigMigration(key, why))
+        .map(|&(key, why)| ConfigMigration { key, why })
         .collect()
 }
 
