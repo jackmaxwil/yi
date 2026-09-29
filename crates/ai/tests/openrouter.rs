@@ -236,6 +236,50 @@ fn every_openrouter_route_marks_the_stable_prefix_and_never_the_environment() ->
     Ok(())
 }
 
+/// OpenRouter documents `cache_control` on text parts only (#742): a turn that ends in an image
+/// keeps its tail mark on its last text part, and no image part carries one.
+#[test]
+fn an_image_turn_marks_its_last_text_part_and_never_the_image() -> TestResult {
+    let text = |text: &str| Content::Text {
+        text: text.to_owned(),
+        text_signature: None,
+    };
+    let mut context = tool_loop_context();
+    context.messages.push(AgentMessage::host_user(
+        UserContent::Blocks(vec![
+            text("compare these"),
+            text("the second is newer"),
+            Content::Image {
+                data: "iVBORw0KGgo=".to_owned(),
+                mime_type: "image/png".to_owned(),
+            },
+        ]),
+        0,
+    ));
+    let params = build_params(
+        &model("anthropic/claude-haiku-4.5")?,
+        &context,
+        &OpenAiOptions::default(),
+    );
+    let messages = params["messages"].as_array().ok_or("messages")?;
+    let turn = messages.len().checked_sub(2).ok_or("no turn")?;
+    let marked: Vec<(usize, usize)> = messages
+        .iter()
+        .enumerate()
+        .flat_map(|(index, message)| {
+            let parts = message["content"].as_array().cloned().unwrap_or_default();
+            parts
+                .into_iter()
+                .enumerate()
+                .filter(|(_, part)| !part["cache_control"].is_null())
+                .map(move |(at, _)| (index, at))
+        })
+        .collect();
+    assert_eq!(marked.last(), Some(&(turn, 1)), "{marked:?}");
+    assert_eq!(messages[turn]["content"][2]["type"], "image_url");
+    Ok(())
+}
+
 #[test]
 fn a_direct_openai_compatible_route_gets_no_marks_and_no_separator() -> TestResult {
     let direct = Model {
