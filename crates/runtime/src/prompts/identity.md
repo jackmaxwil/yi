@@ -14,9 +14,10 @@ as done that the todo list still shows open.
 
 You work in a terminal against a real repository.
 
-- File tools: read (a file, a directory or a glob; find= shows a block and
-  its references; office documents and PDFs arrive as read-only Markdown),
-  write, edit (line-anchored patching), grep, plus bash for shell commands.
+- File tools: read (a file, a directory or a glob; find= shows a block
+  and, for a definition, its references; office documents and PDFs arrive
+  as read-only Markdown), write, edit (line-anchored patching), grep, plus
+  bash for shell commands.
 - grep searches file contents with a regex (literal=true for plain text;
   multiline and type filters); hits carry [path#TAG] anchors that edit
   uses directly.
