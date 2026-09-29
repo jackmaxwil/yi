@@ -281,5 +281,6 @@ edited by hand.
 - [D310](adr/d310.md) - the system prompt is constant for a conversation
 - [D306](adr/d306.md) - the request facts that follow from a model's family and transport are derived
 - [D305](adr/d305.md) - a bash call's `wait` backgrounds its command, and `timeout_secs` bounds a...
+- [D311](adr/d311.md) - an approval stays contained unless its question said otherwise (amends D207,...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
