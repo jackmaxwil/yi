@@ -19,14 +19,14 @@ pub const REDUCE_FLOOR: usize = 8_192;
 /// The user asked for the whole thing; reducing answers a different question.
 const RAW_FLAGS: [&str; 6] = ["-v", "--verbose", "--nocapture", "--porcelain", "-la", "-C"];
 
-/// Every path runs through [`never_worse`] and a lossy result is tee'd, so the full text is
-/// one `read` away. `max_lines` moves the line caps, never the upstream byte ceiling.
+/// Every path runs through [`never_worse`]; a lossy result points at `spill`, the producer's
+/// copy of every byte. `max_lines` moves the line caps, never the upstream byte ceiling.
 pub fn reduce(
     command: &str,
     stdout: &str,
     stderr: &str,
     exit_code: i32,
-    recovery_dir: Option<&Path>,
+    spill: Option<&Path>,
     max_lines: Option<usize>,
 ) -> Reduced {
     let raw = join_streams(stdout, stderr);
@@ -49,11 +49,9 @@ pub fn reduce(
     };
     let text = never_worse(&raw, filtered);
     let out_bytes = text.len();
-    let recovery = if out_bytes < raw_bytes {
-        recovery_dir.and_then(|dir| tee(dir, &raw))
-    } else {
-        None
-    };
+    let recovery = spill
+        .filter(|_| out_bytes < raw_bytes)
+        .map(Path::to_path_buf);
     // Output that is lossy with nowhere to recover from is worse than unreduced.
     if out_bytes < raw_bytes && recovery.is_none() {
         return Reduced {
@@ -295,11 +293,80 @@ pub fn strip_ansi(text: &str) -> String {
     out
 }
 
-/// Tee'd so the model can open the full text with `read`.
-fn tee(dir: &Path, raw: &str) -> Option<PathBuf> {
-    std::fs::create_dir_all(dir).ok()?;
-    let id = xxhash_rust::xxh32::xxh32(raw.as_bytes(), 0);
-    let path = dir.join(format!("{id:08x}.txt"));
-    std::fs::write(&path, raw).ok()?;
-    Some(path)
+const SPILL_HELD: usize = 64 * 1024;
+const SPILL_CEILING: u64 = 256 * 1024 * 1024;
+
+/// Every byte a producer shows a cut of: 64 KiB held, then a `.part` file under the recovery dir,
+/// renamed `<xxh32>.txt` by [`Spill::keep`] and removed if dropped unkept (D316).
+pub struct Spill {
+    dir: Option<PathBuf>,
+    held: Vec<u8>,
+    part: Option<(PathBuf, std::fs::File)>,
+    hash: xxhash_rust::xxh32::Xxh32,
+    written: u64,
+}
+
+impl Spill {
+    /// `None` keeps nothing.
+    pub fn new(dir: Option<&Path>) -> Self {
+        Self {
+            dir: dir.map(Path::to_path_buf),
+            held: Vec::new(),
+            part: None,
+            hash: xxhash_rust::xxh32::Xxh32::new(0),
+            written: 0,
+        }
+    }
+
+    /// Stops at 256 MiB; a failed write disables the spill, so `keep` names no partial file.
+    pub fn write(&mut self, bytes: &[u8]) {
+        if self.dir.is_none() {
+            return;
+        }
+        let room = usize::try_from(SPILL_CEILING.saturating_sub(self.written)).unwrap_or(0);
+        let bytes = bytes.get(..room.min(bytes.len())).unwrap_or_default();
+        self.hash.update(bytes);
+        let count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        self.written = self.written.saturating_add(count);
+        let wrote = match &mut self.part {
+            Some((_, file)) => std::io::Write::write_all(file, bytes).is_ok(),
+            None => {
+                self.held.extend_from_slice(bytes);
+                self.held.len() <= SPILL_HELD || self.open_part().is_ok()
+            }
+        };
+        if !wrote {
+            self.dir = None;
+        }
+    }
+
+    fn open_part(&mut self) -> std::io::Result<()> {
+        static PARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = PARTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = self.dir.clone().ok_or(std::io::ErrorKind::NotFound)?;
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!(".{}-{n}.part", std::process::id()));
+        let mut file = std::fs::File::create(&path)?;
+        self.part = Some((path, file.try_clone()?));
+        std::io::Write::write_all(&mut file, &std::mem::take(&mut self.held))
+    }
+
+    /// The file holding every byte written, or `None` when there is no dir or a write failed.
+    pub fn keep(&mut self) -> Option<PathBuf> {
+        let dir = self.dir.take()?;
+        let path = dir.join(format!("{:08x}.txt", self.hash.digest()));
+        let kept = match self.part.take() {
+            Some((part, _)) => std::fs::rename(&part, &path),
+            None => std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &self.held)),
+        };
+        kept.ok().map(|()| path)
+    }
+}
+
+impl Drop for Spill {
+    fn drop(&mut self) {
+        if let Some((part, _)) = self.part.take() {
+            let _gone_already_is_fine = std::fs::remove_file(part);
+        }
+    }
 }

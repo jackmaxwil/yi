@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::jobs::LiveOutput;
+use crate::reduce::Spill;
 use crate::tool::CancelFlag;
 
 pub const OUTPUT_CAP: usize = 30_000;
@@ -26,6 +27,18 @@ pub struct CommandCapture {
     pub cancelled: bool,
     pub truncated: bool,
     pub kill_error: Option<String>,
+    /// Every byte of both streams, as they arrived, when a stream was cut or ran past the
+    /// reducer's floor and a recovery dir was given.
+    pub spill: Option<std::path::PathBuf>,
+}
+
+impl CommandCapture {
+    /// What a cut capture ends with: the spill that holds every byte, else the bare cut.
+    pub fn cut_note(&self) -> Option<String> {
+        let kept = (self.spill.as_ref()).map(|path| format!("[full output: {}]", path.display()));
+        self.truncated
+            .then(|| kept.unwrap_or_else(|| "[output truncated]".to_owned()))
+    }
 }
 
 /// Walk the descendants, then kill the group, the shell and each walked pid: a live grandchild
@@ -145,7 +158,12 @@ fn group_kill(pgid: u32) -> Result<(), String> {
 
 /// Incident: keeping only the first `cap` bytes lost a long build's last lines, where its verdict
 /// is. The first half and a rolling last half are kept, and the middle is counted.
-fn drain_capped(mut reader: impl Read, cap: usize, live: Option<&LiveOutput>) -> (String, bool) {
+fn drain_capped(
+    mut reader: impl Read,
+    cap: usize,
+    live: Option<&LiveOutput>,
+    spill: &Mutex<Spill>,
+) -> (String, bool) {
     let head_cap = cap / 2;
     let tail_cap = cap.saturating_sub(head_cap);
     let mut head = Vec::new();
@@ -159,6 +177,9 @@ fn drain_capped(mut reader: impl Read, cap: usize, live: Option<&LiveOutput>) ->
                 let bytes = chunk.get(..n).unwrap_or(&[]);
                 if let Some(live) = live {
                     live.push(bytes);
+                }
+                if let Ok(mut spill) = spill.lock() {
+                    spill.write(bytes);
                 }
                 let room = head_cap.saturating_sub(head.len());
                 head.extend(bytes.iter().take(room));
@@ -206,7 +227,7 @@ pub fn run_captured(
     cancelled: &CancelFlag,
     cap: usize,
 ) -> Result<CommandCapture, String> {
-    run_captured_live(command, stdin, cancelled, cap, None)
+    run_captured_live(command, stdin, cancelled, cap, None, None)
 }
 
 pub(crate) fn run_captured_live(
@@ -215,6 +236,7 @@ pub(crate) fn run_captured_live(
     cancelled: &CancelFlag,
     cap: usize,
     live: Option<Arc<LiveOutput>>,
+    spill_dir: Option<&std::path::Path>,
 ) -> Result<CommandCapture, String> {
     command
         .stdin(if stdin.is_some() {
@@ -280,12 +302,14 @@ pub(crate) fn run_captured_live(
     };
 
     let stderr_live = live.clone();
+    let spill = Arc::new(Mutex::new(Spill::new(spill_dir)));
+    let stderr_spill = Arc::clone(&spill);
     let stderr_reader = std::thread::spawn(move || match stderr_pipe {
-        Some(pipe) => drain_capped(pipe, cap, stderr_live.as_deref()),
+        Some(pipe) => drain_capped(pipe, cap, stderr_live.as_deref(), &stderr_spill),
         None => (String::new(), false),
     });
     let (stdout, stdout_truncated) = match stdout_pipe {
-        Some(pipe) => drain_capped(pipe, cap, live.as_deref()),
+        Some(pipe) => drain_capped(pipe, cap, live.as_deref(), &spill),
         None => (String::new(), false),
     };
     let (stderr, stderr_truncated) = stderr_reader
@@ -302,13 +326,18 @@ pub(crate) fn run_captured_live(
         let _writer_done = writer.join();
     }
 
+    let truncated = stdout_truncated || stderr_truncated;
+    // Past the floor the reducer may cut too, and it points at this copy.
+    let large = stdout.len().saturating_add(stderr.len()) > crate::reduce::REDUCE_FLOOR;
+    let spill = spill.lock().ok().filter(|_| truncated || large);
     Ok(CommandCapture {
         stdout,
         stderr,
         exit_code: waited?,
         cancelled: was_cancelled.load(Ordering::SeqCst),
-        truncated: stdout_truncated || stderr_truncated,
+        truncated,
         kill_error,
+        spill: spill.and_then(|mut spill| spill.keep()),
     })
 }
 
@@ -337,7 +366,11 @@ mod tests {
     fn an_uncut_stream_is_decoded_whole() {
         // Twelve two-byte characters: the 17-byte head of a 35-byte cap ends inside the ninth.
         let text = "é".repeat(12);
-        assert_eq!(drain_capped(text.as_bytes(), 35, None), (text, false));
+        let spill = Mutex::new(Spill::new(None));
+        assert_eq!(
+            drain_capped(text.as_bytes(), 35, None, &spill),
+            (text, false)
+        );
     }
 
     #[test]
