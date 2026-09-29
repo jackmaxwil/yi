@@ -5,7 +5,7 @@ name: review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
 
 # A newer head supersedes the rounds on the old one.
 concurrency:
@@ -19,12 +19,9 @@ jobs:
   review:
     # A fork's head never runs with the bot's key, and a PR out of draft is past review.
     # Folded: a plain scalar reads the `: ` inside 'WIP: ' as a mapping, and the forge rejects the file.
-    # Only a draft labelled `review` until the provider enforces the answer shape (#826, #880): three
-    # runs posted nothing, each voided by one of about 26 calls answering outside its JSON shape.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository
       && startsWith(github.event.pull_request.title, 'WIP: ')
-      && contains(github.event.pull_request.labels.*.name, 'review')
     runs-on: ubuntu-latest
     # One round on a 293-line change took 510 s; two rounds and a warm build fit.
     timeout-minutes: 60
