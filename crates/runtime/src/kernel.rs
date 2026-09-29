@@ -15,6 +15,7 @@ pub use crate::kernel_bootstrap::{
 use crate::kernel_variables::{
     VariableReply, dump_variable_code, parse_variable_reply, read_variable_code, render_value,
 };
+use crate::wiring::make_board;
 
 pub type HostHandlerFn = dyn Fn(Map<String, Value>) -> HostFuture + Send + Sync;
 
@@ -224,7 +225,7 @@ pub(crate) fn kernel_profile(
     // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling.
     profile
         .writable
-        .extend(family_dir.map(crate::kernel_state::board));
+        .extend(family_dir.map(std::path::Path::to_path_buf));
     profile.loopback = true;
     profile.writable.sort();
     profile.writable.dedup();
@@ -329,7 +330,8 @@ impl KernelService {
         sandbox
             .writable
             .extend(state.map(std::path::Path::to_path_buf));
-        Some(kernel_profile(&sandbox, self.options.family_dir.as_deref()).kernel_prefix())
+        let family = self.options.family_dir.as_deref().map(make_board);
+        Some(kernel_profile(&sandbox, family.as_deref()).kernel_prefix())
     }
 
     fn kernel_env(&self, state: Option<&std::path::Path>) -> Vec<(String, String)> {
