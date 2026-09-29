@@ -230,18 +230,11 @@ impl Store {
     }
 
     fn lock(&self) -> Result<fs::File, StoreError> {
-        fs::create_dir_all(&self.dir).map_err(io("memory directory"))?;
-        let file = fs::File::create(self.dir.join(".lock")).map_err(io(".lock"))?;
-        file.lock().map_err(io(".lock"))?;
-        Ok(file)
+        yi_session::lock_file(&self.dir.join(".lock")).map_err(io(".lock"))
     }
 
     fn replace(&self, file: &str, text: &str) -> Result<(), StoreError> {
-        let target = self.dir.join(file);
-        let staging = self.dir.join(format!(".{file}.tmp"));
-        fs::write(&staging, text)
-            .and_then(|()| fs::rename(&staging, &target))
-            .map_err(io(file))
+        yi_session::replace_file(&self.dir.join(file), text.as_bytes()).map_err(io(file))
     }
 
     fn read_text(&self, file: &str) -> Result<Option<String>, StoreError> {
