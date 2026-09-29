@@ -409,7 +409,7 @@ pub(crate) mod tests {
     }
 
     fn scripted(script: Vec<AgentMessage>) -> AgentSession {
-        let provider = Arc::new(crate::provider::ProviderStream::new(None, None));
+        let provider = Arc::new(crate::provider::ProviderStream::new(None));
         provider.queue_faux(script);
         AgentSession::new(
             SessionConfig {
@@ -471,6 +471,7 @@ pub(crate) mod tests {
         let asks = serde_json::to_string(&script).is_ok_and(|text| text.contains("ask_user"));
         let cwd = root.to_path_buf();
         let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+            provider: Arc::new(crate::provider::ProviderStream::new(None)),
             depth: 0,
             max_depth: 1,
             max_children: 8,
@@ -1102,6 +1103,7 @@ pub(crate) mod tests {
         let root = Scratch::new("yi-dispatch-child-wake")?;
         let (events, _keep) = tokio::sync::broadcast::channel(16);
         let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+            provider: Arc::new(crate::provider::ProviderStream::new(None)),
             depth: 0,
             max_depth: 1,
             max_children: 8,

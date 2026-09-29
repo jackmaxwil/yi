@@ -67,7 +67,7 @@ fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
             thinking_level: None,
             tool_execution: ExecutionMode::Sequential,
         },
-        Arc::new(ProviderStream::new(None, None)),
+        Arc::new(ProviderStream::new(None)),
     );
     let store = memory_store(name);
     session.attach_store(store.clone())?;

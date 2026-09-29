@@ -13,6 +13,10 @@ const MAX_TURNS: u32 = 10;
 pub(crate) const PARTITION_CAP: usize = 65_536;
 pub const HELD_CAP: usize = 64;
 
+pub(crate) fn full_child(refusal: &str) -> String {
+    format!("{refusal}; role=\"root\" spawns a full child")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reader {
     pub tools: Vec<String>,
@@ -62,10 +66,10 @@ fn tools_of(kwargs: &Map<String, Value>) -> Result<Vec<String>, String> {
         .iter()
         .find(|name| !READER_TOOLS.contains(&name.as_str()))
     {
-        Some(name) => Err(format!(
+        Some(name) => Err(full_child(&format!(
             "a reader may call {}, not {name}",
             READER_TOOLS.join(" and ")
-        )),
+        ))),
         None => Ok(names),
     }
 }
@@ -98,6 +102,7 @@ pub fn session(
     tools: Vec<Arc<dyn yi_tools::Tool>>,
     cwd: std::path::PathBuf,
     broker: Option<Arc<crate::permission::PermissionBroker>>,
+    rules: Option<Arc<crate::rules::RuleEngine>>,
 ) -> AgentSession {
     let mut child = AgentSession::new(
         SessionConfig {
@@ -115,9 +120,12 @@ pub fn session(
         one_shot: reader.tools.is_empty(),
     });
     child.set_wall(build.wall);
+    if let Some(rules) = rules {
+        child.set_rules_engine(rules);
+    }
     let named = tools
         .into_iter()
-        .filter(|tool| reader.tools.iter().any(|name| name == tool.name()))
+        .filter(|tool| reader.turns > 1 && reader.tools.iter().any(|name| name == tool.name()))
         .collect();
     child.use_tools(named, cwd, broker);
     child
@@ -130,7 +138,8 @@ pub(crate) fn partition(
     cwd: &Path,
 ) -> Result<String, String> {
     let mut out = String::new();
-    for raw in entries {
+    let mut room = PARTITION_CAP;
+    for (index, raw) in entries.iter().enumerate() {
         let url: Url = raw
             .parse()
             .map_err(|error| format!("partition {raw}: {error}"))?;
@@ -144,21 +153,50 @@ pub(crate) fn partition(
                 "the partition names what its wall denies. {denied}"
             ));
         }
+        if room == 0 {
+            out.push_str(&format!(
+                "[… kept {index} of {} partition entries: partition cap {PARTITION_CAP} bytes; \
+                 not inlined: {}]\n",
+                entries.len(),
+                entries.get(index..).unwrap_or_default().join(", ")
+            ));
+            break;
+        }
         let fetched = resolver
             .fetch(&url)
             .map_err(|error| format!("partition {raw}: {error}"))?;
-        let first = url.fragment().map_or(1, |range| range.start().get());
-        let numbered: Vec<String> = fetched
-            .text
-            .lines()
-            .zip(first..)
-            .map(|(line, number)| format!("{number}:{line}"))
-            .collect();
-        let text = crate::ext::sanitize(&numbered.join("\n")).into_owned();
+        let first = url
+            .fragment()
+            .map_or(1, |range| usize::try_from(range.start().get()).unwrap_or(1));
+        let mut kept = Vec::new();
+        let lines: Vec<&str> = fetched.text.lines().collect();
+        for (line, number) in lines.iter().zip(first..) {
+            let numbered = format!("{number}:{line}");
+            let Some(left) = room.checked_sub(numbered.len().saturating_add(1)) else {
+                room = 0;
+                break;
+            };
+            room = left;
+            kept.push(numbered);
+        }
+        let text = crate::ext::sanitize(&kept.join("\n")).into_owned();
         out.push_str(&crate::ext::fence(raw, "untrusted", &text));
         out.push_str("\n\n");
+        if kept.len() < lines.len() {
+            let (next, last) = (
+                first.saturating_add(kept.len()),
+                first.saturating_add(lines.len()).saturating_sub(1),
+            );
+            let base = raw.split('#').next().unwrap_or(raw);
+            out.push_str(&format!(
+                "[… kept {} of {} lines of {raw}: partition cap {PARTITION_CAP} bytes; \
+                 the rest is {base}#L{next}-{last}]\n\n",
+                kept.len(),
+                lines.len()
+            ));
+        }
     }
-    Ok(yi_context::fit(&out, yi_context::Bytes(PARTITION_CAP)).text)
+    Ok(out)
 }
 
 fn entries(kwargs: &Map<String, Value>) -> Result<Vec<String>, String> {

@@ -1,10 +1,21 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use std::sync::mpsc::Sender;
+
+use crate::app::{App, Bottom};
 use crate::colors::Theme;
 use crate::keymap::{KeyCodeValue, SingleKey};
 use crate::popup::{BottomView, PopupResult};
 use crate::wrap::wrap_line;
+
+pub struct AskRequest {
+    pub title: String,
+    pub description: String,
+    pub grants: Vec<String>,
+    pub reply: Sender<AskChoice>,
+    pub tool_call_id: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskChoice {
@@ -24,6 +35,7 @@ pub struct ApprovalView {
     pub description: String,
     pub selected: usize,
     pub outcome: Option<AskChoice>,
+    pub tool_call_id: Option<String>,
     options: Vec<(AskChoice, String)>,
 }
 
@@ -48,6 +60,7 @@ impl ApprovalView {
         Self {
             title,
             description,
+            tool_call_id: None,
             selected: 0,
             outcome: None,
             options,
@@ -166,6 +179,16 @@ impl BottomView for ApprovalView {
                 PopupResult::Close
             }
             _ => PopupResult::Open,
+        }
+    }
+}
+
+impl App {
+    pub(crate) fn expire_approval(&mut self, tool_call_id: &str) {
+        if let Some(Bottom::Approval(view, _)) = &self.bottom
+            && view.tool_call_id.as_deref() == Some(tool_call_id)
+        {
+            self.bottom = None;
         }
     }
 }

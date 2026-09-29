@@ -111,21 +111,24 @@ config raises it, eight children per parent, sixteen live per family.
 
 ## Patterns
 
-- Map-reduce: readers per shard `put` their findings; you reduce with
-  pandas in your kernel (`shards = [rlm.get(n) for n in names]`).
+A bare `rlm.run` is a question-child: it reads and answers once. Every
+pattern here but map-reduce spawns `role="root"`, a full child.
+
+- Map-reduce: `rlm.ask` per shard with a `schema`; you reduce the
+  answers with pandas in your kernel.
 - Hypothesis tournament: N children with `check=`; `result()` is withheld
   while red; take the first green and `interrupt` the rest.
 - Best-of-N: N writers in worktrees on one todo at different `thinking`
   levels or models; run the check in each through `tree://`; merge the
   winner, discard the rest.
 - Persistent specialist: one child kept all session as the test runner or
-  the reference reader; `await rlm.send(name, q, followup=True)` reuses
+  the codebase guide; `await rlm.send(name, q, followup=True)` reuses
   its warmed context.
-- Live pair review: write into a kernel variable; a reader fetches
+- Live pair review: write into a kernel variable; a root child fetches
   `kernel://main/draft` on each `send` and answers with findings.
 - What-if fork: `fork=8` into a worktree for the risky refactor while you
   continue the safe one; discard on red.
-- Watchdog reader: a child polls `history://main/tail/20` every 60 s and
+- Watchdog: a child polls `history://main/tail/20` every 60 s and
   sends one line when your tail repeats a tool batch three times.
 - Swarm with a blackboard: siblings `put` under their names and `get`
   each other's before starting a shard; `status()` says who still runs.
