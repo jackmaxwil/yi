@@ -279,5 +279,6 @@ edited by hand.
 - [D300](adr/d300.md) - a new user is set up by `yi setup`, offered once on the first terminal launch
 - [D301](adr/d301.md) - the classifier may approve an auto-mode ask, and settles one nobody answers,...
 - [D306](adr/d306.md) - the request facts that follow from a model's family and transport are derived
+- [D305](adr/d305.md) - a bash call's `wait` backgrounds its command, and `timeout_secs` bounds a...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
