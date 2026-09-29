@@ -766,14 +766,7 @@ fn render_banner(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     if spans.is_empty() {
         let armed = matches!(app.state.mode, Mode::Prefix);
         spans.push(Span::styled(
-            format!(
-                "   {}",
-                keys::hint(
-                    armed,
-                    app.cmd_hints,
-                    usize::from(area.width).saturating_sub(3)
-                )
-            ),
+            keys::hint(armed, app.cmd_hints, usize::from(area.width)),
             if armed {
                 theme.accent_style()
             } else {
