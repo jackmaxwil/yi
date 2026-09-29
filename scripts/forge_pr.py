@@ -424,7 +424,7 @@ def cmd_ready(args):
     errs = pr_review.ready_problems(rounds, pr["head"]["sha"])
     for err in errs:
         print(f"  {err}")
-    if errs and pr_review.MODE == "blocking" and not getattr(args, "force", False):
+    if errs and pr_review.MODE == "blocking":
         print(f"ready: refused — #{number} stays a draft")
         return 1
     answer = fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
@@ -630,9 +630,10 @@ def cmd_land(args):
     code = cmd_open(args)
     if code:
         return code
-    # `just land` is the owner asking for this merge now, so it readies its own draft.
-    args.number, args.force = None, True
+    # A PR lands through its review rounds: until two are clean on its head it stays a draft.
+    args.number = None
     if cmd_ready(args):
+        print("land: opened as a draft; the review bot reads it — `just pr merge` after `just pr ready` passes")
         return 1
     args.wait = True
     return cmd_merge(args)
