@@ -117,7 +117,7 @@ pub struct PermissionBroker {
     /// nothing in this file behaves differently from before it existed.
     reviewer: std::sync::OnceLock<Arc<crate::auto_review::Reviewer>>,
     ledger: Mutex<ActionLedger>,
-    asking: Mutex<()>,
+    asking: Mutex<std::collections::BTreeSet<RequestId>>,
     confirms: AtomicU64,
     journal: std::sync::OnceLock<Journal>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
@@ -181,7 +181,7 @@ impl PermissionBroker {
             events,
             reviewer: std::sync::OnceLock::new(),
             ledger: Mutex::new(ActionLedger::new()),
-            asking: Mutex::new(()),
+            asking: Mutex::new(std::collections::BTreeSet::new()),
             confirms: AtomicU64::new(0),
             journal: std::sync::OnceLock::new(),
             approver: std::sync::OnceLock::new(),
@@ -722,13 +722,15 @@ impl PermissionBroker {
             })
     }
 
-    /// The `ask_user` seam: one open request, replayed verbatim to the human.
+    /// The `ask_user` seam: a request still waiting is put to the human once; an answered one
+    /// is answered from the ledger.
     pub fn resolve_request(&self, request: u64, tool_call_id: &str) -> String {
         let request = RequestId::new(request);
-        let _one_question_at_a_time = self
-            .asking
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(_asking) = InFlight::claim(&self.asking, request) else {
+            return format!(
+                "Request {request} is already being put to the user; wait for that answer."
+            );
+        };
         let Some((stored, state)) = self
             .ledger
             .lock()
@@ -737,7 +739,7 @@ impl PermissionBroker {
             .map(|(ask, state)| (ask.clone(), state))
         else {
             return format!(
-                "There is no open request {request}: it was answered and used, or it never existed."
+                "There is no open request {request}: it was answered and used, dropped, or never existed."
             );
         };
         match state {
@@ -903,5 +905,32 @@ impl PermissionBroker {
                 contained: false,
             }
         }
+    }
+}
+
+struct InFlight<'a> {
+    set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
+    request: RequestId,
+}
+
+impl<'a> InFlight<'a> {
+    fn claim(
+        set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
+        request: RequestId,
+    ) -> Option<Self> {
+        let inserted = set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(request);
+        inserted.then_some(Self { set, request })
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.request);
     }
 }

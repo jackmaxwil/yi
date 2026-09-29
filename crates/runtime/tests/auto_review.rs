@@ -611,7 +611,12 @@ async fn a_request_asked_twice_at_once_is_put_to_the_user_once() -> TestResult {
         one.join().map_err(|_| "thread")?,
         two.join().map_err(|_| "thread")?,
     ];
-    assert_eq!(replies[0], replies[1]);
+    assert!(
+        replies
+            .iter()
+            .any(|reply| reply.contains("already being put to the user")),
+        "{replies:?}"
+    );
     assert_eq!(harness.asks.lock().map(|asks| asks.len()).unwrap_or(0), 1);
     Ok(())
 }
