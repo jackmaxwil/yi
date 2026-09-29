@@ -326,29 +326,25 @@ fn the_cheapest_ttl_prices_the_written_tokens_against_the_expected_rewrite()
     assert_eq!(choose(&paused, 6 * 60_000, &opus), Some(five));
     let held = spaced(&[30, 30], hour)?;
     assert_eq!(choose(&held, 20 * 60_000, &opus), Some(hour));
-    // A pause, then a compaction: the growth since is unknown, so the request is priced as
-    // writing its whole prompt, not nothing.
-    let mut compacted = MissTracker::default();
-    let compaction: Entry = serde_json::from_value(serde_json::json!({
-        "type": "compaction", "id": "c", "parentId": null, "seq": 0, "timestamp": 1000,
-        "summary": "", "retainedTail": [], "tokensBefore": 40_000,
-    }))?;
+    // A pause after which the prompt shrank: no growth has been seen, so the request is priced
+    // as writing its whole prompt, not nothing.
+    let mut unseen = MissTracker::default();
     for entry in [
         took(
             request(CLAUDE, (0, 39_500, 500), 0, "Amazon Bedrock")?,
             0,
             Some(five),
         )?,
-        compaction,
         took(
             request(CLAUDE, (0, 20_000, 500), 30 * 60_000, "Amazon Bedrock")?,
             0,
             Some(five),
         )?,
     ] {
-        compacted.observe_entry(&entry);
+        unseen.observe_entry(&entry);
     }
-    assert_eq!(choose(&compacted, 10_000, &opus), Some(five));
+    assert_eq!(unseen.estimate().and_then(|estimate| estimate.growth), None);
+    assert_eq!(choose(&unseen, 10_000, &opus), Some(five));
     let mut glm = opus.clone();
     glm.id = GLM.1.to_owned();
     assert_eq!(choose(&paused, 10_000, &glm), Some(Ttl::Min5));
