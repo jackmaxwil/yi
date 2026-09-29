@@ -696,8 +696,9 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
     // §16: ADVISOR.md attention text, project-local, best-effort.
     let attention = std::fs::read_to_string(wiring.cwd.join("ADVISOR.md")).ok();
     let llm = wiring.advisor.clone().map(|model| {
+        // Its own conversation: the root's ledger estimate and hour prefix are not its (D315).
         Arc::new(crate::advisor::review::LlmReviewer::new(
-            Arc::clone(&wiring.provider),
+            Arc::new(wiring.provider.for_child()),
             model,
             attention.clone(),
         ))

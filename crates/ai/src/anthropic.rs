@@ -4,7 +4,7 @@ use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 use yi_types::model::{LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolChoice, ToolDef};
 
-use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, encode};
+use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, Ttl, encode};
 use crate::catalog::calculate_cost;
 use crate::compat::compat_bool;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
@@ -29,7 +29,8 @@ pub struct AnthropicOptions {
     pub max_tokens: Option<u64>,
     pub temperature: Option<f64>,
     pub thinking: Thinking,
-    /// Interactive sessions hold the stable prefix for an hour.
+    /// Interactive sessions hold the system breakpoints for an hour (D116); the history
+    /// breakpoints' TTL is `LlmContext::cache_ttl`.
     pub cache_1h: bool,
     pub proxy: Option<crate::request::ProxyConfig>,
     /// The loop's cut of this request (D163): set, the pump stops at the next event.
@@ -258,7 +259,15 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
         Some(normalize_anthropic_tool_call_id),
     );
     let breakpoints = Breakpoints::build(
-        &CachePolicy::of(model, options.cache_1h),
+        &CachePolicy::of(
+            model,
+            if options.cache_1h {
+                Ttl::Hour1
+            } else {
+                context.cache_ttl
+            },
+            context.cache_ttl,
+        ),
         &history,
         context.reuse,
         context.shared_through,

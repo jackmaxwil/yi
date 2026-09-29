@@ -6,14 +6,8 @@ use std::ops::Deref;
 
 use serde_json::{Value, json};
 use yi_types::message::AgentMessage;
+pub use yi_types::model::Ttl;
 use yi_types::model::{Model, Reuse};
-
-/// How long the entry a breakpoint writes lives. Along the prompt a longer TTL comes first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Ttl {
-    Min5,
-    Hour1,
-}
 
 /// Where a breakpoint sits. A message position is an index into the transformed
 /// `messages`; `transient` has none.
@@ -107,24 +101,33 @@ impl Engine {
     }
 }
 
-/// How a model's route is cached: its engine and the TTL the two system breakpoints carry.
+/// How a model's route is cached: its engine and the TTL its breakpoints carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CachePolicy {
     pub engine: Engine,
-    /// The tail breakpoints are always 5m, so the order along the prompt holds.
+    /// The two system breakpoints.
     pub stable_ttl: Ttl,
+    /// The history breakpoints; never above `stable_ttl`, so the order along the prompt holds.
+    pub history_ttl: Ttl,
 }
 
 impl CachePolicy {
-    /// `hold_1h`: an interactive session keeps its stable prefix for an hour on an engine that
-    /// prices one (D116). The adaptive rule that switches after an expiry miss is a later stage.
-    pub fn of(model: &Model, hold_1h: bool) -> Self {
-        let engine = Engine::of(model);
-        let stable_ttl = match engine {
-            Engine::Breakpoint { hour: true, .. } if hold_1h => Ttl::Hour1,
+    pub fn of(model: &Model, stable_ttl: Ttl, history_ttl: Ttl) -> Self {
+        Self::new(Engine::of(model), stable_ttl, history_ttl)
+    }
+
+    /// `history_ttl` is the caller's (`LlmContext::cache_ttl`, D315); `stable_ttl` may ask more
+    /// (an interactive session, D116). An hour is kept only where the engine prices one.
+    pub fn new(engine: Engine, stable_ttl: Ttl, history_ttl: Ttl) -> Self {
+        let cap = match engine {
+            Engine::Breakpoint { hour: true, .. } => Ttl::Hour1,
             _ => Ttl::Min5,
         };
-        Self { engine, stable_ttl }
+        Self {
+            engine,
+            stable_ttl: stable_ttl.max(history_ttl).min(cap),
+            history_ttl: history_ttl.min(cap),
+        }
     }
 }
 
@@ -184,7 +187,7 @@ impl Breakpoints {
             prev_tail.map(Position::PrevTail),
         ];
         for position in history.into_iter().flatten() {
-            keep(position, Ttl::Min5);
+            keep(position, policy.history_ttl);
         }
         let slots = policy.engine.slots();
         if slots >= SLOTS {

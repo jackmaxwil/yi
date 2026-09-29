@@ -287,5 +287,6 @@ edited by hand.
 - [D308](adr/d308.md) - a worker spawn that names no `role` is a reader (`role="reader"`)
 - [D309](adr/d309.md) - a reader's `schema` reaches the provider (`yi_ai
 - [D314](adr/d314.md) - a session's children cache as one family
+- [D315](adr/d315.md) - a loop request's cache TTL is the cheaper of five minutes and an hour at the...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

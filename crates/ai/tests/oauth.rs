@@ -75,6 +75,7 @@ fn model(port: u16) -> Result<Model, Box<dyn std::error::Error>> {
 
 fn context() -> LlmContext {
     LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: String::new(),
         messages: vec![],
         transient: Vec::new(),
