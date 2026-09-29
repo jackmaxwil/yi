@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-const UNSUPPORTED: [&str; 19] = [
+const UNSUPPORTED: [&str; 22] = [
     "minimum",
     "maximum",
     "exclusiveMinimum",
@@ -20,6 +20,9 @@ const UNSUPPORTED: [&str; 19] = [
     "patternProperties",
     "dependentSchemas",
     "unevaluatedProperties",
+    "oneOf",
+    "prefixItems",
+    "contains",
 ];
 
 pub fn strict(schema: &Value) -> bool {
