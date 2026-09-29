@@ -237,10 +237,12 @@ fn tool_result(id: &str, name: &str, text: &str) -> AgentMessage {
 
 fn context(messages: Vec<AgentMessage>) -> Result<LlmContext, Box<dyn Error>> {
     Ok(LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: system_prompt(),
         messages,
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::Loop,
         tools: Some(tool_defs()?),
         tool_choice: None,

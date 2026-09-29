@@ -8,10 +8,22 @@ use crate::mailbox::{ParentLink, register_child_messaging};
 use crate::session::AgentSession;
 use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOptions};
 
-/// A child is a fresh session: it runs its own extensions against its own cwd
-/// and shares the universal cached prefix with its parent.
+/// A child is a fresh session with its own extensions and cwd, on its family's stream (D314).
 fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
     Arc::new(move |build: ChildBuild<'_>| {
+        let provider = Arc::new(wiring.provider.for_child());
+        if let Some(reader) = build.reader.clone() {
+            let cwd = build
+                .cwd
+                .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
+            let broker = wiring.broker.clone();
+            let tools = (wiring.tools)();
+            let rules = crate::rules::discover_armed(&cwd, &wiring.home).rules;
+            let rules = Some(Arc::new(crate::rules::RuleEngine::new(rules)));
+            return Ok(crate::subagent::reader::session(
+                provider, build, &reader, tools, cwd, broker, rules,
+            ));
+        }
         let mut child = AgentSession::new(
             crate::session::SessionConfig {
                 system_prompt: wiring.system_prompt.clone(),
@@ -19,7 +31,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
                 thinking_level: build.thinking,
                 tool_execution: wiring.tool_execution,
             },
-            Arc::clone(&wiring.provider),
+            Arc::clone(&provider),
         );
         let child_cwd = build
             .cwd
@@ -46,6 +58,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
                 wall: build.wall,
                 deadline: build.deadline,
                 kernel_prewarm: false,
+                provider,
                 ..wiring.clone()
             },
         );
@@ -320,6 +333,7 @@ fn wire_fetch(
         resolver = resolver.with_mcp_read(read);
     }
     let resolver = Arc::new(resolver);
+    host.set_resolver(Arc::clone(&resolver));
     let handler = Arc::clone(&resolver);
     registry.register("fetch", move |payload| {
         let resolver = Arc::clone(&handler);
@@ -678,8 +692,9 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
     // §16: ADVISOR.md attention text, project-local, best-effort.
     let attention = std::fs::read_to_string(wiring.cwd.join("ADVISOR.md")).ok();
     let llm = wiring.advisor.clone().map(|model| {
+        // Its own conversation: the root's ledger estimate and hour prefix are not its (D315).
         Arc::new(crate::advisor::review::LlmReviewer::new(
-            Arc::clone(&wiring.provider),
+            Arc::new(wiring.provider.for_child()),
             model,
             attention.clone(),
         ))

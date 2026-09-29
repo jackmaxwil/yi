@@ -119,6 +119,7 @@ pub struct PermissionBroker {
     /// nothing in this file behaves differently from before it existed.
     reviewer: std::sync::OnceLock<Arc<crate::auto_review::Reviewer>>,
     ledger: Mutex<ActionLedger>,
+    asking: Mutex<std::collections::BTreeSet<RequestId>>,
     confirms: AtomicU64,
     journal: std::sync::OnceLock<Journal>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
@@ -212,6 +213,7 @@ impl PermissionBroker {
             events,
             reviewer: std::sync::OnceLock::new(),
             ledger: Mutex::new(ActionLedger::new()),
+            asking: Mutex::new(std::collections::BTreeSet::new()),
             confirms: AtomicU64::new(0),
             journal: std::sync::OnceLock::new(),
             approver: std::sync::OnceLock::new(),
@@ -844,18 +846,34 @@ impl PermissionBroker {
             })
     }
 
-    /// The `ask_user` seam: one open request, replayed verbatim to the human.
+    /// The `ask_user` seam: a waiting request is asked once; an answered one replies from the ledger.
     pub fn resolve_request(&self, request: u64, tool_call_id: &str) -> String {
         let request = RequestId::new(request);
-        let Some(stored) = self
+        let Some(_asking) = InFlight::claim(&self.asking, request) else {
+            return format!(
+                "Request {request} is already being put to the user by another ask_user call; that call's result carries the answer. Do not ask again."
+            );
+        };
+        let Some((stored, state)) = self
             .ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .ask_of(request)
-            .cloned()
+            .entry_of(request)
+            .map(|(ask, state)| (ask.clone(), state))
         else {
-            return format!("There is no open request {request}.");
+            return format!(
+                "There is no open request {request}: it was answered and used, dropped, or never existed."
+            );
         };
+        match state {
+            ActionState::DeniedPendingUser => {}
+            ActionState::UserApproved => {
+                return crate::auto_review::resolution_text(&stored.display, UserVerdict::Approved);
+            }
+            ActionState::UserDenied => {
+                return crate::auto_review::resolution_text(&stored.display, UserVerdict::Denied);
+            }
+        }
         // The asker blocks on a human; the ledger lock is released first so a
         // concurrent decision is not held behind the answer.
         let Some(asker) = &self.asker else {
@@ -1010,5 +1028,32 @@ impl PermissionBroker {
                 containment: Containment::Uncontained,
             }
         }
+    }
+}
+
+struct InFlight<'a> {
+    set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
+    request: RequestId,
+}
+
+impl<'a> InFlight<'a> {
+    fn claim(
+        set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
+        request: RequestId,
+    ) -> Option<Self> {
+        let inserted = set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(request);
+        inserted.then(|| Self { set, request })
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.request);
     }
 }

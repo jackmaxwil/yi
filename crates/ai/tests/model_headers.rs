@@ -45,10 +45,12 @@ fn model(
 
 fn context() -> LlmContext {
     LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: String::new(),
         messages: vec![],
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::Loop,
         tools: None,
         tool_choice: None,

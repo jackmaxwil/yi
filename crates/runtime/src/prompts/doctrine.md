@@ -321,10 +321,11 @@ check; it is the rare case and the one that needs ownership.
    worth, each with a check written before the child starts. Never
    delegate the reasoning the answer turns on: a reader brings evidence,
    you conclude.
-2. A reader is walled and cheap: `deny_write=["."]` refuses every edit,
-   write and cwd-naming bash and leaves reads alone; it runs in your tree
-   with no worktree, on a cheaper model when `rlm.find_models` offers
-   one, with one question, the places to look, and findings shaped
+2. A reader is walled and cheap: a bare `rlm.run`, or `rlm.ask(question,
+   partition)`, gets a short reader prompt, `read` and `grep`, three turns
+   and no writes; it runs in your tree with no worktree, on a cheaper model
+   when `rlm.find_models` offers one, with one question, the lines it needs
+   inlined as `partition` URLs, and findings shaped
    `{path, line, claim, evidence}` where `evidence` is the quoted line. A
    reader's claim is data: open the cited line before you build on it; a
    claim with no citation is dropped at the schema seam, not argued with.
@@ -356,7 +357,7 @@ check; it is the rare case and the one that needs ownership.
    digest and the decision, never the data.
 
     SCHEMA = {"type": "object", "required": ["outcome"], "properties": {"outcome": {"type": "string"}}}
-    h = await rlm.run(brief, name="foo", isolation="worktree")
+    h = await rlm.run(brief, name="foo", role="root", isolation="worktree")
     r = await h.result(schema=SCHEMA, timeout=420)
 
 ## Done is a measurement
