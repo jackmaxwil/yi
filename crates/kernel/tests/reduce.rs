@@ -66,11 +66,11 @@ fn oversized_attachment_fails_the_cell_instead_of_silently_dropping() {
 }
 
 /// An attachment's data is written into a kitty escape and sent to the provider as is, so
-/// only strict base64 of the image its mime_type names is kept (#817). The images are
-/// Pillow's 1x1 encodes, the JPEG cut to its first twelve bytes.
+/// only strict base64 whose head carries its type's magic number is kept (#817). The images
+/// are Pillow's 1x1 encodes, the PNG's carrying `+` and `/`, the JPEG cut to twelve bytes.
 #[test]
 fn an_attachment_is_kept_only_as_base64_of_the_image_it_names() {
-    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4IScHAAK2AQU0pnWqAAAAAElFTkSuQmCC";
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4+3g/AATwAnDE8Xs+AAAAAElFTkSuQmCC";
     let gif = "R0lGODdhAQABAIEAAMgeHgAAAAAAAAAAACwAAAAAAQABAAAIBAABBAQAOw==";
     let webp =
         "UklGRjoAAABXRUJQVlA4IC4AAACwAQCdASoBAAEAAUAmJaACdLoABDAAAP7x3I/4DdfFtMv/vYL/3YL/3YL/WwAA";
@@ -80,6 +80,7 @@ fn an_attachment_is_kept_only_as_base64_of_the_image_it_names() {
         ("image/gif", gif, true),
         ("image/webp", webp, true),
         ("image/jpeg", jpeg, true),
+        ("image/bmp", "QUJD", true),
         (
             "image/png",
             "AAAA\u{1b}\\\u{1b}]52;c;ZWNobyBwd25lZA==\u{7}",

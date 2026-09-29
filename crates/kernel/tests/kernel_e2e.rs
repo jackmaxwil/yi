@@ -359,9 +359,9 @@ async fn an_image_whose_data_is_not_base64_attaches_nothing() -> TestResult {
     Ok(())
 }
 
-/// Pillow's encode of a 1x1 RGB image.
+/// Pillow's encode of a 1x1 RGB image, chosen so its base64 carries `+` and `/`.
 const PILLOW_PNG: &str =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4IScHAAK2AQU0pnWqAAAAAElFTkSuQmCC";
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4+3g/AATwAnDE8Xs+AAAAAElFTkSuQmCC";
 
 #[tokio::test]
 async fn namespace_snapshot_revives_across_kernels() -> TestResult {

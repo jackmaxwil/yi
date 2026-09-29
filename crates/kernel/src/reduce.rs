@@ -91,10 +91,10 @@ pub fn parse_attachment_display(payload: &Value) -> AttachmentParse {
             "exceeds {MAX_ATTACHMENT_DATA_CHARS} base64 chars"
         ));
     }
-    // Invariant (#817): `data` goes as is into a kitty escape and to the provider, so a byte
-    // outside base64 could end that escape, and a false image fails every later request.
-    let image =
-        base64_head(&attachment.data).is_some_and(|head| opens_as(&attachment.mime_type, &head));
+    // Invariant (#817): `data` goes as is into a kitty escape and to the provider; a byte outside
+    // base64 could end the escape. A header checks no body: a refused image is still #860's.
+    let image = strict_base64_head(&attachment.data)
+        .is_some_and(|head| has_magic_number(&attachment.mime_type, &head));
     if !image {
         return AttachmentParse::Rejected(
             "its data is not base64 of the image its mime_type names".to_owned(),
@@ -117,7 +117,7 @@ fn sextet(byte: u8) -> Option<u32> {
 
 /// The first twelve bytes `data` decodes to, or `None` when it is not strict base64: the
 /// standard alphabet in whole four-character groups, `=` only as the last one or two.
-fn base64_head(data: &str) -> Option<Vec<u8>> {
+fn strict_base64_head(data: &str) -> Option<Vec<u8>> {
     let body = data
         .strip_suffix("==")
         .or_else(|| data.strip_suffix('='))
@@ -141,7 +141,7 @@ fn base64_head(data: &str) -> Option<Vec<u8>> {
 
 /// Whether `head` opens with the magic number of the provider image type `mime_type`
 /// names; any other type has none to check.
-fn opens_as(mime_type: &str, head: &[u8]) -> bool {
+fn has_magic_number(mime_type: &str, head: &[u8]) -> bool {
     match mime_type {
         "image/png" => head.starts_with(b"\x89PNG\r\n\x1a\n"),
         "image/jpeg" => head.starts_with(b"\xff\xd8\xff"),
