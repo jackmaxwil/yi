@@ -10,7 +10,7 @@ use yi_loop::run::StreamFn;
 use yi_types::entry::Entry;
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
-use yi_types::model::{Effort, LlmContext, Model};
+use yi_types::model::{Effort, LlmContext, Model, Reuse, ToolDef};
 
 use crate::provider::ProviderStream;
 
@@ -35,11 +35,39 @@ impl Drop for Closing {
     }
 }
 
+/// What the loop sends beside its messages (its tool choice past the first request is none): a
+/// compaction on the session's model sends the same, so its prefix is a cache read (design §7).
+#[derive(Clone, Debug)]
+pub struct LoopRequest {
+    pub system_prompt: String,
+    pub tools: Option<Vec<ToolDef>>,
+    pub effort: Effort,
+}
+
+impl LoopRequest {
+    /// The loop's own spelling: an empty table rides as no table.
+    pub fn new(
+        system_prompt: String,
+        tools: &[Arc<dyn yi_loop::AgentTool>],
+        effort: Effort,
+    ) -> Self {
+        let tools: Vec<ToolDef> = tools.iter().map(|tool| tool.definition()).collect();
+        Self {
+            system_prompt,
+            tools: (!tools.is_empty()).then_some(tools),
+            effort,
+        }
+    }
+}
+
+/// Built only when a compaction is due: a run's tool table is not free to render.
+pub type LoopRequestOf = Arc<dyn Fn() -> LoopRequest + Send + Sync>;
+
 pub fn loop_hook(
     compactor: Arc<Compactor>,
     provider: Arc<ProviderStream>,
     model: Model,
-    system_prompt: Arc<dyn Fn() -> String + Send + Sync>,
+    request: LoopRequestOf,
     store: StoreOf,
     reports: CompactReports,
 ) -> CompactHook {
@@ -51,7 +79,7 @@ pub fn loop_hook(
         let compactor = Arc::clone(&compactor);
         let provider = Arc::clone(&provider);
         let model = model.clone();
-        let assembled = system_prompt();
+        let request = request();
         let store = store();
         let CompactReports {
             waiting,
@@ -71,7 +99,7 @@ pub fn loop_hook(
                 .maybe_compact(
                     &messages,
                     &model,
-                    &assembled,
+                    &request,
                     provider.as_ref(),
                     store.as_ref(),
                     &signal,
@@ -161,9 +189,10 @@ pub(crate) async fn complete_text(
     provider: &ProviderStream,
     model: &Model,
     context: &LlmContext,
+    effort: Effort,
     signal: &InterruptSignal,
 ) -> Result<String, String> {
-    let mut receiver = provider.stream(model, context, model.clamp_effort(Effort::Off), signal);
+    let mut receiver = provider.stream(model, context, effort, signal);
     while let Some(event) = receiver.recv().await {
         match event {
             AssistantMessageEvent::Done { message, .. } => {
@@ -340,13 +369,13 @@ impl Compactor {
         should_compact(scoped, Tokens(model.context_window), &self.settings)
     }
 
-    /// Prefix-aligned: the directive appends as a trailing user message, so summarization
-    /// extends the warm cache. Overflow retries once trimmed, then rolls unsummarized.
+    /// On the session's model this is the loop's request plus the directive, a cache read (§7);
+    /// another summarizer sends no tools or thinking. Overflow retries once trimmed, then rolls.
     pub async fn maybe_compact(
         &self,
         messages: &[AgentMessage],
         model: &Model,
-        system_prompt: &str,
+        loop_request: &LoopRequest,
         provider: &ProviderStream,
         store: Option<&yi_session::SharedSession>,
         signal: &InterruptSignal,
@@ -380,8 +409,10 @@ impl Compactor {
             return Ok(None);
         };
         let inputs = store.and_then(|store| crate::fetch::user_inputs(store).ok());
-        let request = |window_messages: &[AgentMessage]| LlmContext {
-            system_prompt: system_prompt.to_owned(),
+        let summarizer = self.summarizer.as_ref().unwrap_or(model);
+        let warm = summarizer == model;
+        let request = |window_messages: &[AgentMessage], warm: bool| LlmContext {
+            system_prompt: loop_request.system_prompt.clone(),
             messages: {
                 let mut converted = convert_to_llm(window_messages);
                 let key = yi_context::user_key(window_messages, inputs.as_deref().unwrap_or(&[]));
@@ -391,17 +422,30 @@ impl Compactor {
             transient: Vec::new(),
             schema: None,
             shared_through: None,
-            reuse: yi_types::model::Reuse::OneShot,
-            tools: None,
+            reuse: if warm {
+                Reuse::ReadOnly
+            } else {
+                Reuse::OneShot
+            },
+            tools: loop_request.tools.clone().filter(|_| warm),
             tool_choice: None,
         };
-        let summarizer = self.summarizer.as_ref().unwrap_or(model);
+        let effort = |warm: bool| {
+            if warm {
+                loop_request.effort
+            } else {
+                summarizer.clamp_effort(Effort::Off)
+            }
+        };
+        let first = request(messages, warm);
         let summary_text =
-            match complete_text(provider, summarizer, &request(messages), signal).await {
-                Ok(text) => text,
-                Err(_) => {
-                    let trimmed = &messages[messages.len() / 4..];
-                    complete_text(provider, summarizer, &request(trimmed), signal)
+            match complete_text(provider, summarizer, &first, effort(warm), signal).await {
+                // With the loop's tools attached a reply can be a call alone: no summary in it.
+                Ok(text) if !text.trim().is_empty() => text,
+                // The trimmed retry shares no prefix, so it goes cold: no tools, so it must be text.
+                _ => {
+                    let trimmed = request(&messages[messages.len() / 4..], false);
+                    complete_text(provider, summarizer, &trimmed, effort(false), signal)
                         .await
                         .unwrap_or_default()
                 }

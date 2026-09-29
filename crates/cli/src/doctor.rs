@@ -34,13 +34,14 @@ fn fail(detail: impl Into<String>) -> Finding {
 struct Site {
     home: PathBuf,
     cwd: PathBuf,
+    sessions: PathBuf,
     fix: bool,
 }
 
 type Check = fn(&Site) -> Finding;
 
 /// The rows, in the order a reader wants them: what the process is, then what it owns.
-const ROWS: [(&str, Check); 11] = [
+const ROWS: [(&str, Check); 12] = [
     ("host", host_environment),
     ("home", home_absolute),
     ("config", config_parses),
@@ -52,6 +53,7 @@ const ROWS: [(&str, Check); 11] = [
     ("daemon-socket", socket_alive_or_absent),
     ("daemon-ledger", ledger_roots_exist),
     ("lanes", lanes_consistent),
+    ("cache", cache_reads),
 ];
 
 /// Never a failure: where yi runs decides what a contained command and a placement can reach.
@@ -110,16 +112,22 @@ fn catalog_age(site: &Site) -> Finding {
     let stale: Vec<String> = yi_runtime::CATALOG_PROVIDERS
         .iter()
         .filter(|provider| {
-            yi_runtime::catalog_age(&dir, provider, now)
-                .is_some_and(|age| age.as_secs() >= hours.saturating_mul(3600))
+            yi_runtime::catalog_age(&dir, provider, now).is_some()
+                && yi_runtime::catalog_is_stale(&dir, provider, hours, now)
         })
         .map(|provider| (*provider).to_owned())
         .collect();
-    if stale.is_empty() {
-        ok("bundled floor, caches younger than the refresh age")
+    let rejected = yi_runtime::catalog_rejected(&dir);
+    if let Some(first) = rejected.first() {
+        fail(format!(
+            "did not load: {first} ({} in all); `yi catalog refresh`",
+            rejected.len()
+        ))
+    } else if stale.is_empty() {
+        ok("bundled floor, caches current and younger than the refresh age")
     } else {
         fail(format!(
-            "{} older than {hours}h; `yi catalog refresh`",
+            "{} older than {hours}h or an older schema; `yi catalog refresh`",
             stale.join(", ")
         ))
     }
@@ -258,6 +266,55 @@ fn lanes_consistent(site: &Site) -> Finding {
     ok(format!("{} slot(s) consistent", views.len()))
 }
 
+/// Never a failure: a session's history is not install health and the user cannot clear it.
+/// The newest session here, read line by line and never repaired, since it may be live.
+fn cache_reads(site: &Site) -> Finding {
+    let dir = site
+        .sessions
+        .join(yi_runtime::session_store::session_directory_name(
+            &site.cwd.to_string_lossy(),
+        ));
+    let newest = std::fs::read_dir(&dir).ok().and_then(|files| {
+        files
+            .flatten()
+            .map(|file| file.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+            .max()
+    });
+    let Some(path) = newest else {
+        return ok("no session here");
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => return ok(format!("{} unreadable: {error}", path.display())),
+    };
+    let mut tracker = yi_runtime::cache_miss::MissTracker::default();
+    let mut causes = std::collections::BTreeMap::<&str, u32>::new();
+    let mut notice = None;
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value["kind"] != "entry" || value.get("lane").is_some_and(|lane| lane != "main") {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_value(value) else {
+            continue;
+        };
+        if let Some(cause) = tracker.observe_entry(&entry) {
+            *causes.entry(cause.label()).or_default() += 1;
+        }
+        notice = notice.or_else(|| tracker.take_notice());
+    }
+    let misses: Vec<String> = causes
+        .iter()
+        .map(|(cause, count)| format!("{cause} {count}"))
+        .collect();
+    let name = path.file_stem().unwrap_or_default().to_string_lossy();
+    let row = format!("session {name}: misses [{}]", misses.join(", "));
+    ok(notice.map_or(row.clone(), |notice| format!("{row}; {notice}")))
+}
+
 /// Runs before the config loads, so a config that will not parse is a row, not a death.
 pub(crate) fn early() {
     if std::env::args().nth(1).as_deref() != Some("doctor") {
@@ -278,6 +335,7 @@ pub(crate) fn run(args: &Args) -> i32 {
             .map(PathBuf::from)
             .unwrap_or_default(),
         cwd: effective_cwd(args),
+        sessions: crate::default_session_dir(args),
         fix: args.fix,
     };
     let findings: Vec<(&str, Finding)> = ROWS

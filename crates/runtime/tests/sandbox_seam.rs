@@ -12,7 +12,8 @@ use serde_json::{Map, json};
 use yi_ai::faux::{faux_assistant_message, faux_tool_call};
 use yi_loop::ExecutionMode;
 use yi_runtime::{
-    AgentSession, PermissionBroker, PermissionMode, ProviderStream, SessionConfig, builtin_tools,
+    AgentSession, AskOutcome, Asker, PermissionBroker, PermissionMode, ProviderStream,
+    SessionConfig, Wall, builtin_tools,
 };
 use yi_tools::Sandbox;
 use yi_types::message::{AgentMessage, Content, StopReason};
@@ -80,6 +81,29 @@ async fn run_contained(
     sandbox: Sandbox,
     commands: &[&str],
 ) -> Result<Vec<String>, Box<dyn Error>> {
+    run_held(project, project, sandbox, commands, None, Wall::default()).await
+}
+
+/// `commands` run from `holder` under a broker built for `project`, every question approved once.
+async fn run_approved(
+    project: &Path,
+    holder: &Path,
+    sandbox: Sandbox,
+    commands: &[&str],
+    wall: Wall,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let asker: Asker = Arc::new(|_| AskOutcome::AllowOnce);
+    run_held(project, holder, sandbox, commands, Some(asker), wall).await
+}
+
+async fn run_held(
+    project: &Path,
+    holder: &Path,
+    sandbox: Sandbox,
+    commands: &[&str],
+    asker: Option<Asker>,
+    wall: Wall,
+) -> Result<Vec<String>, Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(
         commands
@@ -102,12 +126,13 @@ async fn run_contained(
             PermissionMode::Auto,
             project.to_path_buf(),
             Vec::new(),
-            None,
+            asker,
             session.events_sender(),
         )
         .with_sandbox(Some(sandbox)),
     );
-    session.use_tools(builtin_tools(), project.to_path_buf(), Some(broker));
+    session.set_wall(wall);
+    session.use_tools(builtin_tools(), holder.to_path_buf(), Some(broker));
     // One turn runs every call: the loop answers each tool result with the next queued message.
     session.prompt("do the thing")?;
     session.wait_idle().await;
@@ -360,6 +385,138 @@ async fn a_refusal_deep_in_long_output_is_remembered() -> TestResult {
         results[1].contains("Permission denied") && !refused.exists(),
         "the retry asks: {}",
         results[1]
+    );
+    Ok(())
+}
+
+/// A directory under the uncovered probe, removed on drop: a probe left behind would be
+/// writable-by-accident evidence for the next run.
+struct Probe(PathBuf);
+
+impl Probe {
+    fn new(under: &Path, tag: &str) -> Result<Self, Box<dyn Error>> {
+        let dir = under.join(format!("yi-a2-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self(dir))
+    }
+}
+
+impl Drop for Probe {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// #600: approving the retry of a refused write ran the whole command with no sandbox, so a
+/// second path in the same call, one nobody was asked about, was written too.
+#[tokio::test]
+async fn an_approved_retry_stays_contained_and_widens_by_the_refused_dir() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, probe) = workspace("yi-seam-widen")?;
+    let (a, b) = (Probe::new(&probe, "a")?, Probe::new(&probe, "b")?);
+    let (first, second) = (a.0.join("a"), b.0.join("b"));
+    let refused = format!("touch {}", first.display());
+    let retry = format!("touch {}; touch {}", first.display(), second.display());
+    let results = run_approved(
+        &project,
+        &project,
+        sandbox,
+        &[&refused, &retry],
+        Wall::default(),
+    )
+    .await?;
+    assert!(
+        first.exists(),
+        "the approved retry writes the refused dir: {}",
+        results[1]
+    );
+    assert!(
+        !second.exists(),
+        "a dir nobody approved stays refused inside the approved call: {}",
+        results[1]
+    );
+    Ok(())
+}
+
+/// The demo of #600: an approved `rm` removes what it names in the tree and nothing outside.
+#[tokio::test]
+async fn an_approved_destructive_command_runs_contained() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, probe) = workspace("yi-seam-rm")?;
+    let outside = Probe::new(&probe, "rm")?;
+    let (victim, escape) = (project.join("victim"), outside.0.join("escape"));
+    std::fs::write(&victim, "v")?;
+    std::fs::write(&escape, "e")?;
+    let command = format!("rm -f {} {}", victim.display(), escape.display());
+    let results = run_approved(&project, &project, sandbox, &[&command], Wall::default()).await?;
+    assert!(!victim.exists(), "the approved rm ran: {}", results[0]);
+    assert!(
+        escape.exists(),
+        "the approved rm must not reach outside the tree: {}",
+        results[0]
+    );
+    Ok(())
+}
+
+/// A juror walled off the tree could still write it through any approved bash call: the wall
+/// was a pre-check on paths the command spelled, and no profile carried it.
+#[tokio::test]
+async fn a_walled_juror_cannot_write_the_tree_from_an_approved_bash() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, _probe) = workspace("yi-seam-wall")?;
+    let victim = project.join("victim");
+    std::fs::write(&victim, "v")?;
+    let wall = Wall {
+        deny_write: vec![project.clone()],
+        ..Wall::default()
+    };
+    let results = run_approved(
+        &project,
+        &project,
+        sandbox,
+        &["find . -name victim -delete"],
+        wall,
+    )
+    .await?;
+    assert!(
+        victim.exists(),
+        "the wall holds inside the approved call: {}",
+        results[0]
+    );
+    Ok(())
+}
+
+/// A worktree child shares its parent's broker, whose profile covered only the parent's tree,
+/// so the child's contained bash could not write its own lane.
+#[tokio::test]
+async fn a_worktree_childs_contained_bash_writes_its_own_lane() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, probe) = workspace("yi-seam-lane")?;
+    let lane = Probe::new(&probe, "lane")?;
+    let made = lane.0.join("made");
+    let command = format!("touch made && ls {}", made.display());
+    let results = run_held(
+        &project,
+        &lane.0,
+        sandbox,
+        &[&command],
+        None,
+        Wall::default(),
+    )
+    .await?;
+    assert!(
+        made.exists(),
+        "the child's contained bash writes its own lane: {}",
+        results[0]
     );
     Ok(())
 }

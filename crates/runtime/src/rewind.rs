@@ -108,8 +108,10 @@ pub async fn summarize_branch(session: &AgentSession, stub: BranchStub) {
         tool_choice: None,
     };
     let signal = yi_loop::interrupt::InterruptSignal::default();
+    let off = model.clamp_effort(yi_types::model::Effort::Off);
     let Ok(summary) =
-        crate::compaction::complete_text(session.provider_arc(), &model, &context, &signal).await
+        crate::compaction::complete_text(session.provider_arc(), &model, &context, off, &signal)
+            .await
     else {
         return;
     };
