@@ -412,7 +412,7 @@ mod sealed_store {
             let kernel = Arc::clone(&kernel);
             move || {
                 let cancelled: CancelFlag = Arc::new(|| false);
-                KernelBridge::execute_cell(kernel.as_ref(), &code, &cancelled)
+                KernelBridge::execute_cell(kernel.as_ref(), &code, &cancelled, None)
             }
         })
         .await?;
