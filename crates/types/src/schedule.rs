@@ -178,3 +178,7 @@ pub struct ScheduleState {
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
+
+impl crate::entry::CustomRecord for HaltRecord {
+    const TYPE: &'static str = HALT_ENTRY_TYPE;
+}

@@ -11,3 +11,7 @@ pub struct FetchRecord {
 }
 
 pub const FETCH_ENTRY_TYPE: &str = "fetch";
+
+impl crate::entry::CustomRecord for FetchRecord {
+    const TYPE: &'static str = FETCH_ENTRY_TYPE;
+}

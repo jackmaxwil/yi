@@ -280,6 +280,17 @@ impl AgentMessage {
         }
     }
 
+    /// Host text shown in the transcript as a `custom_type` note, with no details attached.
+    pub fn host_note(custom_type: &str, text: String, timestamp: u64) -> Self {
+        Self::Custom {
+            custom_type: custom_type.to_owned(),
+            content: UserContent::Text(text),
+            display: true,
+            details: None,
+            timestamp,
+        }
+    }
+
     /// Input that crossed the process boundary from the user, the only kind
     /// `user://` serves.
     pub fn user_input(content: UserContent, timestamp: u64) -> Self {
