@@ -5,8 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use yi_runtime::session_store::{
-    BranchBounds, CreateOptions, EntryOrder, EntryQuery, JsonlRepo, SessionRepo, age_label,
-    lock_session, now_ms,
+    BranchBounds, CreateOptions, EntryOrder, EntryQuery, JsonlRepo, SessionRepo, lock_session,
 };
 use yi_runtime::{AgentSession, BranchStub};
 use yi_types::entry::Entry;
@@ -115,9 +114,7 @@ pub(crate) fn slash_off_thread(
     let session = Arc::clone(session);
     let reply_tx = reply_tx.clone();
     std::thread::spawn(move || {
-        let (command, args) = line
-            .split_once(char::is_whitespace)
-            .map_or((line.as_str(), ""), |(head, rest)| (head, rest.trim()));
+        let (command, args) = yi_runtime::slash::split(&line);
         let text = yi_runtime::slash::run(&session, command, args)
             .unwrap_or_else(|| format!("unknown command: /{command}"));
         let _ = reply_tx.send(crate::app::UiEvent::Reply(Reply::Notice(text)));
@@ -165,45 +162,7 @@ fn sessions_listing(session_dir: &str, cwd: &str) -> String {
     let mut repo = JsonlRepo::new(std::path::PathBuf::from(session_dir), cwd.to_owned());
     match repo.list() {
         Err(error) => format!("/sessions: {error}"),
-        Ok(listed) if listed.is_empty() => "no sessions for this directory".to_owned(),
-        Ok(listed) => {
-            let now = now_ms();
-            listed
-                .iter()
-                .map(|m| {
-                    format!(
-                        "{}  {:>8}",
-                        m.id,
-                        age_label(now.saturating_sub(m.created_at))
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-    }
-}
-
-fn undo_text(session: &AgentSession, cwd: &str) -> String {
-    if session.status() == yi_runtime::Status::Running {
-        return "/undo: the current turn is still running (Esc Esc to stop it)".to_owned();
-    }
-    let Some(store) = session.store() else {
-        return "/undo: this session has no store to read checkpoints from".to_owned();
-    };
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_default();
-    match yi_runtime::undo(&store, std::path::Path::new(cwd), &home) {
-        yi_runtime::UndoOutcome::Restored { changes, scoped } => {
-            format!("/undo: {}", yi_runtime::describe_undo(&changes, scoped))
-        }
-        // Scoped to this session on purpose: undoing a turn the reader never saw is not what
-        // the word means. An earlier session's turns stay reachable, just not from here.
-        yi_runtime::UndoOutcome::NoCheckpoint => {
-            "/undo: this session has taken no turn yet — `yi undo` restores an earlier session"
-                .to_owned()
-        }
-        yi_runtime::UndoOutcome::Failed(error) => format!("/undo failed: {error}"),
+        Ok(listed) => yi_runtime::slash::sessions_listing(&listed),
     }
 }
 
@@ -243,13 +202,14 @@ impl SessionPort for Arc<AgentSession> {
     }
 
     fn undo(&mut self, cwd: &str) -> Answer {
-        Answer::now(Reply::Notice(undo_text(self, cwd)))
+        Answer::now(Reply::Notice(yi_runtime::slash::undo(
+            self,
+            std::path::Path::new(cwd),
+        )))
     }
 
     fn slash(&mut self, line: &str, session_dir: &str, cwd: &str) -> Answer {
-        let (command, args) = line
-            .split_once(char::is_whitespace)
-            .map_or((line, ""), |(head, rest)| (head, rest.trim()));
+        let (command, args) = yi_runtime::slash::split(line);
         let text = match command {
             "sessions" if args.is_empty() || args == "list" => sessions_listing(session_dir, cwd),
             "sessions" => "/sessions — listing only; show and rm stay on `yi sessions`".to_owned(),
