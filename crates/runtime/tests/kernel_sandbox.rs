@@ -448,6 +448,47 @@ async fn a_root_kernels_board_takes_puts_and_bash_jobs() -> TestResult {
     Ok(())
 }
 
+/// Incident (#855 review): a kernel whose board did not exist yet planted it as a link to
+/// `~/.docker`, and the host's `family://` read followed it past the kernel's read denial.
+/// `outside` stands in for the credential dir, which a test must never write.
+#[tokio::test]
+async fn a_link_planted_as_the_board_is_replaced_not_followed() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home, _session) = workspace("board-link")?;
+    let bare = Sandbox::for_workspace(&project, &home, None);
+    let probe = uncovered(&bare, &home).ok_or("no directory outside the sandbox")?;
+    let corpus = probe.join(format!("yi-board-link-{}", std::process::id()));
+    let (rlm_dir, outside) = (corpus.join("rlm-1"), corpus.join("outside"));
+    let board = rlm_dir.join("family");
+    std::fs::create_dir_all(&rlm_dir)?;
+    std::fs::create_dir_all(&outside)?;
+    std::fs::write(outside.join("config.json"), "yi-855-probe-secret")?;
+    // A board an older binary let a kernel plant stays a link until the host replaces it.
+    std::os::unix::fs::symlink(&outside, &board)?;
+    let session = root_session(&project, &home, &rlm_dir, Some(corpus.clone()), None, None);
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let (board_text, outside_text) = (board.display(), outside.display());
+    let code = format!(
+        "import os\ntry:\n    os.rmdir(r'{board_text}')\n    os.symlink(r'{outside_text}', r'{board_text}')\nexcept OSError as e:\n    print(e)\ntry:\n    print(await fetch('family://config'))\nexcept Exception as e:\n    print(e)"
+    );
+    let ran = cell(&kernel, code).await;
+    kernel.dispose().await;
+    let real = std::fs::symlink_metadata(&board).is_ok_and(|seen| seen.is_dir());
+    let kept = std::fs::read_to_string(outside.join("config.json")).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&corpus);
+    let stdout = ran?.result.stdout;
+    assert!(
+        real && kept == "yi-855-probe-secret" && !stdout.contains("yi-855-probe-secret"),
+        "a board link was kept ({}) or followed: {stdout}",
+        !real
+    );
+    Ok(())
+}
+
 /// Incident (#584): `~/.yi/mcp` was a kernel writable root, and the host ran whatever
 /// `sessions.json` named on a `fetch("mcp://…")`, a read Auto mode never asks about. The store
 /// is host-only now (D296), and the token files under it are hidden from a cell.

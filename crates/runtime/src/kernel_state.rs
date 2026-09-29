@@ -19,12 +19,6 @@ pub(crate) fn state_dir(dir: &Path, per_session: bool, key: Option<&str>) -> Opt
     Some(state)
 }
 
-/// The family board, made by the host: a profile can grant the board but not its parent (D240).
-pub(crate) fn board(dir: &Path) -> PathBuf {
-    let _a_failed_mkdir_surfaces_at_the_put = std::fs::create_dir_all(dir);
-    dir.to_path_buf()
-}
-
 fn register_harness_save(
     registry: &mut crate::kernel::HostRegistry,
     broker: Option<std::sync::Arc<crate::permission::PermissionBroker>>,
