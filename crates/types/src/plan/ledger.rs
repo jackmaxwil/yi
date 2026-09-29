@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::canonical::{CanonicalError, Digest, canonical_bytes, canonical_digest};
+use super::canonical::{CanonicalError, Chained, Digest, canonical_digest};
 use super::doc::{PlanId, TodoLabel, TodoStateName};
 
 pub const PLAN_OP_ENTRY_TYPE: &str = "plan_op";
@@ -189,39 +189,9 @@ macro_rules! text_id {
         #[serde(try_from = "String", into = "String")]
         pub struct $name(String);
 
-        impl $name {
-            /// # Errors
-            /// Empty, over [`crate::plan::ledger::ID_MAX_BYTES`], or containing whitespace.
-            pub fn new(id: impl Into<String>) -> Result<Self, $crate::plan::ledger::IdError> {
-                let id = id.into();
-                $crate::plan::ledger::check_id($what, &id)?;
-                Ok(Self(id))
-            }
-
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl TryFrom<String> for $name {
-            type Error = $crate::plan::ledger::IdError;
-
-            fn try_from(id: String) -> Result<Self, Self::Error> {
-                Self::new(id)
-            }
-        }
-
-        impl From<$name> for String {
-            fn from(id: $name) -> Self {
-                id.0
-            }
-        }
-
-        impl std::fmt::Display for $name {
-            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str(&self.0)
-            }
-        }
+        crate::plan::ids::text_newtype!($name, crate::plan::ledger::IdError, |id| {
+            crate::plan::ledger::check_id($what, &id).map(|()| id)
+        });
     };
 }
 
@@ -247,34 +217,15 @@ pub struct JournalRecord {
     pub digest: Digest,
 }
 
-impl JournalRecord {
-    /// The digest this record must carry: `sha256(prev || canonical(record without digest))`.
-    pub fn digest_of(&self, prev: Option<&Digest>) -> Result<Digest, CanonicalError> {
-        let mut value = serde_json::to_value(self).map_err(|error| CanonicalError::Serialize {
-            detail: error.to_string(),
-        })?;
-        if let Value::Object(map) = &mut value {
-            map.remove("digest");
-        }
-        Ok(Digest::chained(prev, &canonical_bytes(&value)?))
-    }
+impl Chained for JournalRecord {}
 
+impl JournalRecord {
     /// Fill `args_hash` from `args` and `digest` from the chain, in that order (the digest covers
     /// the hash).
     pub fn seal(mut self, prev: Option<&Digest>) -> Result<Self, CanonicalError> {
         self.args_hash = canonical_digest(&self.args)?;
         self.digest = self.digest_of(prev)?;
         Ok(self)
-    }
-
-    /// The bytes of one journal line: canonical JSON plus a newline.
-    pub fn line(&self) -> Result<Vec<u8>, CanonicalError> {
-        let value = serde_json::to_value(self).map_err(|error| CanonicalError::Serialize {
-            detail: error.to_string(),
-        })?;
-        let mut bytes = canonical_bytes(&value)?;
-        bytes.push(b'\n');
-        Ok(bytes)
     }
 
     /// True when the record recorded a refusal: nothing moved, `to` is absent.

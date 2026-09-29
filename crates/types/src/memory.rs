@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::plan::canonical::{CanonicalError, Digest, canonical_bytes};
+use crate::plan::canonical::{CanonicalError, Chained, Digest};
 
 /// The `custom_type` of the session entry that points at one journal record.
 pub const MEMORY_ENTRY_TYPE: &str = "memory";
@@ -26,35 +26,14 @@ pub struct MemoryRecord {
     pub digest: Digest,
 }
 
-impl MemoryRecord {
-    /// # Errors
-    /// The record does not serialize to canonical JSON.
-    pub fn digest_of(&self, prev: Option<&Digest>) -> Result<Digest, CanonicalError> {
-        let mut value = serde_json::to_value(self).map_err(|error| CanonicalError::Serialize {
-            detail: error.to_string(),
-        })?;
-        if let Value::Object(map) = &mut value {
-            map.remove("digest");
-        }
-        Ok(Digest::chained(prev, &canonical_bytes(&value)?))
-    }
+impl Chained for MemoryRecord {}
 
+impl MemoryRecord {
     /// # Errors
     /// The record does not serialize to canonical JSON.
     pub fn seal(mut self, prev: Option<&Digest>) -> Result<Self, CanonicalError> {
         self.digest = self.digest_of(prev)?;
         Ok(self)
-    }
-
-    /// # Errors
-    /// The record does not serialize to canonical JSON.
-    pub fn line(&self) -> Result<Vec<u8>, CanonicalError> {
-        let value = serde_json::to_value(self).map_err(|error| CanonicalError::Serialize {
-            detail: error.to_string(),
-        })?;
-        let mut bytes = canonical_bytes(&value)?;
-        bytes.push(b'\n');
-        Ok(bytes)
     }
 }
 
