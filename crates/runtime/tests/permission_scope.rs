@@ -246,8 +246,9 @@ fn a_glob_is_judged_by_the_directory_its_walk_starts_from() {
     }
 }
 
-/// A named read or grep `path=` is judged by the file it opens, not the spelling (#898), and
-/// yi's own token stores are key stores (#887). Every spelling below reached a key before.
+/// Every call that opens a path is judged by the file it opens, not the spelling (#898), and
+/// yi's own token stores are key stores (#887): a read or grep prints the key, an edit prints
+/// the lines it refuses, a write replaces it. Every spelling below reached a key before.
 #[cfg(unix)]
 #[test]
 fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
@@ -257,14 +258,18 @@ fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
     for store in [".ssh", ".yi/providers/tokens", ".yi/mcp/tokens"] {
         std::fs::create_dir_all(home.join(store))?;
     }
-    std::fs::create_dir_all(&elsewhere)?;
-    std::fs::write(home.join(".ssh/id_rsa"), "FAKE PRIVATE KEY\n")?;
-    std::fs::write(home.join(".yi/providers/tokens/openai.json"), "{}\n")?;
-    std::fs::write(home.join(".yi/mcp/tokens/default_mcp.json"), "{}\n")?;
+    std::fs::create_dir_all(elsewhere.join(".git"))?;
+    std::fs::write(elsewhere.join(".git/config"), "[core]\n")?;
+    let secret = "FAKE KEY MARKER\n";
+    std::fs::write(home.join(".ssh/id_rsa"), secret)?;
+    std::fs::write(home.join(".yi/providers/tokens/openai.json"), secret)?;
+    std::fs::write(home.join(".yi/mcp/tokens/default_mcp.json"), secret)?;
     std::fs::write(home.join("notes.md"), "ordinary\n")?;
     symlink(home.join(".ssh"), elsewhere.join("link"))?;
     symlink(&home, elsewhere.join("h"))?;
     symlink(home.join(".ssh/missing"), elsewhere.join("ghost"))?;
+    symlink(elsewhere.join(".git"), elsewhere.join("gitlink"))?;
+    symlink("/dev", elsewhere.join("devlink"))?;
     // SAFETY: nextest runs each test in its own process; no other test reads HOME.
     unsafe { std::env::set_var("HOME", &home) };
     let broker = PermissionBroker::new(
@@ -274,24 +279,37 @@ fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
         None,
         tokio::sync::broadcast::channel(8).0,
     );
-    let allowed = |tool: &str, path: &str| {
+    let decide = |tool: &str, path: &str| {
         let mut args = Map::new();
         args.insert("path".to_owned(), json!(path));
         args.insert("pattern".to_owned(), json!("KEY"));
-        (broker.decide_call(tool, ToolKind::Read, false, "c1", &args, None)).allowed
+        args.insert("content".to_owned(), json!("overwritten"));
+        args.insert("patch".to_owned(), json!(format!("[{path}]\nPUT 1.=1:\nx")));
+        let (kind, irreversible) = match tool {
+            "read" | "grep" => (ToolKind::Read, false),
+            _ => (ToolKind::Write, true),
+        };
+        broker.decide_call(tool, kind, irreversible, "c1", &args, None)
     };
     let shown = home.display().to_string();
-    let mut denied = vec![
-        "~/.yi/providers/tokens/openai.json".to_owned(),
-        "~/.yi/providers/tokens".to_owned(),
-        "~/.yi/mcp/tokens/default_mcp.json".to_owned(),
-        "link/id_rsa".to_owned(),
-        "link".to_owned(),
-        "h/.ssh/id_rsa".to_owned(),
-        "h/.yi/providers/tokens/openai.json".to_owned(),
-        "link/../.ssh/id_rsa".to_owned(),
-        "ghost".to_owned(),
-    ];
+    let mut denied = [
+        "~/.yi/providers/tokens/openai.json",
+        "~/.yi/providers/tokens",
+        "~/.yi/mcp/tokens/default_mcp.json",
+        "link/id_rsa",
+        "link",
+        "h/.ssh/id_rsa",
+        "h/.yi/providers/tokens/openai.json",
+        "h/.yi",
+        "link/../.ssh/id_rsa",
+        "ghost",
+        "gitlink/config",
+        "gitlink/no-such",
+        "devlink/zero",
+        "devlink/no-such-device",
+    ]
+    .map(str::to_owned)
+    .to_vec();
     if home.join(".SSH").exists() {
         denied.push("~/.SSH/id_rsa".to_owned());
         denied.push("~/.YI/providers/tokens/openai.json".to_owned());
@@ -303,14 +321,21 @@ fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
     ] {
         if std::path::Path::new(&format!("{alias}{shown}")).exists() {
             denied.push(format!("{alias}{shown}/.ssh/id_rsa"));
+            denied.push(format!("{alias}{shown}/.yi/providers/tokens/openai.json"));
+            denied.push(format!("{alias}{shown}/.yi/providers"));
         }
     }
-    for tool in ["read", "grep"] {
+    for tool in ["read", "grep", "edit", "write"] {
         for path in &denied {
-            assert!(!allowed(tool, path), "{tool} {path} reaches a key");
+            let outcome = decide(tool, path);
+            assert!(!outcome.allowed, "{tool} {path} reaches a key");
+            assert!(!outcome.reason.contains("MARKER"), "{}", outcome.reason);
         }
         for path in ["~/notes.md", "h/notes.md"] {
-            assert!(allowed(tool, path), "{tool} {path} is an ordinary file");
+            assert!(
+                decide(tool, path).allowed,
+                "{tool} {path} is an ordinary file"
+            );
         }
     }
     Ok(())
