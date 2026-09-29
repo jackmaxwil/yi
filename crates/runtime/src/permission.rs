@@ -171,6 +171,10 @@ pub(crate) fn extract_targets(
     let mut push = |raw: &str| targets.push(yi_permission::resolve_target(raw, cwd));
     if let Some(path) = args.get("path").and_then(Value::as_str) {
         push(path);
+        // A glob walks from its literal head, so the gates judge that directory too.
+        if let Some(head) = yi_tools::glob_head(path) {
+            push(&head);
+        }
     }
     if tool_name == "edit"
         && let Some(patch) = args.get("patch").and_then(Value::as_str)

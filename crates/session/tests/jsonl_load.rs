@@ -263,3 +263,32 @@ fn the_list_index_follows_appends_shrinks_deletes_and_corruption() -> TestResult
     );
     Ok(())
 }
+
+/// Dies with `delete` removing only the file: the children a session spawned stay on disk
+/// under `<file stem>/children/` with nothing left that points at them.
+#[test]
+fn deleting_a_session_deletes_the_children_it_holds() -> TestResult {
+    let dir = Scratch::new("yi-session-children")?;
+    let mut repo = JsonlRepo::new(dir.to_path_buf(), "/work");
+    let session = repo.create(yi_session::CreateOptions {
+        id: Some("root".to_owned()),
+        ..Default::default()
+    })?;
+    let file = yi_session::lock_session(&session)
+        .file_path()
+        .cloned()
+        .ok_or("no file")?;
+    let children = file.with_extension("").join("children/sub-1a2b3c4d");
+    fs::create_dir_all(&children)?;
+    fs::write(children.join("child.jsonl"), "{}\n")?;
+    let sibling = dir.join("other");
+    fs::create_dir_all(&sibling)?;
+    repo.delete("root")?;
+    assert!(!file.exists());
+    assert!(
+        !file.with_extension("").exists(),
+        "the children went with it"
+    );
+    assert!(sibling.exists(), "nothing beside it is touched");
+    Ok(())
+}

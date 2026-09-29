@@ -281,6 +281,30 @@ impl GoalService {
             .map_err(|error| error.to_string())
     }
 
+    pub fn act(&self, params: &Map<String, Value>) -> Result<Value, String> {
+        let text = |key| params.get(key).and_then(Value::as_str).unwrap_or_default();
+        match text("action") {
+            "get" => self.get(),
+            "create" => self.create(
+                text("objective"),
+                params.get("tokenBudget").and_then(Value::as_u64),
+                params
+                    .get("check")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                params.get("checkTimeoutMs").and_then(Value::as_u64),
+            ),
+            "update" => self.update(text("status")),
+            "objective" => self.set_objective(
+                text("objective"),
+                params.get("citation").and_then(Value::as_str),
+            ),
+            other => Err(format!(
+                "unknown goal action {other}; use get|create|update|objective"
+            )),
+        }
+    }
+
     pub fn get(&self) -> Result<Value, String> {
         match self.read_goal() {
             Some(goal) => Ok(goal_json(&goal)),

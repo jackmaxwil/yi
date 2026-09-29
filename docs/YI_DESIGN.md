@@ -528,8 +528,10 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   [`family.rs`](../crates/runtime/src/family.rs)
 - Shapes: [`types/src/subagent.rs`](../crates/types/src/subagent.rs) (`ChildUpdate` on
   `_yi/subagent_update`), [`types/src/lease.rs`](../crates/types/src/lease.rs) (`Lease`,
-  `LeaseRecord`, `ParentClose`); child dirs `<parent rlm dir>/sub-<8 hex>`
-- Settled by: D165, D210, D215, D216, D218, D234, D307, D308, D309
+  `LeaseRecord`, `ParentClose`), `ChildTrail` (the parent's `custom{child}` lines); child dirs
+  `<parent file without .jsonl>/children/sub-<8 hex>` at the root, `<parent dir>/children/sub-<8 hex>`
+  below it, `rlm-<pid>/sub-<8 hex>` for a root with no transcript (D317)
+- Settled by: D165, D210, D215, D216, D218, D234, D307, D308, D309, D317
 
 ## 12. Mailbox
 A family message: an envelope in the receiver's inbox before delivery, then its one queue.
