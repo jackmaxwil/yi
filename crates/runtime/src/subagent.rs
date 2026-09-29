@@ -233,6 +233,7 @@ pub struct SubagentHost {
     pub(crate) family: std::sync::OnceLock<PathBuf>,
     pub(crate) resolver: std::sync::OnceLock<Arc<crate::fetch::Resolver>>,
     pub(crate) partitions: Mutex<HashMap<String, std::time::Instant>>,
+    pub(crate) leads: Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>,
 }
 
 impl SubagentHost {
@@ -400,45 +401,6 @@ fn seed_for_fork(parent: &[AgentMessage], fork: Fork, window: u64) -> Vec<AgentM
     kept
 }
 
-fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
-    let mut unsupported: Vec<&str> = kwargs
-        .keys()
-        .map(String::as_str)
-        .filter(|key| {
-            !matches!(
-                *key,
-                "name"
-                    | "model"
-                    | "thinking"
-                    | "fork"
-                    | "isolation"
-                    | "deny_write"
-                    | "deny_read"
-                    | "deny_url"
-                    | "context"
-                    | "check"
-                    | "deadline_s"
-                    | "tokens"
-                    | "parent_close"
-                    | "role"
-                    | "partition"
-                    | "tools"
-                    | "turns"
-                    | "schema"
-                    | "readers"
-            )
-        })
-        .collect();
-    if unsupported.is_empty() {
-        return Ok(());
-    }
-    unsupported.sort_unstable();
-    Err(format!(
-        "Unsupported rlm.run kwargs: {}",
-        unsupported.join(", ")
-    ))
-}
-
 fn optional_string(kwargs: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
     match kwargs.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -517,6 +479,7 @@ impl SubagentHost {
             family: std::sync::OnceLock::new(),
             resolver: std::sync::OnceLock::new(),
             partitions: Mutex::default(),
+            leads: Mutex::default(),
         }
     }
 
@@ -664,7 +627,7 @@ impl SubagentHost {
             matches!(standing, Standing::Juror),
             crate::levers::get().family_cap,
         );
-        require_kwargs(&kwargs)?;
+        build::require_kwargs(&kwargs)?;
         let mut kwargs = kwargs;
         if matches!(standing, Standing::Worker) && !kwargs.contains_key("role") {
             kwargs.insert("role".to_owned(), Value::from("reader"));
@@ -713,7 +676,7 @@ impl SubagentHost {
         let session_name =
             requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
         let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask, &standing)?;
-        reader::share(self, &kwargs, seed.as_ref(), &mut cast);
+        let stagger = reader::share(self, &kwargs, seed.as_ref(), &mut cast);
         if let Isolation::Container(image) = &isolation {
             crate::node::placeable(&self.options.home, image)?;
         }
@@ -744,6 +707,7 @@ impl SubagentHost {
             child.seed_messages(seed);
         }
         let session = Arc::new(child);
+        let lead = stagger.and_then(|stagger| stagger.arm(&session));
         if matches!(standing, Standing::Service(_)) {
             service::watch_kernel(&session);
         }
@@ -800,6 +764,7 @@ impl SubagentHost {
         // Invariant: the spawn reply resolves at admission, and blocking here
         // would abort the turn whose cell awaits it.
         tokio::spawn(async move {
+            reader::follow(lead).await;
             host.run_child(
                 task_child_id,
                 task_name,

@@ -577,7 +577,8 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
         return _spawn_handle_from_payload(await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs}))
     # Runs gathered together all register before any sends: each tells the host how many share
     # its partition, so the first reader writes the cache entry the others read (D314).
-    key = json.dumps(partition, default=str)
+    shape = [kwargs.get(name) for name in ("role", "model", "tools", "schema")]
+    key = json.dumps([partition, shape], default=str)
     live, peak = _SENDING.get(key, (0, 0))
     _SENDING[key] = (live + 1, max(peak, live + 1))
     try:
@@ -594,7 +595,7 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     return _spawn_handle_from_payload(payload)
 
 
-# Per partition: runs still sending, and the most that were at once.
+# Per partition and reader shape: runs still sending, and the most that were at once.
 _SENDING: dict[str, tuple[int, int]] = {}
 
 

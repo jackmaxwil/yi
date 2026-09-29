@@ -322,7 +322,7 @@ pub struct LlmContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<serde_json::Value>,
     /// The last message index siblings share byte for byte, set when a sibling sent the same
-    /// run within the cache's life (D309); both encoders mark it (D314).
+    /// run within the cache's life (D309) or a fan-out shares it; both encoders mark it (D314).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_through: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]

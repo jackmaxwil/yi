@@ -262,9 +262,10 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
                 rlm.run("first?", partition=["local://a.txt"]),
                 rlm.run("second?", partition=["local://a.txt"]),
                 rlm.run("other?", partition=["local://b.txt"]),
+                rlm.run("shaped?", partition=["local://a.txt"], tools=[]),
             )
             await rlm.run("alone?", partition=["local://a.txt"])
-        self.assertEqual([kwargs.get("readers") for kwargs in sent], [2, 2, None, None])
+        self.assertEqual([kwargs.get("readers") for kwargs in sent], [2, 2, None, None, None])
         self.assertEqual(rlm._SENDING, {})
 
     async def test_module_result_refuses_a_non_dict_schema_before_any_host_round_trip(
