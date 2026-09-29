@@ -110,16 +110,22 @@ fn catalog_age(site: &Site) -> Finding {
     let stale: Vec<String> = yi_runtime::CATALOG_PROVIDERS
         .iter()
         .filter(|provider| {
-            yi_runtime::catalog_age(&dir, provider, now)
-                .is_some_and(|age| age.as_secs() >= hours.saturating_mul(3600))
+            yi_runtime::catalog_age(&dir, provider, now).is_some()
+                && yi_runtime::catalog_is_stale(&dir, provider, hours, now)
         })
         .map(|provider| (*provider).to_owned())
         .collect();
-    if stale.is_empty() {
-        ok("bundled floor, caches younger than the refresh age")
+    let rejected = yi_runtime::catalog_rejected(&dir);
+    if let Some(first) = rejected.first() {
+        fail(format!(
+            "did not load: {first} ({} in all); `yi catalog refresh`",
+            rejected.len()
+        ))
+    } else if stale.is_empty() {
+        ok("bundled floor, caches current and younger than the refresh age")
     } else {
         fail(format!(
-            "{} older than {hours}h; `yi catalog refresh`",
+            "{} older than {hours}h or an older schema; `yi catalog refresh`",
             stale.join(", ")
         ))
     }

@@ -70,7 +70,7 @@ struct Shared {
     waits: Mutex<Option<Arc<dyn Fn() -> u64 + Send + Sync>>>,
     environment: Mutex<Option<Arc<EnvironmentFn>>>,
     reuse: Mutex<yi_types::model::Reuse>,
-    /// The system bytes the first request sent; every later request must send the same (D306).
+    /// The system bytes the first request sent; every later request must send the same (D310).
     first_system_prompt: OnceLock<String>,
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,

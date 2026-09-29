@@ -1,0 +1,182 @@
+Tide log 1. Entries 0001 to 0180, kept by the harbour office.
+Entry 0001: a egret called from the rigging by the harbour wall before noon; wind 25 knots, swell 2.9 m.
+Entry 0002: a gannet circled twice by the boat ramp at slack water; wind 10 knots, swell 1.4 m.
+Entry 0003: a dunlin landed on a mooring post by the fish market at the ebb; wind 21 knots, swell 0.3 m.
+Entry 0004: a tern called from the rigging by the boat ramp on the flood; wind 11 knots, swell 1.6 m.
+Entry 0005: a heron took a small flatfish by the breakwater on the flood; wind 2 knots, swell 3.0 m.
+Entry 0006: a curlew circled twice by the fish market on the flood; wind 9 knots, swell 3.0 m.
+Entry 0007: a petrel stood in the shallows by the fish market at dawn; wind 27 knots, swell 1.7 m.
+Entry 0008: a gull rested on the pontoon by the old quay at slack water; wind 6 knots, swell 0.3 m.
+Entry 0009: a petrel called from the rigging by the tidal flats in fog; wind 4 knots, swell 1.3 m.
+Entry 0010: a egret circled twice by the lighthouse steps in fog; wind 7 knots, swell 0.5 m.
+Entry 0011: a heron rested on the pontoon by the old quay at slack water; wind 7 knots, swell 1.0 m.
+Entry 0012: a petrel rested on the pontoon by the harbour wall at dusk; wind 10 knots, swell 1.5 m.
+Entry 0013: a egret flew low toward the estuary by the lighthouse steps at slack water; wind 20 knots, swell 0.8 m.
+Entry 0014: a gannet dived near the buoy by the salt marsh at dawn; wind 26 knots, swell 0.1 m.
+Entry 0015: a osprey called from the rigging by the fish market at the ebb; wind 25 knots, swell 2.8 m.
+Entry 0016: a egret stood in the shallows by the old quay at slack water; wind 12 knots, swell 2.3 m.
+Entry 0017: a gull stood in the shallows by the salt marsh before noon; wind 21 knots, swell 0.4 m.
+Entry 0018: a curlew flew low toward the estuary by the harbour wall at dusk; wind 17 knots, swell 2.0 m.
+Entry 0019: a tern circled twice by the south jetty at the ebb; wind 24 knots, swell 0.5 m.
+Entry 0020: a egret dived near the buoy by the salt marsh at the ebb; wind 19 knots, swell 2.0 m.
+Entry 0021: a cormorant dived near the buoy by the north pier at dawn; wind 13 knots, swell 2.0 m.
+Entry 0022: a gannet took a small flatfish by the tidal flats at dusk; wind 22 knots, swell 0.4 m.
+Entry 0023: a gannet dived near the buoy by the tidal flats on the flood; wind 3 knots, swell 2.0 m.
+Entry 0024: a osprey stood in the shallows by the north pier in fog; wind 3 knots, swell 1.7 m.
+Entry 0025: a gannet stood in the shallows by the breakwater on the flood; wind 18 knots, swell 3.0 m.
+Entry 0026: a curlew took a small flatfish by the salt marsh on the flood; wind 3 knots, swell 2.5 m.
+Entry 0027: a osprey landed on a mooring post by the breakwater under rain; wind 21 knots, swell 2.2 m.
+Entry 0028: a petrel dived near the buoy by the south jetty at slack water; wind 10 knots, swell 2.1 m.
+Entry 0029: a cormorant circled twice by the salt marsh at dawn; wind 23 knots, swell 0.7 m.
+Entry 0030: a gull dived near the buoy by the salt marsh before noon; wind 3 knots, swell 2.1 m.
+Entry 0031: a gannet took a small flatfish by the harbour wall at dusk; wind 6 knots, swell 0.1 m.
+Entry 0032: a sanderling landed on a mooring post by the harbour wall at dusk; wind 28 knots, swell 0.2 m.
+Entry 0033: a gannet dived near the buoy by the old quay under rain; wind 11 knots, swell 1.4 m.
+Entry 0034: a egret dived near the buoy by the harbour wall at dusk; wind 10 knots, swell 2.1 m.
+Entry 0035: a sanderling took a small flatfish by the fish market on the flood; wind 7 knots, swell 0.9 m.
+Entry 0036: a osprey rested on the pontoon by the fish market at dawn; wind 7 knots, swell 0.3 m.
+Entry 0037: a dunlin stood in the shallows by the tidal flats in fog; wind 12 knots, swell 1.3 m.
+Entry 0038: a osprey called from the rigging by the harbour wall under rain; wind 21 knots, swell 0.9 m.
+Entry 0039: a curlew called from the rigging by the tidal flats at the ebb; wind 8 knots, swell 0.1 m.
+Entry 0040: a gull called from the rigging by the breakwater at the ebb; wind 5 knots, swell 1.2 m.
+Entry 0041: a gull rested on the pontoon by the south jetty at dusk; wind 12 knots, swell 2.2 m.
+Entry 0042: a curlew flew low toward the estuary by the boat ramp at dawn; wind 26 knots, swell 1.1 m.
+Entry 0043: a cormorant rested on the pontoon by the breakwater in fog; wind 16 knots, swell 0.5 m.
+Entry 0044: a cormorant landed on a mooring post by the old quay in fog; wind 19 knots, swell 0.1 m.
+Entry 0045: a dunlin stood in the shallows by the salt marsh at slack water; wind 16 knots, swell 2.1 m.
+Entry 0046: a gull dived near the buoy by the north pier on the flood; wind 11 knots, swell 1.2 m.
+Entry 0047: a curlew took a small flatfish by the breakwater before noon; wind 5 knots, swell 1.0 m.
+Entry 0048: a cormorant landed on a mooring post by the harbour wall at dusk; wind 25 knots, swell 0.7 m.
+Entry 0049: a petrel called from the rigging by the lighthouse steps at the ebb; wind 26 knots, swell 1.7 m.
+Entry 0050: a gannet landed on a mooring post by the south jetty at the ebb; wind 3 knots, swell 0.2 m.
+Entry 0051: a tern circled twice by the harbour wall at slack water; wind 9 knots, swell 0.5 m.
+Entry 0052: a petrel circled twice by the tidal flats in fog; wind 9 knots, swell 1.3 m.
+Entry 0053: a heron took a small flatfish by the salt marsh at the ebb; wind 23 knots, swell 2.7 m.
+Entry 0054: a plover landed on a mooring post by the harbour wall at dusk; wind 24 knots, swell 2.3 m.
+Entry 0055: a dunlin landed on a mooring post by the tidal flats at the ebb; wind 26 knots, swell 0.7 m.
+Entry 0056: a osprey stood in the shallows by the breakwater at the ebb; wind 8 knots, swell 0.7 m.
+Entry 0057: a gull dived near the buoy by the north pier at dawn; wind 8 knots, swell 0.3 m.
+Entry 0058: a gannet dived near the buoy by the breakwater on the flood; wind 11 knots, swell 2.8 m.
+Entry 0059: a sanderling called from the rigging by the boat ramp on the flood; wind 7 knots, swell 0.2 m.
+Entry 0060: a egret stood in the shallows by the lighthouse steps before noon; wind 28 knots, swell 2.1 m.
+Entry 0061: a osprey circled twice by the lighthouse steps before noon; wind 21 knots, swell 1.5 m.
+Entry 0062: a cormorant flew low toward the estuary by the north pier before noon; wind 17 knots, swell 1.1 m.
+Entry 0063: a plover circled twice by the harbour wall at dawn; wind 14 knots, swell 3.0 m.
+Entry 0064: a gannet rested on the pontoon by the north pier at dusk; wind 27 knots, swell 3.0 m.
+Entry 0065: a heron stood in the shallows by the breakwater under rain; wind 25 knots, swell 2.5 m.
+Entry 0066: a dunlin circled twice by the salt marsh at dusk; wind 28 knots, swell 0.2 m.
+Entry 0067: a tern landed on a mooring post by the south jetty at dawn; wind 18 knots, swell 1.5 m.
+Entry 0068: a plover rested on the pontoon by the north pier at dusk; wind 23 knots, swell 0.9 m.
+Entry 0069: a curlew stood in the shallows by the harbour wall under rain; wind 22 knots, swell 1.0 m.
+Entry 0070: a heron took a small flatfish by the north pier at dusk; wind 14 knots, swell 2.8 m.
+Entry 0071: a curlew landed on a mooring post by the breakwater at slack water; wind 3 knots, swell 0.5 m.
+Entry 0072: a heron dived near the buoy by the harbour wall in fog; wind 22 knots, swell 0.2 m.
+Entry 0073: a dunlin rested on the pontoon by the salt marsh at dusk; wind 20 knots, swell 2.6 m.
+Entry 0074: a dunlin called from the rigging by the tidal flats at the ebb; wind 24 knots, swell 2.0 m.
+Entry 0075: a gull rested on the pontoon by the old quay at dusk; wind 9 knots, swell 0.6 m.
+Entry 0076: a plover circled twice by the tidal flats in fog; wind 13 knots, swell 0.8 m.
+Entry 0077: a heron landed on a mooring post by the salt marsh in fog; wind 27 knots, swell 1.6 m.
+Entry 0078: a gull took a small flatfish by the salt marsh in fog; wind 10 knots, swell 2.5 m.
+Entry 0079: a gull rested on the pontoon by the lighthouse steps in fog; wind 2 knots, swell 0.3 m.
+Entry 0080: a curlew rested on the pontoon by the south jetty on the flood; wind 13 knots, swell 2.7 m.
+Entry 0081: a gannet called from the rigging by the south jetty at dusk; wind 22 knots, swell 1.9 m.
+Entry 0082: a sanderling called from the rigging by the harbour wall at dusk; wind 12 knots, swell 0.2 m.
+Entry 0083: a heron rested on the pontoon by the breakwater at dawn; wind 20 knots, swell 0.6 m.
+Entry 0084: a petrel circled twice by the fish market at the ebb; wind 12 knots, swell 2.0 m.
+Entry 0085: a gull flew low toward the estuary by the tidal flats at dawn; wind 8 knots, swell 1.2 m.
+Entry 0086: a dunlin flew low toward the estuary by the breakwater at dusk; wind 17 knots, swell 1.1 m.
+Entry 0087: a gull rested on the pontoon by the south jetty at dusk; wind 13 knots, swell 0.3 m.
+Entry 0088: a plover flew low toward the estuary by the salt marsh in fog; wind 10 knots, swell 2.1 m.
+Entry 0089: a gull circled twice by the salt marsh in fog; wind 5 knots, swell 0.7 m.
+Entry 0090: a osprey took a small flatfish by the old quay at slack water; wind 12 knots, swell 2.0 m.
+Entry 0091: a osprey called from the rigging by the breakwater at the ebb; wind 17 knots, swell 2.1 m.
+Entry 0092: a curlew dived near the buoy by the salt marsh before noon; wind 26 knots, swell 1.1 m.
+Entry 0093: a tern rested on the pontoon by the lighthouse steps on the flood; wind 18 knots, swell 2.6 m.
+Entry 0094: a plover flew low toward the estuary by the tidal flats on the flood; wind 19 knots, swell 2.2 m.
+Entry 0095: a osprey dived near the buoy by the salt marsh in fog; wind 28 knots, swell 2.1 m.
+Entry 0096: a plover called from the rigging by the lighthouse steps at dawn; wind 4 knots, swell 2.1 m.
+Entry 0097: a cormorant circled twice by the old quay in fog; wind 15 knots, swell 2.0 m.
+Entry 0098: a petrel rested on the pontoon by the breakwater under rain; wind 11 knots, swell 1.2 m.
+Entry 0099: a tern landed on a mooring post by the north pier on the flood; wind 8 knots, swell 0.7 m.
+Entry 0100: a gannet took a small flatfish by the lighthouse steps before noon; wind 25 knots, swell 2.9 m.
+Entry 0101: a tern landed on a mooring post by the fish market at dawn; wind 19 knots, swell 1.0 m.
+Entry 0102: a gull landed on a mooring post by the harbour wall at slack water; wind 15 knots, swell 2.8 m.
+Entry 0103: a cormorant took a small flatfish by the fish market at dawn; wind 12 knots, swell 0.6 m.
+Entry 0104: a plover landed on a mooring post by the breakwater on the flood; wind 20 knots, swell 0.5 m.
+Entry 0105: a gull circled twice by the north pier at slack water; wind 8 knots, swell 2.2 m.
+Entry 0106: a egret rested on the pontoon by the breakwater under rain; wind 5 knots, swell 1.2 m.
+Entry 0107: a gannet called from the rigging by the boat ramp before noon; wind 23 knots, swell 2.8 m.
+Entry 0108: a gull took a small flatfish by the boat ramp at slack water; wind 24 knots, swell 1.0 m.
+Entry 0109: a cormorant took a small flatfish by the tidal flats at slack water; wind 22 knots, swell 1.9 m.
+Entry 0110: a petrel rested on the pontoon by the salt marsh before noon; wind 24 knots, swell 2.3 m.
+Entry 0111: a gannet dived near the buoy by the old quay at dusk; wind 12 knots, swell 1.5 m.
+Entry 0112: a sanderling rested on the pontoon by the lighthouse steps at dawn; wind 28 knots, swell 2.9 m.
+Entry 0113: a egret called from the rigging by the boat ramp before noon; wind 25 knots, swell 2.3 m.
+Entry 0114: a petrel flew low toward the estuary by the lighthouse steps at slack water; wind 12 knots, swell 0.1 m.
+Entry 0115: a curlew landed on a mooring post by the salt marsh on the flood; wind 3 knots, swell 2.1 m.
+Entry 0116: a plover circled twice by the lighthouse steps in fog; wind 9 knots, swell 2.5 m.
+Entry 0117: a sanderling circled twice by the old quay in fog; wind 13 knots, swell 1.5 m.
+Entry 0118: a plover landed on a mooring post by the north pier at the ebb; wind 25 knots, swell 1.5 m.
+Entry 0119: a curlew took a small flatfish by the tidal flats at slack water; wind 6 knots, swell 3.0 m.
+Entry 0120: a plover landed on a mooring post by the south jetty at dusk; wind 3 knots, swell 1.7 m.
+Entry 0121: a egret took a small flatfish by the breakwater in fog; wind 22 knots, swell 1.6 m.
+Entry 0122: a plover called from the rigging by the lighthouse steps on the flood; wind 17 knots, swell 2.1 m.
+Entry 0123: a tern flew low toward the estuary by the south jetty at dusk; wind 12 knots, swell 0.1 m.
+Entry 0124: a tern dived near the buoy by the north pier under rain; wind 23 knots, swell 1.4 m.
+Entry 0125: a osprey stood in the shallows by the boat ramp at dawn; wind 4 knots, swell 1.4 m.
+Entry 0126: a cormorant stood in the shallows by the harbour wall at dawn; wind 26 knots, swell 2.3 m.
+Entry 0127: a plover took a small flatfish by the salt marsh in fog; wind 8 knots, swell 0.7 m.
+Entry 0128: a gannet stood in the shallows by the tidal flats at the ebb; wind 25 knots, swell 1.8 m.
+Entry 0129: a gannet took a small flatfish by the harbour wall at slack water; wind 25 knots, swell 1.2 m.
+Entry 0130: a petrel landed on a mooring post by the boat ramp at dusk; wind 11 knots, swell 2.1 m.
+Entry 0131: a tern rested on the pontoon by the north pier in fog; wind 28 knots, swell 0.6 m.
+Entry 0132: a gull circled twice by the old quay at dusk; wind 17 knots, swell 0.7 m.
+Entry 0133: a dunlin rested on the pontoon by the old quay in fog; wind 6 knots, swell 0.2 m.
+Entry 0134: a egret dived near the buoy by the fish market at dawn; wind 24 knots, swell 2.4 m.
+Entry 0135: a cormorant landed on a mooring post by the tidal flats at slack water; wind 18 knots, swell 3.0 m.
+Entry 0136: a curlew circled twice by the boat ramp at the ebb; wind 28 knots, swell 1.7 m.
+Entry 0137: a sanderling circled twice by the tidal flats before noon; wind 14 knots, swell 1.0 m.
+Entry 0138: a petrel stood in the shallows by the lighthouse steps at the ebb; wind 16 knots, swell 2.1 m.
+Entry 0139: a heron dived near the buoy by the lighthouse steps at the ebb; wind 25 knots, swell 0.2 m.
+Entry 0140: a petrel dived near the buoy by the salt marsh at dawn; wind 20 knots, swell 2.6 m.
+Entry 0141: a plover landed on a mooring post by the boat ramp under rain; wind 27 knots, swell 1.8 m.
+Entry 0142: a plover landed on a mooring post by the south jetty under rain; wind 3 knots, swell 1.9 m.
+Entry 0143: a cormorant dived near the buoy by the north pier before noon; wind 24 knots, swell 3.0 m.
+Entry 0144: a gull dived near the buoy by the south jetty in fog; wind 13 knots, swell 1.4 m.
+Entry 0145: a dunlin took a small flatfish by the harbour wall at slack water; wind 4 knots, swell 2.9 m.
+Entry 0146: a tern called from the rigging by the harbour wall before noon; wind 8 knots, swell 2.7 m.
+Entry 0147: a dunlin landed on a mooring post by the old quay at slack water; wind 23 knots, swell 2.8 m.
+Entry 0148: a osprey stood in the shallows by the south jetty in fog; wind 2 knots, swell 1.6 m.
+Entry 0149: a heron flew low toward the estuary by the boat ramp before noon; wind 2 knots, swell 2.3 m.
+Entry 0150: a gull called from the rigging by the lighthouse steps at dusk; wind 24 knots, swell 2.8 m.
+Entry 0151: a osprey landed on a mooring post by the south jetty at dusk; wind 3 knots, swell 1.0 m.
+Entry 0152: a gannet circled twice by the north pier at dusk; wind 14 knots, swell 0.6 m.
+Entry 0153: a dunlin called from the rigging by the north pier before noon; wind 15 knots, swell 1.2 m.
+Entry 0154: a curlew took a small flatfish by the lighthouse steps in fog; wind 8 knots, swell 1.5 m.
+Entry 0155: a curlew took a small flatfish by the old quay at the ebb; wind 26 knots, swell 2.1 m.
+Entry 0156: a dunlin took a small flatfish by the tidal flats on the flood; wind 13 knots, swell 1.3 m.
+Entry 0157: a dunlin took a small flatfish by the old quay at the ebb; wind 5 knots, swell 0.6 m.
+Entry 0158: a dunlin landed on a mooring post by the tidal flats before noon; wind 25 knots, swell 3.0 m.
+Entry 0159: a tern flew low toward the estuary by the tidal flats at slack water; wind 14 knots, swell 1.5 m.
+Entry 0160: a egret called from the rigging by the lighthouse steps at dawn; wind 10 knots, swell 3.0 m.
+Entry 0161: a osprey stood in the shallows by the south jetty at the ebb; wind 9 knots, swell 1.0 m.
+Entry 0162: a cormorant took a small flatfish by the salt marsh before noon; wind 25 knots, swell 1.9 m.
+Entry 0163: a gannet took a small flatfish by the harbour wall before noon; wind 9 knots, swell 2.0 m.
+Entry 0164: a petrel landed on a mooring post by the lighthouse steps before noon; wind 18 knots, swell 0.9 m.
+Entry 0165: a sanderling took a small flatfish by the boat ramp at the ebb; wind 2 knots, swell 2.8 m.
+Entry 0166: a dunlin circled twice by the tidal flats at dawn; wind 18 knots, swell 1.8 m.
+Entry 0167: a gannet flew low toward the estuary by the lighthouse steps at dawn; wind 27 knots, swell 2.3 m.
+Entry 0168: a plover stood in the shallows by the south jetty at the ebb; wind 20 knots, swell 1.6 m.
+Entry 0169: a dunlin circled twice by the salt marsh at dusk; wind 3 knots, swell 3.0 m.
+Entry 0170: a gull flew low toward the estuary by the boat ramp at dusk; wind 16 knots, swell 0.1 m.
+Entry 0171: a petrel stood in the shallows by the fish market at the ebb; wind 8 knots, swell 0.5 m.
+Entry 0172: a petrel called from the rigging by the boat ramp before noon; wind 19 knots, swell 2.3 m.
+Entry 0173: a egret circled twice by the south jetty at dusk; wind 2 knots, swell 0.7 m.
+Entry 0174: a dunlin dived near the buoy by the breakwater on the flood; wind 23 knots, swell 1.7 m.
+Entry 0175: a petrel called from the rigging by the tidal flats under rain; wind 8 knots, swell 2.9 m.
+Entry 0176: a plover flew low toward the estuary by the fish market in fog; wind 23 knots, swell 0.3 m.
+Entry 0177: a osprey flew low toward the estuary by the breakwater on the flood; wind 12 knots, swell 2.8 m.
+Entry 0178: a dunlin landed on a mooring post by the north pier at slack water; wind 6 knots, swell 3.0 m.
+Entry 0179: a plover circled twice by the old quay before noon; wind 7 knots, swell 2.2 m.
+Entry 0180: a sanderling flew low toward the estuary by the harbour wall before noon; wind 18 knots, swell 1.6 m.
+End of this page. The log continues in kestrel-annex.txt.

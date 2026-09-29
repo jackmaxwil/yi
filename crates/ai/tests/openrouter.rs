@@ -22,7 +22,7 @@ fn target_model() -> Result<Model, Box<dyn Error>> {
         .ok_or_else(|| format!("bundled catalog is missing openrouter/{TARGET}").into())
 }
 
-fn history_context() -> LlmContext {
+pub(crate) fn history_context() -> LlmContext {
     LlmContext {
         system_prompt: "be terse".to_owned(),
         messages: vec![
@@ -173,7 +173,6 @@ fn a_claude_newer_than_the_bundle_marks_its_system_and_the_block_before_the_envi
 -> TestResult {
     let fetched = Model {
         id: "anthropic/claude-opus-5.5".to_owned(),
-        compat: Some(json!({"supportsDeveloperRole": false, "thinkingFormat": "openrouter"})),
         ..model("anthropic/claude-opus-5")?
     };
     let params = build_params(&fetched, &tool_loop_context(), &OpenAiOptions::default());
@@ -234,6 +233,50 @@ fn every_openrouter_route_marks_the_stable_prefix_and_never_the_environment() ->
         let expected = if model.id.contains("gemini") { 1 } else { 3 };
         assert_eq!(found.len(), expected, "{}: {found:?}", model.id);
     }
+    Ok(())
+}
+
+/// OpenRouter documents `cache_control` on text parts only (#742): a turn that ends in an image
+/// keeps its tail mark on its last text part, and no image part carries one.
+#[test]
+fn an_image_turn_marks_its_last_text_part_and_never_the_image() -> TestResult {
+    let text = |text: &str| Content::Text {
+        text: text.to_owned(),
+        text_signature: None,
+    };
+    let mut context = tool_loop_context();
+    context.messages.push(AgentMessage::host_user(
+        UserContent::Blocks(vec![
+            text("compare these"),
+            text("the second is newer"),
+            Content::Image {
+                data: "iVBORw0KGgo=".to_owned(),
+                mime_type: "image/png".to_owned(),
+            },
+        ]),
+        0,
+    ));
+    let params = build_params(
+        &model("anthropic/claude-haiku-4.5")?,
+        &context,
+        &OpenAiOptions::default(),
+    );
+    let messages = params["messages"].as_array().ok_or("messages")?;
+    let turn = messages.len().checked_sub(2).ok_or("no turn")?;
+    let marked: Vec<(usize, usize)> = messages
+        .iter()
+        .enumerate()
+        .flat_map(|(index, message)| {
+            let parts = message["content"].as_array().cloned().unwrap_or_default();
+            parts
+                .into_iter()
+                .enumerate()
+                .filter(|(_, part)| !part["cache_control"].is_null())
+                .map(move |(at, _)| (index, at))
+        })
+        .collect();
+    assert_eq!(marked.last(), Some(&(turn, 1)), "{marked:?}");
+    assert_eq!(messages[turn]["content"][2]["type"], "image_url");
     Ok(())
 }
 
