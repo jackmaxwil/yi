@@ -241,6 +241,16 @@ fn credential_stores(context: &CatastrophicContext) -> Vec<PathBuf> {
 /// Directories that hold users' key stores whatever HOME is, refused to a read's walk.
 const HOME_ROOTS: [&str; 4] = ["/", "/home", "/Users", "/root"];
 
+/// What a read's walk may not enter, to be judged by file identity so no spelling reaches
+/// them: trees guarded with all under them, and directories guarded only as themselves (D180).
+pub fn read_guarded_dirs(context: &CatastrophicContext) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut trees = credential_stores(context);
+    trees.push(PathBuf::from("/dev"));
+    let mut exact: Vec<PathBuf> = HOME_ROOTS.iter().map(PathBuf::from).collect();
+    exact.extend(context.home_dir.iter().cloned());
+    (trees, exact)
+}
+
 /// `/proc` entries that link elsewhere (`/proc/self/root` is `/`), unseen by a lexical check.
 const PROC_LINKS: [&str; 4] = ["root", "cwd", "fd", "map_files"];
 

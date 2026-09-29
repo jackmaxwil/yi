@@ -245,7 +245,7 @@ fn skeletons(
              read a directory for its skeletons, or pass symbol to rank its files first]\n"
         ));
     }
-    if let Some(notice) = crate::builtins::walled_notice(walled) {
+    for notice in walled.notices() {
         out.push_str(&notice);
     }
     Ok(out.trim_end().to_owned())
@@ -310,7 +310,7 @@ const DECL_PREFIXES: &str =
 const DECL_KEYWORDS: &str = "fn struct enum union trait type const mut mod class def function \
     func interface typedef";
 /// Words that open a statement, never a C `type name(` declaration.
-const STATEMENT_HEADS: &str = "let var return await yield throw new if while for";
+const STATEMENT_HEADS: &str = "let var return await yield throw new if while for assert";
 
 fn in_word_list(list: &str, word: &str) -> bool {
     list.split_whitespace().any(|entry| entry == word)
@@ -322,23 +322,26 @@ fn identifiers(text: &str) -> Vec<&str> {
         .collect()
 }
 
-/// The word after a declaration's keyword, past visibility and storage words, or in C the word
-/// before the `(` of an unindented `type name(`; a comment, call or local binding has none.
+/// The word after a declaration's keyword (a Go method's, past its receiver), past visibility
+/// and storage words, or in C the word before the `(` of an unindented `type name(`.
 pub(crate) fn defined_name(line: &str) -> Option<String> {
+    let indented = line.starts_with(char::is_whitespace);
     let trimmed = line.trim_start();
     (trimmed.starts_with(|first: char| first.is_ascii_alphabetic())).then_some(())?;
-    let all = identifiers(trimmed);
-    let mut rest = (all.iter())
-        .skip_while(|word| in_word_list(DECL_PREFIXES, word))
-        .peekable();
-    let head = **rest.peek()?;
+    let method = (trimmed.strip_prefix("func (")).and_then(|rest| rest.split_once(')'));
+    let trimmed = method.map_or_else(|| trimmed.to_owned(), |(_, name)| format!("func{name}"));
+    let prefixed = |word: &&str| in_word_list(DECL_PREFIXES, word);
+    let all = identifiers(&trimmed);
+    let mut rest = all.iter().copied().skip_while(prefixed).peekable();
+    let head = *rest.peek()?;
     if in_word_list(DECL_KEYWORDS, head) {
-        let name = rest.find(|word| !in_word_list(DECL_KEYWORDS, word));
-        return name.map(|word| (*word).to_owned());
+        return rest
+            .find(|word| !in_word_list(DECL_KEYWORDS, word))
+            .map(str::to_owned);
     }
     let (text, _) = trimmed.split_once('(')?;
-    let before = identifiers(text);
-    let typed = line == trimmed
+    let before: Vec<&str> = identifiers(text).into_iter().skip_while(prefixed).collect();
+    let typed = !indented
         && before.len() >= 2
         && !text.contains(['.', '='])
         && !in_word_list(STATEMENT_HEADS, head);
