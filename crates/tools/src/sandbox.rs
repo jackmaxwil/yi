@@ -21,17 +21,6 @@ pub struct Sandbox {
     pub loopback: bool,
 }
 
-/// Credential stores: the paths the permission layer already refuses to destroy or read,
-/// and the MCP OAuth token files.
-const CREDENTIAL_DIRS: [&str; 6] = [
-    ".ssh",
-    ".gnupg",
-    ".aws",
-    ".kube",
-    ".docker",
-    ".yi/mcp/tokens",
-];
-
 /// A git dir's escape hatches: `hooks` and `config` run under the host's next git, and the
 /// pointers are what the next sandbox policy is built from.
 const HOST_RUN_BY_GIT: [&str; 4] = ["hooks", "config", "commondir", "gitdir"];
@@ -54,7 +43,8 @@ impl Sandbox {
         writable.dedup();
         Self {
             writable,
-            deny_read: CREDENTIAL_DIRS.iter().map(|dir| home.join(dir)).collect(),
+            // The stores the read gate refuses, so a contained `cat` meets the same list (D322).
+            deny_read: yi_permission::credential_stores(home),
             deny_write,
             loopback: false,
         }

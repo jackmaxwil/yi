@@ -1,8 +1,18 @@
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 /// Credential stores, protected recursively: destroying one private key inside
-/// ~/.ssh is as damaging as destroying the directory.
-const PROTECTED_CREDENTIAL_SUBPATHS: [&str; 5] = [".ssh", ".gnupg", ".aws", ".kube", ".docker"];
+/// ~/.ssh is as damaging as destroying the directory. yi's own provider logins and MCP OAuth
+/// tokens are keys too (#887).
+const PROTECTED_CREDENTIAL_SUBPATHS: [&str; 7] = [
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".kube",
+    ".docker",
+    ".yi/mcp/tokens",
+    ".yi/providers/tokens",
+];
 
 /// Home directories whose wholesale destruction is unacceptable but whose
 /// individual files are legitimately edited; matched exactly.
@@ -175,13 +185,20 @@ fn expand(raw: &str, context: &CatastrophicContext) -> PathBuf {
 }
 
 pub(crate) fn resolve(path: &Path, context: &CatastrophicContext) -> PathBuf {
-    let path = expand_home(path, context.home_dir.as_deref());
-    if path.is_absolute() {
-        return lexical_normalize(&path);
+    let path = absolute(path, context);
+    match path.is_absolute() {
+        true => lexical_normalize(&path),
+        false => path,
     }
-    match &context.working_dir {
-        Some(cwd) => lexical_normalize(&cwd.join(path)),
-        None => path,
+}
+
+/// `~` and the working dir applied, `..` left to the kernel, which takes it after the link
+/// before it as a tool's open does: `link/../x` names the link target's sibling.
+pub(crate) fn absolute(path: &Path, context: &CatastrophicContext) -> PathBuf {
+    let path = expand_home(path, context.home_dir.as_deref());
+    match (&context.working_dir, path.is_absolute()) {
+        (Some(cwd), false) => cwd.join(path),
+        _ => path,
     }
 }
 
@@ -226,58 +243,160 @@ pub fn is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
         .any(|sub| path == home.join(sub))
 }
 
-fn credential_stores(context: &CatastrophicContext) -> Vec<PathBuf> {
-    context
-        .home_dir
+/// The credential stores under `home`, the one list the destroy gate, the read gate, the bash
+/// read belt and the sandbox's deny-read all take (D322).
+pub fn credential_stores(home: &Path) -> Vec<PathBuf> {
+    PROTECTED_CREDENTIAL_SUBPATHS
         .iter()
-        .flat_map(|home| {
-            PROTECTED_CREDENTIAL_SUBPATHS
-                .iter()
-                .map(|sub| lexical_normalize(&home.join(sub)))
-        })
+        .map(|sub| lexical_normalize(&home.join(sub)))
         .collect()
+}
+
+fn stores(context: &CatastrophicContext) -> Vec<PathBuf> {
+    (context.home_dir.as_deref())
+        .map(credential_stores)
+        .unwrap_or_default()
 }
 
 /// Directories that hold users' key stores whatever HOME is, refused to a read's walk.
 const HOME_ROOTS: [&str; 4] = ["/", "/home", "/Users", "/root"];
 
-/// What a read's walk may not enter, to be judged by file identity so no spelling reaches
-/// them: trees guarded with all under them, and directories guarded only as themselves (D180).
-pub fn read_guarded_dirs(context: &CatastrophicContext) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let mut trees = credential_stores(context);
-    trees.push(PathBuf::from("/dev"));
-    let mut exact: Vec<PathBuf> = HOME_ROOTS.iter().map(PathBuf::from).collect();
-    exact.extend(context.home_dir.iter().cloned());
-    (trees, exact)
-}
-
 /// `/proc` entries that link elsewhere (`/proc/self/root` is `/`), unseen by a lexical check.
 const PROC_LINKS: [&str; 4] = ["root", "cwd", "fd", "map_files"];
 
-/// What a read may not touch (D180): a key or the workspace `.git`, a directory a walk would
-/// carry into a key store, and a device, which never ends (`/dev/zero`) or waits (`/dev/tty`).
+/// What a read may not touch (D180, D322): a key, the workspace `.git` or a device, which never
+/// ends (`/dev/zero`) or waits (`/dev/tty`), judged by file identity so that letter case, a
+/// link, `/private` or a firmlink names no way in; and a directory a walk would carry into a
+/// key store. Built once per call or walk: each guarded directory costs a stat.
+pub struct ReadGuard<'a> {
+    context: &'a CatastrophicContext,
+    stores: Vec<PathBuf>,
+    /// Guarded with all under them: the key stores, `/dev` and the workspace `.git`.
+    trees: Vec<PathBuf>,
+    tree_ids: Vec<FileId>,
+    /// The trees, plus the homes and roots above key stores, guarded only as themselves.
+    ids: Vec<FileId>,
+}
+
+impl<'a> ReadGuard<'a> {
+    pub fn new(context: &'a CatastrophicContext) -> Self {
+        let stores = stores(context);
+        let mut trees = stores.clone();
+        trees.push(PathBuf::from("/dev"));
+        trees.extend(context.workspace_git.iter().cloned());
+        let mut exact: Vec<PathBuf> = HOME_ROOTS.iter().map(PathBuf::from).collect();
+        exact.extend(context.home_dir.iter().cloned());
+        let tree_ids = identities(&trees);
+        let ids = [tree_ids.clone(), identities(&exact)].concat();
+        Self {
+            context,
+            stores,
+            trees,
+            tree_ids,
+            ids,
+        }
+    }
+
+    /// A named path: refused when it or an ancestor is guarded by spelling or by identity, a
+    /// missing tail judged by its existing head and a dangling link by where it points.
+    pub fn denies(&self, path: &Path) -> bool {
+        self.denies_spelling(path)
+            || fs::canonicalize(path).is_ok_and(|real| self.denies_spelling(&real))
+            || beneath_via(&self.trees, &self.tree_ids, path, LINK_HOPS)
+            || denied_file(&self.ids, fs::metadata(path).ok().as_ref())
+    }
+
+    /// A walk's entry, whose ancestors the walk judged on its way in: its own spelling, and
+    /// the identity `meta` read without following it.
+    pub fn denies_entry(&self, path: &Path, meta: Option<&fs::Metadata>) -> bool {
+        self.denies_spelling(path) || denied_file(&self.ids, meta)
+    }
+
+    fn denies_spelling(&self, path: &Path) -> bool {
+        let path = lexical_normalize(path);
+        if path.starts_with("/dev") || HOME_ROOTS.iter().any(|root| path == Path::new(root)) {
+            return true;
+        }
+        if let Ok(rest) = path.strip_prefix("/proc")
+            && rest
+                .components()
+                .any(|part| PROC_LINKS.iter().any(|link| part.as_os_str() == *link))
+        {
+            return true;
+        }
+        if (self.context.workspace_git.iter()).any(|git| path.starts_with(lexical_normalize(git))) {
+            return true;
+        }
+        (self.stores.iter()).any(|store| path.starts_with(store) || store.starts_with(&path))
+    }
+}
+
+/// [`ReadGuard::denies`] for one path.
 pub fn read_is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
-    let path = lexical_normalize(path);
-    if path.starts_with("/dev") || HOME_ROOTS.iter().any(|root| path == Path::new(root)) {
+    ReadGuard::new(context).denies(path)
+}
+
+/// Invariant: beneath when it or an ancestor is one of `roots` by spelling or file identity, so
+/// a symlink (dangling too), `..` or letter case cannot reach around it; hard links can.
+pub fn beneath(roots: &[PathBuf], path: &Path) -> bool {
+    !roots.is_empty() && beneath_via(roots, &identities(roots), path, LINK_HOPS)
+}
+
+/// As many links as the kernel follows before `ELOOP`.
+const LINK_HOPS: u8 = 40;
+
+/// A missing tail is judged by its existing head, and a dangling link just past that head by
+/// where it points, so a refusal never tells a file behind a guard from a missing one.
+fn beneath_via(roots: &[PathBuf], ids: &[FileId], path: &Path, hops: u8) -> bool {
+    if lexically_beneath(roots, path) {
         return true;
     }
-    if let Ok(rest) = path.strip_prefix("/proc")
-        && rest
-            .components()
-            .any(|part| PROC_LINKS.iter().any(|link| part.as_os_str() == *link))
-    {
+    let Some((head, real)) =
+        (path.ancestors()).find_map(|head| Some((head, fs::canonicalize(head).ok()?)))
+    else {
+        return false;
+    };
+    if (real.ancestors()).any(|dir| denied_file(ids, fs::metadata(dir).ok().as_ref())) {
         return true;
     }
-    if context
-        .workspace_git
+    let mut rest = path.strip_prefix(head).unwrap_or(path).components();
+    let Some(Ok(target)) = rest.next().map(|next| fs::read_link(head.join(next))) else {
+        return false;
+    };
+    let target = real.join(target).join(rest.as_path());
+    hops > 0 && beneath_via(roots, ids, &target, hops.saturating_sub(1))
+}
+
+pub fn lexically_beneath(roots: &[PathBuf], path: &Path) -> bool {
+    !roots.is_empty() && {
+        let normalized = lexical_normalize(path);
+        (roots.iter()).any(|root| normalized.starts_with(lexical_normalize(root)))
+    }
+}
+
+/// A file's device and inode, which no spelling of its path changes.
+pub type FileId = (u64, u64);
+
+pub fn identities(paths: &[PathBuf]) -> Vec<FileId> {
+    paths
         .iter()
-        .any(|git| path.starts_with(lexical_normalize(git)))
-    {
-        return true;
-    }
-    credential_stores(context)
-        .iter()
-        .any(|store| path.starts_with(store) || store.starts_with(&path))
+        .filter_map(|path| file_id(&fs::metadata(path).ok()?))
+        .collect()
+}
+
+pub fn denied_file(ids: &[FileId], meta: Option<&fs::Metadata>) -> bool {
+    !ids.is_empty() && meta.and_then(file_id).is_some_and(|id| ids.contains(&id))
+}
+
+#[cfg(unix)]
+fn file_id(meta: &fs::Metadata) -> Option<FileId> {
+    use std::os::unix::fs::MetadataExt;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_id(_meta: &fs::Metadata) -> Option<FileId> {
+    None
 }
 
 const DESTRUCTIVE_COMMANDS: [&str; 4] = ["rm", "rmdir", "shred", "unlink"];
@@ -285,7 +404,7 @@ const DESTRUCTIVE_COMMANDS: [&str; 4] = ["rm", "rmdir", "shred", "unlink"];
 /// A key read into the transcript has already left the machine, so credential stores are
 /// read-gated too. Path-shaped arguments only: this reads a command, it does not run one.
 pub fn command_reads_credentials(command: &str, context: &CatastrophicContext) -> Option<String> {
-    let stores = credential_stores(context);
+    let stores = stores(context);
     command
         .split_whitespace()
         .skip(1)
