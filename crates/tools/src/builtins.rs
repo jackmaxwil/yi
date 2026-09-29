@@ -204,7 +204,7 @@ fn walk_capped(
     let ids = yi_permission::identities(deny);
     let gate = yi_permission::CatastrophicContext::detect(&root);
     // Judged by identity, so letter case, a link, `/private` or a firmlink name no way in.
-    let guard = yi_permission::ReadGuard::new(&gate);
+    let guard = yi_permission::ReadGate::new(&gate);
     if guard.denies(&root) {
         walked.refused = true;
         return walked;
@@ -241,7 +241,7 @@ fn walk_capped(
             let meta = (file_type.is_dir() || !ids.is_empty())
                 .then(|| entry.metadata().ok())
                 .flatten();
-            if guard.denies_entry(&path, meta.as_ref()) {
+            if guard.denies_entry(meta.as_ref()) {
                 continue;
             }
             if yi_permission::lexically_beneath(deny, &path)

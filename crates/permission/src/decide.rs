@@ -130,16 +130,15 @@ pub fn decide(
     holds: &[Hold],
     catastrophic_context: &CatastrophicContext,
 ) -> Decision {
-    // A call that only reads is judged by what a read can do, on the file it opens (D180, D322).
+    // Every call is judged by what a read can do, on the file it opens: an edit shows the lines
+    // it refuses and a write replaces a key (D322). Only a call that reads stops there (D180).
     let reads = call.reads_only && !call.irreversible;
     for target in call.targets {
         let opened = absolute(target, catastrophic_context);
         let target = resolve(target, catastrophic_context);
-        let protected = match reads {
-            true => read_is_catastrophic(&opened, catastrophic_context),
-            false => is_catastrophic(&target, catastrophic_context),
-        };
-        if protected {
+        if read_is_catastrophic(&opened, catastrophic_context)
+            || (!reads && is_catastrophic(&target, catastrophic_context))
+        {
             return Decision::Deny {
                 reason: format!(
                     "{} targets a protected path ({}); this is denied in every mode.",

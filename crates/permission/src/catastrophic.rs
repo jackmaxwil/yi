@@ -265,27 +265,32 @@ const HOME_ROOTS: [&str; 4] = ["/", "/home", "/Users", "/root"];
 const PROC_LINKS: [&str; 4] = ["root", "cwd", "fd", "map_files"];
 
 /// What a read may not touch (D180, D322): a key, the workspace `.git` or a device, which never
-/// ends (`/dev/zero`) or waits (`/dev/tty`), judged by file identity so that letter case, a
-/// link, `/private` or a firmlink names no way in; and a directory a walk would carry into a
-/// key store. Built once per call or walk: each guarded directory costs a stat.
-pub struct ReadGuard<'a> {
+/// ends (`/dev/zero`) or waits (`/dev/tty`), and a directory a walk would carry into a key
+/// store; judged by file identity too, so letter case, a link, `/private` or a firmlink names no
+/// way in at the time of the check (a link swapped between check and open is #890). Built
+/// once per call or walk: each guarded directory costs a stat.
+pub struct ReadGate<'a> {
     context: &'a CatastrophicContext,
     stores: Vec<PathBuf>,
     /// Guarded with all under them: the key stores, `/dev` and the workspace `.git`.
     trees: Vec<PathBuf>,
     tree_ids: Vec<FileId>,
-    /// The trees, plus the homes and roots above key stores, guarded only as themselves.
+    /// The trees, the roots other users' homes sit under, and every directory above a store,
+    /// each guarded as itself.
     ids: Vec<FileId>,
 }
 
-impl<'a> ReadGuard<'a> {
+impl<'a> ReadGate<'a> {
     pub fn new(context: &'a CatastrophicContext) -> Self {
         let stores = stores(context);
         let mut trees = stores.clone();
         trees.push(PathBuf::from("/dev"));
         trees.extend(context.workspace_git.iter().cloned());
-        let mut exact: Vec<PathBuf> = HOME_ROOTS.iter().map(PathBuf::from).collect();
-        exact.extend(context.home_dir.iter().cloned());
+        let above = stores.iter().flat_map(|store| store.ancestors().skip(1));
+        let exact: Vec<PathBuf> = (HOME_ROOTS.iter().map(Path::new))
+            .chain(above)
+            .map(Path::to_path_buf)
+            .collect();
         let tree_ids = identities(&trees);
         let ids = [tree_ids.clone(), identities(&exact)].concat();
         Self {
@@ -301,15 +306,14 @@ impl<'a> ReadGuard<'a> {
     /// missing tail judged by its existing head and a dangling link by where it points.
     pub fn denies(&self, path: &Path) -> bool {
         self.denies_spelling(path)
-            || fs::canonicalize(path).is_ok_and(|real| self.denies_spelling(&real))
             || beneath_via(&self.trees, &self.tree_ids, path, LINK_HOPS)
             || denied_file(&self.ids, fs::metadata(path).ok().as_ref())
     }
 
-    /// A walk's entry, whose ancestors the walk judged on its way in: its own spelling, and
-    /// the identity `meta` read without following it.
-    pub fn denies_entry(&self, path: &Path, meta: Option<&fs::Metadata>) -> bool {
-        self.denies_spelling(path) || denied_file(&self.ids, meta)
+    /// A walk's entry, whose ancestors the walk judged on its way in: the identity `meta` read
+    /// without following it. Its spelling adds nothing, since every guarded directory has one.
+    pub fn denies_entry(&self, meta: Option<&fs::Metadata>) -> bool {
+        denied_file(&self.ids, meta)
     }
 
     fn denies_spelling(&self, path: &Path) -> bool {
@@ -331,9 +335,9 @@ impl<'a> ReadGuard<'a> {
     }
 }
 
-/// [`ReadGuard::denies`] for one path.
+/// [`ReadGate::denies`] for one path.
 pub fn read_is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
-    ReadGuard::new(context).denies(path)
+    ReadGate::new(context).denies(path)
 }
 
 /// Invariant: beneath when it or an ancestor is one of `roots` by spelling or file identity, so
