@@ -274,8 +274,8 @@ fn node_holder_child() -> TestResult {
 }
 
 fn kwargs(pairs: &[(&str, &str)]) -> Map<String, Value> {
-    pairs
-        .iter()
+    std::iter::once(&("role", "root"))
+        .chain(pairs)
         .map(|(key, value)| ((*key).to_owned(), Value::String((*value).to_owned())))
         .collect()
 }
@@ -657,7 +657,7 @@ async fn eight_container_children_fill_the_node_and_a_ninth_kernel_waits() -> Te
     let ninth = kernel_in(&home, &repo, None, Some(on_boot));
     let cell = tokio::task::spawn_blocking(move || {
         let cancelled: CancelFlag = Arc::new(|| false);
-        yi_tools::KernelBridge::execute_cell(ninth.as_ref(), "print(9)", &cancelled)
+        yi_tools::KernelBridge::execute_cell(ninth.as_ref(), "print(9)", &cancelled, None)
     });
     let waiting = |told: &[String]| {
         told.iter().any(|step| {
@@ -719,7 +719,7 @@ async fn a_parent_cell_waiting_on_its_childs_kernel_completes_on_one_slot() -> T
     );
     let cell = tokio::task::spawn_blocking(move || {
         let cancelled: CancelFlag = Arc::new(|| false);
-        yi_tools::KernelBridge::execute_cell(parent.as_ref(), &parent_cell, &cancelled)
+        yi_tools::KernelBridge::execute_cell(parent.as_ref(), &parent_cell, &cancelled, None)
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
     while !up.is_file() {

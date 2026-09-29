@@ -24,6 +24,7 @@ fn target_model() -> Result<Model, Box<dyn Error>> {
 
 pub(crate) fn history_context() -> LlmContext {
     LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "be terse".to_owned(),
         messages: vec![
             AgentMessage::host_user(UserContent::Text("hi".to_owned()), 0),
@@ -50,6 +51,7 @@ pub(crate) fn history_context() -> LlmContext {
         ],
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::Loop,
         tools: None,
         tool_choice: None,
@@ -83,6 +85,8 @@ fn build_params_honors_the_openrouter_compat_flags() -> TestResult {
     assert!(params.get("reasoning_effort").is_none());
     assert!(params.get("store").is_none());
     assert!(params.get("prompt_cache_key").is_none());
+    // The family's affinity key: OpenRouter keeps one session's requests on one upstream.
+    assert_eq!(params["session_id"], "session-1");
     assert!(
         params.get("cache_control").is_none(),
         "an automatic-cache route gets no breakpoint"

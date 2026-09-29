@@ -33,6 +33,7 @@ fn model(reasoning: bool) -> Model {
 
 fn context() -> LlmContext {
     LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "be terse".to_owned(),
         messages: vec![AgentMessage::host_user(
             UserContent::Text("hi".to_owned()),
@@ -40,6 +41,7 @@ fn context() -> LlmContext {
         )],
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::Loop,
         tools: Some(vec![ToolDef {
             name: "bash".to_owned(),
@@ -65,6 +67,10 @@ fn build_params_openai_shape() -> Result<(), Box<dyn Error>> {
     assert_eq!(params["max_completion_tokens"], 4096);
     assert_eq!(params["reasoning_effort"], "high");
     assert_eq!(params["prompt_cache_key"], "session-1");
+    assert!(
+        params.get("session_id").is_none(),
+        "OpenRouter's key off OpenRouter"
+    );
     assert_eq!(params["messages"][0]["role"], "developer");
     assert_eq!(params["tools"][0]["function"]["name"], "bash");
     let non_reasoning = build_params(&model(false), &context(), &OpenAiOptions::default());
@@ -357,6 +363,7 @@ fn a_call_streamed_as_text_finishes_as_a_tool_call() -> Result<(), Box<dyn Error
 #[test]
 fn a_routed_claude_request_keeps_its_newest_twenty_images() {
     let turns = |count: usize| LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: String::new(),
         messages: (0..count)
             .map(|_| {
@@ -371,6 +378,7 @@ fn a_routed_claude_request_keeps_its_newest_twenty_images() {
             .collect(),
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::Loop,
         tools: None,
         tool_choice: None,

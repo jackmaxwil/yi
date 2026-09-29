@@ -1,11 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reduced {
     pub text: String,
     pub raw_bytes: usize,
     pub out_bytes: usize,
-    pub recovery: Option<PathBuf>,
+    /// The `[full output: …]` pointer the text ends with.
+    pub recovery: Option<String>,
 }
 
 const HEAD_LINES: usize = 80;
@@ -19,14 +20,15 @@ pub const REDUCE_FLOOR: usize = 8_192;
 /// The user asked for the whole thing; reducing answers a different question.
 const RAW_FLAGS: [&str; 6] = ["-v", "--verbose", "--nocapture", "--porcelain", "-la", "-C"];
 
-/// Every path runs through [`never_worse`] and a lossy result is tee'd, so the full text is
-/// one `read` away. `max_lines` moves the line caps, never the upstream byte ceiling.
+/// Every path runs through [`never_worse`]; a lossy result points at `kept` (a cut capture's
+/// spill) or at a tee under `tee_dir`. `max_lines` moves the line caps, never the byte ceiling.
 pub fn reduce(
     command: &str,
     stdout: &str,
     stderr: &str,
     exit_code: i32,
-    recovery_dir: Option<&Path>,
+    kept: Option<&str>,
+    tee_dir: Option<&Path>,
     max_lines: Option<usize>,
 ) -> Reduced {
     let raw = join_streams(stdout, stderr);
@@ -50,7 +52,7 @@ pub fn reduce(
     let text = never_worse(&raw, filtered);
     let out_bytes = text.len();
     let recovery = if out_bytes < raw_bytes {
-        recovery_dir.and_then(|dir| tee(dir, &raw))
+        (kept.map(str::to_owned)).or_else(|| tee_dir.and_then(|dir| tee(dir, &raw)))
     } else {
         None
     };
@@ -64,7 +66,7 @@ pub fn reduce(
         };
     }
     let text = match &recovery {
-        Some(path) => format!("{text}\n[full output: {}]", path.display()),
+        Some(note) => format!("{text}\n{note}"),
         None => text,
     };
     Reduced {
@@ -295,11 +297,9 @@ pub fn strip_ansi(text: &str) -> String {
     out
 }
 
-/// Tee'd so the model can open the full text with `read`.
-fn tee(dir: &Path, raw: &str) -> Option<PathBuf> {
-    std::fs::create_dir_all(dir).ok()?;
-    let id = xxhash_rust::xxh32::xxh32(raw.as_bytes(), 0);
-    let path = dir.join(format!("{id:08x}.txt"));
-    std::fs::write(&path, raw).ok()?;
-    Some(path)
+/// The whole joined text, for a reduction of a capture that was never cut.
+fn tee(dir: &Path, raw: &str) -> Option<String> {
+    let mut spill = crate::spill::Spill::new(Some(dir));
+    spill.write(raw.as_bytes());
+    spill.keep()
 }

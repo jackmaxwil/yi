@@ -538,6 +538,7 @@ async fn prune_removes_oversized_variables_and_list_names_reports() -> TestResul
 /// The v4 trial images ship python3 and no uv; the venv must build from python3 alone and the
 /// kernel it boots must import `rlm`, or delegation is unreachable for the whole hour.
 #[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
 async fn the_kernel_boots_on_system_python_when_uv_is_absent() -> TestResult {
     let Some(python3) = find_system_python() else {
         return Ok(());

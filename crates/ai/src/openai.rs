@@ -343,16 +343,21 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if model.provider == "openai" {
         params["store"] = json!(false);
     }
-    if model.base_url.contains("api.openai.com")
-        && let Some(session_id) = &options.session_id
-    {
-        params["prompt_cache_key"] = json!(session_id);
+    if let Some(session_id) = &options.session_id {
+        if model.base_url.contains("api.openai.com") {
+            params["prompt_cache_key"] = json!(session_id);
+        } else if model.base_url.contains("openrouter.ai") {
+            params["session_id"] = json!(session_id);
+        }
     }
     if let Some(ttl) = prompt_cache_retention(model) {
         params["prompt_cache_retention"] = json!(ttl);
     }
     if let Some(routing) = routing_params(model, options) {
         params["provider"] = routing;
+    }
+    if let Some(schema) = &context.schema {
+        params["response_format"] = crate::schema::chat(schema);
     }
     if let Some(max_tokens) = options.max_tokens {
         params["max_completion_tokens"] = json!(max_tokens);
@@ -374,8 +379,12 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     // OpenRouter passes per-part breakpoints to every upstream; elsewhere the provider caches
     // its own prefix and no explicit breakpoint is known to be accepted (design §11).
     if model.base_url.contains("openrouter.ai") {
-        let breakpoints =
-            Breakpoints::build(&CachePolicy::of(model, false), &history, context.reuse);
+        let breakpoints = Breakpoints::build(
+            &CachePolicy::of(model, context.cache_ttl, context.cache_ttl),
+            &history,
+            context.reuse,
+            context.shared_through,
+        );
         encode(
             &breakpoints,
             Dialect::OpenRouterParts,

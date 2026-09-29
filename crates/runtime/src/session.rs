@@ -48,6 +48,12 @@ pub struct SessionConfig {
     pub tool_execution: ExecutionMode,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RequestShape {
+    pub schema: Option<serde_json::Value>,
+    pub shared_through: Option<usize>,
+}
+
 struct Shared {
     ext: Mutex<Option<Arc<Mutex<crate::ext::Host>>>>,
     model: Mutex<Model>,
@@ -77,6 +83,8 @@ struct Shared {
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
     rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     deadline: OnceLock<Deadline>,
+    turn_cap: OnceLock<u32>,
+    shape: OnceLock<RequestShape>,
     turn_time: Mutex<(Option<std::time::Instant>, Option<Duration>)>,
     cancelled: std::sync::atomic::AtomicBool,
     /// The kill switch's hold: no wake starts a turn until it lifts; a typed prompt still does.
@@ -189,6 +197,8 @@ impl AgentSession {
                 coupling: Mutex::new(None),
                 waits: Mutex::new(None),
                 deadline: OnceLock::new(),
+                turn_cap: OnceLock::new(),
+                shape: OnceLock::new(),
                 turn_time: Mutex::new((None, None)),
                 cancelled: false.into(),
                 held: false.into(),
@@ -274,6 +284,18 @@ impl AgentSession {
         self.shared.deadline.get_or_init(|| Deadline::new(total));
     }
 
+    pub fn set_turn_cap(&self, turns: u32) {
+        self.shared.turn_cap.get_or_init(|| turns);
+    }
+
+    pub fn set_request_shape(&self, shape: RequestShape) {
+        self.shared.shape.get_or_init(|| shape);
+    }
+
+    pub fn request_shape(&self) -> Option<RequestShape> {
+        self.shared.shape.get().cloned()
+    }
+
     pub(crate) fn deadline(&self) -> Option<Deadline> {
         self.shared.deadline.get().copied()
     }
@@ -286,6 +308,14 @@ impl AgentSession {
 
     /// A session whose one prompt is never continued (the auto-reviewer) says so, and its
     /// tail is never marked (D295).
+    pub fn reuse(&self) -> yi_types::model::Reuse {
+        self.shared
+            .reuse
+            .lock()
+            .map(|reuse| *reuse)
+            .unwrap_or_default()
+    }
+
     pub fn set_reuse(&self, reuse: yi_types::model::Reuse) {
         if let Ok(mut slot) = self.shared.reuse.lock() {
             *slot = reuse;

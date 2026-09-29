@@ -369,6 +369,9 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if let Some(ttl) = crate::openai::prompt_cache_retention(model) {
         params["prompt_cache_retention"] = json!(ttl);
     }
+    if let Some(schema) = &context.schema {
+        params["text"]["format"] = crate::schema::responses(schema);
+    }
     if let Some(max_tokens) = options.max_tokens {
         params["max_output_tokens"] = json!(max_tokens);
     }

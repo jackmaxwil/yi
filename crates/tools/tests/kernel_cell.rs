@@ -35,6 +35,7 @@ impl KernelBridge for NoKernel {
         &self,
         _code: &str,
         _cancelled: &CancelFlag,
+        _recovery_dir: Option<&std::path::Path>,
     ) -> Result<KernelCellOutcome, String> {
         Err("no kernel in this test".to_owned())
     }

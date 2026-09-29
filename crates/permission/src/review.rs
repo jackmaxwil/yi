@@ -142,10 +142,15 @@ impl ActionLedger {
 
     #[must_use]
     pub fn ask_of(&self, request: RequestId) -> Option<&ReviewedAsk> {
+        self.entry_of(request).map(|(ask, _)| ask)
+    }
+
+    #[must_use]
+    pub fn entry_of(&self, request: RequestId) -> Option<(&ReviewedAsk, ActionState)> {
         self.entries
             .iter()
             .find(|entry| entry.request == request)
-            .map(|entry| &entry.ask)
+            .map(|entry| (&entry.ask, entry.state))
     }
 
     pub fn resolve(&mut self, request: RequestId, verdict: UserVerdict) -> bool {

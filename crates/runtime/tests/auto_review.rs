@@ -45,6 +45,7 @@ struct Harness {
     broker: Arc<PermissionBroker>,
     provider: Arc<ProviderStream>,
     asks: Arc<Mutex<Vec<String>>>,
+    hold: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
     events: tokio::sync::broadcast::Receiver<yi_types::event::AgentEvent>,
     _cwd: Scratch,
 }
@@ -76,11 +77,17 @@ fn answers(replies: &[&str]) -> Vec<yi_types::message::AgentMessage> {
 fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> std::io::Result<Harness> {
     let cwd = Scratch::new("yi-auto-review")?;
     let asks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let hold: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>> = Arc::new(Mutex::new(None));
     let asker: Option<Asker> = reply.map(|reply| {
-        let asks = Arc::clone(&asks);
+        let (asks, hold) = (Arc::clone(&asks), Arc::clone(&hold));
         Arc::new(move |ask: &yi_runtime::PermissionAsk<'_>| {
             if let Ok(mut asks) = asks.lock() {
                 asks.push(ask.text());
+            }
+            if let Ok(hold) = hold.lock()
+                && let Some(release) = hold.as_ref()
+            {
+                let _released = release.recv();
             }
             reply
         }) as Asker
@@ -101,6 +108,7 @@ fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> std::io::Result<Harn
         broker,
         provider,
         asks,
+        hold,
         events: receiver,
         _cwd: cwd,
     })
@@ -311,6 +319,7 @@ async fn an_approved_request_lets_the_identical_call_through_once() -> TestResul
 
     let replay = harness.broker.resolve_request(1, "call-ask");
     assert!(replay.contains("approved"), "{replay}");
+    assert_eq!(harness.broker.resolve_request(1, "call-ask-again"), replay);
     assert_eq!(
         harness.asks.lock().map(|asks| asks.len()).unwrap_or(0),
         1,
@@ -382,6 +391,11 @@ async fn a_user_denial_stands_without_asking_again() -> TestResult {
     decide(&harness.broker, destructive_args()).await?;
     let replay = harness.broker.resolve_request(1, "call-ask");
     assert!(replay.contains("denied"), "{replay}");
+    let asked_again = harness.broker.resolve_request(1, "call-ask-again");
+    assert_eq!(
+        asked_again, replay,
+        "an answered request is answered from the ledger"
+    );
 
     let again = decide(&harness.broker, destructive_args()).await?;
     assert!(!again.allowed);
@@ -587,5 +601,40 @@ fn a_question_ends_the_turn_and_lists_its_options() -> TestResult {
         tool.validate(&request).is_err(),
         "request mode needs auto-review; without it the model is told to ask a question"
     );
+    Ok(())
+}
+
+/// Dies with the user asked twice: two `ask_user` calls for one request in one message run in
+/// parallel, and only one of them may put it to the user.
+#[tokio::test]
+async fn a_request_asked_twice_at_once_is_put_to_the_user_once() -> TestResult {
+    let harness = setup(Some(AskOutcome::Reject), true)?;
+    harness.provider.queue_faux(answers(&["deny unprovable"]));
+    decide(&harness.broker, destructive_args()).await?;
+    let (release, held) = std::sync::mpsc::channel();
+    if let Ok(mut hold) = harness.hold.lock() {
+        *hold = Some(held);
+    }
+    let broker = Arc::clone(&harness.broker);
+    let first = std::thread::spawn(move || broker.resolve_request(1, "call-a"));
+    let asked = || harness.asks.lock().map(|asks| asks.len()).unwrap_or(0);
+    for _ in 0..500 {
+        if asked() == 1 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(asked(), 1, "the first call is waiting on the user");
+    for late in ["call-b", "call-c"] {
+        let reply = harness.broker.resolve_request(1, late);
+        assert!(
+            reply.contains("already being put to the user"),
+            "{late}: {reply}"
+        );
+    }
+    release.send(())?;
+    let answered = first.join().map_err(|_| "thread")?;
+    assert!(answered.contains("denied"), "{answered}");
+    assert_eq!(asked(), 1);
     Ok(())
 }

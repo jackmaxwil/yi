@@ -220,7 +220,7 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
          key /\ntype permissions\nkey enter\nwait-frame 10000 permission mode:\nkey /\n\
          type permissions yolo\nkey enter\nwait-frame 10000 permission mode: yolo\nkey /\n\
          type compact\nkey enter\nwait-frame 10000 compaction scheduled\nkey /\n\
-         type sessions\nkey enter\nwait-frame 10000 0s ago\nquit\n",
+         type sessions\nkey enter\nwait-frame 10000 ago\nquit\n",
     )?;
     let frames = dir.join("frames");
 
@@ -261,13 +261,32 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
         "/undo: nothing to restore",
         "permission mode: yolo",
         "compaction scheduled",
-        "0s ago",
     ] {
         assert!(
             final_frame.contains(needle),
             "{needle} must reach this session: {final_frame}"
         );
     }
+    // The age label counts wall-clock seconds, so a loaded run reads "1s ago" or more: the
+    // /sessions row is matched by this session's id, read from its file, not by its age.
+    let mut ids = Vec::new();
+    for project in std::fs::read_dir(dir.join("sessions"))?.filter_map(Result::ok) {
+        for entry in std::fs::read_dir(project.path())?.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some((_, id)) = name.strip_suffix(".jsonl").and_then(|n| n.split_once('_')) {
+                ids.push(id.to_owned());
+            }
+        }
+    }
+    let [id] = ids.as_slice() else {
+        return Err(format!("one session file expected: {ids:?}").into());
+    };
+    assert!(
+        final_frame.lines().any(|line| line
+            .split_once(id.as_str())
+            .is_some_and(|(_, age)| age.contains(" ago"))),
+        "/sessions must list {id} with its age: {final_frame}"
+    );
     Ok(())
 }
 
