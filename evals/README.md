@@ -558,7 +558,11 @@ of the previous request's whole prompt (fresh, read and written tokens) over at
 least `minRequests` (a shorter loop is `inconclusive` unless a request already
 missed, which is `fail`), and its row lists each `warmShares`. An `"onlyByName": true` scenario runs only under `--task`:
 `cache-warm-claude` judges a Claude route's marks, which a route that caches by
-itself does not have. Every scenario ends
+itself does not have. With `minCompactionShare` only the compaction is judged:
+the request span in the session's telemetry that no reply's usage matches must
+read that share of the loop request before it, and a session that never
+compacted is `inconclusive`; `cache-warm-compaction` asks for one after seven
+reads (#746). Every scenario ends
 `pass`, `fail` or `inconclusive` — timeout, no key, provider trouble, budget —
 and only `fail` is red. `--allow-faux` runs the lane's plumbing offline. The
 run's HOME is fresh and has `telemetry.enabled`, so `run.json` carries

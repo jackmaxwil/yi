@@ -116,7 +116,8 @@ fn case_strategy() -> impl Strategy<Value = Case> {
     let reuse = prop_oneof![
         Just(Reuse::Loop),
         Just(Reuse::OneShot),
-        Just(Reuse::LastTurn)
+        Just(Reuse::LastTurn),
+        Just(Reuse::ReadOnly)
     ];
     let engine = prop_oneof![
         (1..=SLOTS, any::<bool>()).prop_map(|(slots, hour)| Engine::Breakpoint { slots, hour }),
@@ -218,8 +219,15 @@ fn check_breakpoints(case: &Case, ctx: &LlmContext) -> Result<(), TestCaseError>
                 "position {index} past the history of {}: transient is in reach",
                 ctx.messages.len()
             );
-            proptest::prop_assert_eq!(case.reuse, Reuse::Loop, "a tail on {:?}", case.reuse);
+            proptest::prop_assert!(
+                matches!(case.reuse, Reuse::Loop | Reuse::ReadOnly),
+                "a history mark on {:?}",
+                case.reuse
+            );
         }
+    }
+    if case.reuse == Reuse::ReadOnly {
+        proptest::prop_assert_eq!(tail, None, "a read-only request writes no tail");
     }
     if case.reuse == Reuse::Loop && slots >= 2 {
         proptest::prop_assert_eq!(tail, last_user, "the tail is the last user-role message");
@@ -274,6 +282,11 @@ fn check_rendered(case: &Case, body: &Encoded, dialect: &str) -> Result<(), Test
             last_user,
             "{}: the last history mark is not on the last user-role message",
             dialect
+        ),
+        // The previous tail sits ahead of the reply that followed it, so never last.
+        Reuse::ReadOnly => proptest::prop_assert!(
+            last_marked.is_none() || last_marked < last_user,
+            "{dialect}: a read-only request marked its own tail"
         ),
         Reuse::OneShot | Reuse::LastTurn => proptest::prop_assert!(
             last_marked.is_none(),
