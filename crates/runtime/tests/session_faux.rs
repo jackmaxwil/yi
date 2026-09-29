@@ -946,6 +946,22 @@ async fn an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone()
         ],
         "the protocol rides once, ahead of the reply it steers"
     );
+    let keys: Vec<_> = session
+        .messages()
+        .into_iter()
+        .filter_map(|message| match message {
+            AgentMessage::Assistant { diagnostics, .. } => diagnostics?
+                .into_iter()
+                .find(|note| note.diagnostic_type == "cache")?
+                .details?
+                .remove("stable"),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        keys.len() == 3 && keys.iter().all(|key| *key == keys[0]),
+        "every request records one stable key: {keys:?}"
+    );
     let sent = yi_context::convert_to_llm(&session.messages());
     let AgentMessage::User {
         content: UserContent::Text(text),
@@ -1196,5 +1212,34 @@ async fn a_deadline_kills_a_backgrounded_job() -> Result<(), Box<dyn Error>> {
     let state = jobs.report(job).map(|report| report.state);
     let killed = yi_tools::jobs::JobState::Settled(yi_tools::jobs::Outcome::Killed);
     assert_eq!(state, Some(killed), "{said}");
+    Ok(())
+}
+
+/// Dies with the wait that reads the status before it listens: `settle` fires `notify_waiters`,
+/// which stores no permit, so an idle landing between the two was lost and the wait never woke.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_wait_idle_wakes_when_its_run_settles() -> Result<(), Box<dyn Error>> {
+    const RUNS: usize = 2_000;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        (0..RUNS)
+            .map(|_| faux_assistant_message(vec![faux_text("ok")], StopReason::Stop))
+            .collect(),
+    );
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    for run in 0..RUNS {
+        session.prompt("go")?;
+        tokio::time::timeout(Duration::from_secs(2), session.wait_idle())
+            .await
+            .map_err(|_| format!("run {run}: wait_idle never woke after the run settled"))?;
+    }
     Ok(())
 }
