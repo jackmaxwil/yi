@@ -478,7 +478,20 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - Every child enters through `SubagentHost::admit`; `rlm.run` answers
   `{rlm_child_id, next, name, session_dir, model}` at admission and the run proceeds detached.
 - kwargs are a whitelist: `name, model, thinking, fork, isolation, deny_write, deny_read,
-  deny_url, context, check, deadline_s, tokens, parent_close`; `fork=all` refuses a model.
+  deny_url, context, check, deadline_s, tokens, parent_close, role, partition, tools, turns`;
+  `fork=all` refuses a model.
+- A child's request is made of its brief (D307). `partition` is a list of Urls resolved at spawn
+  through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
+  prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
+  with a `[… kept …]` row naming the cap and the rest. A worker spawn that names no `role` is
+  `role="reader"` (D308); a plan delegation, a juror and a service are `root`. A reader is a
+  question-child: `prompts/reader.md` is its whole system prompt, `tools` a subset of `read` and
+  `grep` (both by default), `turns` its request cap (3, at most 10; the last is the last word, whose tool calls are refused,
+  after a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
+  gate rules bind it, and it has no extension, kernel, plan, schedule,
+  checkpoint or environment block; a fork or an isolation refuses; 64 held readers refuse the next
+  until one is reaped. `rlm.ask(question, partition,
+  schema=…)` runs one, reads its result and reaps it.
 - `isolation` is `none`, `worktree` or `container:<image>` (D286), from `rlm.run` or a plan
   delegation's `spec.isolation`. A container child claims the same lane, branch and merge as a
   worktree child; `docker run -d --rm` starts one container of the image over it at spawn, the
@@ -490,8 +503,8 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   with a notice.
 - Admission refuses at lever `family.cap` (16) live sessions, at depth `rlm.maxDepth` (1,
   clamped 1..=3) but for a juror, at `family.max_children` (8) workers, and on a taken name.
-- `Standing { Worker, Juror, Service }`: juror and service stand outside the worker cap; lease,
-  wall and family cap bind all three. A service (`rlm.service(name, brief, restart=3)`)
+- `Standing { Worker, Juror, Reader, Service }`: juror, reader and service stand outside the worker cap; lease,
+  wall and family cap bind them all. A service (`rlm.service(name, brief, restart=3)`)
   respawns on its `ChildRecord` after `Failed { Provider | KernelDeath }`, ≤ 10 per 10 min.
   A judge seats `policy.n` jurors from the cheapest other model family, else `Abstain` (§13).
 - The wall only reduces and `under(parent)` makes it hereditary; it refuses at the tool adapter
@@ -513,7 +526,7 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - Shapes: [`types/src/subagent.rs`](../crates/types/src/subagent.rs) (`ChildUpdate` on
   `_yi/subagent_update`), [`types/src/lease.rs`](../crates/types/src/lease.rs) (`Lease`,
   `LeaseRecord`, `ParentClose`); child dirs `<parent rlm dir>/sub-<8 hex>`
-- Settled by: D165, D210, D215, D216, D218, D234
+- Settled by: D165, D210, D215, D216, D218, D234, D307, D308
 
 ## 12. Mailbox
 A family message: an envelope in the receiver's inbox before delivery, then its one queue.

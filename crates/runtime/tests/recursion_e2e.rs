@@ -313,8 +313,8 @@ const POLL_ATTEMPTS: usize = 400;
 const POLL_INTERVAL_MS: u64 = 30;
 
 fn kwargs(pairs: &[(&str, &str)]) -> Map<String, Value> {
-    pairs
-        .iter()
+    std::iter::once(&("role", "root"))
+        .chain(pairs)
         .map(|(key, value)| ((*key).to_owned(), Value::String((*value).to_owned())))
         .collect()
 }
@@ -2563,7 +2563,7 @@ async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
             )
             .map_err(|error| error.to_string())?;
     }
-    let overflow = harness.host.spawn("ninth".to_owned(), Map::new());
+    let overflow = harness.host.spawn("ninth".to_owned(), kwargs(&[]));
     assert!(
         overflow
             .err()

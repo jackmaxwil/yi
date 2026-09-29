@@ -11,7 +11,7 @@ use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_session::{CreateOptions, JsonlRepo, SessionRepo};
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, StopReason, UserContent};
-use yi_types::model::{Model, ModelCost};
+use yi_types::model::{Effort, Model, ModelCost};
 
 fn faux_model(context_window: u64) -> Model {
     let zero = || serde_json::Number::from(0u64);
@@ -479,7 +479,7 @@ async fn an_unknown_usage_never_pins_the_window_prefill() -> Result<(), Box<dyn 
             .maybe_compact(
                 &messages,
                 &faux_model(2_000),
-                "sys",
+                &yi_runtime::compaction::LoopRequest::new("sys".to_owned(), &[], Effort::Off),
                 &provider,
                 None,
                 &signal,
@@ -538,22 +538,22 @@ async fn a_compaction_announces_itself_and_closes() -> Result<(), Box<dyn Error>
     Ok(())
 }
 
-/// Incident: the loop's hook ran before every request and copied the whole history, read
-/// the store and assembled the system prompt, only to learn compaction was not due.
+/// Incident: the loop's hook ran before every request, copied the history, read the store and
+/// rendered the system prompt and tools, only to learn compaction was not due.
 #[tokio::test]
 async fn a_request_that_is_not_due_assembles_nothing() -> Result<(), Box<dyn Error>> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let mut compactor = yi_runtime::Compactor::new("w".to_owned());
     compactor.settings = tight_settings();
     let asked = Arc::new(AtomicUsize::new(0));
-    let (prompts, stores) = (Arc::clone(&asked), Arc::clone(&asked));
+    let (requests, stores) = (Arc::clone(&asked), Arc::clone(&asked));
     let hook = yi_runtime::compaction::loop_hook(
         Arc::new(compactor),
         Arc::new(ProviderStream::new(None)),
         faux_model(2_000),
         Arc::new(move || {
-            prompts.fetch_add(1, Ordering::SeqCst);
-            "sys".to_owned()
+            requests.fetch_add(1, Ordering::SeqCst);
+            yi_runtime::compaction::LoopRequest::new("sys".to_owned(), &[], Effort::Off)
         }),
         Arc::new(move || {
             stores.fetch_add(1, Ordering::SeqCst);
@@ -663,4 +663,302 @@ fn compaction_window(
             _ => None,
         })
         .collect())
+}
+
+/// Answers each request with the next of `replies`, an OpenAI-style event stream, and hands
+/// back every request body it read, in order. It stands in for OpenRouter as the proxy.
+fn openrouter_stand_in(
+    replies: Vec<String>,
+) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let handle = std::thread::spawn(move || {
+        let mut bodies = Vec::new();
+        for reply in replies {
+            let Ok((stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut reader = BufReader::new(stream);
+            let mut length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0u8; length];
+            let _ = reader.read_exact(&mut body);
+            bodies.push(String::from_utf8_lossy(&body).into_owned());
+            let _ = write!(
+                reader.into_inner(),
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+        }
+        bodies
+    });
+    Ok((port, handle))
+}
+
+/// One streamed reply: `delta` then a finish chunk that carries usage, so nothing settles late.
+fn sse_reply(delta: &serde_json::Value, finish: &str) -> String {
+    let chunks = [
+        serde_json::json!({"choices": [{"index": 0, "delta": delta}]}),
+        serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}),
+    ];
+    let mut text: String = chunks
+        .iter()
+        .map(|chunk| format!("data: {chunk}\n\n"))
+        .collect();
+    text.push_str("data: [DONE]\n\n");
+    text
+}
+
+/// A tool whose result is long enough to make the next boundary compact.
+struct LongResult;
+
+impl yi_loop::AgentTool for LongResult {
+    fn definition(&self) -> yi_types::model::ToolDef {
+        yi_types::model::ToolDef {
+            name: "probe".to_owned(),
+            description: "Reads the probe.".to_owned(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+            freeform: None,
+        }
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _tool_call_id: &'a str,
+        _args: serde_json::Map<String, serde_json::Value>,
+        _signal: &'a yi_loop::interrupt::InterruptSignal,
+    ) -> yi_loop::tool::ToolFuture<'a> {
+        Box::pin(async {
+            yi_loop::tool::ToolOutcome {
+                result: yi_types::event::ToolResult {
+                    content: vec![yi_types::message::Content::Text {
+                        text: "probe line\n".repeat(400),
+                        text_signature: None,
+                    }],
+                    details: serde_json::json!({}),
+                    usage: None,
+                    added_tool_names: None,
+                    terminate: None,
+                },
+                is_error: false,
+            }
+        })
+    }
+}
+
+/// A Claude route on OpenRouter with reasoning, a tool table, and a proxy to the stand-in. A cut
+/// needs a reply inside `keep_recent`: a single message over it keeps everything.
+fn openrouter_session(port: u16, keep_recent: u64) -> Result<AgentSession, Box<dyn Error>> {
+    let mut model = faux_model(2_000);
+    model.id = "anthropic/claude-haiku-4.5".to_owned();
+    model.api = "openai-completions".to_owned();
+    model.provider = "openrouter".to_owned();
+    model.base_url = "http://openrouter.ai.invalid/api/v1".to_owned();
+    model.reasoning = true;
+    let provider = ProviderStream::new(None)
+        .with_auth(
+            "openrouter",
+            yi_runtime::auth::Resolved {
+                secret: yi_runtime::auth::Secret::new("sk-test".to_owned()),
+                kind: yi_runtime::auth::AuthKind::ApiKey,
+                org: None,
+                expires: None,
+                headers: Vec::new(),
+            },
+        )
+        .with_proxy(yi_ai::request::ProxyConfig::from_values(
+            Some(&format!("http://127.0.0.1:{port}")),
+            None,
+            None,
+        )?);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model,
+            thinking_level: Some(yi_types::model::Effort::Medium),
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::new(provider),
+    );
+    session.set_tools(vec![Arc::new(LongResult)]);
+    session.enable_compaction_with(Settings {
+        keep_recent_tokens: Tokens(keep_recent),
+        ..tight_settings()
+    });
+    Ok(session)
+}
+
+/// Indexes of the body messages that carry a breakpoint.
+fn marked(body: &serde_json::Value) -> Vec<usize> {
+    body["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter(|(_, message)| {
+            message["content"]
+                .as_array()
+                .is_some_and(|parts| parts.iter().any(|part| part["cache_control"].is_object()))
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// The body's messages through `last`, with every breakpoint taken off: a mark moves no byte
+/// of the prompt it sits on. Nothing else is touched, so a string beside a part list differs.
+fn unmarked_through(body: &serde_json::Value, last: usize) -> Option<Vec<serde_json::Value>> {
+    let mut head = body["messages"].as_array()?.get(..=last)?.to_vec();
+    for message in &mut head {
+        for part in message["content"].as_array_mut().into_iter().flatten() {
+            part.as_object_mut()
+                .map(|part| part.remove("cache_control"));
+        }
+    }
+    Some(head)
+}
+
+/// #746: the compaction is the loop request before it through that tail, marked only on the
+/// system and that tail. OpenRouter merges adjacent user messages, so each shape counts.
+fn assert_warm(loop_body: &str, compaction_body: &str) -> Result<(), Box<dyn Error>> {
+    let mut before: serde_json::Value = serde_json::from_str(loop_body)?;
+    let mut compaction: serde_json::Value = serde_json::from_str(compaction_body)?;
+    let tail = *marked(&before)
+        .last()
+        .ok_or("the loop request marks nothing")?;
+    assert_eq!(
+        marked(&compaction),
+        [0, tail],
+        "the compaction must mark the system and the loop's tail, and nothing after: {compaction}"
+    );
+    assert_eq!(
+        unmarked_through(&compaction, tail),
+        unmarked_through(&before, tail),
+        "the compaction must repeat the loop's messages through its tail"
+    );
+    let (Some(rest), Some(loop_rest)) = (compaction.as_object_mut(), before.as_object_mut()) else {
+        return Err("a body is not an object".into());
+    };
+    rest.remove("messages");
+    loop_rest.remove("messages");
+    assert_eq!(
+        rest, loop_rest,
+        "tools, reasoning and tool choice must be the loop's"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_in_loop_compaction_reads_the_loop_requests_prefix() -> Result<(), Box<dyn Error>> {
+    let call = serde_json::json!({"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+        "function": {"name": "probe", "arguments": "{}"}}]});
+    let (port, served) = openrouter_stand_in(vec![
+        sse_reply(
+            &serde_json::json!({"content": "answer ".repeat(460)}),
+            "stop",
+        ),
+        sse_reply(&call, "tool_calls"),
+        sse_reply(&serde_json::json!({"content": "## Goal\nProbe"}), "stop"),
+        sse_reply(&serde_json::json!({"content": "done"}), "stop"),
+    ])?;
+    let session = openrouter_session(port, 1_500)?;
+    session.prompt("say something")?;
+    session.wait_idle().await;
+    session.prompt("read the probe")?;
+    session.wait_idle().await;
+    assert!(
+        session
+            .messages()
+            .iter()
+            .any(|message| matches!(message, AgentMessage::CompactionSummary { .. })),
+        "the probe's result must compact at the next boundary"
+    );
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let [_, before, compaction, _] = bodies.as_slice() else {
+        return Err(format!("expected four requests, got {}", bodies.len()).into());
+    };
+    assert_warm(before, compaction)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_idle_compaction_reads_the_last_requests_prefix() -> Result<(), Box<dyn Error>> {
+    let (port, served) = openrouter_stand_in(vec![
+        sse_reply(
+            &serde_json::json!({"content": "answer ".repeat(100)}),
+            "stop",
+        ),
+        sse_reply(&serde_json::json!({"content": "## Goal\nProbe"}), "stop"),
+    ])?;
+    let session = openrouter_session(port, 10)?;
+    session.prompt("say something")?;
+    session.wait_idle().await;
+    assert!(
+        session.compact_now().await,
+        "a scheduled compaction applies when idle"
+    );
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let [first, compaction] = bodies.as_slice() else {
+        return Err(format!("expected two requests, got {}", bodies.len()).into());
+    };
+    assert_warm(first, compaction)
+}
+
+/// A reply that is a tool call alone carries no summary: the trimmed retry goes cold, with no
+/// tools to call, so it answers in text and the history is never replaced by a blank summary.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_instead_of_a_summary_retries_without_tools() -> Result<(), Box<dyn Error>> {
+    let call = serde_json::json!({"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+        "function": {"name": "probe", "arguments": "{}"}}]});
+    let (port, served) = openrouter_stand_in(vec![
+        sse_reply(
+            &serde_json::json!({"content": "answer ".repeat(100)}),
+            "stop",
+        ),
+        sse_reply(&call, "tool_calls"),
+        sse_reply(&serde_json::json!({"content": "## Goal\nProbe"}), "stop"),
+    ])?;
+    let session = openrouter_session(port, 10)?;
+    session.prompt("say something")?;
+    session.wait_idle().await;
+    assert!(session.compact_now().await, "the retry's summary applies");
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let [_, warm, retry] = bodies.as_slice() else {
+        return Err(format!("expected three requests, got {}", bodies.len()).into());
+    };
+    let (warm, retry): (serde_json::Value, serde_json::Value) =
+        (serde_json::from_str(warm)?, serde_json::from_str(retry)?);
+    assert!(
+        warm["tools"].is_array(),
+        "the first request is the warm one: {warm}"
+    );
+    assert!(
+        retry.get("tools").is_none(),
+        "the retry offers no tool: {retry}"
+    );
+    assert_eq!(marked(&retry), [0], "a cold retry marks the system alone");
+    let summary = session
+        .messages()
+        .into_iter()
+        .find_map(|message| match message {
+            AgentMessage::CompactionSummary { summary, .. } => Some(summary),
+            _ => None,
+        });
+    assert!(
+        summary
+            .as_deref()
+            .is_some_and(|text| text.contains("## Goal\nProbe")),
+        "{summary:?}"
+    );
+    Ok(())
 }
