@@ -159,6 +159,126 @@ async fn a_read_deny_keeps_the_orientation_packet_out_of_the_denied_tree() -> Te
     Ok(())
 }
 
+fn read_walled(root: &std::path::Path) -> Wall {
+    Wall {
+        deny_write: Vec::new(),
+        deny_read: vec![root.join("secret"), root.join("vault.rs")],
+        deny_url: Vec::new(),
+        container: None,
+    }
+}
+
+fn args(pairs: &[(&str, &str)]) -> serde_json::Map<String, serde_json::Value> {
+    pairs
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), serde_json::json!(value)))
+        .collect()
+}
+
+/// grep, a read of a glob and a read of a directory name no denied path in their arguments, so
+/// the wall passes them; each walk has to keep out of the denied tree on its own.
+#[tokio::test]
+async fn a_read_deny_keeps_every_tree_walk_out_of_the_denied_tree() -> TestResult {
+    let root = Scratch::new("yi-wall-walks")?;
+    std::fs::create_dir_all(root.join("secret/nested"))?;
+    std::fs::write(root.join("open.rs"), "pub fn open_declaration() {}\n")?;
+    std::fs::write(
+        root.join("secret/nested/clé.rs"),
+        "pub fn hidden_declaration() {}\n",
+    )?;
+    std::fs::write(root.join("vault.rs"), "pub fn vault_declaration() {}\n")?;
+    let calls = [
+        ("grep", args(&[("pattern", "_declaration")])),
+        ("grep", args(&[("pattern", "_declaration"), ("path", ".")])),
+        ("read", args(&[("path", "**/*.rs")])),
+        ("read", args(&[("path", ".")])),
+    ];
+    for (tool, call) in calls {
+        let (text, _) = run_walled_tool(read_walled(&root), tool, call.clone(), &root).await?;
+        assert!(
+            text.contains("open_declaration"),
+            "{tool} {call:?} still answers outside the deny: {text}"
+        );
+        assert!(
+            !text.contains("hidden_declaration") && !text.contains("vault_declaration"),
+            "{tool} {call:?} read out of the denied tree: {text}"
+        );
+        assert!(
+            text.contains("deny_read"),
+            "{tool} {call:?} must say the wall cut it: {text}"
+        );
+    }
+    Ok(())
+}
+
+/// A grep replace over the whole tree names `.` as its path, which no deny covers; the files it
+/// would rewrite are what the wall has to see.
+#[tokio::test]
+async fn a_grep_apply_never_rewrites_a_write_denied_file() -> TestResult {
+    let root = Scratch::new("yi-wall-grep-apply")?;
+    std::fs::write(root.join("open.rs"), "fn old_name() {}\n")?;
+    std::fs::write(root.join("check.rs"), "fn old_name() {}\n")?;
+    let wall = Wall {
+        deny_write: vec![root.join("check.rs")],
+        deny_read: Vec::new(),
+        deny_url: Vec::new(),
+        container: None,
+    };
+    let mut call = args(&[
+        ("pattern", "old_name"),
+        ("replace", "new_name"),
+        ("path", "."),
+    ]);
+    call.insert("apply".to_owned(), serde_json::json!(true));
+    let (text, is_error) = run_walled_tool(wall, "grep", call, &root).await?;
+    assert!(
+        is_error,
+        "a replace touching a walled file is refused: {text}"
+    );
+    assert!(text.contains("deny_write"), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(root.join("check.rs"))?,
+        "fn old_name() {}\n",
+        "the walled file is untouched"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("open.rs"))?,
+        "fn old_name() {}\n",
+        "a refused replace writes nothing at all"
+    );
+    Ok(())
+}
+
+/// Dies with a private wrapper list: `timeout 5 rm` and `nice rm` named no write target, so a
+/// walled file was removable by any wrapper the wall did not know.
+#[test]
+fn a_wrapped_write_to_a_write_denied_path_is_refused() -> TestResult {
+    let root = std::env::temp_dir().join("yi-wall-wrapped");
+    let check = root.join("check.py").display().to_string();
+    let wall = Wall {
+        deny_write: vec![root.join("check.py")],
+        deny_read: Vec::new(),
+        deny_url: Vec::new(),
+        container: None,
+    };
+    for write in [
+        format!("timeout 5 rm {check}"),
+        format!("nice -n 5 rm -f {check}"),
+        format!("stdbuf -o0 tee {check} < /dev/null"),
+        format!("ionice -c 3 touch {check}"),
+        format!("FOO=1 nohup rm {check}"),
+        format!("xargs rm {check}"),
+    ] {
+        let mut call = serde_json::Map::new();
+        call.insert("command".to_owned(), serde_json::json!(write));
+        let refused = wall
+            .check("bash", yi_tools::ToolKind::Exec, &call, &root)
+            .ok_or(format!("{write} was let through"))?;
+        assert!(refused.contains("deny_write"), "{refused}");
+    }
+    Ok(())
+}
+
 /// Dies with the substring match: eleven confirmation `bash` reads of a `deny_write` standard
 /// (`python3 /app/check.py`, `sed -n`, `ls`) were refused as if they wrote it.
 #[test]
