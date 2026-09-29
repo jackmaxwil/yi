@@ -142,6 +142,8 @@
  "ids::AgentId": "#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)] #[serde(try_from = \"String\", into = \"String\")] pub struct AgentId(String);",
  "ids::GoalText": "#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)] #[serde(try_from = \"String\", into = \"String\")] pub struct GoalText(String);",
  "ids::InlineNote": "#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)] #[serde(try_from = \"String\", into = \"String\")] pub struct InlineNote(String);",
+ "ids::Intent": "#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)] #[serde(try_from = \"String\", into = \"String\")] pub struct Intent(String);",
+ "ids::Note": "#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)] #[serde(try_from = \"String\", into = \"String\")] pub struct Note(String);",
  "ids::PlanId": "#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)] #[serde(try_from = \"String\", into = \"String\")] pub struct PlanId(String);",
  "ids::ProbeCommand": "#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)] #[serde(try_from = \"String\", into = \"String\")] pub struct ProbeCommand(String);",
  "ids::RetryCount": "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)] pub struct RetryCount(pub u8);",
