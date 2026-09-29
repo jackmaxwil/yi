@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 use yi_types::memory::MemoryRecord;
-use yi_types::plan::canonical::Digest;
+use yi_types::plan::canonical::{Chained, Digest};
 
 use super::store::StoreError;
 
