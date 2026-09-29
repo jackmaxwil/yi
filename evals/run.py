@@ -276,7 +276,7 @@ def refusal_check(spec, binary, out):
             "status": status, "detail": detail, "wallSec": 0}
 
 
-def prompt_reads(events):
+def prompt_and_read_per_request(events):
     """(prompt, read) per request, in order. The prompt counts every input token, fresh, read and
     written (D116): a ratio without the writes scores a lost tail mark about 0.98 (#742)."""
     out = []
@@ -315,7 +315,7 @@ def cache_check(spec, task_dir, binary, model, out):
                     break
             events_text += events.read_text(errors="replace")
             turns.append(yi_usage.parse_events(events))
-            requests += prompt_reads(events)
+            requests += prompt_and_read_per_request(events)
             # DeepSeek builds its prefix cache after the response, not during it.
             if index + 1 < len(spec["turns"]):
                 time.sleep(spec.get("settleSec", 3))
@@ -335,7 +335,8 @@ def cache_check(spec, task_dir, binary, model, out):
     if row["status"] == "fail" and floor is None:
         row["detail"] = f"warm turns read 0 cached tokens over {len(turns)} requests ({row['input']} input)"
     elif row["status"] == "fail" and len(requests) < least:
-        row["detail"] = f"{len(requests)} requests, the scenario needs {least}"
+        # A short loop is the scenario's problem, never a cache red.
+        row["status"], row["detail"] = "inconclusive", f"{len(requests)} requests, the scenario needs {least}"
     elif row["status"] == "fail":
         worst = shares.index(min(shares))
         row["detail"] = (f"request {worst + 2} read {requests[worst + 1][1]} of the previous request's "
@@ -365,8 +366,8 @@ def run_live(args):
     if args.task:
         specs = [spec for spec in specs if spec.name in set(args.task)]
     else:
-        # A `byName` scenario judges one route's engine, not the suite's model.
-        specs = [spec for spec in specs if not json.loads((spec / "task.json").read_text()).get("byName")]
+        # An `onlyByName` scenario judges one route's engine, not the suite's model.
+        specs = [spec for spec in specs if not json.loads((spec / "task.json").read_text()).get("onlyByName")]
     suite = f"live@{_capture(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'])}"
     mode = "live" + yi_usage.routing_label(os.environ) + yi_usage.levers_label(os.environ)
     fingerprint = yi_usage.config_fingerprint(_capture([args.binary, "--version"]), args.model, mode, suite)

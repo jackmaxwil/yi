@@ -1,7 +1,7 @@
 {
   "id": "cache-warm-claude",
   "kind": "cache",
-  "byName": true,
+  "onlyByName": true,
   "timeoutSec": 180,
   "turns": [
     "Read the whole of start.txt. Its last line names the next file: read the whole of that one too, then reply with the code word on its last line and nothing else."

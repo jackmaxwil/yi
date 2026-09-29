@@ -253,11 +253,9 @@ fn ephemeral(ttl: Ttl) -> Value {
 
 /// Marks the message's last block, or on OpenRouter its last text part: OpenRouter documents
 /// `cache_control` on text parts only, so an image part never carries one, as in pi. A message
-/// with no text part goes unmarked there; the previous tail still reads.
+/// with no text part goes unmarked there; the previous tail still reads. Content is already
+/// blocks or parts on both wires (D51).
 fn mark_last_part(message: &mut Value, control: Value, dialect: Dialect) {
-    if let Some(text) = message["content"].as_str() {
-        message["content"] = json!([{"type": "text", "text": text}]);
-    }
     let takes_mark = |part: &&mut Value| match dialect {
         Dialect::AnthropicBlocks => true,
         Dialect::OpenRouterParts => part["type"] == "text",
@@ -292,7 +290,7 @@ pub fn encode(
                 .flatten()
                 .filter(|message| message["role"] != "assistant")
             {
-                if let Some(text) = message["content"].as_str().filter(|text| !text.is_empty()) {
+                if let Some(text) = message["content"].as_str() {
                     message["content"] = json!([{"type": "text", "text": text}]);
                 }
             }

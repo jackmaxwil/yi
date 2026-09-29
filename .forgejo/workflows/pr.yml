@@ -168,7 +168,8 @@ jobs:
       # whose every warm request must read 90% of the previous request's whole prompt, writes
       # included, so a lost or misplaced tail mark is red. The verdict is the cache's alone (its
       # reward); a red doctor row is the report's. The pin is this route's, not the ledger's, so it
-      # is not EVAL_ROUTING. The job stays advisory; a red here names a real loss.
+      # is not EVAL_ROUTING. The job stays advisory; a red here names a real loss. If this step is
+      # ever made required, a red run is rerun once before it counts, as the ledger's `again` rule does.
       - name: a Claude route reads its warm prefix
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

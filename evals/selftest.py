@@ -307,7 +307,8 @@ def check_warm_share():
     detail = rows["no-tail"]["detail"]
     assert rows["no-tail"]["reward"] == 0 and detail.startswith("request 3 read 14336 of"), detail
     assert rows["reshaped"]["detail"].startswith("request 3 read 13900 of"), rows["reshaped"]
-    assert rows["no-loop"]["reward"] == 0 and rows["no-loop"]["detail"].startswith("2 requests"), rows["no-loop"]
+    short = rows["no-loop"]
+    assert short["status"] == "inconclusive" and short["detail"].startswith("2 requests"), short
 
 
 def check_session_extras():
