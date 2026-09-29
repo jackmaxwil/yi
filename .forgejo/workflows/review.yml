@@ -18,7 +18,10 @@ env:
 jobs:
   review:
     # A fork's head never runs with the bot's key, and a PR out of draft is past review.
-    if: github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.title, 'WIP: ')
+    # Folded: a plain scalar reads the `: ` inside 'WIP: ' as a mapping, and the forge rejects the file.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && startsWith(github.event.pull_request.title, 'WIP: ')
     runs-on: ubuntu-latest
     # One round on a 293-line change took 510 s; two rounds and a warm build fit.
     timeout-minutes: 60
