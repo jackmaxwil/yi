@@ -136,7 +136,7 @@ impl Tool for HashlineReadTool {
         }
         let path = resolve_path(context, &display_path);
         if path.is_dir() {
-            return read_dir(&display_path, &path);
+            return read_dir(&display_path, &path, &context.deny_read);
         }
         self.read_file(&display_path, &path, &input, context)
     }
@@ -312,14 +312,19 @@ fn skeleton_heads(text: &str, cap: usize) -> (Vec<String>, usize) {
     (heads, total)
 }
 
-fn read_dir(display_path: &str, path: &Path) -> ToolOutput {
+fn read_dir(display_path: &str, path: &Path, deny: &[std::path::PathBuf]) -> ToolOutput {
     let entries = match std::fs::read_dir(path) {
         Ok(entries) => entries,
         Err(error) => return error_output(format!("failed to read {}: {error}", path.display())),
     };
     let mut dirs: Vec<String> = Vec::new();
     let mut files: Vec<(String, u64)> = Vec::new();
+    let mut walled = 0_usize;
     for entry in entries.flatten() {
+        if crate::builtins::walled(deny, &entry.path()) {
+            walled = walled.saturating_add(1);
+            continue;
+        }
         let name = entry.file_name().to_string_lossy().into_owned();
         match entry.metadata() {
             Ok(meta) if meta.is_dir() => dirs.push(name),
@@ -372,6 +377,7 @@ fn read_dir(display_path: &str, path: &Path) -> ToolOutput {
         ));
         rows.extend(skeleton);
     }
+    rows.extend(crate::builtins::walled_notice(walled));
     let mut output = text_output(rows.join("\n"));
     output.result.details = json!({ "dirs": dirs.len(), "files": files.len() });
     output
@@ -390,7 +396,7 @@ impl HashlineReadTool {
         };
         let root = context.cwd.clone();
         let mut matches: Vec<std::path::PathBuf> = Vec::new();
-        crate::builtins::walk_files(&root, &mut |path| {
+        let walled = crate::builtins::walk_files(&root, &context.deny_read, &mut |path| {
             let relative = path.strip_prefix(&root).unwrap_or(path);
             if matcher.is_match(relative) {
                 matches.push(path.to_path_buf());
@@ -451,6 +457,7 @@ impl HashlineReadTool {
             rows.extend(heads.iter().map(|head| format!("  {head}")));
             sections.push(rows.join("\n"));
         }
+        sections.extend(crate::builtins::walled_notice(walled));
         let mut output = text_output(sections.join("\n\n"));
         output.result.details = json!({ "files": matches.len(), "whole": whole });
         output
@@ -640,6 +647,7 @@ impl HashlineReadTool {
             };
             let (refs, total) = grep.references(
                 &context.cwd,
+                &context.deny_read,
                 identifier,
                 Some((&canonical, *index)),
                 REFS_CAP,
