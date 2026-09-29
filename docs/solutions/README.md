@@ -291,6 +291,5 @@ edited by hand.
 - [D316](adr/d316.md) - every stream a producer cuts for the model is kept whole under the recovery...
 - [D313](adr/d313.md) - exclusion is an OS file lock through one helper, and the plan store's mkdir...
 - [D318](adr/d318.md) - the session verbs a person types answer from `yi_runtime
-- [D318](adr/d318.md) - the session verbs answer from `yi_runtime
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
