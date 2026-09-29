@@ -266,6 +266,8 @@ async fn a_reader_is_refused_what_a_reader_cannot_use() -> TestResult {
     assert!(fork.contains("not a fork"), "{fork}");
     let bare = refused(json!({"fork": "all"})).ok_or("a bare fork admitted as a reader")?;
     assert!(bare.contains("role=\"root\" spawns a full child"), "{bare}");
+    let check = refused(json!({"check": "test -f notes.txt"})).ok_or("a bare check admitted")?;
+    assert!(check.contains("runs no check; role=\"root\""), "{check}");
     let bash = refused(json!({"role": "reader", "tools": ["bash"]})).ok_or("bash admitted")?;
     assert_eq!(
         bash,

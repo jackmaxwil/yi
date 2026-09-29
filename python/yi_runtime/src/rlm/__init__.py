@@ -552,7 +552,7 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     child's ``fetch`` refuses, so ``["kernel://"]`` walls a whole scheme.
     ``context_keys`` is the child's whole view of this kernel: those variables are
     serialized into its brief and nothing else of this namespace reaches it.
-    ``check`` makes it a protocol child — it owes a ``{"value": …, "discoveries":
+    ``check`` makes a ``role="root"`` child a protocol child (a reader refuses it) — it owes a ``{"value": …, "discoveries":
     […]}`` answer, and ``result`` withholds that answer while the check is red.
     ``deadline_s`` and ``tokens`` are the child's lease, drawn from this session's own: an
     ask past what is left here is refused with both numbers, never clamped. ``parent_close``
