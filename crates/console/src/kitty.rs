@@ -62,14 +62,31 @@ mod tests {
     /// escape and made the terminal write the clipboard.
     #[test]
     fn a_payload_outside_base64_places_nothing() -> std::io::Result<()> {
+        let rect = ratatui::layout::Rect::new(0, 0, 10, 5);
         let mut out = Vec::new();
         let payload = "AAAA\u{1b}\\\u{1b}]52;c;ZWNobyBwd25lZA==\u{7}";
-        super::place_png(&mut out, payload, ratatui::layout::Rect::new(0, 0, 10, 5))?;
+        super::place_png(&mut out, payload, rect)?;
         assert_eq!(
             String::from_utf8_lossy(&out),
             "\u{1b}_Ga=d,d=i,i=7701,q=2\u{1b}\\",
             "only the delete of the image before it"
         );
+        Ok(())
+    }
+
+    /// Pillow's 1x1 PNG, chosen so its base64 carries `+` and `/`, is transmitted and placed.
+    #[test]
+    fn a_base64_png_is_transmitted_and_placed() -> std::io::Result<()> {
+        let rect = ratatui::layout::Rect::new(0, 0, 10, 5);
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4+3g/AATwAnDE8Xs+AAAAAElFTkSuQmCC";
+        let mut out = Vec::new();
+        super::place_png(&mut out, png, rect)?;
+        let written = String::from_utf8_lossy(&out);
+        assert!(
+            written.contains(&format!("m=0;{png}\u{1b}\\")),
+            "{written:?}"
+        );
+        assert!(written.contains("a=p,"), "{written:?}");
         Ok(())
     }
 }
