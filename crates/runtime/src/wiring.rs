@@ -121,13 +121,45 @@ pub(crate) fn family_dir_of(rlm_dir: &std::path::Path) -> PathBuf {
 /// Invariant: every sandboxed family member can plant a link on the board (D240), so host
 /// code reads and writes only regular files there and never follows one.
 pub(crate) fn is_board_file(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|seen| seen.file_type().is_file())
+    refuse_linked_board(path).is_ok()
+        && std::fs::symlink_metadata(path).is_ok_and(|seen| seen.file_type().is_file())
+}
+
+/// A board that is itself a link, planted before the host made it (#757), would carry every
+/// read and write below it elsewhere, past the kernel's read denials.
+fn refuse_linked_board(path: &Path) -> std::io::Result<()> {
+    match path.parent() {
+        Some(dir) if std::fs::symlink_metadata(dir).is_ok_and(|seen| seen.is_symlink()) => {
+            Err(std::io::Error::other(format!(
+                "the family board {} is a link, which is never followed",
+                dir.display()
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The host makes the board before a kernel boots under a grant of it: the grant covers the
+/// board but not its parent, and whatever a member planted in its place is removed unfollowed.
+pub(crate) fn make_board(dir: &Path) -> PathBuf {
+    let unplanted = match std::fs::symlink_metadata(dir) {
+        Ok(seen) if !seen.is_dir() => std::fs::remove_file(dir),
+        _ => Ok(()),
+    };
+    if let Err(error) = unplanted.and_then(|()| std::fs::create_dir_all(dir)) {
+        eprintln!(
+            "kernel: the family board {} could not be made: {error}",
+            dir.display()
+        );
+    }
+    dir.to_path_buf()
 }
 
 /// The file opened must be the one `lstat` saw, so a link swapped in between is refused too.
 pub(crate) fn read_board(path: &Path) -> std::io::Result<String> {
     use std::io::Read;
     use std::os::unix::fs::MetadataExt;
+    refuse_linked_board(path)?;
     let seen = std::fs::symlink_metadata(path)?;
     let mut file = std::fs::File::open(path)?;
     let opened = file.metadata()?;
@@ -145,6 +177,7 @@ pub(crate) fn read_board(path: &Path) -> std::io::Result<String> {
 /// A fresh file created exclusively, then renamed over `path`: rename replaces a link.
 pub(crate) fn write_board(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
+    refuse_linked_board(path)?;
     let fresh = path.with_extension("tmp");
     let _a_stale_file_or_link_is_only_unlinked = std::fs::remove_file(&fresh);
     std::fs::File::create_new(&fresh)?.write_all(bytes)?;
