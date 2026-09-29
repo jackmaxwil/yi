@@ -58,10 +58,11 @@ fn provider_api(api: &str) -> Option<ProviderApi> {
 }
 
 pub struct ProviderStream {
-    credentials: Mutex<BTreeMap<String, Arc<Resolved>>>,
+    credentials: Arc<Mutex<BTreeMap<String, Arc<Resolved>>>>,
+    /// The family's affinity key: the root's id, cut to 64 characters (D314).
     pub session_id: Option<String>,
-    pub faux: Mutex<FauxProvider>,
-    pub(crate) faux_pace: Mutex<Option<std::time::Duration>>,
+    pub faux: Arc<Mutex<FauxProvider>>,
+    pub(crate) faux_pace: Arc<Mutex<Option<std::time::Duration>>>,
     long_cache: bool,
     proxy: Option<yi_ai::request::ProxyConfig>,
     routing: Option<serde_json::Value>,
@@ -81,14 +82,29 @@ fn auth_now() -> std::time::SystemTime {
 impl ProviderStream {
     pub fn new(session_id: Option<String>) -> Self {
         Self {
-            credentials: Mutex::new(BTreeMap::new()),
-            session_id,
-            faux: Mutex::new(FauxProvider::default()),
-            faux_pace: Mutex::new(None),
+            credentials: Arc::default(),
+            session_id: session_id.map(|id| id.chars().take(64).collect()),
+            faux: Arc::default(),
+            faux_pace: Arc::default(),
             long_cache: false,
             proxy: None,
             routing: None,
             telemetry: None,
+        }
+    }
+
+    /// A child's stream: the family's credentials, faux script and key, 5-minute marks (D314).
+    #[must_use]
+    pub fn for_child(&self) -> Self {
+        Self {
+            credentials: Arc::clone(&self.credentials),
+            session_id: self.session_id.clone(),
+            faux: Arc::clone(&self.faux),
+            faux_pace: Arc::clone(&self.faux_pace),
+            long_cache: false,
+            proxy: self.proxy.clone(),
+            routing: self.routing.clone(),
+            telemetry: self.telemetry.clone(),
         }
     }
 

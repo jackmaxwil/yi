@@ -13,7 +13,7 @@ use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::model::{Effort, Model, ModelCost};
 
-fn faux_model(context_window: u64) -> Model {
+pub(crate) fn faux_model(context_window: u64) -> Model {
     let zero = || serde_json::Number::from(0u64);
     Model {
         id: "faux-1".to_owned(),
@@ -707,7 +707,7 @@ fn openrouter_stand_in(
 }
 
 /// One streamed reply: `delta` then a finish chunk that carries usage, so nothing settles late.
-fn sse_reply(delta: &serde_json::Value, finish: &str) -> String {
+pub(crate) fn sse_reply(delta: &serde_json::Value, finish: &str) -> String {
     let chunks = [
         serde_json::json!({"choices": [{"index": 0, "delta": delta}]}),
         serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
