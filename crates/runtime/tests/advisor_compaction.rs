@@ -96,7 +96,7 @@ async fn compacted_store(id: &str) -> Result<(Scratch, yi_session::SharedSession
         id: Some(id.to_owned()),
         ..CreateOptions::default()
     })?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         reply_with_usage(&format!("long body {}", "y".repeat(400)), 100, 5_000),
         faux_assistant_message(

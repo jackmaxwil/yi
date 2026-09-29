@@ -50,7 +50,7 @@ fn draw_frame<B>(
     B: ratatui::backend::Backend + std::io::Write,
 {
     if let Some(title) = app.take_title() {
-        let osc = format!("\x1b]2;{title}\x07");
+        let osc = crate::term::window_title_osc(&title);
         let _ = terminal.backend_mut().write_all(osc.as_bytes());
     }
     if app.take_pending_clear() {

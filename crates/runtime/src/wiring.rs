@@ -12,6 +12,18 @@ use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOption
 /// and shares the universal cached prefix with its parent.
 fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
     Arc::new(move |build: ChildBuild<'_>| {
+        if let Some(reader) = build.reader.clone() {
+            let cwd = build
+                .cwd
+                .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
+            let (provider, broker) = (Arc::clone(&wiring.provider), wiring.broker.clone());
+            let tools = (wiring.tools)();
+            let rules = crate::rules::discover_armed(&cwd, &wiring.home).rules;
+            let rules = Some(Arc::new(crate::rules::RuleEngine::new(rules)));
+            return Ok(crate::subagent::reader::session(
+                provider, build, &reader, tools, cwd, broker, rules,
+            ));
+        }
         let mut child = AgentSession::new(
             crate::session::SessionConfig {
                 system_prompt: wiring.system_prompt.clone(),
@@ -34,6 +46,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             user_system: String::new(),
             schema_instruction: None,
             context_window: child.model().context_window,
+            global_skills: Vec::new(),
         }));
         let host = attach_runtime(
             &mut child,
@@ -87,7 +100,7 @@ pub struct RuntimeWiring {
     pub parent_link: Option<ParentLink>,
     /// The wall reduction: paths this session may not touch (plan §3.4 wall).
     pub wall: crate::wall::Wall,
-    /// D13 `bash.autoBackgroundMs`; None keeps every command in the turn.
+    /// `bash.autoBackgroundMs`, for a call that passes no `wait`; None backgrounds only one that does.
     pub auto_background: Option<std::time::Duration>,
     /// `--deadline`: the run's wall clock, counted down in the environment block and enforced.
     pub deadline: Option<std::time::Duration>,
@@ -120,13 +133,45 @@ pub(crate) fn family_dir_of(rlm_dir: &std::path::Path) -> PathBuf {
 /// Invariant: every sandboxed family member can plant a link on the board (D240), so host
 /// code reads and writes only regular files there and never follows one.
 pub(crate) fn is_board_file(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|seen| seen.file_type().is_file())
+    refuse_linked_board(path).is_ok()
+        && std::fs::symlink_metadata(path).is_ok_and(|seen| seen.file_type().is_file())
+}
+
+/// A board that is itself a link, planted before the host made it (#757), would carry every
+/// read and write below it elsewhere, past the kernel's read denials.
+fn refuse_linked_board(path: &Path) -> std::io::Result<()> {
+    match path.parent() {
+        Some(dir) if std::fs::symlink_metadata(dir).is_ok_and(|seen| seen.is_symlink()) => {
+            Err(std::io::Error::other(format!(
+                "the family board {} is a link, which is never followed",
+                dir.display()
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The host makes the board before a kernel boots under a grant of it: the grant covers the
+/// board but not its parent, and whatever a member planted in its place is removed unfollowed.
+pub(crate) fn make_board(dir: &Path) -> PathBuf {
+    let unplanted = match std::fs::symlink_metadata(dir) {
+        Ok(seen) if !seen.is_dir() => std::fs::remove_file(dir),
+        _ => Ok(()),
+    };
+    if let Err(error) = unplanted.and_then(|()| std::fs::create_dir_all(dir)) {
+        eprintln!(
+            "kernel: the family board {} could not be made: {error}",
+            dir.display()
+        );
+    }
+    dir.to_path_buf()
 }
 
 /// The file opened must be the one `lstat` saw, so a link swapped in between is refused too.
 pub(crate) fn read_board(path: &Path) -> std::io::Result<String> {
     use std::io::Read;
     use std::os::unix::fs::MetadataExt;
+    refuse_linked_board(path)?;
     let seen = std::fs::symlink_metadata(path)?;
     let mut file = std::fs::File::open(path)?;
     let opened = file.metadata()?;
@@ -144,6 +189,7 @@ pub(crate) fn read_board(path: &Path) -> std::io::Result<String> {
 /// A fresh file created exclusively, then renamed over `path`: rename replaces a link.
 pub(crate) fn write_board(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
+    refuse_linked_board(path)?;
     let fresh = path.with_extension("tmp");
     let _a_stale_file_or_link_is_only_unlinked = std::fs::remove_file(&fresh);
     std::fs::File::create_new(&fresh)?.write_all(bytes)?;
@@ -161,9 +207,8 @@ impl RuntimeWiring {
 
     /// The kernel's own profile, which its `bash()` jobs run under too (D241).
     fn exec_sandbox(&self) -> Option<yi_tools::Sandbox> {
-        self.session_sandbox().map(|sandbox| {
-            crate::kernel::kernel_profile(&sandbox, &self.home, Some(&self.family_dir()))
-        })
+        self.session_sandbox()
+            .map(|sandbox| crate::kernel::kernel_profile(&sandbox, Some(&self.family_dir())))
     }
 
     fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {
@@ -291,6 +336,7 @@ fn wire_fetch(
         resolver = resolver.with_mcp_read(read);
     }
     let resolver = Arc::new(resolver);
+    host.set_resolver(Arc::clone(&resolver));
     let handler = Arc::clone(&resolver);
     registry.register("fetch", move |payload| {
         let resolver = Arc::clone(&handler);
@@ -333,6 +379,9 @@ fn wire_fetch(
         })
     });
     register_history_grep(registry, session.store_handle());
+    if let Some(dir) = wiring.sessions_dir.clone().filter(|_| wiring.depth == 0) {
+        crate::history::register(registry, dir, wiring.cwd.clone());
+    }
     crate::memory::attach(
         Some(session),
         registry,
@@ -665,27 +714,40 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
     session.set_advisor(advisor);
 }
 
-/// A job finishing between turns reports through the §4.3 follow-up queue, so the
-/// model hears about it without a turn being interrupted.
-fn wire_job_completions(session: &AgentSession) {
+/// A job of this session's cwd reports through the §4.3 follow-up queue, read at a running
+/// turn's end; an idle session hears it only after its next turn (#820 wakes it).
+fn wire_job_completions(session: &AgentSession, cwd: PathBuf) {
     let follow_up = session.follow_up_hook();
     tokio::spawn(async move {
         let settled = job_settled();
-        loop {
-            let mut next = std::pin::pin!(settled.notified());
-            next.as_mut().enable();
-            for report in yi_tools::jobs::registry().take_finished() {
+        let never: std::convert::Infallible = crate::session::until(settled, || {
+            for report in yi_tools::jobs::registry().take_finished(&cwd) {
+                let (job, headline) = (report.id, report.headline());
                 follow_up(&format!(
-                    "<async_result job=\"{}\" exit=\"{}\">{}\n{}</async_result>",
-                    report.id,
-                    report.exit_code.unwrap_or(-1),
-                    report.command,
+                    "<async_result job=\"{job}\">{headline}\n{}</async_result>",
                     report.output
                 ));
             }
-            next.await;
-        }
+            std::ops::ControlFlow::Continue(None)
+        })
+        .await;
+        match never {}
     });
+}
+
+fn journal_into(
+    store: Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>,
+) -> crate::permission::Journal {
+    Arc::new(move |record| {
+        let (Some(store), Ok(data)) = (store(), serde_json::to_value(&record)) else {
+            return;
+        };
+        let _journaled = yi_session::lock_session(&store).append_custom(
+            "main",
+            yi_types::permission::PERMISSION_ENTRY,
+            Some(data),
+        );
+    })
 }
 
 /// One thread turns the job registry's settles into a wake the per-session loops can await.
@@ -726,7 +788,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
     registry.register_exec(wiring.cwd.clone(), wiring.exec_sandbox());
-    crate::kernel_state::register_harness_save(&mut registry, wiring.broker.clone(), &wiring.home);
+    crate::kernel_state::register_host_stores(&mut registry, &wiring);
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort
         // the turn whose cell awaits the reply (design §9.2).
@@ -823,6 +885,9 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::fetch::route_urls(&mut tools, &resolver);
     tools.push(crate::kernel::ipython_tool(Arc::clone(&service)));
     crate::auto_review::wire(session, &wiring, &mut tools);
+    if let Some(broker) = &wiring.broker {
+        broker.set_journal(journal_into(session.store_handle()));
+    }
     let fetch_for_rules = Arc::clone(&fetch_log);
     wire_plan_engine(session, &wiring, &plans_dir, &host, &mut tools, plan);
     if let (Some(plan), Some(advisor)) = (session.plan_service(), session.advisor()) {
@@ -851,7 +916,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         wiring.broker.clone(),
         wiring.auto_background,
     );
-    wire_job_completions(session);
+    wire_job_completions(session, wiring.cwd.clone());
     host
 }
 
@@ -875,6 +940,7 @@ fn subagent_host(
         parent_session_dir: wiring.rlm_dir.clone(),
         defaults: session.settings_handle(),
         factory,
+        provider: Arc::clone(&wiring.provider),
         notice: lifecycle_notice(session),
         events: session.events_sender(),
         parent_messages: session.history_handle(),

@@ -32,10 +32,12 @@ use ratatui::crossterm::{ExecutableCommand, execute};
 use yi_tui::capture::RecordingBackend;
 use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier};
 use yi_tui::drive::{Step, WaitPoll, key_event, poll_condition, typed_events};
+use yi_tui::term::ControlPictures;
 
 use crate::app::{App, MouseKind};
 use crate::client::{ClientEvent, Outbound};
-use crate::model::{Link, SessionStatus};
+use crate::layout::PaneId;
+use crate::model::{Link, SessionId, SessionStatus};
 
 pub struct ConsoleOptions {
     pub socket: PathBuf,
@@ -127,23 +129,39 @@ fn draw<B: Backend>(
         return Ok(());
     }
     app.dirty = false;
+    if std::mem::take(&mut app.pending_clear) {
+        terminal.clear()?;
+        app.notebook_image = None;
+    }
     let _span = yi_types::trace::span("console.draw");
     terminal.draw(|frame| {
         let computing = yi_types::trace::span("console.compute_view");
         let mut view = render::compute_view(app, frame.area(), theme);
         drop(computing);
         let _rendering = yi_types::trace::span("console.render");
+        let scroll = |app: &App| {
+            let drag = app.selection.as_ref()?;
+            Some(app.state.panes.get(&drag.pane)?.scroll_from_bottom)
+        };
+        let before = scroll(app);
         render::render(app, frame, &mut view, theme);
-        app.selected = match app.selection {
-            Some(selection) => crate::select::selected(
+        app.selected.clear();
+        if let Some(mut drag) = app.selection.take() {
+            // A held view that grew below raises its scroll with nothing moving on screen.
+            if let (Some(before), Some(after)) = (before, scroll(app))
+                && after > before
+            {
+                drag.shift(after - before);
+            }
+            app.selected = crate::select::selected(
                 app,
                 &view,
                 frame.buffer_mut(),
-                selection,
+                &mut drag,
                 theme.selection_bg(),
-            ),
-            None => String::new(),
-        };
+            );
+            app.selection = Some(drag);
+        }
         if let Some(cursor) = view.editor_cursor {
             frame.set_cursor_position(cursor);
         }
@@ -199,7 +217,7 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
                 | ratatui::crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
         )
     );
-    let backend = CrosstermBackend::new(stdout);
+    let backend = ControlPictures(CrosstermBackend::new(stdout));
     let mut terminal = match Terminal::new(backend) {
         Ok(terminal) => terminal,
         Err(error) => {
@@ -224,15 +242,13 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
 
 fn run_interactive(
     app: &mut App,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut Terminal<ControlPictures<CrosstermBackend<Stdout>>>,
     events: &std::sync::mpsc::Receiver<ClientEvent>,
     outbound: &Outbound,
     theme: &Theme,
 ) -> i32 {
     let kitty_ok = app.kitty;
-    // (payload length, rect) of the placed image; unchanged frames skip the
-    // retransmit entirely.
-    let mut placed: Option<(usize, ratatui::layout::Rect)> = None;
+    let mut orb_owners = std::collections::HashMap::new();
     let mut scheduler = yi_tui::frame::FrameScheduler::default();
     while !app.state.quit {
         drain(app, outbound, events);
@@ -278,7 +294,7 @@ fn run_interactive(
             if kitty_ok {
                 use std::io::Write;
                 place_avatars(app, &mut out);
-                place_notebook_image(app, &mut out, &mut placed);
+                place_notebook_image(app, &mut out);
                 let _ = out.flush();
             }
             scheduler.mark_drawn(start, Instant::now());
@@ -286,7 +302,7 @@ fn run_interactive(
         if kitty_ok {
             use std::io::Write;
             let mut out = std::io::stdout();
-            place_chat_orbs(app, &mut out);
+            place_chat_orbs(app, &mut orb_owners, &mut out);
             app.avatars.animate(&mut out);
             let _ = out.flush();
         }
@@ -301,7 +317,7 @@ fn set_window_title(app: &mut App) {
         .and_then(|id| app.state.sessions.get(&id))
         .map_or_else(|| "yi".to_owned(), |row| format!("yi · {}", row.label()));
     if title != app.window_title {
-        app.osc_out.push(format!("\x1b]2;{title}\x07"));
+        app.osc_out.push(yi_tui::term::window_title_osc(&title));
         app.window_title = title;
     }
 }
@@ -331,17 +347,43 @@ fn orb_wake(app: &App) -> Duration {
         .unwrap_or(IDLE_POLL)
 }
 
-/// One orb per chat pane, each on its own image ids; only the focused pane animates.
-fn place_chat_orbs(app: &mut App, out: &mut std::io::Stdout) {
+/// One orb per chat pane on its own image ids; only the focused pane animates. Incident: a
+/// closed or switched pane kept its orb, as the next chat's `Tick` deletes only what it placed.
+fn place_chat_orbs(
+    app: &mut App,
+    owners: &mut std::collections::HashMap<PaneId, Option<SessionId>>,
+    out: &mut std::io::Stdout,
+) {
     use crate::model::PaneContent;
+    owners.retain(|pane, owner| {
+        let kept = app
+            .state
+            .panes
+            .get(pane)
+            .is_some_and(|pane| match &pane.content {
+                PaneContent::Session {
+                    session,
+                    chat: Some(_),
+                } => session == owner,
+                _ => false,
+            });
+        if !kept {
+            for id in crate::app::orb_ids(*pane) {
+                let _ = yi_tui::orb::kitty::delete_id(out, id);
+            }
+        }
+        kept
+    });
     let focused = app.state.focused_pane_id();
     for (id, pane) in &mut app.state.panes {
         let PaneContent::Session {
-            chat: Some(chat), ..
+            session,
+            chat: Some(chat),
         } = &mut pane.content
         else {
             continue;
         };
+        owners.entry(*id).or_insert_with(|| session.clone());
         if Some(*id) == focused {
             yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb);
             yi_tui::logos::tick(&chat.app, out, &mut chat.logos);
@@ -354,13 +396,10 @@ fn place_chat_orbs(app: &mut App, out: &mut std::io::Stdout) {
 
 /// The focused notebook pane's newest image rides the kitty protocol over
 /// the top half of the pane; text placeholders stay for every other terminal.
-fn place_notebook_image(
-    app: &App,
-    out: &mut std::io::Stdout,
-    placed: &mut Option<(usize, ratatui::layout::Rect)>,
-) {
+fn place_notebook_image(app: &mut App, out: &mut impl std::io::Write) {
     use crate::model::PaneContent;
-    let clear = |out: &mut std::io::Stdout, placed: &mut Option<(usize, ratatui::layout::Rect)>| {
+    let placed = &mut app.notebook_image;
+    let clear = |out: &mut _, placed: &mut Option<(usize, ratatui::layout::Rect)>| {
         if placed.take().is_some() {
             let _ = crate::kitty::delete(out);
         }
@@ -555,10 +594,91 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                 }
             }
         }
+        if let Some((x, y, symbol)) = terminal.backend().first_control_cell() {
+            eprintln!("error: a control character reached a cell: {symbol:?} at ({x}, {y})");
+            exit_code = 1;
+            break;
+        }
     }
 
     outbound.shutdown();
     drop(events);
     join_with_deadline(threads);
     exit_code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Incident: a same-size resize now draws a clear, which takes the kitty image with it,
+    /// while the cache still said placed, so the notebook image never came back.
+    #[test]
+    fn a_resize_places_the_notebook_image_again() -> Result<(), Box<dyn std::error::Error>> {
+        let theme = Theme::new(ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        let home = app.state.focused_pane_id().ok_or("a pane")?;
+        if let Some(pane) = app.state.panes.get_mut(&home) {
+            pane.content = crate::model::PaneContent::Notebook {
+                session: None,
+                cells: vec![crate::model::NbCell {
+                    images: vec!["iVBORw0KGgo=".to_owned()],
+                    ..crate::model::NbCell::default()
+                }],
+                input: Box::default(),
+            };
+        }
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30))?;
+        let placed = |app: &mut App| {
+            let mut out = Vec::new();
+            place_notebook_image(app, &mut out);
+            String::from_utf8_lossy(&out).contains("a=p,")
+        };
+        draw(&mut app, &mut terminal, &theme)?;
+        assert!(placed(&mut app), "placed once drawn");
+        assert!(!placed(&mut app), "an unchanged frame writes nothing");
+        let (events, _received) = client::events();
+        let socket = std::env::temp_dir().join("yi-notebook-resize-no-daemon.sock");
+        let (outbound, _threads) = client::spawn(socket, events);
+        app.handle_event(&outbound, CtEvent::Resize(100, 30));
+        outbound.shutdown();
+        draw(&mut app, &mut terminal, &theme)?;
+        assert!(placed(&mut app), "placed again after the clear");
+        Ok(())
+    }
+
+    /// Incident: the daemon names a session from its first prompt, so `BEL ESC]52;…` in it
+    /// ended the title early and made the terminal write the clipboard.
+    #[test]
+    fn a_session_name_cannot_end_the_window_title() -> Result<(), Box<dyn std::error::Error>> {
+        let mut app = App::new("/repo".to_owned(), Theme::new(ColorTier::TrueColor, true));
+        let id = SessionId("s-evil".to_owned());
+        app.state.upsert_row(crate::model::SessionRow {
+            id: id.clone(),
+            root: "/repo".to_owned(),
+            status: SessionStatus::Idle,
+            attached: true,
+            name: Some("Fix bug\u{7}\u{1b}]52;c;ZWNobyBwd25lZA==\u{7} now".to_owned()),
+            created_ms: 0,
+            last_ms: 0,
+        });
+        let home = app.state.focused_pane_id().ok_or("a pane")?;
+        if let Some(pane) = app.state.panes.get_mut(&home) {
+            pane.content = crate::model::PaneContent::Session {
+                session: Some(id),
+                chat: None,
+            };
+        }
+        set_window_title(&mut app);
+        let osc = app.osc_out.first().ok_or("no title written")?;
+        let inner = osc
+            .strip_prefix("\u{1b}]2;")
+            .and_then(|rest| rest.strip_suffix('\u{7}'));
+        assert_eq!(
+            inner,
+            Some("yi · Fix bug]52;c;ZWNobyBwd25lZA== now"),
+            "{osc:?}"
+        );
+        Ok(())
+    }
 }

@@ -3,7 +3,9 @@
 pub mod advisor;
 pub mod affordance;
 pub mod auto_review;
+pub mod cache_miss;
 pub mod checkpoint;
+pub mod classifier;
 pub mod compaction;
 pub mod environment;
 pub mod ext;
@@ -11,6 +13,7 @@ pub mod family;
 pub mod fetch;
 pub mod gate;
 pub mod goal;
+pub mod history;
 pub mod host;
 pub mod kernel;
 mod kernel_bootstrap;
@@ -52,6 +55,10 @@ pub use checkpoint::{
     wire_turn_checkpoints,
 };
 pub use compaction::{CompactStatus, Compactor};
+
+/// Hands the session a message for its transcript: the classifier's verdicts and the
+/// extension host's reminders and late fragments ride it.
+pub type Deliver = std::sync::Arc<dyn Fn(yi_types::message::AgentMessage) + Send + Sync>;
 pub use ext::{ExtOptions, Host as ExtensionHost, Trust, TrustGate};
 pub use kernel::{
     HostRegistry, KernelService, KernelServiceOptions, ipython_tool, restore_notice_text,
@@ -61,8 +68,8 @@ pub use mailbox::ParentLink;
 pub use permission::{AskOutcome, Asker, PermissionAsk, PermissionBroker};
 pub use provider::{
     CATALOG_PROVIDERS, DEFAULT_REFRESH_HOURS, MODELS_DEV, ProviderStream, available_models,
-    catalog_age, catalog_cache_dir, catalog_is_stale, catalog_list_url, refresh_catalog,
-    resolve_model, set_catalog_cache_dir,
+    catalog_age, catalog_cache_dir, catalog_is_stale, catalog_list_url, catalog_rejected,
+    refresh_catalog, resolve_model, set_catalog_cache_dir,
 };
 pub use rewind::{BranchStub, Rewound, rewind_to, summarize_branch};
 pub use session::{AgentSession, SessionConfig, SessionError, Status};

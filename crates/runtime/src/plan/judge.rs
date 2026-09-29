@@ -13,7 +13,7 @@ use yi_types::plan::contract::{
 };
 
 use super::verify::{Judge, Seat, Snapshot};
-use crate::subagent::models::{family_of, other_families, selector_of};
+use crate::subagent::models::{credentialed_models, family_of, other_families, selector_of};
 use crate::subagent::{ChildExit, SubagentHost};
 
 pub const JUDGE_BRIEF: &str = include_str!("../prompts/judge.md");
@@ -149,18 +149,10 @@ pub fn brief(rubric: &str, evidence: &[Evidence]) -> String {
 }
 
 impl Jury {
-    /// Seats jurors on the registry's models a provider key is set for, and on the host's
-    /// own provider, whose credentials evidently work.
+    /// Seats jurors on the models whose provider holds a credential on the host's stream.
     pub fn new(host: Arc<SubagentHost>) -> Self {
-        let defaults = Arc::clone(&host.options.defaults);
-        let registry = move || {
-            let own = defaults().0.provider;
-            let mut models = crate::provider::available_models();
-            models.retain(|model| {
-                model.provider == own || yi_ai::auth::api_key(&model.provider).is_some()
-            });
-            models
-        };
+        let stream = Arc::clone(&host.options.provider);
+        let registry = move || credentialed_models(&stream);
         Self::over(host, Arc::new(registry))
     }
 
@@ -273,7 +265,7 @@ impl Jury {
             .enumerate()
             .map(|(index, model)| {
                 let name = format!("judge-{}-{suffix}-{index}", item.id);
-                let kwargs = json!({"name": name, "model": selector_of(model), "tokens": JUROR_TOKENS,
+                let kwargs = json!({"name": name, "role": "root", "model": selector_of(model), "tokens": JUROR_TOKENS,
                     "deny_write": ["."], "deny_url": DENY_URL});
                 let kwargs = kwargs.as_object().cloned().unwrap_or_default();
                 let spawned = self

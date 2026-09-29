@@ -212,6 +212,10 @@ class TaskLevel(unittest.TestCase):
                           lambda t, r: trial(t, 0.9, censored=(t == "t00")))
         got = self.judge(base, cand)
         self.assertEqual(got["per_task"]["graded"]["t00"], -0.5, "the censored arm scores 0, not 0.9")
+        # N1: a verifier that timed out under load scored its trial 0 without judging it.
+        timed = self.judge(*arms(SLICE, 2, lambda t, r: trial(t, 0.5),
+                                  lambda t, r: trial(t, 0.9, verifierUnmeasured=(t == "t00"))))
+        self.assertEqual(timed["per_task"]["graded"]["t00"], -0.5, "an unjudged trial is unusable, not a score")
         both = lambda t, r: trial(t, 0.5, censored=t in {"t00", "t01", "t02"})
         dropped = self.judge(*arms(SLICE, 2, both, both))
         self.assertEqual((dropped["verdict"], dropped["reason"]), ("inconclusive", "pairs_dropped"))
@@ -234,9 +238,13 @@ class TaskLevel(unittest.TestCase):
         self.assertEqual((better["verdict"], better["road"]), ("better", "economy"))
 
     def test_a_lost_pass_and_unpriced_trials_have_their_own_reasons(self):
-        base = lambda t, r: trial(t, 0.5, reward=1.0 if t == "t00" else 0.0)
-        lost = self.judge(*arms(SLICE, 2, base, lambda t, r: trial(t, 0.9)))
+        base = lambda t, r: trial(t, 0.5, reward=1.0)
+        lost = self.judge(*arms(SLICE, 2, base, lambda t, r: trial(t, 0.9, reward=0.0 if t != "t00" else 1.0)))
         self.assertEqual((lost["verdict"], lost["reason"]), ("rejected", "pass_lost"))
+        # Inner A/A, 2026-09-28: two same-config arms of 60 tasks, and one arm fully solved one task
+        # fewer; a count of binary passes with no tolerance rejected an A/A. One flip is noise.
+        flip = lambda t, r: trial(t, 0.5, reward=0.0 if t == "t00" and r == 0 else 1.0)
+        self.assertNotEqual(self.judge(*arms(SLICE, 2, base, flip))["reason"], "pass_lost")
         unpriced = lambda t, r: trial(t, 0.9, cost=None if t in {"t00", "t01"} and r == 0 else 1.0)
         got = self.judge(*arms(SLICE, 2, lambda t, r: trial(t, 0.5), unpriced))
         self.assertEqual((got["verdict"], got["reason"]), ("inconclusive", "unmeasured"))

@@ -24,9 +24,11 @@ graph/refine.py              offline refiner for the procedural graph (D219): pr
 orient_census.py             read-only census of route telemetry and get_context packets in session files
 judge_replay.py              stage 0 judge replay over recorded sessions, read-only (D259); replay/ holds its prompts and schemas
 rule_fires.py                labelled haystack lanes against what the rule matcher can see
+skill_labels.py              typed messages -> teacher labels -> a frozen sample: the skill classifier's training data (#779)
 journeys/ab.py               journey prompts under one prompt ref, scored by the session-mining extractor
 drivers/                     harbor sweep drivers, spend and wall caps (drivers/README.md)
 improve/                     one round's proposer half: a development-only corpus, a history-free snapshot, S0 (round.py, brief.md)
+inner/                       the inner loop: seeded task generators (gen/) and their runner (runner.py), container-free
 trials/                      the trial store: one row per paid harbor trial, and the weekly budget it sums (trials/README.md)
 arc/yi_arc.py                ARC-AGI-3 bridge: one `yi ask --json --yolo` per action (arc/README.md)
 fixtures/                    recorded transcripts, v4 session files, runner tasks, live and surface scenarios
@@ -550,7 +552,17 @@ Scenarios live under `fixtures/live/<id>/` in the task shape (`task.json`,
 `prompt.txt`, `repo/`, `reward.sh`); a `"kind": "refusal"` scenario names the
 argv the binary must refuse and the stderr it must print; a `"kind": "cache"`
 scenario asks one session its `turns` in order (`--continue` after the first)
-and passes only when the warm turns read cached tokens. Every scenario ends
+and passes only when the warm turns read cached tokens; with `minWarmShare`
+every request after the first, a tool loop's own included, must read that share
+of the previous request's whole prompt (fresh, read and written tokens) over at
+least `minRequests` (a shorter loop is `inconclusive` unless a request already
+missed, which is `fail`), and its row lists each `warmShares`. An `"onlyByName": true` scenario runs only under `--task`:
+`cache-warm-claude` judges a Claude route's marks, which a route that caches by
+itself does not have. With `minCompactionShare` only the compaction is judged:
+the request span in the session's telemetry that no reply's usage matches must
+read that share of the loop request before it, and a session that never
+compacted is `inconclusive`; `cache-warm-compaction` asks for one after seven
+reads (#746). Every scenario ends
 `pass`, `fail` or `inconclusive` — timeout, no key, provider trouble, budget —
 and only `fail` is red. `--allow-faux` runs the lane's plumbing offline. The
 run's HOME is fresh and has `telemetry.enabled`, so `run.json` carries

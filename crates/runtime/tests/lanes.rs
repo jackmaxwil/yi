@@ -2264,6 +2264,7 @@ async fn a_repossessed_worktree_keeps_its_work_on_its_branch() -> TestResult {
     let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, hold);
     let mut asked = serde_json::Map::new();
     asked.insert("name".to_owned(), "writer".into());
+    asked.insert("role".to_owned(), "root".into());
     asked.insert("isolation".to_owned(), "worktree".into());
     family.host.spawn("write a draft".to_owned(), asked)?;
     let tree = family.host.cwd_of("writer").ok_or("no worktree")?;

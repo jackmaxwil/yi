@@ -45,6 +45,13 @@ impl CheckpointShow for Checkpoints {
 /// Invariant: every MCP socket and token stays in the one-shot CLI, never here.
 pub trait McpResourceRead: Send + Sync {
     fn read(&self, server: &str, resource: &str) -> Result<String, String>;
+
+    /// Connects `entry` of `config`, a file no sandbox writes, as `@session` on the host and
+    /// returns the connect reply as JSON text (D296).
+    fn connect_server(&self, config: &Path, entry: &str, session: &str) -> Result<String, String> {
+        let _ = (config, entry, session);
+        Err("mcp connect is unavailable in this session".to_owned())
+    }
 }
 
 /// Invariant: `agent://` serves a live child alone — a reaped one is reached
@@ -207,10 +214,14 @@ impl Transcripts for SessionTranscripts {
         if let Some(kept) = self.host.kept_transcript(agent) {
             return Some(Transcript::Kept(kept));
         }
-        let mut repo = yi_session::JsonlRepo::new(self.sessions_dir.clone()?, self.cwd.clone());
-        yi_session::SessionRepo::open(&mut repo, agent)
-            .ok()
-            .map(Transcript::Kept)
+        let dir = self.sessions_dir.clone()?;
+        let mut repo = yi_session::JsonlRepo::new(dir.clone(), self.cwd.clone());
+        if let Ok(session) = yi_session::SessionRepo::open(&mut repo, agent) {
+            return Some(Transcript::Kept(session));
+        }
+        let file = crate::history::find_session(&dir, Path::new(&self.cwd), agent)?;
+        let store = yi_session::load_session(&file).ok()?;
+        Some(Transcript::Kept(Arc::new(std::sync::Mutex::new(store))))
     }
 }
 
@@ -767,6 +778,23 @@ mod tests {
             .err()
             .ok_or("a board link was served")?;
         assert!(matches!(error, FetchError::Denied { .. }), "{error}");
+        // The board itself a link, planted before the host made it (#757): refused, then replaced.
+        let parent = Scratch::new("yi-fetch-board-linked")?;
+        let board = parent.join("family");
+        std::os::unix::fs::symlink(&elsewhere, &board)?;
+        std::fs::write(elsewhere.join("config.json"), "{}")?;
+        assert!(crate::wiring::write_board(&board.join("reply-2.json"), b"spilled").is_err());
+        let linked = Resolver::new(elsewhere.to_path_buf(), Wall::default())
+            .with_family_dir(board.clone())
+            .fetch(&"family://config".parse()?)
+            .err()
+            .ok_or("a linked board was read")?;
+        assert!(matches!(linked, FetchError::Denied { .. }), "{linked}");
+        crate::wiring::make_board(&board);
+        assert!(std::fs::symlink_metadata(&board)?.is_dir());
+        assert!(
+            elsewhere.join("config.json").is_file() && !elsewhere.join("reply-2.json").exists()
+        );
         Ok(())
     }
 

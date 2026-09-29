@@ -8,7 +8,7 @@ use yi_loop::{AgentTool, ToolOutcome};
 use yi_tools::{CancelFlag, Tool, ToolContext};
 use yi_types::model::ToolDef;
 
-use crate::permission::PermissionBroker;
+use crate::permission::{Containment, PermissionBroker};
 
 pub struct ToolAdapter {
     tool: Arc<dyn Tool>,
@@ -33,14 +33,6 @@ fn files_matched(name: &str, result: &yi_types::event::ToolResult) -> u32 {
             .map_or(0, |files| u32::try_from(files).unwrap_or(u32::MAX)),
         _ => 0,
     }
-}
-
-fn exit_of(result: &yi_types::event::ToolResult) -> Option<i32> {
-    result
-        .details
-        .get("exitCode")
-        .and_then(Value::as_i64)
-        .and_then(|code| i32::try_from(code).ok())
 }
 
 fn result_text(result: &yi_types::event::ToolResult) -> String {
@@ -151,9 +143,9 @@ pub fn refuse_armed(
         &bash(command),
         Some(command),
     );
-    match (outcome.allowed, outcome.contained) {
-        (true, false) => None,
-        (true, true) => Some(format!(
+    match (outcome.allowed, outcome.containment) {
+        (true, Containment::Uncontained) => None,
+        (true, Containment::Contained { .. }) => Some(format!(
             "an exec:// source runs `{command}` outside the sandbox, which allows it only contained: run it with bash in a turn, or allow it by a permission rule"
         )),
         (false, _) => Some(format!("Permission denied: {}", outcome.reason)),
@@ -276,6 +268,7 @@ impl AgentTool for ToolAdapter {
             auto_background: self.auto_background,
             sandbox: None,
             deny_read: self.wall.deny_read.clone(),
+            deny_write: self.wall.deny_write.clone(),
             container: self.wall.container.clone(),
             call_id: tool_call_id.to_owned(),
         };
@@ -309,7 +302,11 @@ impl AgentTool for ToolAdapter {
                     is_error: true,
                 };
             }
-            if let Some(denial) = wall.check(tool.name(), tool.kind(), &args, &context.cwd) {
+            let kind = match tool.kind_for(&args) {
+                yi_tools::ToolKind::Write => yi_tools::ToolKind::Write,
+                _ => tool.kind(),
+            };
+            if let Some(denial) = wall.check(tool.name(), kind, &args, &context.cwd) {
                 return ToolOutcome {
                     result: yi_loop::tool::error_tool_result_kind(
                         &denial,
@@ -334,7 +331,6 @@ impl AgentTool for ToolAdapter {
             }
             let mut contained: Option<Arc<PermissionBroker>> = None;
             if let Some(broker) = permission {
-                let sandbox = broker.sandbox().cloned();
                 let reporter = Arc::clone(&broker);
                 let gate_tool = Arc::clone(&tool);
                 let gate_args = args.clone();
@@ -356,9 +352,9 @@ impl AgentTool for ToolAdapter {
                 .await;
                 match outcome {
                     Ok(outcome) if outcome.allowed => {
-                        if outcome.contained {
-                            context.sandbox = sandbox;
-                            contained = Some(reporter);
+                        if let Containment::Contained { widen } = &outcome.containment {
+                            context.sandbox = reporter.sandbox_for(&context.cwd, &wall, widen);
+                            contained = context.sandbox.as_ref().map(|_| reporter);
                         }
                     }
                     Ok(outcome) => {
@@ -399,14 +395,10 @@ impl AgentTool for ToolAdapter {
                     let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());
                     // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
                     if let Some(broker) = &contained
-                        && yi_tools::denial_hint(
-                            exit_of(&output.result),
-                            &result_text(&output.result),
-                            &command,
-                        )
-                        .is_some()
+                        && let Some(refusal) = (output.result.details.get("sandboxRefusal"))
+                            .and_then(yi_tools::SandboxRefusal::from_json)
                     {
-                        broker.note_containment_failure(&command);
+                        broker.note_containment_failure(refusal);
                     }
                     let holds = facts_of(&name, &command, &output);
                     let facts = crate::affordance::Facts {

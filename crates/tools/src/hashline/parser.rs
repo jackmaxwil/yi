@@ -401,7 +401,9 @@ impl Executor {
         self.consume_pending_skippable_comments()?;
         self.flush_pending()?;
         self.validate_file_op()?;
-        self.normalize_overlapping_ranges()?;
+        if coalesce_overlapping_ranges(&mut self.edits)? {
+            self.warn_once(REPLACE_PAIR_COALESCED_WARNING);
+        }
         Ok(ParsedSection {
             edits: self.edits,
             file_op: self.file_op,
@@ -427,105 +429,6 @@ impl Executor {
             return Err(
                 "`REM` deletes the whole file and cannot be combined with line ops.".to_owned(),
             );
-        }
-        Ok(())
-    }
-
-    fn normalize_overlapping_ranges(&mut self) -> Result<(), String> {
-        struct ConcreteHunk {
-            line_num: u64,
-            source_lines: HashSet<u64>,
-            clipboard_dependent: bool,
-        }
-        let mut hunks: HashMap<u64, ConcreteHunk> = HashMap::new();
-        let mut order: Vec<u64> = Vec::new();
-        for edit in &self.edits {
-            let line_num = edit.line_num();
-            let entry = hunks.entry(line_num).or_insert_with(|| {
-                order.push(line_num);
-                ConcreteHunk {
-                    line_num,
-                    source_lines: HashSet::new(),
-                    clipboard_dependent: false,
-                }
-            });
-            match edit {
-                Edit::Cut { .. } => entry.clipboard_dependent = true,
-                Edit::Paste {
-                    at: PasteTarget::Span { range },
-                    ..
-                } => {
-                    entry.clipboard_dependent = true;
-                    for line in range.start.line..=range.end.line {
-                        entry.source_lines.insert(line);
-                    }
-                }
-                Edit::Delete { anchor, .. } => {
-                    entry.source_lines.insert(anchor.line);
-                }
-                _ => {}
-            }
-        }
-
-        let mut owner_by_line: HashMap<u64, u64> = HashMap::new();
-        let mut dropped: HashSet<u64> = HashSet::new();
-        for hunk_line in order {
-            let Some(hunk) = hunks.get(&hunk_line) else {
-                continue;
-            };
-            if hunk.source_lines.is_empty() {
-                continue;
-            }
-            let mut overlap_owner: Option<u64> = None;
-            let mut multiple_owners = false;
-            let mut first_overlap: Option<u64> = None;
-            let mut sorted_lines: Vec<u64> = hunk.source_lines.iter().copied().collect();
-            sorted_lines.sort_unstable();
-            for &line in &sorted_lines {
-                if let Some(&owner) = owner_by_line.get(&line) {
-                    match overlap_owner {
-                        None => overlap_owner = Some(owner),
-                        Some(existing) if existing != owner => multiple_owners = true,
-                        _ => {}
-                    }
-                    first_overlap.get_or_insert(line);
-                }
-            }
-            let Some(previous_line) = overlap_owner else {
-                for &line in &sorted_lines {
-                    owner_by_line.insert(line, hunk_line);
-                }
-                continue;
-            };
-            let previous = hunks.get(&previous_line);
-            let exact = !multiple_owners
-                && previous.is_some_and(|previous| {
-                    previous.source_lines.len() == hunk.source_lines.len()
-                        && hunk
-                            .source_lines
-                            .iter()
-                            .all(|line| previous.source_lines.contains(line))
-                });
-            if exact && previous.is_some_and(|previous| !previous.clipboard_dependent) {
-                dropped.insert(previous_line);
-                owner_by_line.retain(|_, owner| *owner != previous_line);
-                for &line in &sorted_lines {
-                    owner_by_line.insert(line, hunk_line);
-                }
-                self.warn_once(REPLACE_PAIR_COALESCED_WARNING);
-                continue;
-            }
-            return Err(format!(
-                "line {}: anchor line {} is already targeted by another hunk on line {previous_line}. \
-Issue ONE hunk per range; payload is only the final desired content, never a before/after pair. \
-A CUT over the same lines as a PUT is one PUT over that range carrying the final body.",
-                hunk.line_num,
-                first_overlap.unwrap_or(0)
-            ));
-        }
-        if !dropped.is_empty() {
-            self.edits
-                .retain(|edit| !dropped.contains(&edit.line_num()));
         }
         Ok(())
     }
@@ -920,4 +823,103 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
             }
         }
     }
+}
+
+/// Two hunks over one source line: an exact duplicate keeps the later hunk and reports
+/// `true`; a partial overlap is refused. Runs on parse, and again once block ops are lines.
+pub(super) fn coalesce_overlapping_ranges(edits: &mut Vec<Edit>) -> Result<bool, String> {
+    struct ConcreteHunk {
+        line_num: u64,
+        source_lines: HashSet<u64>,
+        clipboard_dependent: bool,
+    }
+    let mut hunks: HashMap<u64, ConcreteHunk> = HashMap::new();
+    let mut order: Vec<u64> = Vec::new();
+    for edit in edits.iter() {
+        let line_num = edit.line_num();
+        let entry = hunks.entry(line_num).or_insert_with(|| {
+            order.push(line_num);
+            ConcreteHunk {
+                line_num,
+                source_lines: HashSet::new(),
+                clipboard_dependent: false,
+            }
+        });
+        match edit {
+            Edit::Cut { .. } => entry.clipboard_dependent = true,
+            Edit::Paste {
+                at: PasteTarget::Span { range },
+                ..
+            } => {
+                entry.clipboard_dependent = true;
+                for line in range.start.line..=range.end.line {
+                    entry.source_lines.insert(line);
+                }
+            }
+            Edit::Delete { anchor, .. } => {
+                entry.source_lines.insert(anchor.line);
+            }
+            _ => {}
+        }
+    }
+
+    let mut owner_by_line: HashMap<u64, u64> = HashMap::new();
+    let mut dropped: HashSet<u64> = HashSet::new();
+    for hunk_line in order {
+        let Some(hunk) = hunks.get(&hunk_line) else {
+            continue;
+        };
+        if hunk.source_lines.is_empty() {
+            continue;
+        }
+        let mut overlap_owner: Option<u64> = None;
+        let mut multiple_owners = false;
+        let mut first_overlap: Option<u64> = None;
+        let mut sorted_lines: Vec<u64> = hunk.source_lines.iter().copied().collect();
+        sorted_lines.sort_unstable();
+        for &line in &sorted_lines {
+            if let Some(&owner) = owner_by_line.get(&line) {
+                match overlap_owner {
+                    None => overlap_owner = Some(owner),
+                    Some(existing) if existing != owner => multiple_owners = true,
+                    _ => {}
+                }
+                first_overlap.get_or_insert(line);
+            }
+        }
+        let Some(previous_line) = overlap_owner else {
+            for &line in &sorted_lines {
+                owner_by_line.insert(line, hunk_line);
+            }
+            continue;
+        };
+        let previous = hunks.get(&previous_line);
+        let exact = !multiple_owners
+            && previous.is_some_and(|previous| {
+                previous.source_lines.len() == hunk.source_lines.len()
+                    && hunk
+                        .source_lines
+                        .iter()
+                        .all(|line| previous.source_lines.contains(line))
+            });
+        if exact && previous.is_some_and(|previous| !previous.clipboard_dependent) {
+            dropped.insert(previous_line);
+            owner_by_line.retain(|_, owner| *owner != previous_line);
+            for &line in &sorted_lines {
+                owner_by_line.insert(line, hunk_line);
+            }
+            continue;
+        }
+        return Err(format!(
+            "line {}: anchor line {} is already targeted by another hunk on line {previous_line}. \
+Issue ONE hunk per range; payload is only the final desired content, never a before/after pair. \
+A CUT over the same lines as a PUT is one PUT over that range carrying the final body.",
+            hunk.line_num,
+            first_overlap.unwrap_or(0)
+        ));
+    }
+    if !dropped.is_empty() {
+        edits.retain(|edit| !dropped.contains(&edit.line_num()));
+    }
+    Ok(!dropped.is_empty())
 }

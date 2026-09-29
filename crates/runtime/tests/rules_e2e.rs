@@ -117,7 +117,7 @@ fn engine_with_sink(rules: Vec<RuleDoc>) -> (Arc<RuleEngine>, Arc<Mutex<Vec<Stri
     (engine, delivered)
 }
 
-fn assistant_saying(text: &str) -> AgentEvent {
+pub(crate) fn assistant_saying(text: &str) -> AgentEvent {
     AgentEvent::MessageEnd {
         message: AgentMessage::Assistant {
             content: vec![Content::Text {
@@ -139,6 +139,24 @@ fn assistant_saying(text: &str) -> AgentEvent {
             timestamp: 0,
         },
     }
+}
+
+fn typed(text: &str) -> AgentMessage {
+    AgentMessage::user_input(UserContent::Text(text.to_owned()), 0)
+}
+
+fn pointer_texts(messages: &[AgentMessage]) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Custom {
+                custom_type,
+                content: UserContent::Text(text),
+                ..
+            } if custom_type == "reminder" => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
@@ -315,7 +333,7 @@ async fn gate_rule_denies_through_the_real_adapter_before_execution() -> TestRes
         thinking_level_map: None,
         headers: None,
     };
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut call_args = serde_json::Map::new();
     let dir = Scratch::new("yi-rule-gate")?;
     let marker = dir.join("touched");
@@ -520,25 +538,17 @@ fn evidence_latch_is_per_path() -> TestResult {
 }
 
 #[test]
-fn skill_pointer_is_one_line_and_read_suppresses() -> TestResult {
-    let mut doc = rule(
+fn skill_pointer_is_one_line_and_a_read_spends_it() -> TestResult {
+    let (engine, _delivered) = engine_with_sink(vec![skill(
         "rust-borrowck",
         "E0502",
-        RuleScope::Error,
+        RuleScope::Text,
         RuleGap::Once,
-        RuleMode::Remind,
+    )]);
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("fix error[E0502]: cannot borrow"))),
+        ["Relevant: skill://rust-borrowck (matched \"E0502\")"]
     );
-    doc.body = "skill://rust-borrowck".to_owned();
-    let (engine, delivered) = engine_with_sink(vec![doc]);
-    engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
-    {
-        let queue = delivered.lock().map_err(|_| "lock")?;
-        assert_eq!(queue.len(), 1);
-        assert_eq!(
-            queue[0],
-            "Relevant: skill://rust-borrowck (matched \"E0502\")"
-        );
-    }
     engine.rearm();
     engine.check_result(
         "read",
@@ -546,10 +556,8 @@ fn skill_pointer_is_one_line_and_read_suppresses() -> TestResult {
         "body",
         false,
     );
-    engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
-    assert_eq!(
-        delivered.lock().map_err(|_| "lock")?.len(),
-        1,
+    assert!(
+        engine.observe_user(&typed("still error[E0502]")).is_empty(),
         "a read of the skill file spends the pointer"
     );
     Ok(())
@@ -562,7 +570,7 @@ fn skill(name: &str, needle: &str, scope: RuleScope, gap: RuleGap) -> RuleDoc {
 }
 
 #[test]
-fn a_failure_quoted_by_a_read_points_to_no_skill() -> TestResult {
+fn tool_output_points_to_no_skill_but_a_pasted_failure_does() -> TestResult {
     let (engine, delivered) = engine_with_sink(vec![skill(
         "debug",
         "FAILED",
@@ -570,54 +578,97 @@ fn a_failure_quoted_by_a_read_points_to_no_skill() -> TestResult {
         RuleGap::Once,
     )]);
     engine.check_result(
-        "read",
-        r#"{"path":"docs/CHANGELOG.md"}"#,
-        "| 0.9.0 | the suite said test result: FAILED |",
-        false,
-    );
-    assert!(
-        delivered.lock().map_err(|_| "lock")?.is_empty(),
-        "a file that quotes a failure is not a failure"
-    );
-    engine.check_result(
         "bash",
         "{}",
         "test result: FAILED. 1 passed; 1 failed",
         false,
     );
-    let queue = delivered.lock().map_err(|_| "lock")?;
+    let seen = delivered.lock().map_err(|_| "lock")?.clone();
+    assert!(
+        seen.is_empty(),
+        "a tool's output is not a request: {seen:?}"
+    );
     assert_eq!(
-        queue.as_slice(),
+        pointer_texts(&engine.observe_user(&typed("the suite says test result: FAILED"))),
         ["Relevant: skill://debug (matched \"FAILED\")"]
     );
     Ok(())
 }
 
+/// #587: a probe session was pointed at skills by its own "verified" and `cargo nextest`.
 #[test]
-fn a_prose_skill_pointer_waits_for_a_write_and_forgets_it_at_the_prompt() -> TestResult {
-    let (engine, delivered) = engine_with_sink(vec![skill(
-        "verify",
-        "complete",
+fn the_agents_own_words_point_to_no_skill_but_a_typed_request_does() -> TestResult {
+    let (engine, delivered) = engine_with_sink(vec![
+        skill(
+            "verify",
+            "verified",
+            RuleScope::Text,
+            RuleGap::AfterTurns(1),
+        ),
+        skill(
+            "gate",
+            "cargo nextest",
+            RuleScope::Tool("bash".to_owned()),
+            RuleGap::Once,
+        ),
+        skill("review", "verify the goal", RuleScope::Text, RuleGap::Once),
+    ]);
+    assert!(engine.check_tool("edit", r#"{"patch":"x"}"#).is_none());
+    engine.observe(&assistant_saying("verified: the change holds"));
+    let command = r#"{"command":"cargo nextest run -p yi-runtime"}"#;
+    assert!(engine.check_tool("bash", command).is_none());
+    engine.check_result("bash", command, "cargo nextest: 12 passed", false);
+    engine.observe(&assistant_saying("next I verify the goal"));
+    let seen = delivered.lock().map_err(|_| "lock")?.clone();
+    assert!(
+        seen.is_empty(),
+        "prose, a command and its output are the agent's own words: {seen:?}"
+    );
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("verify the goal"))),
+        ["Relevant: skill://review (matched \"verify the goal\")"]
+    );
+    Ok(())
+}
+
+#[test]
+fn only_a_message_the_user_typed_points_to_a_skill() -> TestResult {
+    let (engine, _delivered) = engine_with_sink(vec![skill(
+        "review",
+        "verify the goal",
         RuleScope::Text,
         RuleGap::AfterTurns(1),
     )]);
-    engine.observe(&assistant_saying("the record is decision-complete"));
-    assert!(
-        delivered.lock().map_err(|_| "lock")?.is_empty(),
-        "a turn that only read has nothing to verify"
-    );
-    assert!(engine.check_tool("edit", r#"{"patch":"x"}"#).is_none());
-    engine.observe(&assistant_saying("the change is complete"));
-    assert_eq!(delivered.lock().map_err(|_| "lock")?.len(), 1);
-    engine.observe(&AgentEvent::AgentEnd {
-        messages: Vec::new(),
-    });
-    engine.observe(&assistant_saying("complete, as asked"));
+    // A child's prompt and a reviewer's prompt are user-role messages a parent or the host wrote.
+    let delegated = AgentMessage::host_user(UserContent::Text("verify the goal".to_owned()), 0);
+    assert!(engine.observe_user(&delegated).is_empty());
     assert_eq!(
-        delivered.lock().map_err(|_| "lock")?.len(),
-        1,
-        "a new prompt starts with no write behind it"
+        pointer_texts(&engine.observe_user(&typed("Verify the goal"))),
+        ["Relevant: skill://review (matched \"verify the goal\")"],
+        "a capital at the start of a sentence is the same request"
     );
+    Ok(())
+}
+
+#[test]
+fn a_typed_dollar_name_skips_the_latch_and_a_needle_does_not() -> TestResult {
+    let mut review = skill("review", "verify the goal", RuleScope::Text, RuleGap::Once);
+    review.needles.push("$review".to_owned());
+    let (engine, _delivered) = engine_with_sink(vec![review]);
+    let first = engine.observe_user(&typed("verify the goal"));
+    let again = engine.observe_user(&typed("verify the goal"));
+    assert_eq!(
+        (first.len(), again.len()),
+        (1, 0),
+        "a needle fires once a gap"
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            pointer_texts(&engine.observe_user(&typed("$review before you finish"))),
+            ["Relevant: skill://review (matched \"$review\")"],
+            "typing the name is an explicit request, every time"
+        );
+    }
     Ok(())
 }
 
@@ -636,7 +687,49 @@ fn skill_trigger_compiles_when_the_user_did_not_claim_the_name() -> TestResult {
         .find(|rule| rule.name == "rust-borrowck")
         .ok_or("skill did not compile")?;
     assert_eq!(rule.body, "skill://rust-borrowck");
-    assert_eq!(rule.scope, RuleScope::Error);
+    assert_eq!(
+        rule.scope,
+        RuleScope::Text,
+        "a skill trigger reads what the user types"
+    );
+    assert!(
+        set.warnings.is_empty(),
+        "a dropped scope still points, so it costs the model no notice: {:?}",
+        set.warnings
+    );
+    Ok(())
+}
+
+#[test]
+fn a_skill_never_denies_and_says_so() -> TestResult {
+    let (_base, home, cwd) = scratch("skill-gate")?;
+    std::fs::create_dir_all(cwd.join(".yi/skills/guard"))?;
+    std::fs::write(
+        cwd.join(".yi/skills/guard/SKILL.md"),
+        "---\nname: guard\ntrigger: rm -rf\nscope: tool:bash\nmode: gate\npaths: src/**\n---\nBody.\n",
+    )?;
+    let set = discover_armed(&cwd, &home);
+    assert_eq!(set.warnings.len(), 1, "{:?}", set.warnings);
+    assert!(
+        set.warnings
+            .iter()
+            .all(|warning| warning.contains("guard/SKILL.md")
+                && warning.contains("`mode: gate` ignored")
+                && warning.contains(".yi/rules")),
+        "{:?}",
+        set.warnings
+    );
+    let engine = RuleEngine::new(set.rules);
+    assert!(
+        engine
+            .check_tool("bash", r#"{"command":"rm -rf build","path":"src/x"}"#)
+            .is_none(),
+        "a skill is a pointer, never a deny"
+    );
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("rm -rf build first"))),
+        ["Relevant: skill://guard (matched \"rm -rf\")"]
+    );
     Ok(())
 }
 
@@ -729,33 +822,24 @@ fn three_user_rules_all_deliver_in_one_scan() -> TestResult {
 }
 
 #[test]
-fn the_third_skill_pointer_is_dropped_and_stays_armed() -> TestResult {
+fn the_cap_names_the_skill_it_dropped_and_leaves_it_armed() -> TestResult {
     let pointers = ["alpha", "beta", "gamma"]
         .into_iter()
-        .map(|name| {
-            let mut doc = rule(
-                name,
-                "E0502",
-                RuleScope::Error,
-                RuleGap::Once,
-                RuleMode::Remind,
-            );
-            doc.body = format!("skill://{name}");
-            doc
-        })
+        .map(|name| skill(name, "E0502", RuleScope::Text, RuleGap::Once))
         .collect();
-    let (engine, delivered) = engine_with_sink(pointers);
-    engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
-    engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
-    {
-        let queue = delivered.lock().map_err(|_| "lock")?;
-        assert_eq!(queue.len(), 2, "two pointers is the budget for one turn");
-    }
-    engine.observe(&assistant_saying("the next turn"));
-    engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
-    let queue = delivered.lock().map_err(|_| "lock")?;
-    assert_eq!(queue.len(), 3, "the dropped pointer was never latched");
-    assert_eq!(queue[2], "Relevant: skill://gamma (matched \"E0502\")");
+    let (engine, _delivered) = engine_with_sink(pointers);
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("error[E0502] three ways"))),
+        [
+            "Relevant: skill://alpha (matched \"E0502\")",
+            "Relevant: skill://beta (matched \"E0502\") [+1 past the cap of 2: skill://gamma]",
+        ]
+    );
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("error[E0502] again"))),
+        ["Relevant: skill://gamma (matched \"E0502\")"],
+        "the dropped pointer was never latched"
+    );
     Ok(())
 }
 
@@ -816,5 +900,44 @@ fn a_dollar_name_in_the_prompt_points_at_the_skill_with_or_without_a_trigger() -
     assert_eq!(quiet.needles, vec!["$quiet".to_owned()]);
     assert_eq!(quiet.scope, RuleScope::Text);
     assert_eq!(quiet.body, "skill://quiet");
+    let engine = RuleEngine::new(set.rules);
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("$quiet then $assess"))),
+        [
+            "Relevant: skill://assess (matched \"$assess\")",
+            "Relevant: skill://quiet (matched \"$quiet\")",
+        ]
+    );
+    Ok(())
+}
+
+/// Dies with `$har-api` also pointing at `har`, or re-pointing at a latched `har`: a name that
+/// prefixes another is its own mention only where the typed name ends. A `$` trigger that is not
+/// a name still matches as written.
+#[test]
+fn a_typed_name_does_not_also_name_its_prefix() -> TestResult {
+    let mut har = skill("har", "unwrap", RuleScope::Text, RuleGap::Once);
+    har.needles.push("$har".to_owned());
+    let mut api = skill("har-api", "never typed", RuleScope::Text, RuleGap::Once);
+    api.needles.push("$har-api".to_owned());
+    let npm = skill("npm", "$ npm i", RuleScope::Text, RuleGap::Once);
+    let (engine, _delivered) = engine_with_sink(vec![har, api, npm]);
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("fix this with $har-api"))),
+        ["Relevant: skill://har-api (matched \"$har-api\")"]
+    );
+    assert_eq!(engine.observe_user(&typed("unwrap this")).len(), 1);
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("unwrap with $har-api"))),
+        ["Relevant: skill://har-api (matched \"$har-api\")"]
+    );
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("now $har."))),
+        ["Relevant: skill://har (matched \"$har\")"]
+    );
+    assert_eq!(
+        pointer_texts(&engine.observe_user(&typed("`$ npm install` fails"))),
+        ["Relevant: skill://npm (matched \"$ npm i\")"]
+    );
     Ok(())
 }
