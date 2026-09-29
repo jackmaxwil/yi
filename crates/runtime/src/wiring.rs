@@ -674,9 +674,7 @@ fn wire_job_completions(session: &AgentSession) {
     let follow_up = session.follow_up_hook();
     tokio::spawn(async move {
         let settled = job_settled();
-        loop {
-            let mut next = std::pin::pin!(settled.notified());
-            next.as_mut().enable();
+        let never: std::convert::Infallible = crate::session::until(settled, || {
             for report in yi_tools::jobs::registry().take_finished() {
                 follow_up(&format!(
                     "<async_result job=\"{}\" exit=\"{}\">{}\n{}</async_result>",
@@ -686,8 +684,10 @@ fn wire_job_completions(session: &AgentSession) {
                     report.output
                 ));
             }
-            next.await;
-        }
+            std::ops::ControlFlow::Continue(None)
+        })
+        .await;
+        match never {}
     });
 }
 
