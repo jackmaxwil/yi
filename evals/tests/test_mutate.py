@@ -164,6 +164,26 @@ class Mutate(unittest.TestCase):
         self.assertIn("def test_b", body, "only the broken test is cut")
         self.assertIsNone(mutate._hide(module.parents[1], spec, ["tests.test_x.WithPackrat.test_missing"]))
 
+    def test_a_grader_that_never_ran_is_unmeasured_not_zero(self):
+        # 2026-09-28: a starved host timed the grading suite out and nine trials scored 0.
+        task = mutate.make(1, 1)
+        workspace = gen.materialize(task, self.root / "w")
+        mutate.solve(1, workspace, 1)
+        suite, calls = mutate._suite, []
+
+        def starved(root, spec, timeout=180, notes=False):
+            calls.append(pathlib.Path(root).name)
+            return {}
+        mutate._suite = starved
+        self.addCleanup(setattr, mutate, "_suite", suite)
+        passed, total = mutate.check(1, workspace, 1)
+        self.assertEqual((passed, calls), (None, ["repo", "pristine"]), "the pristine tree failed too: unmeasured")
+
+        def hangs(root, spec, timeout=180, notes=False):
+            return {} if pathlib.Path(root).name == "repo" else suite(root, spec, timeout, notes)
+        mutate._suite = hangs
+        self.assertEqual(mutate.check(1, workspace, 1), (0, total), "only the workspace hung: a real 0")
+
 
 if __name__ == "__main__":
     unittest.main()
