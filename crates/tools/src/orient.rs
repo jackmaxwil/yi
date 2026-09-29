@@ -197,7 +197,12 @@ fn skeletons(
         files.len() < SKELETON_SCAN
     });
     if files.is_empty() {
-        return Err("no source files under the working directory".to_owned());
+        let rows = ["no source files under the working directory".to_owned()];
+        return Err(rows
+            .into_iter()
+            .chain(walled.notices())
+            .collect::<Vec<_>>()
+            .join("\n"));
     }
     // Incident: name order spent the whole layer on the alphabetically first
     // crate, so a symbol's own file was never shown.
@@ -245,7 +250,7 @@ fn skeletons(
              read a directory for its skeletons, or pass symbol to rank its files first]\n"
         ));
     }
-    if let Some(notice) = crate::builtins::walled_notice(walled) {
+    for notice in walled.notices() {
         out.push_str(&notice);
     }
     Ok(out.trim_end().to_owned())
@@ -301,6 +306,53 @@ pub(crate) fn skeleton_of(text: &str, cap: usize) -> Vec<String> {
         .map(decl_head)
         .take(cap)
         .collect()
+}
+
+/// Visibility, export and storage words that may open a declaration before its keyword.
+const DECL_PREFIXES: &str =
+    "pub crate super export default async unsafe extern static inline public private protected";
+/// Words that introduce a named declaration; `const fn` and `static mut` chain two.
+const DECL_KEYWORDS: &str = "fn struct enum union trait type const mut mod class def function \
+    func interface typedef";
+/// Words that open a statement, never a C `type name(` declaration.
+const STATEMENT_HEADS: &str = "let var return await yield throw new if while for assert";
+
+fn in_word_list(list: &str, word: &str) -> bool {
+    list.split_whitespace().any(|entry| entry == word)
+}
+
+fn identifiers(text: &str) -> Vec<&str> {
+    text.split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+/// The word after a declaration's keyword (a Go method's, past its receiver), past visibility
+/// and storage words, or in C the word before the `(` of an unindented `type name(`.
+pub(crate) fn defined_name(line: &str) -> Option<String> {
+    let indented = line.starts_with(char::is_whitespace);
+    let trimmed = line.trim_start();
+    (trimmed.starts_with(|first: char| first.is_ascii_alphabetic())).then_some(())?;
+    let method = (trimmed.strip_prefix("func (")).and_then(|rest| rest.split_once(')'));
+    let trimmed = method.map_or_else(|| trimmed.to_owned(), |(_, name)| format!("func{name}"));
+    let prefixed = |word: &&str| in_word_list(DECL_PREFIXES, word);
+    let all = identifiers(&trimmed);
+    let mut rest = all.iter().copied().skip_while(prefixed).peekable();
+    let head = *rest.peek()?;
+    if in_word_list(DECL_KEYWORDS, head) {
+        return rest
+            .find(|word| !in_word_list(DECL_KEYWORDS, word))
+            .map(str::to_owned);
+    }
+    let (text, _) = trimmed.split_once('(')?;
+    let before: Vec<&str> = identifiers(text).into_iter().skip_while(prefixed).collect();
+    let typed = !indented
+        && before.len() >= 2
+        && !text.contains(['.', '='])
+        && !in_word_list(STATEMENT_HEADS, head);
+    typed
+        .then(|| before.last().map(|word| (*word).to_owned()))
+        .flatten()
 }
 
 pub(crate) fn decl_head(line: &str) -> String {
