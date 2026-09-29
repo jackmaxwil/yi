@@ -3,9 +3,7 @@ use std::sync::{Arc, Mutex};
 use yi_types::plan::doc::{
     AgentId, BlockedOn, DocError, Note, PlanId, Todo, TodoLabel, TodoState, TodoStateName,
 };
-use yi_types::todo::{
-    PhaseName, TODO_ENTRY_TYPE, TodoId, TodoList, TodoPhase, TodoProgress, TodoRecord,
-};
+use yi_types::todo::{PhaseName, TodoId, TodoList, TodoPhase, TodoProgress, TodoRecord};
 
 use crate::goal::StoreHandle;
 
@@ -544,32 +542,15 @@ impl TodoStore {
             list: list.clone(),
             extra: serde_json::Map::new(),
         };
-        let Ok(payload) = serde_json::to_value(&record) else {
-            return;
-        };
-        let _a_ledger_write_never_fails_an_op = yi_session::lock_session(&session).append_custom(
-            "main",
-            TODO_ENTRY_TYPE,
-            Some(payload),
-        );
+        let _a_ledger_write_never_fails_an_op =
+            yi_session::lock_session(&session).append_custom_record(&record);
     }
 }
 
 pub fn latest_record(session: &yi_session::SharedSession) -> Option<TodoRecord> {
-    let entries = yi_session::lock_session(session)
-        .find_entries(&yi_session::EntryQuery {
-            custom_type: Some(TODO_ENTRY_TYPE.to_owned()),
-            order: yi_session::EntryOrder::NewestFirst,
-            limit: Some(1),
-            ..yi_session::EntryQuery::default()
-        })
-        .unwrap_or_default();
-    entries.into_iter().find_map(|entry| match entry {
-        yi_types::entry::Entry::Custom {
-            data: Some(data), ..
-        } => serde_json::from_value::<TodoRecord>(data).ok(),
-        _ => None,
-    })
+    yi_session::lock_session(session)
+        .custom_records(yi_session::EntryOrder::NewestFirst, Some(1))
+        .pop()
 }
 
 fn named(item: &Todo) -> String {

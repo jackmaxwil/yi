@@ -25,3 +25,7 @@ pub enum CheckpointAt {
 }
 
 pub const CHECKPOINT_ENTRY_TYPE: &str = "checkpoint";
+
+impl crate::entry::CustomRecord for CheckpointData {
+    const TYPE: &'static str = CHECKPOINT_ENTRY_TYPE;
+}
