@@ -159,7 +159,7 @@ pub enum ChildTrail {
 #[serde(rename_all = "camelCase")]
 pub struct ChildSpawned {
     pub name: String,
-    pub id: String,
+    pub id: ChildId,
     pub session: String,
     pub path: String,
     pub brief: String,
@@ -169,7 +169,7 @@ pub struct ChildSpawned {
 #[serde(rename_all = "camelCase")]
 pub struct ChildEnded {
     pub name: String,
-    pub id: String,
+    pub id: ChildId,
     pub exit: ChildExit,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

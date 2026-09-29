@@ -37,6 +37,7 @@ pub(crate) const AMBIGUOUS: &str = "names more than one child, so give its full 
 pub(crate) struct ChildRecord {
     pub(crate) session_name: String,
     session_dir: PathBuf,
+    trail: Option<yi_session::SharedSession>,
     pub(crate) worktree: Option<crate::lane::Lane>,
     /// The worker share of the lane pool this child's checkout was taken from; dropped with
     /// the lane, so a settled child stops holding a slot nobody is standing in.
@@ -726,6 +727,7 @@ impl SubagentHost {
                 ChildRecord {
                     session_name: session_name.clone(),
                     session_dir: session_dir.clone(),
+                    trail: (self.options.store)(),
                     worktree,
                     lane_permit,
                     _container: container,

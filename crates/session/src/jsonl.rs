@@ -301,14 +301,14 @@ impl SessionRepo for JsonlRepo {
 
     fn delete(&mut self, id: &str) -> Result<(), SessionError> {
         if let Some(path) = self.find_session_file(id)? {
-            fs::remove_file(&path)
-                .map_err(|error| storage_error("Failed to delete session", &path, error))?;
             let held = path.with_extension("");
             if held.is_dir() {
                 fs::remove_dir_all(&held).map_err(|error| {
                     storage_error("Failed to delete its children", &held, error)
                 })?;
             }
+            fs::remove_file(&path)
+                .map_err(|error| storage_error("Failed to delete session", &path, error))?;
         }
         Ok(())
     }

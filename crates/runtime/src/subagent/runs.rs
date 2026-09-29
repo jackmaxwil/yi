@@ -117,15 +117,18 @@ impl SubagentHost {
                 let service = matches!(record.standing, Standing::Service(_));
                 let (replied, cause) = (record.replied, Cause::ended(exit));
                 juror = matches!(record.standing, Standing::Juror);
-                let tokens = record.token_count();
+                let trail = (record.token_count(), record.trail.clone());
                 let epoch = children.touch(child_id, cause);
-                ended = Some((replied, service, billed, epoch, tokens));
+                ended = Some((replied, service, billed, epoch, trail));
             }
         }
-        let Some((replied, service, billed, epoch, tokens)) = ended else {
+        let Some((replied, service, billed, epoch, (tokens, trail))) = ended else {
             return;
         };
-        self.trail_ended(session_name, child_id, exit, error.clone(), tokens);
+        if !(service && exit == ChildExit::Completed) {
+            let ending = (exit, error.clone(), tokens);
+            Self::trail_ended(trail.as_ref(), session_name, child_id, ending);
+        }
         if exit == ChildExit::Completed {
             for message in messages.get(billed..).unwrap_or_default() {
                 if let AgentMessage::Assistant {
