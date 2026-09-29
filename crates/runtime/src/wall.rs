@@ -101,23 +101,15 @@ impl Wall {
         } else {
             workspace.join(raw)
         };
-        self.check_read_path(&target).or_else(|| {
-            std::fs::canonicalize(&target)
-                .ok()
-                .and_then(|real| self.check_read_path(&real))
-        })
+        self.check_read_path(&target)
     }
 
     /// Invariant: the wall covers the path a read lands on, so a link out of one tree into a
-    /// denied one is refused on the target; the root canonicalizes only after a lexical miss.
+    /// denied one is refused on the target.
     pub fn check_read_path(&self, path: &Path) -> Option<String> {
-        let normalized = yi_permission::lexical_normalize(path);
         self.deny_read
             .iter()
-            .find(|denied| {
-                normalized.starts_with(yi_permission::lexical_normalize(denied))
-                    || std::fs::canonicalize(denied).is_ok_and(|real| normalized.starts_with(real))
-            })
+            .find(|denied| yi_tools::walled(std::slice::from_ref(denied), path))
             .map(|hit| yi_tools::wall_refusal("fetch", &hit.display().to_string(), "deny_read"))
     }
 
@@ -184,13 +176,8 @@ impl Wall {
 }
 
 fn under<'a>(targets: &[PathBuf], denied: &[&'a PathBuf]) -> Option<&'a PathBuf> {
-    let targets: Vec<PathBuf> = targets
-        .iter()
-        .map(|target| yi_permission::lexical_normalize(target))
-        .collect();
     denied.iter().copied().find(|denied| {
-        let denied = yi_permission::lexical_normalize(denied);
-        targets.iter().any(|target| target.starts_with(&denied))
+        (targets.iter()).any(|target| yi_tools::walled(std::slice::from_ref(*denied), target))
     })
 }
 

@@ -605,15 +605,21 @@ fn computing(th: f64) -> Vec<Point> {
 
 fn planning(th: f64, done: u8, total: u8) -> Vec<Point> {
     let layers = f64::from(total.clamp(1, 9));
-    let done = f64::from(done.min(total)) * layers / f64::from(total.max(1));
+    // Incident: an unfloored share (3 of 30 is 0.9) and a finished plan both left no band
+    // equal to `done`, so nothing swept and the orb froze.
+    let done = (f64::from(done.min(total)) * layers / f64::from(total.max(1))).floor();
+    let finished = done >= layers;
     (0..POINTS)
         .map(|i| {
             let d = fib(i, POINTS);
             let layer = (((d[1] + 1.0) / 2.0 * layers).floor()).min(layers - 1.0);
             let lon = d[2].atan2(d[0]).rem_euclid(TAU) / TAU;
-            let x = (lon - th).rem_euclid(1.0);
+            // Invariant: the turn below subtracts th from each longitude, so the sweep holds at the front.
+            let x = (lon - th - 0.25).rem_euclid(1.0);
             let sweep = (-(x.min(1.0 - x) / 0.08).powi(2)).exp();
-            let lit = if layer < done {
+            let lit = if finished {
+                0.4 + 0.6 * sweep
+            } else if layer < done {
                 1.0
             } else if layer == done {
                 0.4 + 0.6 * sweep
@@ -625,7 +631,7 @@ fn planning(th: f64, done: u8, total: u8) -> Vec<Point> {
             } else {
                 0.2
             };
-            body(scale(d, 0.95), 0.9 - 0.9 * lit, alpha)
+            body(rot_y(scale(d, 0.95), th * TAU), 0.9 - 0.9 * lit, alpha)
         })
         .collect()
 }

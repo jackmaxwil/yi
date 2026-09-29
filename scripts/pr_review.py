@@ -37,7 +37,7 @@ from check_pr_metadata import CITE, DRAFT, section, template_problems  # noqa: E
 
 # Shadow posts every round and blocks nothing; blocking makes `just pr ready` refuse a
 # draft whose rounds are not clean. The flip waits for the replay on the labelled set.
-MODE = "shadow"
+MODE = "blocking"
 MAX_ROUNDS = 3
 SEVERITIES = ("high", "medium", "low")
 DIFF_MAX = 150_000
@@ -560,8 +560,10 @@ def cmd_review(args):
         if not (answer or {}).get("id"):
             print(f"#{number}: the forge refused the round: {(answer or {}).get('message')}")
             return 1
-    print(f"#{number} round {n}: {verdict(findings, None)} ({len(findings)} finding(s), {dropped} dropped)")
-    return 0
+    said = verdict(findings, None)
+    print(f"#{number} round {n}: {said} ({len(findings)} finding(s), {dropped} dropped)")
+    # A blocked round turns its job red, so the PR shows the block where its checks are read.
+    return 1 if MODE == "blocking" and said == "blocked" else 0
 
 
 def replay_row(read, label):

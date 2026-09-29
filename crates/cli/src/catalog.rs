@@ -2,7 +2,6 @@
 
 use crate::{Args, config, proxy_from_env, yi_ai_key};
 
-/// `None` when `catalog.enabled: false` turns the refresh off.
 pub(crate) fn refresh_hours(catalog: Option<&yi_types::config::CatalogConfig>) -> Option<u64> {
     if catalog.and_then(|c| c.enabled) == Some(false) {
         return None;
