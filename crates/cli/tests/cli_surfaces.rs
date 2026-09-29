@@ -1157,9 +1157,44 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "kernel-boot",
             "daemon-socket",
             "daemon-ledger",
-            "lanes"
+            "lanes",
+            "cache"
         ]
     );
+    assert_eq!(rows[11]["detail"], "no session here", "{rows}");
+    Ok(())
+}
+
+/// C5: the cache row replays the newest session and reports its notice without failing,
+/// and never repairs the file, which may be the live session another process appends to.
+#[test]
+fn doctor_reports_a_cache_notice_and_leaves_the_session_file_alone() -> TestResult {
+    let workspace = Workspace::new("doctor-cache")?;
+    let dir =
+        workspace
+            .0
+            .join("home/sessions")
+            .join(yi_runtime::session_store::session_directory_name(
+                &workspace.project().to_string_lossy(),
+            ));
+    std::fs::create_dir_all(&dir)?;
+    let torn = format!(
+        "{}{{\"kind\":\"entr",
+        include_str!("../../runtime/tests/fixtures/cache/opus_no_marks.jsonl")
+    );
+    let file = dir.join("1790575150042_s.jsonl");
+    std::fs::write(&file, &torn)?;
+    let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&json))?;
+    let row = &rows[11];
+    assert_eq!(row["name"], "cache", "{rows}");
+    assert_eq!(row["status"], "ok", "{row}");
+    let detail = row["detail"].as_str().ok_or("detail")?;
+    assert!(
+        detail.contains("nothing written or read 37") && detail.contains("[cache]"),
+        "{detail}"
+    );
+    assert_eq!(std::fs::read_to_string(&file)?, torn, "the torn tail stays");
     Ok(())
 }
 
