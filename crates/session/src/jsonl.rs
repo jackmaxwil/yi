@@ -148,13 +148,27 @@ fn append_bytes(path: &Path, bytes: &[u8]) -> Result<(), SessionError> {
 }
 
 fn publish_atomically(path: &Path, bytes: &[u8]) -> Result<(), SessionError> {
-    let temp = path.with_extension("jsonl.tmp");
-    fs::write(&temp, bytes)
-        .map_err(|error| storage_error("Failed to stage session", &temp, error))?;
-    fs::rename(&temp, path).map_err(|error| {
-        let _ = fs::remove_file(&temp);
-        storage_error("Failed to publish staged file", path, error)
-    })
+    replace_file(path, bytes)
+        .map_err(|error| storage_error("Failed to publish staged file", path, error))
+}
+
+/// Incident: a pid-only temp name was shared by every writer in the process, so two saves at
+/// once wrote one temp file and the loser's rename failed.
+pub fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let temp = path.with_file_name(format!(".{name}.{}.tmp", crate::id::nonce()));
+    let staged = fs::File::create(&temp)
+        .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_data()))
+        .and_then(|()| fs::rename(&temp, path));
+    if staged.is_err() {
+        let _staged_file_is_litter_only = fs::remove_file(&temp);
+    }
+    staged?;
+    match path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        Some(dir) => fs::File::open(dir)?.sync_all(),
+        None => Ok(()),
+    }
 }
 
 pub struct JsonlRepo {
