@@ -237,6 +237,7 @@ async fn a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land() -
             &service,
             "h = await rlm.run('report the answer', name='helper')\nr = await h.result()\nprint('typed', r['json']['answer'], r['name'])\nprint(h.session_dir)",
             &cancelled,
+            None,
         )
     })
     .await??;
