@@ -158,22 +158,6 @@ const GLOB_FILES_CAP: usize = 200;
 const DIR_HEADS_PER_FILE: usize = 8;
 const GLOB_HEADS_PER_FILE: usize = 12;
 
-/// The name a declaration line defines: the first word after its keyword; any other line
-/// defines nothing, so `find=` lists references only for a definition.
-fn defined_name(line: &str) -> Option<String> {
-    const KEYWORDS: [&str; 11] = [
-        "fn", "struct", "enum", "trait", "type", "const", "static", "mod", "class", "def", "mut",
-    ];
-    let mut words = line
-        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
-        .filter(|word| !word.is_empty());
-    crate::orient::is_decl(line).then_some(())?;
-    words.find(|word| KEYWORDS.contains(word))?;
-    words
-        .find(|word| !KEYWORDS.contains(word))
-        .map(str::to_owned)
-}
-
 /// The first line holding `needle`, widened to its block when the file's language has one,
 /// else to a fixed window; no hit lists the nearest lines by the needle's longest word.
 fn locate(
@@ -250,7 +234,9 @@ fn locate(
         window,
         index,
         block: span.is_some(),
-        identifier: lines.get(index).and_then(|line| defined_name(line)),
+        identifier: lines
+            .get(index)
+            .and_then(|line| crate::orient::defined_name(line)),
     })
 }
 
