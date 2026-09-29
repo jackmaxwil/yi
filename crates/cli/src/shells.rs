@@ -32,6 +32,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
                 description: ask.text(),
                 grants: ask.grants.iter().map(|grant| grant.label.clone()).collect(),
                 reply: reply_tx,
+                tool_call_id: ask.tool_call_id.map(str::to_owned),
             };
             if ask_tx.send(request).is_err() {
                 return yi_runtime::AskOutcome::Reject;
@@ -52,6 +53,9 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             Err(refused) => return exit_refused(refused),
         }
     };
+    if let Some(broker) = session.permission_broker() {
+        broker.prompts_close_on_settle();
+    }
     let session_name = match attach_store(args, &session, &target) {
         Ok(id) => id,
         Err(error) if args.resume == Resume::Fresh => {

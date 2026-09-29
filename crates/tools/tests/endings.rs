@@ -49,7 +49,10 @@ fn fixture(name: &str) -> Result<Vec<u8>, Box<dyn Error>> {
 /// The fixture with `from` swapped for `to`; `from` must occur once, so the expectation is
 /// one line's bytes and nothing else.
 fn with_one_line_changed(name: &str, from: &[u8], to: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-    let bytes = fixture(name)?;
+    swap_once(&fixture(name)?, from, to)
+}
+
+fn swap_once(bytes: &[u8], from: &[u8], to: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     let hits: Vec<usize> = bytes
         .windows(from.len())
         .enumerate()
@@ -57,7 +60,7 @@ fn with_one_line_changed(name: &str, from: &[u8], to: &[u8]) -> Result<Vec<u8>, 
         .map(|(index, _)| index)
         .collect();
     let [at] = hits[..] else {
-        return Err(format!("{name}: {} occurrences of the edited text", hits.len()).into());
+        return Err(format!("{} occurrences of {}", hits.len(), from.escape_ascii()).into());
     };
     let mut out = bytes[..at].to_vec();
     out.extend_from_slice(to);
@@ -65,12 +68,23 @@ fn with_one_line_changed(name: &str, from: &[u8], to: &[u8]) -> Result<Vec<u8>, 
     Ok(out)
 }
 
+/// On a mismatch, the bytes around the first differing offset from each side.
 fn assert_bytes(actual: &[u8], expected: &[u8]) {
+    let at = actual
+        .iter()
+        .zip(expected)
+        .position(|(left, right)| left != right)
+        .unwrap_or(actual.len().min(expected.len()));
+    let window = |bytes: &[u8]| {
+        bytes[at.saturating_sub(24)..(at + 24).min(bytes.len())]
+            .escape_ascii()
+            .to_string()
+    };
     assert!(
         actual == expected,
-        "\n     got {}\nexpected {}",
-        actual.escape_ascii(),
-        expected.escape_ascii()
+        "\nat byte {at}\n     got {}\nexpected {}",
+        window(actual),
+        window(expected)
     );
 }
 
@@ -89,8 +103,12 @@ struct Lab {
 
 impl Lab {
     fn with(tag: &str, name: &str) -> Result<Self, Box<dyn Error>> {
+        Self::holding(tag, name, &fixture(name)?)
+    }
+
+    fn holding(tag: &str, name: &str, bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
         let dir = Scratch::new(&format!("yi-endings-{tag}"))?;
-        fs::write(dir.join(name), fixture(name)?)?;
+        fs::write(dir.join(name), bytes)?;
         let context = ToolContext::new(dir.to_path_buf());
         Ok(Self {
             _dir: dir,
@@ -117,7 +135,7 @@ impl Lab {
         .execute(args(&[("patch", json!(patch))]), &self.context)
     }
 
-    fn replace(&self, pattern: &str, replacement: &str) -> ToolOutput {
+    fn replace(&self, pattern: &str, replacement: &str, multiline: bool) -> ToolOutput {
         GrepTool {
             hashline: Some(Arc::clone(&self.state)),
         }
@@ -125,6 +143,7 @@ impl Lab {
             args(&[
                 ("pattern", json!(pattern)),
                 ("replace", json!(replacement)),
+                ("multiline", json!(multiline)),
                 ("apply", json!(true)),
             ]),
             &self.context,
@@ -188,7 +207,7 @@ fn grep_replace_keeps_every_lines_ending() -> TestResult {
         ("demo.sln", "Version 17", "Version 17", "Version 18"),
     ] {
         let lab = Lab::with("grep", name)?;
-        let applied = lab.replace(pattern, to);
+        let applied = lab.replace(pattern, to, false);
         let text = output_text(&applied);
         assert!(text.contains("applied to 1 of 1 files"), "{name}: {text}");
         assert_bytes(
@@ -202,10 +221,121 @@ fn grep_replace_keeps_every_lines_ending() -> TestResult {
 #[test]
 fn grep_replace_skips_a_latin_1_file_and_names_it() -> TestResult {
     let lab = Lab::with("latin1", "latin1.txt")?;
-    let applied = lab.replace("old_name", "new_name");
+    let applied = lab.replace("old_name", "new_name", false);
     assert_bytes(&lab.bytes("latin1.txt")?, &fixture("latin1.txt")?);
     let text = output_text(&applied);
-    assert!(text.contains("skipped (not UTF-8): latin1.txt"), "{text}");
+    assert_eq!(
+        text,
+        "nothing written: 1 of 1 matches in files skipped (not UTF-8)\nskipped (not UTF-8): latin1.txt"
+    );
+    assert_eq!(
+        applied.result.details["skipped"],
+        json!(1),
+        "{}",
+        applied.result.details
+    );
+    Ok(())
+}
+
+/// One multiline replace with two matches: a blank line replaces two lines before the LF line
+/// and the last line is doubled after it, so the line count is unchanged while every line
+/// between the matches has moved by one.
+#[test]
+fn a_balanced_multiline_replace_keeps_the_lf_line_it_moved() -> TestResult {
+    let lab = Lab::with("balanced", "requirements.txt")?;
+    let applied = lab.replace(
+        r"charset-normalizer==3\.4\.0\nidna==3\.10\n|(-e \.)",
+        "$1\n$1",
+        true,
+    );
+    let text = output_text(&applied);
+    assert!(text.contains("applied to 1 of 1 files"), "{text}");
+    let expected = swap_once(
+        &swap_once(
+            &fixture("requirements.txt")?,
+            b"charset-normalizer==3.4.0\r\nidna==3.10\r\n",
+            b"\r\n",
+        )?,
+        b"-e .",
+        b"-e .\r\n-e .",
+    )?;
+    assert_bytes(&lab.bytes("requirements.txt")?, &expected);
+    Ok(())
+}
+
+/// The `requirements.txt` shape at a size past the diff's 2,000-line region limit: CRLF lines
+/// with one LF line in the middle, and a per-line replace that adds a line at each end.
+#[test]
+fn distant_count_changing_hits_keep_the_lf_line_between_them() -> TestResult {
+    let mut bytes = Vec::new();
+    for n in 1..=2100 {
+        let end = if n == 1000 { "\n" } else { "\r\n" };
+        bytes.extend_from_slice(format!("L{n}{end}").as_bytes());
+    }
+    let lab = Lab::holding("distant", "long.txt", &bytes)?;
+    let applied = lab.replace(r"^L(1|2100)$", "L$1\nL${1}b", false);
+    let text = output_text(&applied);
+    assert!(text.contains("applied to 1 of 1 files"), "{text}");
+    let expected = swap_once(
+        &swap_once(&bytes, b"L1\r\n", b"L1\r\nL1b\r\n")?,
+        b"L2100\r\n",
+        b"L2100\r\nL2100b\r\n",
+    )?;
+    assert_bytes(&lab.bytes("long.txt")?, &expected);
+    Ok(())
+}
+
+/// The `\n` a replacement writes takes the majority ending; the LF that closed the source line
+/// stays where its bytes are, after the text the replacement put last.
+#[test]
+fn a_line_added_at_the_lf_line_takes_the_majority_and_the_lf_stays_last() -> TestResult {
+    let lab = Lab::with("grep-add", "requirements.txt")?;
+    let applied = lab.replace(r"^mypkg==0\.1$", "mypkg==0.1\nmypkg-extras==0.1", false);
+    let text = output_text(&applied);
+    assert!(text.contains("applied to 1 of 1 files"), "{text}");
+    assert_bytes(
+        &lab.bytes("requirements.txt")?,
+        &with_one_line_changed(
+            "requirements.txt",
+            b"mypkg==0.1\n",
+            b"mypkg==0.1\r\nmypkg-extras==0.1\n",
+        )?,
+    );
+    Ok(())
+}
+
+#[test]
+fn an_edit_that_adds_a_line_keeps_the_later_lf_line() -> TestResult {
+    let lab = Lab::with("edit-add", "requirements.txt")?;
+    let tag = lab.tag_of("requirements.txt")?;
+    let edit = lab.edit(&format!(
+        "[requirements.txt#{tag}]\nPUT 2.=2:\n+charset-normalizer==3.4.0\n+chardet==5.2.0\n"
+    ));
+    assert!(!edit.is_error, "{}", output_text(&edit));
+    assert_bytes(
+        &lab.bytes("requirements.txt")?,
+        &with_one_line_changed(
+            "requirements.txt",
+            b"charset-normalizer==3.4.0\r\n",
+            b"charset-normalizer==3.4.0\r\nchardet==5.2.0\r\n",
+        )?,
+    );
+    Ok(())
+}
+
+#[test]
+fn a_replacement_equal_to_its_match_says_nothing_changed() -> TestResult {
+    let lab = Lab::with("identity", "requirements.txt")?;
+    let applied = lab.replace(r"requests==2\.32\.3", "requests==2.32.3", false);
+    assert_eq!(
+        output_text(&applied),
+        "nothing changed: each of the 1 matches is replaced by itself"
+    );
+    assert_eq!(applied.result.details["hits"], json!(1));
+    assert_bytes(
+        &lab.bytes("requirements.txt")?,
+        &fixture("requirements.txt")?,
+    );
     Ok(())
 }
 
@@ -216,7 +346,7 @@ fn a_never_read_bom_file_lands_on_the_retry_its_refusal_names() -> TestResult {
     let refused = lab.edit(&format!("[demo.sln]\n{patch}"));
     let text = output_text(&refused);
     assert!(
-        refused.is_error && text.contains("a straight retry now succeeds"),
+        refused.is_error && text.contains("then re-issue with this header"),
         "{text}"
     );
     let tag = tag_in(&text).ok_or("no minted tag in the refusal")?;

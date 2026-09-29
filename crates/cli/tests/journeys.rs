@@ -631,3 +631,211 @@ fn the_agents_own_words_fire_no_skill() -> TestResult {
     journey.reclaim();
     Ok(())
 }
+
+/// `yi setup` fed its answers on stdin, as a person at the prompts would type them.
+fn setup(journey: &Journey, answers: &str) -> Result<Output, Box<dyn Error>> {
+    feed(journey.command(&["setup"]), answers)
+}
+
+fn feed(mut command: Command, answers: &str) -> Result<Output, Box<dyn Error>> {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or("setup has no stdin")?
+        .write_all(answers.as_bytes())?;
+    Ok(child.wait_with_output()?)
+}
+
+fn config_of(journey: &Journey) -> Result<Value, Box<dyn Error>> {
+    Ok(serde_json::from_str(&std::fs::read_to_string(
+        journey.root.join("home/.yi/config.json"),
+    )?)?)
+}
+
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_saves_the_answered_steps_and_keeps_every_other_key() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let journey = Journey::new("setup")?;
+    let file = journey.root.join("home/.yi/config.json");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))?;
+    let before = std::fs::read_to_string(&file)?;
+    let skipped = setup(&journey, "\n\n\n")?;
+    assert!(skipped.status.success(), "{skipped:?}");
+    assert_eq!(
+        std::fs::read_to_string(journey.root.join("home/.yi/config.json"))?,
+        before,
+        "every step skipped writes nothing"
+    );
+    let saved = setup(&journey, "openrouter\n\nask\nn\n")?;
+    assert!(saved.status.success(), "{saved:?}");
+    let config = config_of(&journey)?;
+    assert_eq!(config["model"], "openrouter/anthropic/claude-sonnet-5");
+    assert_eq!(config["permissions"]["mode"], "ask");
+    assert_eq!(
+        config["kernel"]["prewarm"], false,
+        "a key setup never asked about survives"
+    );
+    assert_eq!(
+        std::fs::metadata(&file)?.permissions().mode() & 0o777,
+        0o600,
+        "a config that may hold keys stays private"
+    );
+    assert!(!journey.root.join("home/.yi/.config.json.setup").exists());
+    assert!(
+        config.get("models").is_none(),
+        "no classifier was set up: {config}"
+    );
+    let asked: Value = serde_json::from_str(&String::from_utf8_lossy(
+        &journey.yi(&["gate", "--json", "echo hi"])?.stdout,
+    ))?;
+    assert_eq!(asked["decision"], "ask", "the saved mode is the run's mode");
+    let flagged: Value = serde_json::from_str(&String::from_utf8_lossy(
+        &journey.yi(&["gate", "--auto", "--json", "echo hi"])?.stdout,
+    ))?;
+    assert_eq!(
+        flagged["decision"], "allow",
+        "a flag still wins over the saved mode"
+    );
+    journey.reclaim();
+    Ok(())
+}
+
+/// The classifier is saved only once one answers at its URL; a dead URL saves nothing.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_saves_the_classifier_only_once_one_answers() -> TestResult {
+    use std::io::{BufRead, BufReader, Read};
+    let journey = Journey::new("setup-classifier")?;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let dead = setup(&journey, &format!("\n\ny\nn\nhttp://127.0.0.1:{closed}\n"))?;
+    assert!(
+        String::from_utf8_lossy(&dead.stderr).contains("nothing saved for it"),
+        "{dead:?}"
+    );
+    assert!(config_of(&journey)?.get("models").is_none());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let sidecar = std::thread::spawn(move || -> std::io::Result<()> {
+        let (stream, _) = listener.accept()?;
+        let mut reader = BufReader::new(stream);
+        let mut length = 0usize;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line)? == 0 || line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse().unwrap_or(0);
+            }
+        }
+        reader.read_exact(&mut vec![0; length])?;
+        let body = r#"{"answers":{"probe":{"choice":"yes","answer_confidence":0.9}},"routing":{"model":"english"}}"#;
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        reader.get_mut().write_all(reply.as_bytes())
+    });
+    let live = setup(&journey, &format!("\n\ny\nn\nhttp://127.0.0.1:{port}\n"))?;
+    assert!(live.status.success(), "{live:?}");
+    sidecar.join().map_err(|_| "sidecar thread")??;
+    let config = config_of(&journey)?;
+    assert_eq!(config["models"]["classifier"], "english");
+    assert_eq!(
+        config["classifier"]["url"],
+        format!("http://127.0.0.1:{port}")
+    );
+    journey.reclaim();
+    Ok(())
+}
+
+/// A config that names its model in the roles table gets the new model there, where it is read.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_writes_the_model_where_the_config_reads_it() -> TestResult {
+    let journey = Journey::new("setup-primary")?;
+    std::fs::write(
+        journey.root.join("home/.yi/config.json"),
+        r#"{"kernel":{"prewarm":false},"models":{"primary":"faux/faux-1"}}"#,
+    )?;
+    let saved = setup(&journey, "openrouter\n\n\nn\n")?;
+    assert!(saved.status.success(), "{saved:?}");
+    let config = config_of(&journey)?;
+    assert_eq!(
+        config["models"]["primary"],
+        "openrouter/anthropic/claude-sonnet-5"
+    );
+    assert!(config.get("model").is_none(), "{config}");
+    journey.reclaim();
+    Ok(())
+}
+
+/// A config Yi cannot load is refused before the first question, not after an install.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_refuses_a_bad_config_before_asking_anything() -> TestResult {
+    let journey = Journey::new("setup-bad")?;
+    let file = journey.root.join("home/.yi/config.json");
+    std::fs::write(&file, r#"{"modle":"x"}"#)?;
+    let refused = setup(&journey, "openrouter\n\nask\nn\n")?;
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success(), "{refused:?}");
+    assert!(said.contains("fix it, then run `yi setup` again"), "{said}");
+    assert!(!said.contains("Provider"), "nothing was asked: {said}");
+    assert_eq!(std::fs::read_to_string(&file)?, r#"{"modle":"x"}"#);
+    journey.reclaim();
+    Ok(())
+}
+
+/// A config that is a link to a file not yet made stays a link, and the file gets the config.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_writes_through_a_dangling_config_link() -> TestResult {
+    let journey = Journey::new("setup-link")?;
+    let file = journey.root.join("home/.yi/config.json");
+    std::fs::remove_file(&file)?;
+    std::os::unix::fs::symlink("../dotfiles/yi.json", &file)?;
+    let saved = setup(&journey, "\nask\nn\n")?;
+    assert!(saved.status.success(), "{saved:?}");
+    assert!(std::fs::symlink_metadata(&file)?.file_type().is_symlink());
+    let config: Value = serde_json::from_str(&std::fs::read_to_string(
+        journey.root.join("home/dotfiles/yi.json"),
+    )?)?;
+    assert_eq!(config["permissions"]["mode"], "ask");
+    journey.reclaim();
+    Ok(())
+}
+
+/// A failed laya install still saves the answers given before it.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn setup_keeps_the_earlier_answers_when_the_install_fails() -> TestResult {
+    let journey = Journey::new("setup-install")?;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let mut command = journey.command(&["setup"]);
+    command.env("PATH", "");
+    let saved = feed(
+        command,
+        &format!("\nask\ny\ny\nhttp://127.0.0.1:{closed}\n"),
+    )?;
+    assert!(saved.status.success(), "{saved:?}");
+    assert!(
+        String::from_utf8_lossy(&saved.stderr).contains("laya-serve did not install"),
+        "{saved:?}"
+    );
+    let config = config_of(&journey)?;
+    assert_eq!(config["permissions"]["mode"], "ask");
+    assert!(config.get("models").is_none(), "{config}");
+    journey.reclaim();
+    Ok(())
+}
