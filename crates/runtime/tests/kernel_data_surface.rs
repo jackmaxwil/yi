@@ -164,6 +164,36 @@ fn every_rlm_name_the_model_reads_is_public_in_the_package() -> TestResult {
     Ok(())
 }
 
+/// Dogfood 2026-09-27: a cell's stream past 65,536 characters was cut, and no copy was kept.
+#[tokio::test]
+async fn a_cut_cell_stream_names_a_file_with_every_character() -> TestResult {
+    let root = Scratch::new("yi-kernel-spill")?;
+    let service = service();
+    let tool = yi_runtime::kernel::ipython_tool(Arc::clone(&service));
+    let mut context = yi_tools::ToolContext::new(root.to_path_buf());
+    context.recovery_dir = Some(root.join("tool-output"));
+    let input = serde_json::json!({"code": "print('x' * 200_000)"});
+    let input = input.as_object().cloned().ok_or("an object")?;
+    let output = tokio::task::spawn_blocking(move || tool.execute(input, &context)).await?;
+    let text: String = (output.result.content.iter())
+        .filter_map(|content| match content {
+            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let path = (text.lines())
+        .find_map(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
+        .ok_or_else(|| {
+            format!(
+                "no pointer: {}",
+                text.get(text.len().saturating_sub(300)..).unwrap_or("")
+            )
+        })?;
+    assert_eq!(std::fs::read_to_string(path)?, "x".repeat(200_000) + "\n");
+    service.dispose().await;
+    Ok(())
+}
+
 struct NoChildren;
 
 impl Delegate for NoChildren {
@@ -215,7 +245,7 @@ async fn cell(
     let (service, code) = (Arc::clone(service), code.to_owned());
     tokio::task::spawn_blocking(move || {
         let cancelled: CancelFlag = Arc::new(|| false);
-        KernelBridge::execute_cell(service.as_ref(), &code, &cancelled)
+        KernelBridge::execute_cell(service.as_ref(), &code, &cancelled, None)
     })
     .await
     .map_err(|error| error.to_string())?

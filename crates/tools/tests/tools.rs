@@ -760,6 +760,28 @@ fn a_capped_bash_stream_keeps_the_tail_with_the_verdict() -> TestResult {
     Ok(())
 }
 
+/// Dogfood 2026-09-27: a cut stream named no file, and the reducer's tee kept the cut text under
+/// a `[full output: P]` label. Held in memory, then past 64 KiB in a file, every byte survives.
+#[test]
+fn a_cut_bash_stream_names_a_file_with_every_byte() -> TestResult {
+    let dir = temp_dir("bash-spill")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    for count in [8_000, 20_000] {
+        let command = json!(format!("seq 1 {count}"));
+        let output = BashTool::default().execute(args(&[("command", command)]), &context);
+        let text = output_text(&output);
+        let path = (text.lines().last())
+            .and_then(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
+            .ok_or_else(|| format!("the pointer is not last: {text}"))?;
+        let whole: String = (1..=count).map(|n| format!("{n}\n")).collect();
+        assert_eq!(fs::read_to_string(path)?, whole, "seq 1 {count}");
+        let read = read_tool().execute(args(&[("path", json!(path))]), &context);
+        assert!(!read.is_error && output_text(&read).contains("\n100:100\n"));
+    }
+    Ok(())
+}
+
 #[test]
 fn a_lossy_reduction_without_a_tee_returns_raw() -> TestResult {
     let raw: String = (1..4_000).map(|n| format!("line-{n}\n")).collect();
@@ -1292,6 +1314,7 @@ impl yi_tools::KernelBridge for OneCell {
         &self,
         _code: &str,
         _cancelled: &yi_tools::CancelFlag,
+        _recovery_dir: Option<&std::path::Path>,
     ) -> Result<yi_tools::KernelCellOutcome, String> {
         Ok(yi_tools::KernelCellOutcome {
             result: self.0.clone(),

@@ -29,7 +29,7 @@ pub use document::{Converter, DEFAULT_TIMEOUT, Documents, document_ceiling};
 pub use exec::{ExecTool, discover_exec_tools};
 pub use grep::GrepTool;
 pub use ipython::cell_output;
-pub use ipython::{IpythonTool, KernelBridge, KernelCellOutcome};
+pub use ipython::{CellSpill, IpythonTool, KernelBridge, KernelCellOutcome};
 pub use jobs::{JobId, JobReport, MAX_TIMEOUT_SECS, Run, clamp_timeout, run_or_background};
 pub use orient::GetContextTool;
 pub use process::{CommandCapture, OUTPUT_CAP, command, edit_file, run_captured};

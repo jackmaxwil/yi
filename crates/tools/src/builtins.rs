@@ -594,7 +594,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 8,192 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode, where a sandbox exists (macOS), a command the gate cannot prove or one a question approved runs contained: no network, no socket bind, writes only under cwd, its git dirs and tmp; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; only an approval whose question says so (network, credentials, a protected path) runs outside. A container child's commands have its image's network."
+        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode, where a sandbox exists (macOS), a command the gate cannot prove or one a question approved runs contained: no network, no socket bind, writes only under cwd, its git dirs and tmp; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; only an approval whose question says so (network, credentials, a protected path) runs outside. A container child's commands have its image's network."
     }
 
     fn schema(&self) -> Value {
@@ -657,8 +657,7 @@ impl Tool for BashTool {
             .map(|name| crate::jobs::in_container(name, &context.cwd, command));
         let (capture, timed_out) = match crate::jobs::run_or_background(
             placed.as_ref().map_or(command, |(run, _)| run),
-            &context.cwd,
-            &context.cancelled,
+            context,
             background_after,
             timeout,
             context.sandbox.as_ref().filter(|_| placed.is_none()),
@@ -686,15 +685,13 @@ impl Tool for BashTool {
             &capture.stdout,
             &capture.stderr,
             exit_code_for_reduce,
-            context.recovery_dir.as_deref(),
+            capture.spill.as_deref(),
             max_lines,
         );
         if !reduced.text.is_empty() {
             sections.push(reduced.text.clone());
         }
-        if capture.truncated {
-            sections.push("[output truncated]".to_owned());
-        }
+        sections.extend(capture.cut_note().filter(|_| reduced.recovery.is_none()));
         if timed_out {
             sections.extend(timed_out_notes(timeout, nudge.is_some(), asked_wait));
         } else if capture.cancelled {

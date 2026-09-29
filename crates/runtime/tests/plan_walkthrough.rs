@@ -1308,7 +1308,7 @@ async fn a_program_and_its_json_fixture_reach_the_same_plan_json() -> Fallible<(
         let kernel = Arc::clone(&service);
         let outcome = tokio::task::spawn_blocking(move || {
             let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
-            yi_tools::KernelBridge::execute_cell(kernel.as_ref(), &source, &cancelled)
+            yi_tools::KernelBridge::execute_cell(kernel.as_ref(), &source, &cancelled, None)
         })
         .await??;
         service.dispose().await;
