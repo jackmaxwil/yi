@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use serde_json::{Value, json};
+
 const BASE_POLICY: &str = include_str!("../../../vendor/seatbelt/seatbelt_base_policy.sbpl");
 
 /// Only `/usr/bin/sandbox-exec`, never one found on PATH: an attacker who can
@@ -19,9 +21,16 @@ pub struct Sandbox {
     pub loopback: bool,
 }
 
-/// Credential stores, matching the paths the permission layer already refuses
-/// to destroy or read.
-const CREDENTIAL_DIRS: [&str; 5] = [".ssh", ".gnupg", ".aws", ".kube", ".docker"];
+/// Credential stores: the paths the permission layer already refuses to destroy or read,
+/// and the MCP OAuth token files.
+const CREDENTIAL_DIRS: [&str; 6] = [
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".kube",
+    ".docker",
+    ".yi/mcp/tokens",
+];
 
 /// A git dir's escape hatches: `hooks` and `config` run under the host's next git, and the
 /// pointers are what the next sandbox policy is built from.
@@ -53,6 +62,23 @@ impl Sandbox {
 
     pub fn available() -> bool {
         cfg!(target_os = "macos") && Path::new(SEATBELT).is_file()
+    }
+
+    /// Outside every writable root, or under a denied one; the devices the base policy grants
+    /// (`/dev/null`, `/dev/ptmx`, the ttys) are not denied, and every other device is.
+    pub fn denies_write(&self, path: &Path) -> bool {
+        let path = resolve_aliases(path);
+        let under = |roots: &[PathBuf]| {
+            roots
+                .iter()
+                .any(|root| path.starts_with(resolve_aliases(root)))
+        };
+        let tty = path
+            .to_str()
+            .and_then(|path| path.strip_prefix("/dev/ttys"))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|byte| byte.is_ascii_digit()));
+        let granted = tty || path == Path::new("/dev/null") || path == Path::new("/dev/ptmx");
+        !granted && (!under(&self.writable) || under(&self.deny_write))
     }
 
     /// `-D` bindings keep paths out of the policy text. A denied path binds twice, logical
@@ -203,32 +229,211 @@ fn temp_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// Seatbelt reports a denial as an ordinary errno, so the caller cannot know it was the
-/// sandbox: a non-zero exit that is no known shell failure, plus output naming a denial.
-pub fn denial_hint(exit_code: Option<i32>, output: &str, command: &str) -> Option<String> {
+/// Why a contained command failed, as the hint words it and the broker remembers it. The bash
+/// tool finds it once, from the raw output, and hands it to the broker in its result details.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SandboxRefusal {
+    /// A write this profile denies.
+    Path(PathBuf),
+    /// No denied path found, so likely the network: the programs that ran.
+    Scopes(Vec<String>),
+}
+
+impl SandboxRefusal {
+    /// The bash result's `sandboxRefusal` detail: `{"path": …}` or `{"scopes": […]}`.
+    pub fn to_json(&self) -> Value {
+        match self {
+            Self::Path(path) => json!({ "path": path }),
+            Self::Scopes(scopes) => json!({ "scopes": scopes }),
+        }
+    }
+
+    pub fn from_json(value: &Value) -> Option<Self> {
+        if let Some(path) = value.get("path").and_then(Value::as_str) {
+            // An empty or relative path would sit above every path it is compared with.
+            return Path::new(path)
+                .is_absolute()
+                .then(|| Self::Path(PathBuf::from(path)));
+        }
+        let scopes = value.get("scopes")?.as_array()?;
+        let scopes = scopes.iter().filter_map(Value::as_str).map(str::to_owned);
+        Some(Self::Scopes(scopes.collect()))
+    }
+
+    /// Whether `command` retries this refusal: it writes a denied path under the refused one's
+    /// directory, or names one there in any spelling when that directory is in home.
+    pub fn retried_by(&self, sandbox: &Sandbox, cwd: &Path, command: &str) -> bool {
+        let dir = match self {
+            Self::Path(refused) => refused.parent().unwrap_or(refused),
+            Self::Scopes(refused) => {
+                return yi_permission::refused_scopes(command)
+                    .iter()
+                    .any(|scope| refused.contains(scope));
+            }
+        };
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let text = with_home_expanded(command, home.as_deref());
+        let denied = |path: &Path| path.starts_with(dir) && sandbox.denies_write(path);
+        let written = yi_permission::write_targets(&text)
+            .iter()
+            .any(|raw| denied(&absolute_path(raw, cwd)));
+        // The directory as spelled from `/` or from `~`, found anywhere in the text.
+        let dir_text = dir.to_string_lossy();
+        let from_tilde = (home.as_deref())
+            .and_then(|home| Some(format!("~{}", dir_text.strip_prefix(home.to_str()?)?)));
+        let named = [Some(dir_text.to_string()), from_tilde]
+            .into_iter()
+            .flatten()
+            .any(|needle| {
+                text.match_indices(needle.as_str()).any(|(at, _)| {
+                    // A shell expands `~` only at a word's start, or after `=` or `:`, and up to
+                    // a `/` or the word's end: `rm *~` and `s~a~b~` name no home path.
+                    let before = text.get(..at).and_then(|head| head.chars().next_back());
+                    let after = text
+                        .get(at + needle.len()..)
+                        .and_then(|tail| tail.chars().next());
+                    let inside = |c: Option<char>, ends: &str| {
+                        c.is_some_and(|c| !c.is_whitespace() && !ends.contains(c))
+                    };
+                    if needle.starts_with('~')
+                        && (inside(before, "=:;|&()<>") || inside(after, "/;|&)<>"))
+                    {
+                        return false;
+                    }
+                    let rest = text.get(at..).unwrap_or_default();
+                    let end = rest.find(|c: char| c.is_whitespace() || PATH_END.contains(&c));
+                    denied(&absolute_path(
+                        rest.get(..end.unwrap_or(rest.len())).unwrap_or(rest),
+                        cwd,
+                    ))
+                })
+            });
+        // A read outside home never asks: `cat /etc/hosts` after a refused `/etc` write.
+        written || (in_home(dir) && named)
+    }
+}
+
+/// Whether a refusal in `dir` also asks for a call that only names a path there.
+fn in_home(dir: &Path) -> bool {
+    std::env::var_os("HOME").is_some_and(|home| dir.starts_with(home))
+}
+
+/// What ends a path spelled inside a command: a quote, a shell operator, a comma.
+const PATH_END: [char; 12] = ['\'', '"', '`', ';', '|', '&', '<', '>', '(', ')', ',', '$'];
+
+/// `command` with `${HOME}` and `$HOME` written as `home`; `resolve_target` reads `~` itself.
+fn with_home_expanded(command: &str, home: Option<&Path>) -> String {
+    let home = home.map_or_else(|| "$HOME".into(), Path::to_string_lossy);
+    command.replace("${HOME}", &home).replace("$HOME", &home)
+}
+
+fn absolute_path(raw: &str, cwd: &Path) -> PathBuf {
+    yi_permission::lexical_normalize(&yi_permission::resolve_target(raw, cwd))
+}
+
+/// The path of a line in the errno shape a refused write prints, `<prog>: <path>: Operation not
+/// permitted` (Rust adds ` (os error 1)`), Python's `[Errno 1] …: '<path>'` or node's `EPERM`.
+fn errno_path(line: &str) -> Option<&str> {
+    let line = line.trim_end();
+    let line = line.strip_suffix(" (os error 1)").unwrap_or(line);
+    let raw = match line.strip_suffix(": Operation not permitted") {
+        // `touch: /x`, or a quoted path: git's `'/x/.git'`, uv's `` `/x` ``.
+        Some(head) => head
+            .rsplit_once(": ")
+            .map(|(_, path)| path)
+            .filter(|path| !path.contains(char::is_whitespace))
+            .or_else(|| {
+                let word = head.rsplit(char::is_whitespace).next()?;
+                let quote = word.chars().next().filter(|c| matches!(c, '\'' | '`'))?;
+                (word.len() > 2 && word.ends_with(quote)).then_some(word)
+            })?,
+        None => match line.split_once("[Errno 1] Operation not permitted: ") {
+            Some((_, path)) => path,
+            // `Error: EPERM: operation not permitted, open '/x'`
+            None => (line.split_once("EPERM: operation not permitted, ")?.1)
+                .rsplit(char::is_whitespace)
+                .next()?,
+        },
+    };
+    let raw = raw.trim_matches(['\'', '"', '`']);
+    (!raw.is_empty() && !raw.contains(char::is_whitespace)).then_some(raw)
+}
+
+/// The first write target this profile denies, once an output line has the errno shape; else,
+/// when the command failed, the first denied path such a line names.
+fn refused_path(
+    sandbox: &Sandbox,
+    cwd: &Path,
+    exit_code: Option<i32>,
+    output: &str,
+    command: &str,
+) -> Option<PathBuf> {
+    let named: Vec<&str> = output.lines().filter_map(errno_path).collect();
+    if named.is_empty() {
+        return None;
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let targets = yi_permission::write_targets(&with_home_expanded(command, home.as_deref()));
+    let failed = exit_code != Some(0);
+    targets
+        .iter()
+        .map(String::as_str)
+        .chain(named.into_iter().filter(|_| failed))
+        .map(|raw| absolute_path(raw, cwd))
+        .find(|path| sandbox.denies_write(path))
+}
+
+/// Seatbelt denies with a plain errno. A denied write target counts at any exit (`touch x |
+/// tail -1` is 0); without one, a non-zero exit that is no known shell failure, naming a denial.
+pub fn sandbox_refusal(
+    sandbox: &Sandbox,
+    cwd: &Path,
+    exit_code: Option<i32>,
+    output: &str,
+    command: &str,
+) -> Option<SandboxRefusal> {
     const QUICK_REJECT: [i32; 3] = [2, 126, 127];
-    const KEYWORDS: [&str; 5] = [
+    const DENIALS: [&str; 5] = [
         "operation not permitted",
         "permission denied",
         "read-only file system",
         "sandbox",
         "deny file-write",
     ];
+    if let Some(path) = refused_path(sandbox, cwd, exit_code, output, command) {
+        return Some(SandboxRefusal::Path(path));
+    }
     let code = exit_code?;
-    if code == 0 || QUICK_REJECT.contains(&code) {
-        return None;
-    }
     let lower = output.to_lowercase();
-    if !KEYWORDS.iter().any(|needle| lower.contains(needle)) {
-        return None;
+    let named = DENIALS.iter().any(|needle| lower.contains(needle));
+    (code != 0 && !QUICK_REJECT.contains(&code) && named)
+        .then(|| SandboxRefusal::Scopes(yi_permission::refused_scopes(command)))
+}
+
+pub fn denial_hint(refusal: &SandboxRefusal) -> String {
+    const CONTAINED: &str =
+        "a contained run writes only the working tree, its git dirs and tmp, and has no network";
+    match refusal {
+        SandboxRefusal::Path(path) => {
+            let dir = path.parent().unwrap_or(path);
+            let rule = if in_home(dir) {
+                "naming a path"
+            } else {
+                "writing"
+            };
+            format!(
+                "next: the sandbox refused writing `{}` ({CONTAINED}); the next call {rule} under `{}` outside those asks: approving widens that run by that directory, or runs it outside the sandbox where the directory is protected; nobody to answer refuses it",
+                path.display(),
+                dir.display()
+            )
+        }
+        SandboxRefusal::Scopes(scopes) => {
+            let needs = if scopes.len() == 1 { "needs" } else { "need" };
+            let scopes: Vec<String> = scopes.iter().map(|scope| format!("`{scope}`")).collect();
+            format!(
+                "next: the sandbox refused this ({CONTAINED}); {} now {needs} permission: the next call using it asks, and approving runs that one call outside the sandbox; nobody to answer refuses it",
+                scopes.join(", ")
+            )
+        }
     }
-    let scopes: Vec<String> = yi_permission::refused_scopes(command)
-        .iter()
-        .map(|scope| format!("`{scope}`"))
-        .collect();
-    let needs = if scopes.len() == 1 { "needs" } else { "need" };
-    Some(format!(
-        "next: the sandbox refused this (a contained run writes only the working tree, its git dirs and tmp, and has no network); {} now {needs} permission: the next call using it asks instead of running contained, and is refused where nobody can answer",
-        scopes.join(", ")
-    ))
 }

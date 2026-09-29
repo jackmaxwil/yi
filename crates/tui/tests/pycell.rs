@@ -111,6 +111,18 @@ fn the_expanded_source_is_redacted_too() -> TestResult {
     Ok(())
 }
 
+/// Incident: redaction split the source on spaces while `=\t"…"` still held its tab, so the
+/// quoted secret was never a token of its own and the verbose body showed it.
+#[test]
+fn a_tab_before_a_secret_does_not_hide_it_from_redaction() {
+    let cell = cell(
+        json!({ "code": "password =\t\"hunter2\"" }),
+        ToolStatus::Done,
+    );
+    let body = text(&Cell::Tool(cell).lines(120, &theme(), TranscriptMode::Verbose, 0)).join("\n");
+    assert!(!body.contains("hunter2"), "{body}");
+}
+
 /// Invariant: a head that changes width when the body opens moves every row
 /// under it, and the reader loses their place.
 #[test]

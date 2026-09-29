@@ -1,7 +1,16 @@
 use std::collections::{HashMap, HashSet};
 
 use yi_types::message::{AgentMessage, Content, StopReason};
-use yi_types::model::Model;
+use yi_types::model::{Model, SYSTEM_BLOCK_SEPARATOR};
+
+/// The assembled system prompt for a wire that takes one string: each block separator
+/// becomes a paragraph break instead of reaching the model as a raw `\u{1d}` (D291).
+pub fn system_text(prompt: &str) -> String {
+    prompt
+        .split(SYSTEM_BLOCK_SEPARATOR)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
 
 fn is_vision(model: &Model) -> bool {
     model.input.iter().any(|kind| kind == "image")

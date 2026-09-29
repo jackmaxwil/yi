@@ -9,7 +9,12 @@ use crate::provider::resolve_model;
 use yi_types::model::{Effort, Model};
 
 /// What a build is made from, read off the spawn's kwargs: the model, the effort, the wall.
-pub(super) type Cast = (Model, Effort, crate::wall::Wall);
+pub(crate) type Cast = (
+    Model,
+    Effort,
+    crate::wall::Wall,
+    Option<super::reader::Reader>,
+);
 
 /// Dropped, it frees the name and the slot a build reserved, whether the build landed or not.
 pub(super) struct Reservation<'a> {
@@ -33,7 +38,7 @@ impl SubagentHost {
         session_name: &str,
         session_dir: &Path,
         ask: &crate::lease::Ask,
-        capped: bool,
+        standing: &Standing,
     ) -> Result<(Reservation<'_>, yi_types::lease::Lease), String> {
         let mut children = self
             .children
@@ -41,16 +46,32 @@ impl SubagentHost {
             .map_err(|_| "subagent state poisoned")?;
         // Jurors sit in the verification reserve (plan section 7.6) and a service is never
         // reaped while it serves: neither fills the worker cap nor is refused by it.
-        let worker = |record: &&super::ChildRecord| matches!(record.standing, Standing::Worker);
-        let workers = children.values().filter(worker).count();
+        let held = |kind: fn(&Standing) -> bool| {
+            children
+                .values()
+                .filter(|record| kind(&record.standing))
+                .count()
+        };
+        let building_readers = children
+            .building
+            .iter()
+            .filter(|(.., reader)| *reader)
+            .count();
+        let workers = held(|standing| matches!(standing, Standing::Worker))
+            .saturating_add(children.building.len().saturating_sub(building_readers));
+        let readers =
+            held(|standing| matches!(standing, Standing::Reader)).saturating_add(building_readers);
         let reserved = [OWNER_AGENT, ENGINE_AGENT, "host"];
         let refusal = if reserved.contains(&session_name) {
             Some(format!(
                 "\"{session_name}\" is reserved: it names the plan's owner, engine or host; pick another name"
             ))
-        } else if capped
-            && workers.saturating_add(children.building.len()) >= self.options.max_children
-        {
+        } else if matches!(standing, Standing::Reader) && readers >= super::reader::HELD_CAP {
+            Some(format!(
+                "{} readers are held; rlm.ask reaps its own, rlm.delete_subagent the rest",
+                super::reader::HELD_CAP
+            ))
+        } else if matches!(standing, Standing::Worker) && workers >= self.options.max_children {
             Some(format!(
                 "RLM child limit reached ({} children retained); rlm.delete_subagent a finished child first",
                 self.options.max_children
@@ -58,7 +79,7 @@ impl SubagentHost {
         } else if children
             .values()
             .map(|record| &record.session_name)
-            .chain(children.building.iter().map(|(name, _)| name))
+            .chain(children.building.iter().map(|(name, ..)| name))
             .any(|name| name == session_name)
         {
             Some(format!(
@@ -76,7 +97,10 @@ impl SubagentHost {
             let _ = std::fs::remove_dir_all(session_dir);
         })?;
         let tokens = lease.tokens.unwrap_or(0);
-        children.building.push((session_name.to_owned(), tokens));
+        let reader = matches!(standing, Standing::Reader);
+        children
+            .building
+            .push((session_name.to_owned(), tokens, reader));
         let reservation = Reservation {
             host: self,
             name: session_name.to_owned(),
@@ -103,15 +127,20 @@ impl SubagentHost {
                     .ok_or_else(|| format!("no model matches selector {selector}"))?
             }
         };
+        // Before a lane, a container or a lease is taken: the child would stream with no key.
+        if !self.options.provider.has_credential(&model.provider) {
+            return Err(yi_ai::auth::missing_message(&model.provider));
+        }
         let wall = self.wall_for(kwargs)?;
-        Ok((model, thinking.unwrap_or(parent_effort), wall))
+        let reader = super::reader::parse(kwargs)?;
+        Ok((model, thinking.unwrap_or(parent_effort), wall, reader))
     }
 
     /// Invariant: a child that runs unrecorded leaves nothing to read when it fails, so a
     /// transcript it cannot open refuses the build. `kept` is a respawned service's own.
     pub(super) fn build(
         self: &std::sync::Arc<Self>,
-        (model, thinking, wall): Cast,
+        (model, thinking, wall, reader): Cast,
         name: &str,
         session_dir: &Path,
         cwd: Option<&Path>,
@@ -133,6 +162,7 @@ impl SubagentHost {
             wall,
             deadline: clock,
             tokens: lease.tokens,
+            reader,
         })?;
         if let Some(clock) = clock {
             child.set_deadline(clock);

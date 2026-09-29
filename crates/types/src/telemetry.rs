@@ -112,6 +112,9 @@ impl ErrorClass {
     /// A provider's error text names its transport class when it can; the rest is the provider.
     pub fn from_provider_text(text: &str) -> Self {
         let lower = text.to_lowercase();
+        if lower.contains("no credential for provider") {
+            return Self::RefusalNoKey;
+        }
         if let Some(rest) = lower.split("http ").nth(1)
             && let Some(code) = rest.split(|c: char| !c.is_ascii_digit()).next()
             && let Ok(status) = code.parse::<u16>()

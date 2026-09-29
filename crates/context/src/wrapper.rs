@@ -54,6 +54,8 @@ pub fn internal_source_of_custom(custom_type: &str) -> Option<&'static str> {
         "ledger_prompt" => Some("ledger"),
         "plan_dispatch" => Some("dispatch"),
         "reminder" => Some("reminder"),
+        "classifier" => Some("classifier"),
+        "fragment" => Some("fragment"),
         _ => None,
     }
 }

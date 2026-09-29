@@ -46,6 +46,32 @@ fn repairs_a_torn_tail_by_dropping_the_partial_line() -> TestResult {
     Ok(())
 }
 
+/// Dies with one shared staging name: two loads repairing the same torn file wrote one temp
+/// file, and the rename that lost found it gone.
+#[test]
+fn loads_repairing_one_torn_file_at_once_all_succeed() -> TestResult {
+    let dir = Scratch::new("yi-session-jsonl")?;
+    let path = dir.join("golden-torn.jsonl");
+    let mut torn = fs::read_to_string(golden_fixture())?;
+    torn.push_str("{\"kind\":\"ent");
+    fs::write(&path, &torn)?;
+    let loads: Vec<_> = (0..8)
+        .map(|_| {
+            let path = path.clone();
+            std::thread::spawn(move || load_session(&path).map(|store| store.metadata().id.clone()))
+        })
+        .collect();
+    for load in loads {
+        let id = load.join().map_err(|_| "a load panicked")??;
+        assert_eq!(id, "fixture-a");
+    }
+    assert_eq!(
+        fs::read_to_string(&path)?,
+        fs::read_to_string(golden_fixture())?
+    );
+    Ok(())
+}
+
 #[test]
 fn reterminates_a_file_missing_its_trailing_newline() -> TestResult {
     let dir = Scratch::new("yi-session-jsonl")?;

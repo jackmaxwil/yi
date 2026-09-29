@@ -31,6 +31,28 @@ import termios
 import time
 
 
+def kitty_ledger(out: bytes) -> dict:
+    """Kitty image placements still live after replaying the output: a=p adds
+    (image, placement) at the last ESC[r;cH, a=d with d=i/I drops that image,
+    ESC[2J drops them all."""
+    live, at = {}, (1, 1)
+    pattern = rb"\x1b\[(\d+);(\d+)H|\x1b\[2J|\x1b_G([^;\x1b]*)"
+    for match in re.finditer(pattern, out):
+        if match.group(1):
+            at = (int(match.group(1)), int(match.group(2)))
+        elif match.group(3) is None:
+            live.clear()
+        else:
+            keys = dict(pair.split(b"=", 1) for pair in match.group(3).split(b",")
+                        if b"=" in pair)
+            image = keys.get(b"i", b"?").decode()
+            if keys.get(b"a") == b"p":
+                live[(image, keys.get(b"p", b"-").decode())] = at
+            elif keys.get(b"a") == b"d" and keys.get(b"d") in (b"i", b"I"):
+                live = {key: cell for key, cell in live.items() if key[0] != image}
+    return live
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rows", type=int, default=24)
@@ -49,6 +71,8 @@ def main() -> int:
     parser.add_argument("--expect", action="append", default=[],
                         help="fail unless the captured screen contains this "
                              "text; repeatable")
+    parser.add_argument("--kitty-ledger", action="store_true",
+                        help="print the kitty image placements still live at exit")
     parser.add_argument("--binary", default="./target/debug/yi")
     parser.add_argument("--term", default="xterm-256color",
                         help="TERM for the child; use xterm-kitty to exercise "
@@ -151,6 +175,11 @@ def main() -> int:
     print(f"exit: {exit_status if exit_status is not None else 'killed'}")
     print(f"bytes: {len(out)}")
     print(plain)
+    if options.kitty_ledger:
+        live = kitty_ledger(bytes(out))
+        print(f"kitty placements live: {len(live)}")
+        for (image, placement), (row, col) in sorted(live.items()):
+            print(f"  image {image} placement {placement} at row {row} col {col}")
     # A killed child exits 0 here, so without --expect a run that rendered
     # nothing still passes; the journey lane needs the screen asserted.
     missing = [needle for needle in options.expect if needle not in plain]
