@@ -136,9 +136,38 @@ impl Tool for WriteTool {
     }
 }
 
+pub fn wall_refusal(tool_name: &str, path: &str, list: &str) -> String {
+    format!(
+        "Denied by the reviewer wall: {tool_name} targets {path}, which this agent's {list} covers. \
+         The standard is fixed for the run: report the mismatch instead of changing it."
+    )
+}
+
+pub(crate) fn walled(deny: &[PathBuf], path: &Path) -> bool {
+    if deny.is_empty() {
+        return false;
+    }
+    let normalized = yi_permission::lexical_normalize(path);
+    deny.iter()
+        .any(|denied| normalized.starts_with(yi_permission::lexical_normalize(denied)))
+}
+
+pub(crate) fn walled_notice(left_out: usize) -> Option<String> {
+    (left_out > 0).then(|| {
+        format!(
+            "[{left_out} paths left out: the reviewer wall's deny_read covers them, and no call reaches them this run]"
+        )
+    })
+}
+
 /// Name order within each directory: the filesystem's own order differs between machines, and
-/// every cap and page over this walk would keep a different set.
-pub(crate) fn walk_files(root: &Path, visit: &mut dyn FnMut(&Path) -> bool) {
+/// every cap and page over this walk would keep a different set. Returns the walled entries.
+pub(crate) fn walk_files(
+    root: &Path,
+    deny: &[PathBuf],
+    visit: &mut dyn FnMut(&Path) -> bool,
+) -> usize {
+    let mut left_out = 0_usize;
     let mut ignore = crate::ignore::Ignore::default();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -154,16 +183,19 @@ pub(crate) fn walk_files(root: &Path, visit: &mut dyn FnMut(&Path) -> bool) {
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            if file_type.is_dir() {
+            if walled(deny, &path) {
+                left_out = left_out.saturating_add(1);
+            } else if file_type.is_dir() {
                 if !ignore.ignored(&path, true) {
                     subdirs.push(path);
                 }
             } else if file_type.is_file() && !ignore.ignored(&path, false) && !visit(&path) {
-                return;
+                return left_out;
             }
         }
         stack.extend(subdirs.into_iter().rev());
     }
+    left_out
 }
 
 /// Every other verb keeps the `Exec` default: the flag warns about blast
@@ -562,7 +594,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 8,192 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. wait is clamped 5-300 s; a longer command becomes a job you check by calling bash with no command. A command is killed at timeout_secs (default 300 s, ceiling 600 s); raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
+        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 8,192 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode, where a sandbox exists (macOS), a command the gate cannot prove or one a question approved runs contained: no network, no socket bind, writes only under cwd, its git dirs and tmp; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; only an approval whose question says so (network, credentials, a protected path) runs outside. A container child's commands have its image's network."
     }
 
     fn schema(&self) -> Value {
@@ -571,7 +603,7 @@ impl Tool for BashTool {
             "properties": {
                 "command": {"type": "string", "description": "Shell command to run. Omit it to check on a background job instead."},
                 "job": {"type": "integer", "description": "Background job to check on; defaults to the most recent"},
-                "wait": {"type": "integer", "description": "Seconds to wait for that job, clamped to 5-300"},
+                "wait": {"type": "integer", "description": "With command: seconds, below timeout_secs, before a still-running command becomes a background job. Without: seconds to wait for that job. Clamped 5-300."},
                 "timeout_secs": {"type": "integer", "description": "Wall-clock limit in seconds, default 300, ceiling 600; raise it for a build or a test suite. Past it the command is killed and reported as timed out."},
                 "max_output_lines": {"type": "integer", "description": "Per-call reducer line budget, for when the full output matters"}
             }
@@ -602,13 +634,17 @@ impl Tool for BashTool {
             .and_then(Value::as_str)
             .unwrap_or_default();
         if command.trim().is_empty() {
-            return poll_job(&input);
+            return poll_job(&input, &context.cancelled);
         }
         if let Some(refusal) = broad_search(command) {
             return error_output(refusal);
         }
         let requested_timeout = input.get("timeout_secs").and_then(Value::as_u64);
         let timeout = crate::jobs::clamp_timeout(requested_timeout);
+        let asked_wait = input.get("wait").and_then(Value::as_u64);
+        let background_after = asked_wait
+            .map(crate::jobs::clamp_wait)
+            .or(context.auto_background);
         let started = std::time::Instant::now();
         let mut sections = Vec::new();
         if let Some(asked) = requested_timeout.filter(|asked| *asked > MAX_TIMEOUT_SECS) {
@@ -623,7 +659,7 @@ impl Tool for BashTool {
             placed.as_ref().map_or(command, |(run, _)| run),
             &context.cwd,
             &context.cancelled,
-            context.auto_background,
+            background_after,
             timeout,
             context.sandbox.as_ref().filter(|_| placed.is_none()),
             placed.as_ref().map(|(_, sweep)| sweep.as_str()),
@@ -631,12 +667,8 @@ impl Tool for BashTool {
             Ok(crate::jobs::Run::Finished(capture)) => (*capture, false),
             Ok(crate::jobs::Run::TimedOut(capture)) => (*capture, true),
             Ok(crate::jobs::Run::Backgrounded(id)) => {
-                sections.push(format!(
-                    "Backgrounded as job {id}. Call bash with no command (optionally job={id}) to check on it."
-                ));
-                let mut output = text_output(sections.join("\n"));
-                output.result.details = json!({ "job": id.0, "backgrounded": true });
-                return output;
+                let after = background_after.unwrap_or_default();
+                return backgrounded_output(sections, id, after, timeout);
             }
             Err(message) => return error_output(message),
         };
@@ -663,14 +695,8 @@ impl Tool for BashTool {
         if capture.truncated {
             sections.push("[output truncated]".to_owned());
         }
-        if timed_out && nudge.is_some() {
-            sections.push(format!("[timed out after {}s]", timeout.as_secs()));
-        } else if timed_out {
-            sections.push(format!(
-                "[timed out after {}s; pass timeout_secs up to {} for a longer run, or narrow the command]",
-                timeout.as_secs(),
-                crate::jobs::MAX_TIMEOUT_SECS
-            ));
+        if timed_out {
+            sections.extend(timed_out_notes(timeout, nudge.is_some(), asked_wait));
         } else if capture.cancelled {
             sections.push("[command aborted]".to_owned());
         }
@@ -697,15 +723,12 @@ impl Tool for BashTool {
         if let Some(hint) = document_hint(command) {
             sections.push(hint);
         }
-        if context.sandbox.is_some()
-            && let Some(hint) = crate::sandbox::denial_hint(
-                capture.exit_code,
-                &format!("{}{}", capture.stdout, capture.stderr),
-                command,
-            )
-        {
-            sections.push(hint);
-        }
+        // The raw output, not the reduced text: a refusal line the reducer cut still counts.
+        let refusal = context.sandbox.as_ref().and_then(|sandbox| {
+            let raw = format!("{}{}", capture.stdout, capture.stderr);
+            crate::sandbox::sandbox_refusal(sandbox, &context.cwd, capture.exit_code, &raw, command)
+        });
+        sections.extend(refusal.as_ref().map(crate::sandbox::denial_hint));
         let mut text = if sections.is_empty() {
             "(no output)".to_owned()
         } else {
@@ -739,14 +762,82 @@ impl Tool for BashTool {
             "outBytes": reduced.out_bytes,
             "category": command_category(command),
             "bridge": bridge,
+            "sandboxRefusal": refusal.as_ref().map(crate::sandbox::SandboxRefusal::to_json),
         });
         output.is_error = exit_code != 0 || capture.cancelled;
         output
     }
 }
 
-/// The same tool with no command, never a second tool to discover.
-fn poll_job(input: &Map<String, Value>) -> ToolOutput {
+/// A command still running at its wait: the turn gets the job and a bounded tail printed so far.
+fn backgrounded_output(
+    mut sections: Vec<String>,
+    id: crate::jobs::JobId,
+    after: std::time::Duration,
+    timeout: std::time::Duration,
+) -> ToolOutput {
+    const TAIL_LINES: usize = 20;
+    const TAIL_BYTES: usize = 2_048;
+    let timeout = timeout.as_secs();
+    sections.push(format!(
+        "[still running after {after:?}: now job {id}, killed {timeout}s after it started (timeout_secs) or by an interrupt (Esc, the deadline). Its result reaches you on its own only if it exits while this turn is still running; before you end the turn, wait for it with bash job={id} wait=<s>.]"
+    ));
+    let chunk = crate::jobs::registry().output_since(id, 0);
+    let (so_far, printed) = chunk.map_or((String::new(), 0), |chunk| (chunk.text, chunk.next));
+    let lines: Vec<&str> = so_far.lines().collect();
+    let tail = lines.get(lines.len().saturating_sub(TAIL_LINES)..);
+    let tail = tail.unwrap_or_default().join("\n");
+    let from = (tail.len().saturating_sub(TAIL_BYTES)..tail.len())
+        .find(|at| tail.is_char_boundary(*at))
+        .unwrap_or(tail.len());
+    if lines.len() > TAIL_LINES || from > 0 {
+        sections.push(format!(
+            "[the last {} of {} bytes printed so far (the preview keeps {TAIL_LINES} lines, at most {TAIL_BYTES} bytes); bash job={id} wait=<s> returns its output once it exits]",
+            tail.len().saturating_sub(from),
+            printed
+        ));
+    }
+    sections.extend(
+        tail.get(from..)
+            .filter(|kept| !kept.is_empty())
+            .map(str::to_owned),
+    );
+    let mut output = text_output(sections.join("\n"));
+    output.result.details = json!({
+        "job": id.0, "backgrounded": true, "timeoutSecs": timeout,
+        "afterMs": u64::try_from(after.as_millis()).unwrap_or(u64::MAX),
+    });
+    output
+}
+
+/// The timeout's remedy, unless the nudge names one, and why a `wait` did not make a job.
+fn timed_out_notes(timeout: std::time::Duration, nudged: bool, asked: Option<u64>) -> Vec<String> {
+    let secs = timeout.as_secs();
+    let mut notes = vec![if nudged {
+        format!("[timed out after {secs}s]")
+    } else {
+        format!(
+            "[timed out after {secs}s; pass timeout_secs up to {} for a longer run, or narrow the command]",
+            crate::jobs::MAX_TIMEOUT_SECS
+        )
+    }];
+    if let Some(asked) = asked.filter(|asked| crate::jobs::clamp_wait(*asked) >= timeout) {
+        let wait = crate::jobs::clamp_wait(asked).as_secs();
+        let clamped = if wait == asked {
+            String::new()
+        } else {
+            format!(" (clamped to {wait}s)")
+        };
+        notes.push(format!(
+            "[wait {asked}s{clamped} is not below timeout_secs {secs}s, so it ran in the turn; to get the turn back, pass a wait below timeout_secs or raise timeout_secs above the wait]"
+        ));
+    }
+    notes
+}
+
+/// The same tool with no command; it holds the job's report so what it returns is not resent.
+fn poll_job(input: &Map<String, Value>, cancelled: &crate::CancelFlag) -> ToolOutput {
+    let jobs = crate::jobs::registry();
     let requested = input
         .get("job")
         .and_then(Value::as_u64)
@@ -757,35 +848,31 @@ fn poll_job(input: &Map<String, Value>) -> ToolOutput {
         .map(crate::jobs::clamp_wait);
     let started = std::time::Instant::now();
     let _span = yi_types::trace::span("wait.job");
+    let Some(id) = requested.or_else(|| jobs.latest().map(|report| report.id)) else {
+        return error_output("no background job to check on".to_owned());
+    };
+    jobs.set_reported(id, true);
     loop {
-        let report = match requested {
-            Some(id) => crate::jobs::registry().report(id),
-            None => crate::jobs::registry().latest(),
-        };
-        let Some(report) = report else {
+        let Some(report) = jobs.report(id) else {
             return error_output("no background job to check on".to_owned());
         };
         if report.finished {
             let exit_code = report.exit_code.unwrap_or(-1);
-            let mut output = text_output(format!(
-                "job {} finished (exit {exit_code}): {}\n{}",
-                report.id, report.command, report.output
-            ));
-            output.result.details = json!({ "job": report.id.0, "exitCode": exit_code });
+            let mut output = text_output(format!("{}\n{}", report.headline(), report.output));
+            output.result.details = json!({ "job": id.0, "exitCode": exit_code });
             output.is_error = exit_code != 0;
             return output;
         }
         match deadline {
-            Some(limit) if started.elapsed() < limit => {
-                crate::jobs::registry()
-                    .wait_settled(requested, limit.saturating_sub(started.elapsed()));
+            // In slices, so an interrupt (Esc, the deadline) ends the wait within a second.
+            Some(limit) if started.elapsed() < limit && !cancelled() => {
+                let left = limit.saturating_sub(started.elapsed());
+                jobs.wait_settled(Some(id), left.min(std::time::Duration::from_secs(1)));
             }
             _ => {
-                let mut output = text_output(format!(
-                    "job {} still running: {}",
-                    report.id, report.command
-                ));
-                output.result.details = json!({ "job": report.id.0, "running": true });
+                jobs.set_reported(id, false);
+                let mut output = text_output(report.headline());
+                output.result.details = json!({ "job": id.0, "running": true });
                 return output;
             }
         }
@@ -795,7 +882,7 @@ fn poll_job(input: &Map<String, Value>) -> ToolOutput {
 /// Gitignore-filtered and sorted, for surfaces offering a file picker.
 pub fn list_files(root: &Path, cap: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    walk_files(root, &mut |path| {
+    walk_files(root, &[], &mut |path| {
         if let Ok(relative) = path.strip_prefix(root) {
             out.push(relative.to_string_lossy().into_owned());
         }

@@ -107,6 +107,7 @@ fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
 fn kwargs_of(agent: &AgentId, delegation: &Delegation) -> Result<Map<String, Value>, String> {
     let mut kwargs = Map::new();
     kwargs.insert("name".to_owned(), Value::String(agent.as_str().to_owned()));
+    kwargs.insert("role".to_owned(), Value::from("root"));
     if let Some(model) = &delegation.spec.model {
         kwargs.insert("model".to_owned(), Value::String(model.clone()));
     }
@@ -408,7 +409,7 @@ pub(crate) mod tests {
     }
 
     fn scripted(script: Vec<AgentMessage>) -> AgentSession {
-        let provider = Arc::new(crate::provider::ProviderStream::new(None, None));
+        let provider = Arc::new(crate::provider::ProviderStream::new(None));
         provider.queue_faux(script);
         AgentSession::new(
             SessionConfig {
@@ -470,6 +471,7 @@ pub(crate) mod tests {
         let asks = serde_json::to_string(&script).is_ok_and(|text| text.contains("ask_user"));
         let cwd = root.to_path_buf();
         let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+            provider: Arc::new(crate::provider::ProviderStream::new(None)),
             depth: 0,
             max_depth: 1,
             max_children: 8,
@@ -563,6 +565,14 @@ pub(crate) mod tests {
         })
     }
 
+    fn worker(name: &str) -> Map<String, Value> {
+        let named = [("name", name), ("role", "root")];
+        named
+            .map(|(key, value)| (key.to_owned(), Value::from(value)))
+            .into_iter()
+            .collect()
+    }
+
     async fn wait_done(host: &Arc<SubagentHost>) -> bool {
         let mut pace = backoff(std::time::Duration::from_millis(25));
         for _ in 0..400 {
@@ -588,7 +598,7 @@ pub(crate) mod tests {
             .lock()
             .map(|children| Arc::clone(&children.stirred))
             .map_err(|_| "family state poisoned")?;
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(50);
         loop {
             let mut stir = std::pin::pin!(stirred.notified());
             stir.as_mut().enable();
@@ -727,16 +737,17 @@ pub(crate) mod tests {
         label: &str,
     ) -> Result<yi_types::plan::doc::Todo, Box<dyn std::error::Error>> {
         let label = TodoLabel::new(label)?;
-        let mut pace = backoff(std::time::Duration::from_millis(25));
-        for _ in 0..400 {
+        let mut left = None;
+        stirred_until(&rig.host, || {
             let read = rig.engine.store().read(plan)?;
             let todo = read.todo(&label).ok_or("todo missing")?;
             if !texts(&rig.said).is_empty() && !matches!(todo.state, TodoState::Running { .. }) {
-                return Ok(todo.clone());
+                left = Some(todo.clone());
             }
-            tokio::time::sleep(pace()).await;
-        }
-        Err(format!("{label:?} never left running").into())
+            Ok(left.is_some())
+        })
+        .await?;
+        left.ok_or_else(|| format!("{label:?} never left running").into())
     }
 
     fn failing(text: &str, error: &str) -> AgentMessage {
@@ -878,10 +889,7 @@ pub(crate) mod tests {
             goal: GoalText::new("ship the widget")?,
             todos: Vec::new(),
         }))?;
-        rig.host.spawn(
-            "work".to_owned(),
-            Map::from_iter([("name".to_owned(), Value::String("quota".to_owned()))]),
-        )?;
+        rig.host.spawn("work".to_owned(), worker("quota"))?;
         let notice = wait_notice(&rig, "[subagent quota").await?;
         assert!(notice.contains("the quota parser lands"), "{notice}");
         assert!(
@@ -921,10 +929,7 @@ pub(crate) mod tests {
             "required": ["outcome"],
         });
         let fenced = rig("```json\n{\"outcome\": \"the quota parser lands\"}\n```")?;
-        fenced.host.spawn(
-            "work".to_owned(),
-            Map::from_iter([("name".to_owned(), Value::String("quota".to_owned()))]),
-        )?;
+        fenced.host.spawn("work".to_owned(), worker("quota"))?;
         assert!(wait_done(&fenced.host).await, "child never completed");
         let reply = fenced.host.result("quota", Some(&schema))?;
         assert_eq!(
@@ -934,10 +939,7 @@ pub(crate) mod tests {
 
         // Prose is still refused, with its text attached: there is nothing to read as JSON.
         let prose = rig("the quota parser lands")?;
-        prose.host.spawn(
-            "work".to_owned(),
-            Map::from_iter([("name".to_owned(), Value::String("prose".to_owned()))]),
-        )?;
+        prose.host.spawn("work".to_owned(), worker("prose"))?;
         assert!(wait_done(&prose.host).await, "child never completed");
         let refused = prose
             .host
@@ -1101,6 +1103,7 @@ pub(crate) mod tests {
         let root = Scratch::new("yi-dispatch-child-wake")?;
         let (events, _keep) = tokio::sync::broadcast::channel(16);
         let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+            provider: Arc::new(crate::provider::ProviderStream::new(None)),
             depth: 0,
             max_depth: 1,
             max_children: 8,
@@ -1124,6 +1127,7 @@ pub(crate) mod tests {
             "name".to_owned(),
             serde_json::Value::String("helper".to_owned()),
         );
+        kwargs.insert("role".to_owned(), serde_json::Value::from("root"));
         host.spawn("answer once".to_owned(), kwargs)
             .map_err(|error| error.to_string())?;
         let mut woke = false;

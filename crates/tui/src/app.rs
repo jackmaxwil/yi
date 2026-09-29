@@ -10,7 +10,7 @@ use yi_runtime::{AgentSession, ChildUpdate, SubagentHost};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Attribution, StopReason};
 
-use crate::approval::{ApprovalView, AskChoice};
+use crate::approval::{ApprovalView, AskChoice, AskRequest};
 use crate::cell::{Cell, TaskCell, TaskStatus, ToolCell, ToolStatus, TranscriptMode};
 use crate::colors::{Theme, detect_dark, detect_tier};
 use crate::composer::Composer;
@@ -26,13 +26,6 @@ use crate::term;
 use crate::transcript::{arg_summary, intent_of, preview_lines, text_of, thinking_of, user_text};
 use crate::tree::TreeView;
 use yi_orb::OrbState;
-
-pub struct AskRequest {
-    pub title: String,
-    pub description: String,
-    pub grants: Vec<String>,
-    pub reply: Sender<AskChoice>,
-}
 
 pub enum UiEvent {
     Agent(AgentEvent),
@@ -218,6 +211,8 @@ pub struct App {
     model_since: Option<Instant>,
     pub(crate) pen: Option<crate::pen::Pen>,
     turn_tokens: crate::status::TurnTokens,
+    /// Requests seen; past the first one a read is expected, so the footer shows `0% cached`.
+    pub(crate) requests: u64,
     turn_cost: f64,
     pub(crate) width: usize,
     pub(crate) rows: usize,
@@ -333,6 +328,7 @@ impl App {
             model_since: None,
             pen: None,
             turn_tokens: crate::status::TurnTokens::default(),
+            requests: 0,
             turn_cost: 0.0,
             width,
             rows: 24,
@@ -394,10 +390,9 @@ impl App {
     }
 
     pub fn open_approval(&mut self, ask: AskRequest) {
-        self.bottom = Some(Bottom::Approval(
-            ApprovalView::new(ask.title, ask.description, ask.grants),
-            ask.reply,
-        ));
+        let mut view = ApprovalView::new(ask.title, ask.description, ask.grants);
+        view.tool_call_id = ask.tool_call_id;
+        self.bottom = Some(Bottom::Approval(view, ask.reply));
         self.scheduler.request();
     }
 
@@ -604,6 +599,11 @@ impl App {
         let (top, rows) = &self.pane_rows;
         let owner = *rows.get(usize::from(y.checked_sub(*top)?))?;
         Some(owner.map(|index| (index, self.history.source(index))))
+    }
+
+    /// The source of transcript cell `index`, for rows a drag read before they scrolled away.
+    pub fn cell_source(&self, index: usize) -> Option<&str> {
+        self.history.source(index)
     }
 
     pub fn reflowed(&self, rows: usize) -> Vec<Line<'static>> {
@@ -847,6 +847,7 @@ impl App {
             }
             AgentEvent::PermissionResolved { tool_call_id, .. } => {
                 self.set_awaiting(&tool_call_id, ToolStatus::Running);
+                self.expire_approval(&tool_call_id);
             }
             _ => {}
         }
@@ -864,6 +865,7 @@ impl App {
                 self.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
                 self.cost_unknown |= usage.unknown;
                 self.turn_tokens.record(usage);
+                self.requests = self.requests.saturating_add(1);
                 self.turn_cost += usage.cost.total.as_f64().unwrap_or(0.0);
                 self.close_segments(content);
                 let open = content.get(self.segment..).unwrap_or_default();
@@ -1024,7 +1026,7 @@ impl App {
             crate::status::fmt_tokens(input),
             crate::status::fmt_tokens(output),
         ));
-        if cached > 0 {
+        if cached > 0 || self.requests > 1 {
             text.push_str(&format!(" · {}% cached", cached * 100 / input.max(1)));
         }
         if self.turn_cost > 0.0 {

@@ -789,23 +789,24 @@ pub fn register_receive(
             let asked = asked?;
             let clamped = asked.clamp(crate::mailbox::WAIT_MIN_MS, crate::mailbox::WAIT_MAX_MS);
             let started = std::time::Instant::now();
-            let deadline = std::time::Duration::from_millis(clamped);
+            let deadline = started
+                .checked_add(std::time::Duration::from_millis(clamped))
+                .unwrap_or(started);
             let _span = yi_types::trace::span("wait.mail_receive");
-            loop {
-                let mut arrived = std::pin::pin!(mail.notified());
-                arrived.as_mut().enable();
+            let envelopes = crate::session::until(&mail, || {
                 let envelopes = take();
-                if !envelopes.is_empty() || started.elapsed() >= deadline {
-                    host.waited_on(!envelopes.is_empty());
-                    let mut reply = Map::new();
-                    reply.insert("envelopes".to_owned(), Value::Array(envelopes));
-                    reply.insert("timeout_ms".to_owned(), Value::from(clamped));
-                    reply.insert("clamped".to_owned(), Value::Bool(clamped != asked));
-                    return Ok(reply);
+                if envelopes.is_empty() && std::time::Instant::now() < deadline {
+                    return std::ops::ControlFlow::Continue(Some(deadline));
                 }
-                let left = deadline.saturating_sub(started.elapsed());
-                let _ = tokio::time::timeout(left, arrived).await;
-            }
+                std::ops::ControlFlow::Break(envelopes)
+            })
+            .await;
+            host.waited_on(!envelopes.is_empty());
+            let mut reply = Map::new();
+            reply.insert("envelopes".to_owned(), Value::Array(envelopes));
+            reply.insert("timeout_ms".to_owned(), Value::from(clamped));
+            reply.insert("clamped".to_owned(), Value::Bool(clamped != asked));
+            Ok(reply)
         })
     });
 }

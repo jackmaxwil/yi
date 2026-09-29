@@ -14,6 +14,13 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Invariant: unique per call within a process, so a temp path or a hold names one write.
+pub fn nonce() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}.{next}", std::process::id())
+}
+
 pub fn age_label(elapsed_ms: u64) -> String {
     let seconds = elapsed_ms / 1_000;
     let minutes = seconds / 60;

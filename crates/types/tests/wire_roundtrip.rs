@@ -268,3 +268,64 @@ fn an_unknown_tape_mark_kind_survives_a_round_trip() -> Result<(), Box<dyn std::
     assert_eq!(serde_json::to_string(&mark)?, line);
     Ok(())
 }
+
+/// Laya's documented answer, extra fields and all, and the ledger records of a decision: what a
+/// newer sidecar or a later consumer adds survives a round trip.
+#[test]
+fn classifier_answers_and_records_round_trip_with_unknown_fields()
+-> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::classifier::{ClassifyRecord, DecisionResponse};
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let stored: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        fixtures.join("decision-response-v1.json"),
+    )?)?;
+    let response: DecisionResponse = serde_json::from_value(stored.clone())?;
+    let skill = response.answers.get("skill").ok_or("the skill answer")?;
+    assert_eq!(
+        (skill.choice.as_deref(), skill.answer_confidence),
+        (Some("land"), Some(0.91))
+    );
+    assert_eq!(
+        response
+            .routing
+            .as_ref()
+            .map(|routing| routing.model.as_str()),
+        Some("english")
+    );
+    assert_eq!(serde_json::to_value(&response)?, stored);
+    let stored: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        fixtures.join("classify-record-v1.json"),
+    )?)?;
+    let records: Vec<ClassifyRecord> = serde_json::from_value(stored.clone())?;
+    assert_eq!(records.len(), 3);
+    assert_eq!(serde_json::to_value(&records)?, stored);
+    Ok(())
+}
+
+/// A settled ask journaled by the session: an answerer this build does not know and a field it
+/// does not read both survive, so a later cascade's records load and write back whole.
+#[test]
+fn permission_records_round_trip_with_an_unknown_answerer_and_field()
+-> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::permission::{Answerer, PermissionRecord};
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/permission-record-v1.json");
+    let stored: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)?)?;
+    let records: Vec<PermissionRecord> = serde_json::from_value(stored.clone())?;
+    let by: Vec<&Answerer> = records.iter().map(|record| &record.by).collect();
+    assert_eq!(
+        by,
+        [
+            &Answerer::User,
+            &Answerer::Reviewer,
+            &Answerer::Nobody,
+            &Answerer::Classifier
+        ]
+    );
+    assert_eq!(serde_json::to_value(&records)?, stored);
+    let later = serde_json::json!({"toolCallId": "c", "title": "t", "description": "d", "allowed": false, "by": "timeout"});
+    let record: PermissionRecord = serde_json::from_value(later.clone())?;
+    assert_eq!(record.by, Answerer::Other("timeout".to_owned()));
+    assert_eq!(serde_json::to_value(&record)?, later);
+    Ok(())
+}

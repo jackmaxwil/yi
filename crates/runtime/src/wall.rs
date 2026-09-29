@@ -81,7 +81,7 @@ impl Wall {
     pub fn check_url(&self, url: &Url, workspace: &Path) -> Option<String> {
         let rendered = url.to_string();
         if let Some(hit) = self.deny_url.iter().find(|prefix| walls(prefix, &rendered)) {
-            return Some(refusal("fetch", hit, "deny_url"));
+            return Some(yi_tools::wall_refusal("fetch", hit, "deny_url"));
         }
         let raw = match url.scheme() {
             Scheme::Local => Path::new(url.path()),
@@ -101,7 +101,11 @@ impl Wall {
         } else {
             workspace.join(raw)
         };
-        self.check_read_path(&target)
+        self.check_read_path(&target).or_else(|| {
+            std::fs::canonicalize(&target)
+                .ok()
+                .and_then(|real| self.check_read_path(&real))
+        })
     }
 
     /// Invariant: the wall covers the path a read lands on, so a link out of one tree into a
@@ -114,7 +118,7 @@ impl Wall {
                 normalized.starts_with(yi_permission::lexical_normalize(denied))
                     || std::fs::canonicalize(denied).is_ok_and(|real| normalized.starts_with(real))
             })
-            .map(|hit| refusal("fetch", &hit.display().to_string(), "deny_read"))
+            .map(|hit| yi_tools::wall_refusal("fetch", &hit.display().to_string(), "deny_read"))
     }
 
     /// Denies before the call runs, naming the path; not a sandbox, it stops an honest agent.
@@ -142,12 +146,21 @@ impl Wall {
             } else {
                 "deny_write"
             };
-            refusal(tool_name, &hit.display().to_string(), list)
+            yi_tools::wall_refusal(tool_name, &hit.display().to_string(), list)
         };
-        if let Some(hit) = under(
-            &crate::permission::extract_targets(tool_name, args, cwd),
-            &denied,
-        ) {
+        let mut targets = crate::permission::extract_targets(tool_name, args, cwd);
+        let rewrite = tool_name == "grep" && !matches!(kind, ToolKind::Read);
+        if targets.is_empty() && rewrite {
+            targets.push(cwd.to_path_buf());
+        }
+        if let Some(hit) = under(&targets, &denied) {
+            return Some(list(hit));
+        }
+        let inside = |hit: &&&PathBuf| {
+            let hit = yi_permission::lexical_normalize(hit);
+            (targets.iter()).any(|root| hit.starts_with(yi_permission::lexical_normalize(root)))
+        };
+        if let Some(hit) = denied.iter().find(inside).filter(|_| rewrite) {
             return Some(list(hit));
         }
         let command = args.get("command").and_then(Value::as_str)?;
@@ -158,7 +171,7 @@ impl Wall {
         {
             return Some(list(hit));
         }
-        let written: Vec<PathBuf> = write_targets(command)
+        let written: Vec<PathBuf> = yi_permission::write_targets(command)
             .iter()
             .map(|raw| yi_permission::resolve_target(raw, cwd))
             .collect();
@@ -181,66 +194,6 @@ fn under<'a>(targets: &[PathBuf], denied: &[&'a PathBuf]) -> Option<&'a PathBuf>
     })
 }
 
-/// What a command writes as an honest agent spells it: redirects, in-place edits, file verbs.
-fn write_targets(command: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for (at, _) in command.match_indices('>') {
-        let rest = command[at..].trim_start_matches(['>', '|']).trim_start();
-        let target: String = rest
-            .chars()
-            .take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '&' | '|' | ')'))
-            .collect();
-        if !target.is_empty() && !command[at..].starts_with(">&") {
-            out.push(target);
-        }
-    }
-    for segment in command.split([';', '&', '|', '\n', '(', ')']) {
-        let words: Vec<&str> = segment
-            .split_whitespace()
-            .map(|word| word.trim_matches(['\'', '"']))
-            .skip_while(|word| {
-                word.contains('=') || matches!(*word, "sudo" | "env" | "time" | "nohup" | "command")
-            })
-            .collect();
-        let Some((head, args)) = words.split_first() else {
-            continue;
-        };
-        let operands: Vec<String> = args
-            .iter()
-            .filter(|word| !word.starts_with('-') && !word.contains('>') && !word.contains('<'))
-            .map(|word| (*word).to_owned())
-            .collect();
-        let program = head.rsplit('/').next().unwrap_or(head);
-        let in_place = args.iter().any(|word| {
-            *word == "--in-place"
-                || (word.starts_with('-') && !word.starts_with("--") && word.contains('i'))
-        });
-        match program {
-            "sed" | "perl" if in_place => out.extend(operands),
-            "rm" | "rmdir" | "unlink" | "mv" | "tee" | "touch" | "chmod" | "chown" | "truncate"
-            | "mkdir" | "shred" => out.extend(operands),
-            "cp" | "ln" | "install" | "rsync" => out.extend(operands.last().cloned()),
-            "dd" => out.extend(
-                args.iter()
-                    .filter_map(|word| word.strip_prefix("of="))
-                    .map(str::to_owned),
-            ),
-            "git"
-                if operands.first().is_some_and(|verb| {
-                    matches!(
-                        verb.as_str(),
-                        "checkout" | "restore" | "rm" | "mv" | "clean" | "reset" | "apply"
-                    )
-                }) =>
-            {
-                out.extend(operands.into_iter().skip(1))
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
 /// Incident: a raw prefix walled every address beginning with it, so `plan://secret` refused
 /// `plan://secretary`. The match ends at the entry, a path separator, or a fragment.
 fn walls(prefix: &str, rendered: &str) -> bool {
@@ -248,11 +201,4 @@ fn walls(prefix: &str, rendered: &str) -> bool {
         return false;
     };
     rest.is_empty() || prefix.ends_with('/') || rest.starts_with('/') || rest.starts_with('#')
-}
-
-fn refusal(tool_name: &str, path: &str, list: &str) -> String {
-    format!(
-        "Denied by the reviewer wall: {tool_name} targets {path}, which this agent's {list} covers. \
-         The standard is fixed for the run: report the mismatch instead of changing it."
-    )
 }

@@ -38,6 +38,10 @@ fn context() -> LlmContext {
             UserContent::Text("hi".to_owned()),
             0,
         )],
+        transient: Vec::new(),
+        schema: None,
+        shared_through: None,
+        reuse: yi_types::model::Reuse::Loop,
         tools: Some(vec![ToolDef {
             name: "bash".to_owned(),
             description: "run".to_owned(),
@@ -366,6 +370,10 @@ fn a_routed_claude_request_keeps_its_newest_twenty_images() {
                 )
             })
             .collect(),
+        transient: Vec::new(),
+        schema: None,
+        shared_through: None,
+        reuse: yi_types::model::Reuse::Loop,
         tools: None,
         tool_choice: None,
     };

@@ -7,7 +7,6 @@ description: >
   verification step calls for a fresh look. Not a code-style review — this
   checks that the claimed end state is actually true.
 trigger: review the work, verify the goal, acceptance criteria, cold review
-scope: text
 ---
 
 # Review

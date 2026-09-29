@@ -11,6 +11,7 @@ mod memory;
 mod plan;
 mod rpc;
 mod sessions;
+mod setup;
 mod stats;
 mod todo;
 mod tty;
@@ -72,7 +73,15 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut json = false;
     // Auto is the default: reads and known-safe commands run, destructive ones ask.
     // `--yolo` removes the gate, `--confirm` asks for everything.
-    let mut mode = yi_runtime::PermissionMode::Auto;
+    let mut mode = match config()
+        .permissions
+        .as_ref()
+        .and_then(|permissions| permissions.mode)
+    {
+        Some(yi_types::config::ModeName::Ask) => yi_runtime::PermissionMode::Ask,
+        Some(yi_types::config::ModeName::Yolo) => yi_runtime::PermissionMode::Yolo,
+        Some(yi_types::config::ModeName::Auto) | None => yi_runtime::PermissionMode::Auto,
+    };
     let mut session_dir = None;
     let mut cwd = None;
     let mut here = false;
@@ -266,6 +275,7 @@ fn load_config() -> Result<(), String> {
             home.to_string_lossy()
         ));
     }
+    setup::early();
     yi_runtime::set_catalog_cache_dir(std::path::Path::new(&home).join(".yi/catalog"));
     let (config, migrations) = read_config(std::path::Path::new(&home))?;
     for migration in migrations {
@@ -434,22 +444,6 @@ fn build_session(
             }
         }
     };
-    // Resolved through the session's proxy so an OAuth refresh can reach the token
-    // endpoint from behind the same wall the stream rides through.
-    let auth = yi_types::trace::span("build_session.auth");
-    let resolved = yi_runtime::auth::resolve_with_proxy(&model.provider, proxy.as_ref());
-    drop(auth);
-    if resolved.is_none() && !faux {
-        return Err(login::no_credential(&model.provider));
-    }
-    if !faux {
-        let _span = yi_types::trace::span("build_session.catalog_refresh");
-        catalog::spawn_refresh(
-            &model.provider,
-            resolved.as_ref().map(|f| &f.secret),
-            proxy.as_ref(),
-        );
-    }
     let telemetry = config()
         .telemetry
         .as_ref()
@@ -457,12 +451,23 @@ fn build_session(
         .unwrap_or(false)
         .then(|| Arc::new(yi_runtime::Telemetry::default()));
     let provider = Arc::new(
-        login::stream_for(&model.provider, resolved.as_ref())
+        yi_runtime::ProviderStream::new(None)
             .with_long_cache(interactive)
-            .with_proxy(proxy)
+            .with_proxy(proxy.clone())
             .with_routing(config().routing.clone())
             .with_telemetry(telemetry.clone()),
     );
+    if !faux {
+        // Resolved through the session's proxy so an OAuth refresh can reach the token
+        // endpoint from behind the same wall the stream rides through.
+        let auth = yi_types::trace::span("build_session.auth");
+        let credential = provider
+            .credential(&model.provider)
+            .map_err(|_| login::no_credential(&model.provider))?;
+        drop(auth);
+        let _span = yi_types::trace::span("build_session.catalog_refresh");
+        catalog::spawn_refresh(&model.provider, Some(&credential.secret), proxy.as_ref());
+    }
     if faux {
         provider.queue_faux(shells::faux_replies(args).map_err(|reason| Refused {
             code: 2,
@@ -573,6 +578,9 @@ fn build_session(
         },
     );
     drop(wiring);
+    for why in yi_runtime::classifier::attach(&session, &work, &home, config()) {
+        eprintln!("warning: {why}");
+    }
     if let Some(every) = config()
         .spend
         .as_ref()
@@ -581,6 +589,7 @@ fn build_session(
     {
         yi_runtime::spend::attach(&session, every);
     }
+    yi_runtime::cache_miss::attach(&session);
     session.set_lane(yi_runtime::lane::land::LaneHandle::new(
         lane,
         pool,
@@ -609,31 +618,47 @@ struct McpOneShot;
 
 impl yi_runtime::fetch::McpResourceRead for McpOneShot {
     fn read(&self, server: &str, resource: &str) -> Result<String, String> {
-        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "every MCP call goes out through the one-shot CLI, never a held socket"
-        )]
-        let output = std::process::Command::new(exe)
-            .args(["mcp", "--json"])
-            .arg(format!("@{server}"))
-            .args(["resources-read", resource])
-            .output()
-            .map_err(|error| error.to_string())?;
-        if !output.status.success() {
-            let raw = String::from_utf8_lossy(&output.stderr);
-            let trimmed = raw.trim();
-            let message = trimmed.strip_prefix("error: ").unwrap_or(trimmed);
-            return Err(if message.is_empty() {
-                format!("yi mcp exited {:?}", output.status.code())
-            } else {
-                message.to_owned()
-            });
-        }
-        Ok(String::from_utf8_lossy(&output.stdout)
-            .trim_end()
-            .to_owned())
+        run_yi_mcp(&[&format!("@{server}"), "resources-read", resource])
     }
+
+    /// The kernel's connect: the entry is read from `config` by the `<file>:<entry>` form, so
+    /// no workspace file, and no other name, is consulted (D296).
+    fn connect_server(
+        &self,
+        config: &std::path::Path,
+        entry: &str,
+        session: &str,
+    ) -> Result<String, String> {
+        let reference = format!("{}:{entry}", config.display());
+        run_yi_mcp(&["connect", &reference, &format!("@{session}")])
+    }
+}
+
+/// `yi mcp --json <args>` as a child of this binary; its `error:` line is the failure text.
+fn run_yi_mcp(args: &[&str]) -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "every MCP call goes out through the one-shot CLI, never a held socket"
+    )]
+    let output = std::process::Command::new(exe)
+        .args(["mcp", "--json"])
+        .args(args)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let raw = String::from_utf8_lossy(&output.stderr);
+        let trimmed = raw.trim();
+        let message = trimmed.strip_prefix("error: ").unwrap_or(trimmed);
+        return Err(if message.is_empty() {
+            format!("yi mcp exited {:?}", output.status.code())
+        } else {
+            message.to_owned()
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_owned())
 }
 
 fn run_why(args: &Args) -> i32 {

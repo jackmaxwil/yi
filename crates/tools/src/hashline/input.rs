@@ -338,10 +338,23 @@ impl PatchSection {
         Ok(lines)
     }
 
-    /// True when at least one edit anchors to concrete file content; pure
-    /// head/tail literal inserts are safe to apply to files that don't exist.
-    pub fn has_anchor_scoped_edit(&self) -> Result<bool, String> {
-        Ok(!self.collect_anchor_lines()?.is_empty())
+    /// Whether the section inserts at the file head (`PUT <1:`) or tail (`PUT >$:`).
+    pub fn inserts_at_ends(&self) -> Result<(bool, bool), String> {
+        use super::types::{Cursor, Edit, PasteTarget};
+        let mut ends = (false, false);
+        for edit in self.parse()?.edits {
+            let cursor = match edit {
+                Edit::Insert { cursor, .. }
+                | Edit::Paste {
+                    at: PasteTarget::Gap { cursor },
+                    ..
+                } => cursor,
+                _ => continue,
+            };
+            ends.0 |= cursor == Cursor::Bof;
+            ends.1 |= cursor == Cursor::Eof;
+        }
+        Ok(ends)
     }
 }
 

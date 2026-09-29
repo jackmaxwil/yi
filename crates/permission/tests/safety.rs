@@ -1,6 +1,8 @@
 use std::error::Error;
 
-use yi_permission::{Class, Parsed, Verdict, classify, parse, refused_scopes, verdict};
+use yi_permission::{
+    Class, Parsed, Verdict, classify, needs_host, parse, refused_scopes, verdict, write_targets,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -407,5 +409,56 @@ fn scope_names_program_and_subcommand() {
     ];
     for (command, expected) in cases {
         assert_eq!(refused_scopes(command), expected, "{command:?}");
+    }
+}
+
+/// Where a refused write went: the splitter skips redirect targets, which is how the dogfood
+/// hint blamed `yes` for `echo y > ~/yidog_probe`. File verbs name theirs too.
+#[test]
+fn write_targets_keep_what_the_splitter_skips() {
+    let cases: [(&str, &[&str]); 9] = [
+        (
+            "yes | head -5; echo y > ~/yidog_probe && echo wrote-home",
+            &["~/yidog_probe"],
+        ),
+        ("cargo fmt 2>&1 | tee -a log >>out.txt", &["out.txt", "log"]),
+        ("touch /outside/x | tail -1", &["/outside/x"]),
+        (
+            "git worktree add -q /outside/wt 2>&1 | tail -3",
+            &["/outside/wt"],
+        ),
+        ("git worktree list && git worktree prune", &[]),
+        ("make 2>err.log &>'all.log'", &["err.log", "all.log"]),
+        ("echo x >/outside/f; echo y >| g", &["/outside/f", "g"]),
+        ("cmd >&2 2> /dev/null", &["/dev/null"]),
+        ("git log --oneline | head", &[]),
+    ];
+    for (command, expected) in cases {
+        assert_eq!(write_targets(command), expected, "{command:?}");
+    }
+}
+
+/// A contained run has no network, so these approvals leave the sandbox; `git add` and a local
+/// `rm` stay inside it.
+#[test]
+fn only_network_and_install_approvals_need_the_host() {
+    for command in [
+        "curl -o out.json https://example.invalid/x",
+        "git push --force origin main",
+        "timeout 60 git fetch origin",
+        "npm install left-pad",
+        "cargo add serde",
+        "scp a host:b",
+        "cd sub && wget https://example.invalid/x > log",
+    ] {
+        assert!(needs_host(command), "{command}");
+    }
+    for command in [
+        "git add -A",
+        "rm -rf target/old",
+        "cargo test",
+        "touch x; true",
+    ] {
+        assert!(!needs_host(command), "{command}");
     }
 }

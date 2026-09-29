@@ -37,6 +37,27 @@ fn at_once() -> CancelFlag {
     Arc::new(|| true)
 }
 
+/// Dies with a pid-only staging name: every kernel booting in one process staged the card at
+/// one path, and a boot whose rename lost failed with the file gone.
+#[test]
+fn kernels_computing_the_card_at_once_all_read_it() -> TestResult {
+    let dir = Scratch::new("yi-node-card-race")?;
+    let home = dir.to_path_buf();
+    let boots: Vec<_> = (0..8)
+        .map(|_| {
+            let home = home.clone();
+            std::thread::spawn(move || node::card(&home).map(|card| card.slots))
+        })
+        .collect();
+    let mut slots = Vec::new();
+    for boot in boots {
+        slots.push(boot.join().map_err(|_| "a boot panicked")??);
+    }
+    slots.dedup();
+    assert_eq!(slots.len(), 1, "every boot read one card: {slots:?}");
+    Ok(())
+}
+
 #[test]
 fn a_card_is_computed_once_and_an_edit_to_it_sticks() -> TestResult {
     let slots = |cpus| node::computed(cpus, 8, false, "n".to_owned()).slots.get();
@@ -253,8 +274,8 @@ fn node_holder_child() -> TestResult {
 }
 
 fn kwargs(pairs: &[(&str, &str)]) -> Map<String, Value> {
-    pairs
-        .iter()
+    std::iter::once(&("role", "root"))
+        .chain(pairs)
         .map(|(key, value)| ((*key).to_owned(), Value::String((*value).to_owned())))
         .collect()
 }
@@ -525,6 +546,7 @@ fn demo_family(root: &Path, repo: &Path, home: &Path, cell: String) -> Demo {
     let (events, _keep) = tokio::sync::broadcast::channel(256);
     let host = Arc::new(yi_runtime::SubagentHost::new(
         yi_runtime::SubagentHostOptions {
+            provider: Arc::new(yi_runtime::ProviderStream::new(None)),
             depth: 0,
             max_depth: 1,
             max_children: 8,
@@ -550,7 +572,7 @@ fn demo_family(root: &Path, repo: &Path, home: &Path, cell: String) -> Demo {
                         StopReason::ToolUse,
                     )
                 };
-                let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+                let provider = Arc::new(yi_runtime::ProviderStream::new(None));
                 provider.queue_faux(vec![
                     call("c1", "ipython", "code", &cell),
                     call("c2", "bash", "command", "uname -s > placed.txt"),

@@ -768,3 +768,81 @@ Each major was re-checked against the tree before it was accepted.
 | LoopConfig fields never read by the loop | accepted | §5.2, §8 stage 3 |
 | Minor citation fixes (account.rs, memory store, retry, auto-review, cache key, README blocker, SD band, probe) | accepted | §1, §3, §6.1, §6.4 |
 | Merge the verdict ledger, census and runner into existing pieces | accepted | §0, §9 |
+
+## 18. Measured since revision 2 (2026-09-27)
+
+The first paid runs replaced four of this plan's estimates. Where a number above disagrees with
+this section, this section holds.
+
+- **A slice trial costs $0.27, not $0.13.** Row 0055's median was over all 38 sweep tasks, and the
+  cheap ones pulled it down. PAID-0 (row 0062) and N1's first call priced mid-band slice trials at
+  about $0.27. Z.AI bills exactly 2.0x the bundled catalog: PAID-0's catalog price is $0.122,
+  billed $0.244. At that rate one candidate through the cascade costs about $23.6: fixtures $0.61,
+  one task $0.27, dev $9.72, validation $12.96. The owner's decisions: "13$ is fine" for a stage
+  (soft $13 / hard $15, `evals/drivers/trials.py`), and "keep" for the week ($25 / $30), which is
+  one candidate to validation per week.
+- **The pin is Z.AI, and the probe needs a warm-up sample** (row 0061). The first session on any
+  upstream misses the cache that the later ones hit at 0.97, so `cache_probe.WARMUP = 1`. Z.AI,
+  Together and Wafer qualify, and Z.AI's warm turn is the cheapest by 1%. PAID-0 read 93.1% of its
+  prompt from cache, against 79.4% in row 0055. Whether another qualifying upstream bills nearer
+  the catalog is open.
+- **T4 drops below T5.** Recounted with the fixed extractor (#699) on 11 current-binary
+  sessions, `evidence_shape_refused` fired once and intercepts never did (#656). In the same
+  sessions `spiral_cut` fired 4 times (T2) and `pointer_never_read` 3 times (T5).
+- **The watcher removed an image a trial still needed.** A multi-image task's sidecar sat unused
+  while its main image pulled, and two idle polls removed it. The pruner now waits ten polls
+  (#717, `check_watch_prune`).
+- **A cut stop of 2 or 3 is the only T2 range the corpus reaches.** On those 11 sessions a value of
+  4 or more flips none (#720, `levers.py census`).
+
+## 19. The rethink: two speeds (2026-09-28)
+
+N1 showed Terminal-Bench cannot be the development loop. The owner's five findings: "environment is not stable", "these evals are too long and slow", "results are too similar", "sample sizes are not big enough" and "sandboxes are too heavy". The evidence:
+- 20 of 42 trials were lost before the agent ran;
+- a median trial took 45-51 minutes, many at the 1-hour cap;
+- repeats of a task landed within 0.03 on four tasks and swung 0.14 and 0.40 on two;
+- 12 tasks cannot detect anything but a near-uniform gain;
+- each task needs a ~1.5 GB image plus sidecars in Docker Desktop.
+
+The owner's decisions, verbatim:
+- "Mine from our failures": failure classes, not individual failures.
+- "Seeded generators per class": one generator per failure class emits unlimited graded instances by seed. The same seed on both arms is the pairing; the precedent is SWE-smith's synthesized bugs.
+- "Real sessions + N1, final stays clean": classes may come from real sessions and N1's slice sessions; the six final tasks stay untouched.
+- "Validation + final only": Terminal-Bench runs only for inner-loop winners, at k=1.
+- "Temp dirs, auto mode + Seatbelt": inner tasks run container-free, and auto mode lets Seatbelt contain bash, which `--yolo` does not (`crates/permission/src/decide.rs`, the `Yolo` arm).
+- "3 generators × 20 seeds + inner A/A": the milestone before scaling.
+
+The nouns are unchanged: candidate, runner, trial row, gate. Only the task set and the runner are new:
+
+| piece | status | where |
+|---|---|---|
+| generators `logs`, `bugfix`, `reconcile` | ✚ | `evals/inner/gen/` (each: `make`, `check`, `solve`; the grader never enters the workspace) |
+| family `revert`, real past fixes redone | ✚ | `evals/inner/gen/revert.py` (full clones of Markdown, more-itertools and pyparsing; tomli's slot went to pyparsing) |
+| family `mutate`, bug injection into real repos | ✚ | `evals/inner/gen/mutate.py` (the repos stay outside this repository, under `INNER_REPOS`) |
+| inner runner (the runner protocol, parallel, auto mode) | ✚ | `evals/inner/runner.py` |
+| graded score from `testsPassed/testsTotal` | ✓ | `evals/levers.py` `graded` |
+| stage and week caps | ✓ | `evals/drivers/trials.py` (`caps` takes the inner per-trial estimate) |
+| gate | ✓ | `evals/levers.py` `judge` (one difference per task) |
+
+Statistics for the inner loop: k=1 over many tasks, since repeats barely move. The gate's interval is over per-task differences. A cached baseline is allowed once a scheduled A/A shows no drift. The health metric is the transfer rate: the share of inner-loop winners that also pass Terminal-Bench validation.
+
+The generators map to the failure classes that fire most in the real-session corpus (199 sessions from the last 30 days) and in N1:
+- `logs`: large output the reducer cuts (`pointer_never_read`, `reduced_results`, `spiral_cut`);
+- `bugfix`: read, edit and run the tests (edit refusals, lost tests);
+- `reconcile`: multi-step spec work (intercepts, `done` without evidence).
+
+The inner A/A saturated them (ledger 0064: 115 of 120 full), and so did their harder levels (0065: 28 of 30). glm-5.3-flash writes a script for any crisp spec, so these three measure economy (cost, turns, wall), not capability. For the capability signal the owner chose "Bug injection into real repos" (the `mutate` family):
+- seeded operator and constant flips in pure-Python libraries with stdlib-unittest suites (Markdown, more-itertools, tomli), cloned outside this repository at a pinned commit;
+- a flip is kept only when 1-12 of the pristine suite's passing tests turn red;
+- the pristine tests grade it: each broken test fixed, plus one point when nothing else regressed;
+- the workspace has no `.git`, so the bug cannot be diffed out.
+
+Level 1 plants one bug and level 2 two, and both name the failing tests; they saturate as well (0066: 15 of 16, the miss an upstream refusal). Level 3 plants two bugs and hides the tests they break, giving only their failure messages, as an issue report does. It scored 7 of 8 full but tripled the wall time, and 3 of 8 reached yi's wind-down (0067).
+
+The owner then chose "Redo real past fixes" (the `revert` family, SWE-smith's PR mirroring):
+- a commit from the same repos' history that changed the library and its tests, with the library change undone;
+- its own tests grade the redo, and its message is the request.
+
+Level 1 shows the commit's tests and level 2 hides them behind their failure lines; they scored 8 of 8 and 6 of 8 full (0068). Level 3 takes a commit of 40-300 library lines on level 2's terms and scored 2 of 5 full, mean 0.63, without the tomli seeds, which the kernel venv's own tomli answers (0069); pyparsing took tomli's slot, and seeds 0-29 hold 19 level-3 tasks. That is the capability set; the other families measure economy.
+
+Before `revert`, the inner loop was the economy suite only: cost, turns, wall and wind-downs over hundreds of paired seeds. A capability claim still needs Terminal-Bench validation. Its first find was a harness defect, not a lever: the last-word turn sent `tool_choice: "none"`, which no OpenRouter endpoint for the model accepts (0066, fixed by D299 in #802).

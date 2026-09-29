@@ -39,7 +39,7 @@ fn faux_model() -> Model {
 
 #[tokio::test]
 async fn prompt_runs_to_idle_with_events() -> Result<(), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![faux_assistant_message(
         vec![faux_text("hello from faux")],
         StopReason::Stop,
@@ -75,7 +75,7 @@ async fn prompt_runs_to_idle_with_events() -> Result<(), Box<dyn Error>> {
 }
 
 fn session_with_reply(text: &str) -> AgentSession {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![faux_assistant_message(
         vec![faux_text(text)],
         StopReason::Stop,
@@ -96,7 +96,7 @@ async fn executes_a_read_tool_call_through_the_adapter() -> Result<(), Box<dyn E
     let dir = Scratch::new("yi-runtime-tool")?;
     std::fs::write(dir.join("fact.txt"), "the answer is 42")?;
 
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut call_args = serde_json::Map::new();
     call_args.insert("path".to_owned(), serde_json::json!("fact.txt"));
     provider.queue_faux(vec![
@@ -182,7 +182,7 @@ fn one_call_session(
     tool: &str,
     call_args: serde_json::Map<String, serde_json::Value>,
 ) -> AgentSession {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         faux_assistant_message(
             vec![faux_tool_call("call-1", tool, call_args)],
@@ -292,7 +292,7 @@ async fn write_approval_carries_the_patch() -> Result<(), Box<dyn Error>> {
     let target = dir.join("notes.txt");
     std::fs::write(&target, "alpha\nbravo\ncharlie\n")?;
 
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut call_args = serde_json::Map::new();
     call_args.insert("path".to_owned(), serde_json::json!("notes.txt"));
     call_args.insert(
@@ -352,7 +352,7 @@ async fn write_approval_carries_the_patch() -> Result<(), Box<dyn Error>> {
 /// at its first checkpoint. A session the user interrupted once was finished.
 #[tokio::test]
 async fn a_session_still_runs_turns_after_an_abort() -> Result<(), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         faux_assistant_message(vec![faux_text("first")], StopReason::Stop),
         faux_assistant_message(vec![faux_text("second")], StopReason::Stop),
@@ -446,9 +446,19 @@ async fn an_abort_during_a_tool_call_kills_the_child() -> Result<(), Box<dyn Err
 /// `tool_call_session` wired the way `yi ask` is, `--deadline` included.
 fn deadline_session(root: &std::path::Path, command: &str, total: Duration) -> AgentSession {
     let mut session = tool_call_session(command);
+    attach_like_yi_ask(&mut session, root, Some(total));
+    session
+}
+
+/// `session` wired the way `yi ask` is.
+fn attach_like_yi_ask(
+    session: &mut AgentSession,
+    root: &std::path::Path,
+    deadline: Option<Duration>,
+) {
     let provider = Arc::clone(session.provider_arc());
     yi_runtime::attach_runtime(
-        &mut session,
+        session,
         yi_runtime::RuntimeWiring {
             provider,
             system_prompt: "sys".to_owned(),
@@ -470,14 +480,13 @@ fn deadline_session(root: &std::path::Path, command: &str, total: Duration) -> A
             parent_link: None,
             wall: yi_runtime::Wall::default(),
             auto_background: None,
-            deadline: Some(total),
+            deadline,
             kernel_prewarm: false,
             mcp_read: None,
             sessions_dir: None,
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
-    session
 }
 
 fn scratch(name: &str) -> Result<Scratch, Box<dyn Error>> {
@@ -503,12 +512,23 @@ async fn a_deadline_kills_a_running_bash_call() -> Result<(), Box<dyn Error>> {
 
 /// The deadline ends the run between turns, never inside one: the call in flight runs to its
 /// own end and no work turn follows. Dies too with a run that ends on that tool call with no
-/// answer (`mbx-service`, `mbx-ask`): one last turn, with tool choice `none`, answers.
+/// answer (`mbx-service`, `mbx-ask`): one last turn answers, and a tool it calls is not run.
 #[tokio::test]
 async fn a_deadline_ends_the_run_after_the_turn_in_flight() -> Result<(), Box<dyn Error>> {
     let root = scratch("deadline-stop")?;
-    // A 4.6 s call ends past a quarter-of-six-seconds margin and before the clock runs out.
-    let session = deadline_session(&root, "sleep 4.6", Duration::from_secs(6));
+    // Invariant: the call ends between the 4.5 s margin and the 4.875 s last word of a 6 s clock,
+    // so it sleeps to an instant: a span also counted the work before it, and git init took 0.3 s.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the command sleeps to a wall-clock instant, so the fixture reads that clock"
+    )]
+    let ends = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs_f64()
+        + 4.7;
+    let command =
+        format!("python3 -c \"import time; time.sleep(max(0, {ends:.3} - time.time()))\"");
+    let session = deadline_session(&root, &command, Duration::from_secs(6));
     let mut events = session.subscribe();
     session.prompt("run it")?;
     session.wait_idle().await;
@@ -566,7 +586,7 @@ fn note(log: &Log, what: &'static str) {
 /// A session whose start capture takes 300 ms and then writes `captured` into `fact.txt`;
 /// the log records each request, the capture's end and the end capture.
 fn capture_session(dir: &Scratch, replies: Vec<AgentMessage>) -> (AgentSession, Log) {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(replies);
     let mut session = AgentSession::new(
         SessionConfig {
@@ -670,5 +690,556 @@ async fn the_end_capture_follows_a_slow_start_capture() -> Result<(), Box<dyn Er
     assert!(at_end.contains(&"captured"), "{at_end:?}");
     let seen = settled_log(&session, &log, 3).await;
     assert_eq!(seen, ["request", "captured", "end"]);
+    Ok(())
+}
+
+/// Every settled ask of a session run with `asker`, read back from its journal.
+async fn journaled(
+    root: &std::path::Path,
+    asker: Option<yi_runtime::Asker>,
+) -> Result<Vec<yi_types::permission::PermissionRecord>, Box<dyn Error>> {
+    let mut repo = JsonlRepo::new(root.join("sessions"), "/tmp/yi-perm-journal");
+    let store = repo.create(CreateOptions::default())?;
+    let mut session = tool_call_session("echo journaled");
+    session.attach_store(Arc::clone(&store))?;
+    let broker = Arc::new(yi_runtime::PermissionBroker::new(
+        yi_runtime::PermissionMode::Ask,
+        root.to_path_buf(),
+        Vec::new(),
+        asker,
+        session.events_sender(),
+    ));
+    let provider = Arc::clone(session.provider_arc());
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: "sys".to_owned(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: root.to_path_buf(),
+            home: root.join("home"),
+            lane_slots: 1,
+            broker: Some(broker),
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    session.prompt("run it")?;
+    session.wait_idle().await;
+    let entries = yi_session::lock_session(&store).find_entries(&yi_session::EntryQuery {
+        order: yi_session::EntryOrder::OldestFirst,
+        ..yi_session::EntryQuery::default()
+    })?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            yi_types::entry::Entry::Custom {
+                custom_type, data, ..
+            } if custom_type == yi_types::permission::PERMISSION_ENTRY => data,
+            _ => None,
+        })
+        .map(serde_json::from_value)
+        .collect::<Result<_, _>>()?)
+}
+
+/// Approvals are the labels a classifier fits its thresholds on, so each settled ask is journaled
+/// in the session, not only broadcast. Dies with the record missing, or naming the wrong answerer.
+#[tokio::test]
+async fn a_settled_ask_is_journaled_in_the_session() -> Result<(), Box<dyn Error>> {
+    use yi_types::permission::Answerer;
+    let approve: yi_runtime::Asker = Arc::new(|_| yi_runtime::AskOutcome::AllowOnce);
+    for (asker, want) in [
+        (None, (false, Answerer::Nobody)),
+        (Some(approve), (true, Answerer::User)),
+    ] {
+        let root = scratch("perm-journal")?;
+        let records = journaled(&root, asker).await?;
+        let [record] = records.as_slice() else {
+            return Err(format!("one settled ask, one record: {records:?}").into());
+        };
+        assert_eq!((record.allowed, record.by.clone()), want, "{record:?}");
+        assert!(record.description.contains("echo journaled"), "{record:?}");
+    }
+    Ok(())
+}
+
+/// What the model was sent, in order: user text, reminder text, or `assistant`.
+fn transcript(session: &AgentSession) -> Vec<String> {
+    use yi_types::message::UserContent;
+    session
+        .messages()
+        .into_iter()
+        .filter_map(|message| match message {
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            } => Some(format!("user: {text}")),
+            AgentMessage::Custom {
+                custom_type,
+                content: UserContent::Text(text),
+                ..
+            } if custom_type == "reminder" => Some(format!("reminder: {text}")),
+            AgentMessage::Assistant { .. } => Some("assistant".to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), Box<dyn Error>> {
+    use yi_runtime::rules::{RuleDoc, RuleEngine, RuleGap, RuleMode, RuleScope};
+    use yi_runtime::session::user_input;
+    let skill = |name: &str, needle: &str| RuleDoc {
+        name: name.to_owned(),
+        body: format!("skill://{name}"),
+        path: std::path::PathBuf::from(format!("/skills/{name}/SKILL.md")),
+        needles: vec![needle.to_owned()],
+        scope: RuleScope::Text,
+        gap: RuleGap::AfterTurns(1),
+        mode: RuleMode::Remind,
+        paths: Vec::new(),
+        after: 1,
+    };
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        ["one", "two", "three"]
+            .into_iter()
+            .map(|text| faux_assistant_message(vec![faux_text(text)], StopReason::Stop))
+            .collect(),
+    );
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.set_rules_engine(Arc::new(RuleEngine::new(vec![
+        skill("gate", "cargo nextest"),
+        skill("review", "review the work"),
+        skill("plan", "write a plan"),
+    ])));
+    session.prompt_message(user_input("run cargo nextest"))?;
+    assert!(
+        session.follow_up_message(user_input("then review the work")),
+        "the run is going, so the follow-up waits for its answer"
+    );
+    session.wait_idle().await;
+    // An idle session's follow-up starts the run itself.
+    session.follow_up_message(user_input("write a plan"));
+    session.wait_idle().await;
+    assert_eq!(
+        transcript(&session),
+        [
+            "user: run cargo nextest",
+            "reminder: Relevant: skill://gate (matched \"cargo nextest\")",
+            "assistant",
+            "user: then review the work",
+            "reminder: Relevant: skill://review (matched \"review the work\")",
+            "assistant",
+            "user: write a plan",
+            "reminder: Relevant: skill://plan (matched \"write a plan\")",
+            "assistant",
+        ]
+    );
+    Ok(())
+}
+
+/// D310: the system prompt is constant for a conversation. An orchestrate signal on the third
+/// turn leaves the bytes the first request sent, and the protocol rides the transcript once, as
+/// a `fragment` message between the prompt that raised it and the reply.
+/// The transcript's kinds in order; a custom entry shows its kind and its first clause.
+fn shape(session: &AgentSession) -> Vec<String> {
+    use yi_types::message::UserContent;
+    session
+        .messages()
+        .into_iter()
+        .filter_map(|message| match message {
+            AgentMessage::User { .. } => Some("user".to_owned()),
+            AgentMessage::Assistant { .. } => Some("assistant".to_owned()),
+            AgentMessage::CompactionSummary { .. } => Some("summary".to_owned()),
+            AgentMessage::Custom {
+                custom_type,
+                content: UserContent::Text(text),
+                ..
+            } => Some(format!(
+                "{custom_type}: {}",
+                text.split(['.', '\n']).next().unwrap_or_default()
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone()
+-> Result<(), Box<dyn Error>> {
+    use yi_types::message::UserContent;
+    let dir = Scratch::new("yi-faux-constant-prompt")?;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        (1..=3)
+            .map(|n| {
+                faux_assistant_message(vec![faux_text(&format!("reply {n}"))], StopReason::Stop)
+            })
+            .collect(),
+    );
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.install_extensions(yi_runtime::ext::install(yi_runtime::ext::ExtOptions {
+        cwd: dir.to_path_buf(),
+        home: dir.to_path_buf(),
+        mode: yi_runtime::PermissionMode::Auto,
+        user_system: String::new(),
+        schema_instruction: None,
+        context_window: 128_000,
+        global_skills: Vec::new(),
+    }));
+    session.prompt("hi")?;
+    session.wait_idle().await;
+    let first = session.system_prompt();
+    assert!(!first.contains("# Orchestrate"), "a greeting is no program");
+    session.prompt("thanks")?;
+    session.wait_idle().await;
+    session.prompt("plan this: split the crate in two")?;
+    session.wait_idle().await;
+    assert_eq!(
+        session.system_prompt(),
+        first,
+        "the third turn must send the first request's system bytes"
+    );
+    assert_eq!(
+        shape(&session),
+        [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+            "user",
+            "fragment: # Orchestrate",
+            "assistant",
+        ],
+        "the protocol rides once, ahead of the reply it steers"
+    );
+    let keys: Vec<_> = session
+        .messages()
+        .into_iter()
+        .filter_map(|message| match message {
+            AgentMessage::Assistant { diagnostics, .. } => diagnostics?
+                .into_iter()
+                .find(|note| note.diagnostic_type == "cache")?
+                .details?
+                .remove("stable"),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        keys.len() == 3 && keys.iter().all(|key| *key == keys[0]),
+        "every request records one stable key: {keys:?}"
+    );
+    let sent = yi_context::convert_to_llm(&session.messages());
+    let AgentMessage::User {
+        content: UserContent::Text(text),
+        ..
+    } = &sent[5]
+    else {
+        return Err(format!(
+            "the fragment must reach the model as a user message: {:?}",
+            sent[5]
+        )
+        .into());
+    };
+    assert!(
+        text.starts_with("<yi_internal_context source=\"fragment\">\n# Orchestrate"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// D310: a permission-mode flip through the broker rides once as the current mode's fragment,
+/// and a compaction, which drops every internal message, is followed by every late slot's
+/// current text on the next request: the mode, then the orchestrate protocol.
+#[tokio::test]
+async fn a_mode_flip_and_the_protocol_survive_a_compaction() -> Result<(), Box<dyn Error>> {
+    use yi_context::{Settings, Tokens};
+    let dir = Scratch::new("yi-faux-late-compaction")?;
+    let provider = Arc::new(ProviderStream::new(None));
+    let reply = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+    // Turns 1 and 2 weigh about 2k tokens each, so a 3k retained tail keeps turn 3 (its
+    // 8 KB protocol fragment included) and summarizes the rest.
+    provider.queue_faux(vec![
+        reply(&format!("reply 1 {}", "y".repeat(8_000))),
+        reply(&format!("reply 2 {}", "y".repeat(8_000))),
+        reply("reply 3"),
+        reply("## Goal\nThe summary"),
+        reply("reply 4"),
+    ]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    let broker = Arc::new(yi_runtime::permission::PermissionBroker::new(
+        yi_runtime::PermissionMode::Auto,
+        dir.to_path_buf(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    ));
+    session.use_tools(Vec::new(), dir.to_path_buf(), Some(Arc::clone(&broker)));
+    session.enable_compaction_with(Settings {
+        enabled: true,
+        reserve_tokens: Tokens(1_000),
+        keep_recent_tokens: Tokens(3_000),
+    });
+    session.install_extensions(yi_runtime::ext::install(yi_runtime::ext::ExtOptions {
+        cwd: dir.to_path_buf(),
+        home: dir.to_path_buf(),
+        mode: yi_runtime::PermissionMode::Auto,
+        user_system: String::new(),
+        schema_instruction: None,
+        context_window: 128_000,
+        global_skills: Vec::new(),
+    }));
+    session.prompt("hi")?;
+    session.wait_idle().await;
+    let first = session.system_prompt();
+    broker.set_mode_and_fragment(yi_runtime::PermissionMode::Ask, &session);
+    session.prompt("thanks")?;
+    session.wait_idle().await;
+    assert_eq!(
+        shape(&session)[2..],
+        ["user", "fragment: Permission mode: ask", "assistant"],
+        "the broker's flip rides once, as the current mode"
+    );
+    assert_eq!(session.system_prompt(), first);
+    session.prompt("plan this: split the crate in two")?;
+    session.wait_idle().await;
+    assert!(
+        session.compact_now().await,
+        "a scheduled compaction applies at once when idle"
+    );
+    let compacted = shape(&session);
+    assert_eq!(
+        compacted.first().map(String::as_str),
+        Some("summary"),
+        "{compacted:?}"
+    );
+    assert!(
+        compacted.iter().all(|kind| !kind.starts_with("fragment")),
+        "a compaction drops every internal message: {compacted:?}"
+    );
+    session.prompt("go on")?;
+    session.wait_idle().await;
+    let after = shape(&session);
+    let last_user = after
+        .iter()
+        .rposition(|kind| kind == "user")
+        .ok_or("no user")?;
+    assert_eq!(
+        after[last_user..],
+        [
+            "user",
+            "fragment: Permission mode: ask",
+            "fragment: # Orchestrate",
+            "assistant",
+        ],
+        "the next request carries every late slot's current text: {after:?}"
+    );
+    assert_eq!(session.system_prompt(), first);
+    Ok(())
+}
+
+/// A session wired like `yi ask` whose faux model makes `calls` (bash arguments) in order and
+/// then says each of `replies`. Each test's scratch root is its own cwd, so another session's
+/// completion loop in the same process never takes its jobs.
+fn bash_session(
+    root: &Scratch,
+    calls: &[serde_json::Value],
+    replies: &[&str],
+    deadline: Option<Duration>,
+) -> AgentSession {
+    let provider = Arc::new(ProviderStream::new(None));
+    let calls = calls.iter().enumerate().map(|(n, args)| {
+        let args = args.as_object().cloned().unwrap_or_default();
+        let call = faux_tool_call(&format!("call-{n}"), "bash", args);
+        faux_assistant_message(vec![call], StopReason::ToolUse)
+    });
+    let replies = replies
+        .iter()
+        .map(|text| faux_assistant_message(vec![faux_text(text)], StopReason::Stop));
+    provider.queue_faux(calls.chain(replies).collect());
+    let config = SessionConfig {
+        system_prompt: "sys".to_owned(),
+        model: faux_model(),
+        thinking_level: None,
+        tool_execution: ExecutionMode::Sequential,
+    };
+    let mut session = AgentSession::new(config, provider);
+    attach_like_yi_ask(&mut session, root, deadline);
+    session
+}
+
+/// The job a transcript's first backgrounded call became, by the id its result names, since the
+/// registry is shared by every test in a `cargo test` process.
+fn job_in(said: &str) -> Result<yi_tools::jobs::JobId, Box<dyn Error>> {
+    let id = said
+        .split("now job ")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|id| id.parse().ok())
+        .ok_or_else(|| format!("no job in {said}"))?;
+    Ok(yi_tools::jobs::JobId(id))
+}
+
+/// Issue #758: a command still running at its `wait` hands the turn back as a job, and a job that
+/// exits while that turn still runs reaches the model as `<async_result>` before the run ends.
+#[tokio::test]
+async fn a_job_that_exits_mid_turn_reports_into_that_turn() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-report")?;
+    let calls = [
+        serde_json::json!({"command": "sleep 6; echo w$((1+1))ke", "wait": 5}),
+        serde_json::json!({"command": "sleep 4"}),
+    ];
+    let session = bash_session(&root, &calls, &["done", "seen"], None);
+    session.prompt("run it")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = serde_json::to_string(&session.messages())?;
+    assert!(said.contains("now job"), "not backgrounded: {said}");
+    let report = said
+        .split("<async_result")
+        .nth(1)
+        .ok_or_else(|| said.clone())?;
+    assert!(report.contains("w2ke") && report.contains("seen"), "{said}");
+    Ok(())
+}
+
+/// What the bash text now says of an idle session: a job that exits after the turn ended is
+/// heard only once a later turn ends. #820 wakes the session instead; this pins today's truth.
+#[tokio::test]
+async fn a_job_that_exits_after_the_turn_waits_for_the_next_one() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-idle")?;
+    let calls = [serde_json::json!({"command": "sleep 6; echo w$((1+1))ke", "wait": 5})];
+    let session = bash_session(&root, &calls, &["done", "seen", "after"], None);
+    session.prompt("run it")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let job = job_in(&serde_json::to_string(&session.messages())?)?;
+    let jobs = yi_tools::jobs::registry();
+    tokio::task::spawn_blocking(move || jobs.wait_settled(Some(job), Duration::from_secs(20)))
+        .await?;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let idle = serde_json::to_string(&session.messages())?;
+    assert!(!idle.contains("<async_result"), "{idle}");
+    assert_eq!(session.status(), Status::Idle);
+    session.prompt("next")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = serde_json::to_string(&session.messages())?;
+    let (seen, report) = (said.find("seen"), said.find("<async_result"));
+    assert!(seen.is_some() && seen < report, "{said}");
+    Ok(())
+}
+
+/// A job the watchdog killed says so in its `<async_result>`, not a bare exit code.
+#[tokio::test]
+async fn a_killed_job_reports_that_timeout_secs_killed_it() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-killed")?;
+    let calls = [
+        serde_json::json!({"command": "echo started; sleep 30", "wait": 5, "timeout_secs": 7}),
+        serde_json::json!({"command": "sleep 5"}),
+    ];
+    let session = bash_session(&root, &calls, &["done", "seen"], None);
+    session.prompt("run it")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = serde_json::to_string(&session.messages())?;
+    let report = said
+        .split("<async_result")
+        .nth(1)
+        .ok_or_else(|| said.clone())?;
+    assert!(
+        report.contains("killed (timeout_secs or an interrupt): echo started; sleep 30"),
+        "{said}"
+    );
+    Ok(())
+}
+
+/// `--deadline` ends a job the turn handed back, as it ends a command in the turn: once yi exits
+/// nothing else would, since the watchdog is a thread of yi (#819).
+#[tokio::test]
+async fn a_deadline_kills_a_backgrounded_job() -> Result<(), Box<dyn Error>> {
+    let root = scratch("job-deadline")?;
+    let calls = [
+        serde_json::json!({"command": "sleep 40", "wait": 5}),
+        serde_json::json!({"command": "sleep 30"}),
+    ];
+    let deadline = Some(Duration::from_secs(12));
+    let session = bash_session(&root, &calls, &["done", "late"], deadline);
+    session.prompt("run it")?;
+    tokio::time::timeout(Duration::from_secs(30), session.wait_idle()).await?;
+    let said = serde_json::to_string(&session.messages())?;
+    let job = job_in(&said)?;
+    let jobs = yi_tools::jobs::registry();
+    tokio::task::spawn_blocking(move || jobs.wait_settled(Some(job), Duration::from_secs(5)))
+        .await?;
+    let state = jobs.report(job).map(|report| report.state);
+    let killed = yi_tools::jobs::JobState::Settled(yi_tools::jobs::Outcome::Killed);
+    assert_eq!(state, Some(killed), "{said}");
+    Ok(())
+}
+
+/// Dies with the wait that reads the status before it listens: `settle` fires `notify_waiters`,
+/// which stores no permit, so an idle landing between the two was lost and the wait never woke.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_wait_idle_wakes_when_its_run_settles() -> Result<(), Box<dyn Error>> {
+    const RUNS: usize = 2_000;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        (0..RUNS)
+            .map(|_| faux_assistant_message(vec![faux_text("ok")], StopReason::Stop))
+            .collect(),
+    );
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    for run in 0..RUNS {
+        session.prompt("go")?;
+        tokio::time::timeout(Duration::from_secs(2), session.wait_idle())
+            .await
+            .map_err(|_| format!("run {run}: wait_idle never woke after the run settled"))?;
+    }
     Ok(())
 }

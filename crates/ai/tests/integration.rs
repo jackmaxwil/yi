@@ -5,6 +5,8 @@
 mod scratch;
 
 mod anthropic_mapper;
+mod compat;
+mod decide;
 mod effort_catalog;
 mod faux_events;
 mod leak;
@@ -16,4 +18,5 @@ mod openrouter;
 mod proxy;
 mod refresh;
 mod resend;
+mod structured;
 mod tool_choice;

@@ -6,10 +6,11 @@ use yi_types::message::{
 };
 use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 
+use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, encode};
 use crate::catalog::calculate_cost;
-use crate::compat::{compat_bool, compat_str};
+use crate::compat::{compat_bool, developer_role, nested_reasoning, replays_reasoning_content};
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
-use crate::transform::transform_messages;
+use crate::transform::{system_text, transform_messages};
 
 const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning", "reasoning_text"];
 
@@ -88,28 +89,22 @@ pub fn normalize_openai_tool_call_id(id: &str) -> String {
     id.to_owned()
 }
 
-fn convert_messages(model: &Model, context: &LlmContext) -> Vec<Value> {
+/// Renders transformed messages onto `params`, recording for each rendered message the index
+/// of the message it came from, which is what a breakpoint position names.
+fn convert_messages(
+    model: &Model,
+    transformed: &[AgentMessage],
+    params: &mut Vec<Value>,
+    origins: &mut Vec<Option<usize>>,
+) {
     let _span = yi_types::trace::span("ai.convert_messages");
-    let transformed = transform_messages(
-        &context.messages,
-        model,
-        Some(normalize_openai_tool_call_id),
-    );
-    let mut params: Vec<Value> = Vec::new();
-    if !context.system_prompt.is_empty() {
-        let role = if model.reasoning && compat_bool(model, "supportsDeveloperRole", true) {
-            "developer"
-        } else {
-            "system"
-        };
-        params.push(json!({"role": role, "content": context.system_prompt}));
-    }
     let mut index = 0;
     while index < transformed.len() {
         match &transformed[index] {
             AgentMessage::User { content, .. } => match content {
                 UserContent::Text(text) => {
                     params.push(json!({"role": "user", "content": text}));
+                    origins.push(Some(index));
                 }
                 UserContent::Blocks(blocks) => {
                     let parts: Vec<Value> = blocks
@@ -127,22 +122,23 @@ fn convert_messages(model: &Model, context: &LlmContext) -> Vec<Value> {
                         .collect();
                     if !parts.is_empty() {
                         params.push(json!({"role": "user", "content": parts}));
+                        origins.push(Some(index));
                     }
                 }
             },
             AgentMessage::Assistant { content, .. } => {
                 if let Some(message) = assistant_param(model, content) {
                     params.push(message);
+                    origins.push(Some(index));
                 }
             }
             AgentMessage::ToolResult { .. } => {
-                index = push_tool_results(model, &transformed, index, &mut params);
+                index = push_tool_results(model, transformed, index, params, origins);
             }
             _ => {}
         }
         index = index.saturating_add(1);
     }
-    params
 }
 
 fn assistant_param(model: &Model, content: &[Content]) -> Option<Value> {
@@ -198,10 +194,7 @@ fn assistant_param(model: &Model, content: &[Content]) -> Option<Value> {
         if !tool_calls.is_empty() {
             message["tool_calls"] = Value::Array(tool_calls);
         }
-        if compat_bool(model, "requiresReasoningContentOnAssistantMessages", false)
-            && model.reasoning
-            && message.get("reasoning_content").is_none()
-        {
+        if replays_reasoning_content(model) && message.get("reasoning_content").is_none() {
             message["reasoning_content"] = Value::String(String::new());
         }
         let has_content = message["content"].is_string();
@@ -217,6 +210,7 @@ fn push_tool_results(
     transformed: &[AgentMessage],
     start: usize,
     params: &mut Vec<Value>,
+    origins: &mut Vec<Option<usize>>,
 ) -> usize {
     let mut index = start;
     {
@@ -250,6 +244,7 @@ fn push_tool_results(
                 "content": body,
                 "tool_call_id": tool_call_id,
             }));
+            origins.push(Some(index));
             if has_images && model.input.iter().any(|kind| kind == "image") {
                 for block in content {
                     if let Content::Image { data, mime_type } = block {
@@ -268,6 +263,8 @@ fn push_tool_results(
                 vec![json!({"type": "text", "text": "Attached image(s) from tool result:"})];
             parts.extend(images);
             params.push(json!({"role": "user", "content": parts}));
+            // Synthesized, so no position names it: the mark stays on the tool message's text.
+            origins.push(None);
         }
     }
     index
@@ -309,16 +306,40 @@ pub(crate) fn prompt_cache_retention(model: &Model) -> Option<&'static str> {
     .then_some("24h")
 }
 
-pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Value {
+pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Encoded {
     let _span = yi_types::trace::span("ai.build_params")
         .arg("api", "openai")
         .arg("messages", context.messages.len());
+    let history = transform_messages(
+        &context.messages,
+        model,
+        Some(normalize_openai_tool_call_id),
+    );
+    let mut messages: Vec<Value> = Vec::new();
+    let mut origins: Vec<Option<usize>> = Vec::new();
+    if !context.system_prompt.is_empty() {
+        let role = if developer_role(model) {
+            "developer"
+        } else {
+            "system"
+        };
+        messages.push(json!({"role": role, "content": system_text(&context.system_prompt)}));
+        origins.push(None);
+    }
+    convert_messages(model, &history, &mut messages, &mut origins);
     let mut params = json!({
         "model": model.id,
-        "messages": convert_messages(model, context),
+        "messages": messages,
         "stream": true,
         "stream_options": {"include_usage": true},
     });
+    let transient = transform_messages(
+        &context.transient,
+        model,
+        Some(normalize_openai_tool_call_id),
+    );
+    let mut tail: Vec<Value> = Vec::new();
+    convert_messages(model, &transient, &mut tail, &mut Vec::new());
     if model.provider == "openai" {
         params["store"] = json!(false);
     }
@@ -330,13 +351,11 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if let Some(ttl) = prompt_cache_retention(model) {
         params["prompt_cache_retention"] = json!(ttl);
     }
-    // OpenRouter places the breakpoint on the last cacheable block itself; only
-    // the Anthropic-routed models need one, and the catalog marks them.
-    if compat_str(model, "cacheControlFormat") == Some("anthropic") {
-        params["cache_control"] = json!({"type": "ephemeral"});
-    }
     if let Some(routing) = routing_params(model, options) {
         params["provider"] = routing;
+    }
+    if let Some(schema) = &context.schema {
+        params["response_format"] = crate::schema::chat(schema);
     }
     if let Some(max_tokens) = options.max_tokens {
         params["max_completion_tokens"] = json!(max_tokens);
@@ -355,7 +374,21 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if model.reasoning {
         apply_reasoning_params(model, options, &mut params);
     }
-    params
+    // OpenRouter passes per-part breakpoints to every upstream; elsewhere the provider caches
+    // its own prefix and no explicit breakpoint is known to be accepted (design §11).
+    if model.base_url.contains("openrouter.ai") {
+        let breakpoints =
+            Breakpoints::build(&CachePolicy::of(model, false), &history, context.reuse);
+        encode(
+            &breakpoints,
+            Dialect::OpenRouterParts,
+            params,
+            &origins,
+            tail,
+        )
+    } else {
+        Encoded::provider_prefix(params, "messages", tail)
+    }
 }
 
 /// Invariant: callers clamp through [`Model::clamp_effort`] first, so the `null` arm is
@@ -372,7 +405,7 @@ pub(crate) fn mapped_effort(model: &Model, effort: Effort) -> Option<&str> {
 }
 
 fn apply_reasoning_params(model: &Model, options: &OpenAiOptions, params: &mut Value) {
-    if compat_str(model, "thinkingFormat") == Some("openrouter") {
+    if nested_reasoning(model) {
         let off = model
             .thinking_level_map
             .as_ref()
@@ -813,7 +846,7 @@ fn settle_from_record(
 
 fn run_request(
     model: &Model,
-    body: &Value,
+    body: &Encoded,
     wire: crate::request::Wire<'_>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
