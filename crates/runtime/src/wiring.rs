@@ -53,6 +53,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             RuntimeWiring {
                 depth: wiring.depth.saturating_add(1),
                 rlm_dir: build.session_dir.to_path_buf(),
+                family_dir: Some(wiring.family_dir()),
                 cwd: child_cwd,
                 parent_link: Some(build.link),
                 wall: build.wall,

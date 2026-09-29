@@ -18,6 +18,7 @@ pub mod reader;
 mod record;
 mod runs;
 pub(crate) mod service;
+mod trail;
 pub use record::ChildFeed;
 pub(crate) use record::Step;
 use record::preview;
@@ -672,7 +673,7 @@ impl SubagentHost {
         let mut cast = self.cast(&kwargs)?;
         let (seed, prompt) = reader::brief(self, &kwargs, prompt, &mut cast)?;
         let model = cast.0.clone();
-        let (session_dir, child_id) = self.create_child_dir(&self.options.parent_session_dir)?;
+        let (session_dir, child_id) = self.create_child_dir(&self.children_dir())?;
         let session_name =
             requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
         let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask, &standing)?;
@@ -697,6 +698,7 @@ impl SubagentHost {
         };
         cast.2.container = container.as_ref().map(|held| held.name().to_owned());
         let child = self.build(cast, &session_name, &session_dir, cwd, &lease, None)?;
+        self.trail_spawned(&session_name, &child_id, &child, &prompt);
         reader::seed(&child, seed);
         if fork != Fork::None {
             let seed = seed_for_fork(

@@ -185,6 +185,7 @@ pub struct JsonlRepo {
 pub fn create_flat_session(
     dir: PathBuf,
     cwd: impl Into<String>,
+    parent_session_id: Option<String>,
 ) -> Result<SharedSession, SessionError> {
     JsonlRepo {
         root: dir,
@@ -192,7 +193,10 @@ pub fn create_flat_session(
         nested: false,
         ids: IdGenerator::new(),
     }
-    .create(CreateOptions::default())
+    .create(CreateOptions {
+        parent_session_id,
+        ..CreateOptions::default()
+    })
 }
 
 impl JsonlRepo {
@@ -299,6 +303,12 @@ impl SessionRepo for JsonlRepo {
         if let Some(path) = self.find_session_file(id)? {
             fs::remove_file(&path)
                 .map_err(|error| storage_error("Failed to delete session", &path, error))?;
+            let held = path.with_extension("");
+            if held.is_dir() {
+                fs::remove_dir_all(&held).map_err(|error| {
+                    storage_error("Failed to delete its children", &held, error)
+                })?;
+            }
         }
         Ok(())
     }
