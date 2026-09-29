@@ -274,8 +274,8 @@ fn node_holder_child() -> TestResult {
 }
 
 fn kwargs(pairs: &[(&str, &str)]) -> Map<String, Value> {
-    pairs
-        .iter()
+    std::iter::once(&("role", "root"))
+        .chain(pairs)
         .map(|(key, value)| ((*key).to_owned(), Value::String((*value).to_owned())))
         .collect()
 }
