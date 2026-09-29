@@ -416,14 +416,15 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900):
     command += ["--auto"] if write else ["--confirm"]
     if os.environ.get("YI_REVIEW_MODEL"):
         command += ["--model", os.environ["YI_REVIEW_MODEL"]]
-    # Measured: 2 of the first 10 replayed rounds lost a lens to two malformed answers in a row.
+    # Measured: 2 of the first 10 replayed rounds lost a lens to two malformed answers in a row,
+    # and a forge round lost one to a host that closed mid-answer (exit 1, 503 provider_overloaded).
     for _ in range(3):
         # A whole diff passes Linux's 128 KiB cap on one argument, so the prompt goes on stdin.
         out = subprocess.run(command + ["-"], input=prompt, capture_output=True, text=True,
                              timeout=deadline + 120, check=False)
         if out.returncode == 0:
             return json.loads(out.stdout)
-        if out.returncode != 3:
+        if out.returncode not in (1, 3):
             break
     raise Unanswered(f"yi ask exited {out.returncode}: {out.stderr.strip()[-300:]}")
 
@@ -857,6 +858,18 @@ def selfcheck():
             os.environ["PATH"] = real_path
     finally:
         shutil.rmtree(fakes)
+    flaky = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-ask-"))
+    try:
+        (flaky / "yi").write_text(f'#!/bin/sh\ncat >/dev/null\nif [ -e {flaky}/tried ]; then echo \'{{"ok": true}}\'; exit 0; fi\n'
+                                  f'touch {flaky}/tried\necho "Upstream error (code 503, provider_overloaded)" >&2\nexit 1\n')
+        (flaky / "yi").chmod(0o755)
+        before, os.environ["YI_BIN"] = os.environ.get("YI_BIN"), str(flaky / "yi")
+        try:
+            assert ask("p", {"type": "object"}, flaky) == {"ok": True}, "a host that dropped mid-answer is asked again"
+        finally:
+            os.environ.pop("YI_BIN") if before is None else os.environ.update(YI_BIN=before)
+    finally:
+        shutil.rmtree(flaky)
     assert walled(["crates/a.rs", "scripts/guardrails/baselines/src_loc.json", ".forgejo/workflows/pr.yml"]) == [
         "scripts/guardrails/baselines/src_loc.json", ".forgejo/workflows/pr.yml"]
     assert walled(["scripts/hooks/pre-commit", "justfile"]) == ["scripts/hooks/pre-commit", "justfile"], "the fixer's accept is walled"
