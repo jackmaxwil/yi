@@ -109,13 +109,8 @@ impl AgentSession {
                 match events.recv().await {
                     Ok(event) => {
                         if let Some(text) = observe(&event) {
-                            let notice = AgentMessage::Custom {
-                                custom_type: custom_type.to_owned(),
-                                content: yi_types::message::UserContent::Text(text),
-                                display: true,
-                                details: None,
-                                timestamp: yi_session::now_ms(),
-                            };
+                            let notice =
+                                AgentMessage::host_note(custom_type, text, yi_session::now_ms());
                             deliver(notice, false);
                         }
                     }
