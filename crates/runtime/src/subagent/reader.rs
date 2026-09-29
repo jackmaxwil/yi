@@ -37,6 +37,9 @@ pub(crate) fn parse(kwargs: &Map<String, Value>) -> Result<Option<Reader>, Strin
             }
             Ok(None)
         }
+        Some("reader") if kwargs.get("check").is_some_and(|check| !check.is_null()) => {
+            Err(full_child("a reader answers once and runs no check"))
+        }
         Some("reader") => Ok(Some(Reader {
             tools: tools_of(kwargs)?,
             turns: turns_of(kwargs)?,
