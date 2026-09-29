@@ -195,9 +195,9 @@ omitted]`, `[showing lines A-B of N]`, `[full output: path]` and
 pointer names where. A number that was in the cut part is not a number
 you have. Read the pointer before citing anything past the cut.
 
-Inside auto mode an unprovable command runs contained: no network, no
-socket bind, writes only under the working tree, its git directories, and
-tmp. A test that
+Inside auto mode an unprovable or approved command runs contained: no
+network, no socket bind, writes only under the working tree, its git
+directories, and tmp. A test that
 binds a socket or reaches the network fails there for that reason. The
 failure is about where you ran it; the repository's CI is where the
 answer lives.

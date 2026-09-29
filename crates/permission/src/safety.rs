@@ -617,6 +617,27 @@ fn lenient_segments(command: &str) -> Vec<Vec<String>> {
     segments
 }
 
+/// Programs a contained run cannot serve, having no network.
+const HOST_PROGRAMS: [&str; 7] = ["curl", "http", "rsync", "scp", "sftp", "ssh", "wget"];
+
+/// Whether an approval of `command` must run it outside the sandbox: a network program, a git
+/// network verb, or a package install, none of which works without the network.
+pub fn needs_host(command: &str) -> bool {
+    let segments = match parse(command) {
+        Parsed::Segments(segments) => segments,
+        Parsed::Unparsed => lenient_segments(command),
+    };
+    segments.iter().filter_map(|argv| scope(argv)).any(|scope| {
+        let (name, verb) = scope.split_once(' ').unwrap_or((scope.as_str(), ""));
+        let git_network = matches!(
+            verb,
+            "clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule"
+        );
+        let install = matches!(verb, "add" | "install" | "login" | "publish");
+        HOST_PROGRAMS.contains(&name) || if name == "git" { git_network } else { install }
+    })
+}
+
 /// Options that move a command's tree or repository, and so its blast radius, elsewhere.
 const ESCAPES_THE_TREE: [&str; 5] = ["--git-dir", "--work-tree", "-C", "--directory", "--chdir"];
 
