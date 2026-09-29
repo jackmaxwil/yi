@@ -105,7 +105,11 @@ fn root(
 
 /// A tool-less reader over `notes.txt`; `readers` is the count `rlm.run` sends for a fan-out.
 fn reader(question: &str, readers: Option<u64>) -> (String, Map<String, Value>) {
-    let mut kwargs = json!({"role": "reader", "tools": [], "partition": ["local://notes.txt"]});
+    reader_over("local://notes.txt", question, readers)
+}
+
+fn reader_over(url: &str, question: &str, readers: Option<u64>) -> (String, Map<String, Value>) {
+    let mut kwargs = json!({"role": "reader", "tools": [], "partition": [url]});
     if let Some(readers) = readers {
         kwargs["readers"] = json!(readers);
     }
@@ -265,11 +269,11 @@ async fn a_fan_out_marks_the_partition_on_its_first_reader_too() -> TestResult {
     Ok(())
 }
 
-/// Every request body with the instant it was read. The request that asks `lead` is answered
-/// after `delay` with `status` (a stream on 200, an error body otherwise); the rest at once.
+/// Every request body with the instant it was read. A request asking `lead` is answered after
+/// `LEAD_DELAY`: with `status` and an error body, or on 200 with one text delta, then the rest
+/// of the stream `HOLD` later, so its first event and its reply's end are apart.
 fn timed_stand_in(
     lead: &'static str,
-    delay: std::time::Duration,
     status: u16,
 ) -> std::io::Result<(u16, mpsc::Receiver<(std::time::Instant, Value)>)> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -294,25 +298,31 @@ fn timed_stand_in(
                 let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
                 let leading = body.to_string().contains(lead);
                 let _ = sender.send((std::time::Instant::now(), body));
-                let (status, kind, reply) = if leading && status != 200 {
-                    std::thread::sleep(delay);
-                    let error = r#"{"error":{"message":"bad request","code":400}}"#.to_owned();
-                    (status, "application/json", error)
-                } else {
-                    if leading {
-                        std::thread::sleep(delay);
-                    }
-                    (
-                        200,
-                        "text/event-stream",
-                        sse_reply(&json!({"content": "sky"}), "stop"),
-                    )
-                };
+                let mut out = reader.into_inner();
+                if leading {
+                    std::thread::sleep(LEAD_DELAY);
+                }
+                if leading && status != 200 {
+                    let error = r#"{"error":{"message":"bad request","code":400}}"#;
+                    let _ = write!(
+                        out,
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{error}",
+                        error.len()
+                    );
+                    return;
+                }
+                let delta = json!({"choices": [{"index": 0, "delta": {"content": "sky"}}]});
                 let _ = write!(
-                    reader.into_inner(),
-                    "HTTP/1.1 {status} X\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
-                    reply.len()
+                    out,
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {delta}\n\n"
                 );
+                let _ = out.flush();
+                if leading {
+                    std::thread::sleep(HOLD);
+                }
+                let finish = json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}});
+                let _ = write!(out, "data: {finish}\n\ndata: [DONE]\n\n");
             });
         }
     });
@@ -342,37 +352,47 @@ async fn read_at(
 }
 
 const LEAD_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
+const HOLD: std::time::Duration = std::time::Duration::from_secs(3);
+/// A follower released by the lead's first event sends well before the lead's reply ends.
+const RELEASED_BY: std::time::Duration = std::time::Duration::from_millis(2_600);
+
+fn openrouter_claude() -> Model {
+    route(
+        "anthropic/claude-haiku-4.5",
+        "openai-completions",
+        "openrouter",
+        "http://openrouter.ai.invalid/api/v1",
+    )
+}
+
+async fn spawn_pair(host: &Arc<SubagentHost>, url: &str, first: &str, second: &str) -> TestResult {
+    for question in [first, second] {
+        let (question, kwargs) = reader_over(url, question, Some(2));
+        host.spawn(question, kwargs)?;
+    }
+    Ok(())
+}
 
 async fn fan_out_pair(
     status: u16,
 ) -> Result<(std::time::Instant, Value, std::time::Instant, Value), Box<dyn Error>> {
     let scratch = Scratch::new("yi-family-stagger")?;
-    let (port, from) = timed_stand_in("sky, first?", LEAD_DELAY, status)?;
-    let model = route(
-        "anthropic/claude-haiku-4.5",
-        "openai-completions",
-        "openrouter",
-        "http://openrouter.ai.invalid/api/v1",
-    );
-    let (_session, host) = root(&scratch, model, port, false)?;
-    for question in [
-        "Which line names the sky, first?",
-        "Which line names the sky, second?",
-    ] {
-        let (question, kwargs) = reader(question, Some(2));
-        host.spawn(question, kwargs)?;
-    }
-    read_at(&from, "sky, first?", "sky, second?").await
+    let (port, from) = timed_stand_in("first?", status)?;
+    let (_session, host) = root(&scratch, openrouter_claude(), port, false)?;
+    let (first, second) = ("Which line, sky first?", "Which line, sky second?");
+    spawn_pair(&host, "local://notes.txt", first, second).await?;
+    read_at(&from, "sky first?", "sky second?").await
 }
 
-/// A fan-out's second reader sends only once the first one's response has begun, since an
-/// entry is read only after the response writing it begins (design §9.4, D314).
+/// A fan-out's second reader sends once the first one's response has begun, at its first
+/// streamed event and not its reply's end, since an entry is read only after the response
+/// writing it begins (design §9.4, D314).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fan_out_follower_sends_after_the_leads_response_begins() -> TestResult {
     let (lead_at, lead, follow_at, follow) = fan_out_pair(200).await?;
     let gap = follow_at.duration_since(lead_at);
     assert!(
-        gap >= LEAD_DELAY,
+        gap >= LEAD_DELAY && gap < RELEASED_BY,
         "the follower sent {gap:?} after the lead"
     );
     assert_eq!(
@@ -395,5 +415,56 @@ async fn a_lead_that_fails_before_streaming_releases_its_follower() -> TestResul
         gap < std::time::Duration::from_secs(8),
         "the follower waited out the bound: {gap:?}"
     );
+    Ok(())
+}
+
+/// A second fan-out over the same shape, after the first lead's response began, gets a lead of
+/// its own that marks the partition, and a follower that waits for it, not for the old lead.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_later_fan_out_over_the_same_partition_gets_its_own_lead() -> TestResult {
+    let scratch = Scratch::new("yi-family-again")?;
+    let (port, from) = timed_stand_in("first?", 200)?;
+    let (_session, host) = root(&scratch, openrouter_claude(), port, false)?;
+    let url = "local://notes.txt";
+    spawn_pair(
+        &host,
+        url,
+        "Which line, sky first?",
+        "Which line, sky second?",
+    )
+    .await?;
+    read_at(&from, "sky first?", "sky second?").await?;
+    tokio::time::sleep(LEAD_DELAY + HOLD).await;
+    spawn_pair(&host, url, "Again, sky first?", "Again, sky second?").await?;
+    let (lead_at, lead, follow_at, follow) =
+        read_at(&from, "Again, sky first?", "Again, sky second?").await?;
+    let gap = follow_at.duration_since(lead_at);
+    assert!(
+        gap >= LEAD_DELAY && gap < RELEASED_BY,
+        "the second fan-out's follower sent {gap:?} after its lead"
+    );
+    let marked = &lead["messages"][1]["content"][0]["cache_control"];
+    assert_eq!(*marked, json!({"type": "ephemeral"}), "{lead}");
+    assert_eq!(
+        follow["messages"][1].to_string(),
+        lead["messages"][1].to_string()
+    );
+    Ok(())
+}
+
+/// Fan-outs over two partitions at once each have a lead: neither waits on the other.
+#[tokio::test(flavor = "multi_thread")]
+async fn fan_outs_over_two_partitions_do_not_wait_on_each_other() -> TestResult {
+    let scratch = Scratch::new("yi-family-two")?;
+    let (port, from) = timed_stand_in("first?", 200)?;
+    let (_session, host) = root(&scratch, openrouter_claude(), port, false)?;
+    std::fs::write(scratch.join("ws/trees.txt"), "oak\nash\n")?;
+    let (question, kwargs) = reader_over("local://notes.txt", "Which line, sky first?", Some(2));
+    host.spawn(question, kwargs)?;
+    let (question, kwargs) = reader_over("local://trees.txt", "Which line, tree first?", Some(2));
+    host.spawn(question, kwargs)?;
+    let (sky_at, _, tree_at, _) = read_at(&from, "sky first?", "tree first?").await?;
+    let apart = tree_at.max(sky_at).duration_since(tree_at.min(sky_at));
+    assert!(apart < LEAD_DELAY, "one lead waited {apart:?} on the other");
     Ok(())
 }

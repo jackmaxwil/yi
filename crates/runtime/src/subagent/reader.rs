@@ -295,7 +295,6 @@ fn stagger(host: &super::SubagentHost, key: String) -> Stagger {
 }
 
 impl Stagger {
-    /// A lead says when its response begins (first event, reply end or run end); a follower waits.
     pub(crate) fn arm(self, child: &AgentSession) -> Option<tokio::sync::watch::Receiver<bool>> {
         let sender = match self {
             Self::Follow(lead) => return Some(lead),
@@ -325,18 +324,13 @@ pub(crate) async fn follow(lead: Option<tokio::sync::watch::Receiver<bool>>) {
 }
 
 fn response_began(event: &yi_types::event::AgentEvent) -> bool {
-    use yi_types::event::{AgentEvent, AssistantMessageEvent};
+    use yi_types::event::AgentEvent;
     match event {
-        AgentEvent::MessageUpdate {
-            assistant_message_event,
-        } => !matches!(
-            assistant_message_event,
-            AssistantMessageEvent::Start { .. } | AssistantMessageEvent::Waiting { .. }
-        ),
+        // The loop sends a request's start and waits as other events: an update is upstream bytes.
+        AgentEvent::MessageUpdate { .. } | AgentEvent::AgentEnd { .. } => true,
         AgentEvent::MessageEnd { message } => {
             matches!(message, yi_types::message::AgentMessage::Assistant { .. })
         }
-        AgentEvent::AgentEnd { .. } => true,
         _ => false,
     }
 }
