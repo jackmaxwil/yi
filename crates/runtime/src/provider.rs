@@ -64,6 +64,9 @@ pub struct ProviderStream {
     pub faux: Arc<Mutex<FauxProvider>>,
     pub(crate) faux_pace: Arc<Mutex<Option<std::time::Duration>>>,
     long_cache: bool,
+    /// What the session ledger says of the next gap and write, for its loop requests' TTL
+    /// (D315); `None` for a stream no ledger feeds, a child's included.
+    ttl_estimate: Mutex<Option<crate::cache_miss::TtlEstimate>>,
     proxy: Option<yi_ai::request::ProxyConfig>,
     routing: Option<serde_json::Value>,
     telemetry: Option<Arc<crate::telemetry::Telemetry>>,
@@ -87,6 +90,7 @@ impl ProviderStream {
             faux: Arc::default(),
             faux_pace: Arc::default(),
             long_cache: false,
+            ttl_estimate: Mutex::new(None),
             proxy: None,
             routing: None,
             telemetry: None,
@@ -102,6 +106,7 @@ impl ProviderStream {
             faux: Arc::clone(&self.faux),
             faux_pace: Arc::clone(&self.faux_pace),
             long_cache: false,
+            ttl_estimate: Mutex::new(None),
             proxy: self.proxy.clone(),
             routing: self.routing.clone(),
             telemetry: self.telemetry.clone(),
@@ -155,6 +160,13 @@ impl ProviderStream {
         self
     }
 
+    /// The session ledger's latest estimate (`cache_miss::attach`).
+    pub fn set_ttl_estimate(&self, estimate: Option<crate::cache_miss::TtlEstimate>) {
+        if let Ok(mut held) = self.ttl_estimate.lock() {
+            *held = estimate;
+        }
+    }
+
     #[must_use]
     pub fn with_routing(mut self, routing: Option<serde_json::Value>) -> Self {
         self.routing = routing;
@@ -204,6 +216,13 @@ impl StreamFn for ProviderStream {
             Some(telemetry) => telemetry.wrap(model, receiver),
             None => receiver,
         }
+    }
+
+    fn cache_ttl(&self, model: &Model) -> yi_types::model::Ttl {
+        let estimate = self.ttl_estimate.lock().ok().and_then(|held| *held);
+        estimate.map_or(yi_types::model::Ttl::Min5, |estimate| {
+            estimate.cheapest(model, yi_session::now_ms())
+        })
     }
 }
 

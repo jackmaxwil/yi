@@ -1,5 +1,6 @@
 //! The breakpoints' invariants over random requests (D295): at most the engine's slots, a
-//! TTL that never rises along the prompt, no position past the history (so none in
+//! TTL that never rises along the prompt and is the one asked where the engine prices it
+//! (D315), no position past the history (so none in
 //! `transient`), no tail unless the caller said the request loops, and a system breakpoint
 //! on every request. The same requests are then rendered through both dialects: the
 //! environment messages come out last and bare, the system end is marked, and a loop
@@ -109,7 +110,9 @@ struct Case {
     reuse: Reuse,
     tools: bool,
     engine: Engine,
-    hold_1h: bool,
+    /// What the caller asks of the system breakpoints and of every breakpoint.
+    stable: Ttl,
+    ttl: Ttl,
     /// `shared_through`, which may point past the history.
     shared: Option<usize>,
 }
@@ -126,23 +129,25 @@ fn case_strategy() -> impl Strategy<Value = Case> {
         Just(Engine::Snapshot),
         Just(Engine::Prefix),
     ];
+    let ttl = || prop_oneof![Just(Ttl::Min5), Just(Ttl::Hour1)];
     (
         prop::collection::vec(0..5u8, 0..12),
         0..3usize,
         reuse,
         any::<bool>(),
         engine,
-        any::<bool>(),
+        (ttl(), ttl()),
         proptest::option::of(0..14usize),
     )
         .prop_map(
-            |(kinds, transient, reuse, tools, engine, hold_1h, shared)| Case {
+            |(kinds, transient, reuse, tools, engine, (stable, ttl), shared)| Case {
                 kinds,
                 transient,
                 reuse,
                 tools,
                 engine,
-                hold_1h,
+                stable,
+                ttl,
                 shared,
             },
         )
@@ -174,6 +179,7 @@ fn context(case: &Case) -> LlmContext {
         reuse: case.reuse,
         tools: case.tools.then(|| vec![tool()]),
         tool_choice: (case.reuse == Reuse::LastTurn).then_some(ToolChoice::None),
+        cache_ttl: case.ttl,
     }
 }
 
@@ -185,16 +191,22 @@ fn is_user_role(message: &AgentMessage) -> bool {
 }
 
 fn check_breakpoints(case: &Case, ctx: &LlmContext) -> Result<(), TestCaseError> {
-    let stable_ttl = match case.engine {
-        Engine::Breakpoint { hour: true, .. } if case.hold_1h => Ttl::Hour1,
-        _ => Ttl::Min5,
+    // An hour only where the engine prices one; the history's hour lifts the system's too.
+    let (stable_ttl, ttl) = match case.engine {
+        Engine::Breakpoint { hour: true, .. } => (case.stable.max(case.ttl), case.ttl),
+        _ => (Ttl::Min5, Ttl::Min5),
     };
-    let policy = CachePolicy {
-        engine: case.engine,
-        stable_ttl,
-    };
+    let policy = CachePolicy::new(case.engine, case.stable, case.ttl);
     let breakpoints = Breakpoints::build(&policy, &ctx.messages, case.reuse, case.shared);
     let marks: Vec<_> = breakpoints.marks().collect();
+    for mark in &marks {
+        let want = if mark.position.index().is_some() {
+            ttl
+        } else {
+            stable_ttl
+        };
+        proptest::prop_assert_eq!(mark.ttl, want, "{:?} under {:?}", mark, case);
+    }
     let slots = match case.engine {
         Engine::Breakpoint { slots, .. } => slots,
         Engine::Snapshot => 1,
@@ -343,7 +355,7 @@ fn random_requests_hold_every_breakpoint_invariant_on_both_dialects() -> Result<
             let ctx = context(&case);
             check_breakpoints(&case, &ctx)?;
             let options = AnthropicOptions {
-                cache_1h: case.hold_1h,
+                cache_1h: case.stable == Ttl::Hour1,
                 ..AnthropicOptions::default()
             };
             check_rendered(
@@ -366,6 +378,7 @@ fn random_requests_hold_every_breakpoint_invariant_on_both_dialects() -> Result<
 #[test]
 fn a_tool_less_loop_still_marks_its_previous_tail_and_tail() -> Result<(), Box<dyn Error>> {
     let ctx = LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "be terse".to_owned(),
         messages: vec![
             user("first"),
@@ -431,6 +444,7 @@ fn marked_messages(body: &Value) -> Vec<usize> {
 fn a_shared_partition_is_marked_on_both_wires() -> Result<(), Box<dyn Error>> {
     let partition = "<untrusted>\n1:red sun\n2:blue sky\n</untrusted>";
     let mut ctx = LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: ["reader", "rules"].join(yi_types::model::SYSTEM_BLOCK_SEPARATOR),
         messages: vec![user(partition), user("Which line names the sky?")],
         transient: Vec::new(),

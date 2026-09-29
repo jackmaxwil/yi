@@ -7,6 +7,7 @@
 //! | `siblings_carry_the_root_id_and_the_second_marks_the_shared_partition` | T1 | Two readers over one partition, spawned by the production wiring on an OpenRouter Claude route, both send `session_id` = the root id; the second one's partition message is the first one's, byte for byte, plus one `cache_control`. | `ProviderStream::for_child` keeps the family key; `Breakpoints` honours `shared_through`. | The key is `None` on every request and `shared_through` is read by no encoder: each sibling may land on another upstream and writes nothing a sibling reads. |
 //! | `a_fan_out_marks_the_partition_on_its_first_reader_too` | T1 | Two readers spawned as one fan-out (`readers: 2`, what `rlm.run` sends when gathered calls share a partition) both mark the partition, the first's byte for byte the second's. | `reader::share` gives `Some(0)` to every reader of a fan-out. | Only a repeat got `Some(0)`: nobody wrote the entry, and the second sibling paid the write. |
 //! | `a_child_of_an_hour_long_root_writes_five_minute_marks` | T1 | Under a root that holds its stable prefix for an hour, the root's request carries `"ttl":"1h"` and its reader child's carries none. | `for_child` clears the long cache. | The child shares the root's `ProviderStream` and writes its own prompt at the 1h price. |
+//! | `a_root_whose_ledger_shows_long_pauses_holds_its_history_an_hour_and_its_child_none` | T1 | Replies whose starts sit half an hour apart, folded by `cache_miss::attach` as in production, make the root's next OpenRouter request carry `"ttl":"1h"` on every `cache_control`, and its worker child's (a loop) on none. | `attach` hands `TtlEstimate` to `ProviderStream::set_ttl_estimate`; the loop asks `StreamFn::cache_ttl`; `for_child` has no estimate (D315). | `attach` never feeds the provider and every pause past five minutes rewrites the prompt; or a child inherits the root's estimate and writes its own prompt at the 1h price. |
 
 use crate::compaction_faux::{faux_model, sse_reply};
 use crate::scratch::Scratch;
@@ -17,6 +18,7 @@ use std::sync::{Arc, mpsc};
 
 use serde_json::{Map, Value, json};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost};
+use yi_types::message::AgentMessage;
 use yi_types::model::Model;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -231,6 +233,105 @@ async fn a_child_of_an_hour_long_root_writes_five_minute_marks() -> TestResult {
     assert!(root.to_string().contains(hour), "{root}");
     let child = body_asking(&mut bodies, &from, "names the sky?").await?;
     assert!(!child.to_string().contains(hour), "{child}");
+    Ok(())
+}
+
+/// Every `cache_control` in a body, in order.
+fn cache_controls(value: &Value) -> Vec<Value> {
+    match value {
+        Value::Object(map) => map
+            .iter()
+            .flat_map(|(key, value)| {
+                if key == "cache_control" {
+                    vec![value.clone()]
+                } else {
+                    cache_controls(value)
+                }
+            })
+            .collect(),
+        Value::Array(items) => items.iter().flat_map(cache_controls).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A reply as the loop records it: `prompt` tokens, the last 500 written, started `elapsed` ms
+/// before it ended, its history sent for five minutes.
+fn recorded_reply(
+    model: &Model,
+    prompt: u64,
+    elapsed: u64,
+) -> Result<AgentMessage, Box<dyn Error>> {
+    Ok(serde_json::from_value(json!({
+        "role": "assistant", "content": [], "api": model.api, "provider": model.provider,
+        "model": model.id, "stopReason": "stop", "timestamp": 0,
+        "diagnostics": [{"type": "cache", "timestamp": 0,
+            "details": {"elapsed_ms": elapsed, "ttl": "5m"}}],
+        "usage": {"input": 0, "output": 10, "cacheRead": prompt - 500, "cacheWrite": 500,
+            "totalTokens": prompt + 10,
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+    }))?)
+}
+
+/// Through the production wiring (D315): `cache_miss::attach` folds the root's replies, and once
+/// they show two half-hour pauses the next OpenRouter request holds every history breakpoint an
+/// hour; the root's worker child, a loop whose stream no ledger feeds, stays at five minutes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_root_whose_ledger_shows_long_pauses_holds_its_history_an_hour_and_its_child_none()
+-> TestResult {
+    let scratch = Scratch::new("yi-family-ttl-choice")?;
+    // Each reply reads 41k of a 41.5k prompt, so the root's own reply keeps the ledger's
+    // estimate pricing an hour when the child's request goes out.
+    let usage = json!({"prompt_tokens": 41_500, "completion_tokens": 5, "total_tokens": 41_505,
+        "prompt_tokens_details": {"cached_tokens": 41_000}});
+    let reply_stream = [
+        json!({"choices": [{"index": 0, "delta": {"content": "blue sky"}}]}),
+        json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": usage}),
+    ]
+    .iter()
+    .map(|chunk| format!("data: {chunk}\n\n"))
+    .collect::<String>()
+        + "data: [DONE]\n\n";
+    let (port, from) = stand_in(reply_stream)?;
+    let mut model = openrouter_claude();
+    let price = |value: f64| serde_json::Number::from_f64(value).ok_or("price");
+    (model.cost.input, model.cost.cache_write) = (price(1.0)?, price(1.25)?);
+    model.cost.cache_read = price(0.1)?;
+    let (session, host) = root(&scratch, model.clone(), port, false)?;
+    yi_runtime::cache_miss::attach(&session);
+    let minute = 60_000;
+    for (prompt, elapsed) in [(40_000, 60 * minute), (40_500, 30 * minute), (41_000, 0)] {
+        session
+            .events_sender()
+            .send(yi_types::event::AgentEvent::MessageEnd {
+                message: recorded_reply(&model, prompt, elapsed)?,
+            })?;
+    }
+    let mut folded = false;
+    for _ in 0..100 {
+        folded = yi_loop::run::StreamFn::cache_ttl(session.provider(), &model)
+            == yi_types::model::Ttl::Hour1;
+        if folded {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(folded, "the ledger's estimate never reached the provider");
+    session.prompt("root turn")?;
+    let mut bodies = Vec::new();
+    let root = cache_controls(&body_asking(&mut bodies, &from, "root turn").await?);
+    let hour = json!({"type": "ephemeral", "ttl": "1h"});
+    assert!(
+        !root.is_empty() && root.iter().all(|mark| *mark == hour),
+        "{root:?}"
+    );
+    // A worker loops (`Reuse::Loop`), so it asks its own stream, which no ledger feeds.
+    let kwargs = json!({"role": "root"})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    host.spawn("Which line names the sea?".to_owned(), kwargs)?;
+    let child = cache_controls(&body_asking(&mut bodies, &from, "names the sea?").await?);
+    assert!(!child.is_empty() && !child.contains(&hour), "{child:?}");
     Ok(())
 }
 

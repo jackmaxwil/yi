@@ -305,6 +305,29 @@ impl Reuse {
     }
 }
 
+/// How long a prompt-cache entry lives once written. Along the prompt a longer TTL comes first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Ttl {
+    #[default]
+    #[serde(rename = "5m")]
+    Min5,
+    #[serde(rename = "1h")]
+    Hour1,
+}
+
+impl Ttl {
+    pub fn is_min5(&self) -> bool {
+        *self == Self::Min5
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Min5 => "5m",
+            Self::Hour1 => "1h",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmContext {
@@ -325,6 +348,10 @@ pub struct LlmContext {
     /// run within the cache's life (D309) or a fan-out shares it; both encoders mark it (D314).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_through: Option<usize>,
+    /// The TTL of the history breakpoints, chosen by the caller: the session ledger's cheapest
+    /// for a loop request (D315), five minutes for anything else.
+    #[serde(default, skip_serializing_if = "Ttl::is_min5")]
+    pub cache_ttl: Ttl,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -387,6 +414,7 @@ mod tests {
     #[test]
     fn transient_and_schema_ride_only_when_set() -> Result<(), Box<dyn std::error::Error>> {
         let context = LlmContext {
+            cache_ttl: super::Ttl::Min5,
             system_prompt: "s".to_owned(),
             messages: Vec::new(),
             transient: vec![crate::message::AgentMessage::host_user(
@@ -428,6 +456,7 @@ mod tests {
     #[test]
     fn the_stable_key_moves_with_schema_tools_and_system_only() {
         let base = LlmContext {
+            cache_ttl: super::Ttl::Min5,
             system_prompt: "s".to_owned(),
             messages: Vec::new(),
             transient: Vec::new(),

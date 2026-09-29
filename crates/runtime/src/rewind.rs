@@ -95,6 +95,7 @@ pub async fn summarize_branch(session: &AgentSession, stub: BranchStub) {
         .and_then(|compactor| compactor.summarizer.clone())
         .unwrap_or_else(|| session.model());
     let context = LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: BRANCH_SUMMARY_PROMPT.to_owned(),
         messages: vec![AgentMessage::host_user(
             UserContent::Text(yi_context::serialize_conversation(&stub.messages)),
