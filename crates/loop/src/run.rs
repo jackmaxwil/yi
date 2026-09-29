@@ -29,7 +29,8 @@ pub trait StreamFn: Send + Sync {
     ) -> Receiver<AssistantMessageEvent>;
 }
 
-fn synthesized_error_message(model: &Model, text: &str) -> AgentMessage {
+/// An errored reply carrying `text`, for a turn that fails before or outside a request.
+pub fn synthesized_error_message(model: &Model, text: &str) -> AgentMessage {
     AgentMessage::Assistant {
         content: Vec::new(),
         api: model.api.clone(),

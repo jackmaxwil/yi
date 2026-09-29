@@ -8,6 +8,7 @@ use yi_runtime::ext::{
     Effect, Event, ExtOptions, Host, PromptState, Rank, Route, Slot, StartReason, Trust, TrustGate,
     contributions, install, prefilter,
 };
+use yi_types::message::{AgentMessage, UserContent};
 use yi_types::model::SYSTEM_BLOCK_SEPARATOR;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -29,6 +30,51 @@ fn started(cwd: &Path, home: &Path) -> Host {
     });
     host.start(None, false);
     host
+}
+
+type Seen = std::sync::Arc<std::sync::Mutex<Vec<AgentMessage>>>;
+
+/// Everything the host delivers to the session's notice hook, in order.
+fn deliveries(host: &mut Host) -> Seen {
+    let seen = Seen::default();
+    let into = std::sync::Arc::clone(&seen);
+    host.set_deliver(std::sync::Arc::new(move |message| {
+        if let Ok(mut all) = into.lock() {
+            all.push(message);
+        }
+    }));
+    seen
+}
+
+/// The `fragment` messages late attaches delivered.
+fn fragments(seen: &Seen) -> Vec<String> {
+    delivered(seen, |custom_type| custom_type == Some("fragment"))
+}
+
+/// The reminder lines, which ride as plain host messages.
+fn reminders(seen: &Seen) -> Vec<String> {
+    delivered(seen, |custom_type| custom_type.is_none())
+}
+
+fn delivered(seen: &Seen, keep: impl Fn(Option<&str>) -> bool) -> Vec<String> {
+    seen.lock()
+        .map(|all| {
+            all.iter()
+                .filter_map(|message| match message {
+                    AgentMessage::Custom {
+                        custom_type,
+                        content: UserContent::Text(text),
+                        ..
+                    } if keep(Some(custom_type)) => Some(text.clone()),
+                    AgentMessage::User {
+                        content: UserContent::Text(text),
+                        ..
+                    } if keep(None) => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[test]
@@ -184,30 +230,46 @@ fn the_slot_table_survives_a_resume() -> TestResult {
     Ok(())
 }
 
-/// A mid-session attach rebuilds one prefix, never the universal one: the
-/// first block is what every session and every child reads from cache.
+/// D310: the system prompt is constant for a conversation. Once the first request has
+/// rendered it, a trajectory signal leaves its bytes alone and the protocol goes out once,
+/// as a `fragment` message; the slot still lands in the snapshot a resume restores.
 #[test]
-fn a_mid_session_attach_leaves_the_universal_prefix_alone() -> TestResult {
-    let dir = Scratch::new("yi-ext-rebuild")?;
+fn a_signal_after_the_first_request_delivers_the_protocol_as_one_message() -> TestResult {
+    let dir = Scratch::new("yi-ext-late")?;
     let mut host = started(&dir, &dir);
-    let before = host.system_prompt();
+    let seen = deliveries(&mut host);
+    let first = host.system_prompt();
+    let signal = Event::ToolResult {
+        name: "grep".to_owned(),
+        exit: Some(0),
+        files_matched: 40,
+    };
+    host.dispatch(&signal, None);
+    assert_eq!(
+        host.system_prompt(),
+        first,
+        "a late attach must not touch the prompt's bytes"
+    );
+    let delivered = fragments(&seen);
+    assert_eq!(delivered.len(), 1, "{delivered:?}");
+    assert!(
+        delivered[0].starts_with("# Orchestrate"),
+        "{}",
+        delivered[0]
+    );
+    host.dispatch(&signal, None);
     host.dispatch(
-        &Event::ToolResult {
-            name: "grep".to_owned(),
-            exit: Some(0),
-            files_matched: 40,
+        &Event::ToolCall {
+            name: "edit".to_owned(),
+            target: Some(dir.join("never_read.txt")),
         },
         None,
     );
-    let after = host.system_prompt();
-    assert_ne!(before, after, "the attach must reach the prompt");
-    let universal = |text: &str| {
-        text.split(SYSTEM_BLOCK_SEPARATOR)
-            .next()
-            .unwrap_or_default()
-            .to_owned()
-    };
-    assert_eq!(universal(&before), universal(&after));
+    assert_eq!(fragments(&seen).len(), 1, "a protocol attaches once");
+    assert!(
+        host.state().has(&Slot::new(Rank::Protocol, "orchestrate")),
+        "the slot still lands in the resume snapshot"
+    );
     Ok(())
 }
 
@@ -251,14 +313,9 @@ fn every_commonmark_bullet_marker_counts_as_an_enumeration() {
 fn a_turn_that_only_read_stays_one_shot_and_a_write_escalates_silently() -> TestResult {
     let dir = Scratch::new("yi-ext-escalate")?;
     let mut host = started(&dir, &dir);
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let sink = std::sync::Arc::clone(&seen);
-    host.set_notice(std::sync::Arc::new(move |line: &str| {
-        if let Ok(mut lines) = sink.lock() {
-            lines.push(line.to_owned());
-        }
-    }));
+    let seen = deliveries(&mut host);
     host.dispatch(&host.prompt_event("fix the typo"), None);
+    let first = host.system_prompt();
     let call = |name: &str, target: &str| Event::ToolCall {
         name: name.to_owned(),
         target: Some(PathBuf::from(target)),
@@ -269,7 +326,7 @@ fn a_turn_that_only_read_stays_one_shot_and_a_write_escalates_silently() -> Test
     let end = host.turn_end_event();
     host.dispatch(&end, None);
     assert!(
-        !host.system_prompt().contains("# Orchestrate"),
+        fragments(&seen).is_empty() && !first.contains("# Orchestrate"),
         "twenty reads and no write is an assessment, not a program"
     );
     host.dispatch(&call("read", "src/lib.rs"), None);
@@ -279,36 +336,45 @@ fn a_turn_that_only_read_stays_one_shot_and_a_write_escalates_silently() -> Test
     }
     let end = host.turn_end_event();
     host.dispatch(&end, None);
-    assert!(
-        host.system_prompt().contains("# Orchestrate"),
-        "five calls with a write in the turn loads the protocol"
-    );
-    let nudges = || {
-        seen.lock()
-            .map(|lines| lines.iter().filter(|l| l.contains("outgrown")).count())
-            .unwrap_or(usize::MAX)
+    let protocols = |seen: &Seen| {
+        fragments(seen)
+            .iter()
+            .filter(|text| text.starts_with("# Orchestrate"))
+            .count()
     };
     assert_eq!(
-        nudges(),
+        protocols(&seen),
+        1,
+        "five calls with a write in the turn loads the protocol: {:?}",
+        fragments(&seen)
+    );
+    assert_eq!(
+        host.system_prompt(),
+        first,
+        "as a message, not a prompt edit"
+    );
+    let nudges = |seen: &Seen| {
+        reminders(seen)
+            .iter()
+            .filter(|line| line.contains("outgrown"))
+            .count()
+    };
+    assert_eq!(
+        nudges(&seen),
         0,
         "the turn-end signal attaches silently; a nudge after the answer is a wasted turn"
     );
     host.dispatch(&call("edit", "src/never_read.rs"), None);
     assert_eq!(
-        nudges(),
+        nudges(&seen),
         0,
         "the protocol is already attached, so a later signal adds nothing"
     );
     let dir = Scratch::new("yi-ext-edit-before-read")?;
     let mut host = started(&dir, &dir);
-    let sink = std::sync::Arc::clone(&seen);
-    host.set_notice(std::sync::Arc::new(move |line: &str| {
-        if let Ok(mut lines) = sink.lock() {
-            lines.push(line.to_owned());
-        }
-    }));
+    let seen = deliveries(&mut host);
     host.dispatch(&call("edit", "src/never_read.rs"), None);
-    assert_eq!(nudges(), 1, "a mid-turn signal still reminds");
+    assert_eq!(nudges(&seen), 1, "a mid-turn signal still reminds");
     Ok(())
 }
 
@@ -401,7 +467,9 @@ fn a_rust_repository_loads_the_language_pack() -> TestResult {
 fn a_rust_write_arms_the_language_pack_in_a_foreign_repository() -> TestResult {
     let dir = Scratch::new("yi-ext-armed")?;
     let mut host = started(&dir, &dir);
-    assert!(!host.system_prompt().contains("# Rust discipline"));
+    let seen = deliveries(&mut host);
+    let first = host.system_prompt();
+    assert!(!first.contains("# Rust discipline"));
     host.dispatch(
         &Event::ToolCall {
             name: "read".to_owned(),
@@ -409,10 +477,7 @@ fn a_rust_write_arms_the_language_pack_in_a_foreign_repository() -> TestResult {
         },
         None,
     );
-    assert!(
-        !host.system_prompt().contains("# Rust discipline"),
-        "reads never trigger a pack"
-    );
+    assert!(fragments(&seen).is_empty(), "reads never trigger a pack");
     host.dispatch(
         &Event::ToolCall {
             name: "write".to_owned(),
@@ -420,7 +485,19 @@ fn a_rust_write_arms_the_language_pack_in_a_foreign_repository() -> TestResult {
         },
         None,
     );
-    assert!(host.system_prompt().contains("# Rust discipline"));
+    let delivered = fragments(&seen);
+    assert!(
+        delivered.len() == 1 && delivered[0].starts_with("# Rust discipline"),
+        "a write after the first request delivers the pack as a message: {delivered:?}"
+    );
+    assert_eq!(host.system_prompt(), first);
+    assert!(
+        reminders(&seen)
+            .iter()
+            .any(|line| line.starts_with("lang-rust applies to this file")),
+        "{:?}",
+        reminders(&seen)
+    );
     Ok(())
 }
 
@@ -501,20 +578,18 @@ fn fragment_examples_name_real_kernel_apis() -> TestResult {
 fn effects_apply_in_emit_order_and_reminders_reach_the_notice_hook() -> TestResult {
     let dir = Scratch::new("yi-ext-effects")?;
     let mut host = Host::new(dir.to_path_buf());
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let sink = std::sync::Arc::clone(&seen);
-    host.set_notice(std::sync::Arc::new(move |line: &str| {
-        if let Ok(mut lines) = sink.lock() {
-            lines.push(line.to_owned());
-        }
-    }));
+    let seen = deliveries(&mut host);
     host.register(Box::new(Noisy));
     host.start(None, false);
     assert!(host.system_prompt().contains("FROM AN EXTENSION"));
     assert_eq!(
-        seen.lock().map(|lines| lines.len()).unwrap_or(0),
-        1,
+        reminders(&seen),
+        ["one line"],
         "the reminder must reach the session's notice hook"
+    );
+    assert!(
+        fragments(&seen).is_empty(),
+        "a start-time attach is prompt, not message"
     );
     Ok(())
 }
@@ -579,6 +654,7 @@ fn a_user_pack_loads_from_the_global_root() -> TestResult {
     let elsewhere = dir.join("empty");
     std::fs::create_dir_all(&elsewhere)?;
     let mut host = started(&elsewhere, &home);
+    let seen = deliveries(&mut host);
     assert!(!host.system_prompt().contains("# Python discipline"));
     host.dispatch(
         &Event::ToolCall {
@@ -587,8 +663,9 @@ fn a_user_pack_loads_from_the_global_root() -> TestResult {
         },
         None,
     );
-    assert!(
-        host.system_prompt().contains("# Python discipline"),
+    assert_eq!(
+        fragments(&seen),
+        ["# Python discipline\n"],
         "writing a covered file arms the pack"
     );
     Ok(())
@@ -905,5 +982,64 @@ fn the_memory_block_is_present_at_zero_notes() -> TestResult {
     );
     let _ = std::fs::remove_dir_all(&cwd);
     let _ = std::fs::remove_dir_all(&home);
+    Ok(())
+}
+
+/// D310: a compaction drops every internal message, so each slot attached after the first
+/// request goes out again with its current text, in rank order; a slot whose text the frozen
+/// prompt already carries (a mode that flipped back) is not repeated.
+#[test]
+fn a_compaction_delivers_every_late_fragment_again() -> TestResult {
+    let dir = Scratch::new("yi-ext-compacted")?;
+    let mut host = started(&dir, &dir);
+    let seen = deliveries(&mut host);
+    let first = host.system_prompt();
+    host.dispatch(
+        &Event::ToolResult {
+            name: "grep".to_owned(),
+            exit: Some(0),
+            files_matched: 40,
+        },
+        None,
+    );
+    let mode = |mode: yi_runtime::PermissionMode| yi_permission::mode_fragment(mode).to_owned();
+    assert!(host.attach(
+        Slot::new(Rank::Mode, "permission"),
+        mode(yi_runtime::PermissionMode::Ask)
+    ));
+    let heads = |seen: &Seen| -> Vec<String> {
+        fragments(seen)
+            .iter()
+            .map(|text| {
+                text.split(['.', '\n'])
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect()
+    };
+    assert_eq!(heads(&seen), ["# Orchestrate", "Permission mode: ask"]);
+    host.dispatch(&Event::Compacted, None);
+    assert_eq!(
+        heads(&seen),
+        [
+            "# Orchestrate",
+            "Permission mode: ask",
+            "Permission mode: ask",
+            "# Orchestrate",
+        ],
+        "after a compaction every late slot rides again, mode before protocol"
+    );
+    assert!(host.attach(
+        Slot::new(Rank::Mode, "permission"),
+        mode(yi_runtime::PermissionMode::Auto)
+    ));
+    host.dispatch(&Event::Compacted, None);
+    assert_eq!(
+        heads(&seen)[4..],
+        ["Permission mode: auto", "# Orchestrate"],
+        "a mode the frozen prompt already states is not repeated"
+    );
+    assert_eq!(host.system_prompt(), first);
     Ok(())
 }
