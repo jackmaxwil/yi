@@ -552,7 +552,12 @@ Scenarios live under `fixtures/live/<id>/` in the task shape (`task.json`,
 `prompt.txt`, `repo/`, `reward.sh`); a `"kind": "refusal"` scenario names the
 argv the binary must refuse and the stderr it must print; a `"kind": "cache"`
 scenario asks one session its `turns` in order (`--continue` after the first)
-and passes only when the warm turns read cached tokens. Every scenario ends
+and passes only when the warm turns read cached tokens; with `minWarmShare`
+every request after the first, a tool loop's own included, must read that share
+of the previous request's whole prompt (fresh, read and written tokens) over at
+least `minRequests`, and its row lists each `warmShares`. A `"byName": true`
+scenario runs only under `--task`: `cache-warm-claude` judges a Claude route's
+marks, which a route that caches by itself does not have. Every scenario ends
 `pass`, `fail` or `inconclusive` — timeout, no key, provider trouble, budget —
 and only `fail` is red. `--allow-faux` runs the lane's plumbing offline. The
 run's HOME is fresh and has `telemetry.enabled`, so `run.json` carries
