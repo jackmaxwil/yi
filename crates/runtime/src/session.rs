@@ -70,6 +70,8 @@ struct Shared {
     waits: Mutex<Option<Arc<dyn Fn() -> u64 + Send + Sync>>>,
     environment: Mutex<Option<Arc<EnvironmentFn>>>,
     reuse: Mutex<yi_types::model::Reuse>,
+    /// The system bytes the first request sent; every later request must send the same (D310).
+    first_system_prompt: OnceLock<String>,
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
@@ -178,6 +180,7 @@ impl AgentSession {
                 on_turn_start: Mutex::new(None),
                 environment: Mutex::new(None),
                 reuse: Mutex::new(yi_types::model::Reuse::Loop),
+                first_system_prompt: OnceLock::new(),
                 lane: Mutex::new(None),
                 telemetry: Mutex::new(None),
                 todos: Mutex::new(None),
@@ -234,11 +237,13 @@ impl AgentSession {
         if let Ok(mut slot) = self.shared.ext.lock() {
             *slot = Some(Arc::new(Mutex::new(host)));
         }
-        let notice = self.notice_hook();
+        let deliver = self.deliver_hook();
         if let Some(host) = self.extensions()
             && let Ok(mut host) = host.lock()
         {
-            host.set_notice(notice);
+            host.set_deliver(Arc::new(move |message| {
+                deliver(message, false);
+            }));
         }
     }
 
@@ -1073,5 +1078,46 @@ fn attribute_to_shared(shared: &Arc<Shared>, child: &Usage) {
         if let Err(error) = recorded {
             record_store_error(shared, &error);
         }
+    }
+}
+
+/// Invariant: `notify_waiters` stores no permit, so this registers before `poll` reads state.
+pub(crate) async fn until<T>(
+    notify: &tokio::sync::Notify,
+    mut poll: impl FnMut() -> std::ops::ControlFlow<T, Option<std::time::Instant>>,
+) -> T {
+    loop {
+        let mut woken = std::pin::pin!(notify.notified());
+        woken.as_mut().enable();
+        match poll() {
+            std::ops::ControlFlow::Break(done) => return done,
+            std::ops::ControlFlow::Continue(Some(at)) => {
+                let at = tokio::time::Instant::from_std(at);
+                let _ = tokio::time::timeout_at(at, woken).await;
+            }
+            std::ops::ControlFlow::Continue(None) => woken.await,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::ControlFlow;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_wake_fired_while_polling_is_not_lost() -> Result<(), tokio::time::error::Elapsed> {
+        let notify = tokio::sync::Notify::new();
+        let mut polls = 0;
+        let woke = super::until(&notify, || {
+            polls += 1;
+            if polls > 1 {
+                return ControlFlow::Break(polls);
+            }
+            notify.notify_waiters();
+            ControlFlow::Continue(None)
+        });
+        assert_eq!(tokio::time::timeout(Duration::from_secs(1), woke).await?, 2);
+        Ok(())
     }
 }
