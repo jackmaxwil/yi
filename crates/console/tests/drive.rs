@@ -1774,6 +1774,27 @@ fn editor_script(path: &std::path::Path, split: &str, rest: &str) -> String {
     )
 }
 
+/// At 100 columns beside the full sidebar the hint row drops whole keys by rank,
+/// notebook first, and still ends in `⌥? keys` rather than a key cut in half.
+#[test]
+fn the_hint_row_keeps_whole_keys() -> TestResult {
+    let frame = run_frames(
+        "hint-row",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         quit\n",
+    )?;
+    let last = frame.lines().last().unwrap_or_default();
+    let last = last.trim_end_matches(['"', ',', ' ']);
+    assert!(
+        last.ends_with("   ⌥/ command palette   ⌥n new session   ⌥b sidebar   ⌥g diff   ⌥? keys"),
+        "the notebook drops whole and ⌥? keys stays: {last:?}"
+    );
+    Ok(())
+}
+
 fn session_fixture() -> Vec<Step> {
     vec![
         Step::Expect("initialize", init_reply),

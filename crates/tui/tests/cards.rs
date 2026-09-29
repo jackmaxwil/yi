@@ -382,6 +382,39 @@ fn a_turn_ends_with_a_dim_footer() -> TestResult {
     Ok(())
 }
 
+/// C5: past the first request a read is expected, so a turn that read nothing says `0% cached`;
+/// the first request of a conversation has nothing to read and says nothing.
+#[test]
+fn a_total_miss_after_the_first_request_shows_zero_cached() -> TestResult {
+    let footer = |requests: usize| -> Result<String, Box<dyn std::error::Error>> {
+        let mut app = app();
+        app.reduce_agent(AgentEvent::AgentStart);
+        for _ in 0..requests {
+            let message: AgentMessage = serde_json::from_value(serde_json::json!({
+                "role": "assistant", "content": [], "api": "faux", "provider": "faux",
+                "model": "faux-1", "stopReason": "stop", "timestamp": 0,
+                "usage": {"input": 30000, "output": 500, "cacheRead": 0, "cacheWrite": 0,
+                    "totalTokens": 30500, "cost": {"input": 0, "output": 0, "cacheRead": 0,
+                    "cacheWrite": 0, "total": 0}},
+            }))?;
+            app.reduce_agent(AgentEvent::MessageEnd { message });
+        }
+        app.reduce_agent(AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        });
+        let rows = flat(&app.take_commits());
+        Ok(rows
+            .into_iter()
+            .find(|r| r.contains(" in / "))
+            .unwrap_or_default())
+    };
+    let first = footer(1)?;
+    assert!(!first.contains("cached"), "{first}");
+    let second = footer(2)?;
+    assert!(second.contains("60K in / 1K out · 0% cached"), "{second}");
+    Ok(())
+}
+
 /// Three pointers in one turn landed as three padded blocks, one of them bare:
 /// injected text takes one shape, and a run of it is one block.
 #[test]

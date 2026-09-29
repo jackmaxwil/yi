@@ -71,10 +71,13 @@ pub enum Engine {
 
 impl Engine {
     pub fn of(model: &Model) -> Self {
-        let id = model.id.trim_start_matches('~');
-        if model.api == "anthropic-messages"
-            || id.starts_with("anthropic/")
-            || id.starts_with("claude-")
+        Self::of_route(&model.api, &model.provider, &model.id)
+    }
+
+    /// The same prior from what an assistant record names, for a replay with no catalog.
+    pub fn of_route(api: &str, provider: &str, id: &str) -> Self {
+        let id = id.trim_start_matches('~');
+        if api == "anthropic-messages" || id.starts_with("anthropic/") || id.starts_with("claude-")
         {
             return Self::Breakpoint {
                 slots: SLOTS,
@@ -85,10 +88,7 @@ impl Engine {
             return Self::Snapshot;
         }
         // OpenAI's explicit mode takes three breakpoints beside its automatic one, at one TTL.
-        if id.starts_with("openai/")
-            || model.provider == "openai"
-            || model.provider == "openai-codex"
-        {
+        if id.starts_with("openai/") || provider == "openai" || provider == "openai-codex" {
             return Self::Breakpoint {
                 slots: 3,
                 hour: false,
