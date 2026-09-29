@@ -977,23 +977,32 @@ fn report_undo(changes: &[yi_runtime::Change], scoped: bool, json: bool) {
     }
 }
 
-/// D10: `--schema` answers are JSON or a non-zero exit, never prose.
-fn emit_structured(schema: &yi_runtime::schema::Schema, answer: &str, json: bool) -> i32 {
-    let value = match yi_runtime::schema::extract(answer) {
-        Ok(value) => value,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return 3;
+/// D10: `--schema` answers are JSON or a non-zero exit, never prose. The answer is the newest
+/// assistant message that holds a matching value: a reader narrates before tool calls and wraps up after.
+fn emit_structured(schema: &yi_runtime::schema::Schema, said: &[String], json: bool) -> i32 {
+    let mut newest_error = None;
+    for text in said.iter().rev() {
+        let checked = yi_runtime::schema::extract(text).and_then(|value| {
+            let valid = schema.validate(&value);
+            valid
+                .map(|()| value)
+                .map_err(|error| format!("answer does not match --schema: {error}"))
+        });
+        match checked {
+            Ok(value) => {
+                if !json && let Ok(line) = serde_json::to_string(&value) {
+                    println!("{line}");
+                }
+                return 0;
+            }
+            Err(error) => {
+                newest_error.get_or_insert(error);
+            }
         }
-    };
-    if let Err(error) = schema.validate(&value) {
-        eprintln!("error: answer does not match --schema: {error}");
-        return 3;
     }
-    if !json && let Ok(line) = serde_json::to_string(&value) {
-        println!("{line}");
-    }
-    0
+    let error = newest_error.unwrap_or_else(|| "answer contains no JSON value".to_owned());
+    eprintln!("error: {error}");
+    3
 }
 
 fn yi_ai_key(provider: &str) -> Option<yi_runtime::auth::Secret> {
