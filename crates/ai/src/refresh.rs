@@ -1,40 +1,33 @@
 //! The fetched catalog: models.dev metadata, narrowed to the ids a provider's own list says a
 //! key can reach, written per provider beside the bundled floor.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use serde_json::{Map, Value, json};
 use yi_types::model::Model;
 
-use crate::catalog::Catalog;
+use crate::catalog::{Catalog, SCHEMA};
 use crate::request::{ProxyConfig, get_json};
 
 pub const MODELS_DEV: &str = "https://models.dev/api.json";
 pub const CAP_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_REFRESH_HOURS: u64 = 24;
 
-/// The per-provider facts the fetched metadata does not carry: yi's adapter, its endpoint,
-/// the compat block and effort ladder a new id inherits.
-fn adapter(provider: &str) -> Option<(&'static str, &'static str, Value, Value)> {
+/// The per-provider facts models.dev does not carry: yi's adapter, its endpoint and the effort
+/// ladder a new id inherits; the request shape is derived (`compat`), so no flag is copied.
+fn adapter(provider: &str) -> Option<(&'static str, &'static str, Value)> {
     Some(match provider {
         "anthropic" => (
             "anthropic-messages",
             "https://api.anthropic.com",
-            json!({"forceAdaptiveThinking": true, "supportsStrictTools": true}),
             json!({"off": null, "xhigh": "xhigh", "max": "max"}),
         ),
-        "openai" => (
-            "openai-responses",
-            "https://api.openai.com/v1",
-            json!({"supportsStrictMode": true}),
-            Value::Null,
-        ),
+        "openai" => ("openai-responses", "https://api.openai.com/v1", Value::Null),
         "openrouter" => (
             "openai-completions",
             "https://openrouter.ai/api/v1",
-            json!({"supportsDeveloperRole": false, "thinkingFormat": "openrouter"}),
             json!({"off": null}),
         ),
         _ => return None,
@@ -74,14 +67,14 @@ fn u64_at(value: Option<&Value>) -> u64 {
 }
 
 /// One models.dev entry as a yi [`Model`]; `known` is the bundled entry whose compat and effort
-/// ladder win over the provider default.
+/// ladder it keeps.
 fn model_from(
     provider: &str,
     id: &str,
     entry: &Map<String, Value>,
     known: Option<&Model>,
 ) -> Option<Model> {
-    let (api, base_url, compat, ladder) = adapter(provider)?;
+    let (api, base_url, ladder) = adapter(provider)?;
     let cost = entry.get("cost").and_then(Value::as_object);
     let limit = entry.get("limit").and_then(Value::as_object);
     let cost_json = json!({
@@ -120,7 +113,7 @@ fn model_from(
         cost: serde_json::from_value(cost_json).ok()?,
         context_window: u64_at(limit.and_then(|l| l.get("context"))),
         max_tokens: u64_at(limit.and_then(|l| l.get("output"))),
-        compat: known.and_then(|k| k.compat.clone()).or(Some(compat)),
+        compat: known.and_then(|k| k.compat.clone()),
         thinking_level_map: known
             .and_then(|k| k.thinking_level_map.clone())
             .or(if ladder.is_null() { None } else { Some(ladder) }),
@@ -155,7 +148,7 @@ pub fn catalog_from(
         }
     }
     let api = adapter(provider).map_or("", |(api, ..)| api);
-    json!({ api: by_id })
+    json!({ api: by_id, "schema": SCHEMA })
 }
 
 pub fn cache_path(dir: &Path, provider: &str) -> std::path::PathBuf {
@@ -170,8 +163,16 @@ pub fn age(dir: &Path, provider: &str, now: SystemTime) -> Option<Duration> {
     now.duration_since(modified).ok()
 }
 
+/// Missing, older than `hours`, or written under another [`SCHEMA`].
 pub fn is_stale(dir: &Path, provider: &str, hours: u64, now: SystemTime) -> bool {
+    let current = || {
+        std::fs::read(cache_path(dir, provider))
+            .ok()
+            .and_then(|data| serde_json::from_slice::<Value>(&data).ok())
+            .is_some_and(|catalog| catalog.get("schema").and_then(Value::as_u64) == Some(SCHEMA))
+    };
     age(dir, provider, now).is_none_or(|age| age >= Duration::from_secs(hours.saturating_mul(3600)))
+        || !current()
 }
 
 fn write_atomic(path: &Path, value: &Value) -> Result<(), String> {
@@ -230,13 +231,4 @@ pub fn refresh(
     }
     write_atomic(&cache_path(dir, provider), &catalog)?;
     Ok(count)
-}
-
-pub fn providers_models(catalog: &Value) -> HashMap<String, usize> {
-    catalog
-        .as_object()
-        .into_iter()
-        .flatten()
-        .map(|(api, models)| (api.clone(), models.as_object().map_or(0, Map::len)))
-        .collect()
 }

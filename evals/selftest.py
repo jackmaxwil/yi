@@ -279,6 +279,40 @@ def check_unknown_usage_is_not_a_free_turn():
     assert yi_usage.parse_events(EVENTS)["costUnknownTurns"] == 0, "recorded turns are known"
 
 
+def check_warm_share():
+    """#742: the Claude cache gate reads each warm request against the previous request's whole
+    prompt, writes included, over a loop of at least three requests. The usage rows are
+    OpenRouter's, from live runs of cache-warm-claude on Bedrock."""
+    held = [(206, 0, 14336), (235, 14336, 7798), (242, 22134, 7996), (227, 30130, 418)]
+    no_tail = [(642, 13900, 0), (8044, 14336, 0), (8097, 14336, 7809), (861, 22145, 7855)]
+    # 0.396.0-0.450.0: a user string reshaped once its mark moved on, and request 3 read only the
+    # system prefix; its fresh input was 240 tokens, so a ratio without the writes said 0.95.
+    reshaped = [(207, 0, 14336), (240, 14336, 7786), (240, 13900, 16065), (228, 29965, 368)]
+    task = run.LIVE / "cache-warm-claude"
+    spec = json.loads((task / "task.json").read_text())
+    rows = {}
+    with tempfile.TemporaryDirectory() as directory:
+        fake = Path(directory) / "yi"
+        fake.write_text(
+            "#!/usr/bin/env python3\nimport json, pathlib\n"
+            "for i, r, w in json.loads(pathlib.Path(__file__).with_suffix('.json').read_text()):\n"
+            "    print(json.dumps({'type': 'message_end', 'message': {'role': 'assistant',"
+            " 'usage': {'input': i, 'cacheRead': r, 'cacheWrite': w, 'output': 1}}}))\n"
+        )
+        fake.chmod(0o755)
+        for name, usage in (("held", held), ("no-tail", no_tail), ("reshaped", reshaped), ("no-loop", held[:2]), ("cold-short", [(206, 0, 14336), (235, 0, 14336)])):
+            fake.with_suffix(".json").write_text(json.dumps(usage))
+            rows[name] = run.cache_check(spec, task, str(fake), "m", Path(directory) / name)
+    assert rows["held"]["reward"] == 1 and rows["held"]["warmShares"] == [0.9858, 0.9895, 0.992], rows["held"]
+    detail = rows["no-tail"]["detail"]
+    assert rows["no-tail"]["reward"] == 0 and detail.startswith("request 3 read 14336 of"), detail
+    assert rows["reshaped"]["detail"].startswith("request 3 read 13900 of"), rows["reshaped"]
+    cold = rows["cold-short"]
+    assert cold["status"] == "fail" and cold["detail"].startswith("request 2 read 0 of"), cold
+    short = rows["no-loop"]
+    assert short["status"] == "inconclusive" and short["detail"].startswith("2 requests"), short
+
+
 def check_session_extras():
     """Pier's three extra columns, off a committed v4 session fixture."""
     extras = yi_usage.session_extras(SESSIONS)
@@ -854,6 +888,7 @@ CHECKS = (
     check_empty_stream_fails_clean_workspace,
     check_no_assistant_rows,
     check_unknown_usage_is_not_a_free_turn,
+    check_warm_share,
     check_session_extras,
     check_fingerprint,
     check_driver_ceiling,

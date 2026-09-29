@@ -77,7 +77,8 @@ pub fn parse_diff_display(payload: &Value) -> Option<KernelDiffDisplay> {
 
 pub enum AttachmentParse {
     Attachment(KernelAttachment),
-    Oversized,
+    /// Well-formed but refused; the reason is what the cell's stderr tells the model.
+    Rejected(String),
     Malformed,
 }
 
@@ -86,9 +87,68 @@ pub fn parse_attachment_display(payload: &Value) -> AttachmentParse {
         return AttachmentParse::Malformed;
     };
     if attachment.data.len() > MAX_ATTACHMENT_DATA_CHARS {
-        return AttachmentParse::Oversized;
+        return AttachmentParse::Rejected(format!(
+            "exceeds {MAX_ATTACHMENT_DATA_CHARS} base64 chars"
+        ));
+    }
+    // Invariant (#817): `data` goes as is into a kitty escape and to the provider; a byte outside
+    // base64 could end the escape. A header checks no body: a refused image is still #860's.
+    let image = strict_base64_head(&attachment.data)
+        .is_some_and(|head| has_magic_number(&attachment.mime_type, &head));
+    if !image {
+        return AttachmentParse::Rejected(
+            "its data is not base64 of the image its mime_type names".to_owned(),
+        );
     }
     AttachmentParse::Attachment(attachment)
+}
+
+/// The value of `byte` in the standard base64 alphabet (RFC 4648 §4).
+fn sextet(byte: u8) -> Option<u32> {
+    match byte {
+        b'A'..=b'Z' => Some(u32::from(byte - b'A')),
+        b'a'..=b'z' => Some(u32::from(byte - b'a') + 26),
+        b'0'..=b'9' => Some(u32::from(byte - b'0') + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+/// The first twelve bytes `data` decodes to, or `None` when it is not strict base64: the
+/// standard alphabet in whole four-character groups, `=` only as the last one or two.
+fn strict_base64_head(data: &str) -> Option<Vec<u8>> {
+    let body = data
+        .strip_suffix("==")
+        .or_else(|| data.strip_suffix('='))
+        .unwrap_or(data);
+    if data.is_empty()
+        || !data.len().is_multiple_of(4)
+        || !body.bytes().all(|b| sextet(b).is_some())
+    {
+        return None;
+    }
+    let head = body.as_bytes().chunks(4).take(4).flat_map(|group| {
+        let bits = group
+            .iter()
+            .filter_map(|&byte| sextet(byte))
+            .fold(0, |acc, value| acc << 6 | value);
+        let [_, a, b, c] = (bits << (6 * 4usize.saturating_sub(group.len()))).to_be_bytes();
+        [a, b, c].into_iter().take(group.len().saturating_sub(1))
+    });
+    Some(head.collect())
+}
+
+/// Whether `head` opens with the magic number of the provider image type `mime_type`
+/// names; any other type has none to check.
+fn has_magic_number(mime_type: &str, head: &[u8]) -> bool {
+    match mime_type {
+        "image/png" => head.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => head.starts_with(b"\xff\xd8\xff"),
+        "image/gif" => head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a"),
+        "image/webp" => head.starts_with(b"RIFF") && head.get(8..12) == Some(&b"WEBP"[..]),
+        _ => true,
+    }
 }
 
 pub fn parse_sent_agent_message(payload: &Value) -> Option<KernelSentAgentMessage> {
@@ -161,15 +221,14 @@ pub fn reduce(
             if let Some(payload) = data.and_then(|data| data.get(ATTACHMENT_DISPLAY_MIME)) {
                 match parse_attachment_display(payload) {
                     AttachmentParse::Attachment(attachment) => cell.attachments.push(attachment),
-                    AttachmentParse::Oversized => {
-                        // A well-formed oversized attachment fails the cell loudly,
+                    AttachmentParse::Rejected(reason) => {
+                        // A well-formed refused attachment fails the cell loudly,
                         // never a silent image drop.
                         if !cell.stderr.is_empty() {
                             cell.stderr.push('\n');
                         }
-                        cell.stderr.push_str(&format!(
-                            "attachment dropped: exceeds {MAX_ATTACHMENT_DATA_CHARS} base64 chars"
-                        ));
+                        cell.stderr
+                            .push_str(&format!("attachment dropped: {reason}"));
                         cell.status = ExecuteStatus::Error;
                     }
                     AttachmentParse::Malformed => {}
