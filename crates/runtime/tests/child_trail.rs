@@ -40,12 +40,15 @@ fn faux_model() -> Model {
 }
 
 /// A host whose parent has a real transcript on disk, as every CLI root does at spawn time.
-fn host(
-    depth: u8,
-    parent_dir: PathBuf,
-    parent: Option<yi_session::SharedSession>,
-) -> Arc<SubagentHost> {
+type Slot = Arc<std::sync::Mutex<Option<yi_session::SharedSession>>>;
+
+fn slot(parent: Option<yi_session::SharedSession>) -> Slot {
+    Arc::new(std::sync::Mutex::new(parent))
+}
+
+fn host(depth: u8, parent_dir: PathBuf, parent: Slot) -> Arc<SubagentHost> {
     let (events, _keep) = tokio::sync::broadcast::channel(64);
+    let spawned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     Arc::new(SubagentHost::new(SubagentHostOptions {
         provider: Arc::new(ProviderStream::new(None)),
         depth,
@@ -56,10 +59,12 @@ fn host(
         home: std::env::temp_dir(),
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), Effort::Medium)),
-        factory: Arc::new(|build: yi_runtime::ChildBuild<'_>| {
+        factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             let provider = Arc::new(ProviderStream::new(None));
+            let n = spawned.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let answer = format!("the token is minted in auth.rs, answer {n}");
             provider.queue_faux(vec![faux_assistant_message(
-                vec![faux_text("the token is minted in auth.rs")],
+                vec![faux_text(&answer)],
                 StopReason::Stop,
             )]);
             Ok(AgentSession::new(
@@ -77,7 +82,7 @@ fn host(
         report: Arc::new(|_, _| {}),
         parent_messages: Arc::new(Vec::new),
         attribute: Arc::new(|_| {}),
-        store: Arc::new(move || parent.clone()),
+        store: Arc::new(move || parent.lock().ok().and_then(|held| held.clone())),
         plans_dir: std::env::temp_dir().join(".yi/plans"),
         family_live: Arc::new(|| 0),
     }))
@@ -120,9 +125,13 @@ fn trail(root: &Path) -> Result<Vec<Value>, Box<dyn Error>> {
 }
 
 async fn ended(root: &Path) -> Result<Vec<Value>, Box<dyn Error>> {
+    ended_n(root, 1).await
+}
+
+async fn ended_n(root: &Path, n: usize) -> Result<Vec<Value>, Box<dyn Error>> {
     for _ in 0..400 {
         let lines = trail(root)?;
-        if lines.iter().any(|line| line["event"] == "ended") {
+        if lines.iter().filter(|line| line["event"] == "ended").count() >= n {
             return Ok(lines);
         }
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
@@ -136,7 +145,7 @@ async fn ended(root: &Path) -> Result<Vec<Value>, Box<dyn Error>> {
 async fn a_child_lives_inside_its_parent_and_the_parent_points_at_it() -> TestResult {
     let scratch = Scratch::new("yi-child-trail")?;
     let (session, root_file, root_id) = root_session(&scratch)?;
-    let host = host(0, scratch.join("rlm-1"), Some(session));
+    let host = host(0, scratch.join("rlm-1"), slot(Some(session)));
     let reply = host.spawn("Where is the token minted?".to_owned(), kwargs("scout"))?;
     let child_dir = PathBuf::from(reply["session_dir"].as_str().ok_or("no session_dir")?);
     assert_eq!(
@@ -184,7 +193,7 @@ fn lines_of_header(path: &Path) -> Result<Value, Box<dyn Error>> {
 async fn a_childs_history_resolves_through_the_trail_after_a_restart() -> TestResult {
     let scratch = Scratch::new("yi-child-trail-restart")?;
     let (session, root_file, _) = root_session(&scratch)?;
-    let first = host(0, scratch.join("rlm-1"), Some(Arc::clone(&session)));
+    let first = host(0, scratch.join("rlm-1"), slot(Some(Arc::clone(&session))));
     first.spawn("Where is the token minted?".to_owned(), kwargs("scout"))?;
     ended(&root_file).await?;
     drop(first);
@@ -192,7 +201,7 @@ async fn a_childs_history_resolves_through_the_trail_after_a_restart() -> TestRe
     let after = host(
         0,
         scratch.join("rlm-2"),
-        Some(Arc::new(std::sync::Mutex::new(reopened))),
+        slot(Some(Arc::new(std::sync::Mutex::new(reopened)))),
     );
     let resolver =
         yi_runtime::fetch::Resolver::new(std::env::temp_dir(), yi_runtime::Wall::default())
@@ -215,12 +224,77 @@ async fn a_childs_history_resolves_through_the_trail_after_a_restart() -> TestRe
 async fn a_grandchild_nests_under_its_parents_directory() -> TestResult {
     let scratch = Scratch::new("yi-child-trail-nested")?;
     let child_dir = scratch.join("children/sub-00000001");
-    let host = host(1, child_dir.clone(), None);
+    let host = host(1, child_dir.clone(), slot(None));
     let reply = host.spawn("Probe.".to_owned(), kwargs("probe"))?;
     let grandchild = PathBuf::from(reply["session_dir"].as_str().ok_or("no session_dir")?);
     assert_eq!(
         grandchild.parent(),
         Some(child_dir.join("children").as_path())
     );
+    Ok(())
+}
+
+fn history(host: Arc<SubagentHost>, agent: &str) -> Result<String, Box<dyn Error>> {
+    let resolver =
+        yi_runtime::fetch::Resolver::new(std::env::temp_dir(), yi_runtime::Wall::default())
+            .with_transcripts(Arc::new(yi_runtime::fetch::SessionTranscripts::new(
+                host,
+                None,
+                Path::new("/work"),
+            )));
+    Ok(resolver.fetch(&format!("history://{agent}").parse()?)?.text)
+}
+
+/// Dies with the trail walked oldest first: a name reused after a reap reads the first child's
+/// transcript after a restart, while the live process read the second.
+#[tokio::test]
+async fn a_reused_name_resolves_to_the_newest_child_and_an_id_to_its_own() -> TestResult {
+    let scratch = Scratch::new("yi-child-trail-reuse")?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let first = host(0, scratch.join("rlm-1"), slot(Some(Arc::clone(&session))));
+    let old = first.spawn("One.".to_owned(), kwargs("scout"))?;
+    ended_n(&root_file, 1).await?;
+    first.delete("scout")?;
+    first.spawn("Two.".to_owned(), kwargs("scout"))?;
+    ended_n(&root_file, 2).await?;
+    drop(first);
+    let reopened = Arc::new(std::sync::Mutex::new(yi_session::load_session(&root_file)?));
+    let after = host(0, scratch.join("rlm-2"), slot(Some(reopened)));
+    let newest = history(Arc::clone(&after), "scout")?;
+    assert!(newest.contains("answer 1"), "{newest}");
+    let by_id = history(after, old["rlm_child_id"].as_str().ok_or("no id")?)?;
+    assert!(by_id.contains("answer 0"), "{by_id}");
+    Ok(())
+}
+
+/// Dies with the end written through the host's live handle: after `/new` swaps the root's
+/// transcript, the child's end lands in a session that never spawned it.
+#[tokio::test]
+async fn a_childs_end_is_written_where_its_spawn_was() -> TestResult {
+    let scratch = Scratch::new("yi-child-trail-swap")?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let (next, next_file, _) = root_session(&scratch)?;
+    let parent = slot(Some(session));
+    let host = host(0, scratch.join("rlm-1"), Arc::clone(&parent));
+    host.spawn("Where is the token minted?".to_owned(), kwargs("scout"))?;
+    *parent.lock().map_err(|_| "poisoned")? = Some(next);
+    ended(&root_file).await?;
+    assert!(trail(&next_file)?.is_empty(), "{:?}", trail(&next_file)?);
+    Ok(())
+}
+
+/// Dies with the stem taken from any file: a transcript loaded from a path with no `.jsonl`
+/// names a file, not a directory, so every spawn failed with ENOTDIR.
+#[tokio::test]
+async fn a_parent_file_without_the_extension_keeps_its_children_where_they_were() -> TestResult {
+    let scratch = Scratch::new("yi-child-trail-noext")?;
+    let (_, root_file, _) = root_session(&scratch)?;
+    let bare = scratch.join("session");
+    std::fs::copy(&root_file, &bare)?;
+    let loaded = Arc::new(std::sync::Mutex::new(yi_session::load_session(&bare)?));
+    let host = host(0, scratch.join("rlm-1"), slot(Some(loaded)));
+    let reply = host.spawn("Probe.".to_owned(), kwargs("probe"))?;
+    let dir = PathBuf::from(reply["session_dir"].as_str().ok_or("no session_dir")?);
+    assert_eq!(dir.parent(), Some(scratch.join("rlm-1").as_path()));
     Ok(())
 }
