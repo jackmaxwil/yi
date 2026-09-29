@@ -82,6 +82,7 @@ fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> std::io::Result<Harn
             if let Ok(mut asks) = asks.lock() {
                 asks.push(ask.text());
             }
+            std::thread::sleep(std::time::Duration::from_millis(20));
             reply
         }) as Asker
     });
@@ -593,5 +594,24 @@ fn a_question_ends_the_turn_and_lists_its_options() -> TestResult {
         tool.validate(&request).is_err(),
         "request mode needs auto-review; without it the model is told to ask a question"
     );
+    Ok(())
+}
+
+/// Dies with the user asked twice: two `ask_user` calls for one request in one message run in
+/// parallel, and only one of them may put it to the user.
+#[tokio::test]
+async fn a_request_asked_twice_at_once_is_put_to_the_user_once() -> TestResult {
+    let harness = setup(Some(AskOutcome::Reject), true)?;
+    harness.provider.queue_faux(answers(&["deny unprovable"]));
+    decide(&harness.broker, destructive_args()).await?;
+    let (first, second) = (Arc::clone(&harness.broker), Arc::clone(&harness.broker));
+    let one = std::thread::spawn(move || first.resolve_request(1, "call-a"));
+    let two = std::thread::spawn(move || second.resolve_request(1, "call-b"));
+    let replies = [
+        one.join().map_err(|_| "thread")?,
+        two.join().map_err(|_| "thread")?,
+    ];
+    assert_eq!(replies[0], replies[1]);
+    assert_eq!(harness.asks.lock().map(|asks| asks.len()).unwrap_or(0), 1);
     Ok(())
 }

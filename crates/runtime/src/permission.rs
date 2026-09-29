@@ -117,6 +117,7 @@ pub struct PermissionBroker {
     /// nothing in this file behaves differently from before it existed.
     reviewer: std::sync::OnceLock<Arc<crate::auto_review::Reviewer>>,
     ledger: Mutex<ActionLedger>,
+    asking: Mutex<()>,
     confirms: AtomicU64,
     journal: std::sync::OnceLock<Journal>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
@@ -180,6 +181,7 @@ impl PermissionBroker {
             events,
             reviewer: std::sync::OnceLock::new(),
             ledger: Mutex::new(ActionLedger::new()),
+            asking: Mutex::new(()),
             confirms: AtomicU64::new(0),
             journal: std::sync::OnceLock::new(),
             approver: std::sync::OnceLock::new(),
@@ -723,6 +725,10 @@ impl PermissionBroker {
     /// The `ask_user` seam: one open request, replayed verbatim to the human.
     pub fn resolve_request(&self, request: u64, tool_call_id: &str) -> String {
         let request = RequestId::new(request);
+        let _one_question_at_a_time = self
+            .asking
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some((stored, state)) = self
             .ledger
             .lock()
@@ -730,7 +736,9 @@ impl PermissionBroker {
             .entry_of(request)
             .map(|(ask, state)| (ask.clone(), state))
         else {
-            return format!("There is no open request {request}.");
+            return format!(
+                "There is no open request {request}: it was answered and used, or it never existed."
+            );
         };
         match state {
             ActionState::DeniedPendingUser => {}
