@@ -946,6 +946,22 @@ async fn an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone()
         ],
         "the protocol rides once, ahead of the reply it steers"
     );
+    let keys: Vec<_> = session
+        .messages()
+        .into_iter()
+        .filter_map(|message| match message {
+            AgentMessage::Assistant { diagnostics, .. } => diagnostics?
+                .into_iter()
+                .find(|note| note.diagnostic_type == "cache")?
+                .details?
+                .remove("stable"),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        keys.len() == 3 && keys.iter().all(|key| *key == keys[0]),
+        "every request records one stable key: {keys:?}"
+    );
     let sent = yi_context::convert_to_llm(&session.messages());
     let AgentMessage::User {
         content: UserContent::Text(text),

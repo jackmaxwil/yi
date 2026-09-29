@@ -3,6 +3,7 @@
 pub mod advisor;
 pub mod affordance;
 pub mod auto_review;
+pub mod cache_miss;
 pub mod checkpoint;
 pub mod classifier;
 pub mod compaction;

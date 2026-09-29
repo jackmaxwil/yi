@@ -589,6 +589,7 @@ fn build_session(
     {
         yi_runtime::spend::attach(&session, every);
     }
+    yi_runtime::cache_miss::attach(&session);
     session.set_lane(yi_runtime::lane::land::LaneHandle::new(
         lane,
         pool,
