@@ -565,7 +565,8 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     a list of URLs (``local://path#L1-40@TAG``, ``history://…``, ``plan://…``) resolved now and
     inlined into its brief as numbered, fenced lines, for any role; a kernel value rides
     ``context_keys``. ``schema`` (a reader's) names the answer's shape in its question and, on a
-    request with no tools, asks the provider for it: strictly where the schema closes every
+    reader with ``tools=[]`` or ``turns=1``, asks the provider for it (the capped last turn
+    still carries a reader's tools, so it gets the schema only in its question): strictly where the schema closes every
     object, as guidance otherwise.
     """
     if not isinstance(prompt, str):

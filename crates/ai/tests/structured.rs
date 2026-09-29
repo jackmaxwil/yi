@@ -98,7 +98,15 @@ fn strict_judges_the_schema_nodes_not_the_property_names() {
     let array_root = json!({"type": "array", "items": {"type": "string"}});
     let combined = json!({"type": "object", "properties": {}, "required": [],
         "additionalProperties": false, "allOf": []});
-    for refused in [&open_without_type, &open_nullable, &array_root, &combined] {
+    let one_of = json!({"type": "object", "properties": {"a": {"oneOf": [{"type": "object",
+        "properties": {"x": {"type": "string"}}}]}}, "required": ["a"], "additionalProperties": false});
+    for refused in [
+        &open_without_type,
+        &open_nullable,
+        &array_root,
+        &combined,
+        &one_of,
+    ] {
         assert!(!strict(refused), "{refused}");
     }
     let named_like_keywords = json!({"type": "object",
