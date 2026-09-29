@@ -69,6 +69,29 @@ pub enum SubmitError {
     Op(#[from] PlanOpError),
 }
 
+/// Invariant: the peer is anything running as the user, so a submission carries no principal;
+/// only a caller holding the human's prompt passes a confirmer.
+pub fn submit_request(
+    service: &super::PlanService,
+    payload: &Map<String, Value>,
+    confirmer: Option<&Confirmer>,
+) -> Result<Value, String> {
+    if payload.contains_key("actor") {
+        return Err(ArgError::ActorArg.to_string());
+    }
+    let (engine, actor) = service
+        .engine()
+        .ok_or_else(|| "no plan engine is attached".to_owned())?;
+    let applied =
+        submit(&engine, &actor, confirmer, submission_of(payload)?).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "plan": applied.outcome.plan.id.as_str(),
+        "revision": applied.outcome.plan.touched.0,
+        "text": applied.text(),
+        "notices": applied.outcome.notices,
+    }))
+}
+
 /// A submission by a principal that may apply the op runs as that principal; one the owner may
 /// not apply is confirmed by the human, or refused when no prompt can reach one.
 pub fn submit(
