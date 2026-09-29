@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-const UNSUPPORTED: [&str; 11] = [
+const UNSUPPORTED: [&str; 19] = [
     "minimum",
     "maximum",
     "exclusiveMinimum",
@@ -12,22 +12,46 @@ const UNSUPPORTED: [&str; 11] = [
     "minItems",
     "maxItems",
     "uniqueItems",
+    "allOf",
+    "not",
+    "if",
+    "then",
+    "else",
+    "patternProperties",
+    "dependentSchemas",
+    "unevaluatedProperties",
 ];
 
 pub fn strict(schema: &Value) -> bool {
-    match schema {
-        Value::Object(map) => {
-            if UNSUPPORTED.iter().any(|key| map.contains_key(*key)) {
-                return false;
-            }
-            if map.get("type") == Some(&json!("object")) && !closed(map) {
-                return false;
-            }
-            map.values().all(strict)
+    is_object(schema) && node(schema)
+}
+
+fn is_object(schema: &Value) -> bool {
+    schema.get("properties").is_some()
+        || match schema.get("type") {
+            Some(Value::String(kind)) => kind == "object",
+            Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind == "object"),
+            _ => false,
         }
-        Value::Array(items) => items.iter().all(strict),
-        _ => true,
+}
+
+fn node(schema: &Value) -> bool {
+    let Value::Object(map) = schema else {
+        return false;
+    };
+    if UNSUPPORTED.iter().any(|key| map.contains_key(*key)) || (is_object(schema) && !closed(map)) {
+        return false;
     }
+    let values = |key: &str| match map.get(key) {
+        Some(Value::Object(inner)) if key != "items" => inner.values().collect(),
+        Some(Value::Array(items)) => items.iter().collect(),
+        Some(item @ Value::Object(_)) => vec![item],
+        _ => Vec::new(),
+    };
+    ["properties", "items", "anyOf", "$defs", "definitions"]
+        .into_iter()
+        .flat_map(values)
+        .all(node)
 }
 
 fn closed(map: &serde_json::Map<String, Value>) -> bool {

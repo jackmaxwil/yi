@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{Effort, Model, ModelCost};
+use yi_types::model::{Effort, Model, ModelCost, Reuse};
 
 type TestResult = Result<(), Box<dyn Error>>;
 type Script = Arc<Mutex<Vec<AgentMessage>>>;
@@ -46,7 +46,7 @@ struct Family {
     shapes: Arc<Mutex<Vec<Shape>>>,
 }
 
-type Shape = Option<yi_runtime::session::RequestShape>;
+type Shape = (Option<yi_runtime::session::RequestShape>, Reuse);
 
 type Rules = Option<Arc<yi_runtime::rules::RuleEngine>>;
 type Hook = Arc<dyn Fn() + Send + Sync>;
@@ -124,7 +124,7 @@ fn family_with(
                 sink.push(names);
             }
             if let Ok(mut sink) = shape_sink.lock() {
-                sink.push(child.request_shape());
+                sink.push((child.request_shape(), child.reuse()));
             }
             Ok(child)
         }),
@@ -545,11 +545,11 @@ async fn a_readers_schema_and_a_shared_partition_shape_its_requests() -> TestRes
     }
     let shapes = family.shapes.lock().map_err(|_| "poisoned")?.clone();
     let shape = |shared_through| {
-        Some(yi_runtime::session::RequestShape {
+        let shape = yi_runtime::session::RequestShape {
             schema: Some(schema.clone()),
             shared_through,
-            one_shot: false,
-        })
+        };
+        (Some(shape), Reuse::Loop)
     };
     assert_eq!(
         shapes,
@@ -561,5 +561,42 @@ async fn a_readers_schema_and_a_shared_partition_shape_its_requests() -> TestRes
         role == "user" && text.contains("Reply with one JSON object matching this schema")
     });
     assert!(asked, "{rows:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reader_without_tools_is_one_request() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![reply("a"), reply("b")]));
+    let family = family(4, script)?;
+    for (name, tools) in [("bare", json!([])), ("reads", json!(["read"]))] {
+        family.host.spawn(
+            "Which line names the sky?".to_owned(),
+            kwargs(json!({"name": name, "role": "reader", "tools": tools})),
+        )?;
+    }
+    let shapes = family.shapes.lock().map_err(|_| "poisoned")?.clone();
+    let reuses: Vec<Reuse> = shapes.iter().map(|(_, reuse)| *reuse).collect();
+    assert_eq!(reuses, vec![Reuse::OneShot, Reuse::Loop]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_refused_sibling_marks_no_partition_shared() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![reply("a")]));
+    let family = family(4, script)?;
+    let ask = |name: &str| {
+        family.host.spawn(
+            "q".to_owned(),
+            kwargs(json!({"name": name, "role": "reader", "partition": ["local://notes.txt"]})),
+        )
+    };
+    assert!(ask("host").is_err(), "a reserved name is refused");
+    ask("first")?;
+    let shapes = family.shapes.lock().map_err(|_| "poisoned")?.clone();
+    let marks: Vec<Option<usize>> = shapes
+        .iter()
+        .map(|(shape, _)| shape.as_ref().and_then(|shape| shape.shared_through))
+        .collect();
+    assert_eq!(marks, vec![None], "the refused spawn sent nothing to share");
     Ok(())
 }
