@@ -211,11 +211,20 @@ impl Jobs {
             .wait_timeout_while(self.lock(), timeout, running);
     }
 
-    fn mark_reported(&self, id: JobId) {
-        if let Some(job) = self.lock().get_mut(&id.0)
-            && let Reaper::Poller { reported } = &mut job.reaper
-        {
-            *reported = true;
+    /// A poll holds the report while it waits, so the result is not sent twice; one that gives
+    /// up hands it back and re-announces a settle it held, or the completion loop never looks.
+    pub(crate) fn set_reported(&self, id: JobId, held: bool) {
+        let mut jobs = self.lock();
+        let Some(job) = jobs.get_mut(&id.0) else {
+            return;
+        };
+        if let Reaper::Poller { reported } = &mut job.reaper {
+            *reported = held;
+        }
+        if !held && job.capture.is_some() {
+            self.settles.fetch_add(1, Ordering::SeqCst);
+            drop(jobs);
+            self.settled.notify_all();
         }
     }
 
@@ -272,18 +281,36 @@ impl Jobs {
         running.into_iter().map(|(_, command)| command).collect()
     }
 
-    /// Marking them keeps the follow-up queue from repeating every poll.
-    pub fn take_finished(&self) -> Vec<JobReport> {
+    /// The unannounced finished jobs a session in `cwd` started, marked so none repeats; another
+    /// session in the same process takes only its own (#820 still shares one cwd's).
+    pub fn take_finished(&self, cwd: &Path) -> Vec<JobReport> {
         let mut jobs = self.lock();
         let mut out = Vec::new();
         for (id, job) in jobs.iter_mut() {
-            if job.capture.is_some() && matches!(job.reaper, Reaper::Poller { reported: false }) {
+            let unannounced = matches!(job.reaper, Reaper::Poller { reported: false });
+            if job.capture.is_some() && unannounced && job.cwd == cwd {
                 job.reaper = Reaper::Poller { reported: true };
                 out.push(render(*id, job));
             }
         }
         out.sort_by_key(|report| report.id);
         out
+    }
+}
+
+impl JobReport {
+    /// `job 7 finished (exit 0): cmd`, the one wording the poll and the `<async_result>` share.
+    pub fn headline(&self) -> String {
+        let ending = match self.state {
+            JobState::Settled(Outcome::Killed) => {
+                "killed (timeout_secs or an interrupt)".to_owned()
+            }
+            JobState::Settled(Outcome::Exited { code }) => {
+                format!("finished (exit {})", code.unwrap_or(-1))
+            }
+            JobState::Running => "still running".to_owned(),
+        };
+        format!("job {} {ending}: {}", self.id, self.command)
     }
 }
 
@@ -305,8 +332,11 @@ fn render(id: u64, job: &Job) -> JobReport {
                 .kill_error
                 .as_ref()
                 .map(|error| format!("\n[group kill failed: {error}]"));
+            let cut = capture.cut_note().map(|note| format!("\n{note}"));
             let text = format!("{}{}", capture.stdout, capture.stderr);
-            crate::reduce::strip_ansi(&text) + &failed.unwrap_or_default()
+            crate::reduce::strip_ansi(&text)
+                + &cut.unwrap_or_default()
+                + &failed.unwrap_or_default()
         }
         None => String::new(),
     };
@@ -375,6 +405,7 @@ fn start(
     sandbox: Option<&crate::sandbox::Sandbox>,
     reaper: Reaper,
     sweep: Option<&str>,
+    spill_dir: Option<&Path>,
 ) -> (
     JobId,
     std::sync::mpsc::Receiver<Result<CommandCapture, String>>,
@@ -392,6 +423,7 @@ fn start(
     let text = shell_command.to_owned();
     let sweep = sweep.map(str::to_owned);
     let dir = cwd.to_path_buf();
+    let spill_dir = spill_dir.map(Path::to_path_buf);
     let outer = Arc::clone(cancelled);
     let flag: CancelFlag = Arc::new(move || kill.load(Ordering::SeqCst) || outer());
     let wrapped = sandbox.map(|sandbox| sandbox.wrap(interpreter(), &["-c", shell_command]));
@@ -409,7 +441,14 @@ fn start(
             }
         };
         process.current_dir(&dir);
-        let capture = run_captured_live(process, None, &flag, OUTPUT_CAP, Some(live));
+        let capture = run_captured_live(
+            process,
+            None,
+            &flag,
+            OUTPUT_CAP,
+            Some(live),
+            spill_dir.as_deref(),
+        );
         // Invariant: before the job settles, so a lane settle never reads a job gone quiet
         // while what it started in a container still writes the tree.
         if let (Ok(capture), Some(sweep)) = (&capture, &sweep)
@@ -457,56 +496,73 @@ pub fn spawn_job(
     cancelled: &CancelFlag,
     sandbox: Option<&crate::sandbox::Sandbox>,
 ) -> JobId {
-    start(shell_command, cwd, cancelled, sandbox, Reaper::Handle, None).0
-}
-
-/// A command outliving `auto_background` keeps running as a job instead of holding the turn
-/// (`None` disables it: silently detaching surprises); past `timeout` it is killed instead.
-pub fn run_or_background(
-    shell_command: &str,
-    cwd: &Path,
-    cancelled: &CancelFlag,
-    auto_background: Option<Duration>,
-    timeout: Duration,
-    sandbox: Option<&crate::sandbox::Sandbox>,
-    sweep: Option<&str>,
-) -> Result<Run, String> {
-    let (id, receiver) = start(
+    start(
         shell_command,
         cwd,
         cancelled,
         sandbox,
-        Reaper::Poller { reported: false },
+        Reaper::Handle,
+        None,
+        None,
+    )
+    .0
+}
+
+/// Past `background_after` (a call's `wait`, else `bash.autoBackgroundMs`; `None` holds the turn)
+/// a command keeps running as a job, killed by an interrupt or at `timeout` from its start.
+pub fn run_or_background(
+    shell_command: &str,
+    context: &crate::tool::ToolContext,
+    background_after: Option<Duration>,
+    timeout: Duration,
+    sandbox: Option<&crate::sandbox::Sandbox>,
+    sweep: Option<&str>,
+) -> Result<Run, String> {
+    let begun = std::time::Instant::now();
+    let (id, receiver) = start(
+        shell_command,
+        &context.cwd,
+        &context.cancelled,
+        sandbox,
+        // Invariant: held until the call hands the turn back, or its output is announced twice.
+        Reaper::Poller { reported: true },
         sweep,
+        context.recovery_dir.as_deref(),
     );
-    let background = auto_background.filter(|limit| *limit <= timeout);
+    let background = background_after.filter(|limit| *limit < timeout);
     match receiver.recv_timeout(background.unwrap_or(timeout)) {
-        Ok(Ok(capture)) => {
-            registry().mark_reported(id);
-            Ok(Run::Finished(Box::new(capture)))
-        }
+        Ok(Ok(capture)) => Ok(Run::Finished(Box::new(capture))),
         Ok(Err(message)) => Err(message),
-        Err(RecvTimeoutError::Timeout) if background.is_some() => Ok(Run::Backgrounded(id)),
+        Err(RecvTimeoutError::Timeout) if background.is_some() => {
+            registry().set_reported(id, false);
+            let left = timeout.saturating_sub(begun.elapsed());
+            std::thread::spawn(move || {
+                registry().wait_settled(Some(id), left);
+                let _settled_or_evicted_meanwhile_is_fine = registry().kill(id);
+            });
+            Ok(Run::Backgrounded(id))
+        }
         Err(RecvTimeoutError::Timeout) => {
             let _a_job_that_settled_meanwhile_is_fine = registry().kill(id);
             // Incident: `timeout 3000 python3 …` left the shell's group and held the pipes
             // for 43 minutes; the kill gets five seconds, then the turn moves on.
             match receiver.recv_timeout(KILL_GRACE) {
-                Ok(Ok(capture)) => {
-                    registry().mark_reported(id);
-                    Ok(Run::TimedOut(Box::new(capture)))
-                }
+                Ok(Ok(capture)) => Ok(Run::TimedOut(Box::new(capture))),
                 Ok(Err(message)) => Err(message),
-                Err(_) => Ok(Run::TimedOut(Box::new(CommandCapture {
-                    stdout: String::new(),
-                    stderr: format!(
-                        "[the process outlived the kill and keeps running as job {id}; its output arrives as a job result]"
-                    ),
-                    exit_code: None,
-                    cancelled: true,
-                    truncated: false,
-                    kill_error: None,
-                }))),
+                Err(_) => {
+                    registry().set_reported(id, false);
+                    Ok(Run::TimedOut(Box::new(CommandCapture {
+                        stdout: String::new(),
+                        stderr: format!(
+                            "[the process outlived the kill and keeps running as job {id}; bash job={id} wait=<s> waits for it]"
+                        ),
+                        exit_code: None,
+                        cancelled: true,
+                        truncated: false,
+                        kill_error: None,
+                        spill: None,
+                    })))
+                }
             }
         }
         Err(RecvTimeoutError::Disconnected) => {
@@ -525,7 +581,7 @@ pub fn clamp_wait(seconds: u64) -> Duration {
 pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const KILL_GRACE: Duration = Duration::from_secs(5);
 /// One sixth of a one-hour attempt: room for a cold build or a whole suite, and twice the
-/// wait clamp, so anything longer is already a job.
+/// wait clamp; a job is killed here too, so a server belongs in `nohup … &`.
 pub const MAX_TIMEOUT_SECS: u64 = 600;
 
 /// Absent or zero is the default; the ceiling holds whatever the model asks.
@@ -668,16 +724,13 @@ mod tests {
     /// it replaced reported a finished job up to two seconds late).
     #[test]
     fn a_settle_wakes_the_completion_wait() -> Fallible {
+        // Its own cwd and the count it saw, since `cargo test` shares the registry across tests.
+        let cwd = Path::new("/yi-jobs-test/settle-wakes");
         let reaper = Reaper::Poller { reported: false };
-        let id = registry().insert(
-            "true",
-            Path::new("."),
-            reaper,
-            Arc::default(),
-            Arc::default(),
-        );
+        let id = registry().insert("true", cwd, reaper, Arc::default(), Arc::default());
+        let seen = registry().settles.load(Ordering::SeqCst);
         let (woke, waking) = std::sync::mpsc::channel();
-        std::thread::spawn(move || woke.send(registry().wait_settle(0)));
+        std::thread::spawn(move || woke.send(registry().wait_settle(seen)));
         std::thread::sleep(Duration::from_millis(20));
         let capture = CommandCapture {
             stdout: String::new(),
@@ -685,11 +738,39 @@ mod tests {
             exit_code: Some(0),
             cancelled: false,
             truncated: false,
+            spill: None,
             kill_error: None,
         };
         registry().finish(id, capture);
-        assert_eq!(waking.recv_timeout(Duration::from_secs(5))?, 1);
-        assert_eq!(registry().take_finished().len(), 1);
+        assert!(waking.recv_timeout(Duration::from_secs(5))? > seen);
+        assert_eq!(registry().take_finished(cwd).len(), 1);
+        Ok(())
+    }
+
+    /// Dies without the re-announce: a job that settled while a poll held its report was left
+    /// for the completion loop, which had already looked, until some other job settled.
+    #[test]
+    fn a_report_handed_back_after_its_settle_wakes_the_completion_wait() -> Fallible {
+        let cwd = Path::new("/yi-jobs-test/handed-back");
+        let reaper = Reaper::Poller { reported: true };
+        let id = registry().insert("true", cwd, reaper, Arc::default(), Arc::default());
+        let capture = CommandCapture {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            cancelled: false,
+            truncated: false,
+            spill: None,
+            kill_error: None,
+        };
+        registry().finish(id, capture);
+        let held = registry().settles.load(Ordering::SeqCst);
+        let (woke, waking) = std::sync::mpsc::channel();
+        std::thread::spawn(move || woke.send(registry().wait_settle(held)));
+        std::thread::sleep(Duration::from_millis(20));
+        registry().set_reported(id, false);
+        assert!(waking.recv_timeout(Duration::from_secs(5))? > held);
+        assert_eq!(registry().take_finished(cwd).len(), 1);
         Ok(())
     }
 
@@ -712,6 +793,7 @@ mod tests {
                 exit_code: None,
                 cancelled: true,
                 truncated: false,
+                spill: None,
                 kill_error: Some("/bin/sh: No such file or directory".to_owned()),
             },
         );
@@ -742,8 +824,7 @@ mod tests {
         let dir = Scratch::new("yi-jobs")?;
         let run = run_or_background(
             "cd /tmp && timeout 900 python3 -c 'import time; print(\"ready\", flush=True); time.sleep(30)' && ls -la",
-            &dir,
-            &never(),
+            &crate::tool::ToolContext::new(dir.to_path_buf()),
             None,
             Duration::from_secs(3),
             None,

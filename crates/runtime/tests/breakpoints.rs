@@ -1,5 +1,6 @@
 //! The breakpoints' invariants over random requests (D295): at most the engine's slots, a
-//! TTL that never rises along the prompt, no position past the history (so none in
+//! TTL that never rises along the prompt and is the one asked where the engine prices it
+//! (D315), no position past the history (so none in
 //! `transient`), no tail unless the caller said the request loops, and a system breakpoint
 //! on every request. The same requests are then rendered through both dialects: the
 //! environment messages come out last and bare, the system end is marked, and a loop
@@ -109,36 +110,47 @@ struct Case {
     reuse: Reuse,
     tools: bool,
     engine: Engine,
-    hold_1h: bool,
+    /// What the caller asks of the system breakpoints and of every breakpoint.
+    stable: Ttl,
+    ttl: Ttl,
+    /// `shared_through`, which may point past the history.
+    shared: Option<usize>,
 }
 
 fn case_strategy() -> impl Strategy<Value = Case> {
     let reuse = prop_oneof![
         Just(Reuse::Loop),
         Just(Reuse::OneShot),
-        Just(Reuse::LastTurn)
+        Just(Reuse::LastTurn),
+        Just(Reuse::ReadOnly)
     ];
     let engine = prop_oneof![
         (1..=SLOTS, any::<bool>()).prop_map(|(slots, hour)| Engine::Breakpoint { slots, hour }),
         Just(Engine::Snapshot),
         Just(Engine::Prefix),
     ];
+    let ttl = || prop_oneof![Just(Ttl::Min5), Just(Ttl::Hour1)];
     (
         prop::collection::vec(0..5u8, 0..12),
         0..3usize,
         reuse,
         any::<bool>(),
         engine,
-        any::<bool>(),
+        (ttl(), ttl()),
+        proptest::option::of(0..14usize),
     )
-        .prop_map(|(kinds, transient, reuse, tools, engine, hold_1h)| Case {
-            kinds,
-            transient,
-            reuse,
-            tools,
-            engine,
-            hold_1h,
-        })
+        .prop_map(
+            |(kinds, transient, reuse, tools, engine, (stable, ttl), shared)| Case {
+                kinds,
+                transient,
+                reuse,
+                tools,
+                engine,
+                stable,
+                ttl,
+                shared,
+            },
+        )
 }
 
 fn tool() -> ToolDef {
@@ -163,9 +175,11 @@ fn context(case: &Case) -> LlmContext {
             .map(|turn| user(&format!("<environment>\nturn: {turn}\n</environment>")))
             .collect(),
         schema: None,
+        shared_through: None,
         reuse: case.reuse,
         tools: case.tools.then(|| vec![tool()]),
         tool_choice: (case.reuse == Reuse::LastTurn).then_some(ToolChoice::None),
+        cache_ttl: case.ttl,
     }
 }
 
@@ -177,16 +191,22 @@ fn is_user_role(message: &AgentMessage) -> bool {
 }
 
 fn check_breakpoints(case: &Case, ctx: &LlmContext) -> Result<(), TestCaseError> {
-    let stable_ttl = match case.engine {
-        Engine::Breakpoint { hour: true, .. } if case.hold_1h => Ttl::Hour1,
-        _ => Ttl::Min5,
+    // An hour only where the engine prices one; the history's hour lifts the system's too.
+    let (stable_ttl, ttl) = match case.engine {
+        Engine::Breakpoint { hour: true, .. } => (case.stable.max(case.ttl), case.ttl),
+        _ => (Ttl::Min5, Ttl::Min5),
     };
-    let policy = CachePolicy {
-        engine: case.engine,
-        stable_ttl,
-    };
-    let breakpoints = Breakpoints::build(&policy, &ctx.messages, case.reuse);
+    let policy = CachePolicy::new(case.engine, case.stable, case.ttl);
+    let breakpoints = Breakpoints::build(&policy, &ctx.messages, case.reuse, case.shared);
     let marks: Vec<_> = breakpoints.marks().collect();
+    for mark in &marks {
+        let want = if mark.position.index().is_some() {
+            ttl
+        } else {
+            stable_ttl
+        };
+        proptest::prop_assert_eq!(mark.ttl, want, "{:?} under {:?}", mark, case);
+    }
     let slots = match case.engine {
         Engine::Breakpoint { slots, .. } => slots,
         Engine::Snapshot => 1,
@@ -218,8 +238,27 @@ fn check_breakpoints(case: &Case, ctx: &LlmContext) -> Result<(), TestCaseError>
                 "position {index} past the history of {}: transient is in reach",
                 ctx.messages.len()
             );
-            proptest::prop_assert_eq!(case.reuse, Reuse::Loop, "a tail on {:?}", case.reuse);
+            proptest::prop_assert!(
+                matches!(case.reuse, Reuse::Loop | Reuse::ReadOnly)
+                    || mark.position == Position::SharedEnd(index),
+                "a history mark on {:?}",
+                case.reuse
+            );
         }
+    }
+    // Three slots hold the system end, the tail and the shared run's end.
+    if let Some(shared) = case.shared.filter(|shared| *shared < ctx.messages.len())
+        && slots >= 3
+    {
+        proptest::prop_assert!(
+            marks
+                .iter()
+                .any(|mark| mark.position.index() == Some(shared)),
+            "shared_through {shared} is unmarked: {marks:?}"
+        );
+    }
+    if case.reuse == Reuse::ReadOnly {
+        proptest::prop_assert_eq!(tail, None, "a read-only request writes no tail");
     }
     if case.reuse == Reuse::Loop && slots >= 2 {
         proptest::prop_assert_eq!(tail, last_user, "the tail is the last user-role message");
@@ -275,6 +314,11 @@ fn check_rendered(case: &Case, body: &Encoded, dialect: &str) -> Result<(), Test
             "{}: the last history mark is not on the last user-role message",
             dialect
         ),
+        // The previous tail sits ahead of the reply that followed it, so never last.
+        Reuse::ReadOnly => proptest::prop_assert!(
+            last_marked.is_none() || last_marked < last_user,
+            "{dialect}: a read-only request marked its own tail"
+        ),
         Reuse::OneShot | Reuse::LastTurn => proptest::prop_assert!(
             last_marked.is_none(),
             "{dialect}: a history mark on {:?}",
@@ -311,7 +355,7 @@ fn random_requests_hold_every_breakpoint_invariant_on_both_dialects() -> Result<
             let ctx = context(&case);
             check_breakpoints(&case, &ctx)?;
             let options = AnthropicOptions {
-                cache_1h: case.hold_1h,
+                cache_1h: case.stable == Ttl::Hour1,
                 ..AnthropicOptions::default()
             };
             check_rendered(
@@ -334,6 +378,7 @@ fn random_requests_hold_every_breakpoint_invariant_on_both_dialects() -> Result<
 #[test]
 fn a_tool_less_loop_still_marks_its_previous_tail_and_tail() -> Result<(), Box<dyn Error>> {
     let ctx = LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "be terse".to_owned(),
         messages: vec![
             user("first"),
@@ -344,6 +389,7 @@ fn a_tool_less_loop_still_marks_its_previous_tail_and_tail() -> Result<(), Box<d
         ],
         transient: vec![user("<environment>\nturn: 3\n</environment>")],
         schema: None,
+        shared_through: None,
         reuse: Reuse::Loop,
         tools: None,
         tool_choice: None,
@@ -372,5 +418,62 @@ fn a_tool_less_loop_still_marks_its_previous_tail_and_tail() -> Result<(), Box<d
         [0, 3, 5],
         "{routed}"
     );
+    Ok(())
+}
+
+fn marked_messages(body: &Value) -> Vec<usize> {
+    body["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter(|(_, message)| {
+            message["content"]
+                .as_array()
+                .is_some_and(|parts| parts.iter().any(|part| part["cache_control"].is_object()))
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// A question-child over a partition a sibling sent (D309): message 0 is that partition, and
+/// `shared_through` marks it on both wires, as a read of the sibling's entry. A one-request
+/// child marks only the stable prefix and the partition; a looping one adds its previous tail
+/// and tail, and the universal end gives way to stay within four.
+#[test]
+fn a_shared_partition_is_marked_on_both_wires() -> Result<(), Box<dyn Error>> {
+    let partition = "<untrusted>\n1:red sun\n2:blue sky\n</untrusted>";
+    let mut ctx = LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
+        system_prompt: ["reader", "rules"].join(yi_types::model::SYSTEM_BLOCK_SEPARATOR),
+        messages: vec![user(partition), user("Which line names the sky?")],
+        transient: Vec::new(),
+        schema: None,
+        shared_through: Some(0),
+        reuse: Reuse::OneShot,
+        tools: None,
+        tool_choice: None,
+    };
+    let exact = json!({"role": "user", "content": [
+        {"type": "text", "text": partition, "cache_control": {"type": "ephemeral"}}]});
+    let anthropic = anthropic::build_params(&direct(), &ctx, &AnthropicOptions::default());
+    assert_eq!(marked_messages(&anthropic), [0], "{anthropic}");
+    assert_eq!(anthropic["messages"][0].to_string(), exact.to_string());
+    let routed_body = openai::build_params(&routed(), &ctx, &OpenAiOptions::default());
+    assert_eq!(marked_messages(&routed_body), [0, 1], "{routed_body}");
+    assert_eq!(routed_body["messages"][1].to_string(), exact.to_string());
+
+    ctx.reuse = Reuse::Loop;
+    ctx.tools = Some(vec![tool()]);
+    ctx.messages.push(message(2, 2));
+    ctx.messages.push(tool_result("call-2"));
+    let anthropic = anthropic::build_params(&direct(), &ctx, &AnthropicOptions::default());
+    assert_eq!(marked_messages(&anthropic), [0, 1, 3], "{anthropic}");
+    assert!(
+        anthropic["system"][0].get("cache_control").is_none(),
+        "the universal end takes a fifth slot: {anthropic}"
+    );
+    let routed_body = openai::build_params(&routed(), &ctx, &OpenAiOptions::default());
+    assert_eq!(marked_messages(&routed_body), [0, 1, 2, 4], "{routed_body}");
     Ok(())
 }

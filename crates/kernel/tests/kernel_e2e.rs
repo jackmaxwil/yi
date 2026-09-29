@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
+use yi_kernel::ATTACHMENT_DISPLAY_MIME;
 use yi_kernel::bootstrap::{
     BootstrapOptions, Toolchain, default_runtime_source_dir, default_skills_source_dir,
     ensure_kernel_python, find_system_python, has_runtime,
@@ -321,6 +322,47 @@ async fn the_kernel_keeps_no_ipython_history() -> TestResult {
     Ok(())
 }
 
+/// Incident (#817): kernel code displayed an "image" whose data ended the kitty escape the
+/// console writes it into and made the terminal write the clipboard; the provider then
+/// refused it on every later request. A Pillow PNG through the same display still attaches.
+#[tokio::test]
+async fn an_image_whose_data_is_not_base64_attaches_nothing() -> TestResult {
+    let kernel = manager()?;
+    let attach = |data: &str| {
+        format!(
+            "from IPython.display import display\ndisplay({{'{ATTACHMENT_DISPLAY_MIME}': {{'mime_type': 'image/png', 'data': '{data}'}}}}, raw=True)"
+        )
+    };
+    let injected = kernel
+        .execute(
+            &attach(r"AAAA\x1b\\\x1b]52;c;ZWNobyBwd25lZA==\x07"),
+            ExecuteOptions::default(),
+        )
+        .await?;
+    let png = kernel
+        .execute(&attach(PILLOW_PNG), ExecuteOptions::default())
+        .await?;
+    kernel.dispose().await;
+    assert!(
+        injected.attachments.is_empty(),
+        "{:?}",
+        injected.attachments
+    );
+    assert_eq!(injected.status, ExecuteStatus::Error);
+    assert!(
+        injected.stderr.contains("attachment dropped"),
+        "{}",
+        injected.stderr
+    );
+    assert_eq!(png.attachments.len(), 1, "{}", png.stderr);
+    assert_eq!(png.status, ExecuteStatus::Ok);
+    Ok(())
+}
+
+/// Pillow's encode of a 1x1 RGB image, chosen so its base64 carries `+` and `/`.
+const PILLOW_PNG: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4+3g/AATwAnDE8Xs+AAAAAElFTkSuQmCC";
+
 #[tokio::test]
 async fn namespace_snapshot_revives_across_kernels() -> TestResult {
     let dir = Scratch::new("yi-snap-e2e")?;
@@ -496,6 +538,7 @@ async fn prune_removes_oversized_variables_and_list_names_reports() -> TestResul
 /// The v4 trial images ship python3 and no uv; the venv must build from python3 alone and the
 /// kernel it boots must import `rlm`, or delegation is unreachable for the whole hour.
 #[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
 async fn the_kernel_boots_on_system_python_when_uv_is_absent() -> TestResult {
     let Some(python3) = find_system_python() else {
         return Ok(());

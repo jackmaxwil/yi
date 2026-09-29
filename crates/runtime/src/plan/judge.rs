@@ -265,7 +265,7 @@ impl Jury {
             .enumerate()
             .map(|(index, model)| {
                 let name = format!("judge-{}-{suffix}-{index}", item.id);
-                let kwargs = json!({"name": name, "model": selector_of(model), "tokens": JUROR_TOKENS,
+                let kwargs = json!({"name": name, "role": "root", "model": selector_of(model), "tokens": JUROR_TOKENS,
                     "deny_write": ["."], "deny_url": DENY_URL});
                 let kwargs = kwargs.as_object().cloned().unwrap_or_default();
                 let spawned = self

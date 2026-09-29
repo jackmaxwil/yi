@@ -17,19 +17,20 @@ pub mod sandbox;
 #[cfg(test)]
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
+pub mod spill;
 mod syntax;
 mod tool;
 
 use std::sync::Arc;
 
-pub use builtins::{BashTool, WriteTool, list_files};
+pub use builtins::{BashTool, WriteTool, list_files, wall_refusal};
 pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
 pub use document::{Converter, DEFAULT_TIMEOUT, Documents, document_ceiling};
 pub use exec::{ExecTool, discover_exec_tools};
 pub use grep::GrepTool;
 pub use ipython::cell_output;
-pub use ipython::{IpythonTool, KernelBridge, KernelCellOutcome};
+pub use ipython::{CellSpill, IpythonTool, KernelBridge, KernelCellOutcome};
 pub use jobs::{JobId, JobReport, MAX_TIMEOUT_SECS, Run, clamp_timeout, run_or_background};
 pub use orient::GetContextTool;
 pub use process::{CommandCapture, OUTPUT_CAP, command, edit_file, run_captured};

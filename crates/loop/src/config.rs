@@ -61,6 +61,8 @@ pub struct LoopConfig {
     /// Whether a later request reads this session's tail (D295); the forced-none last word
     /// says `LastTurn` on its own.
     pub reuse: yi_types::model::Reuse,
+    pub schema: Option<serde_json::Value>,
+    pub shared_through: Option<usize>,
     pub should_stop_after_turn: Option<Box<StopFn>>,
     pub prepare_next_turn: Option<Box<PrepareFn>>,
     pub get_steering_messages: Option<Box<QueueFn>>,
@@ -91,6 +93,8 @@ impl LoopConfig {
             convert_to_llm: Box::new(|messages| messages.to_vec()),
             request_tail: None,
             reuse: yi_types::model::Reuse::Loop,
+            schema: None,
+            shared_through: None,
             should_stop_after_turn: None,
             prepare_next_turn: None,
             get_steering_messages: None,

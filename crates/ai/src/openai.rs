@@ -8,7 +8,7 @@ use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 
 use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, encode};
 use crate::catalog::calculate_cost;
-use crate::compat::{compat_bool, compat_str};
+use crate::compat::{compat_bool, developer_role, nested_reasoning, replays_reasoning_content};
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
 use crate::transform::{system_text, transform_messages};
 
@@ -194,10 +194,7 @@ fn assistant_param(model: &Model, content: &[Content]) -> Option<Value> {
         if !tool_calls.is_empty() {
             message["tool_calls"] = Value::Array(tool_calls);
         }
-        if compat_bool(model, "requiresReasoningContentOnAssistantMessages", false)
-            && model.reasoning
-            && message.get("reasoning_content").is_none()
-        {
+        if replays_reasoning_content(model) && message.get("reasoning_content").is_none() {
             message["reasoning_content"] = Value::String(String::new());
         }
         let has_content = message["content"].is_string();
@@ -321,7 +318,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     let mut messages: Vec<Value> = Vec::new();
     let mut origins: Vec<Option<usize>> = Vec::new();
     if !context.system_prompt.is_empty() {
-        let role = if model.reasoning && compat_bool(model, "supportsDeveloperRole", true) {
+        let role = if developer_role(model) {
             "developer"
         } else {
             "system"
@@ -346,16 +343,21 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if model.provider == "openai" {
         params["store"] = json!(false);
     }
-    if model.base_url.contains("api.openai.com")
-        && let Some(session_id) = &options.session_id
-    {
-        params["prompt_cache_key"] = json!(session_id);
+    if let Some(session_id) = &options.session_id {
+        if model.base_url.contains("api.openai.com") {
+            params["prompt_cache_key"] = json!(session_id);
+        } else if model.base_url.contains("openrouter.ai") {
+            params["session_id"] = json!(session_id);
+        }
     }
     if let Some(ttl) = prompt_cache_retention(model) {
         params["prompt_cache_retention"] = json!(ttl);
     }
     if let Some(routing) = routing_params(model, options) {
         params["provider"] = routing;
+    }
+    if let Some(schema) = &context.schema {
+        params["response_format"] = crate::schema::chat(schema);
     }
     if let Some(max_tokens) = options.max_tokens {
         params["max_completion_tokens"] = json!(max_tokens);
@@ -377,8 +379,12 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     // OpenRouter passes per-part breakpoints to every upstream; elsewhere the provider caches
     // its own prefix and no explicit breakpoint is known to be accepted (design §11).
     if model.base_url.contains("openrouter.ai") {
-        let breakpoints =
-            Breakpoints::build(&CachePolicy::of(model, false), &history, context.reuse);
+        let breakpoints = Breakpoints::build(
+            &CachePolicy::of(model, context.cache_ttl, context.cache_ttl),
+            &history,
+            context.reuse,
+            context.shared_through,
+        );
         encode(
             &breakpoints,
             Dialect::OpenRouterParts,
@@ -405,7 +411,7 @@ pub(crate) fn mapped_effort(model: &Model, effort: Effort) -> Option<&str> {
 }
 
 fn apply_reasoning_params(model: &Model, options: &OpenAiOptions, params: &mut Value) {
-    if compat_str(model, "thinkingFormat") == Some("openrouter") {
+    if nested_reasoning(model) {
         let off = model
             .thinking_level_map
             .as_ref()

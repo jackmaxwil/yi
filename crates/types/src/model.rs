@@ -290,15 +290,41 @@ pub enum Reuse {
     /// The next request continues this conversation: its tail is read again.
     #[default]
     Loop,
-    /// A single call (a title, a compaction, a branch summary): the tail is never read again.
+    /// A single call (a title, a branch summary): the tail is never read again.
     OneShot,
     /// The conversation's last turn (`tool_choice: none`): nothing follows it.
     LastTurn,
+    /// The conversation's own request shape, sent once and then left (a compaction on the
+    /// session's model): the previous tail is read, and no tail of its own is written.
+    ReadOnly,
 }
 
 impl Reuse {
     pub fn is_loop(&self) -> bool {
         *self == Self::Loop
+    }
+}
+
+/// How long a prompt-cache entry lives once written. Along the prompt a longer TTL comes first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Ttl {
+    #[default]
+    #[serde(rename = "5m")]
+    Min5,
+    #[serde(rename = "1h")]
+    Hour1,
+}
+
+impl Ttl {
+    pub fn is_min5(&self) -> bool {
+        *self == Self::Min5
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Min5 => "5m",
+            Self::Hour1 => "1h",
+        }
     }
 }
 
@@ -318,10 +344,36 @@ pub struct LlmContext {
     /// prefix key hashes it first; read by structured outputs, unread by the adapters yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<serde_json::Value>,
+    /// The last message index siblings share byte for byte, set when a sibling sent the same
+    /// run within the cache's life (D309) or a fan-out shares it; both encoders mark it (D314).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_through: Option<usize>,
+    /// The TTL of the history breakpoints, chosen by the caller: the session ledger's cheapest
+    /// for a loop request (D315), five minutes for anything else.
+    #[serde(default, skip_serializing_if = "Ttl::is_min5")]
+    pub cache_ttl: Ttl,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+}
+
+/// The assistant diagnostic that records [`LlmContext::stable_key`] per request (C5).
+pub const CACHE_DIAGNOSTIC: &str = "cache";
+
+impl LlmContext {
+    /// A hash of the inputs every request of a conversation shares: schema, tools, system.
+    /// A change between two requests is a miss yi caused (design §7, invariant 3).
+    pub fn stable_key(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let rendered = serde_json::json!([self.schema, self.tools, self.system_prompt]);
+        let digest = Sha256::digest(rendered.to_string().as_bytes());
+        digest
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -362,6 +414,7 @@ mod tests {
     #[test]
     fn transient_and_schema_ride_only_when_set() -> Result<(), Box<dyn std::error::Error>> {
         let context = LlmContext {
+            cache_ttl: super::Ttl::Min5,
             system_prompt: "s".to_owned(),
             messages: Vec::new(),
             transient: vec![crate::message::AgentMessage::host_user(
@@ -369,6 +422,7 @@ mod tests {
                 0,
             )],
             schema: Some(serde_json::json!({"type": "object"})),
+            shared_through: None,
             reuse: super::Reuse::OneShot,
             tools: None,
             tool_choice: None,
@@ -396,5 +450,46 @@ mod tests {
         }
         assert_eq!(serde_json::to_string(&Effort::Medium)?, "\"medium\"");
         Ok(())
+    }
+
+    /// The key moves with each input it covers, and not with the history or the tail.
+    #[test]
+    fn the_stable_key_moves_with_schema_tools_and_system_only() {
+        let base = LlmContext {
+            cache_ttl: super::Ttl::Min5,
+            system_prompt: "s".to_owned(),
+            messages: Vec::new(),
+            transient: Vec::new(),
+            schema: None,
+            shared_through: None,
+            reuse: super::Reuse::Loop,
+            tools: Some(vec![super::ToolDef {
+                name: "read".to_owned(),
+                description: "d".to_owned(),
+                parameters: serde_json::json!({}),
+                freeform: None,
+            }]),
+            tool_choice: None,
+        };
+        let key = base.stable_key();
+        let mut system = base.clone();
+        system.system_prompt.push('!');
+        let mut tools = base.clone();
+        if let Some(tool) = tools.tools.iter_mut().flatten().next() {
+            tool.description.push('!');
+        }
+        let mut schema = base.clone();
+        schema.schema = Some(serde_json::json!({"type": "object"}));
+        for moved in [system, tools, schema] {
+            assert_ne!(moved.stable_key(), key);
+        }
+        let mut history = base.clone();
+        history
+            .transient
+            .push(crate::message::AgentMessage::host_user(
+                crate::message::UserContent::Text("<environment>".to_owned()),
+                0,
+            ));
+        assert_eq!(history.stable_key(), key);
     }
 }

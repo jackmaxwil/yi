@@ -71,12 +71,14 @@ fn key(secret: &str) -> Resolved {
 
 async fn stream(provider: &ProviderStream, model: &Model) -> Vec<AssistantMessageEvent> {
     let context = LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: String::new(),
         messages: vec![],
         tools: None,
         tool_choice: None,
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::OneShot,
     };
     let signal = yi_loop::interrupt::InterruptSignal::default();

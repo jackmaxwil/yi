@@ -6,7 +6,7 @@ use yi_types::model::{LlmContext, Model, ToolChoice, ToolDef};
 
 use crate::breakpoints::Encoded;
 use crate::catalog::calculate_cost;
-use crate::compat::compat_bool;
+use crate::compat::developer_role;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
 use crate::openai::{OpenAiOptions, mapped_effort};
 use crate::transform::{system_text, transform_messages};
@@ -221,7 +221,7 @@ fn convert_input(model: &Model, context: &LlmContext) -> (Vec<Value>, Vec<Value>
     // sending it as an input message too would bill it twice.
     let codex = model.provider == "openai-codex";
     if !context.system_prompt.is_empty() && !codex {
-        let role = if model.reasoning && compat_bool(model, "supportsDeveloperRole", true) {
+        let role = if developer_role(model) {
             "developer"
         } else {
             "system"
@@ -368,6 +368,9 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     }
     if let Some(ttl) = crate::openai::prompt_cache_retention(model) {
         params["prompt_cache_retention"] = json!(ttl);
+    }
+    if let Some(schema) = &context.schema {
+        params["text"]["format"] = crate::schema::responses(schema);
     }
     if let Some(max_tokens) = options.max_tokens {
         params["max_output_tokens"] = json!(max_tokens);

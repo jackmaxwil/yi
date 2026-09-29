@@ -74,9 +74,9 @@ fn status_state_and_notice_derive_from_one_exit() -> TestResult {
 }
 
 fn kwargs(pairs: &[(&str, Value)]) -> Map<String, Value> {
-    pairs
-        .iter()
-        .map(|(key, value)| ((*key).to_owned(), value.clone()))
+    std::iter::once(("role", json!("root")))
+        .chain(pairs.iter().cloned())
+        .map(|(key, value)| (key.to_owned(), value))
         .collect()
 }
 

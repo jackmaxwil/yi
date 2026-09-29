@@ -895,7 +895,6 @@ pub fn ensure_kernel_python(options: &BootstrapOptions) -> Result<PathBuf, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lock::bootstrap_lock_dir;
     use crate::scratch::Scratch;
 
     fn version(runtime: &str) -> BootstrapVersion {
@@ -1016,22 +1015,6 @@ mod tests {
             removed.is_empty() && venv.is_dir(),
             "a venv booted now was swept"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn dead_pid_lock_is_broken_live_pid_lock_holds() -> Result<(), String> {
-        let root = Scratch::new("yi-kernel-lock").map_err(|error| error.to_string())?;
-        let venv = root.join("kernel-venv");
-        let lock_dir = bootstrap_lock_dir(&venv);
-        std::fs::create_dir_all(&lock_dir).map_err(|error| error.to_string())?;
-        std::fs::write(lock_dir.join("pid"), "4194303\n").map_err(|error| error.to_string())?;
-        let lock = acquire_bootstrap_lock(&venv)?;
-        let held =
-            std::fs::read_to_string(lock_dir.join("pid")).map_err(|error| error.to_string())?;
-        assert_eq!(held.trim(), std::process::id().to_string());
-        drop(lock);
-        assert!(!lock_dir.exists(), "drop must release the lock directory");
         Ok(())
     }
 

@@ -114,7 +114,7 @@ async fn cell(
     let service = Arc::clone(service);
     tokio::task::spawn_blocking(move || {
         let cancelled: CancelFlag = Arc::new(|| false);
-        KernelBridge::execute_cell(service.as_ref(), code, &cancelled)
+        KernelBridge::execute_cell(service.as_ref(), code, &cancelled, None)
     })
     .await
     .map_err(|error| error.to_string())?

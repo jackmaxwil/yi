@@ -1,11 +1,10 @@
 use std::path::{Path, PathBuf};
 
-const BOOTSTRAP_LOCK_NAME: &str = ".bootstrap.lock";
-const BOOTSTRAP_LOCK_RETRY_MS: u64 = 100;
+const BOOTSTRAP_LOCK_NAME: &str = ".bootstrap.flock";
 const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS: u128 = 30_000;
 const SWEEP_AFTER_SECS: u64 = 86_400;
 
-pub(crate) fn bootstrap_lock_dir(venv: &Path) -> PathBuf {
+fn bootstrap_lock_path(venv: &Path) -> PathBuf {
     let name = venv
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -56,60 +55,69 @@ pub fn lock_missing_pid_is_stale(lock_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// A flock, so the OS releases it with its holder: a boot killed mid-build frees the lock to
+/// one waiter, where a pid file freed it to every waiter that read the dead pid.
 pub(crate) struct BootstrapLock {
-    dir: PathBuf,
+    path: PathBuf,
+    _file: std::fs::File,
 }
 
 impl Drop for BootstrapLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        // Unlinked before the file closes, so a waiter that wins it next sees it gone and reopens.
+        let _ = std::fs::remove_file(&self.path);
     }
+}
+
+fn lock_file(venv: &Path, block: bool) -> std::io::Result<Option<BootstrapLock>> {
+    let path = bootstrap_lock_path(venv);
+    loop {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        let locked = if block {
+            file.lock().map_err(std::fs::TryLockError::Error)
+        } else {
+            file.try_lock()
+        };
+        match locked {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+        }
+        if names_file(&path, &file) {
+            return Ok(Some(BootstrapLock { path, _file: file }));
+        }
+    }
+}
+
+#[cfg(unix)]
+fn names_file(path: &Path, file: &std::fs::File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(path), file.metadata()) {
+        (Ok(named), Ok(held)) => named.dev() == held.dev() && named.ino() == held.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn names_file(path: &Path, _file: &std::fs::File) -> bool {
+    path.exists()
 }
 
 pub(crate) fn acquire_bootstrap_lock(venv: &Path) -> Result<BootstrapLock, String> {
-    let lock_dir = bootstrap_lock_dir(venv);
-    if let Some(parent) = lock_dir.parent() {
+    if let Some(parent) = venv.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    loop {
-        match std::fs::create_dir(&lock_dir) {
-            Ok(()) => {
-                let _ = std::fs::write(lock_dir.join("pid"), format!("{}\n", std::process::id()));
-                return Ok(BootstrapLock { dir: lock_dir });
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                if lock_is_stale(&lock_dir, read_lock_pid(&lock_dir).map(process_is_running)) {
-                    let _ = std::fs::remove_dir_all(&lock_dir);
-                    continue;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(BOOTSTRAP_LOCK_RETRY_MS));
-            }
-            Err(error) => return Err(format!("{}: {error}", lock_dir.display())),
-        }
-    }
+    lock_file(venv, true)
+        .and_then(|lock| lock.ok_or_else(|| std::io::Error::other("lock not taken")))
+        .map_err(|error| format!("{}: {error}", bootstrap_lock_path(venv).display()))
 }
 
 fn try_bootstrap_lock(venv: &Path) -> Option<BootstrapLock> {
-    let lock_dir = bootstrap_lock_dir(venv);
-    for _ in 0..2 {
-        match std::fs::create_dir(&lock_dir) {
-            Ok(()) => {
-                let _ = std::fs::write(lock_dir.join("pid"), format!("{}\n", std::process::id()));
-                return Some(BootstrapLock { dir: lock_dir });
-            }
-            Err(error)
-                if error.kind() == std::io::ErrorKind::AlreadyExists
-                    && lock_is_stale(
-                        &lock_dir,
-                        read_lock_pid(&lock_dir).map(process_is_running),
-                    ) =>
-            {
-                let _ = std::fs::remove_dir_all(&lock_dir);
-            }
-            Err(_) => return None,
-        }
-    }
-    None
+    lock_file(venv, false).ok().flatten()
 }
 
 fn running_commands() -> Option<String> {
@@ -175,4 +183,92 @@ pub fn remove_stale_venvs(current: &Path) -> Vec<PathBuf> {
             try_bootstrap_lock(venv).is_some_and(|_held| std::fs::remove_dir_all(venv).is_ok())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scratch::Scratch;
+
+    const TRIALS: usize = 10;
+    const WAITERS: usize = 8;
+
+    /// Incident (forge task 12770): a boot killed mid-build handed its lock to every waiter at
+    /// once, and a second boot deleted the venv the first was installing into. The race is a
+    /// window a round loses about half the time, so ten dead locks are raced in turn.
+    #[test]
+    fn a_killed_holder_passes_the_lock_to_one_waiter_at_a_time()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const NAME: &str = "lock::tests::a_killed_holder_passes_the_lock_to_one_waiter_at_a_time";
+        const HOLDER: &str = "holder-for:";
+        let venv = |root: &Path, trial: usize| root.join(format!("kernel-venv-{trial}"));
+        // The holder is this test rerun with a second filter that matches no test.
+        if let Some(root) =
+            std::env::args().find_map(|arg| arg.strip_prefix(HOLDER).map(PathBuf::from))
+        {
+            let _held = (0..TRIALS)
+                .map(|trial| acquire_bootstrap_lock(&venv(&root, trial)))
+                .collect::<Result<Vec<_>, _>>()?;
+            std::fs::write(root.join("held"), "")?;
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            return Ok(());
+        }
+        let root = Scratch::new("yi-kernel-lock")?;
+        let mut holder = crate::bootstrap::command(&std::env::current_exe()?)
+            .args(["--exact", NAME, &format!("{HOLDER}{}", root.display())])
+            .stdout(std::process::Stdio::null())
+            .spawn()?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !root.join("held").exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let held = root.join("held").exists();
+        holder.kill()?;
+        holder.wait()?;
+        assert!(held, "the holder never took the locks");
+        // Each round's waiters arrive together at one dead lock, as the retry and the rpc
+        // tests' prewarming boots did; rounds run apart so one's timing cannot shade the next.
+        let counts: Vec<_> = (0..TRIALS)
+            .map(|_| {
+                (
+                    std::sync::atomic::AtomicUsize::new(0),
+                    std::sync::atomic::AtomicUsize::new(0),
+                )
+            })
+            .collect();
+        for (trial, (inside, most)) in counts.iter().enumerate() {
+            let start = std::sync::Barrier::new(WAITERS);
+            let outcomes: Vec<Result<(), String>> = std::thread::scope(|scope| {
+                let waiters: Vec<_> = (0..WAITERS)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            start.wait();
+                            let _lock = acquire_bootstrap_lock(&venv(&root, trial))?;
+                            let now = inside.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                            most.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                            inside.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                            Ok(())
+                        })
+                    })
+                    .collect();
+                waiters
+                    .into_iter()
+                    .map(|waiter| waiter.join().unwrap_or_else(|_| Err("panicked".to_owned())))
+                    .collect()
+            });
+            for outcome in outcomes {
+                outcome?;
+            }
+        }
+        let most: Vec<usize> = counts
+            .iter()
+            .map(|(_, most)| most.load(std::sync::atomic::Ordering::SeqCst))
+            .collect();
+        assert_eq!(
+            most, [1; TRIALS],
+            "two boots held one bootstrap lock at once"
+        );
+        Ok(())
+    }
 }
