@@ -5,8 +5,6 @@ use yi_types::subagent::{CHILD_ENTRY, ChildEnded, ChildExit, ChildSpawned, Child
 use crate::session::AgentSession;
 
 impl super::SubagentHost {
-    /// Invariant: read at spawn, not at build: a root's transcript is attached after its host
-    /// exists and `/new` swaps it. A host with no transcript keeps the directory it was given.
     pub(super) fn children_dir(&self) -> PathBuf {
         if self.options.depth > 0 {
             return self.options.parent_session_dir.join("children");
@@ -75,8 +73,6 @@ impl super::SubagentHost {
             yi_session::lock_session(&store).append_custom("main", CHILD_ENTRY, Some(data));
     }
 
-    /// The transcript of the last child spawned under `name`, found from the parent's own file,
-    /// so it outlives the roster and the process that spawned it.
     pub fn trail(&self, name: &str) -> Option<PathBuf> {
         let base = self.parent_file()?.parent()?.to_path_buf();
         let store = (self.options.store)()?;
