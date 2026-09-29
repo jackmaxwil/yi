@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use yi_runtime::session_store::{
-    BranchBounds, EntryOrder, EntryQuery, JsonlRepo, SessionMetadata, SessionRepo, age_label,
-    lock_session, now_ms, validate_session_id,
+    BranchBounds, EntryOrder, EntryQuery, JsonlRepo, SessionMetadata, SessionRepo, lock_session,
+    validate_session_id,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, UserContent};
@@ -109,16 +109,7 @@ fn print_list(listed: &[SessionMetadata], json: bool) {
         print_json(&json!(listed));
         return;
     }
-    if listed.is_empty() {
-        println!("no sessions for this directory");
-        return;
-    }
-    let now = now_ms();
-    for metadata in listed {
-        let age = age_label(now.saturating_sub(metadata.created_at));
-        let name = metadata.name.as_deref().unwrap_or("");
-        println!("{}  {age:>8}  {name}", metadata.id);
-    }
+    println!("{}", yi_runtime::slash::sessions_listing(listed));
 }
 
 fn print_show(metadata: &SessionMetadata, entries: &[Entry], json: bool) {

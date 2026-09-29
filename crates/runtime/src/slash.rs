@@ -15,6 +15,54 @@ pub const SESSION_VERBS: [&str; 9] = [
     "heartbeat",
 ];
 
+pub fn split(line: &str) -> (&str, &str) {
+    line.split_once(char::is_whitespace)
+        .map_or((line, ""), |(head, rest)| (head, rest.trim()))
+}
+
+pub fn undo(session: &AgentSession, cwd: &std::path::Path) -> String {
+    if session.status() == crate::Status::Running {
+        return "/undo: the current turn is still running; stop it first".to_owned();
+    }
+    let Some(store) = session.store() else {
+        return "/undo: this session has no store to read checkpoints from".to_owned();
+    };
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    match crate::undo(&store, cwd, &home) {
+        crate::UndoOutcome::Restored { changes, scoped } => {
+            format!("/undo: {}", crate::describe_undo(&changes, scoped))
+        }
+        // Scoped to this session on purpose: undoing a turn the reader never saw is not what
+        // the word means. An earlier session's turns stay reachable, just not from here.
+        crate::UndoOutcome::NoCheckpoint => {
+            "/undo: this session has taken no turn yet — `yi undo` restores an earlier session"
+                .to_owned()
+        }
+        crate::UndoOutcome::Failed(error) => format!("/undo failed: {error}"),
+    }
+}
+
+pub fn sessions_listing(listed: &[yi_types::wire::SessionMetadata]) -> String {
+    if listed.is_empty() {
+        return "no sessions for this directory".to_owned();
+    }
+    let now = yi_session::now_ms();
+    listed
+        .iter()
+        .map(|metadata| {
+            format!(
+                "{}  {:>8}  {}",
+                metadata.id,
+                yi_session::age_label(now.saturating_sub(metadata.created_at)),
+                metadata.name.as_deref().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn run(session: &AgentSession, command: &str, args: &str) -> Option<String> {
     Some(match command {
         "advisor" => advisor(session, args),
@@ -133,7 +181,7 @@ fn goal(session: &AgentSession) -> String {
     }
 }
 
-fn parse_mode(text: &str) -> Result<PermissionMode, &'static str> {
+pub fn parse_mode(text: &str) -> Result<PermissionMode, &'static str> {
     match text {
         "ask" => Ok(PermissionMode::Ask),
         "auto" => Ok(PermissionMode::Auto),
