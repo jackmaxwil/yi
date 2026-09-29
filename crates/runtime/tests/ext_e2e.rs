@@ -38,7 +38,7 @@ type Seen = std::sync::Arc<std::sync::Mutex<Vec<AgentMessage>>>;
 fn deliveries(host: &mut Host) -> Seen {
     let seen = Seen::default();
     let into = std::sync::Arc::clone(&seen);
-    host.set_notice(std::sync::Arc::new(move |message| {
+    host.set_deliver(std::sync::Arc::new(move |message| {
         if let Ok(mut all) = into.lock() {
             all.push(message);
         }
@@ -982,5 +982,64 @@ fn the_memory_block_is_present_at_zero_notes() -> TestResult {
     );
     let _ = std::fs::remove_dir_all(&cwd);
     let _ = std::fs::remove_dir_all(&home);
+    Ok(())
+}
+
+/// D306: a compaction drops every internal message, so each slot attached after the first
+/// request goes out again with its current text, in rank order; a slot whose text the frozen
+/// prompt already carries (a mode that flipped back) is not repeated.
+#[test]
+fn a_compaction_delivers_every_late_fragment_again() -> TestResult {
+    let dir = Scratch::new("yi-ext-compacted")?;
+    let mut host = started(&dir, &dir);
+    let seen = deliveries(&mut host);
+    let first = host.system_prompt();
+    host.dispatch(
+        &Event::ToolResult {
+            name: "grep".to_owned(),
+            exit: Some(0),
+            files_matched: 40,
+        },
+        None,
+    );
+    let mode = |mode: yi_runtime::PermissionMode| yi_permission::mode_fragment(mode).to_owned();
+    assert!(host.attach(
+        Slot::new(Rank::Mode, "permission"),
+        mode(yi_runtime::PermissionMode::Ask)
+    ));
+    let heads = |seen: &Seen| -> Vec<String> {
+        fragments(seen)
+            .iter()
+            .map(|text| {
+                text.split(['.', '\n'])
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect()
+    };
+    assert_eq!(heads(&seen), ["# Orchestrate", "Permission mode: ask"]);
+    host.dispatch(&Event::Compacted, None);
+    assert_eq!(
+        heads(&seen),
+        [
+            "# Orchestrate",
+            "Permission mode: ask",
+            "Permission mode: ask",
+            "# Orchestrate",
+        ],
+        "after a compaction every late slot rides again, mode before protocol"
+    );
+    assert!(host.attach(
+        Slot::new(Rank::Mode, "permission"),
+        mode(yi_runtime::PermissionMode::Auto)
+    ));
+    host.dispatch(&Event::Compacted, None);
+    assert_eq!(
+        heads(&seen)[4..],
+        ["Permission mode: auto", "# Orchestrate"],
+        "a mode the frozen prompt already states is not repeated"
+    );
+    assert_eq!(host.system_prompt(), first);
     Ok(())
 }

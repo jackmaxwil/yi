@@ -7,11 +7,13 @@ mod project;
 mod telemetry;
 
 use std::cell::OnceCell;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use serde_json::Value;
 use yi_types::message::{AgentMessage, UserContent};
+
+use crate::Deliver;
 
 pub(crate) use assemble::sanitize;
 pub use assemble::{PromptState, Rank, Slot, Trust};
@@ -125,10 +127,6 @@ pub trait Extension: Send {
     fn on(&mut self, event: &Event, out: &mut Vec<Effect>);
 }
 
-/// The one way the host puts a message in the transcript: a reminder line, or a fragment
-/// attached after the first request (D306). The session presents it at the next boundary.
-pub type Notice = Arc<dyn Fn(AgentMessage) + Send + Sync>;
-
 const STATE_ENTRY: &str = "ext_state";
 const RECORD_ENTRY: &str = "ext_record";
 /// A fragment attached after the first request rides the transcript as this custom entry,
@@ -140,11 +138,15 @@ pub struct Host {
     state: PromptState,
     /// The bytes the first request sent; every later request sends the same (D306).
     frozen: OnceCell<String>,
+    /// Slots attached after the freeze: their current text goes out again after a compaction.
+    late: BTreeSet<Slot>,
     started: bool,
     turn: u32,
     tool_calls_this_turn: u32,
     mutated: bool,
-    notice: Option<Notice>,
+    /// The one way the host puts a message in the transcript: a reminder line, or a fragment
+    /// attached after the first request (D306). The session presents it at the next boundary.
+    deliver: Option<Deliver>,
     cwd: PathBuf,
 }
 
@@ -165,11 +167,12 @@ impl Host {
             extensions: Vec::new(),
             state: PromptState::default(),
             frozen: OnceCell::new(),
+            late: BTreeSet::new(),
             started: false,
             turn: 0,
             tool_calls_this_turn: 0,
             mutated: false,
-            notice: None,
+            deliver: None,
             cwd,
         }
     }
@@ -178,24 +181,42 @@ impl Host {
         self.extensions.push(extension);
     }
 
-    pub fn set_notice(&mut self, notice: Notice) {
-        self.notice = Some(notice);
+    pub fn set_deliver(&mut self, deliver: Deliver) {
+        self.deliver = Some(deliver);
     }
 
     /// Before the first request the slot joins the prompt. After it, the text is delivered once
-    /// as a `fragment` message, and the slot still lands in the snapshot a resume restores.
+    /// as a `fragment` message and again after each compaction; the slot reaches the resume
+    /// snapshot only through an extension effect, since this method holds no store.
     pub fn attach(&mut self, slot: Slot, text: String) -> bool {
-        let late = self.frozen.get().is_some().then(|| fragment_message(&text));
-        let changed = self.state.attach(slot, text);
-        if changed && let Some(message) = late {
-            self.deliver(message);
+        let message = self.frozen.get().is_some().then(|| fragment_message(&text));
+        let changed = self.state.attach(slot.clone(), text);
+        if changed && let Some(message) = message {
+            self.late.insert(slot);
+            self.send(message);
         }
         changed
     }
 
-    fn deliver(&self, message: AgentMessage) {
-        if let Some(notice) = &self.notice {
-            notice(message);
+    fn send(&self, message: AgentMessage) {
+        if let Some(deliver) = &self.deliver {
+            deliver(message);
+        }
+    }
+
+    /// A compaction drops every internal message, late fragments included, so each late slot's
+    /// current text goes out again, unless the frozen prompt already says it (a mode that
+    /// flipped back).
+    fn redeliver(&self) {
+        for slot in &self.late {
+            if let Some(text) = self.state.slot_text(slot)
+                && !self
+                    .frozen
+                    .get()
+                    .is_some_and(|frozen| frozen.contains(text))
+            {
+                self.send(fragment_message(text));
+            }
         }
     }
 
@@ -249,6 +270,7 @@ impl Host {
                 self.mutated |= name == "write" || name == "edit";
             }
             Event::TurnEnd { .. } => self.turn = self.turn.saturating_add(1),
+            Event::Compacted => self.redeliver(),
             _ => {}
         }
         let mut effects: Vec<Effect> = Vec::new();
@@ -293,7 +315,7 @@ impl Host {
                     );
                     changed |= self.state.attach_external(&source, trust, &text);
                 }
-                Effect::Remind { text } => self.deliver(crate::session::user_message(&text)),
+                Effect::Remind { text } => self.send(crate::session::user_message(&text)),
                 Effect::Record { key, value } => record(store, key, &value),
             }
         }
