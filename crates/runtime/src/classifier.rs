@@ -26,7 +26,7 @@ const INSTRUCTIONS: &str =
     "Which of these methods does the user's message ask for? Answer none unless one clearly does.";
 
 pub type Record = Arc<dyn Fn(ClassifyRecord) + Send + Sync>;
-pub type Deliver = Arc<dyn Fn(AgentMessage) + Send + Sync>;
+pub use crate::Deliver;
 
 #[derive(Clone)]
 pub struct Sidecar {

@@ -195,9 +195,9 @@ omitted]`, `[showing lines A-B of N]`, `[full output: path]` and
 pointer names where. A number that was in the cut part is not a number
 you have. Read the pointer before citing anything past the cut.
 
-Inside auto mode an unprovable command runs contained: no network, no
-socket bind, writes only under the working tree, its git directories, and
-tmp. A test that
+Inside auto mode an unprovable or approved command runs contained: no
+network, no socket bind, writes only under the working tree, its git
+directories, and tmp. A test that
 binds a socket or reaches the network fails there for that reason. The
 failure is about where you ran it; the repository's CI is where the
 answer lives.
@@ -286,8 +286,10 @@ not create: write overwrites. `grep def=true` or `block=true` before a
 read of a large file you need one function of. The same command failing
 twice is a hypothesis, not a retry.
 
-Long commands: `wait` is clamped; a command past it becomes a job you
-check by calling bash with no command. Never sleep to wait.
+Long commands: pass `wait`; a command still running then becomes a job.
+Its result comes on its own only while your turn runs, so before you end
+the turn wait for it with `bash job=N wait=S`. `timeout_secs` still bounds
+it. Never sleep to wait.
 
 ## Git, lanes, and the tree
 

@@ -277,6 +277,80 @@ def check_unknown_usage_is_not_a_free_turn():
         assert total is None, f"unmeasurable spend answered {total} instead of refusing"
         assert tb21_cost.main([str(runs), "--hard", "25"]) == 2, "the probe must stop"
     assert yi_usage.parse_events(EVENTS)["costUnknownTurns"] == 0, "recorded turns are known"
+    # Owner, 2026-09-28: "a failed request that returned nothing count as $0". A Z.AI 520 before
+    # any token left three trials of row 0071 unpriced though nothing was generated or billed.
+    failed = {"type": "message_end", "message": {"role": "assistant", "content": [], "stopReason": "error",
+              "errorMessage": "error code: 520", "usage": {"input": 0, "output": 0, "unknown": True}}}
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "yi.jsonl"
+        path.write_text(EVENTS.read_text().rstrip("\n") + "\n" + json.dumps(failed) + "\n")
+        usage = yi_usage.parse_events(path)
+        assert usage["costUnknownTurns"] == 0 and usage["costUsd"] == yi_usage.parse_events(EVENTS)["costUsd"], usage
+
+
+def check_warm_share():
+    """#742: the Claude cache gate reads each warm request against the previous request's whole
+    prompt, writes included, over a loop of at least three requests. The usage rows are
+    OpenRouter's, from live runs of cache-warm-claude on Bedrock."""
+    held = [(206, 0, 14336), (235, 14336, 7798), (242, 22134, 7996), (227, 30130, 418)]
+    no_tail = [(642, 13900, 0), (8044, 14336, 0), (8097, 14336, 7809), (861, 22145, 7855)]
+    # 0.396.0-0.450.0: a user string reshaped once its mark moved on, and request 3 read only the
+    # system prefix; its fresh input was 240 tokens, so a ratio without the writes said 0.95.
+    reshaped = [(207, 0, 14336), (240, 14336, 7786), (240, 13900, 16065), (228, 29965, 368)]
+    task = run.LIVE / "cache-warm-claude"
+    spec = json.loads((task / "task.json").read_text())
+    rows = {}
+    with tempfile.TemporaryDirectory() as directory:
+        fake = Path(directory) / "yi"
+        fake.write_text(
+            "#!/usr/bin/env python3\nimport json, pathlib\n"
+            "for i, r, w in json.loads(pathlib.Path(__file__).with_suffix('.json').read_text()):\n"
+            "    print(json.dumps({'type': 'message_end', 'message': {'role': 'assistant',"
+            " 'usage': {'input': i, 'cacheRead': r, 'cacheWrite': w, 'output': 1}}}))\n"
+        )
+        fake.chmod(0o755)
+        for name, usage in (("held", held), ("no-tail", no_tail), ("reshaped", reshaped), ("no-loop", held[:2]), ("cold-short", [(206, 0, 14336), (235, 0, 14336)])):
+            fake.with_suffix(".json").write_text(json.dumps(usage))
+            rows[name] = run.cache_check(spec, task, str(fake), "m", Path(directory) / name)
+    assert rows["held"]["reward"] == 1 and rows["held"]["warmShares"] == [0.9858, 0.9895, 0.992], rows["held"]
+    detail = rows["no-tail"]["detail"]
+    assert rows["no-tail"]["reward"] == 0 and detail.startswith("request 3 read 14336 of"), detail
+    assert rows["reshaped"]["detail"].startswith("request 3 read 13900 of"), rows["reshaped"]
+    cold = rows["cold-short"]
+    assert cold["status"] == "fail" and cold["detail"].startswith("request 2 read 0 of"), cold
+    short = rows["no-loop"]
+    assert short["status"] == "inconclusive" and short["detail"].startswith("2 requests"), short
+
+
+def check_compaction_share():
+    """#746: the compaction scenario judges only the compaction request, the request span no
+    reply's usage matches. The rows are OpenRouter's, from a live run of an earlier five-read
+    shape on Bedrock whose cut found nothing to summarize: fifteen loop requests, no compaction,
+    and that is inconclusive, never a pass on the loop's own warm reads."""
+    usage = [(204, 0, 14496), (237, 14496, 357), (237, 14853, 4763), (242, 19616, 241),
+             (242, 19857, 4812), (237, 24669, 246), (237, 24915, 4763), (242, 29678, 241),
+             (241, 29919, 4812), (236, 34731, 246), (236, 34977, 4763), (236, 39740, 216),
+             (187, 39956, 579), (182, 40535, 194), (175, 40729, 127)]
+    task = run.LIVE / "cache-warm-compaction"
+    spec = json.loads((task / "task.json").read_text())
+    with tempfile.TemporaryDirectory() as directory:
+        fake = Path(directory) / "yi"
+        fake.write_text(
+            "#!/usr/bin/env python3\nimport json, pathlib, sys\n"
+            "rows = json.loads(pathlib.Path(__file__).with_suffix('.json').read_text())\n"
+            "sessions = pathlib.Path(sys.argv[sys.argv.index('--session-dir') + 1]) / 'cwd'\n"
+            "sessions.mkdir(parents=True, exist_ok=True)\n"
+            "with (sessions / 's.telemetry.jsonl').open('w') as sink:\n"
+            "    for i, r, w in rows:\n"
+            "        sink.write(json.dumps({'span': 'request', 'input': i, 'cacheRead': r, 'cacheWrite': w}) + '\\n')\n"
+            "        print(json.dumps({'type': 'message_end', 'message': {'role': 'assistant',"
+            " 'usage': {'input': i, 'cacheRead': r, 'cacheWrite': w, 'output': 1}}}))\n"
+        )
+        fake.chmod(0o755)
+        fake.with_suffix(".json").write_text(json.dumps(usage))
+        row = run.cache_check(spec, task, str(fake), "m", Path(directory) / "never")
+    assert row["status"] == "inconclusive" and row["detail"] == "the session never compacted", row
+    assert "compaction" not in row, row
 
 
 def check_session_extras():
@@ -854,6 +928,8 @@ CHECKS = (
     check_empty_stream_fails_clean_workspace,
     check_no_assistant_rows,
     check_unknown_usage_is_not_a_free_turn,
+    check_warm_share,
+    check_compaction_share,
     check_session_extras,
     check_fingerprint,
     check_driver_ceiling,

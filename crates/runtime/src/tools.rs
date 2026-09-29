@@ -8,7 +8,7 @@ use yi_loop::{AgentTool, ToolOutcome};
 use yi_tools::{CancelFlag, Tool, ToolContext};
 use yi_types::model::ToolDef;
 
-use crate::permission::PermissionBroker;
+use crate::permission::{Containment, PermissionBroker};
 
 pub struct ToolAdapter {
     tool: Arc<dyn Tool>,
@@ -143,9 +143,9 @@ pub fn refuse_armed(
         &bash(command),
         Some(command),
     );
-    match (outcome.allowed, outcome.contained) {
-        (true, false) => None,
-        (true, true) => Some(format!(
+    match (outcome.allowed, outcome.containment) {
+        (true, Containment::Uncontained) => None,
+        (true, Containment::Contained { .. }) => Some(format!(
             "an exec:// source runs `{command}` outside the sandbox, which allows it only contained: run it with bash in a turn, or allow it by a permission rule"
         )),
         (false, _) => Some(format!("Permission denied: {}", outcome.reason)),
@@ -268,6 +268,7 @@ impl AgentTool for ToolAdapter {
             auto_background: self.auto_background,
             sandbox: None,
             deny_read: self.wall.deny_read.clone(),
+            deny_write: self.wall.deny_write.clone(),
             container: self.wall.container.clone(),
             call_id: tool_call_id.to_owned(),
         };
@@ -330,7 +331,6 @@ impl AgentTool for ToolAdapter {
             }
             let mut contained: Option<Arc<PermissionBroker>> = None;
             if let Some(broker) = permission {
-                let sandbox = broker.sandbox().cloned();
                 let reporter = Arc::clone(&broker);
                 let gate_tool = Arc::clone(&tool);
                 let gate_args = args.clone();
@@ -352,9 +352,9 @@ impl AgentTool for ToolAdapter {
                 .await;
                 match outcome {
                     Ok(outcome) if outcome.allowed => {
-                        if outcome.contained {
-                            context.sandbox = sandbox;
-                            contained = Some(reporter);
+                        if let Containment::Contained { widen } = &outcome.containment {
+                            context.sandbox = reporter.sandbox_for(&context.cwd, &wall, widen);
+                            contained = context.sandbox.as_ref().map(|_| reporter);
                         }
                     }
                     Ok(outcome) => {

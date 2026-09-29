@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use yi_permission::{
-    Class, Parsed, Verdict, classify, parse, refused_scopes, verdict, write_targets,
+    Class, Parsed, Verdict, classify, needs_host, parse, refused_scopes, verdict, write_targets,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -435,5 +435,30 @@ fn write_targets_keep_what_the_splitter_skips() {
     ];
     for (command, expected) in cases {
         assert_eq!(write_targets(command), expected, "{command:?}");
+    }
+}
+
+/// A contained run has no network, so these approvals leave the sandbox; `git add` and a local
+/// `rm` stay inside it.
+#[test]
+fn only_network_and_install_approvals_need_the_host() {
+    for command in [
+        "curl -o out.json https://example.invalid/x",
+        "git push --force origin main",
+        "timeout 60 git fetch origin",
+        "npm install left-pad",
+        "cargo add serde",
+        "scp a host:b",
+        "cd sub && wget https://example.invalid/x > log",
+    ] {
+        assert!(needs_host(command), "{command}");
+    }
+    for command in [
+        "git add -A",
+        "rm -rf target/old",
+        "cargo test",
+        "touch x; true",
+    ] {
+        assert!(!needs_host(command), "{command}");
     }
 }

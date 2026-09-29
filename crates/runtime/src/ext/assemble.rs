@@ -106,6 +106,10 @@ impl PromptState {
         self.slots.contains_key(slot)
     }
 
+    pub fn slot_text(&self, slot: &Slot) -> Option<&str> {
+        self.slots.get(slot).map(String::as_str)
+    }
+
     pub fn attach_external(&mut self, source: &str, trust: Trust, text: &str) -> bool {
         let key = (trust, source.to_owned());
         let clean = sanitize(text).into_owned();

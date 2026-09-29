@@ -475,9 +475,7 @@ impl SubagentHost {
         let stirred = stirred.map_err(|_| "family state poisoned")?;
         let mut span = yi_types::trace::span("wait.family");
         let mut stuck_check = std::time::Instant::now();
-        loop {
-            let mut stir = std::pin::pin!(stirred.notified());
-            stir.as_mut().enable();
+        crate::session::until(&stirred, || {
             if stuck_check <= std::time::Instant::now() {
                 self.mark_stuck();
                 stuck_check += std::time::Duration::from_millis(STUCK_CHECK_MS);
@@ -485,7 +483,10 @@ impl SubagentHost {
             let (epoch, moved, live) = self.changed_since(since);
             let quiet = bare && moved.is_empty() && live;
             let moved_on = epoch > since && !quiet;
-            let at_once = self.at_once(epoch, moved_on)?;
+            let at_once = match self.at_once(epoch, moved_on) {
+                Ok(at_once) => at_once,
+                Err(error) => return std::ops::ControlFlow::Break(Err(error)),
+            };
             let timed_out = std::time::Instant::now() >= deadline;
             if moved_on || at_once.is_some() || timed_out {
                 if bare {
@@ -497,11 +498,12 @@ impl SubagentHost {
                 }
                 let state = at_once.unwrap_or(if moved_on { "moved" } else { "timeout" });
                 span.set("state", state);
-                return Ok(self.wait_reply(state, epoch, &moved, clamped != timeout_ms, clamped));
+                let reply = self.wait_reply(state, epoch, &moved, clamped != timeout_ms, clamped);
+                return std::ops::ControlFlow::Break(Ok(reply));
             }
-            let wake = tokio::time::Instant::from_std(stuck_check.min(deadline));
-            let _ = tokio::time::timeout_at(wake, stir).await;
-        }
+            std::ops::ControlFlow::Continue(Some(stuck_check.min(deadline)))
+        })
+        .await
     }
 
     fn at_once(&self, epoch: u64, moved_on: bool) -> Result<Option<&'static str>, String> {
