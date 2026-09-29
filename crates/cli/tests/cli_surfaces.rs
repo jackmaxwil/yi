@@ -252,6 +252,54 @@ fn ask_reads_a_prompt_past_the_argument_cap_from_stdin() -> TestResult {
     Ok(())
 }
 
+/// A reader that narrates before a tool call ("`lines[0]`") put that bracket ahead of its
+/// answer, and `--schema` exited 3 on a run whose last message was exactly the JSON asked for.
+#[test]
+fn a_schema_answer_is_the_text_after_the_last_tool_call() -> TestResult {
+    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_types::message::StopReason;
+    let workspace = Workspace::new("schema-after-tools")?;
+    std::fs::write(workspace.project().join("r.rs"), "let lines = vec![1];\n")?;
+    let args = json!({"path": "r.rs"})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let narrated = faux_assistant_message(
+        vec![
+            faux_text("Let me read `lines[0]` first."),
+            faux_tool_call("c0", "read", args),
+        ],
+        StopReason::ToolUse,
+    );
+    let answer = faux_assistant_message(
+        vec![faux_text(
+            r#"{"refuted": true, "reason": "r.rs never indexes past 0"}"#,
+        )],
+        StopReason::Stop,
+    );
+    let script = workspace.project().join("script.jsonl");
+    std::fs::write(
+        &script,
+        format!(
+            "{}\n{}",
+            serde_json::to_string(&narrated)?,
+            serde_json::to_string(&answer)?
+        ),
+    )?;
+    let schema = r#"{"type":"object","required":["refuted","reason"],"properties":{"refuted":{"type":"boolean"},"reason":{"type":"string"}}}"#;
+    let script = script.display().to_string();
+    let answered = ask(
+        &workspace,
+        "break the claim",
+        &["--faux", &script, "--schema", schema],
+    )?;
+    let said = String::from_utf8_lossy(&answered.stderr).into_owned();
+    assert_eq!(answered.status.code(), Some(0), "{said}");
+    let value: Value = serde_json::from_str(stdout(&answered).trim())?;
+    assert_eq!(value.get("refuted"), Some(&json!(true)), "{value}");
+    Ok(())
+}
+
 #[test]
 fn sessions_rm_removes_the_session() -> TestResult {
     let workspace = Workspace::new("rm")?;

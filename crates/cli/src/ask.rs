@@ -274,6 +274,10 @@ async fn follow(
             );
             said_anything |= text;
             last_stop = Some((*stop_reason, text));
+            // Incident: a reader's "`lines[0]`" before a read became its answer and voided review rounds.
+            if *stop_reason == StopReason::ToolUse {
+                answer.clear();
+            }
         }
         match &event {
             AgentEvent::MessageEnd {
