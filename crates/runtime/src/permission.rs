@@ -727,7 +727,7 @@ impl PermissionBroker {
         let request = RequestId::new(request);
         let Some(_asking) = InFlight::claim(&self.asking, request) else {
             return format!(
-                "Request {request} is already being put to the user; wait for that answer."
+                "Request {request} is already being put to the user by another ask_user call; that call's result carries the answer. Do not ask again."
             );
         };
         let Some((stored, state)) = self
@@ -921,7 +921,7 @@ impl<'a> InFlight<'a> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(request);
-        inserted.then_some(Self { set, request })
+        inserted.then(|| Self { set, request })
     }
 }
 

@@ -45,6 +45,7 @@ struct Harness {
     broker: Arc<PermissionBroker>,
     provider: Arc<ProviderStream>,
     asks: Arc<Mutex<Vec<String>>>,
+    hold: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
     events: tokio::sync::broadcast::Receiver<yi_types::event::AgentEvent>,
     _cwd: Scratch,
 }
@@ -76,13 +77,18 @@ fn answers(replies: &[&str]) -> Vec<yi_types::message::AgentMessage> {
 fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> std::io::Result<Harness> {
     let cwd = Scratch::new("yi-auto-review")?;
     let asks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let hold: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>> = Arc::new(Mutex::new(None));
     let asker: Option<Asker> = reply.map(|reply| {
-        let asks = Arc::clone(&asks);
+        let (asks, hold) = (Arc::clone(&asks), Arc::clone(&hold));
         Arc::new(move |ask: &yi_runtime::PermissionAsk<'_>| {
             if let Ok(mut asks) = asks.lock() {
                 asks.push(ask.text());
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            if let Ok(hold) = hold.lock()
+                && let Some(release) = hold.as_ref()
+            {
+                let _released = release.recv();
+            }
             reply
         }) as Asker
     });
@@ -102,6 +108,7 @@ fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> std::io::Result<Harn
         broker,
         provider,
         asks,
+        hold,
         events: receiver,
         _cwd: cwd,
     })
@@ -604,19 +611,30 @@ async fn a_request_asked_twice_at_once_is_put_to_the_user_once() -> TestResult {
     let harness = setup(Some(AskOutcome::Reject), true)?;
     harness.provider.queue_faux(answers(&["deny unprovable"]));
     decide(&harness.broker, destructive_args()).await?;
-    let (first, second) = (Arc::clone(&harness.broker), Arc::clone(&harness.broker));
-    let one = std::thread::spawn(move || first.resolve_request(1, "call-a"));
-    let two = std::thread::spawn(move || second.resolve_request(1, "call-b"));
-    let replies = [
-        one.join().map_err(|_| "thread")?,
-        two.join().map_err(|_| "thread")?,
-    ];
-    assert!(
-        replies
-            .iter()
-            .any(|reply| reply.contains("already being put to the user")),
-        "{replies:?}"
-    );
-    assert_eq!(harness.asks.lock().map(|asks| asks.len()).unwrap_or(0), 1);
+    let (release, held) = std::sync::mpsc::channel();
+    if let Ok(mut hold) = harness.hold.lock() {
+        *hold = Some(held);
+    }
+    let broker = Arc::clone(&harness.broker);
+    let first = std::thread::spawn(move || broker.resolve_request(1, "call-a"));
+    let asked = || harness.asks.lock().map(|asks| asks.len()).unwrap_or(0);
+    for _ in 0..500 {
+        if asked() == 1 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(asked(), 1, "the first call is waiting on the user");
+    for late in ["call-b", "call-c"] {
+        let reply = harness.broker.resolve_request(1, late);
+        assert!(
+            reply.contains("already being put to the user"),
+            "{late}: {reply}"
+        );
+    }
+    release.send(())?;
+    let answered = first.join().map_err(|_| "thread")?;
+    assert!(answered.contains("denied"), "{answered}");
+    assert_eq!(asked(), 1);
     Ok(())
 }
