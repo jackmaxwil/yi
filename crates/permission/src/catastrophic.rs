@@ -244,7 +244,7 @@ pub fn is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
 }
 
 /// The credential stores under `home`, the one list the destroy gate, the read gate, the bash
-/// read belt and the sandbox's deny-read all take (D322).
+/// read belt and the sandbox's deny-read all take (D323).
 pub fn credential_stores(home: &Path) -> Vec<PathBuf> {
     PROTECTED_CREDENTIAL_SUBPATHS
         .iter()
@@ -264,7 +264,7 @@ const HOME_ROOTS: [&str; 4] = ["/", "/home", "/Users", "/root"];
 /// `/proc` entries that link elsewhere (`/proc/self/root` is `/`), unseen by a lexical check.
 const PROC_LINKS: [&str; 4] = ["root", "cwd", "fd", "map_files"];
 
-/// What a read may not touch (D180, D322): a key, the workspace `.git` or a device, which never
+/// What a read may not touch (D180, D323): a key, the workspace `.git` or a device, which never
 /// ends (`/dev/zero`) or waits (`/dev/tty`), and a directory a walk would carry into a key
 /// store; judged by file identity too, so letter case, a link, `/private` or a firmlink names no
 /// way in at the time of the check (a link swapped between check and open is #890). Built

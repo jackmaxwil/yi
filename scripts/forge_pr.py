@@ -424,7 +424,7 @@ def cmd_ready(args):
     errs = pr_review.ready_problems(rounds, pr["head"]["sha"])
     for err in errs:
         print(f"  {err}")
-    if errs and pr_review.MODE == "blocking" and not getattr(args, "force", False):
+    if errs and pr_review.MODE == "blocking":
         print(f"ready: refused — #{number} stays a draft")
         return 1
     answer = fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
@@ -630,9 +630,10 @@ def cmd_land(args):
     code = cmd_open(args)
     if code:
         return code
-    # `just land` is the owner asking for this merge now, so it readies its own draft.
-    args.number, args.force = None, True
+    # A PR lands through its review rounds: until two are clean on its head it stays a draft.
+    args.number = None
     if cmd_ready(args):
+        print("land: opened as a draft; the review bot reads it — `just pr merge` after `just pr ready` passes")
         return 1
     args.wait = True
     return cmd_merge(args)
@@ -716,14 +717,20 @@ def selfcheck():
     real_rounds = pr_review.comments, pr_review.authors
     globals()["pull"] = lambda n: {"number": n, "title": DRAFT + "Keep the gate", "head": {"sha": "abc1234"}}
     globals()["fgj_api"] = lambda method, path, payload=None: {"message": "edits are forbidden"}
-    pr_review.comments, pr_review.authors = (lambda repo, number: []), (lambda: set())
+    clean = [{"id": n, "user": {"login": "jack"}, "body": f"<!-- yi-round {n} -->\n<!-- yi-round-meta pr=7 sha=abc1234 verdict=clean -->\n"} for n in (1, 2)]
+    pr_review.authors = lambda: {"jack"}
     try:
+        pr_review.comments = lambda repo, number: []
         with contextlib.redirect_stdout(io.StringIO()) as said:
+            unread = cmd_ready(argparse.Namespace(number=7))
+        pr_review.comments = lambda repo, number: clean
+        with contextlib.redirect_stdout(io.StringIO()) as patched:
             stopped = cmd_ready(argparse.Namespace(number=7))
     finally:
         globals()["fgj_api"], globals()["pull"] = real_fgj, real_pull
         pr_review.comments, pr_review.authors = real_rounds
-    assert stopped == 1, "a refused title PATCH stops the ready verb"
+    assert unread == 1 and "refused" in said.getvalue(), "a draft with no rounds is not readied"
+    assert stopped == 1 and "not readied" in patched.getvalue(), "a refused title PATCH stops the ready verb"
     assert "0 review round(s)" in said.getvalue(), "ready says what the rounds still owe"
     real_measure = gate.measure
     gate.measure = lambda: (([], [], 0, ([], [])), None)
