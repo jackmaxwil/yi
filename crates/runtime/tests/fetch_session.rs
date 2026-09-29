@@ -60,7 +60,7 @@ fn a_store_attached_after_the_resolver_still_serves_history() -> TestResult {
             thinking_level: None,
             tool_execution: yi_loop::ExecutionMode::Sequential,
         },
-        Arc::new(ProviderStream::new(None, None)),
+        Arc::new(ProviderStream::new(None)),
     );
     let workspace = Scratch::new("yi-fetch-session")?;
     let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())

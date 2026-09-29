@@ -206,7 +206,7 @@ The `title` rule accepts exactly `WIP: ` in front of a subject and judges the re
 `WIP`, `wip` and `fixup!` stay refused everywhere else. When round 2 or later is clean
 on the head, the lifecycle strips the prefix (owner: "WIP prefix + bot strips"). The title
 edit needs no rerun of the `title` job: the job judged the subject after the prefix, which is
-the title the strip leaves (D302).
+the title the strip leaves (D307).
 
 ### 3.9 The lease
 
@@ -350,13 +350,13 @@ regressions, performance drains, etc"
 
 ## 10. Open questions
 
-1. Settled by stage 0 (D302): stripping `WIP:` leaves the subject the `title` job already
+1. Settled by stage 0 (D307): stripping `WIP:` leaves the subject the `title` job already
    judged, so no rerun is needed for the title edit. A body edit reruns nothing: the
    workflow deliberately omits the `edited` event, so a body fixed by `just pr edit
    --body` is re-judged only by the next push's synchronize (or locally by `edit`, which
    runs the same template check `pr open` does).
 2. Whether Forgejo 15's merge API refuses a `WIP:` PR as its UI does is unverified;
-   `just pr merge` stops on a draft either way (D302).
+   `just pr merge` stops on a draft either way (D307).
 3. The duplicate thresholds: `grid diff` overlap and window-hash matches. Set them from
    stage 2's fixture pairs.
 4. Stacked PRs have a base other than main. A delta round and a duplicate check should
