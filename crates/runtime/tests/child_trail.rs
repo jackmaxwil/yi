@@ -267,10 +267,24 @@ async fn a_reused_name_resolves_to_the_newest_child_and_an_id_to_its_own() -> Te
     Ok(())
 }
 
-/// Dies with the end written through the host's live handle: after `/new` swaps the root's
+async fn settled(host: &Arc<SubagentHost>) -> TestResult {
+    for _ in 0..400 {
+        let list = host.list();
+        let done = list["subagents"]
+            .as_array()
+            .is_some_and(|all| all.iter().all(|entry| entry["status"] != "running"));
+        if done {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    Err("the child never settled".into())
+}
+
+/// Dies with the end written to whatever the live handle holds: after `/new` swaps the root's
 /// transcript, the child's end lands in a session that never spawned it.
 #[tokio::test]
-async fn a_childs_end_is_written_where_its_spawn_was() -> TestResult {
+async fn a_childs_end_goes_nowhere_once_its_parent_is_swapped_away() -> TestResult {
     let scratch = Scratch::new("yi-child-trail-swap")?;
     let (session, root_file, _) = root_session(&scratch)?;
     let (next, next_file, _) = root_session(&scratch)?;
@@ -278,8 +292,29 @@ async fn a_childs_end_is_written_where_its_spawn_was() -> TestResult {
     let host = host(0, scratch.join("rlm-1"), Arc::clone(&parent));
     host.spawn("Where is the token minted?".to_owned(), kwargs("scout"))?;
     *parent.lock().map_err(|_| "poisoned")? = Some(next);
-    ended(&root_file).await?;
+    settled(&host).await?;
     assert!(trail(&next_file)?.is_empty(), "{:?}", trail(&next_file)?);
+    let old = trail(&root_file)?;
+    assert!(old.iter().all(|line| line["event"] == "spawned"), "{old:?}");
+    Ok(())
+}
+
+/// Dies with the end written through a copy kept at spawn: rpc's `switch_session` reloads the
+/// same file as a second copy, the parent appends through it, and the child's end then reused
+/// that sequence number, so the file no longer loaded.
+#[tokio::test]
+async fn a_reloaded_parent_takes_the_childs_end_without_breaking_its_file() -> TestResult {
+    let scratch = Scratch::new("yi-child-trail-reload")?;
+    let (session, root_file, _) = root_session(&scratch)?;
+    let parent = slot(Some(session));
+    let host = host(0, scratch.join("rlm-1"), Arc::clone(&parent));
+    host.spawn("Where is the token minted?".to_owned(), kwargs("scout"))?;
+    let reloaded = Arc::new(std::sync::Mutex::new(yi_session::load_session(&root_file)?));
+    yi_session::lock_session(&reloaded).append_custom("main", "turn", None)?;
+    *parent.lock().map_err(|_| "poisoned")? = Some(reloaded);
+    ended(&root_file).await?;
+    let loaded = yi_session::load_session(&root_file)?;
+    drop(loaded);
     Ok(())
 }
 

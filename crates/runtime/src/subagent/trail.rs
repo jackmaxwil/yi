@@ -27,38 +27,47 @@ impl super::SubagentHost {
         Some(yi_session::lock_session(&store).metadata().id.clone())
     }
 
-    pub(super) fn trail_spawned(&self, name: &str, id: &str, child: &AgentSession, brief: &str) {
-        let (Some(parent), Some(store)) = (self.parent_file(), child.store()) else {
-            return;
-        };
+    pub(super) fn trail_spawned(
+        &self,
+        name: &str,
+        id: &str,
+        child: &AgentSession,
+        brief: &str,
+    ) -> Option<PathBuf> {
+        let parent = (self.options.store)()?;
+        let parent_file = yi_session::lock_session(&parent).file_path().cloned()?;
         let (file, session) = {
+            let store = child.store()?;
             let store = yi_session::lock_session(&store);
-            (store.file_path().cloned(), store.metadata().id.clone())
+            (store.file_path().cloned()?, store.metadata().id.clone())
         };
-        let Some(path) = file.and_then(|file| {
-            let base = parent.parent()?;
-            Some(file.strip_prefix(base).ok()?.to_string_lossy().into_owned())
-        }) else {
-            return;
-        };
+        let path = file.strip_prefix(parent_file.parent()?).ok()?;
         journal(
-            (self.options.store)().as_ref(),
+            &parent,
             &ChildTrail::Spawned(ChildSpawned {
                 name: name.to_owned(),
                 id: ChildId(id.to_owned()),
                 session,
-                path,
+                path: path.to_string_lossy().into_owned(),
                 brief: crate::fetch::content_hash(brief),
             }),
         );
+        Some(parent_file)
     }
 
     pub(super) fn trail_ended(
-        store: Option<&yi_session::SharedSession>,
+        &self,
+        spawned_in: Option<&PathBuf>,
         name: &str,
         id: &str,
         (exit, error, tokens): (ChildExit, Option<String>, u64),
     ) {
+        let Some(store) = (self.options.store)() else {
+            return;
+        };
+        if spawned_in.is_none() || yi_session::lock_session(&store).file_path() != spawned_in {
+            return;
+        }
         let line = ChildTrail::Ended(ChildEnded {
             name: name.to_owned(),
             id: ChildId(id.to_owned()),
@@ -66,7 +75,7 @@ impl super::SubagentHost {
             error,
             tokens,
         });
-        journal(store, &line);
+        journal(&store, &line);
     }
 
     pub fn trail(&self, name: &str) -> Option<PathBuf> {
@@ -77,7 +86,6 @@ impl super::SubagentHost {
             ..Default::default()
         };
         let entries = yi_session::lock_session(&store).find_entries(&query).ok()?;
-        let suffix = format!("/{name}");
         entries.iter().find_map(|entry| {
             let yi_types::entry::Entry::Custom {
                 data: Some(data), ..
@@ -86,11 +94,7 @@ impl super::SubagentHost {
                 return None;
             };
             match serde_json::from_value(data.clone()).ok()? {
-                ChildTrail::Spawned(line)
-                    if line.name == name
-                        || line.id.as_str() == name
-                        || line.name.ends_with(&suffix) =>
-                {
+                ChildTrail::Spawned(line) if line.name == name || line.id.as_str() == name => {
                     Some(base.join(line.path))
                 }
                 _ => None,
@@ -99,8 +103,8 @@ impl super::SubagentHost {
     }
 }
 
-fn journal(store: Option<&yi_session::SharedSession>, line: &ChildTrail) {
-    let (Some(store), Ok(data)) = (store, serde_json::to_value(line)) else {
+fn journal(store: &yi_session::SharedSession, line: &ChildTrail) {
+    let Ok(data) = serde_json::to_value(line) else {
         return;
     };
     let _a_refused_line_never_blocks_a_child =
