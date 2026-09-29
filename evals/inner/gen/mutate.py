@@ -35,6 +35,9 @@ def _python():
 PYTHON = _python()
 IGNORE = shutil.ignore_patterns(".git", ".venv", "__pycache__", "*.pyc")
 BROKEN = (1, 12)  # a mutation must turn between 1 and 12 passing tests red
+# Incident, 2026-09-28: at load average 88 pyparsing's 20 s suite overran 180 s while grading, and
+# nine trials scored 0 for a grader that never ran.
+GRADE_TIMEOUT = 600
 SWAPS = {"<": "<=", "<=": "<", ">": ">=", ">=": ">", "==": "!=", "!=": "==", "+": "-", "-": "+",
          "and": "or", "or": "and"}
 # One unittest run, reported as {test id: ok | fail | skip}; an import error counts as a failed id.
@@ -290,7 +293,9 @@ def check(seed, workspace, level=1):
 
 def grade(base, workspace, spec, f2p, p2p):
     """The workspace's library dropped into a copy of `base` (the tree whose tests judge it), then
-    the suite: each of `f2p` passing is a point, and all of `p2p` passing is one more."""
+    the suite: each of `f2p` passing is a point, and all of `p2p` passing is one more. A suite that
+    never reported is judged against `base` itself under the same limit: when that fails too, the
+    host could not run the grader and the score is None (unmeasured), not 0."""
     total = len(f2p) + 1
     library = Path(workspace) / spec["src"]
     if not library.is_dir():
@@ -300,7 +305,12 @@ def grade(base, workspace, spec, f2p, p2p):
         shutil.copytree(base, work, ignore=IGNORE)
         shutil.rmtree(work / spec["src"], ignore_errors=True)
         shutil.copytree(library, work / spec["src"], ignore=IGNORE)
-        results = _suite(work, spec)
+        results = _suite(work, spec, GRADE_TIMEOUT)
+        if not results:
+            pristine = Path(tmp) / "pristine"
+            shutil.copytree(base, pristine, ignore=IGNORE)
+            if not _suite(pristine, spec, GRADE_TIMEOUT):
+                return None, total
     fixed = sum(1 for t in f2p if results.get(t) == "ok")
     clean = all(results.get(t) == "ok" for t in p2p)
     return fixed + int(clean and bool(results)), total
