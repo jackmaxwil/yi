@@ -106,6 +106,7 @@ impl Reviewer {
             Arc::clone(&self.provider),
         );
         session.set_tools(Vec::new());
+        session.set_reuse(yi_types::model::Reuse::OneShot);
         if session.prompt(&request.render()).is_err() {
             return ReviewOutcome::Deny {
                 reason: "the reviewer session refused the prompt".to_owned(),
@@ -309,5 +310,6 @@ pub fn ask_text(ask: &ReviewedAsk) -> crate::permission::PermissionAsk<'_> {
         patch: ask.patch.as_deref(),
         changes: &ask.targets,
         grants: &ask.grants,
+        tool_call_id: None,
     }
 }

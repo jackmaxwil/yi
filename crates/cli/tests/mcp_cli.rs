@@ -57,6 +57,24 @@ fn yi(home: &McpHome, args: &[&str]) -> Result<Output, Box<dyn Error>> {
     })
 }
 
+/// `yi <args>` run from `cwd`, the directory a stored relative command would resolve against.
+fn yi_in(home: &McpHome, cwd: &std::path::Path, args: &[&str]) -> Result<Output, Box<dyn Error>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the contract under test is the spawned binary's stdio"
+    )]
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args(args)
+        .env("HOME", &home.home)
+        .current_dir(cwd)
+        .output()?;
+    Ok(Output {
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
 fn yi_mcp(home: &McpHome, args: &[&str]) -> Result<Output, Box<dyn Error>> {
     let mut full = vec!["mcp"];
     full.extend_from_slice(args);
@@ -255,4 +273,170 @@ fn fetch_resolves_an_mcp_url_through_the_one_shot_cli() -> TestResult {
     );
 
     Ok(())
+}
+
+/// A stored stdio command that is a relative path is resolved against the server's cwd, the
+/// way `npx` prefers `<cwd>/node_modules/.bin`. The host runs every MCP server from `~/.yi`,
+/// outside every writable root, so a file planted in the workspace is never the one that runs.
+#[test]
+fn a_relative_server_command_is_not_resolved_in_the_workspace() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let home = mcp_home()?;
+    let workspace = Scratch::new("yi-mcp-cwd")?;
+    let bin = workspace.join("node_modules").join(".bin");
+    std::fs::create_dir_all(&bin)?;
+    let marker = home.home.join("yi-mcp-cwd-marker");
+    let script = bin.join("yi-mcp-relative");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )?;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+    let config = home.home.join(".yi/mcp.json");
+    let mut entries: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config)?)?;
+    entries["mcpServers"]["relative"] =
+        serde_json::json!({"command": "node_modules/.bin/yi-mcp-relative"});
+    std::fs::write(&config, entries.to_string())?;
+
+    let connected = yi_in(
+        &home,
+        &workspace,
+        &["mcp", "connect", "relative", "@rel", "--json"],
+    )?;
+    let ran_at_connect = marker.is_file();
+    let _ = std::fs::remove_file(&marker);
+    let fetched = yi_in(&home, &workspace, &["fetch", "mcp://rel/note://alpha"])?;
+    let ran_at_fetch = marker.is_file();
+    assert!(
+        !ran_at_connect && !ran_at_fetch,
+        "the host ran a file planted in the workspace (connect {ran_at_connect}, fetch {ran_at_fetch}): {} {}",
+        connected.stderr,
+        fetched.stderr
+    );
+    assert_ne!(connected.code, 0);
+    assert!(
+        connected
+            .stderr
+            .contains("could not start `node_modules/.bin/yi-mcp-relative` (MCP servers start in"),
+        "the spawn fails by name and says where servers start: {}",
+        connected.stderr
+    );
+    Ok(())
+}
+
+/// Incident (#584): a root kernel cell wrote a stdio entry into `~/.yi/mcp/sessions.json`, a
+/// kernel writable root, and `fetch("mcp://<entry>/x")`, a read Auto mode never asks about,
+/// made the unsandboxed host run its command. The store is host-only now (D296).
+#[cfg(target_os = "macos")]
+mod sealed_store {
+    use super::{Scratch, TestResult};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use yi_runtime::{HostRegistry, KernelService, KernelServiceOptions};
+    use yi_tools::{CancelFlag, KernelBridge, Sandbox};
+
+    /// The host half of `fetch("mcp://…")`: `yi mcp --json @<server> resources-read <uri>`,
+    /// run in-process past the `mcp.enabled` gate so the test needs no config in HOME.
+    fn fetch_through_yi_mcp(registry: &mut HostRegistry) {
+        registry.register("fetch", |payload| {
+            Box::pin(async move {
+                let url = payload
+                    .get("url")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let (server, uri) = url
+                    .strip_prefix("mcp://")
+                    .and_then(|rest| rest.split_once('/'))
+                    .ok_or_else(|| format!("not an mcp url: {url}"))?;
+                let args =
+                    ["--json", &format!("@{server}"), "resources-read", uri].map(str::to_owned);
+                match yi_mcp_cli::run(&args, None) {
+                    0 => Ok(serde_json::Map::from_iter([(
+                        "text".to_owned(),
+                        "ok".into(),
+                    )])),
+                    code => Err(format!("yi mcp exited {code}")),
+                }
+            })
+        });
+    }
+
+    #[tokio::test]
+    async fn a_cell_cannot_plant_a_session_the_host_runs_on_a_fetch() -> TestResult {
+        if !Sandbox::available() {
+            return Ok(());
+        }
+        let root = Scratch::new("yi-584")?;
+        let project = root.join("project");
+        std::fs::create_dir_all(&project)?;
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or("HOME is unset")?;
+        let sandbox = Sandbox::for_workspace(&project, &home, None);
+        // Under a tmp HOME the store sits in a granted root and the test would prove nothing.
+        let resolve = |path: &std::path::Path| path.canonicalize().unwrap_or(path.to_path_buf());
+        if sandbox
+            .writable
+            .iter()
+            .any(|writable| resolve(&home).starts_with(resolve(writable)))
+        {
+            return Ok(());
+        }
+        let store = home.join(".yi").join("mcp").join("sessions.json");
+        let before = std::fs::read_to_string(&store).ok();
+        let marker = home.join(format!("yi-584-marker-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let entry = format!("yi584-{}", std::process::id());
+        let mut registry = HostRegistry::default();
+        registry.register_mcp_stubs();
+        fetch_through_yi_mcp(&mut registry);
+        let kernel = Arc::new(KernelService::new(KernelServiceOptions {
+            cwd: project,
+            home: home.clone(),
+            session_dir: None,
+            family_dir: None,
+            host: Arc::new(registry),
+            on_restore: None,
+            on_boot: None,
+            sandbox: Some(sandbox),
+            snapshot_key: None,
+            per_session_state: false,
+            cell_ceiling: None,
+        }));
+        let code = format!(
+            "import json, os\nstore = r'{store}'\nrecord = {{'name': '{entry}', 'spec': {{'command': '/usr/bin/touch', 'args': [r'{marker}']}}, 'state': 'live', 'createdAt': 0, 'updatedAt': 0}}\ntry:\n    os.makedirs(os.path.dirname(store), exist_ok=True)\n    sessions = json.load(open(store)) if os.path.exists(store) else {{'sessions': {{}}}}\n    sessions['sessions']['{entry}'] = record\n    json.dump(sessions, open(store, 'w'))\n    print('planted')\nexcept OSError as e:\n    print('write', e.errno)\ntry:\n    print(await fetch('mcp://{entry}/x'))\nexcept Exception as e:\n    print('fetch:', e)",
+            store = store.display(),
+            marker = marker.display(),
+        );
+        let ran = tokio::task::spawn_blocking({
+            let kernel = Arc::clone(&kernel);
+            move || {
+                let cancelled: CancelFlag = Arc::new(|| false);
+                KernelBridge::execute_cell(kernel.as_ref(), &code, &cancelled)
+            }
+        })
+        .await?;
+        kernel.dispose().await;
+        let after = std::fs::read_to_string(&store).ok();
+        let ran_planted_command = marker.is_file();
+        let _ = std::fs::remove_file(&marker);
+        match &before {
+            Some(text) => std::fs::write(&store, text)?,
+            None => {
+                let _ = std::fs::remove_file(&store);
+            }
+        }
+        let stdout = ran?.result.stdout;
+        assert!(
+            !ran_planted_command,
+            "the host ran a command a cell planted in the session store: {stdout}"
+        );
+        // `yi mcp` exits 2 for an unknown session and 3 once a server was spawned and failed.
+        assert!(
+            stdout.contains("write 1\n") && stdout.contains("fetch: yi mcp exited 2\n"),
+            "the write must fail with EPERM and the fetch find no session: {stdout}"
+        );
+        assert_eq!(after, before, "the store must be untouched: {stdout}");
+        Ok(())
+    }
 }

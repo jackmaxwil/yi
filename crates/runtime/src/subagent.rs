@@ -185,6 +185,7 @@ pub struct SubagentHostOptions {
     pub parent_session_dir: PathBuf,
     pub defaults: Arc<dyn Fn() -> (Model, Effort) + Send + Sync>,
     pub factory: Arc<ChildFactory>,
+    pub provider: Arc<crate::provider::ProviderStream>,
     /// A host status notice, delivered as a user-role message.
     pub notice: Arc<NoticeFn>,
     /// The parent's bus: a child's status updates ride it, never the child's own.
@@ -1157,18 +1158,15 @@ impl SubagentHost {
                 })
             });
         }
+        let host = Arc::clone(self);
         registry.register("rlm.find_models", move |payload| {
-            let query = payload
-                .get("query")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
+            let query = payload.get("query").and_then(Value::as_str);
             let limit = payload
                 .get("limit")
                 .and_then(Value::as_u64)
                 .map(|limit| usize::try_from(limit).unwrap_or(8))
                 .unwrap_or(8);
-            let reply = Self::find_models(&query, limit);
+            let reply = host.find_models(query.unwrap_or_default(), limit);
             Box::pin(async move { Ok(reply) })
         });
         let defaults = Arc::clone(&self.options.defaults);

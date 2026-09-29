@@ -426,6 +426,7 @@ fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestR
         patch: Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n"),
         changes: &changes,
         grants: &grants,
+        tool_call_id: None,
     });
     assert!(
         matches!(outcome, yi_runtime::AskOutcome::AllowAlways(1)),

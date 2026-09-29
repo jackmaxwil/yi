@@ -127,8 +127,14 @@ pub fn merge(old: &TodoList, mut new: TodoList) -> TodoList {
     new
 }
 
+/// The prior row is the one the row's id names among those with its label, else the first.
 fn carry(old: &TodoList, row: &mut Todo) {
-    let Some(prior) = old.items().find(|prior| prior.label == row.label) else {
+    let named = |prior: &&Todo| prior.label == row.label && row.id.is_some() && prior.id == row.id;
+    let Some(prior) = old
+        .items()
+        .find(named)
+        .or_else(|| old.items().find(|prior| prior.label == row.label))
+    else {
         return;
     };
     if row.id.is_none() {

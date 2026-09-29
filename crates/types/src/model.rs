@@ -282,11 +282,42 @@ pub enum ToolChoice {
     Tool(ForcedTool),
 }
 
+/// Whether a later request reads this request's tail, said by the caller (D295). A missing
+/// value means `Loop`, the side whose failure is one spare write rather than a total miss.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reuse {
+    /// The next request continues this conversation: its tail is read again.
+    #[default]
+    Loop,
+    /// A single call (a title, a compaction, a branch summary): the tail is never read again.
+    OneShot,
+    /// The conversation's last turn (`tool_choice: none`): nothing follows it.
+    LastTurn,
+}
+
+impl Reuse {
+    pub fn is_loop(&self) -> bool {
+        *self == Self::Loop
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmContext {
     pub system_prompt: String,
     pub messages: Vec<crate::message::AgentMessage>,
+    /// Set by the caller, never inferred from the request's shape.
+    #[serde(default, skip_serializing_if = "Reuse::is_loop")]
+    pub reuse: Reuse,
+    /// Per-request facts (the environment block), rendered after every cache mark and
+    /// never carrying one: such an entry is written every request and read by none (D295).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transient: Vec<crate::message::AgentMessage>,
+    /// A structured-output schema. Providers render it ahead of tools and system, so a
+    /// prefix key hashes it first; read by structured outputs, unread by the adapters yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -325,6 +356,34 @@ mod tests {
         let context: LlmContext = serde_json::from_str(wire)?;
         assert_eq!(context.tool_choice, None);
         assert_eq!(serde_json::to_string(&context)?, wire);
+        Ok(())
+    }
+
+    #[test]
+    fn transient_and_schema_ride_only_when_set() -> Result<(), Box<dyn std::error::Error>> {
+        let context = LlmContext {
+            system_prompt: "s".to_owned(),
+            messages: Vec::new(),
+            transient: vec![crate::message::AgentMessage::host_user(
+                crate::message::UserContent::Text("<environment>".to_owned()),
+                0,
+            )],
+            schema: Some(serde_json::json!({"type": "object"})),
+            reuse: super::Reuse::OneShot,
+            tools: None,
+            tool_choice: None,
+        };
+        let wire = serde_json::to_string(&context)?;
+        assert!(wire.contains(r#""transient":[{"#), "{wire}");
+        assert!(wire.contains(r#""schema":{"type":"object"}"#), "{wire}");
+        assert!(wire.contains(r#""reuse":"one_shot""#), "{wire}");
+        assert_eq!(serde_json::from_str::<LlmContext>(&wire)?, context);
+        let older: LlmContext = serde_json::from_str(r#"{"systemPrompt":"s","messages":[]}"#)?;
+        assert_eq!(
+            older.reuse,
+            super::Reuse::Loop,
+            "a missing value is the loop"
+        );
         Ok(())
     }
 
