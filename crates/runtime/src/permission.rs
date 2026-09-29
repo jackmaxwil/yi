@@ -104,7 +104,7 @@ struct Reviewed<'a> {
 
 pub struct PermissionBroker {
     sandbox: Option<yi_tools::Sandbox>,
-    contained_failures: Mutex<std::collections::BTreeSet<String>>,
+    contained_failures: Mutex<std::collections::BTreeSet<yi_tools::SandboxRefusal>>,
     mode: Mutex<PermissionMode>,
     config_rules: Vec<ConfigRule>,
     session_rules: Mutex<SessionRules>,
@@ -200,10 +200,7 @@ impl PermissionBroker {
     }
 
     fn settle(&self, tool_call_id: &str, ask: &PermissionAsk<'_>, allowed: bool, by: Answerer) {
-        let _ = self.events.send(AgentEvent::PermissionResolved {
-            tool_call_id: tool_call_id.to_owned(),
-            allowed,
-        });
+        self.resolved(tool_call_id, allowed);
         if let Some(journal) = self.journal.get() {
             journal(PermissionRecord {
                 tool_call_id: tool_call_id.to_owned(),
@@ -214,6 +211,13 @@ impl PermissionBroker {
                 extra: std::collections::BTreeMap::new(),
             });
         }
+    }
+
+    fn resolved(&self, tool_call_id: &str, allowed: bool) {
+        let _ = self.events.send(AgentEvent::PermissionResolved {
+            tool_call_id: tool_call_id.to_owned(),
+            allowed,
+        });
     }
 
     /// A second call is a child session re-wiring the same broker; the first
@@ -238,21 +242,21 @@ impl PermissionBroker {
         self.sandbox.as_ref()
     }
 
-    /// The sandbox is the first attempt and the question the second, remembered by program and
-    /// verb: a retry that only reshapes the refused command must not be contained again.
-    pub fn note_containment_failure(&self, command: &str) {
+    /// The sandbox is the first attempt and the question the second, remembered by the refused
+    /// path so unrelated work stays contained, or by program and verb when none was found.
+    pub fn note_containment_failure(&self, refusal: yi_tools::SandboxRefusal) {
         if let Ok(mut failures) = self.contained_failures.lock() {
-            failures.extend(yi_permission::refused_scopes(command));
+            failures.insert(refusal);
         }
     }
 
-    fn contained_and_failed(&self, command: Option<&str>) -> bool {
-        let scopes = command
-            .map(yi_permission::refused_scopes)
-            .unwrap_or_default();
+    fn contained_and_failed(&self, sandbox: &yi_tools::Sandbox, command: Option<&str>) -> bool {
+        let retries = |refusal: &yi_tools::SandboxRefusal| {
+            command.is_some_and(|command| refusal.retried_by(sandbox, &self.cwd, command))
+        };
         self.contained_failures
             .lock()
-            .is_ok_and(|failures| scopes.iter().any(|scope| failures.contains(scope)))
+            .is_ok_and(|failures| failures.iter().any(retries))
     }
 
     /// A question with no tool call behind it, asked once and answered once: an allow-always
@@ -419,7 +423,7 @@ impl PermissionBroker {
             // Containment is an allowance the sandbox enforces; without one
             // there is nothing to enforce it, so the question stands.
             Decision::Contain { reason } => match &self.sandbox {
-                Some(_) if !self.contained_and_failed(command) => CallOutcome {
+                Some(sandbox) if !self.contained_and_failed(sandbox, command) => CallOutcome {
                     allowed: true,
                     reason,
                     contained: true,
@@ -498,7 +502,8 @@ impl PermissionBroker {
             reason: reviewed.reason,
             cwd: &cwd,
         };
-        let approver = self.approver.get().filter(|_| reviewed.reviewable);
+        let approver =
+            (self.approver.get()).filter(|_| reviewed.reviewable && !self.answered(canonical));
         let mut prior = None;
         if let Some(approver) = approver
             && self.mode() == PermissionMode::Auto
@@ -540,10 +545,16 @@ impl PermissionBroker {
             title: ask.title.to_owned(),
             description: ask.text(),
         });
-        let (outcome, by) =
-            self.reviewed_outcome(reviewer, ask, reviewed, rule_kind, canonical, display);
-        self.settle(tool_call_id, ask, outcome.allowed, by);
-        outcome
+        match self.reviewed_outcome(reviewer, ask, reviewed, rule_kind, canonical, display) {
+            (outcome, Some(by)) => {
+                self.settle(tool_call_id, ask, outcome.allowed, by);
+                outcome
+            }
+            (outcome, None) => {
+                self.resolved(tool_call_id, outcome.allowed);
+                outcome
+            }
+        }
     }
 
     fn reviewed_outcome(
@@ -554,7 +565,7 @@ impl PermissionBroker {
         rule_kind: RuleKind,
         canonical: &str,
         display: &str,
-    ) -> (CallOutcome, Answerer) {
+    ) -> (CallOutcome, Option<Answerer>) {
         let action = ActionId::of(canonical);
         match self.recall(action) {
             Some((request, ActionState::UserApproved)) => {
@@ -563,20 +574,20 @@ impl PermissionBroker {
                     reason: format!("allowed by the user answering request {request}"),
                     contained: false,
                 };
-                return (allowed, Answerer::User);
+                return (allowed, None);
             }
-            Some((request, ActionState::UserDenied)) => {
-                let denied = self.denied(format!(
-                    "The user denied request {request} for this exact call. It stays denied; take another approach."
-                ));
-                return (denied, Answerer::User);
+            Some((_, ActionState::UserDenied)) => {
+                let denied = self.denied(
+                    "The user refused this exact call. It stays denied; take another approach rather than re-issuing it.".to_owned(),
+                );
+                return (denied, None);
             }
             // Idempotent by action: a retry of an identical denied call gets the same request
             // back, never a second review or a second question for the user.
             Some((request, ActionState::DeniedPendingUser)) => {
                 let evidence = self.evidence_of(request);
                 let denied = self.denied(Self::escalation_text(&evidence, request));
-                return (denied, Answerer::Reviewer);
+                return (denied, None);
             }
             None => {}
         }
@@ -600,22 +611,32 @@ impl PermissionBroker {
                 contained: false,
             },
             crate::auto_review::ReviewOutcome::Deny { reason } => {
-                let stored = ReviewedAsk {
-                    title: ask.title.to_owned(),
-                    description: ask.description.to_owned(),
-                    patch: ask.patch.map(str::to_owned),
-                    targets: ask.changes.to_vec(),
-                    display: display.to_owned(),
-                    canonical: canonical.to_owned(),
-                    kind: rule_kind,
-                    grants: ask.grants.to_vec(),
-                    evidence: reason.clone(),
-                };
+                let stored = Self::stored(ask, rule_kind, canonical, display, reason.clone());
                 let request = self.open_request(action, stored);
                 self.denied(Self::escalation_text(&reason, request))
             }
         };
-        (outcome, Answerer::Reviewer)
+        (outcome, Some(Answerer::Reviewer))
+    }
+
+    fn stored(
+        ask: &PermissionAsk<'_>,
+        kind: RuleKind,
+        canonical: &str,
+        display: &str,
+        evidence: String,
+    ) -> ReviewedAsk {
+        ReviewedAsk {
+            title: ask.title.to_owned(),
+            description: ask.description.to_owned(),
+            patch: ask.patch.map(str::to_owned),
+            targets: ask.changes.to_vec(),
+            display: display.to_owned(),
+            canonical: canonical.to_owned(),
+            kind,
+            grants: ask.grants.to_vec(),
+            evidence,
+        }
     }
 
     fn escalation_text(evidence: &str, request: RequestId) -> String {
@@ -639,6 +660,14 @@ impl PermissionBroker {
             reason,
             contained: false,
         }
+    }
+
+    fn answered(&self, canonical: &str) -> bool {
+        self.ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .state_of(ActionId::of(canonical))
+            .is_some()
     }
 
     fn recall(&self, action: ActionId) -> Option<(RequestId, ActionState)> {
@@ -828,6 +857,19 @@ impl PermissionBroker {
         };
         let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
         self.settle(tool_call_id, ask, allowed, Answerer::User);
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if allowed {
+            ledger.forget(ActionId::of(canonical));
+        } else {
+            let refusal = "the user refused it when asked".to_owned();
+            let stored = Self::stored(ask, rule_kind, canonical, display, refusal);
+            let request = ledger.open(ActionId::of(canonical), stored);
+            ledger.resolve(request, UserVerdict::Denied);
+        }
+        drop(ledger);
         if let AskOutcome::AllowAlways(index) = outcome {
             self.keep_grant(ask.grants.get(index), rule_kind, canonical, display);
         }

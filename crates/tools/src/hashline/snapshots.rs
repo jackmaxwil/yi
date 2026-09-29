@@ -25,7 +25,7 @@ const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
 /// Per-path history is a short ring of full-file versions, path tracking LRU-bounded. Two
 /// texts colliding on the 16-bit tag stay separate: the tag indexes, it does not identify.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SnapshotStore {
     paths: Vec<(String, Vec<Snapshot>)>,
     clock: u64,
