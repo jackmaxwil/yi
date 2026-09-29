@@ -247,6 +247,11 @@ def main():
 
     out = [
         f"<!-- prefilled by `just pr-body` against {ref} ({base[:8]}); prose is yours -->\n",
+        section(
+            "Why needed",
+            "<!-- the ask: Closes/Refs #N, the owner's words or the issue line quoted, "
+            "and what stays broken if this does not land -->",
+        ),
         section("Summary", "<!-- what changed and why, for a reader without the diff open -->"),
         section("User outcomes", "<!-- what a yi user can now do, see, or rely on -->"),
         section(
@@ -257,7 +262,7 @@ def main():
         ),
         section(
             "UI changes",
-            "\n".join(f"- `{p}`" for p in ui) + "\n\n<!-- describe what moved -->"
+            "\n".join(f"- `{p}`" for p in ui) + "\n\n<!-- describe what moved, with the frames that show it -->"
             if ui
             else "None — no `crates/tui` or `crates/acp` file changed.",
         ),
@@ -269,13 +274,16 @@ def main():
             else "None.",
         ),
         section(
-            "LOC and justification",
+            "Deleted / alternatives",
             f"Net src LOC (`crates/*/src/**/*.rs`) vs the merge base with {ref}: "
             f"**{src_net:+d}** — this branch alone, and the table sums to it.\n\n"
             + src_table + "\n\n"
             + growth_verdict()
-            + "\n\n<!-- past the free band: what was weighed for deletion, and why these bytes earn their place -->",
+            + "\n\n<!-- what this removes, and the simpler options weighed; past the free band, "
+            "what was weighed for deletion and why these bytes earn their place -->",
         ),
+        section("Risk and rollback", "<!-- what could regress, how you would notice, how to revert -->"),
+        section("Performance", "<!-- the hot path touched and a measured number, or \"No hot path touched\" and why -->"),
         section(
             "Architecture notes",
             "<!-- version bump, changelog row, D-rows, feature-ledger rows (each names its journey test) -->",
@@ -283,7 +291,6 @@ def main():
     ]
     added, changed = surface_delta(base)
     out += surface_skeletons(added, changed)
-    out.append(section("Screenshots", "<!-- TUI frames or rendered output; \"None\" if none -->"))
     print("\n".join(out).rstrip())
     return 0
 

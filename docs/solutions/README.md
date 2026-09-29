@@ -275,6 +275,7 @@ edited by hand.
 - [D289](adr/d289.md) - the project rules load whole and once, lanes included
 - [D290](adr/d290.md) - the catalog lists home-root skills only by name
 - [D299](adr/d299.md) - the last word forces no tool choice (amends D235)
+- [D318](adr/d318.md) - a PR opens as a draft against a filled template
 - [D302](adr/d302.md) - a sandbox refusal is remembered by the path it denied, and by program and...
 - [D300](adr/d300.md) - a new user is set up by `yi setup`, offered once on the first terminal launch
 - [D301](adr/d301.md) - the classifier may approve an auto-mode ask, and settles one nobody answers,...

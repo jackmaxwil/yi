@@ -2,8 +2,13 @@
 """PR title and body, judged from CI where the forge is reachable.
 
 Title: the same rule the commit subjects are judged by — `subject_errors` from
-check_commit_style, imported rather than restated. It exists nowhere in the tree
-the local hook scans, so only CI can see it.
+check_commit_style, imported rather than restated — after an optional `WIP: `,
+Forgejo's own draft marker, which the forge refuses to merge. It exists nowhere
+in the tree the local hook scans, so only CI can see it.
+
+Template: every section of .github/PULL_REQUEST_TEMPLATE.md is present, and none
+still holds a template comment. Incident: 30 of the 80 PR bodies merged from
+#395 to #597 kept a placeholder such as `<!-- why this area was touched -->`.
 
 Body: a change that adds a feature-ledger row or grows src past the free band is
 work, and work has an issue (D106). Such a body names it — `Closes #N` finishing
@@ -153,26 +158,62 @@ def footer_problems(body):
 
 
 COMMENT = re.compile(r"<!--.*?-->", re.S)
+CODE_SPAN = re.compile(r"`+[^`]*`+")
+DRAFT = "WIP: "
+TEMPLATE = ROOT / ".github/PULL_REQUEST_TEMPLATE.md"
+REQUIRED = (
+    "Why needed", "Summary", "User outcomes", "Seen red", "UI changes", "Files edited",
+    "Schema changes", "Deleted / alternatives", "Risk and rollback", "Performance",
+    "Architecture notes",
+)
 
 
-def section_table_ok(body, title):
-    """The text under a level-two `## <title>` (case-insensitive), comments
-    stripped and read up to the next level-two heading, holds a markdown table:
-    a `|…|` row, a separator row of `- : |`, and at least one data row after
-    it. Shape, not content — reviewers read the cells."""
-    inside = False
-    lines = []
+def title_errors(title):
+    """A PR title is a commit subject, or `WIP: ` and one: the draft marker is
+    the forge's, the subject after it is judged exactly as it will merge."""
+    return subject_errors(title.removeprefix(DRAFT))
+
+
+def section(body, title):
+    """The text under a level-two `## <title>` (case-insensitive), read up to the
+    next level-two heading; None when the heading is absent."""
+    inside, lines = False, None
     for line in (body or "").splitlines():
         if line.startswith("## "):
             if inside:
                 break
             inside = line[3:].strip().lower() == title.lower()
+            if inside:
+                lines = []
             continue
         if inside:
             lines.append(line)
-    if not lines:
+    return None if lines is None else "\n".join(lines)
+
+
+def template_problems(body):
+    """Every template section present and written: a comment left in one is a
+    placeholder nobody replaced, and an empty one says nothing."""
+    errs = []
+    for title in REQUIRED:
+        text = section(body, title)
+        if text is None:
+            errs.append(f"the body has no `## {title}`; {TEMPLATE.relative_to(ROOT)} lists every section")
+        elif "<!--" in CODE_SPAN.sub("", text):
+            errs.append(f"`## {title}` still holds a template comment; replace it with prose, or \"None\" and why")
+        elif not text.strip():
+            errs.append(f"`## {title}` is empty; write it, or \"None\" and why")
+    return errs
+
+
+def section_table_ok(body, title):
+    """The text under a level-two `## <title>`, comments stripped, holds a
+    markdown table: a `|…|` row, a separator row of `- : |`, and at least one
+    data row after it. Shape, not content — reviewers read the cells."""
+    text = section(body, title)
+    if not text:
         return False
-    text = COMMENT.sub("", "\n".join(lines))
+    text = COMMENT.sub("", text)
     saw_header = saw_separator = False
     for line in (line.strip() for line in text.splitlines()):
         if not line.startswith("|"):
@@ -348,6 +389,35 @@ def selfcheck():
     # --- the title rule is check_commit_style's, imported, not restated
     assert subject_errors("Gate a pull request's issue citation") == []
     assert subject_errors("Added the gate."), "a bad title must still be caught here"
+    # A draft is `WIP: ` and a valid subject; anything else scratch stays refused.
+    assert title_errors("WIP: Keep streamed markdown where the reader saw it") == []
+    assert title_errors("WIP: Added the gate."), "the subject after the marker is judged"
+    assert title_errors("WIP"), "a bare marker names nothing"
+    assert title_errors("WIP:Keep the gate") and title_errors("[WIP] Keep the gate")
+    assert subject_errors("WIP: Keep the gate"), "a commit subject is never a draft"
+
+    # --- the template: present and written, the template itself failing every section
+    filled = "".join(f"## {title}\n\nNone, because the change is a test.\n\n" for title in REQUIRED)
+    assert template_problems(filled) == []
+    assert template_problems(filled.replace("## Summary", "## summary")) == [], "headings match case-insensitively"
+    stale = filled.replace(
+        "## Files edited\n\nNone, because the change is a test.",
+        "## Files edited\n\n- `crates/cli` (1 file, +29/-0) — <!-- why this area was touched -->",
+    )
+    errs = template_problems(stale)
+    assert len(errs) == 1 and "`## Files edited` still holds a template comment" in errs[0], errs
+    quoted = filled.replace("None, because the change is a test.", "It kept `<!-- a placeholder -->`.", 1)
+    assert template_problems(quoted) == [], "a comment quoted in a code span is prose"
+    errs = template_problems(filled.replace("## Performance\n\nNone, because the change is a test.", "## Performance\n"))
+    assert len(errs) == 1 and "`## Performance` is empty" in errs[0], errs
+    errs = template_problems(filled.replace("## Why needed", "## Why"))
+    assert any("no `## Why needed`" in e for e in errs), errs
+    template = TEMPLATE.read_text()
+    headings = [line[3:].strip() for line in template.splitlines() if line.startswith("## ")]
+    assert headings == list(REQUIRED), f"the template and REQUIRED drifted: {headings}"
+    assert len(template_problems(template)) == len(REQUIRED), "an untouched template fails every section"
+    assert section("## A\n\none\n## B\n\ntwo\n", "a").strip() == "one"
+    assert section("## A\n", "B") is None and section("## A\n", "a") == ""
 
     # --- the surface gate: shape, not content, over the sections a surface
     # change owes. surface_problems is pure, so the forge is never asked.
@@ -396,12 +466,13 @@ def main(argv):
     if "--selfcheck" in argv:
         selfcheck()
         return 0
-    errs = [f"title: {e}" for e in subject_errors(os.environ.get("PR_TITLE", "").strip())]
+    errs = [f"title: {e}" for e in title_errors(os.environ.get("PR_TITLE", "").strip())]
     measured, why = measure()
     if why:
         fail([why], "pr_metadata")
     ledger_added, changelog_added, src_net, (surface_added, surface_changed) = measured
     errs += footer_problems(os.environ.get("PR_BODY", ""))
+    errs += template_problems(os.environ.get("PR_BODY", ""))
     errs += surface_problems(os.environ.get("PR_BODY", ""), surface_added, surface_changed)
     errs += body_problems(
         send,
