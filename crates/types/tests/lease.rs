@@ -50,3 +50,26 @@ fn an_exit_from_a_newer_host_keeps_the_update_that_carries_it() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with `#[serde(other)]` off `ChildTrail`: a trail line a newer host wrote fails the scan
+/// that finds every older child's transcript, and `history://<child>` stops resolving.
+#[test]
+fn a_child_trail_line_round_trips_and_a_newer_one_is_kept() -> TestResult {
+    use yi_types::subagent::{ChildExit, ChildTrail};
+    let spawned = r#"{"event":"spawned","name":"scout","id":"sub-1a2b3c4d","session":"0199a1b2-c3d4","path":"1759100000000_0199a0/children/sub-1a2b3c4d/1759100001000_0199a1b2-c3d4.jsonl","brief":"5f2c9e"}"#;
+    let parsed: ChildTrail = serde_json::from_str(spawned)?;
+    let ChildTrail::Spawned(line) = &parsed else {
+        return Err("not a spawn line".into());
+    };
+    assert_eq!(line.name, "scout");
+    assert_eq!(serde_json::to_string(&parsed)?, spawned);
+    let ended = r#"{"event":"ended","name":"scout","id":"sub-1a2b3c4d","exit":{"kind":"failed","class":"provider"},"error":"429","tokens":1200}"#;
+    let parsed: ChildTrail = serde_json::from_str(ended)?;
+    assert!(
+        matches!(&parsed, ChildTrail::Ended(line) if matches!(line.exit, ChildExit::Failed { .. }))
+    );
+    assert_eq!(serde_json::to_string(&parsed)?, ended);
+    let newer: ChildTrail = serde_json::from_str(r#"{"event":"moved","name":"scout"}"#)?;
+    assert_eq!(newer, ChildTrail::Other);
+    Ok(())
+}

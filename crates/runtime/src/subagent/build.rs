@@ -173,7 +173,12 @@ impl SubagentHost {
         let store = match kept {
             Some(store) => Ok(store),
             None => {
-                yi_session::create_flat_session(session_dir.to_path_buf(), root.to_string_lossy())
+                let parent = self.parent_id();
+                yi_session::create_flat_session(
+                    session_dir.to_path_buf(),
+                    root.to_string_lossy(),
+                    parent,
+                )
             }
         };
         store

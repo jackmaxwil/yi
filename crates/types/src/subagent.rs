@@ -138,3 +138,40 @@ pub enum ChildFlag {
     #[serde(other)]
     Other,
 }
+
+/// The custom entry type of a parent's child trail.
+pub const CHILD_ENTRY: &str = "child";
+
+/// One line of the trail a parent keeps on its own transcript: where each child's transcript
+/// lives and how its run ended. `path` is relative to the directory of the parent's file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum ChildTrail {
+    Spawned(ChildSpawned),
+    Ended(ChildEnded),
+    /// A line a newer host wrote; the scan that finds older children reads past it.
+    #[serde(other)]
+    Other,
+}
+
+/// `brief` is the SHA-256 of the prompt the child was spawned with, hex.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildSpawned {
+    pub name: String,
+    pub id: ChildId,
+    pub session: String,
+    pub path: String,
+    pub brief: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildEnded {
+    pub name: String,
+    pub id: ChildId,
+    pub exit: ChildExit,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub tokens: u64,
+}
