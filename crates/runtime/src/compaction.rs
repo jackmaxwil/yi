@@ -411,7 +411,7 @@ impl Compactor {
         let inputs = store.and_then(|store| crate::fetch::user_inputs(store).ok());
         let summarizer = self.summarizer.as_ref().unwrap_or(model);
         let warm = summarizer == model;
-        let request = |window_messages: &[AgentMessage]| LlmContext {
+        let request = |window_messages: &[AgentMessage], warm: bool| LlmContext {
             system_prompt: loop_request.system_prompt.clone(),
             messages: {
                 let mut converted = convert_to_llm(window_messages);
@@ -429,18 +429,22 @@ impl Compactor {
             tools: loop_request.tools.clone().filter(|_| warm),
             tool_choice: None,
         };
-        let effort = if warm {
-            loop_request.effort
-        } else {
-            summarizer.clamp_effort(Effort::Off)
+        let effort = |warm: bool| {
+            if warm {
+                loop_request.effort
+            } else {
+                summarizer.clamp_effort(Effort::Off)
+            }
         };
+        let first = request(messages, warm);
         let summary_text =
-            match complete_text(provider, summarizer, &request(messages), effort, signal).await {
+            match complete_text(provider, summarizer, &first, effort(warm), signal).await {
                 // With the loop's tools attached a reply can be a call alone: no summary in it.
                 Ok(text) if !text.trim().is_empty() => text,
+                // The trimmed retry shares no prefix, so it goes cold: no tools, so it must be text.
                 _ => {
-                    let trimmed = &messages[messages.len() / 4..];
-                    complete_text(provider, summarizer, &request(trimmed), effort, signal)
+                    let trimmed = request(&messages[messages.len() / 4..], false);
+                    complete_text(provider, summarizer, &trimmed, effort(false), signal)
                         .await
                         .unwrap_or_default()
                 }

@@ -913,3 +913,52 @@ async fn an_idle_compaction_reads_the_last_requests_prefix() -> Result<(), Box<d
     };
     assert_warm(first, compaction)
 }
+
+/// A reply that is a tool call alone carries no summary: the trimmed retry goes cold, with no
+/// tools to call, so it answers in text and the history is never replaced by a blank summary.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_instead_of_a_summary_retries_without_tools() -> Result<(), Box<dyn Error>> {
+    let call = serde_json::json!({"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+        "function": {"name": "probe", "arguments": "{}"}}]});
+    let (port, served) = openrouter_stand_in(vec![
+        sse_reply(
+            &serde_json::json!({"content": "answer ".repeat(100)}),
+            "stop",
+        ),
+        sse_reply(&call, "tool_calls"),
+        sse_reply(&serde_json::json!({"content": "## Goal\nProbe"}), "stop"),
+    ])?;
+    let session = openrouter_session(port, 10)?;
+    session.prompt("say something")?;
+    session.wait_idle().await;
+    assert!(session.compact_now().await, "the retry's summary applies");
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let [_, warm, retry] = bodies.as_slice() else {
+        return Err(format!("expected three requests, got {}", bodies.len()).into());
+    };
+    let (warm, retry): (serde_json::Value, serde_json::Value) =
+        (serde_json::from_str(warm)?, serde_json::from_str(retry)?);
+    assert!(
+        warm["tools"].is_array(),
+        "the first request is the warm one: {warm}"
+    );
+    assert!(
+        retry.get("tools").is_none(),
+        "the retry offers no tool: {retry}"
+    );
+    assert_eq!(marked(&retry), [0], "a cold retry marks the system alone");
+    let summary = session
+        .messages()
+        .into_iter()
+        .find_map(|message| match message {
+            AgentMessage::CompactionSummary { summary, .. } => Some(summary),
+            _ => None,
+        });
+    assert!(
+        summary
+            .as_deref()
+            .is_some_and(|text| text.contains("## Goal\nProbe")),
+        "{summary:?}"
+    );
+    Ok(())
+}
