@@ -149,10 +149,18 @@ impl Wall {
             refusal(tool_name, &hit.display().to_string(), list)
         };
         let mut targets = crate::permission::extract_targets(tool_name, args, cwd);
-        if targets.is_empty() && tool_name == "grep" {
+        let rewrite = tool_name == "grep" && !matches!(kind, ToolKind::Read);
+        if targets.is_empty() && rewrite {
             targets.push(cwd.to_path_buf());
         }
         if let Some(hit) = under(&targets, &denied) {
+            return Some(list(hit));
+        }
+        let inside = |hit: &&&PathBuf| {
+            let hit = yi_permission::lexical_normalize(hit);
+            (targets.iter()).any(|root| hit.starts_with(yi_permission::lexical_normalize(root)))
+        };
+        if let Some(hit) = denied.iter().find(inside).filter(|_| rewrite) {
             return Some(list(hit));
         }
         let command = args.get("command").and_then(Value::as_str)?;
