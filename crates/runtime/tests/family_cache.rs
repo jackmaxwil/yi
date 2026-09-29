@@ -1,10 +1,11 @@
 //! A family's requests share one warm prefix (C3): every member sends the root session's id
-//! as its affinity key, a sibling that reads a partition another sent marks the end of that
-//! run, and a child's stable prefix is written for five minutes, not the root's hour.
+//! as its affinity key, a reader marks its partition's end when a sibling sent it or a fan-out
+//! shares it, and a child's stable prefix is written for five minutes, not the root's hour.
 //!
 //! | test | tier | claim | mechanism | contrast |
 //! |---|---|---|---|---|
 //! | `siblings_carry_the_root_id_and_the_second_marks_the_shared_partition` | T1 | Two readers over one partition, spawned by the production wiring on an OpenRouter Claude route, both send `session_id` = the root id; the second one's partition message is the first one's, byte for byte, plus one `cache_control`. | `ProviderStream::for_child` keeps the family key; `Breakpoints` honours `shared_through`. | The key is `None` on every request and `shared_through` is read by no encoder: each sibling may land on another upstream and writes nothing a sibling reads. |
+//! | `a_fan_out_marks_the_partition_on_its_first_reader_too` | T1 | Two readers spawned as one fan-out (`readers: 2`, what `rlm.run` sends when gathered calls share a partition) both mark the partition, the first's byte for byte the second's. | `reader::share` gives `Some(0)` to every reader of a fan-out. | Only a repeat got `Some(0)`: nobody wrote the entry, and the second sibling paid the write. |
 //! | `a_child_of_an_hour_long_root_writes_five_minute_marks` | T1 | Under a root that holds its stable prefix for an hour, the root's request carries `"ttl":"1h"` and its reader child's carries none. | `for_child` clears the long cache. | The child shares the root's `ProviderStream` and writes its own prompt at the 1h price. |
 
 use crate::compaction_faux::{faux_model, sse_reply};
@@ -102,8 +103,12 @@ fn root(
     Ok((session, host))
 }
 
-fn reader(question: &str) -> (String, Map<String, Value>) {
-    let kwargs = json!({"role": "reader", "tools": [], "partition": ["local://notes.txt"]});
+/// A tool-less reader over `notes.txt`; `readers` is the count `rlm.run` sends for a fan-out.
+fn reader(question: &str, readers: Option<u64>) -> (String, Map<String, Value>) {
+    let mut kwargs = json!({"role": "reader", "tools": [], "partition": ["local://notes.txt"]});
+    if let Some(readers) = readers {
+        kwargs["readers"] = json!(readers);
+    }
     (
         question.to_owned(),
         kwargs.as_object().cloned().unwrap_or_default(),
@@ -172,9 +177,9 @@ async fn siblings_carry_the_root_id_and_the_second_marks_the_shared_partition() 
         "http://openrouter.ai.invalid/api/v1",
     );
     let (_session, host) = root(&scratch, model, port, false)?;
-    let (question, kwargs) = reader("Which line names the sky, first?");
+    let (question, kwargs) = reader("Which line names the sky, first?", None);
     host.spawn(question, kwargs)?;
-    let (question, kwargs) = reader("Which line names the sky, second?");
+    let (question, kwargs) = reader("Which line names the sky, second?", None);
     host.spawn(question, kwargs)?;
     let mut bodies = Vec::new();
     let first = body_asking(&mut bodies, &from, "sky, first?").await?;
@@ -189,7 +194,10 @@ async fn siblings_carry_the_root_id_and_the_second_marks_the_shared_partition() 
         .as_array_mut()
         .and_then(|parts| parts.last_mut())
         .ok_or("the partition message has no parts")?;
-    assert!(last.get("cache_control").is_none(), "{first}");
+    assert!(
+        last.get("cache_control").is_none(),
+        "a lone reader wrote its partition: {first}"
+    );
     last["cache_control"] = json!({"type": "ephemeral"});
     assert_eq!(
         second["messages"][1].to_string(),
@@ -211,7 +219,7 @@ async fn a_child_of_an_hour_long_root_writes_five_minute_marks() -> TestResult {
     );
     let (session, host) = root(&scratch, model, port, true)?;
     session.prompt("root turn")?;
-    let (question, kwargs) = reader("Which line names the sky?");
+    let (question, kwargs) = reader("Which line names the sky?", None);
     host.spawn(question, kwargs)?;
     let mut bodies = Vec::new();
     let hour = r#""ttl":"1h""#;
@@ -219,5 +227,40 @@ async fn a_child_of_an_hour_long_root_writes_five_minute_marks() -> TestResult {
     assert!(root.to_string().contains(hour), "{root}");
     let child = body_asking(&mut bodies, &from, "names the sky?").await?;
     assert!(!child.to_string().contains(hour), "{child}");
+    Ok(())
+}
+
+/// A fan-out's first reader writes the partition entry its siblings read: both mark it, and
+/// the second's partition message is the first's, byte for byte.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fan_out_marks_the_partition_on_its_first_reader_too() -> TestResult {
+    let scratch = Scratch::new("yi-family-fan-out")?;
+    let (port, from) = stand_in(sse_reply(&json!({"content": "blue sky"}), "stop"))?;
+    let model = route(
+        "anthropic/claude-haiku-4.5",
+        "openai-completions",
+        "openrouter",
+        "http://openrouter.ai.invalid/api/v1",
+    );
+    let (_session, host) = root(&scratch, model, port, false)?;
+    for question in [
+        "Which line names the sky, first?",
+        "Which line names the sky, second?",
+    ] {
+        let (question, kwargs) = reader(question, Some(2));
+        host.spawn(question, kwargs)?;
+    }
+    let mut bodies = Vec::new();
+    let first = body_asking(&mut bodies, &from, "sky, first?").await?;
+    let second = body_asking(&mut bodies, &from, "sky, second?").await?;
+    let marked = &first["messages"][1]["content"]
+        .as_array()
+        .and_then(|parts| parts.last())
+        .ok_or("the partition message has no parts")?["cache_control"];
+    assert_eq!(*marked, json!({"type": "ephemeral"}), "{first}");
+    assert_eq!(
+        second["messages"][1].to_string(),
+        first["messages"][1].to_string()
+    );
     Ok(())
 }

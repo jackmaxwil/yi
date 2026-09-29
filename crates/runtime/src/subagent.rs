@@ -425,6 +425,7 @@ fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
                     | "tools"
                     | "turns"
                     | "schema"
+                    | "readers"
             )
         })
         .collect();
@@ -712,7 +713,7 @@ impl SubagentHost {
         let session_name =
             requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
         let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask, &standing)?;
-        reader::share(self, seed.as_ref(), &mut cast);
+        reader::share(self, &kwargs, seed.as_ref(), &mut cast);
         if let Isolation::Container(image) = &isolation {
             crate::node::placeable(&self.options.home, image)?;
         }

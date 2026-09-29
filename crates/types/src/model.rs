@@ -338,52 +338,15 @@ impl LlmContext {
     /// A hash of the inputs every request of a conversation shares: schema, tools, system.
     /// A change between two requests is a miss yi caused (design §7, invariant 3).
     pub fn stable_key(&self) -> String {
-        short_hash(&serde_json::json!([
-            self.schema,
-            self.tools,
-            self.system_prompt
-        ]))
-    }
-
-    /// A hash of what the request renders through `messages[..=through]`, less fields no wire
-    /// carries: equal keys can read one cache entry there (D314), whatever the timestamps.
-    pub fn prefix_key(&self, model: &Model, effort: Effort, through: usize) -> String {
-        let run: Vec<serde_json::Value> = self
-            .messages
+        use sha2::{Digest, Sha256};
+        let rendered = serde_json::json!([self.schema, self.tools, self.system_prompt]);
+        let digest = Sha256::digest(rendered.to_string().as_bytes());
+        digest
             .iter()
-            .take(through.saturating_add(1))
-            .map(|message| {
-                let mut value = serde_json::to_value(message).unwrap_or_default();
-                if let Some(fields) = value.as_object_mut() {
-                    for unsent in ["timestamp", "usage", "diagnostics", "responseId", "details"] {
-                        fields.remove(unsent);
-                    }
-                }
-                value
-            })
-            .collect();
-        short_hash(&serde_json::json!([
-            model.api,
-            model.provider,
-            model.base_url,
-            model.id,
-            self.schema,
-            self.tools,
-            self.system_prompt,
-            effort,
-            self.tool_choice,
-            run
-        ]))
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
-}
-
-fn short_hash(rendered: &serde_json::Value) -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(rendered.to_string().as_bytes())
-        .iter()
-        .take(8)
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 #[cfg(test)]
@@ -499,63 +462,5 @@ mod tests {
                 0,
             ));
         assert_eq!(history.stable_key(), key);
-    }
-
-    fn sibling(question: &str, timestamp: u64) -> LlmContext {
-        let user = |text: &str| {
-            crate::message::AgentMessage::host_user(
-                crate::message::UserContent::Text(text.to_owned()),
-                timestamp,
-            )
-        };
-        LlmContext {
-            system_prompt: "reader".to_owned(),
-            messages: vec![user("<partition>"), user(question)],
-            transient: Vec::new(),
-            schema: None,
-            shared_through: None,
-            reuse: super::Reuse::OneShot,
-            tools: None,
-            tool_choice: None,
-        }
-    }
-
-    fn route() -> Result<super::Model, serde_json::Error> {
-        serde_json::from_value(serde_json::json!({
-            "id": "z-ai/glm-5.3-flash", "name": "flash", "api": "openai-completions",
-            "provider": "openrouter", "baseUrl": "https://openrouter.ai/api/v1",
-            "reasoning": true, "input": ["text"],
-            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-            "contextWindow": 1000, "maxTokens": 16
-        }))
-    }
-
-    /// Siblings asked at different times over one partition share its key and part at their
-    /// questions; a schema moves every tier (it renders first), and a schema-only request
-    /// never shares the key of a tool loop over the same messages.
-    #[test]
-    fn the_prefix_key_parts_where_the_rendered_prompt_parts()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let model = route()?;
-        let key = |ctx: &LlmContext, through| ctx.prefix_key(&model, Effort::Low, through);
-        let (first, second) = (sibling("which line?", 1), sibling("which word?", 2));
-        assert_eq!(key(&first, 0), key(&second, 0));
-        assert_ne!(key(&first, 1), key(&second, 1));
-        let mut shaped = sibling("which line?", 1);
-        shaped.schema = Some(serde_json::json!({"type": "object"}));
-        assert_ne!(key(&shaped, 0), key(&first, 0));
-        let mut looping = sibling("which line?", 1);
-        looping.tools = Some(vec![super::ToolDef {
-            name: "read".to_owned(),
-            description: "d".to_owned(),
-            parameters: serde_json::json!({}),
-            freeform: None,
-        }]);
-        assert_ne!(key(&shaped, 0), key(&looping, 0));
-        assert_ne!(first.prefix_key(&model, Effort::High, 0), key(&first, 0));
-        let mut elsewhere = model.clone();
-        elsewhere.id = "z-ai/glm-5.3".to_owned();
-        assert_ne!(first.prefix_key(&elsewhere, Effort::Low, 0), key(&first, 0));
-        Ok(())
     }
 }

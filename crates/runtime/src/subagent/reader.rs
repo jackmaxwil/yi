@@ -255,13 +255,18 @@ pub(crate) fn brief(
     Ok((fenced, question))
 }
 
+/// A reader marks its partition when a sibling sent it lately or a fan-out shares it (`readers`,
+/// counted by `rlm.run`), so a fan-out's first reader writes it; a lone one pays nothing (D314).
 pub(crate) fn share(
     host: &super::SubagentHost,
+    kwargs: &Map<String, Value>,
     seed: Option<&String>,
     cast: &mut super::build::Cast,
 ) {
     if let (Some(reader), Some(text)) = (cast.3.as_mut(), seed) {
-        reader.shared_through = seen_recently(host, text).then_some(0);
+        let seen = seen_recently(host, text);
+        let gathered = kwargs.get("readers").and_then(Value::as_u64).unwrap_or(1) > 1;
+        reader.shared_through = (seen || gathered).then_some(0);
     }
 }
 

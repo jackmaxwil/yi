@@ -95,7 +95,7 @@ impl ProviderStream {
 
     /// A child's stream: the family's credentials, faux script and key, 5-minute marks (D314).
     #[must_use]
-    pub fn for_child(&self) -> Self {
+    pub(crate) fn for_child(&self) -> Self {
         Self {
             credentials: Arc::clone(&self.credentials),
             session_id: self.session_id.clone(),
