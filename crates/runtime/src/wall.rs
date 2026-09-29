@@ -101,7 +101,11 @@ impl Wall {
         } else {
             workspace.join(raw)
         };
-        self.check_read_path(&target)
+        self.check_read_path(&target).or_else(|| {
+            std::fs::canonicalize(&target)
+                .ok()
+                .and_then(|real| self.check_read_path(&real))
+        })
     }
 
     /// Invariant: the wall covers the path a read lands on, so a link out of one tree into a
@@ -144,10 +148,11 @@ impl Wall {
             };
             refusal(tool_name, &hit.display().to_string(), list)
         };
-        if let Some(hit) = under(
-            &crate::permission::extract_targets(tool_name, args, cwd),
-            &denied,
-        ) {
+        let mut targets = crate::permission::extract_targets(tool_name, args, cwd);
+        if targets.is_empty() && tool_name == "grep" {
+            targets.push(cwd.to_path_buf());
+        }
+        if let Some(hit) = under(&targets, &denied) {
             return Some(list(hit));
         }
         let command = args.get("command").and_then(Value::as_str)?;

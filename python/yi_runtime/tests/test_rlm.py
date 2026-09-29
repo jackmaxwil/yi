@@ -238,11 +238,12 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
             rlm.RLMSpawnHandle, "result", fake_result
         ), mock.patch.object(rlm, "delete_subagent", fake_delete):
             answer = await rlm.ask("which line?", ("local://notes.txt",), schema={"type": "object"})
+            await rlm.ask("which line?", "local://notes.txt")
         self.assertEqual(answer, {"text": "line 2", "schema": {"type": "object"}})
-        kind, payload = sent[0]
-        self.assertEqual(kind, "rlm.run")
-        self.assertEqual(payload["kwargs"], {"role": "reader", "partition": ["local://notes.txt"]})
-        self.assertEqual(reaped, ["sub-1"])
+        for kind, payload in sent:
+            self.assertEqual(kind, "rlm.run")
+            self.assertEqual(payload["kwargs"], {"role": "reader", "partition": ["local://notes.txt"]})
+        self.assertEqual(reaped, ["sub-1", "sub-1"])
 
     async def test_module_result_refuses_a_non_dict_schema_before_any_host_round_trip(
         self,

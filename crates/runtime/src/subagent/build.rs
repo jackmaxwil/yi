@@ -52,8 +52,15 @@ impl SubagentHost {
                 .filter(|record| kind(&record.standing))
                 .count()
         };
-        let workers = held(|standing| matches!(standing, Standing::Worker));
-        let readers = held(|standing| matches!(standing, Standing::Reader));
+        let building_readers = children
+            .building
+            .iter()
+            .filter(|(.., reader)| *reader)
+            .count();
+        let workers = held(|standing| matches!(standing, Standing::Worker))
+            .saturating_add(children.building.len().saturating_sub(building_readers));
+        let readers =
+            held(|standing| matches!(standing, Standing::Reader)).saturating_add(building_readers);
         let reserved = [OWNER_AGENT, ENGINE_AGENT, "host"];
         let refusal = if reserved.contains(&session_name) {
             Some(format!(
@@ -64,9 +71,7 @@ impl SubagentHost {
                 "{} readers are held; rlm.ask reaps its own, rlm.delete_subagent the rest",
                 super::reader::HELD_CAP
             ))
-        } else if matches!(standing, Standing::Worker)
-            && workers.saturating_add(children.building.len()) >= self.options.max_children
-        {
+        } else if matches!(standing, Standing::Worker) && workers >= self.options.max_children {
             Some(format!(
                 "RLM child limit reached ({} children retained); rlm.delete_subagent a finished child first",
                 self.options.max_children
@@ -74,7 +79,7 @@ impl SubagentHost {
         } else if children
             .values()
             .map(|record| &record.session_name)
-            .chain(children.building.iter().map(|(name, _)| name))
+            .chain(children.building.iter().map(|(name, ..)| name))
             .any(|name| name == session_name)
         {
             Some(format!(
@@ -92,7 +97,10 @@ impl SubagentHost {
             let _ = std::fs::remove_dir_all(session_dir);
         })?;
         let tokens = lease.tokens.unwrap_or(0);
-        children.building.push((session_name.to_owned(), tokens));
+        let reader = matches!(standing, Standing::Reader);
+        children
+            .building
+            .push((session_name.to_owned(), tokens, reader));
         let reservation = Reservation {
             host: self,
             name: session_name.to_owned(),

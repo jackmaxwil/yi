@@ -560,7 +560,7 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     ``role="reader"`` makes a question-child: a short reader prompt instead of this session's,
     ``tools`` from ``["read", "grep"]`` (both by default, ``[]`` for one request), at most
     ``turns`` requests (3; the last has tools off), writes walled off, and no kernel. It stands
-    outside the child cap and sends no finish notice: read it with ``result``. ``partition`` is
+    outside the child cap; its finish reaches you like any child's unless ``result`` took it. ``partition`` is
     a list of URLs (``local://path#L1-40@TAG``, ``history://…``, ``plan://…``) resolved now and
     inlined into its brief as numbered, fenced lines, for any role; a kernel value rides
     ``context_keys``.
@@ -588,7 +588,8 @@ async def ask(
 
     ``kwargs`` are ``run``'s (``tools``, ``turns``, ``model``, ``thinking``, ``context_keys``).
     """
-    handle = await run(question, role="reader", partition=list(partition), **kwargs)
+    urls = [partition] if isinstance(partition, str) else list(partition)
+    handle = await run(question, role="reader", partition=urls, **kwargs)
     try:
         return await handle.result(schema=schema, timeout=timeout)
     finally:

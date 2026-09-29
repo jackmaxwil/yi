@@ -301,7 +301,8 @@ impl AgentTool for ToolAdapter {
                     is_error: true,
                 };
             }
-            if let Some(denial) = wall.check(tool.name(), tool.kind(), &args, &context.cwd) {
+            if let Some(denial) = wall.check(tool.name(), tool.kind_for(&args), &args, &context.cwd)
+            {
                 return ToolOutcome {
                     result: yi_loop::tool::error_tool_result_kind(
                         &denial,
