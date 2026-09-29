@@ -559,7 +559,7 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     is ``"terminate"`` (default, 30 s grace) or ``"request_cancel"``; work is kept either way.
     ``role="reader"`` makes a question-child: a short reader prompt instead of this session's,
     ``tools`` from ``["read", "grep"]`` (both by default, ``[]`` for one request), at most
-    ``turns`` requests (3; the last has tools off), writes walled off, and no kernel. It stands
+    ``turns`` requests (3; the last is told to answer, and a tool call in it is refused), writes walled off, and no kernel. It stands
     outside the child cap; its finish reaches you like any child's unless ``result`` took it. ``partition`` is
     a list of URLs (``local://path#L1-40@TAG``, ``history://…``, ``plan://…``) resolved now and
     inlined into its brief as numbered, fenced lines, for any role; a kernel value rides
