@@ -1,0 +1,73 @@
+# The review bot (D319): up to two read-only rounds on a same-repo draft's new head, posted as
+# yi-bot. fgj reads the bot's token from FGJ_TOKEN, so it is never an argument or a file on disk.
+# Shadow mode and no fixer: a round is a comment, and nothing here blocks, pushes or merges.
+name: review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# A newer head supersedes the rounds on the old one.
+concurrency:
+  group: review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CARGO_BUILD_JOBS: "5"
+
+jobs:
+  review:
+    # A fork's head never runs with the bot's key, and a PR out of draft is past review.
+    # Folded: a plain scalar reads the `: ` inside 'WIP: ' as a mapping, and the forge rejects the file.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && startsWith(github.event.pull_request.title, 'WIP: ')
+    runs-on: ubuntu-latest
+    # One round on a 293-line change took 510 s; two rounds and a warm build fit.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: rustup show
+      # The same dev build the live job reads from postmerge's `test` cache.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build -p yi-cli
+      - name: install fgj
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/fgj https://codeberg.org/romaintb/fgj/releases/download/v0.5.0/fgj_linux_amd64
+          echo "7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39  /usr/local/bin/fgj" | sha256sum -c -
+          chmod +x /usr/local/bin/fgj
+      - name: review the head as yi-bot
+        env:
+          FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # The authors write with Anthropic models; the reviewer is from another family.
+          YI_REVIEW_MODEL: openrouter/z-ai/glm-5.3-flash
+          # The owner's hand-written rounds count beside the bot's.
+          YI_ROUND_AUTHORS: yi-bot,jack
+        run: |
+          set -euo pipefail
+          if [ -z "${FGJ_TOKEN:-}" ] || [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            echo "review: skipped, the REVIEW_BOT_TOKEN or OPENROUTER_API_KEY secret is not set"
+            exit 0
+          fi
+          login=$(fgj api --hostname git.example.invalid user | python3 -c 'import json,sys; print(json.load(sys.stdin).get("login", ""))')
+          [ "$login" = yi-bot ] || { echo "review: fgj is signed in as '$login', not yi-bot"; exit 1; }
+          # The second call reads a clean head again for round two and says why when it does not.
+          just pr review ${{ github.event.pull_request.number }}
+          just pr review ${{ github.event.pull_request.number }}
+      # A void round's reason is one line; the answers that caused it are in these sessions.
+      - name: keep the round's sessions
+        if: failure()
+        run: cp -r ~/.yi/sessions/pr-rounds pr-round-sessions || true
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: pr-round-sessions
+          path: pr-round-sessions
