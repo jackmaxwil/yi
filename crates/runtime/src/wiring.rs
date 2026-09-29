@@ -18,8 +18,10 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
                 .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
             let (provider, broker) = (Arc::clone(&wiring.provider), wiring.broker.clone());
             let tools = (wiring.tools)();
+            let rules = crate::rules::discover_armed(&cwd, &wiring.home).rules;
+            let rules = Some(Arc::new(crate::rules::RuleEngine::new(rules)));
             return Ok(crate::subagent::reader::session(
-                provider, build, &reader, tools, cwd, broker,
+                provider, build, &reader, tools, cwd, broker, rules,
             ));
         }
         let mut child = AgentSession::new(

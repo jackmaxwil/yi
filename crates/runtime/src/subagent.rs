@@ -82,7 +82,7 @@ pub(crate) struct Children {
     records: HashMap<String, ChildRecord>,
     pub(crate) epoch: u64,
     /// Children being built outside the lock; each holds a slot, its name and its tokens.
-    building: Vec<(String, u64)>,
+    building: Vec<(String, u64, bool)>,
     /// Removed names at their reap's epoch: a cursor from before the reap reads them as moved.
     removed: std::collections::VecDeque<(String, u64)>,
     forgotten: u64,
@@ -99,13 +99,13 @@ impl Children {
             .records
             .values()
             .filter_map(|record| record.lease.tokens);
-        held.chain(self.building.iter().map(|(_, tokens)| *tokens))
+        held.chain(self.building.iter().map(|(_, tokens, _)| *tokens))
             .fold(0, u64::saturating_add)
     }
 
     /// A build whose record is listed: its reservation is the record's from here on.
     pub(crate) fn release_build(&mut self, name: &str) {
-        self.building.retain(|(held, _)| held != name);
+        self.building.retain(|(held, _, _)| held != name);
     }
 
     pub(crate) fn touch(&mut self, key: &str, cause: crate::family::Cause) -> u64 {
@@ -657,7 +657,7 @@ impl SubagentHost {
         standing: Standing,
     ) -> Result<Map<String, Value>, String> {
         let (juror, family_cap) = (
-            matches!(standing, Standing::Juror | Standing::Reader),
+            matches!(standing, Standing::Juror),
             crate::levers::get().family_cap,
         );
         require_kwargs(&kwargs)?;
@@ -1112,7 +1112,9 @@ impl SubagentHost {
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let prompt = prompt.ok_or("rlm.run requires a prompt")?;
-                host.spawn(prompt, kwargs)
+                tokio::task::spawn_blocking(move || host.spawn(prompt, kwargs))
+                    .await
+                    .map_err(|error| format!("rlm.run task failed: {error}"))?
             })
         });
         let host = Arc::clone(self);
