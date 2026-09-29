@@ -280,6 +280,8 @@ async fn a_reader_is_refused_what_a_reader_cannot_use() -> TestResult {
     assert!(fork.contains("not a fork"), "{fork}");
     let bare = refused(json!({"fork": "all"})).ok_or("a bare fork admitted as a reader")?;
     assert!(bare.contains("role=\"root\" spawns a full child"), "{bare}");
+    let check = refused(json!({"check": "test -f notes.txt"})).ok_or("a bare check admitted")?;
+    assert!(check.contains("runs no check; role=\"root\""), "{check}");
     let bash = refused(json!({"role": "reader", "tools": ["bash"]})).ok_or("bash admitted")?;
     assert_eq!(
         bash,
@@ -380,7 +382,7 @@ async fn a_partition_at_its_cap_is_whole_and_one_byte_over_is_cut_loudly() -> Te
     assert!(whole.contains("\n64:x"), "every line at the cap is kept");
     assert!(!whole.contains("of 64 lines"), "nothing is cut at the cap");
     assert!(
-        whole.contains("[… kept 1 of 2 partition entries: partition cap 65536 bytes; not inlined: local://notes.txt]"),
+        whole.contains("[… kept 1 of 2 partition entries: partition cap 65536 bytes; entries 2 to 2 (from local://notes.txt) go in another reader's partition]"),
         "the entry past the cap is named"
     );
     let cut = brief(1).await?;
@@ -389,7 +391,7 @@ async fn a_partition_at_its_cap_is_whole_and_one_byte_over_is_cut_loudly() -> Te
         "the line past the cap is dropped whole"
     );
     assert!(
-        cut.contains("[… kept 63 of 64 lines of local://big.txt: partition cap 65536 bytes; the rest is local://big.txt#L64-64]"),
+        cut.contains("[… kept 63 of 64 lines of local://big.txt: partition cap 65536 bytes; lines 64-64: read path=big.txt offset=64]"),
         "the cut names kept, total, cap and the rest"
     );
     let (fences, closed) = (
@@ -525,6 +527,21 @@ async fn a_link_into_a_read_walled_tree_is_refused_as_a_partition() -> TestResul
     );
     let error = refused.err().ok_or("a linked secret was inlined")?;
     assert!(error.contains("deny_read"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_partition_of_many_empty_entries_stays_under_its_cap() -> TestResult {
+    let family = family(4, Arc::new(Mutex::new(vec![reply("a")])))?;
+    std::fs::write(family.root.join("ws/empty.txt"), "")?;
+    let partition: Vec<String> = (0..2_000).map(|_| "local://empty.txt".to_owned()).collect();
+    family.host.spawn(
+        "q".to_owned(),
+        kwargs(json!({"name": "q", "role": "reader", "partition": partition})),
+    )?;
+    let brief = first_brief(&family, "q").await?;
+    assert!(brief.len() < 65_536 + 1_024, "{} bytes", brief.len());
+    assert!(brief.contains("of 2000 partition entries: partition cap 65536 bytes"));
     Ok(())
 }
 
