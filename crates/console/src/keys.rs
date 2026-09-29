@@ -251,12 +251,61 @@ pub const CHORDS: [Chord; 20] = [
     ),
 ];
 
-pub fn hint(prefix_armed: bool, cmd: bool) -> &'static str {
-    if prefix_armed {
-        "PREFIX  v split│ s split─ x close z zoom h/j/k/l focus c tab 1..9 tab g palette q leave"
+/// One hint-row key and its drop rank: the row sheds the lowest rank first, whole,
+/// and `KEEP` never.
+type Hint = (&'static str, u8);
+const KEEP: u8 = u8::MAX;
+
+const PREFIX_HINTS: [Hint; 10] = [
+    ("PREFIX ", KEEP),
+    ("v split│", 7),
+    ("s split─", 6),
+    ("x close", 5),
+    ("z zoom", 4),
+    ("h/j/k/l focus", 3),
+    ("c tab", 2),
+    ("1..9 tab", 1),
+    ("g palette", 0),
+    ("q leave", KEEP),
+];
+const CMD_HINTS: [Hint; 6] = [
+    ("⌘P command palette", 4),
+    ("⌘⇧N new session", 3),
+    ("⌘B sidebar", 1),
+    ("⌘J notebook", 0),
+    ("⌘G diff", 2),
+    ("⌘? keys", KEEP),
+];
+const ALT_HINTS: [Hint; 6] = [
+    ("⌥/ command palette", 4),
+    ("⌥n new session", 3),
+    ("⌥b sidebar", 1),
+    ("⌥⇧J notebook", 0),
+    ("⌥g diff", 2),
+    ("⌥? keys", KEEP),
+];
+
+/// The hint row that fits `width` cells: keys drop whole, by rank, never cut mid-key.
+pub fn hint(prefix_armed: bool, cmd: bool, width: usize) -> String {
+    let (items, sep): (&[Hint], &str) = if prefix_armed {
+        (&PREFIX_HINTS, " ")
     } else if cmd {
-        "⌘P command palette   ⌘⇧N new session   ⌘B sidebar   ⌘J notebook   ⌘G diff   ⌘? keys"
+        (&CMD_HINTS, "   ")
     } else {
-        "⌥/ command palette   ⌥n new session   ⌥b sidebar   ⌥⇧J notebook   ⌥g diff   ⌥? keys"
+        (&ALT_HINTS, "   ")
+    };
+    let mut floor = 0;
+    loop {
+        let kept: Vec<&str> = items
+            .iter()
+            .filter(|(_, rank)| *rank >= floor)
+            .map(|(text, _)| *text)
+            .collect();
+        let row = kept.join(sep);
+        // Every glyph in these rows is one cell wide, so chars count cells.
+        if floor == KEEP || row.chars().count() <= width {
+            return row;
+        }
+        floor += 1;
     }
 }
