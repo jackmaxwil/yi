@@ -1,7 +1,7 @@
 //! The plan store (plan section 5.1): `<dir>/<id>/plan.json` checkpoints the root's `ops.jsonl`.
 
 use std::ffi::OsStr;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -21,16 +21,13 @@ pub const PLAN_CAP_BYTES: usize = 32 * 1024;
 
 pub const CHECKPOINT_NAME: &str = "plan.json";
 pub const JOURNAL_NAME: &str = "ops.jsonl";
-const GITIGNORE: &str = "*/ops.jsonl\n";
+const GITIGNORE: &str = "*/ops.jsonl\n.lock\n";
 /// D254: the schema is a build output of `PLAN_SCHEMA`, republished on every open; unlike
 /// `plan.json` it is never a tracked document, so the whole directory is ignored.
 const SCHEMA_GITIGNORE: &str = "*\n";
 const SCHEMA_DIR: &str = "schemas";
 const SCHEMA_NAME: &str = "plan.schema.json";
-const LEASE_NAME: &str = ".lease";
-const LEASE_PID_NAME: &str = "pid";
-const LEASE_HOLD_PREFIX: &str = "hold.";
-const LEASE_ATTEMPTS: u8 = 8;
+const LEASE_NAME: &str = ".lock";
 const ALLOCATE_SUFFIX_MAX: u32 = 9_999;
 const TEMP_PREFIX: &str = ".plan.";
 const TEMP_SUFFIX: &str = ".tmp";
@@ -107,37 +104,11 @@ pub enum StoreError {
     },
 }
 
-/// Invariant: the arbiter is the uniquely named hold file, never the directory, so a holder
-/// whose file is gone releases nothing and cannot unlock whoever took the path over.
+/// Held while the file lives; the OS drops the lock with a dead holder, so no pid is probed.
 #[must_use]
 #[derive(Debug)]
 pub struct Lease {
-    dir: PathBuf,
-    hold: String,
-}
-
-fn lease_hold(dir: &Path) -> Option<String> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    entries.flatten().find_map(|entry| {
-        let name = entry.file_name().into_string().ok()?;
-        name.starts_with(LEASE_HOLD_PREFIX).then_some(name)
-    })
-}
-
-/// Invariant: unlinking one named file is the atomic single-winner step and the name changes
-/// every takeover, so a racer can only condemn the generation it judged stale.
-fn condemn(dir: &Path, arbiter: &str) -> bool {
-    if std::fs::remove_file(dir.join(arbiter)).is_err() {
-        return false;
-    }
-    let _ = std::fs::remove_dir_all(dir);
-    true
-}
-
-impl Drop for Lease {
-    fn drop(&mut self) {
-        condemn(&self.dir, &self.hold);
-    }
+    _file: std::fs::File,
 }
 
 #[derive(Clone)]
@@ -288,8 +259,12 @@ impl PlanStore {
 
     fn publish(&self) -> Result<(), StoreError> {
         let ignore = self.dir.join(".gitignore");
-        if !ignore.exists() {
-            std::fs::write(&ignore, GITIGNORE).map_err(io_at(&ignore))?;
+        match std::fs::read_to_string(&ignore) {
+            Ok(text) if text.lines().any(|line| line == LEASE_NAME) => {}
+            Ok(text) => {
+                std::fs::write(&ignore, format!("{text}{LEASE_NAME}\n")).map_err(io_at(&ignore))?
+            }
+            Err(_) => std::fs::write(&ignore, GITIGNORE).map_err(io_at(&ignore))?,
         }
         let Some(parent) = self.dir.parent() else {
             return Ok(());
@@ -307,9 +282,7 @@ impl PlanStore {
         if std::fs::read(&target).is_ok_and(|bytes| bytes == PLAN_SCHEMA.as_bytes()) {
             return Ok(());
         }
-        let tmp = schemas.join(format!(".{SCHEMA_NAME}.{}", nonce()));
-        std::fs::write(&tmp, PLAN_SCHEMA).map_err(io_at(&tmp))?;
-        std::fs::rename(&tmp, &target).map_err(io_at(&target))
+        yi_session::replace_file(&target, PLAN_SCHEMA.as_bytes()).map_err(io_at(&target))
     }
 
     fn read_checkpoint(&self, id: &PlanId) -> Result<Plan, StoreError> {
@@ -668,51 +641,23 @@ impl PlanStore {
         })
     }
 
-    /// Invariant: K1's `lock_is_stale` decides: a dead pid, else the 30 s mtime rule, which also
-    /// covers an unnamed generation. Taking the lease is what condemns a stale one.
     pub fn lease(&self) -> Result<Lease, StoreError> {
         self.ensure_dir()?;
-        let dir = self.dir.join(LEASE_NAME);
-        for _ in 0..LEASE_ATTEMPTS {
-            match std::fs::create_dir(&dir) {
-                Ok(()) => {
-                    let hold = format!("{LEASE_HOLD_PREFIX}{}", nonce());
-                    std::fs::write(dir.join(&hold), []).map_err(io_at(&dir))?;
-                    std::fs::write(
-                        dir.join(LEASE_PID_NAME),
-                        format!("{}\n", std::process::id()),
-                    )
-                    .map_err(io_at(&dir))?;
-                    if lease_hold(&dir).as_deref() == Some(hold.as_str()) {
-                        return Ok(Lease { dir, hold });
-                    }
-                }
-                Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let generation = lease_hold(&dir);
-                    let pid = yi_kernel::bootstrap::read_lock_pid(&dir);
-                    let probe = pid.map(yi_kernel::bootstrap::process_is_running);
-                    if !yi_kernel::bootstrap::lock_is_stale(&dir, probe) {
-                        return Err(StoreError::LeaseHeld { path: dir, pid });
-                    }
-                    match generation {
-                        Some(hold) => {
-                            condemn(&dir, &hold);
-                        }
-                        None if yi_kernel::bootstrap::lock_missing_pid_is_stale(&dir) => {
-                            condemn(&dir, LEASE_PID_NAME);
-                        }
-                        None => {
-                            let _ = std::fs::remove_dir(&dir);
-                        }
-                    }
-                }
-                Err(source) => return Err(StoreError::Io { path: dir, source }),
+        let path = self.dir.join(LEASE_NAME);
+        match yi_session::try_lock_file(&path).map_err(io_at(&path))? {
+            Ok(mut file) => {
+                file.set_len(0)
+                    .and_then(|()| writeln!(file, "{}", std::process::id()))
+                    .map_err(io_at(&path))?;
+                Ok(Lease { _file: file })
+            }
+            Err(mut file) => {
+                let mut text = String::new();
+                let _a_holder_mid_write_reads_blank = file.read_to_string(&mut text);
+                let pid = text.trim().parse().ok();
+                Err(StoreError::LeaseHeld { path, pid })
             }
         }
-        Err(StoreError::LeaseHeld {
-            path: dir,
-            pid: None,
-        })
     }
 }
 
@@ -1040,40 +985,34 @@ mod tests {
         Ok(())
     }
 
+    /// A lock file outlives every holder, so an ignore file an earlier version wrote gains it once
+    /// or the plans directory shows it as untracked in the user's repository.
     #[test]
-    fn a_stale_lease_with_a_dead_pid_is_taken_over() -> Fallible {
-        let temp = TempStore::new("stale-lease")?;
-        let dir = temp.dir.join(LEASE_NAME);
-        std::fs::create_dir(&dir)?;
-        std::fs::write(dir.join(format!("{LEASE_HOLD_PREFIX}4000000000.0")), [])?;
-        std::fs::write(dir.join(LEASE_PID_NAME), "4000000000\n")?;
-        let taken = temp.store.lease()?;
-        drop(taken);
-        assert!(!dir.exists());
-        std::fs::create_dir(&dir)?;
-        std::fs::write(dir.join(LEASE_PID_NAME), "4000000000\n")?;
-        assert!(
-            matches!(temp.store.lease(), Err(StoreError::LeaseHeld { .. })),
-            "a dead pid with no generation marker was raced instead of waited out"
+    fn an_older_ignore_file_gains_the_lock_once() -> Fallible {
+        let temp = TempStore::new("ignore-lock")?;
+        std::fs::create_dir_all(&temp.dir)?;
+        std::fs::write(temp.dir.join(".gitignore"), "*/ops.jsonl\n")?;
+        drop(temp.store.lease()?);
+        drop(temp.store.lease()?);
+        assert_eq!(
+            std::fs::read_to_string(temp.dir.join(".gitignore"))?,
+            "*/ops.jsonl\n.lock\n"
         );
         Ok(())
     }
 
+    /// Dies with a pid-probed lease: a crash left the lease naming a pid the OS then reused for a
+    /// live process, and every later write was refused as held.
     #[test]
-    fn a_hold_whose_arbiter_was_taken_over_releases_nothing() -> Fallible {
-        let temp = TempStore::new("lease-drop")?;
-        let dir = temp.dir.join(LEASE_NAME);
-        let held = temp.store.lease()?;
-        std::fs::remove_dir_all(&dir)?;
+    fn a_crashed_holder_never_wedges_the_store() -> Fallible {
+        let temp = TempStore::new("crashed-lease")?;
+        let dir = temp.dir.join(".lease");
         std::fs::create_dir(&dir)?;
-        let successor = format!("{LEASE_HOLD_PREFIX}4000000000.0");
-        std::fs::write(dir.join(&successor), [])?;
-        drop(held);
-        assert!(
-            dir.join(&successor).is_file(),
-            "the previous holder released a lease another racer had taken over"
-        );
-        std::fs::remove_dir_all(&dir)?;
+        std::fs::write(dir.join("hold.1.0"), [])?;
+        std::fs::write(dir.join("pid"), format!("{}\n", std::process::id()))?;
+        std::fs::write(temp.dir.join(".lock"), format!("{}\n", std::process::id()))?;
+        let taken = temp.store.lease()?;
+        drop(taken);
         Ok(())
     }
 
@@ -1081,9 +1020,7 @@ mod tests {
     fn a_stale_lease_admits_one_taker_under_contention() -> Fallible {
         for trial in 0..50u32 {
             let temp = TempStore::new(&format!("lease-race-{trial}"))?;
-            let dir = temp.dir.join(LEASE_NAME);
-            std::fs::create_dir(&dir)?;
-            std::fs::write(dir.join(LEASE_PID_NAME), "4000000000\n")?;
+            std::fs::write(temp.dir.join(LEASE_NAME), "4000000000\n")?;
             let ready = std::sync::Barrier::new(6);
             let taken: std::sync::Mutex<Vec<Lease>> = std::sync::Mutex::new(Vec::new());
             std::thread::scope(|scope| {
