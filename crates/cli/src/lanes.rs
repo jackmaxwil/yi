@@ -39,13 +39,12 @@ pub(crate) fn claim_lane(
     session: Option<&str>,
 ) -> Result<Claimed, String> {
     use yi_runtime::lane::{LaneError, Pool, land::claim_root};
-    let lanes = configured_lanes();
     let pool = match Pool::open(home, &effective_cwd(args), lane_slots()) {
         Ok(pool) => pool,
         Err(LaneError::NotARepo(_)) => return Ok((None, None)),
         Err(error) => return Err(error.to_string()),
     };
-    if args.here || lanes.enabled == Some(false) {
+    if args.here || configured_lanes().enabled == Some(false) {
         return Ok((None, Some(pool)));
     }
     let session = session
