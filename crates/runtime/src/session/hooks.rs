@@ -37,12 +37,11 @@ impl AgentSession {
     }
 
     pub async fn wait_idle(&self) {
-        loop {
-            if self.status() == Status::Idle {
-                return;
-            }
-            self.shared.idle.notified().await;
-        }
+        super::until(&self.shared.idle, || match self.status() {
+            Status::Idle => std::ops::ControlFlow::Break(()),
+            _ => std::ops::ControlFlow::Continue(None),
+        })
+        .await;
     }
 
     pub fn ext_hook(&self) -> ExtHook {

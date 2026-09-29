@@ -114,17 +114,11 @@ fn plain_name(
     }
 }
 
-/// Incident: a pid-only temp name was shared by every kernel in the process, so two saves at
-/// once wrote one temp file and the loser's rename failed.
 fn replace_store(file: &Path, text: &str) -> Result<(), String> {
     let parent = file.parent().ok_or("the harness store has no directory")?;
-    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let fresh = file.with_extension(format!("tmp-{}", crate::plan::store::nonce()));
-    std::fs::write(&fresh, text).map_err(|error| error.to_string())?;
-    std::fs::rename(&fresh, file).map_err(|error| {
-        let _staged_file_is_litter_only = std::fs::remove_file(&fresh);
-        error.to_string()
-    })
+    std::fs::create_dir_all(parent)
+        .and_then(|()| yi_session::replace_file(file, text.as_bytes()))
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

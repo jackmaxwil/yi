@@ -1214,3 +1214,32 @@ async fn a_deadline_kills_a_backgrounded_job() -> Result<(), Box<dyn Error>> {
     assert_eq!(state, Some(killed), "{said}");
     Ok(())
 }
+
+/// Dies with the wait that reads the status before it listens: `settle` fires `notify_waiters`,
+/// which stores no permit, so an idle landing between the two was lost and the wait never woke.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_wait_idle_wakes_when_its_run_settles() -> Result<(), Box<dyn Error>> {
+    const RUNS: usize = 2_000;
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(
+        (0..RUNS)
+            .map(|_| faux_assistant_message(vec![faux_text("ok")], StopReason::Stop))
+            .collect(),
+    );
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    for run in 0..RUNS {
+        session.prompt("go")?;
+        tokio::time::timeout(Duration::from_secs(2), session.wait_idle())
+            .await
+            .map_err(|_| format!("run {run}: wait_idle never woke after the run settled"))?;
+    }
+    Ok(())
+}
