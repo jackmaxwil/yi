@@ -536,9 +536,7 @@ pub fn write_targets(command: &str) -> Vec<String> {
         let words: Vec<&str> = segment
             .split_whitespace()
             .map(|word| word.trim_matches(['\'', '"']))
-            .skip_while(|word| {
-                word.contains('=') || matches!(*word, "sudo" | "env" | "time" | "nohup" | "command")
-            })
+            .skip_while(|word| crate::catastrophic::wraps(word))
             .collect();
         let Some((head, args)) = words.split_first() else {
             continue;
