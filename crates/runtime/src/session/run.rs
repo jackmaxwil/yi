@@ -260,6 +260,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     config.effort = effort;
     config.guards = crate::levers::get().loop_guards();
     config.tool_execution = tool_execution;
+    config.reuse = shared.reuse.lock().map(|reuse| *reuse).unwrap_or_default();
     config.convert_to_llm = Box::new(yi_context::convert_to_llm);
     if let Some(compactor) = compactor.clone() {
         let stores = Arc::clone(&shared);

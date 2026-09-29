@@ -2,6 +2,7 @@
 
 pub mod anthropic;
 pub mod auth;
+pub mod breakpoints;
 pub mod catalog;
 mod compat;
 pub mod decide;

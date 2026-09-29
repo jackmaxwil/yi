@@ -329,9 +329,11 @@ MCP is a CLI, never a tool. `yi mcp` runs one-shot: `connect <server> @s`, `clos
 `login`, `logout`, `grep`, `skill`; per session `tools-list|get|call`, `resources-list|read`,
 `prompts-list`, `ping`. It speaks JSON-RPC itself, only yi-cli depends on it, `mcp.enabled` gates
 it. A bare name resolves in `~/.yi/mcp.json`, `.mcp.json`, `.vscode/mcp.json`, `.cursor/mcp.json`.
-The kernel shells out: `rlm.mcp.list_tools|call_tool|reload|close` run `$YI_BIN mcp … --json`.
+The kernel shells out: `rlm.mcp.list_tools|call_tool|reload|close` run `$YI_BIN mcp … --json`;
+`connect` alone goes through the host, from `~/.yi/mcp.json`. A stdio server starts in `~/.yi`,
+outside every sandbox's writable roots, so its command is an absolute path or on `PATH`.
 
-- Owner: [`mcp-cli`](../crates/mcp-cli/src/lib.rs). Settled by: D36, D71.
+- Owner: [`mcp-cli`](../crates/mcp-cli/src/lib.rs). Settled by: D36, D71, D296.
 
 ### 7.7 Checkpoints
 A shadow gitdir `~/.yi/checkpoints/<xxh32 of project>/`, the project as work tree, one lock per
@@ -356,18 +358,23 @@ child's lists none of those. Frontmatter at discovery, body via `read`; `$name` 
 ## 8. Permission
 A pure `decide` over the call, mode, rules, grants, holds and catastrophic context.
 
-- Modes `Ask`, `Auto`, `Yolo`; default `Auto` (`--confirm`, `--auto`, `--yolo`); one prompt
+- Modes `Ask`, `Auto`, `Yolo`; default `permissions.mode`, else `Auto` (`--confirm`, `--auto`, `--yolo`); one prompt
   fragment each. Order: catastrophic (every mode), configured deny, session rule or grant,
   configured allow/ask, hold, mode. `Auto` allows reads, in-tree writes and provably safe
   commands, contains the unproven, asks for destructive and egress segments. Commands are
   decided per segment; an unparseable command is its own input.
 - `git_dirs` reads `.git`, `gitdir:` and `commondir` with bounded reads, trusting a pointer only
   to a `HEAD`; catastrophic matching covers every spelling and reads through wrappers.
-- `refused_scopes` records a contained failure by program and verb; a later use asks. "Always
-  allow" keeps a `Grant` (directory, tree root, program+verb), in memory, ≤ 1024 rules.
+- A contained failure is remembered by the path the sandbox denied, and a later write under its
+  directory asks (in home, any mention); with no path, `refused_scopes` remembers the program and
+  verb and a later use asks. "Always allow" keeps a `Grant` (directory, tree root, program+verb),
+  in memory, ≤ 1024 rules.
 - Sandbox: Seatbelt `/usr/bin/sandbox-exec`, macOS only; writable cwd, git dirs minus
   `hooks config commondir gitdir`, session dir, tmp; reads deny `~/.ssh ~/.gnupg ~/.aws ~/.kube
   ~/.docker`; no network. Without it, `Contain` becomes a reviewable `Ask`.
+- With `classifier.approve` and `LAYA_API_KEY`, a reviewable auto-mode ask first gets one `noul`
+  from the classifier sidecar: P(safe) ≥ 0.9 (0.98 if destructive) allows, ≤ 0.05 asks the user,
+  else on to the reviewer; an ask it may judge left unanswered 120 s is settled by that judgement.
 - With `models.autoReview` set, a reviewable ask goes to the reviewer (30 s); non-allow denies
   with a request id `ask_user` replays; `ActionLedger` (256) makes an approval single-use.
 - Every settled ask is journaled as a `permission` custom entry: the ask, the verdict, and
@@ -375,7 +382,7 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
 - Owner: [`decide`](../crates/permission/src/decide.rs), [`sandbox`](../crates/tools/src/sandbox.rs)
 - State: `PermissionMode { Ask, Auto, Yolo }`, `Decision { Allow, Contain, Deny, Ask { title,
   description, reviewable } }`, `Class { Safe, Destructive, Egress, Unknown }`.
-- Shapes: [`types`](../crates/types/src/permission.rs). Settled by: D15, D26, D81, D205, D206, D207, D293.
+- Shapes: [`types`](../crates/types/src/permission.rs). Settled by: D15, D26, D81, D205, D206, D207, D293, D301.
 
 ## 9. Kernel
 A persistent IPython process per session that reaches the host only through host requests.
@@ -473,13 +480,15 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - kwargs are a whitelist: `name, model, thinking, fork, isolation, deny_write, deny_read,
   deny_url, context, check, deadline_s, tokens, parent_close, role, partition, tools, turns`;
   `fork=all` refuses a model.
-- A child's request is made of its brief (D300). `partition` is a list of Urls resolved at spawn
+- A child's request is made of its brief (D307). `partition` is a list of Urls resolved at spawn
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
-  prompt as numbered lines in untrusted yard fences, 64 KiB at most. A worker spawn that names no
-  `role` is `role="reader"` (D301); a plan delegation, a juror and a service are `root`. A reader is a
+  prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
+  with a `[… kept …]` row naming the cap and the rest. A worker spawn that names no `role` is
+  `role="reader"` (D308); a plan delegation, a juror and a service are `root`. A reader is a
   question-child: `prompts/reader.md` is its whole system prompt, `tools` a subset of `read` and
   `grep` (both by default), `turns` its request cap (3, at most 10; the last is sent with tools off
-  and a `[turns]` note), `deny_write` gains `.`, and it has no extension, kernel, plan, schedule,
+  and a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
+  gate rules bind it, and it has no extension, kernel, plan, schedule,
   checkpoint or environment block; a fork or an isolation refuses; 64 held readers refuse the next
   until one is reaped. `rlm.ask(question, partition,
   schema=…)` runs one, reads its result and reaps it.
@@ -517,7 +526,7 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - Shapes: [`types/src/subagent.rs`](../crates/types/src/subagent.rs) (`ChildUpdate` on
   `_yi/subagent_update`), [`types/src/lease.rs`](../crates/types/src/lease.rs) (`Lease`,
   `LeaseRecord`, `ParentClose`); child dirs `<parent rlm dir>/sub-<8 hex>`
-- Settled by: D165, D210, D215, D216, D218, D234, D300, D301
+- Settled by: D165, D210, D215, D216, D218, D234, D307, D308
 
 ## 12. Mailbox
 A family message: an envelope in the receiver's inbox before delivery, then its one queue.
@@ -752,9 +761,9 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `lanes [reap <slot>]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
-| `login`, `logout`, `mcp …`, `version` | Provider credentials; the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
+| `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
-- The default permission mode is `auto`; `--confirm` selects `ask`, `--yolo` selects `yolo` (§8).
+- The default permission mode is `permissions.mode`, else `auto`; `--confirm` selects `ask`, `--yolo` selects `yolo` (§8).
 - Exit codes: 0 ok; 1 error; 2 usage, bad flag, bad config or refused build; 3 an answer failing
   `--schema`. Under `--json` an agent failure is in-band and exits 0. Errors print `error: …`.
 - `~/.yi/config.json` is the only config file, parsed once; every struct is `deny_unknown_fields`
@@ -763,7 +772,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
   `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
   `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
-  `classifier{url,timeoutMs,threshold}`.
+  `classifier{url,timeoutMs,threshold,approve,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode}`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)

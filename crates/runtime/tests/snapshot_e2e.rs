@@ -46,7 +46,7 @@ fn process(
     pid: u32,
     id: &str,
 ) -> Result<(AgentSession, Arc<KernelService>), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),

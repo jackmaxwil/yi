@@ -42,10 +42,24 @@ struct Family {
     root: Scratch,
     host: Arc<SubagentHost>,
     children: Arc<Mutex<Vec<Vec<String>>>>,
+    notices: Arc<Mutex<Vec<String>>>,
+}
+
+type Rules = Option<Arc<yi_runtime::rules::RuleEngine>>;
+type Hook = Arc<dyn Fn() + Send + Sync>;
+
+fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
+    family_with(max_children, script, None, None)
 }
 
 /// A reader is built by the runtime's own `reader::session`; any other child is a plain one.
-fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
+/// `during` runs inside a reader's build, while its reservation is held.
+fn family_with(
+    max_children: usize,
+    script: Script,
+    rules: Rules,
+    during: Option<Hook>,
+) -> std::io::Result<Family> {
     let root = Scratch::new("yi-reader")?;
     let workspace = root.join("ws");
     std::fs::create_dir_all(&workspace)?;
@@ -56,6 +70,8 @@ fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
     let (events, _keep) = tokio::sync::broadcast::channel(64);
     let tool_names: Arc<Mutex<Vec<Vec<String>>>> = Arc::default();
     let names_sink = Arc::clone(&tool_names);
+    let notices: Arc<Mutex<Vec<String>>> = Arc::default();
+    let notice_sink = Arc::clone(&notices);
     let cwd = workspace.clone();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
@@ -65,9 +81,10 @@ fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
         cwd: workspace.clone(),
         home: root.join("home"),
         lane_slots: 1,
+        provider: Arc::new(ProviderStream::new(None)),
         defaults: Arc::new(|| (faux_model(), Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
-            let provider = Arc::new(ProviderStream::new(None, None));
+            let provider = Arc::new(ProviderStream::new(None));
             let queued = script.lock().map(|mut s| std::mem::take(&mut *s));
             provider.queue_faux(queued.unwrap_or_default());
             let Some(reader) = build.reader.clone() else {
@@ -81,6 +98,9 @@ fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
                     provider,
                 ));
             };
+            if let Some(during) = &during {
+                during();
+            }
             let child = yi_runtime::subagent::reader::session(
                 provider,
                 build,
@@ -88,6 +108,7 @@ fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
                 yi_tools::builtin_tools(),
                 cwd.clone(),
                 None,
+                rules.clone(),
             );
             let names = child
                 .tools()
@@ -99,7 +120,11 @@ fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
             }
             Ok(child)
         }),
-        notice: Arc::new(|_, _| {}),
+        notice: Arc::new(move |text, _| {
+            if let Ok(mut sink) = notice_sink.lock() {
+                sink.push(text.to_owned());
+            }
+        }),
         events,
         report: Arc::new(|_, _| {}),
         parent_messages: Arc::new(Vec::new),
@@ -116,6 +141,7 @@ fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
         root,
         host,
         children: tool_names,
+        notices,
     })
 }
 
@@ -133,7 +159,7 @@ async fn transcript(family: &Family, name: &str) -> Result<Vec<(String, String)>
         let states = family.host.states();
         let settled = states
             .iter()
-            .any(|view| view.name == name && view.state.as_str() == "finished");
+            .any(|view| view.name == name && matches!(view.state.as_str(), "finished" | "failed"));
         if settled {
             break;
         }
@@ -150,6 +176,7 @@ async fn transcript(family: &Family, name: &str) -> Result<Vec<(String, String)>
                 let (role, text) = match &message {
                     AgentMessage::User { content, .. } => ("user", user_text(content)),
                     AgentMessage::Assistant { content, .. } => ("assistant", content_text(content)),
+                    AgentMessage::ToolResult { content, .. } => ("tool", content_text(content)),
                     _ => ("other", String::new()),
                 };
                 rows.push((role.to_owned(), text));
@@ -286,5 +313,202 @@ async fn held_readers_are_a_fuse_not_a_leak() -> TestResult {
         kwargs(json!({"name": "over", "role": "reader"})),
     );
     assert!(refused.is_err_and(|error| error.contains("readers are held")));
+    Ok(())
+}
+
+fn read_call(path: &str) -> AgentMessage {
+    let mut args = Map::new();
+    args.insert("path".to_owned(), Value::from(path));
+    faux_assistant_message(
+        vec![faux_tool_call("c1", "read", args)],
+        StopReason::ToolUse,
+    )
+}
+
+/// Sixty-four numbered lines of 1,023 bytes and their newlines fill the cap to the byte.
+fn cap_filling(extra: usize) -> String {
+    let mut text = String::new();
+    for number in 1..=64 {
+        let width = 1023 - format!("{number}:").len() + if number == 64 { extra } else { 0 };
+        text.push_str(&"x".repeat(width));
+        text.push('\n');
+    }
+    text
+}
+
+async fn first_brief(family: &Family, name: &str) -> Result<String, Box<dyn Error>> {
+    transcript(family, name)
+        .await?
+        .into_iter()
+        .find(|(role, _)| role == "user")
+        .map(|(_, text)| text)
+        .ok_or_else(|| "no brief".into())
+}
+
+#[tokio::test]
+async fn a_partition_at_its_cap_is_whole_and_one_byte_over_is_cut_loudly() -> TestResult {
+    let brief = |extra: usize| async move {
+        let family = family(4, Arc::new(Mutex::new(vec![reply("a")])))?;
+        std::fs::write(family.root.join("ws/big.txt"), cap_filling(extra))?;
+        let partition = json!(["local://big.txt", "local://notes.txt"]);
+        family.host.spawn(
+            "Summarize.".to_owned(),
+            kwargs(json!({"name": "q", "role": "reader", "partition": partition})),
+        )?;
+        first_brief(&family, "q").await
+    };
+    let whole = brief(0).await?;
+    assert!(whole.contains("\n64:x"), "every line at the cap is kept");
+    assert!(!whole.contains("of 64 lines"), "nothing is cut at the cap");
+    assert!(
+        whole.contains("[… kept 1 of 2 partition entries: partition cap 65536 bytes; not inlined: local://notes.txt]"),
+        "the entry past the cap is named"
+    );
+    let cut = brief(1).await?;
+    assert!(
+        !cut.contains("\n64:x"),
+        "the line past the cap is dropped whole"
+    );
+    assert!(
+        cut.contains("[… kept 63 of 64 lines of local://big.txt: partition cap 65536 bytes; the rest is local://big.txt#L64-64]"),
+        "the cut names kept, total, cap and the rest"
+    );
+    let (fences, closed) = (
+        cut.matches("yi-external ").count(),
+        cut.matches("end-yi-external").count(),
+    );
+    assert_eq!(fences, 2 * closed, "every fence the cut touched is closed");
+    assert!(
+        cut.trim_end().ends_with("Summarize."),
+        "the brief stays outside every fence"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_finished_reader_nobody_waits_on_tells_its_parent() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![reply("line 2")]));
+    let family = family(4, script)?;
+    family.host.spawn(
+        "Which line names the sky?".to_owned(),
+        kwargs(json!({"name": "told", "role": "reader"})),
+    )?;
+    transcript(&family, "told").await?;
+    for _ in 0..100 {
+        if !family.notices.lock().map_err(|_| "poisoned")?.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let notices = family.notices.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        notices
+            .iter()
+            .any(|text| text.contains("[subagent told") && text.contains("line 2")),
+        "{notices:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reader_is_gated_by_the_users_rules() -> TestResult {
+    use yi_runtime::rules::{RuleDoc, RuleEngine, RuleGap, RuleMode, RuleScope};
+    let rule = RuleDoc {
+        name: "no-notes".to_owned(),
+        body: "notes are private".to_owned(),
+        path: std::path::PathBuf::from("/rules/no-notes.md"),
+        needles: vec!["notes.txt".to_owned()],
+        scope: RuleScope::Tool("read".to_owned()),
+        gap: RuleGap::Once,
+        mode: RuleMode::Gate,
+        paths: Vec::new(),
+        after: 1,
+    };
+    let script: Script = Arc::new(Mutex::new(vec![read_call("notes.txt"), reply("denied")]));
+    let rules = Some(Arc::new(RuleEngine::new(vec![rule])));
+    let family = family_with(4, script, rules, None)?;
+    family.host.spawn(
+        "Read the notes.".to_owned(),
+        kwargs(json!({"name": "gated", "role": "reader"})),
+    )?;
+    let rows = transcript(&family, "gated").await?;
+    let result = rows
+        .iter()
+        .find(|(role, _)| role == "tool")
+        .ok_or("no tool result")?;
+    assert!(result.1.contains("Denied by rule `no-notes`"), "{rows:?}");
+    assert!(!result.1.contains("blue sky"), "{rows:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_one_turn_reader_is_one_request_with_no_tools() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![reply("x")]));
+    let family = family(4, script)?;
+    family.host.spawn(
+        "q".to_owned(),
+        kwargs(json!({"name": "one", "role": "reader", "turns": 1})),
+    )?;
+    let rows = transcript(&family, "one").await?;
+    let tools = family.children.lock().map_err(|_| "poisoned")?.clone();
+    assert_eq!(tools.first().map(Vec::len), Some(0), "{tools:?}");
+    assert_eq!(
+        rows.iter().filter(|(role, _)| role == "assistant").count(),
+        1,
+        "{rows:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reader_being_built_holds_no_worker_slot() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![reply("a"), reply("b")]));
+    let host_cell: Arc<std::sync::OnceLock<std::sync::Weak<SubagentHost>>> = Arc::default();
+    let (cell, admitted) = (Arc::clone(&host_cell), Arc::new(Mutex::new(None)));
+    let seen = Arc::clone(&admitted);
+    let during: Hook = Arc::new(move || {
+        let Some(host) = cell.get().and_then(std::sync::Weak::upgrade) else {
+            return;
+        };
+        let spawned = host.spawn(
+            "work".to_owned(),
+            kwargs(json!({"name": "w", "role": "root"})),
+        );
+        if let Ok(mut slot) = seen.lock() {
+            slot.get_or_insert(spawned.map(|_| ()));
+        }
+    });
+    let family = family_with(1, script, None, Some(during))?;
+    let _ = host_cell.set(Arc::downgrade(&family.host));
+    family.host.spawn(
+        "ask".to_owned(),
+        kwargs(json!({"name": "r", "role": "reader"})),
+    )?;
+    let outcome = admitted
+        .lock()
+        .map_err(|_| "poisoned")?
+        .clone()
+        .ok_or("hook never ran")?;
+    assert_eq!(
+        outcome,
+        Ok(()),
+        "a worker is admitted while a reader builds"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_link_into_a_read_walled_tree_is_refused_as_a_partition() -> TestResult {
+    let family = family(4, Arc::default())?;
+    let ws = family.root.join("ws");
+    std::fs::create_dir_all(ws.join("secrets"))?;
+    std::fs::write(ws.join("secrets/key"), "hunter2\n")?;
+    std::os::unix::fs::symlink(ws.join("secrets/key"), ws.join("link"))?;
+    let refused = family.host.spawn(
+        "q".to_owned(),
+        kwargs(json!({"name": "l", "role": "reader", "deny_read": ["secrets"], "partition": ["local://link"]})),
+    );
+    let error = refused.err().ok_or("a linked secret was inlined")?;
+    assert!(error.contains("deny_read"), "{error}");
     Ok(())
 }
