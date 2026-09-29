@@ -485,8 +485,8 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
   with a `[… kept …]` row naming the cap and the rest. `role="reader"` is a
   question-child: `prompts/reader.md` is its whole system prompt, `tools` a subset of `read` and
-  `grep` (both by default), `turns` its request cap (3, at most 10; the last is sent with tools off
-  and a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
+  `grep` (both by default), `turns` its request cap (3, at most 10; the last is the last word, whose tool calls are refused,
+  after a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
   gate rules bind it, and it has no extension, kernel, plan, schedule,
   checkpoint or environment block; a fork or an isolation refuses; 64 held readers refuse the next
   until one is reaped. `rlm.ask(question, partition,

@@ -115,7 +115,6 @@ pub(crate) fn partition(
     cwd: &Path,
 ) -> Result<String, String> {
     let mut out = String::new();
-    let mut room = PARTITION_CAP;
     for (index, raw) in entries.iter().enumerate() {
         let url: Url = raw
             .parse()
@@ -130,12 +129,14 @@ pub(crate) fn partition(
                 "the partition names what its wall denies. {denied}"
             ));
         }
+        let mut room = PARTITION_CAP.saturating_sub(out.len());
         if room == 0 {
             out.push_str(&format!(
                 "[… kept {index} of {} partition entries: partition cap {PARTITION_CAP} bytes; \
-                 not inlined: {}]\n",
+                 entries {} to {} (from {raw}) go in another reader's partition]\n",
                 entries.len(),
-                entries.get(index..).unwrap_or_default().join(", ")
+                index.saturating_add(1),
+                entries.len()
             ));
             break;
         }
@@ -164,10 +165,13 @@ pub(crate) fn partition(
                 first.saturating_add(kept.len()),
                 first.saturating_add(lines.len()).saturating_sub(1),
             );
-            let base = raw.split('#').next().unwrap_or(raw);
+            let rest = match url.scheme() {
+                Scheme::Local => format!("read path={} offset={next}", url.path()),
+                _ => "not inlined".to_owned(),
+            };
             out.push_str(&format!(
                 "[… kept {} of {} lines of {raw}: partition cap {PARTITION_CAP} bytes; \
-                 the rest is {base}#L{next}-{last}]\n\n",
+                 lines {next}-{last}: {rest}]\n\n",
                 kept.len(),
                 lines.len()
             ));
