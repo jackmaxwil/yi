@@ -311,6 +311,7 @@ async fn an_approved_request_lets_the_identical_call_through_once() -> TestResul
 
     let replay = harness.broker.resolve_request(1, "call-ask");
     assert!(replay.contains("approved"), "{replay}");
+    assert_eq!(harness.broker.resolve_request(1, "call-ask-again"), replay);
     assert_eq!(
         harness.asks.lock().map(|asks| asks.len()).unwrap_or(0),
         1,
@@ -382,6 +383,11 @@ async fn a_user_denial_stands_without_asking_again() -> TestResult {
     decide(&harness.broker, destructive_args()).await?;
     let replay = harness.broker.resolve_request(1, "call-ask");
     assert!(replay.contains("denied"), "{replay}");
+    let asked_again = harness.broker.resolve_request(1, "call-ask-again");
+    assert_eq!(
+        asked_again, replay,
+        "an answered request is answered from the ledger"
+    );
 
     let again = decide(&harness.broker, destructive_args()).await?;
     assert!(!again.allowed);
