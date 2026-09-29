@@ -248,9 +248,7 @@ fn slash_line(text: &str) -> Option<String> {
 }
 
 pub(crate) fn handle_slash(app: &mut App, line: &str) {
-    let (command, args) = line
-        .split_once(char::is_whitespace)
-        .map_or((line, ""), |(head, rest)| (head, rest.trim()));
+    let (command, args) = yi_runtime::slash::split(line);
     match command {
         "new" => app.pending_new = true,
         "undo" => app.pending_undo = true,

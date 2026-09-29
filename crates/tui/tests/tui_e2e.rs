@@ -2337,3 +2337,37 @@ fn a_kernel_cell_that_spawns_and_deletes_leaves_no_live_card() -> TestResult {
     assert!(!live.contains("Trace sub"), "no card is left live:\n{live}");
     Ok(())
 }
+
+fn notice_of(answer: yi_tui::port::Answer) -> String {
+    match answer {
+        yi_tui::port::Answer::Now(reply) => match *reply {
+            yi_tui::port::Reply::Notice(text) => text,
+            _ => String::new(),
+        },
+        yi_tui::port::Answer::Later => String::new(),
+    }
+}
+
+/// The solo chat and the console ask one runtime: `/sessions` names each session the way the
+/// console lists it, and `/undo` on a session with no turn says what the console says.
+#[test]
+fn solo_session_verbs_answer_as_the_console_does() -> TestResult {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    use yi_tui::port::SessionPort;
+    let dir = Scratch::new("yi-tui-session-verbs")?;
+    let cwd = dir.join("repo");
+    std::fs::create_dir_all(&cwd)?;
+    let (sessions, cwd) = (dir.join("sessions"), cwd.display().to_string());
+    let mut repo = JsonlRepo::new(sessions.clone(), cwd.clone());
+    let store = repo.create(CreateOptions::default())?;
+    lock_session(&store).set_name(Some("fix the parser".to_owned()))?;
+    let mut session = Arc::new(faux_session("ok"));
+    session.attach_store(store)?;
+    let listed = notice_of(session.slash("sessions", &sessions.display().to_string(), &cwd));
+    assert!(listed.contains("fix the parser"), "{listed}");
+    assert_eq!(
+        notice_of(session.undo(&cwd)),
+        "/undo: this session has taken no turn yet — `yi undo` restores an earlier session"
+    );
+    Ok(())
+}

@@ -224,11 +224,7 @@ struct AcpState {
 }
 
 fn mode_value(mode: Option<yi_runtime::PermissionMode>) -> &'static str {
-    match mode {
-        Some(yi_runtime::PermissionMode::Yolo) => "yolo",
-        Some(yi_runtime::PermissionMode::Auto) => "auto",
-        _ => "ask",
-    }
+    mode.map_or("ask", yi_runtime::gate::mode_label)
 }
 
 fn config_options(session: &AgentSession) -> Vec<AcpConfigOption> {
@@ -500,17 +496,12 @@ impl AcpState {
                 handle.session.set_effort(effort);
             }
             "mode" => {
-                let mode = match value {
-                    "ask" => yi_runtime::PermissionMode::Ask,
-                    "auto" => yi_runtime::PermissionMode::Auto,
-                    "yolo" => yi_runtime::PermissionMode::Yolo,
-                    other => {
-                        return Err((
-                            INVALID_PARAMS,
-                            format!("unknown mode {other}; use ask|auto|yolo"),
-                        ));
-                    }
-                };
+                let mode = yi_runtime::slash::parse_mode(value).map_err(|_| {
+                    (
+                        INVALID_PARAMS,
+                        format!("unknown mode {value}; use ask|auto|yolo"),
+                    )
+                })?;
                 handle
                     .session
                     .permission_broker()
@@ -817,13 +808,11 @@ impl AcpState {
             }
             "_yi/slash" => {
                 let line = text("line").trim();
-                let (command, args) = line
-                    .split_once(char::is_whitespace)
-                    .map_or((line, ""), |(head, rest)| (head, rest.trim()));
+                let (command, args) = yi_runtime::slash::split(line);
                 let before = (handle.session.model().id, handle.session.effort());
                 let reply = match command {
                     "sessions" => self.sessions_text()?,
-                    "undo" => crate::review::undo_text(&handle.session, &self.cwd),
+                    "undo" => yi_runtime::slash::undo(&handle.session, &self.cwd),
                     // Routed through `_yi/heartbeat`, not `slash::run`, so the client keeps `_yi/heartbeat_changed` (C9).
                     "heartbeat" => {
                         return self.handle_extension(
@@ -861,28 +850,9 @@ impl AcpState {
                     .session
                     .goal_service()
                     .ok_or((INTERNAL_ERROR, "no goal service is attached".to_owned()))?;
-                let outcome = match text("action") {
-                    "get" => service.get(),
-                    "create" => service.create(
-                        text("objective"),
-                        params.get("tokenBudget").and_then(Value::as_u64),
-                        params
-                            .get("check")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        params.get("checkTimeoutMs").and_then(Value::as_u64),
-                    ),
-                    // Blocks dispatch up to the check timeout — same class as
-                    // the ACP permission bridge's synchronous wait.
-                    "update" => service.update(text("status")),
-                    "objective" => service.set_objective(
-                        text("objective"),
-                        params.get("citation").and_then(Value::as_str),
-                    ),
-                    other => Err(format!(
-                        "unknown goal action {other}; use get|create|update|objective"
-                    )),
-                };
+                // Blocks dispatch up to the check timeout — same class as
+                // the ACP permission bridge's synchronous wait.
+                let outcome = service.act(params.as_object().unwrap_or(&serde_json::Map::new()));
                 match outcome {
                     Ok(goal) => {
                         if text("action") != "get" {
@@ -902,22 +872,7 @@ impl AcpState {
             .repo
             .list()
             .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
-        if listed.is_empty() {
-            return Ok("no sessions for this directory".to_owned());
-        }
-        let now = yi_runtime::session_store::now_ms();
-        Ok(listed
-            .iter()
-            .map(|metadata| {
-                format!(
-                    "{}  {:>8}  {}",
-                    metadata.id,
-                    yi_runtime::session_store::age_label(now.saturating_sub(metadata.created_at)),
-                    metadata.name.as_deref().unwrap_or("")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n"))
+        Ok(yi_runtime::slash::sessions_listing(&listed))
     }
 
     /// A schedule mutation is a fact the client cannot infer from the
@@ -1060,28 +1015,11 @@ fn submit_plan(
     service: &yi_runtime::plan::PlanService,
     params: &Value,
 ) -> Result<Value, (i64, String)> {
-    use yi_runtime::plan::authority::{submission_of, submit};
     let payload = params
         .as_object()
         .ok_or((INVALID_PARAMS, "params must be an object".to_owned()))?;
-    if payload.contains_key("actor") {
-        return Err((
-            INVALID_PARAMS,
-            yi_runtime::plan::tool::ArgError::ActorArg.to_string(),
-        ));
-    }
-    let (engine, actor) = service
-        .engine()
-        .ok_or((INTERNAL_ERROR, "no plan engine is attached".to_owned()))?;
-    let submission = submission_of(payload).map_err(|error| (INVALID_PARAMS, error))?;
-    let applied = submit(&engine, &actor, None, submission)
-        .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
-    Ok(json!({
-        "plan": applied.outcome.plan.id.as_str(),
-        "revision": applied.outcome.plan.touched.0,
-        "text": applied.text(),
-        "notices": applied.outcome.notices,
-    }))
+    yi_runtime::plan::authority::submit_request(service, payload, None)
+        .map_err(|error| (INVALID_PARAMS, error))
 }
 
 fn respond(sink: &LineSink, id: Value, outcome: Result<Value, (i64, String)>) {
