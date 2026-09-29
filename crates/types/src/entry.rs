@@ -3,6 +3,11 @@ use serde_json::Value;
 
 use crate::message::{AgentMessage, Usage};
 
+/// A payload the session log stores as `custom{TYPE}`; every view of that log reads it back.
+pub trait CustomRecord: Serialize + serde::de::DeserializeOwned {
+    const TYPE: &'static str;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[expect(
     clippy::large_enum_variant,

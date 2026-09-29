@@ -771,12 +771,7 @@ impl JobStore {
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let tmp = self.path.with_extension("json.tmp");
-        let write = std::fs::write(&tmp, text.as_bytes()).and_then(|()| {
-            let file = std::fs::File::open(&tmp)?;
-            file.sync_all()?;
-            std::fs::rename(&tmp, &self.path)
-        });
+        let write = yi_session::replace_file(&self.path, text.as_bytes());
         if let Err(error) = write {
             eprintln!("scheduled-jobs.json write failed: {error}");
         }

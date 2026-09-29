@@ -2,6 +2,81 @@ use super::doc::DocError;
 use crate::url::Url;
 use serde::{Deserialize, Serialize};
 
+/// The impls of a `String` newtype on the wire that only `check` admits; the struct stays
+/// declared beside it, where the schema lock reads its shape.
+macro_rules! text_newtype {
+    ($name:ident, $error:ty, $check:expr $(,)?) => {
+        impl $name {
+            /// # Errors
+            /// Whatever the type's check refuses.
+            pub fn new(text: impl Into<String>) -> Result<Self, $error> {
+                let check: fn(String) -> Result<String, $error> = $check;
+                check(text.into()).map(Self)
+            }
+
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(&self.0)
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = $error;
+
+            fn try_from(text: String) -> Result<Self, Self::Error> {
+                Self::new(text)
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(text: $name) -> Self {
+                text.0
+            }
+        }
+    };
+}
+pub(crate) use text_newtype;
+
+/// One line of at most `max` chars: blank, then too long, then a line break is refused.
+pub(crate) fn one_line(
+    text: String,
+    max: usize,
+    empty: DocError,
+    long: fn(String, usize) -> DocError,
+    newline: fn(String) -> DocError,
+) -> Result<String, DocError> {
+    if text.trim().is_empty() {
+        return Err(empty);
+    }
+    if text.chars().count() > max {
+        return Err(long(text, max));
+    }
+    if text.contains(['\n', '\r']) {
+        return Err(newline(text));
+    }
+    Ok(text)
+}
+
+fn within_bytes(
+    text: String,
+    max: usize,
+    empty: DocError,
+    long: fn(usize, usize) -> DocError,
+) -> Result<String, DocError> {
+    if text.trim().is_empty() {
+        return Err(empty);
+    }
+    if text.len() > max {
+        return Err(long(text.len(), max));
+    }
+    Ok(text)
+}
+
 pub const PLAN_FORMAT: u32 = 2;
 /// The frontmatter document format the importer still reads (plan section 5.5, two releases).
 pub const LEGACY_PLAN_FORMAT: u32 = 1;
@@ -138,135 +213,36 @@ impl From<PlanId> for String {
 #[serde(try_from = "String", into = "String")]
 pub struct TodoLabel(String);
 
-impl TodoLabel {
-    pub fn new(label: impl Into<String>) -> Result<Self, DocError> {
-        let label = label.into();
-        if label.trim().is_empty() {
-            return Err(DocError::LabelEmpty);
-        }
-        let chars = label.chars().count();
-        if chars > TODO_LABEL_MAX {
-            return Err(DocError::LabelTooLong {
-                label,
-                max: TODO_LABEL_MAX,
-            });
-        }
-        if label.contains(['\n', '\r']) {
-            return Err(DocError::LabelNewline { label });
-        }
-        Ok(Self(label))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for TodoLabel {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl TryFrom<String> for TodoLabel {
-    type Error = DocError;
-
-    fn try_from(label: String) -> Result<Self, Self::Error> {
-        Self::new(label)
-    }
-}
-
-impl From<TodoLabel> for String {
-    fn from(label: TodoLabel) -> Self {
-        label.0
-    }
-}
+text_newtype!(TodoLabel, DocError, |label| one_line(
+    label,
+    TODO_LABEL_MAX,
+    DocError::LabelEmpty,
+    |label, max| DocError::LabelTooLong { label, max },
+    |label| DocError::LabelNewline { label },
+));
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct GoalText(String);
 
-impl GoalText {
-    pub fn new(goal: impl Into<String>) -> Result<Self, DocError> {
-        let goal = goal.into();
-        if goal.trim().is_empty() {
-            return Err(DocError::GoalEmpty);
-        }
-        let chars = goal.chars().count();
-        if chars > GOAL_TEXT_MAX {
-            return Err(DocError::GoalTooLong {
-                goal,
-                max: GOAL_TEXT_MAX,
-            });
-        }
-        if goal.contains(['\n', '\r']) {
-            return Err(DocError::GoalNewline { goal });
-        }
-        Ok(Self(goal))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for GoalText {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl TryFrom<String> for GoalText {
-    type Error = DocError;
-
-    fn try_from(goal: String) -> Result<Self, Self::Error> {
-        Self::new(goal)
-    }
-}
-
-impl From<GoalText> for String {
-    fn from(goal: GoalText) -> Self {
-        goal.0
-    }
-}
+text_newtype!(GoalText, DocError, |goal| one_line(
+    goal,
+    GOAL_TEXT_MAX,
+    DocError::GoalEmpty,
+    |goal, max| DocError::GoalTooLong { goal, max },
+    |goal| DocError::GoalNewline { goal },
+));
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct InlineNote(String);
 
-impl InlineNote {
-    pub fn new(note: impl Into<String>) -> Result<Self, DocError> {
-        let note = note.into();
-        if note.trim().is_empty() {
-            return Err(DocError::NoteEmpty);
-        }
-        if note.len() > INLINE_NOTE_MAX_BYTES {
-            return Err(DocError::NoteTooLong {
-                bytes: note.len(),
-                max: INLINE_NOTE_MAX_BYTES,
-            });
-        }
-        Ok(Self(note))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for InlineNote {
-    type Error = DocError;
-
-    fn try_from(note: String) -> Result<Self, Self::Error> {
-        Self::new(note)
-    }
-}
-
-impl From<InlineNote> for String {
-    fn from(note: InlineNote) -> Self {
-        note.0
-    }
-}
+text_newtype!(InlineNote, DocError, |note| within_bytes(
+    note,
+    INLINE_NOTE_MAX_BYTES,
+    DocError::NoteEmpty,
+    |bytes, max| DocError::NoteTooLong { bytes, max },
+));
 
 /// The session's own agent: a todo it runs inline, not through a child.
 pub const OWNER_AGENT: &str = "main";
@@ -422,80 +398,30 @@ impl From<TodoAddr> for String {
 #[serde(try_from = "String", into = "String")]
 pub struct ProbeCommand(String);
 
-impl ProbeCommand {
-    pub fn new(probe: impl Into<String>) -> Result<Self, DocError> {
-        let probe = probe.into();
-        if probe.trim().is_empty() {
-            return Err(DocError::ProbeEmpty);
-        }
-        if probe.contains(['\n', '\r']) {
-            return Err(DocError::ProbeNewline { probe });
-        }
-        Ok(Self(probe))
-    }
+text_newtype!(ProbeCommand, DocError, |probe| match probe {
+    blank if blank.trim().is_empty() => Err(DocError::ProbeEmpty),
+    probe if probe.contains(['\n', '\r']) => Err(DocError::ProbeNewline { probe }),
+    probe => Ok(probe),
+});
 
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Intent(String);
 
-impl TryFrom<String> for ProbeCommand {
-    type Error = DocError;
+text_newtype!(Intent, DocError, |intent| within_bytes(
+    intent,
+    INTENT_MAX_BYTES,
+    DocError::IntentEmpty,
+    |bytes, max| DocError::IntentTooLong { bytes, max },
+));
 
-    fn try_from(probe: String) -> Result<Self, Self::Error> {
-        Self::new(probe)
-    }
-}
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Note(String);
 
-impl From<ProbeCommand> for String {
-    fn from(probe: ProbeCommand) -> Self {
-        probe.0
-    }
-}
-
-macro_rules! bounded_text {
-    ($name:ident, $cap:ident, $empty:ident, $long:ident) => {
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-        #[serde(try_from = "String", into = "String")]
-        pub struct $name(String);
-
-        impl $name {
-            /// # Errors
-            /// Blank, or over the byte cap.
-            pub fn new(text: impl Into<String>) -> Result<Self, DocError> {
-                let text = text.into();
-                if text.trim().is_empty() {
-                    return Err(DocError::$empty);
-                }
-                if text.len() > $cap {
-                    return Err(DocError::$long {
-                        bytes: text.len(),
-                        max: $cap,
-                    });
-                }
-                Ok(Self(text))
-            }
-
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl TryFrom<String> for $name {
-            type Error = DocError;
-
-            fn try_from(text: String) -> Result<Self, Self::Error> {
-                Self::new(text)
-            }
-        }
-
-        impl From<$name> for String {
-            fn from(text: $name) -> Self {
-                text.0
-            }
-        }
-    };
-}
-
-bounded_text!(Intent, INTENT_MAX_BYTES, IntentEmpty, IntentTooLong);
-bounded_text!(Note, NOTE_MAX_BYTES, NoteEmpty, NoteTooLong);
+text_newtype!(Note, DocError, |note| within_bytes(
+    note,
+    NOTE_MAX_BYTES,
+    DocError::NoteEmpty,
+    |bytes, max| DocError::NoteTooLong { bytes, max },
+));
