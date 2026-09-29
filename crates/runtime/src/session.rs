@@ -77,6 +77,7 @@ struct Shared {
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
     rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     deadline: OnceLock<Deadline>,
+    turn_cap: OnceLock<u32>,
     turn_time: Mutex<(Option<std::time::Instant>, Option<Duration>)>,
     cancelled: std::sync::atomic::AtomicBool,
     /// The kill switch's hold: no wake starts a turn until it lifts; a typed prompt still does.
@@ -189,6 +190,7 @@ impl AgentSession {
                 coupling: Mutex::new(None),
                 waits: Mutex::new(None),
                 deadline: OnceLock::new(),
+                turn_cap: OnceLock::new(),
                 turn_time: Mutex::new((None, None)),
                 cancelled: false.into(),
                 held: false.into(),
@@ -272,6 +274,10 @@ impl AgentSession {
     /// Starts the clock; the first call wins, so the budget never moves mid-run.
     pub(crate) fn set_deadline(&self, total: Duration) {
         self.shared.deadline.get_or_init(|| Deadline::new(total));
+    }
+
+    pub fn set_turn_cap(&self, turns: u32) {
+        self.shared.turn_cap.get_or_init(|| turns);
     }
 
     pub(crate) fn deadline(&self) -> Option<Deadline> {

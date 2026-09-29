@@ -15,8 +15,8 @@ use yi_types::message::{AgentMessage, UserContent};
 
 use crate::Deliver;
 
-pub(crate) use assemble::sanitize;
 pub use assemble::{PromptState, Rank, Slot, Trust};
+pub(crate) use assemble::{fence, sanitize};
 pub use install::{ExtOptions, install};
 pub use orchestrate::{Features, Route, features, prefilter};
 pub use pack::Pack;
