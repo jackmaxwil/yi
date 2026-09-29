@@ -46,6 +46,7 @@ fn tool(name: &str, freeform: Option<FreeformFormat>) -> ToolDef {
 
 fn bodies(choice: Option<ToolChoice>, tools: Vec<ToolDef>) -> [Value; 3] {
     let context = LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "s".to_owned(),
         messages: vec![AgentMessage::host_user(
             UserContent::Text("hi".to_owned()),
@@ -53,6 +54,7 @@ fn bodies(choice: Option<ToolChoice>, tools: Vec<ToolDef>) -> [Value; 3] {
         )],
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::Loop,
         tools: Some(tools),
         tool_choice: choice,
@@ -147,6 +149,7 @@ fn a_forced_tool_switches_extended_thinking_off_for_that_turn() -> TestResult {
         ..AnthropicOptions::default()
     };
     let context = |choice| LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "s".to_owned(),
         messages: vec![AgentMessage::host_user(
             UserContent::Text("hi".to_owned()),
@@ -154,6 +157,7 @@ fn a_forced_tool_switches_extended_thinking_off_for_that_turn() -> TestResult {
         )],
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::Loop,
         tools: Some(vec![tool("plan", None)]),
         tool_choice: Some(choice),

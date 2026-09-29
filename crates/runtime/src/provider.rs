@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc::Receiver;
-use yi_ai::anthropic::{self, AnthropicOptions, Thinking};
+use yi_ai::anthropic::{self, AnthropicOptions};
 use yi_ai::auth::{AuthKind, Resolved};
 use yi_ai::catalog::Catalog;
 use yi_ai::faux::FauxProvider;
@@ -30,6 +30,11 @@ pub fn catalog_cache_dir() -> Option<&'static std::path::Path> {
     Catalog::cache_dir()
 }
 
+/// The entries the catalog files under `dir` hold that do not load, one line each.
+pub fn catalog_rejected(dir: &std::path::Path) -> Vec<String> {
+    Catalog::bundled().with_cache(dir).rejected().to_vec()
+}
+
 pub use yi_ai::catalog::PROVIDERS as CATALOG_PROVIDERS;
 pub use yi_ai::refresh::{
     DEFAULT_REFRESH_HOURS, MODELS_DEV, age as catalog_age, is_stale as catalog_is_stale,
@@ -52,33 +57,16 @@ fn provider_api(api: &str) -> Option<ProviderApi> {
     }
 }
 
-fn adaptive(model: &Model) -> bool {
-    model
-        .compat
-        .as_ref()
-        .and_then(|compat| compat.get("forceAdaptiveThinking"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn anthropic_thinking(model: &Model, effort: Effort) -> Thinking {
-    match effort {
-        Effort::Off => Thinking::Off,
-        effort if adaptive(model) => Thinking::Adaptive {
-            effort: Some(effort.to_string()),
-        },
-        Effort::Minimal | Effort::Low => Thinking::Budget { tokens: 1024 },
-        Effort::Medium => Thinking::Budget { tokens: 4096 },
-        Effort::High | Effort::XHigh | Effort::Max => Thinking::Budget { tokens: 16384 },
-    }
-}
-
 pub struct ProviderStream {
-    credentials: Mutex<BTreeMap<String, Arc<Resolved>>>,
+    credentials: Arc<Mutex<BTreeMap<String, Arc<Resolved>>>>,
+    /// The family's affinity key: the root's id, cut to 64 characters (D314).
     pub session_id: Option<String>,
-    pub faux: Mutex<FauxProvider>,
-    pub(crate) faux_pace: Mutex<Option<std::time::Duration>>,
+    pub faux: Arc<Mutex<FauxProvider>>,
+    pub(crate) faux_pace: Arc<Mutex<Option<std::time::Duration>>>,
     long_cache: bool,
+    /// What the session ledger says of the next gap and write, for its loop requests' TTL
+    /// (D315); `None` for a stream no ledger feeds, a child's included.
+    ttl_estimate: Mutex<Option<crate::cache_miss::TtlEstimate>>,
     proxy: Option<yi_ai::request::ProxyConfig>,
     routing: Option<serde_json::Value>,
     telemetry: Option<Arc<crate::telemetry::Telemetry>>,
@@ -97,14 +85,31 @@ fn auth_now() -> std::time::SystemTime {
 impl ProviderStream {
     pub fn new(session_id: Option<String>) -> Self {
         Self {
-            credentials: Mutex::new(BTreeMap::new()),
-            session_id,
-            faux: Mutex::new(FauxProvider::default()),
-            faux_pace: Mutex::new(None),
+            credentials: Arc::default(),
+            session_id: session_id.map(|id| id.chars().take(64).collect()),
+            faux: Arc::default(),
+            faux_pace: Arc::default(),
             long_cache: false,
+            ttl_estimate: Mutex::new(None),
             proxy: None,
             routing: None,
             telemetry: None,
+        }
+    }
+
+    /// A child's stream: the family's credentials, faux script and key, 5-minute marks (D314).
+    #[must_use]
+    pub(crate) fn for_child(&self) -> Self {
+        Self {
+            credentials: Arc::clone(&self.credentials),
+            session_id: self.session_id.clone(),
+            faux: Arc::clone(&self.faux),
+            faux_pace: Arc::clone(&self.faux_pace),
+            long_cache: false,
+            ttl_estimate: Mutex::new(None),
+            proxy: self.proxy.clone(),
+            routing: self.routing.clone(),
+            telemetry: self.telemetry.clone(),
         }
     }
 
@@ -153,6 +158,13 @@ impl ProviderStream {
     pub fn with_long_cache(mut self, long_cache: bool) -> Self {
         self.long_cache = long_cache;
         self
+    }
+
+    /// The session ledger's latest estimate (`cache_miss::attach`).
+    pub fn set_ttl_estimate(&self, estimate: Option<crate::cache_miss::TtlEstimate>) {
+        if let Ok(mut held) = self.ttl_estimate.lock() {
+            *held = estimate;
+        }
     }
 
     #[must_use]
@@ -205,6 +217,13 @@ impl StreamFn for ProviderStream {
             None => receiver,
         }
     }
+
+    fn cache_ttl(&self, model: &Model) -> yi_types::model::Ttl {
+        let estimate = self.ttl_estimate.lock().ok().and_then(|held| *held);
+        estimate.map_or(yi_types::model::Ttl::Min5, |estimate| {
+            estimate.cheapest(model, yi_session::now_ms())
+        })
+    }
 }
 
 /// Per-turn output cap on the OpenAI-style paths: a model's catalog ceiling (131k on flash) let
@@ -249,7 +268,7 @@ impl ProviderStream {
         match api {
             ProviderApi::AnthropicMessages => {
                 let options = AnthropicOptions {
-                    thinking: anthropic_thinking(model, effort),
+                    thinking: yi_ai::compat::anthropic_thinking(model, effort),
                     cache_1h: self.long_cache,
                     proxy: self.proxy.clone(),
                     stop: Some(signal.cut_flag()),

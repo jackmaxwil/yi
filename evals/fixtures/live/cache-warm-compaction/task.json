@@ -1,0 +1,11 @@
+{
+  "id": "cache-warm-compaction",
+  "kind": "cache",
+  "onlyByName": true,
+  "timeoutSec": 300,
+  "turns": [
+    "Run these seven bash commands one at a time, in order, each as its own call and never joined into one command, and do not summarise their output: cat start.txt; cat kestrel-annex.txt; cat start.txt; cat kestrel-annex.txt; cat start.txt; cat kestrel-annex.txt; cat start.txt. Then run `await compact.run()` in IPython, and after it reply with the single word done."
+  ],
+  "minCompactionShare": 0.9,
+  "note": "seven ~3k-token reads by yi's estimate outweigh the 20k tokens a compaction keeps, each its own call so the cut finds a reply between them (five did not: the session never compacted); then the model asks for a compaction. The compaction request must read 90% of the loop request before it (fresh, read and written tokens), which it does only when it sends the loop's tools and reasoning, and on a marked route the loop's marks (#746). The compaction is the request span in the telemetry that no reply's usage matches. Runs only under --task"
+}

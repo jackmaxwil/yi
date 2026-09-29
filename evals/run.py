@@ -276,14 +276,55 @@ def refusal_check(spec, binary, out):
             "status": status, "detail": detail, "wallSec": 0}
 
 
-def cache_check(spec, binary, model, out):
-    """A cache scenario asks one session several times; the warm turns must read the cache."""
+def prompt_and_read_per_request(events):
+    """(prompt, read) per request, in order. The prompt counts every input token, fresh, read and
+    written (D116): a ratio without the writes scores a lost tail mark about 0.98 (#742)."""
+    out = []
+    for event in yi_usage.json_lines(events)[0]:
+        message = event.get("message") if event.get("type") == "message_end" else None
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
+            read = usage.get("cacheRead") or 0
+            out.append(((usage.get("input") or 0) + read + (usage.get("cacheWrite") or 0), read))
+    return out
+
+
+def unmatched_requests(sessions, requests):
+    """((prompt, read, cost), prompt of the loop request before it) of every request span whose
+    usage no reply of the session carries, in order: a compaction, or a child's request (#745)."""
+    loop, found, before = list(requests), [], 0
+    for path in sorted(Path(sessions).rglob("*.telemetry.jsonl")):
+        for span in yi_usage.json_lines(path)[0]:
+            if span.get("span") != "request":
+                continue
+            read = span.get("cacheRead") or 0
+            prompt = (span.get("input") or 0) + read + (span.get("cacheWrite") or 0)
+            if (prompt, read) in loop:
+                loop.remove((prompt, read))
+                before = prompt
+            else:
+                found.append(((prompt, read, span.get("costUsd")), before))
+    return found
+
+
+def compaction_request(sessions, requests):
+    """(prompt, read, cost) of the compaction and the prompt of the loop request before it. The
+    compaction is the request span whose usage no reply carries, the largest if several (#746)."""
+    return max(unmatched_requests(sessions, requests), key=lambda found: found[0][0], default=None)
+
+
+def cache_check(spec, task_dir, binary, model, out):
+    """A cache scenario asks one session several times; the warm turns must read the cache.
+    With `minWarmShare`, every request after the first must read that share of the previous
+    request's prompt, over at least `minRequests` requests: a tool loop's own requests count."""
     keep = out / spec["id"]
     keep.mkdir(parents=True, exist_ok=True)
     sessions = keep / "sessions"
     started = time.monotonic()
-    turns, events_text, exit_code, timed_out = [], "", None, False
+    turns, requests, events_text, exit_code, timed_out = [], [], "", None, False
     with tempfile.TemporaryDirectory(prefix="yi-eval-") as workspace:
+        if (task_dir / "repo").is_dir():
+            shutil.copytree(task_dir / "repo", workspace, dirs_exist_ok=True)
         for index, prompt in enumerate(spec["turns"]):
             events = keep / f"events-{index}.jsonl"
             command = [binary, "ask", "--model", model, "--json", "--here", "--yolo", "--cwd", workspace,
@@ -298,20 +339,66 @@ def cache_check(spec, binary, model, out):
                     break
             events_text += events.read_text(errors="replace")
             turns.append(yi_usage.parse_events(events))
+            requests += prompt_and_read_per_request(events)
             # DeepSeek builds its prefix cache after the response, not during it.
             if index + 1 < len(spec["turns"]):
                 time.sleep(spec.get("settleSec", 3))
     warm_read = sum(turn["cacheRead"] or 0 for turn in turns[1:])
-    row = {"task": spec["id"], "reward": 1 if warm_read else 0, "exit": exit_code, "timedOut": timed_out,
-           "wallSec": round(time.monotonic() - started, 2), "requests": len(turns),
-           "warmRead": warm_read, "warmInput": sum(turn["input"] or 0 for turn in turns[1:])}
+    shares = [read / prompt if prompt else 0.0 for (prompt, _), (_, read) in zip(requests, requests[1:])]
+    floor, least = spec.get("minWarmShare"), spec.get("minRequests", 2)
+    held = bool(warm_read) if floor is None else (len(requests) >= least and min(shares, default=0.0) >= floor)
+    compacted, compaction_floor = None, spec.get("minCompactionShare")
+    if compaction_floor is not None:
+        # The loop's own requests after a compaction start a new prefix: only the compaction is judged.
+        found = compaction_request(sessions, requests)
+        if found:
+            (prompt, read, cost), before = found
+            compacted = {"prompt": prompt, "read": read, "before": before, "costUsd": cost,
+                         "share": round(read / before, 4) if before else 0.0}
+        held = bool(compacted) and compacted["share"] >= compaction_floor
+    siblings, sibling_floor = None, spec.get("minSiblingShare")
+    if sibling_floor is not None:
+        # Each tool-less reader is one request no root reply carries; the second reads the first's prefix.
+        siblings = [{"prompt": prompt, "read": read, "costUsd": cost,
+                     "share": round(read / prompt, 4) if prompt else 0.0}
+                    for (prompt, read, cost), _ in unmatched_requests(sessions, requests)]
+        held = len(siblings) >= 2 and siblings[1]["share"] >= sibling_floor
+    row = {"task": spec["id"], "reward": 1 if held else 0, "exit": exit_code, "timedOut": timed_out,
+           "wallSec": round(time.monotonic() - started, 2), "requests": len(requests),
+           "warmRead": warm_read, "warmInput": sum(turn["input"] or 0 for turn in turns[1:]),
+           "warmShares": [round(share, 4) for share in shares]}
     for key in (*yi_usage.TOKEN_KEYS, "nAssistantMessages", "costUnknownTurns"):
         row[key] = sum(turn.get(key) or 0 for turn in turns)
     costs = [turn.get("costUsd") for turn in turns]
     row["costUsd"] = None if not turns or None in costs else sum(costs)
+    if compacted:
+        row["compaction"] = compacted
+        row["costUsd"] = None if row["costUsd"] is None or compacted["costUsd"] is None else (
+            row["costUsd"] + compacted["costUsd"])
+    if siblings is not None:
+        row["siblings"] = siblings
+        costs = [sibling["costUsd"] for sibling in siblings]
+        row["costUsd"] = None if row["costUsd"] is None or None in costs else row["costUsd"] + sum(costs)
     row["status"], row["detail"] = status_of(row, spec, events_text)
-    if row["status"] == "fail":
+    if row["status"] == "fail" and sibling_floor is not None and len(siblings) < 2:
+        row["status"], row["detail"] = "inconclusive", f"{len(siblings)} child requests, the scenario needs 2"
+    elif row["status"] == "fail" and sibling_floor is not None:
+        row["detail"] = (f"the second sibling read {siblings[1]['read']} of its {siblings[1]['prompt']}-token "
+                         f"prompt ({siblings[1]['share']:.1%} < {sibling_floor:.0%})")
+    elif row["status"] == "fail" and compaction_floor is not None and not compacted:
+        row["status"], row["detail"] = "inconclusive", "the session never compacted"
+    elif row["status"] == "fail" and compaction_floor is not None:
+        row["detail"] = (f"the compaction read {compacted['read']} of the previous request's "
+                         f"{compacted['before']}-token prompt ({compacted['share']:.1%} < {compaction_floor:.0%})")
+    elif row["status"] == "fail" and floor is None:
         row["detail"] = f"warm turns read 0 cached tokens over {len(turns)} requests ({row['input']} input)"
+    elif row["status"] == "fail" and len(requests) < least and min(shares, default=1.0) >= floor:
+        # A short loop that read well so far is the scenario's problem; one that already missed is red.
+        row["status"], row["detail"] = "inconclusive", f"{len(requests)} requests, the scenario needs {least}"
+    elif row["status"] == "fail":
+        worst = shares.index(min(shares))
+        row["detail"] = (f"request {worst + 2} read {requests[worst + 1][1]} of the previous request's "
+                         f"{requests[worst][0]}-token prompt ({shares[worst]:.1%} < {floor:.0%})")
     return row
 
 
@@ -336,6 +423,9 @@ def run_live(args):
     specs = sorted(path.parent for path in LIVE.glob("*/task.json"))
     if args.task:
         specs = [spec for spec in specs if spec.name in set(args.task)]
+    else:
+        # An `onlyByName` scenario judges one route's engine, not the suite's model.
+        specs = [spec for spec in specs if not json.loads((spec / "task.json").read_text()).get("onlyByName")]
     suite = f"live@{_capture(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'])}"
     mode = "live" + yi_usage.routing_label(os.environ) + yi_usage.levers_label(os.environ)
     fingerprint = yi_usage.config_fingerprint(_capture([args.binary, "--version"]), args.model, mode, suite)
@@ -348,7 +438,7 @@ def run_live(args):
         if spec.get("kind") == "refusal":
             row = refusal_check(spec, args.binary, out)
         elif spec.get("kind") == "cache":
-            row = cache_check(spec, args.binary, args.model, out)
+            row = cache_check(spec, task_dir, args.binary, args.model, out)
             spent += row.get("costUsd") or 0.0
         else:
             spec, row = run_task(task_dir, args.binary, args.model, out=out)

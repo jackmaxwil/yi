@@ -107,5 +107,7 @@ pub fn build_summarization_prompt(
     }
     prompt.push_str("\n\n");
     prompt.push_str(KERNEL_PERSIST_SUMMARY_NOTE);
+    // The request carries the session's tools so its prefix stays the loop's (§7).
+    prompt.push_str("\n\nReply with the summary as text and call no tool.");
     prompt
 }
