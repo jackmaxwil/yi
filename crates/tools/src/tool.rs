@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
@@ -177,4 +177,50 @@ pub fn require_str<'a>(input: &'a Map<String, Value>, key: &str) -> Result<&'a s
 
 pub fn resolve_path(context: &ToolContext, path: &str) -> PathBuf {
     yi_permission::resolve_target(path, &context.cwd)
+}
+
+/// A glob whose literal head resolves like any path argument, `~`, `../` and absolute alike:
+/// the head is the directory a walk starts from, and the rest matches below it.
+pub(crate) struct RootedGlob {
+    pub(crate) base: PathBuf,
+    rest: globset::GlobMatcher,
+}
+
+impl RootedGlob {
+    pub(crate) fn matches(&self, path: &Path) -> bool {
+        path.strip_prefix(&self.base)
+            .is_ok_and(|rest| self.rest.is_match(rest))
+    }
+}
+
+/// The literal head of a glob, the directory its walk starts from, as the path gate must judge
+/// it; None when no component holds a glob character.
+pub fn glob_head(raw: &str) -> Option<String> {
+    let parts: Vec<&str> = raw.split('/').collect();
+    let at = (parts.iter()).position(|part| part.contains(['*', '?', '[', '{']))?;
+    Some(rooted(raw, &parts.get(..at).unwrap_or_default().join("/")))
+}
+
+fn rooted(raw: &str, head: &str) -> String {
+    match head.is_empty() && raw.starts_with('/') {
+        true => "/".to_owned(),
+        false => head.to_owned(),
+    }
+}
+
+/// Split at the glob's head; without a glob character, at the last component.
+pub(crate) fn rooted_glob(raw: &str, base: &Path) -> Result<RootedGlob, String> {
+    let head = glob_head(raw)
+        .unwrap_or_else(|| rooted(raw, raw.rsplit_once('/').map_or("", |(head, _)| head)));
+    let rest = raw.get(head.len()..).unwrap_or(raw).trim_start_matches('/');
+    let rest = globset::GlobBuilder::new(rest)
+        .literal_separator(false)
+        .build()
+        .map_err(|error| error.to_string())?
+        .compile_matcher();
+    let head = yi_permission::resolve_target(&head, base);
+    Ok(RootedGlob {
+        base: yi_permission::lexical_normalize(&head),
+        rest,
+    })
 }

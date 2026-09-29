@@ -293,6 +293,7 @@ edited by hand.
 - [D313](adr/d313.md) - exclusion is an OS file lock through one helper, and the plan store's mkdir...
 - [D319](adr/d319.md) - a PR is reviewed in rounds
 - [D320](adr/d320.md) - the fixer is a fresh `yi ask --auto` on a same-repo draft, fed the last...
+- [D321](adr/d321.md) - the session verbs answer from `yi_runtime
 - [D317](adr/d317.md) - a child's transcript lives inside its parent
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
