@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc::Receiver;
-use yi_ai::anthropic::{self, AnthropicOptions, Thinking};
+use yi_ai::anthropic::{self, AnthropicOptions};
 use yi_ai::auth::{AuthKind, Resolved};
 use yi_ai::catalog::Catalog;
 use yi_ai::faux::FauxProvider;
@@ -54,18 +54,6 @@ fn provider_api(api: &str) -> Option<ProviderApi> {
         "openai-completions" => Some(ProviderApi::OpenAiCompletions),
         "openai-responses" => Some(ProviderApi::OpenAiResponses),
         _ => None,
-    }
-}
-
-fn anthropic_thinking(model: &Model, effort: Effort) -> Thinking {
-    match effort {
-        Effort::Off => Thinking::Off,
-        effort if yi_ai::compat::adaptive_thinking(model) => Thinking::Adaptive {
-            effort: Some(effort.to_string()),
-        },
-        Effort::Minimal | Effort::Low => Thinking::Budget { tokens: 1024 },
-        Effort::Medium => Thinking::Budget { tokens: 4096 },
-        Effort::High | Effort::XHigh | Effort::Max => Thinking::Budget { tokens: 16384 },
     }
 }
 
@@ -245,7 +233,7 @@ impl ProviderStream {
         match api {
             ProviderApi::AnthropicMessages => {
                 let options = AnthropicOptions {
-                    thinking: anthropic_thinking(model, effort),
+                    thinking: yi_ai::compat::anthropic_thinking(model, effort),
                     cache_1h: self.long_cache,
                     proxy: self.proxy.clone(),
                     stop: Some(signal.cut_flag()),

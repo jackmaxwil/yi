@@ -202,6 +202,16 @@ fn a_malformed_cache_entry_is_reported_not_dropped() -> TestResult {
         .collect();
     assert_eq!(named.len(), 1, "{:?}", catalog.rejected());
     assert!(named[0].contains("openrouter"), "{}", named[0]);
+    written["openai-completions"] = json!("hand-edited");
+    let whole = overlay(&written)?;
+    assert!(
+        whole
+            .rejected()
+            .iter()
+            .any(|line| line.contains("openai-completions: not an object")),
+        "{:?}",
+        whole.rejected()
+    );
     assert!(Catalog::bundled().rejected().is_empty());
     Ok(())
 }
