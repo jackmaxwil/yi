@@ -295,5 +295,6 @@ edited by hand.
 - [D320](adr/d320.md) - the fixer is a fresh `yi ask --auto` on a same-repo draft, fed the last...
 - [D321](adr/d321.md) - the session verbs answer from `yi_runtime
 - [D317](adr/d317.md) - a child's transcript lives inside its parent
+- [D322](adr/d322.md) - review rounds block (revises D319's `shadow`)
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
