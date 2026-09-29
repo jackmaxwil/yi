@@ -196,39 +196,38 @@ pub struct Options {
     pub json: bool,
 }
 
+/// The main branch of session `id_arg` (the newest for `cwd` when blank), oldest first.
+pub fn main_entries(
+    session_dir: &std::path::Path,
+    cwd: &str,
+    id_arg: &str,
+) -> Result<(String, Vec<Entry>), String> {
+    let mut repo = JsonlRepo::new(session_dir.to_path_buf(), cwd.to_owned());
+    let id = if id_arg.trim().is_empty() {
+        crate::sessions::latest_id(&mut repo).ok_or("no sessions for this directory")?
+    } else {
+        id_arg.trim().to_owned()
+    };
+    let store = repo.open(&id).map_err(|error| error.to_string())?;
+    let entries = lock_session(&store)
+        .find_entries_on_branch(
+            "main",
+            &EntryQuery {
+                order: EntryOrder::OldestFirst,
+                ..EntryQuery::default()
+            },
+            &BranchBounds::default(),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok((id, entries))
+}
+
 pub fn run(id_arg: &str, options: &Options) -> i32 {
     if let Some(dir) = id_arg.trim().strip_prefix("telemetry") {
         return telemetry_rollup(std::path::Path::new(dir.trim()), options.json);
     }
-    let mut repo = JsonlRepo::new(options.session_dir.clone(), options.cwd.clone());
-    let id = if id_arg.trim().is_empty() {
-        match crate::sessions::latest_id(&mut repo) {
-            Some(id) => id,
-            None => {
-                eprintln!("error: no sessions for this directory");
-                return 1;
-            }
-        }
-    } else {
-        id_arg.trim().to_owned()
-    };
-    let store = match repo.open(&id) {
-        Ok(store) => store,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return 1;
-        }
-    };
-    let session = lock_session(&store);
-    let entries = match session.find_entries_on_branch(
-        "main",
-        &EntryQuery {
-            order: EntryOrder::OldestFirst,
-            ..EntryQuery::default()
-        },
-        &BranchBounds::default(),
-    ) {
-        Ok(entries) => entries,
+    let (id, entries) = match main_entries(&options.session_dir, &options.cwd, id_arg) {
+        Ok(found) => found,
         Err(error) => {
             eprintln!("error: {error}");
             return 1;

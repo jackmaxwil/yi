@@ -1157,9 +1157,11 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "kernel-boot",
             "daemon-socket",
             "daemon-ledger",
-            "lanes"
+            "lanes",
+            "cache"
         ]
     );
+    assert_eq!(rows[11]["detail"], "no session here", "{rows}");
     Ok(())
 }
 

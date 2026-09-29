@@ -34,13 +34,14 @@ fn fail(detail: impl Into<String>) -> Finding {
 struct Site {
     home: PathBuf,
     cwd: PathBuf,
+    sessions: PathBuf,
     fix: bool,
 }
 
 type Check = fn(&Site) -> Finding;
 
 /// The rows, in the order a reader wants them: what the process is, then what it owns.
-const ROWS: [(&str, Check); 11] = [
+const ROWS: [(&str, Check); 12] = [
     ("host", host_environment),
     ("home", home_absolute),
     ("config", config_parses),
@@ -52,6 +53,7 @@ const ROWS: [(&str, Check); 11] = [
     ("daemon-socket", socket_alive_or_absent),
     ("daemon-ledger", ledger_roots_exist),
     ("lanes", lanes_consistent),
+    ("cache", cache_reads),
 ];
 
 /// Never a failure: where yi runs decides what a contained command and a placement can reach.
@@ -264,6 +266,32 @@ fn lanes_consistent(site: &Site) -> Finding {
     ok(format!("{} slot(s) consistent", views.len()))
 }
 
+/// The newest session here, replayed: its misses by cause, failing when the tripwire fired.
+fn cache_reads(site: &Site) -> Finding {
+    let cwd = site.cwd.display().to_string();
+    let Ok((id, entries)) = crate::stats::main_entries(&site.sessions, &cwd, "") else {
+        return ok("no session here");
+    };
+    let mut tracker = yi_runtime::cache_miss::MissTracker::default();
+    let mut causes = std::collections::BTreeMap::<&str, u32>::new();
+    let mut notice = None;
+    for entry in &entries {
+        if let Some(cause) = tracker.entry(entry) {
+            *causes.entry(cause.label()).or_default() += 1;
+        }
+        notice = notice.or_else(|| tracker.take_notice());
+    }
+    let misses: Vec<String> = causes
+        .iter()
+        .map(|(cause, count)| format!("{cause} {count}"))
+        .collect();
+    let row = format!("session {id}: misses [{}]", misses.join(", "));
+    match notice {
+        Some(notice) => fail(format!("{row}; {notice}")),
+        None => ok(row),
+    }
+}
+
 /// Runs before the config loads, so a config that will not parse is a row, not a death.
 pub(crate) fn early() {
     if std::env::args().nth(1).as_deref() != Some("doctor") {
@@ -284,6 +312,7 @@ pub(crate) fn run(args: &Args) -> i32 {
             .map(PathBuf::from)
             .unwrap_or_default(),
         cwd: effective_cwd(args),
+        sessions: crate::default_session_dir(args),
         fix: args.fix,
     };
     let findings: Vec<(&str, Finding)> = ROWS
