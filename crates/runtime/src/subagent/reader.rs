@@ -255,18 +255,89 @@ pub(crate) fn brief(
     Ok((fenced, question))
 }
 
-/// A reader marks its partition when a sibling sent it lately or a fan-out shares it (`readers`,
-/// counted by `rlm.run`), so a fan-out's first reader writes it; a lone one pays nothing (D314).
+/// A reader marks its partition when a sibling sent it lately or a fan-out shares it (D314).
 pub(crate) fn share(
     host: &super::SubagentHost,
     kwargs: &Map<String, Value>,
     seed: Option<&String>,
     cast: &mut super::build::Cast,
-) {
-    if let (Some(reader), Some(text)) = (cast.3.as_mut(), seed) {
-        let seen = seen_recently(host, text);
-        let gathered = kwargs.get("readers").and_then(Value::as_u64).unwrap_or(1) > 1;
-        reader.shared_through = (seen || gathered).then_some(0);
+) -> Option<Stagger> {
+    let (Some(reader), Some(text)) = (cast.3.as_mut(), seed) else {
+        return None;
+    };
+    let seen = seen_recently(host, text);
+    let gathered = kwargs.get("readers").and_then(Value::as_u64).unwrap_or(1) > 1;
+    reader.shared_through = (seen || gathered).then_some(0);
+    reader.shared_through?;
+    let shape = format!("{}{:?}{:?}{text}", cast.0.id, reader.tools, reader.schema);
+    Some(stagger(host, crate::fetch::content_hash(&shape)))
+}
+
+const STAGGER_BOUND: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// An entry is read once the response writing it begins: a follower waits for its lead (§9.4).
+pub(crate) enum Stagger {
+    Lead(tokio::sync::watch::Sender<bool>),
+    Follow(tokio::sync::watch::Receiver<bool>),
+}
+
+fn stagger(host: &super::SubagentHost, key: String) -> Stagger {
+    let Ok(mut leads) = host.leads.lock() else {
+        return Stagger::Lead(tokio::sync::watch::channel(false).0);
+    };
+    leads.retain(|_, lead| !*lead.borrow() && lead.has_changed().is_ok());
+    if let Some(lead) = leads.get(&key) {
+        return Stagger::Follow(lead.clone());
+    }
+    let (sender, lead) = tokio::sync::watch::channel(false);
+    leads.insert(key, lead);
+    Stagger::Lead(sender)
+}
+
+impl Stagger {
+    /// A lead says when its response begins (first event, reply end or run end); a follower waits.
+    pub(crate) fn arm(self, child: &AgentSession) -> Option<tokio::sync::watch::Receiver<bool>> {
+        let sender = match self {
+            Self::Follow(lead) => return Some(lead),
+            Self::Lead(sender) => sender,
+        };
+        let mut events = child.subscribe();
+        drop(tokio::spawn(async move {
+            let began = async {
+                while let Ok(event) = events.recv().await {
+                    if response_began(&event) {
+                        break;
+                    }
+                }
+            };
+            let _bounded = tokio::time::timeout(STAGGER_BOUND, began).await;
+            let _followers_may_be_gone = sender.send(true);
+        }));
+        None
+    }
+}
+
+pub(crate) async fn follow(lead: Option<tokio::sync::watch::Receiver<bool>>) {
+    if let Some(mut lead) = lead {
+        let _begun_or_bounded =
+            tokio::time::timeout(STAGGER_BOUND, lead.wait_for(|begun| *begun)).await;
+    }
+}
+
+fn response_began(event: &yi_types::event::AgentEvent) -> bool {
+    use yi_types::event::{AgentEvent, AssistantMessageEvent};
+    match event {
+        AgentEvent::MessageUpdate {
+            assistant_message_event,
+        } => !matches!(
+            assistant_message_event,
+            AssistantMessageEvent::Start { .. } | AssistantMessageEvent::Waiting { .. }
+        ),
+        AgentEvent::MessageEnd { message } => {
+            matches!(message, yi_types::message::AgentMessage::Assistant { .. })
+        }
+        AgentEvent::AgentEnd { .. } => true,
+        _ => false,
     }
 }
 

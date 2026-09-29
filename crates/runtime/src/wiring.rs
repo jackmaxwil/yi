@@ -8,8 +8,7 @@ use crate::mailbox::{ParentLink, register_child_messaging};
 use crate::session::AgentSession;
 use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOptions};
 
-/// A child is a fresh session: it runs its own extensions against its own cwd, and streams
-/// with its family's key and credentials at five-minute marks (D314).
+/// A child is a fresh session with its own extensions and cwd, on its family's stream (D314).
 fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
     Arc::new(move |build: ChildBuild<'_>| {
         let provider = Arc::new(wiring.provider.for_child());

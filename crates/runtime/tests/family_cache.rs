@@ -264,3 +264,136 @@ async fn a_fan_out_marks_the_partition_on_its_first_reader_too() -> TestResult {
     );
     Ok(())
 }
+
+/// Every request body with the instant it was read. The request that asks `lead` is answered
+/// after `delay` with `status` (a stream on 200, an error body otherwise); the rest at once.
+fn timed_stand_in(
+    lead: &'static str,
+    delay: std::time::Duration,
+    status: u16,
+) -> std::io::Result<(u16, mpsc::Receiver<(std::time::Instant, Value)>)> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let (sender, bodies) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream);
+                let (mut length, mut line) = (0usize, String::new());
+                while reader.read_line(&mut line).unwrap_or(0) > 0 && !line.trim().is_empty() {
+                    if let Some((name, value)) = line.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                    line.clear();
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let leading = body.to_string().contains(lead);
+                let _ = sender.send((std::time::Instant::now(), body));
+                let (status, kind, reply) = if leading && status != 200 {
+                    std::thread::sleep(delay);
+                    let error = r#"{"error":{"message":"bad request","code":400}}"#.to_owned();
+                    (status, "application/json", error)
+                } else {
+                    if leading {
+                        std::thread::sleep(delay);
+                    }
+                    (
+                        200,
+                        "text/event-stream",
+                        sse_reply(&json!({"content": "sky"}), "stop"),
+                    )
+                };
+                let _ = write!(
+                    reader.into_inner(),
+                    "HTTP/1.1 {status} X\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+            });
+        }
+    });
+    Ok((port, bodies))
+}
+
+/// The instants the requests asking `first` and `second` were read, waiting up to 30 s.
+async fn read_at(
+    from: &mpsc::Receiver<(std::time::Instant, Value)>,
+    first: &str,
+    second: &str,
+) -> Result<(std::time::Instant, Value, std::time::Instant, Value), Box<dyn Error>> {
+    let mut seen: Vec<(std::time::Instant, Value)> = Vec::new();
+    for _ in 0..600 {
+        seen.extend(from.try_iter());
+        let find = |question: &str| {
+            seen.iter()
+                .find(|(_, body)| body.to_string().contains(question))
+                .cloned()
+        };
+        if let (Some(a), Some(b)) = (find(first), find(second)) {
+            return Ok((a.0, a.1, b.0, b.1));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Err(format!("the pair never arrived: {seen:?}").into())
+}
+
+const LEAD_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
+
+async fn fan_out_pair(
+    status: u16,
+) -> Result<(std::time::Instant, Value, std::time::Instant, Value), Box<dyn Error>> {
+    let scratch = Scratch::new("yi-family-stagger")?;
+    let (port, from) = timed_stand_in("sky, first?", LEAD_DELAY, status)?;
+    let model = route(
+        "anthropic/claude-haiku-4.5",
+        "openai-completions",
+        "openrouter",
+        "http://openrouter.ai.invalid/api/v1",
+    );
+    let (_session, host) = root(&scratch, model, port, false)?;
+    for question in [
+        "Which line names the sky, first?",
+        "Which line names the sky, second?",
+    ] {
+        let (question, kwargs) = reader(question, Some(2));
+        host.spawn(question, kwargs)?;
+    }
+    read_at(&from, "sky, first?", "sky, second?").await
+}
+
+/// A fan-out's second reader sends only once the first one's response has begun, since an
+/// entry is read only after the response writing it begins (design §9.4, D314).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fan_out_follower_sends_after_the_leads_response_begins() -> TestResult {
+    let (lead_at, lead, follow_at, follow) = fan_out_pair(200).await?;
+    let gap = follow_at.duration_since(lead_at);
+    assert!(
+        gap >= LEAD_DELAY,
+        "the follower sent {gap:?} after the lead"
+    );
+    assert_eq!(
+        follow["messages"][1].to_string(),
+        lead["messages"][1].to_string()
+    );
+    Ok(())
+}
+
+/// A lead that fails before it streams releases its follower at once, well inside the bound.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lead_that_fails_before_streaming_releases_its_follower() -> TestResult {
+    let (lead_at, _, follow_at, _) = fan_out_pair(400).await?;
+    let gap = follow_at.duration_since(lead_at);
+    assert!(
+        gap >= LEAD_DELAY,
+        "the follower sent {gap:?} after the lead"
+    );
+    assert!(
+        gap < std::time::Duration::from_secs(8),
+        "the follower waited out the bound: {gap:?}"
+    );
+    Ok(())
+}
