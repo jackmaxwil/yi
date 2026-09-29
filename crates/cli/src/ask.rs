@@ -219,7 +219,7 @@ async fn follow(
     schema: Option<&yi_runtime::schema::Schema>,
     ends: Option<Instant>,
 ) -> i32 {
-    let (mut answer, mut exit) = (String::new(), 0);
+    let (mut answer, mut said, mut exit) = (String::new(), Vec::new(), 0);
     let (mut holding, mut ended) = (false, false);
     let (mut last_stop, mut said_anything) = (None, false);
     loop {
@@ -274,10 +274,7 @@ async fn follow(
             );
             said_anything |= text;
             last_stop = Some((*stop_reason, text));
-            // Incident: a reader's "`lines[0]`" before a read became its answer and voided review rounds.
-            if *stop_reason == StopReason::ToolUse {
-                answer.clear();
-            }
+            said.push(std::mem::take(&mut answer));
         }
         match &event {
             AgentEvent::MessageEnd {
@@ -300,7 +297,7 @@ async fn follow(
             }
             AgentEvent::AgentStart if holding => {
                 holding = false;
-                answer.clear();
+                said.clear();
             }
             AgentEvent::AgentEnd { .. } if held() => holding = true,
             AgentEvent::AgentEnd { .. } => {
@@ -311,7 +308,7 @@ async fn follow(
         }
     }
     if ended && let Some(schema) = schema {
-        exit = emit_structured(schema, &answer, json);
+        exit = emit_structured(schema, &said, json);
     } else if ended && !json {
         println!();
     }
