@@ -112,7 +112,7 @@ fn parent_session(replies: &[&str]) -> Arc<AgentSession> {
 
 /// `first` runs ahead of the text replies: a tool call there holds the parent's turn open.
 fn parent_session_scripted(first: Vec<AgentMessage>, replies: &[&str]) -> AgentSession {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut script = first;
     for reply in replies {
         script.push(faux_assistant_message(
@@ -193,6 +193,7 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
     let receivers: Arc<Mutex<std::collections::HashMap<String, HostRegistry>>> = Arc::default();
     let receiver_sink = Arc::clone(&receivers);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth,
         max_depth,
         max_children: 8,
@@ -209,7 +210,7 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
             if let Some(hook) = hook {
                 hook();
             }
-            let provider = Arc::new(ProviderStream::new(None, None));
+            let provider = Arc::new(ProviderStream::new(None));
             let mut script = Vec::new();
             if let Some(command) = tool_command {
                 let mut args = serde_json::Map::new();
@@ -1207,6 +1208,7 @@ fn asking_family(parent: &Arc<AgentSession>) -> std::io::Result<AskingFamily> {
     let store = support::memory_store("ask-parent");
     let kept = store.clone();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 8,
@@ -1219,7 +1221,7 @@ fn asking_family(parent: &Arc<AgentSession>) -> std::io::Result<AskingFamily> {
             let question = json!({"question": "Which file name?", "options": ["notes.md", "hello.txt"], "default": "hello.txt"});
             let question = question.as_object().cloned().unwrap_or_default();
             let call = yi_ai::faux::faux_tool_call("ask-1", "ask_user", question);
-            let provider = Arc::new(ProviderStream::new(None, None));
+            let provider = Arc::new(ProviderStream::new(None));
             provider.queue_faux(vec![
                 faux_assistant_message(vec![call], StopReason::ToolUse),
                 child_reply("wrote the file the parent named"),
@@ -2044,6 +2046,7 @@ async fn a_service_whose_kernel_dies_respawns_with_its_pending_mail() -> TestRes
     let store = support::memory_store("kernel-death");
     let (events, _keep) = tokio::sync::broadcast::channel(256);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 8,
@@ -2054,7 +2057,7 @@ async fn a_service_whose_kernel_dies_respawns_with_its_pending_mail() -> TestRes
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             let first = counted.fetch_add(1, Ordering::SeqCst) == 0;
-            let provider = Arc::new(ProviderStream::new(None, None));
+            let provider = Arc::new(ProviderStream::new(None));
             let config = SessionConfig {
                 system_prompt: "child sys".to_owned(),
                 model: build.model,

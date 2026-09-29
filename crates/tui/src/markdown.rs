@@ -624,7 +624,7 @@ pub(crate) fn blank_before(source: &str, at: usize) -> bool {
 
 /// Prose tabs take one fixed width: a tab stop depends on where the text began, and a streamed
 /// slice begins elsewhere than the whole message.
-fn inline_tabs(text: &str) -> String {
+pub(crate) fn inline_tabs(text: &str) -> String {
     text.replace('\t', &" ".repeat(TAB_STOP))
 }
 

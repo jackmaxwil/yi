@@ -35,7 +35,7 @@ use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::model::{Model, ModelCost};
 use yi_types::plan::doc::{
     AgentId, BlockedOn, Delegation, GoalText, PlanId, ProbeCommand, Todo, TodoAddr, TodoLabel,
-    TodoState,
+    TodoState, TodoStateName,
 };
 use yi_types::schedule::{CronSchedule, Job, JobSource, JobStatus, Overlap, ScheduleKind};
 use yi_types::url::Url;
@@ -69,7 +69,7 @@ fn faux_model() -> Model {
 
 /// A session the way `attach_runtime` leaves one for the timer: a ledger and a todo list.
 fn session(replies: &[&str]) -> Result<(AgentSession, Arc<TodoStore>), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(
         replies
             .iter()
@@ -855,6 +855,68 @@ fn a_substring_filter_unblocks_on_the_message_containing_it_only() -> TestResult
         !waiting(),
         "the message containing the substring left the fix blocked"
     );
+    Ok(())
+}
+
+/// Dies with the wait unblocking its row by label: on a list an older binary wrote with `a`
+/// twice, the wait on `t2` unblocks `t1`, which skips the user's question, or, with `t1`
+/// dropped, fails every tick and leaves `t2` blocked.
+#[test]
+fn a_wait_on_one_of_two_rows_with_a_label_unblocks_that_row() -> TestResult {
+    for (case, first) in [
+        (
+            "asked",
+            serde_json::json!({"op": "block", "id": "t1", "on": "user", "note": "which file?"}),
+        ),
+        (
+            "dropped",
+            serde_json::json!({"op": "drop", "id": "t1", "reason": "out of scope"}),
+        ),
+    ] {
+        let dir = Scratch::new(&format!("yi-channel-twin-{case}"))?;
+        let (_session, todos) = session(&[])?;
+        let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
+        let service = Arc::new(
+            HeartbeatService::new(Arc::clone(&store), dir.to_string_lossy())
+                .with_channels(dir.join("channels")),
+        );
+        service.bind_session("test".to_owned());
+        let channel = Channel::at(dir.join("channels/ci.jsonl"));
+        channel.open("channel://ci", None)?;
+        let tool = TodoTool::new(Arc::clone(&todos));
+        let context = ToolContext::new(dir.to_path_buf());
+        for args in [
+            serde_json::json!({"op": "append", "items": ["a", "b"]}),
+            first,
+            serde_json::json!({"op": "block", "id": "t2", "on": "channel://ci", "note": "CI"}),
+        ] {
+            let output = tool.execute(args.as_object().cloned().unwrap_or_default(), &context);
+            assert!(!output.is_error, "{case}: {output:?}");
+        }
+        // The list an older binary wrote: `t2` carries `t1`'s label.
+        let a = TodoLabel::new("a")?;
+        let mut twins = todos.list();
+        twins.for_each_mut(|item| item.label = a.clone());
+        todos.replace_with(|_| Some(twins), "engine");
+        service.watch(&todos.list());
+        let job = waiting_on(&store, &a)
+            .into_iter()
+            .next()
+            .ok_or("the block armed no wait")?;
+        channel.append("run-1", 1, serde_json::json!({"ok": true}))?;
+        let fired = clock::fire(&todos, &job, &Firing::at(0));
+        let states: Vec<String> = todos
+            .list()
+            .items()
+            .map(|item| format!("{:?}", TodoStateName::of(&item.state)))
+            .collect();
+        let was = if case == "asked" {
+            "Blocked"
+        } else {
+            "Abandoned"
+        };
+        assert_eq!(states, [was, "Running"], "{case}: {fired:?}");
+    }
     Ok(())
 }
 

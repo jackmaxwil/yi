@@ -35,14 +35,6 @@ fn files_matched(name: &str, result: &yi_types::event::ToolResult) -> u32 {
     }
 }
 
-fn exit_of(result: &yi_types::event::ToolResult) -> Option<i32> {
-    result
-        .details
-        .get("exitCode")
-        .and_then(Value::as_i64)
-        .and_then(|code| i32::try_from(code).ok())
-}
-
 fn result_text(result: &yi_types::event::ToolResult) -> String {
     result
         .content
@@ -309,7 +301,8 @@ impl AgentTool for ToolAdapter {
                     is_error: true,
                 };
             }
-            if let Some(denial) = wall.check(tool.name(), tool.kind(), &args, &context.cwd) {
+            if let Some(denial) = wall.check(tool.name(), tool.kind_for(&args), &args, &context.cwd)
+            {
                 return ToolOutcome {
                     result: yi_loop::tool::error_tool_result_kind(
                         &denial,
@@ -399,14 +392,10 @@ impl AgentTool for ToolAdapter {
                     let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());
                     // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
                     if let Some(broker) = &contained
-                        && yi_tools::denial_hint(
-                            exit_of(&output.result),
-                            &result_text(&output.result),
-                            &command,
-                        )
-                        .is_some()
+                        && let Some(refusal) = (output.result.details.get("sandboxRefusal"))
+                            .and_then(yi_tools::SandboxRefusal::from_json)
                     {
-                        broker.note_containment_failure(&command);
+                        broker.note_containment_failure(refusal);
                     }
                     let holds = facts_of(&name, &command, &output);
                     let facts = crate::affordance::Facts {

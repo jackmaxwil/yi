@@ -851,18 +851,14 @@ impl Tool for HashlineEditTool {
     }
 
     /// [`Patcher::prepare`] validates and materializes the new text without touching disk.
-    /// The clipboard fork is dropped, so previewing a denied patch leaves no register.
+    /// It runs on a clone of the store, so a refusal's reveal is recorded only by an execute.
     fn preview(&self, input: &Map<String, Value>, cwd: &Path) -> Option<String> {
         let patch_text = input.get("patch").and_then(Value::as_str)?;
         let patch = Patch::parse(patch_text, Some(cwd)).ok()?;
-        let mut state = lock_state(&self.state);
-        let HashlineState {
-            snapshots,
-            clipboard,
-            ..
-        } = &mut *state;
-        let mut scratch = super::clipboard::fork_clipboard(clipboard);
-        let mut patcher = Patcher::new(snapshots, cwd.to_owned());
+        let state = lock_state(&self.state);
+        let mut snapshots = state.snapshots.clone();
+        let mut scratch = super::clipboard::fork_clipboard(&state.clipboard);
+        let mut patcher = Patcher::new(&mut snapshots, cwd.to_owned());
         let mut out = String::new();
         for section in &patch.sections {
             let Ok(prepared) = patcher.prepare(section, &mut scratch) else {

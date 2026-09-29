@@ -62,7 +62,7 @@ fn service(
 
 /// A directory this process can write that no root of `sandbox` covers: HOME, or the shared
 /// user directory when a run put HOME under tmp, which the sandbox grants whole.
-fn uncovered(sandbox: &Sandbox, home: &std::path::Path) -> Option<PathBuf> {
+pub(crate) fn uncovered(sandbox: &Sandbox, home: &std::path::Path) -> Option<PathBuf> {
     let resolve =
         |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let roots: Vec<PathBuf> = sandbox.writable.iter().map(|root| resolve(root)).collect();
@@ -182,8 +182,9 @@ fn root_session(
     rlm_dir: &std::path::Path,
     sessions_dir: Option<PathBuf>,
     broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
+    mcp_read: Option<Arc<dyn yi_runtime::fetch::McpResourceRead>>,
 ) -> yi_runtime::AgentSession {
-    let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+    let provider = Arc::new(yi_runtime::ProviderStream::new(None));
     let mut session = yi_runtime::AgentSession::new(
         yi_runtime::SessionConfig {
             system_prompt: String::new(),
@@ -218,7 +219,7 @@ fn root_session(
             auto_background: None,
             deadline: None,
             kernel_prewarm: false,
-            mcp_read: None,
+            mcp_read,
             sessions_dir,
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
@@ -245,6 +246,7 @@ async fn a_root_kernel_cannot_write_another_sessions_state() -> TestResult {
         &home,
         &root.join("rlm"),
         Some(corpus.clone()),
+        None,
         None,
     );
     let kernel = session
@@ -290,7 +292,7 @@ async fn a_global_harness_save_asks_the_permission_broker() -> TestResult {
         Some(asker),
         tokio::sync::broadcast::channel(8).0,
     ));
-    let session = root_session(&project, &home, &root.join("rlm"), None, Some(broker));
+    let session = root_session(&project, &home, &root.join("rlm"), None, Some(broker), None);
     let kernel = session
         .kernel_service()
         .ok_or("the wiring installs a kernel")?;
@@ -343,7 +345,7 @@ async fn the_kernels_bash_is_contained_like_the_kernel() -> TestResult {
         return Ok(());
     }
     let (root, project, home, _session) = workspace("bash")?;
-    let session = root_session(&project, &home, &root.join("rlm"), None, None);
+    let session = root_session(&project, &home, &root.join("rlm"), None, None, None);
     let kernel = session
         .kernel_service()
         .ok_or("the wiring installs a kernel")?;
@@ -401,6 +403,118 @@ async fn a_contained_kernel_can_write_its_family_board() -> TestResult {
         written,
         "the board refused the put: {} {:?}",
         put.result.stderr, put.result.error
+    );
+    Ok(())
+}
+
+/// Incident (#584): `~/.yi/mcp` was a kernel writable root, and the host ran whatever
+/// `sessions.json` named on a `fetch("mcp://…")`, a read Auto mode never asks about. The store
+/// is host-only now (D296), and the token files under it are hidden from a cell.
+#[tokio::test]
+async fn a_root_kernel_cannot_plant_an_mcp_session_or_read_its_tokens() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, home, _session) = workspace("mcp")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, Some(&root.join("rlm")));
+    // Under a tmp HOME the store sits in a granted root and the test would prove nothing.
+    if uncovered(&sandbox, &home).as_deref() != Some(home.as_path()) {
+        return Ok(());
+    }
+    let mcp = home.join(".yi").join("mcp");
+    let store = mcp.join("sessions.json");
+    let token = mcp
+        .join("tokens")
+        .join(format!("yi-584-{}.json", std::process::id()));
+    std::fs::create_dir_all(mcp.join("tokens"))?;
+    std::fs::write(&token, r#"{"accessToken":"yi-584-secret"}"#)?;
+    let before = std::fs::read_to_string(&store).ok();
+    let session = root_session(&project, &home, &root.join("rlm"), None, None, None);
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let code = format!(
+        "for path in (r'{store}', r'{token}'):\n    try:\n        open(path, 'a').write('')\n        print('wrote', path)\n    except OSError as e:\n        print('write', e.errno)\ntry:\n    print('read', open(r'{token}').read())\nexcept OSError as e:\n    print('read', e.errno)\nprint(await bash(\"echo x >> '{store}'\"))",
+        store = store.display(),
+        token = token.display(),
+    );
+    let ran = cell(&kernel, code).await;
+    kernel.dispose().await;
+    let after = std::fs::read_to_string(&store).ok();
+    let _ = std::fs::remove_file(&token);
+    let _ = std::fs::remove_dir(mcp.join("tokens"));
+    if before.is_none() {
+        let _ = std::fs::remove_file(&store);
+    }
+    let stdout = ran?.result.stdout;
+    assert!(
+        stdout.matches("write 1\n").count() == 2 && stdout.contains("read 1\n"),
+        "a cell must get EPERM on the store and on a token file: {stdout}"
+    );
+    assert_eq!(after, before, "the store must be untouched: {stdout}");
+    Ok(())
+}
+
+struct RecordingMcp(Arc<std::sync::Mutex<Vec<(PathBuf, String, String)>>>);
+
+impl yi_runtime::fetch::McpResourceRead for RecordingMcp {
+    fn read(&self, _server: &str, _resource: &str) -> Result<String, String> {
+        Err("no read in this test".to_owned())
+    }
+
+    fn connect_server(
+        &self,
+        config: &std::path::Path,
+        entry: &str,
+        session: &str,
+    ) -> Result<String, String> {
+        self.0.lock().map_err(|error| error.to_string())?.push((
+            config.to_path_buf(),
+            entry.to_owned(),
+            session.to_owned(),
+        ));
+        Ok(
+            r#"{"session":"@krnl-fixture","state":"live","server":{"tools":[{"name":"echo"}]}}"#
+                .to_owned(),
+        )
+    }
+}
+
+/// Incident (#584): a kernel-side `connect` ran `yi mcp connect` inside the sandbox and wrote
+/// the session store from there. It now asks the host, which resolves the name in
+/// `~/.yi/mcp.json` alone: a path, a URL or a workspace file a cell could have written is refused.
+#[tokio::test]
+async fn a_kernel_connect_runs_on_the_host_from_the_home_config() -> TestResult {
+    let (root, project, home, _session) = workspace("connect")?;
+    let config = home.join(".yi").join("mcp.json");
+    let created = !config.is_file();
+    if created {
+        std::fs::create_dir_all(home.join(".yi"))?;
+        std::fs::write(&config, "{}")?;
+    }
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let host: Arc<dyn yi_runtime::fetch::McpResourceRead> =
+        Arc::new(RecordingMcp(Arc::clone(&calls)));
+    let session = root_session(&project, &home, &root.join("rlm"), None, None, Some(host));
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let code = "import rlm.mcp as mcp\nprint(await mcp.list_tools('fixture'))\nfor bad in ('../evil.json', 'a:b', '/tmp/x.json'):\n    try:\n        await mcp.list_tools(bad)\n    except Exception as e:\n        print('refused:', bad)";
+    let ran = cell(&kernel, code.to_owned()).await;
+    kernel.dispose().await;
+    if created {
+        let _ = std::fs::remove_file(&config);
+    }
+    let stdout = ran?.result.stdout;
+    let seen = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
+    assert_eq!(
+        seen,
+        vec![(config, "fixture".to_owned(), "krnl-fixture".to_owned())],
+        "the host connects the named entry once: {stdout}"
+    );
+    assert!(
+        stdout.contains("[{'name': 'echo'}]") && stdout.matches("refused:").count() == 3,
+        "tools come back and every non-name is refused: {stdout}"
     );
     Ok(())
 }

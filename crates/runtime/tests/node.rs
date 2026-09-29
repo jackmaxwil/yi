@@ -525,6 +525,7 @@ fn demo_family(root: &Path, repo: &Path, home: &Path, cell: String) -> Demo {
     let (events, _keep) = tokio::sync::broadcast::channel(256);
     let host = Arc::new(yi_runtime::SubagentHost::new(
         yi_runtime::SubagentHostOptions {
+            provider: Arc::new(yi_runtime::ProviderStream::new(None)),
             depth: 0,
             max_depth: 1,
             max_children: 8,
@@ -550,7 +551,7 @@ fn demo_family(root: &Path, repo: &Path, home: &Path, cell: String) -> Demo {
                         StopReason::ToolUse,
                     )
                 };
-                let provider = Arc::new(yi_runtime::ProviderStream::new(None, None));
+                let provider = Arc::new(yi_runtime::ProviderStream::new(None));
                 provider.queue_faux(vec![
                     call("c1", "ipython", "code", &cell),
                     call("c2", "bash", "command", "uname -s > placed.txt"),

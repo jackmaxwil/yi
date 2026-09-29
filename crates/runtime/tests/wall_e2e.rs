@@ -50,7 +50,7 @@ async fn run_walled_tool(
     args: serde_json::Map<String, serde_json::Value>,
     cwd: &std::path::Path,
 ) -> Result<(String, bool), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         faux_assistant_message(
             vec![faux_tool_call("call-1", tool, args)],
@@ -279,5 +279,34 @@ fn a_spawn_declares_url_denies_and_the_child_wall_carries_them() -> TestResult {
         Wall::from_kwargs(&not_a_list, &root).is_err(),
         "a deny that is not a list is refused, not silently ignored"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_grep_rewrite_is_a_write_the_wall_refuses() -> TestResult {
+    let root = Scratch::new("yi-wall-grep")?;
+    let file = root.join("lib.rs");
+    std::fs::write(&file, "fn unsafe_thing() {}\n")?;
+    let wall = Wall {
+        deny_write: vec![root.to_path_buf()],
+        deny_read: Vec::new(),
+        deny_url: Vec::new(),
+        container: None,
+    };
+    for path in [None, Some("lib.rs")] {
+        let mut args = serde_json::Map::new();
+        args.insert("pattern".to_owned(), serde_json::json!("unsafe_thing"));
+        args.insert("replace".to_owned(), serde_json::json!("safe_thing"));
+        args.insert("apply".to_owned(), serde_json::json!(true));
+        if let Some(path) = path {
+            args.insert("path".to_owned(), serde_json::json!(path));
+        }
+        let (denial, is_error) = run_walled_tool(wall.clone(), "grep", args, &root).await?;
+        assert!(
+            is_error && denial.contains("deny_write"),
+            "{path:?}: {denial}"
+        );
+        assert_eq!(std::fs::read_to_string(&file)?, "fn unsafe_thing() {}\n");
+    }
     Ok(())
 }
