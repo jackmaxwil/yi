@@ -267,10 +267,12 @@ impl PlanStore {
                 } else {
                     "\n"
                 };
-                std::fs::write(&ignore, format!("{text}{sep}{LEASE_NAME}\n"))
+                yi_session::replace_file(&ignore, format!("{text}{sep}{LEASE_NAME}\n").as_bytes())
                     .map_err(io_at(&ignore))?;
             }
-            Err(_) => std::fs::write(&ignore, GITIGNORE).map_err(io_at(&ignore))?,
+            Err(_) => {
+                yi_session::replace_file(&ignore, GITIGNORE.as_bytes()).map_err(io_at(&ignore))?
+            }
         }
         let Some(parent) = self.dir.parent() else {
             return Ok(());
@@ -1004,6 +1006,27 @@ mod tests {
             std::fs::read_to_string(temp.dir.join(".gitignore"))?,
             "*/ops.jsonl\n.lock\n"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn stores_opening_at_once_keep_every_ignore_line() -> Fallible {
+        for trial in 0..20u32 {
+            let temp = TempStore::new(&format!("ignore-race-{trial}"))?;
+            std::fs::write(temp.dir.join(".gitignore"), "*/ops.jsonl\n")?;
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    scope.spawn(|| {
+                        PlanStore::open(temp.dir.to_path_buf()).map(|store| store.lease())
+                    });
+                }
+            });
+            let text = std::fs::read_to_string(temp.dir.join(".gitignore"))?;
+            assert!(
+                text.lines().any(|line| line == "*/ops.jsonl"),
+                "trial {trial}: {text:?}"
+            );
+        }
         Ok(())
     }
 
