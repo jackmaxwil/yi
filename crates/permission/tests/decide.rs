@@ -906,6 +906,8 @@ fn a_wrapped_destructive_command_is_denied_in_every_mode() -> TestResult {
         format!("env GIT_DIR=x rm -rf {}", common.display()),
         format!("ionice -c 3 nice rm -rf {}", common.display()),
         format!("/usr/bin/time rm -rf {}", common.display()),
+        format!("nohup rm -rf {}", common.display()),
+        format!("command rm -rf {}", common.display()),
     ] {
         let call = bash_call(&command, "canonical");
         for mode in [
