@@ -14,6 +14,7 @@ use crate::session::AgentSession;
 
 mod build;
 pub mod models;
+pub mod reader;
 mod record;
 mod runs;
 pub(crate) mod service;
@@ -81,7 +82,7 @@ pub(crate) struct Children {
     records: HashMap<String, ChildRecord>,
     pub(crate) epoch: u64,
     /// Children being built outside the lock; each holds a slot, its name and its tokens.
-    building: Vec<(String, u64)>,
+    building: Vec<(String, u64, bool)>,
     /// Removed names at their reap's epoch: a cursor from before the reap reads them as moved.
     removed: std::collections::VecDeque<(String, u64)>,
     forgotten: u64,
@@ -98,13 +99,13 @@ impl Children {
             .records
             .values()
             .filter_map(|record| record.lease.tokens);
-        held.chain(self.building.iter().map(|(_, tokens)| *tokens))
+        held.chain(self.building.iter().map(|(_, tokens, _)| *tokens))
             .fold(0, u64::saturating_add)
     }
 
     /// A build whose record is listed: its reservation is the record's from here on.
     pub(crate) fn release_build(&mut self, name: &str) {
-        self.building.retain(|(held, _)| held != name);
+        self.building.retain(|(held, _, _)| held != name);
     }
 
     pub(crate) fn touch(&mut self, key: &str, cause: crate::family::Cause) -> u64 {
@@ -169,6 +170,7 @@ pub struct ChildBuild<'a> {
     /// The child's lease: its own clock and the tokens its own children may draw on.
     pub deadline: Option<std::time::Duration>,
     pub tokens: Option<u64>,
+    pub reader: Option<reader::Reader>,
 }
 
 pub type ChildFactory = dyn Fn(ChildBuild<'_>) -> Result<AgentSession, String> + Send + Sync;
@@ -183,6 +185,7 @@ pub struct SubagentHostOptions {
     pub parent_session_dir: PathBuf,
     pub defaults: Arc<dyn Fn() -> (Model, Effort) + Send + Sync>,
     pub factory: Arc<ChildFactory>,
+    pub provider: Arc<crate::provider::ProviderStream>,
     /// A host status notice, delivered as a user-role message.
     pub notice: Arc<NoticeFn>,
     /// The parent's bus: a child's status updates ride it, never the child's own.
@@ -228,6 +231,8 @@ pub struct SubagentHost {
     pub(crate) stuck: Mutex<std::collections::HashSet<String>>,
     /// The board a long reply is kept on: the wiring's, set once after construction (D242).
     pub(crate) family: std::sync::OnceLock<PathBuf>,
+    pub(crate) resolver: std::sync::OnceLock<Arc<crate::fetch::Resolver>>,
+    pub(crate) partitions: Mutex<HashMap<String, std::time::Instant>>,
 }
 
 impl SubagentHost {
@@ -415,6 +420,11 @@ fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
                     | "deadline_s"
                     | "tokens"
                     | "parent_close"
+                    | "role"
+                    | "partition"
+                    | "tools"
+                    | "turns"
+                    | "schema"
             )
         })
         .collect();
@@ -504,10 +514,16 @@ impl SubagentHost {
             told: Mutex::new(None),
             stuck: Mutex::default(),
             family: std::sync::OnceLock::new(),
+            resolver: std::sync::OnceLock::new(),
+            partitions: Mutex::default(),
         }
     }
 
     /// The lane split, shared with the plan engine so verification and workers count one pool.
+    pub fn set_resolver(&self, resolver: Arc<crate::fetch::Resolver>) {
+        let _first_wins = self.resolver.set(resolver);
+    }
+
     pub fn capacity(&self) -> Arc<crate::plan::capacity::Capacity> {
         Arc::clone(&self.capacity)
     }
@@ -648,6 +664,18 @@ impl SubagentHost {
             crate::levers::get().family_cap,
         );
         require_kwargs(&kwargs)?;
+        let mut kwargs = kwargs;
+        if matches!(standing, Standing::Worker) && !kwargs.contains_key("role") {
+            kwargs.insert("role".to_owned(), Value::from("reader"));
+        }
+        let reader = reader::parse(&kwargs)?;
+        let standing = match (&reader, standing) {
+            (Some(_), Standing::Worker) => Standing::Reader,
+            (_, standing) => standing,
+        };
+        if reader.is_some() {
+            reader::walls_writes(&mut kwargs);
+        }
         let requested_name = optional_string(&kwargs, "name")?;
         let fork = parse_fork(&kwargs)?;
         let isolation = parse_isolation(&kwargs)?;
@@ -656,6 +684,11 @@ impl SubagentHost {
         let ask = crate::lease::Ask::from_kwargs(&kwargs)?;
         let overrides =
             optional_string(&kwargs, "model")?.or(optional_string(&kwargs, "thinking")?);
+        if reader.is_some() && (fork != Fork::None || isolation != Isolation::None) {
+            return Err(reader::full_child(
+                "a reader gets a partition, not a fork, and writes nothing to isolate",
+            ));
+        }
         if fork == Fork::All && overrides.is_some() {
             return Err(
                 "fork=all inherits the parent's model and thinking; drop the override".to_owned(),
@@ -673,12 +706,13 @@ impl SubagentHost {
             ));
         }
         let mut cast = self.cast(&kwargs)?;
+        let (seed, prompt) = reader::brief(self, &kwargs, prompt, &mut cast)?;
         let model = cast.0.clone();
         let (session_dir, child_id) = self.create_child_dir(&self.options.parent_session_dir)?;
         let session_name =
             requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
-        let capped = matches!(standing, Standing::Worker);
-        let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask, capped)?;
+        let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask, &standing)?;
+        reader::share(self, seed.as_ref(), &mut cast);
         if let Isolation::Container(image) = &isolation {
             crate::node::placeable(&self.options.home, image)?;
         }
@@ -699,6 +733,7 @@ impl SubagentHost {
         };
         cast.2.container = container.as_ref().map(|held| held.name().to_owned());
         let child = self.build(cast, &session_name, &session_dir, cwd, &lease, None)?;
+        reader::seed(&child, seed);
         if fork != Fork::None {
             let seed = seed_for_fork(
                 &(self.options.parent_messages)(),
@@ -1079,7 +1114,9 @@ impl SubagentHost {
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let prompt = prompt.ok_or("rlm.run requires a prompt")?;
-                host.spawn(prompt, kwargs)
+                tokio::task::spawn_blocking(move || host.spawn(prompt, kwargs))
+                    .await
+                    .map_err(|error| format!("rlm.run task failed: {error}"))?
             })
         });
         let host = Arc::clone(self);
@@ -1125,18 +1162,15 @@ impl SubagentHost {
                 })
             });
         }
+        let host = Arc::clone(self);
         registry.register("rlm.find_models", move |payload| {
-            let query = payload
-                .get("query")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
+            let query = payload.get("query").and_then(Value::as_str);
             let limit = payload
                 .get("limit")
                 .and_then(Value::as_u64)
                 .map(|limit| usize::try_from(limit).unwrap_or(8))
                 .unwrap_or(8);
-            let reply = Self::find_models(&query, limit);
+            let reply = host.find_models(query.unwrap_or_default(), limit);
             Box::pin(async move { Ok(reply) })
         });
         let defaults = Arc::clone(&self.options.defaults);

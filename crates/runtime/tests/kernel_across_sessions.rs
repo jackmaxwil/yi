@@ -67,7 +67,7 @@ async fn wait_for_status(host: &Arc<SubagentHost>, name: &str, status: &str) -> 
 #[tokio::test]
 async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
     let root = Scratch::new("yi-kernel-across")?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut code = Map::new();
     code.insert("code".to_owned(), Value::String("answer = 42".to_owned()));
     provider.queue_faux(vec![
@@ -123,6 +123,7 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
 
     let mut kwargs = Map::new();
     kwargs.insert("name".to_owned(), Value::String("helper".to_owned()));
+    kwargs.insert("role".to_owned(), Value::String("root".to_owned()));
     host.spawn("bind the answer".to_owned(), kwargs)?;
     assert!(
         wait_for_status(&host, "helper", "completed").await,
@@ -156,7 +157,7 @@ fn root_session(
     rlm: &str,
     family: &str,
 ) -> Result<(AgentSession, Arc<yi_runtime::KernelService>), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),

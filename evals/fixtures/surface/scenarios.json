@@ -77,7 +77,7 @@
     {
       "id": "mbx-ask",
       "road": "child asks its parent, parent answers, child finishes",
-      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn exactly one child with rlm.run(brief, name='asker') where brief is: 'You need a file name from your parent before you can work. Ask your parent which file name to use and wait for the answer. Then create that file in the current directory containing the single word hello, and reply with the file name you used.' When the child asks you, answer with the file name greeting.txt. Then collect the child's final answer and tell me: the question it asked, how the question reached you, and the child's final answer. Finally check that greeting.txt exists.",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn exactly one child with rlm.run(brief, name='asker', role='root') where brief is: 'You need a file name from your parent before you can work. Ask your parent which file name to use and wait for the answer. Then create that file in the current directory containing the single word hello, and reply with the file name you used.' When the child asks you, answer with the file name greeting.txt. Then collect the child's final answer and tell me: the question it asked, how the question reached you, and the child's final answer. Finally check that greeting.txt exists.",
       "timeoutSec": 420,
       "seed": {},
       "clean": {"files": ["greeting.txt"], "noRefusalsFrom": ["ipython"]}
@@ -85,7 +85,7 @@
     {
       "id": "mbx-steer",
       "road": "plain send vs followup send to a child busy in its first bash call",
-      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn one child with rlm.run(brief, name='counter') where brief is: 'Run the bash command `sleep 15` three separate times, one call per turn. Then reply with the word DONE, and obey every instruction your parent sent you while you worked.' In the same cell, first poll await rlm.status('counter') every second until its entry shows tools of at least 1, so the child is inside its first bash call; only then call rlm.send('counter', 'Include the word BANANA in your final answer.') and print its receipt, then call rlm.send('counter', 'Include the word CHERRY in your final answer.', followup=True) and print that receipt. Then wait for the child's result and report both receipts and whether BANANA and CHERRY appear in its final answer.",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn one child with rlm.run(brief, name='counter', role='root') where brief is: 'Run the bash command `sleep 15` three separate times, one call per turn. Then reply with the word DONE, and obey every instruction your parent sent you while you worked.' In the same cell, first poll await rlm.status('counter') every second until its entry shows tools of at least 1, so the child is inside its first bash call; only then call rlm.send('counter', 'Include the word BANANA in your final answer.') and print its receipt, then call rlm.send('counter', 'Include the word CHERRY in your final answer.', followup=True) and print that receipt. Then wait for the child's result and report both receipts and whether BANANA and CHERRY appear in its final answer.",
       "timeoutSec": 420,
       "seed": {},
       "clean": {"files": [], "noRefusalsFrom": ["ipython"]}
@@ -93,7 +93,7 @@
     {
       "id": "mbx-siblings",
       "road": "one sibling mails another directly",
-      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn two children in one cell. First rlm.run(brief_b, name='beta') with brief_b: 'A sibling named alpha will send you a number. Wait until you have received it, then answer with that number plus one, and nothing else.' Then rlm.run(brief_a, name='alpha') with brief_a: 'Compute 17*23. Send the result to your sibling beta with rlm.send(\"beta\", str(n)). Then answer with the number.' Wait for both, then report each child's final answer and whether beta answered 392.",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn two children in one cell. First rlm.run(brief_b, name='beta', role='root') with brief_b: 'A sibling named alpha will send you a number. Wait until you have received it, then answer with that number plus one, and nothing else.' Then rlm.run(brief_a, name='alpha', role='root') with brief_a: 'Compute 17*23. Send the result to your sibling beta with rlm.send(\"beta\", str(n)). Then answer with the number.' Wait for both, then report each child's final answer and whether beta answered 392.",
       "timeoutSec": 420,
       "seed": {},
       "clean": {"files": [], "noRefusalsFrom": ["ipython"]}
@@ -117,7 +117,7 @@
     {
       "id": "mbx-discovery",
       "road": "a protocol child reports a discovery",
-      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn a child with rlm.run(brief, name='auditor', check='test -f notes.txt') where brief is: 'Create notes.txt containing ok. Your final answer must be exactly this JSON object and nothing else: {\"value\": \"created\", \"discoveries\": [{\"text\": \"the repository has no README\", \"fingerprint\": \"no-readme\"}]}'. Collect the result with h.result(timeout=300) and print it whole. Report what discoveries reached you and through which channel.",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn a child with rlm.run(brief, name='auditor', check='test -f notes.txt', role='root') where brief is: 'Create notes.txt containing ok. Your final answer must be exactly this JSON object and nothing else: {\"value\": \"created\", \"discoveries\": [{\"text\": \"the repository has no README\", \"fingerprint\": \"no-readme\"}]}'. Collect the result with h.result(timeout=300) and print it whole. Report what discoveries reached you and through which channel.",
       "timeoutSec": 360,
       "seed": {},
       "clean": {"files": ["notes.txt"], "noRefusalsFrom": ["ipython"]}
@@ -125,7 +125,7 @@
     {
       "id": "mbx-detach",
       "road": "parent ends its turn while a child runs",
-      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn one child with rlm.run(brief, name='slow') where brief is: 'Run the bash command sleep 30, then create done.txt containing yes, then answer DONE.' Do not wait for it in the cell: end your turn right away, saying the child is started and that its completion notice will come to you. When the notice arrives, confirm done.txt exists.",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn one child with rlm.run(brief, name='slow', role='root') where brief is: 'Run the bash command sleep 30, then create done.txt containing yes, then answer DONE.' Do not wait for it in the cell: end your turn right away, saying the child is started and that its completion notice will come to you. When the notice arrives, confirm done.txt exists.",
       "timeoutSec": 240,
       "seed": {},
       "clean": {"files": ["done.txt"], "noRefusalsFrom": ["ipython"]}
@@ -133,7 +133,7 @@
     {
       "id": "mbx-request",
       "road": "child asks its parent through rlm.request",
-      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn exactly one child with rlm.run(brief, name='asker') where brief is: 'You need a file name from your parent before you can work. In the ipython tool run: r = await rlm.request(\"parent\", \"Which file name should I use?\", timeout=240) and use r[\"reply\"] as the file name. Then create that file in the current directory containing the single word hello, and reply with the file name you used.' When the child's question reaches you, answer it with the file name greeting.txt, using the reply call the message names. Then collect the child's final answer and tell me the question, how it reached you, and the final answer. Check that greeting.txt exists.",
+      "prompt": "Use the ipython tool and the rlm module for this, not bash. Spawn exactly one child with rlm.run(brief, name='asker', role='root') where brief is: 'You need a file name from your parent before you can work. In the ipython tool run: r = await rlm.request(\"parent\", \"Which file name should I use?\", timeout=240) and use r[\"reply\"] as the file name. Then create that file in the current directory containing the single word hello, and reply with the file name you used.' When the child's question reaches you, answer it with the file name greeting.txt, using the reply call the message names. Then collect the child's final answer and tell me the question, how it reached you, and the final answer. Check that greeting.txt exists.",
       "timeoutSec": 360,
       "seed": {},
       "clean": {"files": ["greeting.txt"], "noRefusalsFrom": ["ipython"]}

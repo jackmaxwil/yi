@@ -77,6 +77,12 @@ pub struct App {
     next_request: u64,
     next_list_poll: Instant,
     pub dirty: bool,
+    /// Incident: a W1→W2→W1 flip inside one frame left ratatui's size unchanged, so it drew
+    /// no clear over a screen the terminal had reflowed; every resize event now asks for one.
+    pub pending_clear: bool,
+    /// (payload length, rect) of the placed notebook image; unchanged frames skip the
+    /// retransmit, and a drawn clear empties it, since the clear took the image with it.
+    pub notebook_image: Option<(usize, ratatui::layout::Rect)>,
     animations: Vec<Anim>,
     pub animate: bool,
     pub cmd_hints: bool,
@@ -88,7 +94,7 @@ pub struct App {
     pub osc_out: Vec<String>,
     pub hits: Option<crate::render::Hits>,
     /// The live drag over the frame, and the text the last draw read under it.
-    pub selection: Option<crate::select::Selection>,
+    pub selection: Option<crate::select::Drag>,
     pub selected: String,
     pub flash: Option<(String, Instant)>,
     pub avatars: crate::avatar::Avatars,
@@ -138,6 +144,8 @@ impl App {
             next_request: 0,
             next_list_poll: Instant::now() + LIST_POLL,
             dirty: true,
+            pending_clear: false,
+            notebook_image: None,
             animations: Vec::new(),
             cmd_hints: false,
             autostart: false,
@@ -253,6 +261,7 @@ impl App {
             self.send_request(outbound, RequestKind::ListDaemon, "session/list", json!({}));
         }
         self.tick_animations(now);
+        self.scroll_drag();
         if self
             .flash
             .as_ref()
@@ -1009,6 +1018,7 @@ impl App {
                     }
                 }
                 self.avatars.forget();
+                self.pending_clear = true;
                 self.dirty = true;
             }
             CtEvent::Mouse(mouse) => {
@@ -1168,6 +1178,7 @@ mod notebook;
 pub mod port;
 mod review;
 
+pub(crate) use chat::orb_ids;
 pub use mouse::MouseKind;
 pub use navigator::PaletteEntry;
 use notebook::apply_notebook;

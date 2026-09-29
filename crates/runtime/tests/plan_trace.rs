@@ -58,7 +58,7 @@ fn tool_text(store: &yi_session::SharedSession, call: &str) -> Result<String, Bo
 #[tokio::test]
 async fn a_plan_that_misses_a_message_and_invents_a_todo_is_flagged_both_ways() -> TestResult {
     let root = Scratch::new("yi-plan-trace")?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let init = json!({"op": "init", "goal": "ship the parser", "todos": [
         {"label": "keep the guardrails green", "intent": ["user://1"]},
         {"label": "wire the parser"},
@@ -239,7 +239,7 @@ fn call(id: &str, args: serde_json::Value) -> AgentMessage {
 #[tokio::test]
 async fn a_todo_asking_three_options_takes_the_users_pick_by_number() -> TestResult {
     let root = Scratch::new("yi-plan-ask")?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let option = |id: &str, label: &str| json!({"id": id, "label": label, "preview": format!("hero: {label}")});
     let asked = |options: Vec<serde_json::Value>| {
         json!({"op": "block", "label": "hero style", "on": {"user": null},
@@ -329,7 +329,7 @@ impl Asking {
     /// A wired session whose plan's "hero style" waits on three options, asked on `first`.
     async fn new(first: AgentMessage) -> Result<Self, Box<dyn Error>> {
         let root = Scratch::new("yi-plan-pick")?;
-        let provider = Arc::new(ProviderStream::new(None, None));
+        let provider = Arc::new(ProviderStream::new(None));
         let init =
             json!({"op": "init", "goal": "land the page", "todos": [{"label": "hero style"}]});
         provider.queue_faux(vec![

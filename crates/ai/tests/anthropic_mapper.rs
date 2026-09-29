@@ -39,6 +39,10 @@ fn context() -> LlmContext {
             UserContent::Text("hi".to_owned()),
             0,
         )],
+        transient: Vec::new(),
+        schema: None,
+        shared_through: None,
+        reuse: yi_types::model::Reuse::Loop,
         tools: Some(vec![ToolDef {
             name: "bash".to_owned(),
             description: "run".to_owned(),
@@ -51,11 +55,7 @@ fn context() -> LlmContext {
 
 #[test]
 fn build_params_places_cache_control_and_tools() -> Result<(), Box<dyn Error>> {
-    let options = AnthropicOptions {
-        cache: true,
-        ..AnthropicOptions::default()
-    };
-    let params = build_params(&model(), &context(), &options);
+    let params = build_params(&model(), &context(), &AnthropicOptions::default());
     assert_eq!(params["model"], "claude-opus-4-5");
     assert_eq!(params["max_tokens"], 64_000);
     assert_eq!(params["stream"], true);
@@ -78,13 +78,13 @@ fn build_params_places_cache_control_and_tools() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// The assembled prompt carries its own block separators, and each block takes
-/// a breakpoint: the universal prefix stays cached when the yard changes.
+/// The assembled prompt carries its own block separators; the one stable mark sits on the
+/// last block, so tools and the whole system prompt are one entry (D295), and it is the
+/// mark that carries the interactive session's hour.
 #[test]
 fn system_blocks_split_on_the_separator() -> Result<(), Box<dyn Error>> {
     use yi_types::model::SYSTEM_BLOCK_SEPARATOR;
     let options = AnthropicOptions {
-        cache: true,
         cache_1h: true,
         ..AnthropicOptions::default()
     };
@@ -99,7 +99,11 @@ fn system_blocks_split_on_the_separator() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(blocks[0]["text"], "identity");
     assert_eq!(blocks[2]["text"], "yard\n\nextra");
-    assert_eq!(blocks[0]["cache_control"]["ttl"], "1h");
+    // The universal block keeps its own breakpoint until the system prompt is constant: it is
+    // the entry every session and child of the same identity reads across attaches.
+    assert_eq!(blocks[0]["cache_control"]["ttl"], "1h", "{blocks:?}");
+    assert!(blocks[1].get("cache_control").is_none(), "{blocks:?}");
+    assert_eq!(blocks[2]["cache_control"]["ttl"], "1h");
     Ok(())
 }
 
@@ -241,20 +245,16 @@ fn a_message_start_without_a_usage_object_leaves_the_turn_unknown() -> Result<()
     Ok(())
 }
 
-/// The fourth cache breakpoint must stay on the last persisted user block: on the
-/// trailing environment block, turn N+1 never matches turn N and history re-bills.
+/// The tail mark stays on the last persisted user block: the environment rides
+/// `transient`, rendered after every mark, so turn N+1 reads turn N instead of re-billing.
 #[test]
 fn the_breakpoint_stays_ahead_of_a_trailing_environment_block() -> Result<(), Box<dyn Error>> {
-    let options = AnthropicOptions {
-        cache: true,
-        ..AnthropicOptions::default()
-    };
     let mut ctx = context();
-    ctx.messages.push(AgentMessage::host_user(
+    ctx.transient.push(AgentMessage::host_user(
         UserContent::Text("<environment>\ncwd: /x\n</environment>".to_owned()),
         0,
     ));
-    let params = build_params(&model(), &ctx, &options);
+    let params = build_params(&model(), &ctx, &AnthropicOptions::default());
     let messages = params["messages"].as_array().ok_or("messages")?;
     assert_eq!(messages.len(), 2, "{messages:?}");
     assert_eq!(
@@ -289,6 +289,10 @@ fn image_turns(count: usize, chars: usize) -> LlmContext {
     LlmContext {
         system_prompt: String::new(),
         messages,
+        transient: Vec::new(),
+        schema: None,
+        shared_through: None,
+        reuse: yi_types::model::Reuse::Loop,
         tools: None,
         tool_choice: None,
     }
@@ -393,8 +397,15 @@ fn a_tool_result_image_rides_inside_the_tool_result_block() -> Result<(), Box<dy
         .extend(image_exchange("anthropic-messages", "toolu_1"));
     let params = build_params(&model(), &ctx, &AnthropicOptions::default());
     let messages = params["messages"].as_array().ok_or("messages")?;
+    // The tool result is the request's tail, so its block carries the tail mark.
+    let mut last = messages.last().ok_or("last")?["content"].clone();
+    assert_eq!(last[0]["cache_control"]["type"], "ephemeral", "{last}");
+    last[0]
+        .as_object_mut()
+        .ok_or("block")?
+        .remove("cache_control");
     assert_eq!(
-        messages.last().ok_or("last")?["content"],
+        last,
         json!([{"type": "tool_result", "tool_use_id": "toolu_1", "is_error": false, "content": [
             {"type": "text", "text": "attached"},
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
