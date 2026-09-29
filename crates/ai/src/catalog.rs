@@ -92,10 +92,16 @@ impl Catalog {
             Ok(_) => return self.rejected.push(format!("{source}: not a JSON object")),
             Err(error) => return self.rejected.push(format!("{source}: {error}")),
         };
-        for by_model in by_api.into_iter().filter_map(|(_, value)| match value {
-            Value::Object(map) => Some(map),
-            _ => None,
-        }) {
+        for (api, value) in by_api {
+            let by_model = match value {
+                Value::Object(map) => map,
+                _ if api == "schema" => continue,
+                _ => {
+                    self.rejected
+                        .push(format!("{source}: {api}: not an object"));
+                    continue;
+                }
+            };
             for (id, entry) in by_model {
                 match serde_json::from_value::<Model>(entry) {
                     Ok(model) => {

@@ -50,15 +50,27 @@ def facts(model_id, rows):
     return {"reasoning_content": replay, "adaptive_thinking": generation is None or generation >= (4, 6)}
 
 
+def sibling(model_id, floor):
+    """The bundled id nearest `model_id`: the longest common prefix, then the closest version
+    number after it (`kimi-k2.8` reads `kimi-k2.7-code`, not `kimi-k2.5`), then the shortest id."""
+    if not floor:
+        return None
+    best = max(len(os.path.commonprefix([model_id, b])) for b in floor)
+    number = lambda i: int(m.group(1)) if (m := re.match(r"[.\-_]?(\d+)", i[best:])) else None
+    mine = number(model_id)
+    gap = lambda b: abs(mine - number(b)) if mine is not None and number(b) is not None else float("inf")
+    return min((b for b in floor if len(os.path.commonprefix([model_id, b])) == best), key=lambda b: (gap(b), len(b), b))
+
+
 def fact_drift(bundled, missing, rows):
-    """Per provider: each missing id whose facts differ from the bundled id sharing its longest prefix."""
+    """Per provider: each missing id whose facts differ from its nearest bundled sibling's."""
     out = {}
     for provider, ids in missing.items():
         floor = sorted(bundled.get(provider, ()))
         for model_id in ids:
-            sibling = max(floor, key=lambda b: len(os.path.commonprefix([model_id, b])), default=None)
-            if sibling and facts(model_id, rows) != facts(sibling, rows):
-                out.setdefault(provider, []).append((model_id, sibling))
+            sibling_id = sibling(model_id, floor)
+            if sibling_id and facts(model_id, rows) != facts(sibling_id, rows):
+                out.setdefault(provider, []).append((model_id, sibling_id))
     return out
 
 
@@ -105,6 +117,12 @@ def selfcheck():
         "anthropic": [("claude-haiku-5", "claude-haiku-4-5")],
     }, fact_drift(floor, new, rows)
     assert "`deepseek/deepseek-r2` vs `deepseek/deepseek-r1`" in report(new, fact_drift(floor, new, rows))
+    kimi = ["moonshotai/kimi-k2-thinking", "moonshotai/kimi-k2.5", "moonshotai/kimi-k2.6",
+            "moonshotai/kimi-k2.7-code", "moonshotai/kimi-k2.7-code:batch", "moonshotai/kimi-k3"]
+    assert sibling("moonshotai/kimi-k2.8", kimi) == "moonshotai/kimi-k2.7-code", "a tie goes to the closest version"
+    assert sibling("moonshotai/kimi-k4", kimi) == "moonshotai/kimi-k3"
+    tied = {"openrouter": ["deepseek/deepseek-r1", "deepseek/deepseek-r5"]}
+    assert fact_drift(tied, {"openrouter": ["deepseek/deepseek-r4"]}, rows) == {}, "r4 reads r5, not r1 by sort order"
     print("ok   catalog_drift selfcheck")
 
 
