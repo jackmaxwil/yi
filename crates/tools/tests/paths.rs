@@ -180,5 +180,11 @@ fn a_walk_never_enters_a_walled_tree_by_another_name() -> TestResult {
             "read {glob} leaks: {listed}"
         );
     }
+    context.deny_read = vec![demo.join("alias")];
+    let found = grep(&context, &[("pattern", "hidden_marker")]);
+    assert!(
+        !found.contains("k.rs"),
+        "a deny named by a link walls its target: {found}"
+    );
     Ok(())
 }
