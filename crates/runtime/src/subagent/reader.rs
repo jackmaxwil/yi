@@ -13,6 +13,10 @@ const MAX_TURNS: u32 = 10;
 pub(crate) const PARTITION_CAP: usize = 65_536;
 pub const HELD_CAP: usize = 64;
 
+pub(crate) fn full_child(refusal: &str) -> String {
+    format!("{refusal}; role=\"root\" spawns a full child")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reader {
     pub tools: Vec<String>,
@@ -32,6 +36,9 @@ pub(crate) fn parse(kwargs: &Map<String, Value>) -> Result<Option<Reader>, Strin
                 ));
             }
             Ok(None)
+        }
+        Some("reader") if kwargs.get("check").is_some_and(|check| !check.is_null()) => {
+            Err(full_child("a reader answers once and runs no check"))
         }
         Some("reader") => Ok(Some(Reader {
             tools: tools_of(kwargs)?,
@@ -58,10 +65,10 @@ fn tools_of(kwargs: &Map<String, Value>) -> Result<Vec<String>, String> {
         .iter()
         .find(|name| !READER_TOOLS.contains(&name.as_str()))
     {
-        Some(name) => Err(format!(
+        Some(name) => Err(full_child(&format!(
             "a reader may call {}, not {name}",
             READER_TOOLS.join(" and ")
-        )),
+        ))),
         None => Ok(names),
     }
 }

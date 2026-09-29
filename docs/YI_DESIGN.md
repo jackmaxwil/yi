@@ -483,7 +483,8 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - A child's request is made of its brief (D307). `partition` is a list of Urls resolved at spawn
   through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
   prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
-  with a `[… kept …]` row naming the cap and the rest. `role="reader"` is a
+  with a `[… kept …]` row naming the cap and the rest. A worker spawn that names no `role` is
+  `role="reader"` (D308); a plan delegation, a juror and a service are `root`. A reader is a
   question-child: `prompts/reader.md` is its whole system prompt, `tools` a subset of `read` and
   `grep` (both by default), `turns` its request cap (3, at most 10; the last is the last word, whose tool calls are refused,
   after a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
@@ -525,7 +526,7 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - Shapes: [`types/src/subagent.rs`](../crates/types/src/subagent.rs) (`ChildUpdate` on
   `_yi/subagent_update`), [`types/src/lease.rs`](../crates/types/src/lease.rs) (`Lease`,
   `LeaseRecord`, `ParentClose`); child dirs `<parent rlm dir>/sub-<8 hex>`
-- Settled by: D165, D210, D215, D216, D218, D234, D307
+- Settled by: D165, D210, D215, D216, D218, D234, D307, D308
 
 ## 12. Mailbox
 A family message: an envelope in the receiver's inbox before delivery, then its one queue.
