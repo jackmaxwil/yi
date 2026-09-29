@@ -614,7 +614,7 @@ fn planning(th: f64, done: u8, total: u8) -> Vec<Point> {
             let d = fib(i, POINTS);
             let layer = (((d[1] + 1.0) / 2.0 * layers).floor()).min(layers - 1.0);
             let lon = d[2].atan2(d[0]).rem_euclid(TAU) / TAU;
-            // Invariant: the turn below shifts longitude by th, so the sweep holds on the front face.
+            // Invariant: the turn below subtracts th from each longitude, so the sweep holds at the front.
             let x = (lon - th - 0.25).rem_euclid(1.0);
             let sweep = (-(x.min(1.0 - x) / 0.08).powi(2)).exp();
             let lit = if finished {
