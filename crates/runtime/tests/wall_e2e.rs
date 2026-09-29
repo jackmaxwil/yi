@@ -471,6 +471,8 @@ fn a_named_path_never_reaches_a_walled_tree_by_another_name() -> TestResult {
     std::os::unix::fs::symlink(root.join("secret/nested"), root.join("deep"))?;
     std::os::unix::fs::symlink(root.join("secret/k.rs"), root.join("probe_present"))?;
     std::os::unix::fs::symlink("secret/missing.rs", root.join("probe_missing"))?;
+    std::os::unix::fs::symlink(root.join("loop_b"), root.join("loop_a"))?;
+    std::os::unix::fs::symlink(root.join("loop_a"), root.join("loop_b"))?;
     let mut paths = vec![
         "secret/k.rs",
         "alias/k.rs",
@@ -500,5 +502,10 @@ fn a_named_path_never_reaches_a_walled_tree_by_another_name() -> TestResult {
         assert_eq!(refusal(path), expected, "read {path}");
     }
     assert_eq!(refusal("open.rs"), None, "an unwalled path still reads");
+    assert_eq!(
+        refusal("loop_a/x.rs"),
+        None,
+        "a link loop ends open, as the OS's ELOOP does"
+    );
     Ok(())
 }

@@ -217,7 +217,7 @@ struct Collected {
     binary_skipped: usize,
     documents_searched: usize,
     documents_unsearched: Vec<String>,
-    walled: usize,
+    walled: crate::builtins::Walked,
 }
 
 /// A search converts at most this many documents it has no copy of; the rest are counted.
@@ -393,7 +393,7 @@ fn collect(
     };
     let walled = if root.is_file() {
         search_file(root);
-        0
+        crate::builtins::Walked::default()
     } else {
         walk_files(root, deny, &mut search_file)
     };
@@ -609,7 +609,7 @@ impl GrepTool {
             taken = taken.saturating_add(page.len());
             rows.extend(self.render_file(file, &page, 0, true, false));
         }
-        rows.extend(crate::builtins::walled_notice(collected.walled));
+        rows.extend(collected.walled.notices());
         (rows, total)
     }
 
@@ -695,7 +695,7 @@ impl GrepTool {
                 .iter()
                 .map(|path| format!("skipped (not UTF-8): {path}")),
         );
-        rows.extend(crate::builtins::walled_notice(collected.walled));
+        rows.extend(collected.walled.notices());
         let mut output = text_output(rows.join("\n"));
         output.result.details = json!({
             "hits": collected.total,
@@ -826,7 +826,7 @@ fn walled_write(
 }
 
 fn cut_notices(collected: &Collected, context_asked: usize, rows: &mut Vec<String>) {
-    rows.extend(crate::builtins::walled_notice(collected.walled));
+    rows.extend(collected.walled.notices());
     if collected.collection_capped {
         rows.push(format!(
             "[match collection stopped at {COLLECTION_CAP} before every file was scanned — narrow with path, include, or type]"

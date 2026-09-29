@@ -172,7 +172,9 @@ fn only_the_nearest_repository_binds_a_walk_and_its_inner_rules_win() -> TestRes
     Ok(())
 }
 
-/// A glob from outside the home walks into it; its key store stays out of every walk.
+/// A glob from outside the home walks into it; its key store stays out of every walk, however
+/// the walk's root is spelled: another letter case, a link, `/private`, or a firmlink.
+#[cfg(unix)]
 #[test]
 fn a_glob_never_walks_into_a_key_store() -> TestResult {
     let scratch = Scratch::new("yi-paths-keys")?;
@@ -181,27 +183,51 @@ fn a_glob_never_walks_into_a_key_store() -> TestResult {
     fs::write(home.join(".ssh/id_rsa"), "FAKE PRIVATE KEY MARKER\n")?;
     let elsewhere = scratch.join("elsewhere");
     fs::create_dir_all(&elsewhere)?;
+    std::os::unix::fs::symlink(home.join(".ssh"), elsewhere.join("link"))?;
+    std::os::unix::fs::symlink(&home, elsewhere.join("h"))?;
     // SAFETY: nextest runs each test in its own process; no other test reads HOME.
     unsafe { std::env::set_var("HOME", &home) };
-    let home = home.display();
-    for pattern in [
+    let name = scratch
+        .file_name()
+        .map(|name| name.to_string_lossy().to_uppercase());
+    let upper = scratch.with_file_name(name.unwrap_or_default());
+    let (home, upper) = (home.display().to_string(), upper.display());
+    let mut patterns = vec![
         format!("{home}/.ss?/*"),
         format!("{home}/*/id_*"),
         format!("{home}/**"),
         "~/.ss?/*".to_owned(),
         "~/*/id_*".to_owned(),
-    ] {
-        let listed = read(&elsewhere, &[("path", &pattern)]);
+        "link/*".to_owned(),
+        "link/**".to_owned(),
+        "h/.ss?/*".to_owned(),
+        "h/**/id_*".to_owned(),
+    ];
+    if Path::new(&format!("{home}/.SSH")).exists() {
+        patterns.extend([
+            format!("{home}/.SSH/*"),
+            "~/.SSH/*".to_owned(),
+            format!("{upper}/*/.ssh/*"),
+            format!("{upper}/HOME/.ss?/*"),
+        ]);
+    }
+    for alias in ["/private", "/System/Volumes/Data/private"] {
+        if Path::new(&format!("{alias}{home}")).exists() {
+            patterns.push(format!("{alias}{home}/.ss?/*"));
+        }
+    }
+    for pattern in &patterns {
+        let listed = read(&elsewhere, &[("path", pattern)]);
         assert!(
             !listed.contains("KEY MARKER"),
             "read {pattern} leaks: {listed}"
         );
     }
-    let found = grep(
-        &ToolContext::new(scratch.to_path_buf()),
-        &[("pattern", "KEY MARKER"), ("path", "home")],
-    );
-    assert!(!found.contains("id_rsa"), "grep leaks: {found}");
+    for path in ["../home", "link", "h"] {
+        let context = ToolContext::new(elsewhere.clone());
+        let found = grep(&context, &[("pattern", "KEY MARKER"), ("path", path)]);
+        assert!(!found.contains("id_rsa"), "grep path={path} leaks: {found}");
+    }
     Ok(())
 }
 
@@ -229,12 +255,33 @@ fn find_lists_references_for_a_definition_in_files_of_its_type() -> TestResult {
         !comment.contains("[refs:"),
         "a comment defines nothing: {comment}"
     );
-    fs::write(demo.join("run.py"), "result = compute(1)\ncompute(2)\n")?;
-    let call = read(&demo, &[("path", "run.py"), ("find", "result = compute")]);
-    assert!(
-        !call.contains("[refs:"),
-        "an assigned call defines nothing: {call}"
-    );
+    let calls = [
+        (
+            "run.py",
+            "result = compute(1)\ncompute(2)\n",
+            "result = compute",
+        ),
+        (
+            "check.py",
+            "assert compute(1)\ncompute(2)\n",
+            "assert compute",
+        ),
+        (
+            "app.ts",
+            "export default connect(App)\nconnect(1)\n",
+            "export default",
+        ),
+        (
+            "m.cc",
+            "int main() {\n    int y(3);\n    y;\n}\n",
+            "int y(3)",
+        ),
+    ];
+    for (file, text, needle) in calls {
+        fs::write(demo.join(file), text)?;
+        let call = read(&demo, &[("path", file), ("find", needle)]);
+        assert!(!call.contains("[refs:"), "{needle} defines nothing: {call}");
+    }
     let cases = [
         (
             "a.rs",
@@ -270,6 +317,13 @@ fn find_lists_references_for_a_definition_in_files_of_its_type() -> TestResult {
             "add2",
             "b.c",
             "add2(1);",
+        ),
+        (
+            "a.go",
+            "func (s *Server) Handle(w int) {}",
+            "Handle",
+            "b.go",
+            "s.Handle(1)",
         ),
         (
             "a.h",

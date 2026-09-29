@@ -209,13 +209,30 @@ fn file_id(_meta: &fs::Metadata) -> Option<FileId> {
     None
 }
 
-pub(crate) fn walled_notice(left_out: usize) -> Option<String> {
-    (left_out > 0).then(|| {
-        format!(
-            "[{left_out} paths left out: the reviewer wall's deny_read covers them, and no call reaches them this run]"
-        )
-    })
+/// What a walk left out: entries a wall covers, and whether it stopped at [`WALK_CAP`].
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Walked {
+    pub(crate) walled: usize,
+    pub(crate) stopped: bool,
 }
+
+impl Walked {
+    pub(crate) fn notices(self) -> Vec<String> {
+        let walled = format!(
+            "[{} paths left out: the reviewer wall's deny_read covers them, and no call reaches them this run]",
+            self.walled
+        );
+        let stopped = format!("[the walk stopped after {WALK_CAP} entries: name a narrower path]");
+        (self.walled > 0)
+            .then_some(walled)
+            .into_iter()
+            .chain(self.stopped.then_some(stopped))
+            .collect()
+    }
+}
+
+/// Entries one walk visits at most, so `/usr/**` ends.
+const WALK_CAP: usize = 200_000;
 
 /// Name order: filesystem order differs by machine and every cap would keep a different set.
 /// Links are never followed, so each entry is judged by its own path and identity alone.
@@ -223,14 +240,28 @@ pub(crate) fn walk_files(
     root: &Path,
     deny: &[PathBuf],
     visit: &mut dyn FnMut(&Path) -> bool,
-) -> usize {
+) -> Walked {
+    let mut walked = Walked::default();
     if walled(deny, root) {
-        return 1;
+        walked.walled = 1;
+        return walked;
     }
     let root = yi_permission::lexical_normalize(root);
     let ids = identities(deny);
     let gate = yi_permission::CatastrophicContext::detect(&root);
-    let mut left_out = 0_usize;
+    let (trees, exact) = yi_permission::read_guarded_dirs(&gate);
+    let (trees, guarded) = (
+        identities(&trees),
+        [identities(&trees), identities(&exact)].concat(),
+    );
+    // Judged by identity, so letter case, a link, `/private` or a firmlink name no way in.
+    let real = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+    if yi_permission::read_is_catastrophic(&real, &gate)
+        || denied_file(&guarded, fs::metadata(&real))
+        || (real.ancestors()).any(|dir| denied_file(&trees, fs::metadata(dir)))
+    {
+        return walked;
+    }
     let mut ignore = crate::ignore::Ignore::default();
     // Rules above the root bind it, from the nearest repository top down; a root that is one
     // takes none from above.
@@ -239,6 +270,7 @@ pub(crate) fn walk_files(
         (above.iter().take(top.saturating_add(1)).skip(1).rev())
             .for_each(|dir| ignore.push_dir(dir));
     }
+    let mut seen = 0_usize;
     let mut stack = vec![root];
     while let Some(dir) = stack.pop() {
         ignore.push_dir(&dir);
@@ -247,31 +279,36 @@ pub(crate) fn walk_files(
         };
         let mut entries: Vec<fs::DirEntry> = entries.flatten().collect();
         entries.sort_by_key(fs::DirEntry::file_name);
+        seen = seen.saturating_add(entries.len());
+        if seen > WALK_CAP {
+            walked.stopped = true;
+            return walked;
+        }
         let mut subdirs: Vec<PathBuf> = Vec::new();
         for entry in entries {
             let path = entry.path();
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            // ponytail: the read gate per entry re-derives its stores; hoist them if it profiles.
-            if yi_permission::read_is_catastrophic(&path, &gate) {
+            let guarded_dir = file_type.is_dir() && denied_file(&guarded, entry.metadata());
+            if guarded_dir || yi_permission::read_is_catastrophic(&path, &gate) {
                 continue;
             }
             if lexically_walled(deny, &path)
                 || (!ids.is_empty() && denied_file(&ids, entry.metadata()))
             {
-                left_out = left_out.saturating_add(1);
+                walked.walled = walked.walled.saturating_add(1);
             } else if file_type.is_dir() {
                 if !ignore.ignored(&path, true) {
                     subdirs.push(path);
                 }
             } else if file_type.is_file() && !ignore.ignored(&path, false) && !visit(&path) {
-                return left_out;
+                return walked;
             }
         }
         stack.extend(subdirs.into_iter().rev());
     }
-    left_out
+    walked
 }
 
 /// Every other verb keeps the `Exec` default: the flag warns about blast

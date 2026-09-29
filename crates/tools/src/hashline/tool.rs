@@ -355,7 +355,13 @@ fn read_dir(display_path: &str, path: &Path, deny: &[std::path::PathBuf]) -> Too
         ));
         rows.extend(skeleton);
     }
-    rows.extend(crate::builtins::walled_notice(walled));
+    rows.extend(
+        crate::builtins::Walked {
+            walled,
+            stopped: false,
+        }
+        .notices(),
+    );
     let mut output = text_output(rows.join("\n"));
     output.result.details = json!({ "dirs": dirs.len(), "files": files.len() });
     output
@@ -375,7 +381,7 @@ impl HashlineReadTool {
             if glob.matches(path) {
                 matches.push(path.to_path_buf());
             }
-            matches.len() < GLOB_FILES_CAP
+            matches.len() < GLOB_FILES_CAP && !(context.cancelled)()
         });
         matches.sort();
         if matches.is_empty() {
@@ -431,7 +437,7 @@ impl HashlineReadTool {
             rows.extend(heads.iter().map(|head| format!("  {head}")));
             sections.push(rows.join("\n"));
         }
-        sections.extend(crate::builtins::walled_notice(walled));
+        sections.extend(walled.notices());
         let mut output = text_output(sections.join("\n\n"));
         output.result.details = json!({ "files": matches.len(), "whole": whole });
         output
