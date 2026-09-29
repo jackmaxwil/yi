@@ -59,7 +59,7 @@ async fn seeded(id: &str) -> Result<Seeded, Box<dyn Error>> {
         id: Some(id.to_owned()),
         ..CreateOptions::default()
     })?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![
         faux_assistant_message(vec![faux_text("kept reply")], StopReason::Stop),
         faux_assistant_message(

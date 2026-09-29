@@ -65,9 +65,10 @@ fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
         cwd: workspace.clone(),
         home: root.join("home"),
         lane_slots: 1,
+        provider: Arc::new(ProviderStream::new(None)),
         defaults: Arc::new(|| (faux_model(), Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
-            let provider = Arc::new(ProviderStream::new(None, None));
+            let provider = Arc::new(ProviderStream::new(None));
             let queued = script.lock().map(|mut s| std::mem::take(&mut *s));
             provider.queue_faux(queued.unwrap_or_default());
             let Some(reader) = build.reader.clone() else {

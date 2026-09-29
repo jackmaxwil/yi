@@ -2,14 +2,15 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{
-    AgentMessage, Content, ENVIRONMENT_TAG, RAW_STOP_IN_BAND_ERROR, StopReason, Usage, UserContent,
+    AgentMessage, Content, RAW_STOP_IN_BAND_ERROR, StopReason, Usage, UserContent,
 };
-use yi_types::model::{Effort, LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolChoice, ToolDef};
+use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 
+use crate::breakpoints::{Breakpoints, CachePolicy, Dialect, Encoded, encode};
 use crate::catalog::calculate_cost;
 use crate::compat::{compat_bool, compat_str};
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
-use crate::transform::transform_messages;
+use crate::transform::{system_text, transform_messages};
 
 const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning", "reasoning_text"];
 
@@ -88,33 +89,22 @@ pub fn normalize_openai_tool_call_id(id: &str) -> String {
     id.to_owned()
 }
 
-fn convert_messages(model: &Model, context: &LlmContext) -> Vec<Value> {
+/// Renders transformed messages onto `params`, recording for each rendered message the index
+/// of the message it came from, which is what a breakpoint position names.
+fn convert_messages(
+    model: &Model,
+    transformed: &[AgentMessage],
+    params: &mut Vec<Value>,
+    origins: &mut Vec<Option<usize>>,
+) {
     let _span = yi_types::trace::span("ai.convert_messages");
-    let transformed = transform_messages(
-        &context.messages,
-        model,
-        Some(normalize_openai_tool_call_id),
-    );
-    let mut params: Vec<Value> = Vec::new();
-    if !context.system_prompt.is_empty() {
-        let role = if model.reasoning && compat_bool(model, "supportsDeveloperRole", true) {
-            "developer"
-        } else {
-            "system"
-        };
-        let system = context
-            .system_prompt
-            .split(SYSTEM_BLOCK_SEPARATOR)
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        params.push(json!({"role": role, "content": system}));
-    }
     let mut index = 0;
     while index < transformed.len() {
         match &transformed[index] {
             AgentMessage::User { content, .. } => match content {
                 UserContent::Text(text) => {
                     params.push(json!({"role": "user", "content": text}));
+                    origins.push(Some(index));
                 }
                 UserContent::Blocks(blocks) => {
                     let parts: Vec<Value> = blocks
@@ -132,22 +122,23 @@ fn convert_messages(model: &Model, context: &LlmContext) -> Vec<Value> {
                         .collect();
                     if !parts.is_empty() {
                         params.push(json!({"role": "user", "content": parts}));
+                        origins.push(Some(index));
                     }
                 }
             },
             AgentMessage::Assistant { content, .. } => {
                 if let Some(message) = assistant_param(model, content) {
                     params.push(message);
+                    origins.push(Some(index));
                 }
             }
             AgentMessage::ToolResult { .. } => {
-                index = push_tool_results(model, &transformed, index, &mut params);
+                index = push_tool_results(model, transformed, index, params, origins);
             }
             _ => {}
         }
         index = index.saturating_add(1);
     }
-    params
 }
 
 fn assistant_param(model: &Model, content: &[Content]) -> Option<Value> {
@@ -222,6 +213,7 @@ fn push_tool_results(
     transformed: &[AgentMessage],
     start: usize,
     params: &mut Vec<Value>,
+    origins: &mut Vec<Option<usize>>,
 ) -> usize {
     let mut index = start;
     {
@@ -255,6 +247,7 @@ fn push_tool_results(
                 "content": body,
                 "tool_call_id": tool_call_id,
             }));
+            origins.push(Some(index));
             if has_images && model.input.iter().any(|kind| kind == "image") {
                 for block in content {
                     if let Content::Image { data, mime_type } = block {
@@ -273,6 +266,8 @@ fn push_tool_results(
                 vec![json!({"type": "text", "text": "Attached image(s) from tool result:"})];
             parts.extend(images);
             params.push(json!({"role": "user", "content": parts}));
+            // Synthesized, so no position names it: the mark stays on the tool message's text.
+            origins.push(None);
         }
     }
     index
@@ -314,68 +309,40 @@ pub(crate) fn prompt_cache_retention(model: &Model) -> Option<&'static str> {
     .then_some("24h")
 }
 
-/// Marks end before the per-request environment tail: one there is written each turn and never read.
-/// Gemini keeps only the last mark, so a moving tail would re-snapshot the prompt every turn.
-fn mark_cache_breakpoints(model: &Model, messages: &mut [Value]) {
-    let ephemeral = json!({"type": "ephemeral"});
-    if let Some(system) = messages
-        .first_mut()
-        .filter(|message| matches!(message["role"].as_str(), Some("system" | "developer")))
-    {
-        mark_last_part(system, &ephemeral);
-    }
-    if model.id.contains("gemini") {
-        return;
-    }
-    let tail = messages.iter().rposition(|message| {
-        matches!(message["role"].as_str(), Some("user" | "tool")) && !is_environment(message)
-    });
-    if let Some(message) = tail
-        .filter(|index| *index > 0)
-        .and_then(|index| messages.get_mut(index))
-    {
-        mark_last_part(message, &ephemeral);
-    }
-}
-
-fn mark_last_part(message: &mut Value, mark: &Value) {
-    if let Some(text) = message["content"].as_str() {
-        message["content"] = json!([{"type": "text", "text": text}]);
-    }
-    if let Some(part) = message["content"]
-        .as_array_mut()
-        .and_then(|parts| parts.last_mut())
-    {
-        part["cache_control"] = mark.clone();
-    }
-}
-
-fn is_environment(message: &Value) -> bool {
-    let content = &message["content"];
-    content
-        .as_str()
-        .or_else(|| {
-            content[0]["text"]
-                .as_str()
-                .filter(|_| content.as_array().is_some_and(|parts| parts.len() == 1))
-        })
-        .is_some_and(|text| text.starts_with(ENVIRONMENT_TAG))
-}
-
-pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Value {
+pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Encoded {
     let _span = yi_types::trace::span("ai.build_params")
         .arg("api", "openai")
         .arg("messages", context.messages.len());
-    let mut messages = convert_messages(model, context);
-    if model.base_url.contains("openrouter.ai") {
-        mark_cache_breakpoints(model, &mut messages);
+    let history = transform_messages(
+        &context.messages,
+        model,
+        Some(normalize_openai_tool_call_id),
+    );
+    let mut messages: Vec<Value> = Vec::new();
+    let mut origins: Vec<Option<usize>> = Vec::new();
+    if !context.system_prompt.is_empty() {
+        let role = if model.reasoning && compat_bool(model, "supportsDeveloperRole", true) {
+            "developer"
+        } else {
+            "system"
+        };
+        messages.push(json!({"role": role, "content": system_text(&context.system_prompt)}));
+        origins.push(None);
     }
+    convert_messages(model, &history, &mut messages, &mut origins);
     let mut params = json!({
         "model": model.id,
         "messages": messages,
         "stream": true,
         "stream_options": {"include_usage": true},
     });
+    let transient = transform_messages(
+        &context.transient,
+        model,
+        Some(normalize_openai_tool_call_id),
+    );
+    let mut tail: Vec<Value> = Vec::new();
+    convert_messages(model, &transient, &mut tail, &mut Vec::new());
     if model.provider == "openai" {
         params["store"] = json!(false);
     }
@@ -407,7 +374,21 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if model.reasoning {
         apply_reasoning_params(model, options, &mut params);
     }
-    params
+    // OpenRouter passes per-part breakpoints to every upstream; elsewhere the provider caches
+    // its own prefix and no explicit breakpoint is known to be accepted (design §11).
+    if model.base_url.contains("openrouter.ai") {
+        let breakpoints =
+            Breakpoints::build(&CachePolicy::of(model, false), &history, context.reuse);
+        encode(
+            &breakpoints,
+            Dialect::OpenRouterParts,
+            params,
+            &origins,
+            tail,
+        )
+    } else {
+        Encoded::provider_prefix(params, "messages", tail)
+    }
 }
 
 /// Invariant: callers clamp through [`Model::clamp_effort`] first, so the `null` arm is
@@ -865,7 +846,7 @@ fn settle_from_record(
 
 fn run_request(
     model: &Model,
-    body: &Value,
+    body: &Encoded,
     wire: crate::request::Wire<'_>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
