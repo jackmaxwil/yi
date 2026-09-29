@@ -332,8 +332,11 @@ fn render(id: u64, job: &Job) -> JobReport {
                 .kill_error
                 .as_ref()
                 .map(|error| format!("\n[group kill failed: {error}]"));
+            let cut = capture.cut_note().map(|note| format!("\n{note}"));
             let text = format!("{}{}", capture.stdout, capture.stderr);
-            crate::reduce::strip_ansi(&text) + &failed.unwrap_or_default()
+            crate::reduce::strip_ansi(&text)
+                + &cut.unwrap_or_default()
+                + &failed.unwrap_or_default()
         }
         None => String::new(),
     };
@@ -402,6 +405,7 @@ fn start(
     sandbox: Option<&crate::sandbox::Sandbox>,
     reaper: Reaper,
     sweep: Option<&str>,
+    spill_dir: Option<&Path>,
 ) -> (
     JobId,
     std::sync::mpsc::Receiver<Result<CommandCapture, String>>,
@@ -419,6 +423,7 @@ fn start(
     let text = shell_command.to_owned();
     let sweep = sweep.map(str::to_owned);
     let dir = cwd.to_path_buf();
+    let spill_dir = spill_dir.map(Path::to_path_buf);
     let outer = Arc::clone(cancelled);
     let flag: CancelFlag = Arc::new(move || kill.load(Ordering::SeqCst) || outer());
     let wrapped = sandbox.map(|sandbox| sandbox.wrap(interpreter(), &["-c", shell_command]));
@@ -436,7 +441,14 @@ fn start(
             }
         };
         process.current_dir(&dir);
-        let capture = run_captured_live(process, None, &flag, OUTPUT_CAP, Some(live));
+        let capture = run_captured_live(
+            process,
+            None,
+            &flag,
+            OUTPUT_CAP,
+            Some(live),
+            spill_dir.as_deref(),
+        );
         // Invariant: before the job settles, so a lane settle never reads a job gone quiet
         // while what it started in a container still writes the tree.
         if let (Ok(capture), Some(sweep)) = (&capture, &sweep)
@@ -484,15 +496,23 @@ pub fn spawn_job(
     cancelled: &CancelFlag,
     sandbox: Option<&crate::sandbox::Sandbox>,
 ) -> JobId {
-    start(shell_command, cwd, cancelled, sandbox, Reaper::Handle, None).0
+    start(
+        shell_command,
+        cwd,
+        cancelled,
+        sandbox,
+        Reaper::Handle,
+        None,
+        None,
+    )
+    .0
 }
 
 /// Past `background_after` (a call's `wait`, else `bash.autoBackgroundMs`; `None` holds the turn)
 /// a command keeps running as a job, killed by an interrupt or at `timeout` from its start.
 pub fn run_or_background(
     shell_command: &str,
-    cwd: &Path,
-    cancelled: &CancelFlag,
+    context: &crate::tool::ToolContext,
     background_after: Option<Duration>,
     timeout: Duration,
     sandbox: Option<&crate::sandbox::Sandbox>,
@@ -501,12 +521,13 @@ pub fn run_or_background(
     let begun = std::time::Instant::now();
     let (id, receiver) = start(
         shell_command,
-        cwd,
-        cancelled,
+        &context.cwd,
+        &context.cancelled,
         sandbox,
         // Invariant: held until the call hands the turn back, or its output is announced twice.
         Reaper::Poller { reported: true },
         sweep,
+        context.recovery_dir.as_deref(),
     );
     let background = background_after.filter(|limit| *limit < timeout);
     match receiver.recv_timeout(background.unwrap_or(timeout)) {
@@ -539,6 +560,7 @@ pub fn run_or_background(
                         cancelled: true,
                         truncated: false,
                         kill_error: None,
+                        spill: None,
                     })))
                 }
             }
@@ -716,6 +738,7 @@ mod tests {
             exit_code: Some(0),
             cancelled: false,
             truncated: false,
+            spill: None,
             kill_error: None,
         };
         registry().finish(id, capture);
@@ -737,6 +760,7 @@ mod tests {
             exit_code: Some(0),
             cancelled: false,
             truncated: false,
+            spill: None,
             kill_error: None,
         };
         registry().finish(id, capture);
@@ -769,6 +793,7 @@ mod tests {
                 exit_code: None,
                 cancelled: true,
                 truncated: false,
+                spill: None,
                 kill_error: Some("/bin/sh: No such file or directory".to_owned()),
             },
         );
@@ -799,8 +824,7 @@ mod tests {
         let dir = Scratch::new("yi-jobs")?;
         let run = run_or_background(
             "cd /tmp && timeout 900 python3 -c 'import time; print(\"ready\", flush=True); time.sleep(30)' && ls -la",
-            &dir,
-            &never(),
+            &crate::tool::ToolContext::new(dir.to_path_buf()),
             None,
             Duration::from_secs(3),
             None,

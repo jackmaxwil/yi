@@ -212,13 +212,7 @@ pub fn objective_updated_text(goal: &Goal) -> Result<String, template::TemplateE
 }
 
 fn goal_prompt_message(text: String) -> AgentMessage {
-    AgentMessage::Custom {
-        custom_type: "goal_prompt".to_owned(),
-        content: UserContent::Text(text),
-        display: true,
-        details: None,
-        timestamp: yi_session::now_ms(),
-    }
+    AgentMessage::host_note("goal_prompt", text, yi_session::now_ms())
 }
 
 fn goal_json(goal: &Goal) -> Value {

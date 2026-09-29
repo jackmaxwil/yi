@@ -593,9 +593,9 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
 
 - Shapes: `.yi/plans/<root>/ops.jsonl` (gitignored) of `JournalRecord`
   ([`ledger.rs`](../crates/types/src/plan/ledger.rs)), `.yi/plans/<id>/{plan.json, artifacts/}`,
-  `.yi/plans/.lease`, `.yi/schemas/plan.schema.json`. Surfaces: the `plan` tool, host requests
+  `.yi/plans/.lock` (an OS file lock naming its holder's pid), `.yi/schemas/plan.schema.json`. Surfaces: the `plan` tool, host requests
   `plan.get` and `plan.op`, RPC `plan`, `yi plan`. The session holds `Fact::Plan` as a pointer.
-- Settled by: D192, D193, D223.
+- Settled by: D192, D193, D223, D313.
 
 ### 13.1 Contracts
 A `Contract` ([`contract.rs`](../crates/types/src/plan/contract.rs)) is 1..=16 items
@@ -769,6 +769,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
 - The default permission mode is `permissions.mode`, else `auto`; `--confirm` selects `ask`, `--yolo` selects `yolo` (§8).
+- `yi ask -` reads the prompt from stdin: one argument past Linux's 128 KiB cap is refused before `yi` starts.
 - Exit codes: 0 ok; 1 error; 2 usage, bad flag, bad config or refused build; 3 an answer failing
   `--schema`. Under `--json` an agent failure is in-band and exits 0. Errors print `error: …`.
 - `~/.yi/config.json` is the only config file, parsed once; every struct is `deny_unknown_fields`

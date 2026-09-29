@@ -1051,7 +1051,7 @@ fn main() {
         "ask" => {
             if args.prompt.is_empty() {
                 eprintln!(
-                    "usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt>"
+                    "usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt | ->"
                 );
                 std::process::exit(2);
             }

@@ -579,32 +579,24 @@ impl KernelService {
             _ => {}
         }
         // A lock file that cannot be created never stops the save; only a held lock does.
-        let opened = path
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| {
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .truncate(false)
-                    .write(true)
-                    .open(&path)
-            });
-        let Ok(file) = opened else {
-            return (true, None);
+        let file = match yi_session::try_lock_file(&path) {
+            Ok(Ok(file)) => Some(file),
+            Ok(Err(_held_elsewhere)) => None,
+            Err(_) => return (true, None),
         };
-        let owned = !matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock));
+        let owned = file.is_some();
         if !owned && cached.is_none() {
             eprintln!(
                 "kernel: another yi process holds this session's kernel state ({}); this kernel starts empty and saves nothing",
                 path.display()
             );
         }
-        let displaced = held.replace((path, owned.then_some(file)));
+        let displaced = held.replace((path, file));
         (owned, displaced.and_then(|(_, file)| file))
     }
 
     pub async fn execute_user_cell(&self, code: &str, cancelled: &CancelFlag) -> ToolOutput {
-        match self.execute_async(code, cancelled).await {
+        match self.execute_async(code, cancelled, None).await {
             Ok(outcome) => yi_tools::cell_output(code, outcome),
             Err(message) => yi_tools::error_output(message),
         }
@@ -632,6 +624,7 @@ impl KernelService {
         &self,
         code: &str,
         cancelled: &CancelFlag,
+        recovery_dir: Option<&std::path::Path>,
     ) -> Result<KernelCellOutcome, String> {
         let mut kernel_restarted = false;
         let mut notes = Vec::new();
@@ -660,11 +653,13 @@ impl KernelService {
                     abort.fire();
                 })
             };
+            let spill = yi_tools::CellSpill::new(recovery_dir);
             let outcome = manager
                 .execute(
                     code,
                     ExecuteOptions {
                         abort: Some(abort),
+                        on_stream: Some(spill.sink()),
                         ..ExecuteOptions::default()
                     },
                 )
@@ -672,6 +667,7 @@ impl KernelService {
             watcher.abort();
             match outcome {
                 Ok(result) => {
+                    notes.extend(spill.note(yi_kernel::DEFAULT_MAX_OUTPUT_CHARS));
                     if !kernel_restarted && let Ok(mut restarted) = self.restarted.lock() {
                         *restarted = None;
                     }
@@ -720,10 +716,11 @@ impl KernelBridge for KernelService {
         &self,
         code: &str,
         cancelled: &CancelFlag,
+        recovery_dir: Option<&std::path::Path>,
     ) -> Result<KernelCellOutcome, String> {
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| "ipython requires a tokio runtime".to_owned())?;
-        handle.block_on(self.execute_async(code, cancelled))
+        handle.block_on(self.execute_async(code, cancelled, recovery_dir))
     }
 }
 
