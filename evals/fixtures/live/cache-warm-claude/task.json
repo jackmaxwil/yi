@@ -1,0 +1,12 @@
+{
+  "id": "cache-warm-claude",
+  "kind": "cache",
+  "byName": true,
+  "timeoutSec": 180,
+  "turns": [
+    "Read the whole of start.txt. Its last line names the next file: read the whole of that one too, then reply with the code word on its last line and nothing else."
+  ],
+  "minRequests": 3,
+  "minWarmShare": 0.9,
+  "note": "a tool loop whose two reads (~5k tokens each) outweigh the environment block: each warm request must read 90% of the previous request's whole prompt (fresh, read and written), so a lost or misplaced tail mark reads one request back and fails. Runs only under --task: a route that caches by itself has no marks to lose (#742)"
+}

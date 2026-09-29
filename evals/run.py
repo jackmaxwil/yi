@@ -276,14 +276,31 @@ def refusal_check(spec, binary, out):
             "status": status, "detail": detail, "wallSec": 0}
 
 
-def cache_check(spec, binary, model, out):
-    """A cache scenario asks one session several times; the warm turns must read the cache."""
+def prompt_reads(events):
+    """(prompt, read) per request, in order. The prompt counts every input token, fresh, read and
+    written (D116): a ratio without the writes scores a lost tail mark about 0.98 (#742)."""
+    out = []
+    for event in yi_usage.json_lines(events)[0]:
+        message = event.get("message") if event.get("type") == "message_end" else None
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
+            read = usage.get("cacheRead") or 0
+            out.append(((usage.get("input") or 0) + read + (usage.get("cacheWrite") or 0), read))
+    return out
+
+
+def cache_check(spec, task_dir, binary, model, out):
+    """A cache scenario asks one session several times; the warm turns must read the cache.
+    With `minWarmShare`, every request after the first must read that share of the previous
+    request's prompt, over at least `minRequests` requests: a tool loop's own requests count."""
     keep = out / spec["id"]
     keep.mkdir(parents=True, exist_ok=True)
     sessions = keep / "sessions"
     started = time.monotonic()
-    turns, events_text, exit_code, timed_out = [], "", None, False
+    turns, requests, events_text, exit_code, timed_out = [], [], "", None, False
     with tempfile.TemporaryDirectory(prefix="yi-eval-") as workspace:
+        if (task_dir / "repo").is_dir():
+            shutil.copytree(task_dir / "repo", workspace, dirs_exist_ok=True)
         for index, prompt in enumerate(spec["turns"]):
             events = keep / f"events-{index}.jsonl"
             command = [binary, "ask", "--model", model, "--json", "--here", "--yolo", "--cwd", workspace,
@@ -298,20 +315,31 @@ def cache_check(spec, binary, model, out):
                     break
             events_text += events.read_text(errors="replace")
             turns.append(yi_usage.parse_events(events))
+            requests += prompt_reads(events)
             # DeepSeek builds its prefix cache after the response, not during it.
             if index + 1 < len(spec["turns"]):
                 time.sleep(spec.get("settleSec", 3))
     warm_read = sum(turn["cacheRead"] or 0 for turn in turns[1:])
-    row = {"task": spec["id"], "reward": 1 if warm_read else 0, "exit": exit_code, "timedOut": timed_out,
-           "wallSec": round(time.monotonic() - started, 2), "requests": len(turns),
-           "warmRead": warm_read, "warmInput": sum(turn["input"] or 0 for turn in turns[1:])}
+    shares = [read / prompt if prompt else 0.0 for (prompt, _), (_, read) in zip(requests, requests[1:])]
+    floor, least = spec.get("minWarmShare"), spec.get("minRequests", 2)
+    held = bool(warm_read) if floor is None else (len(requests) >= least and min(shares, default=0.0) >= floor)
+    row = {"task": spec["id"], "reward": 1 if held else 0, "exit": exit_code, "timedOut": timed_out,
+           "wallSec": round(time.monotonic() - started, 2), "requests": len(requests),
+           "warmRead": warm_read, "warmInput": sum(turn["input"] or 0 for turn in turns[1:]),
+           "warmShares": [round(share, 4) for share in shares]}
     for key in (*yi_usage.TOKEN_KEYS, "nAssistantMessages", "costUnknownTurns"):
         row[key] = sum(turn.get(key) or 0 for turn in turns)
     costs = [turn.get("costUsd") for turn in turns]
     row["costUsd"] = None if not turns or None in costs else sum(costs)
     row["status"], row["detail"] = status_of(row, spec, events_text)
-    if row["status"] == "fail":
+    if row["status"] == "fail" and floor is None:
         row["detail"] = f"warm turns read 0 cached tokens over {len(turns)} requests ({row['input']} input)"
+    elif row["status"] == "fail" and len(requests) < least:
+        row["detail"] = f"{len(requests)} requests, the scenario needs {least}"
+    elif row["status"] == "fail":
+        worst = shares.index(min(shares))
+        row["detail"] = (f"request {worst + 2} read {requests[worst + 1][1]} of the previous request's "
+                         f"{requests[worst][0]}-token prompt ({shares[worst]:.1%} < {floor:.0%})")
     return row
 
 
@@ -336,6 +364,9 @@ def run_live(args):
     specs = sorted(path.parent for path in LIVE.glob("*/task.json"))
     if args.task:
         specs = [spec for spec in specs if spec.name in set(args.task)]
+    else:
+        # A `byName` scenario judges one route's engine, not the suite's model.
+        specs = [spec for spec in specs if not json.loads((spec / "task.json").read_text()).get("byName")]
     suite = f"live@{_capture(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'])}"
     mode = "live" + yi_usage.routing_label(os.environ) + yi_usage.levers_label(os.environ)
     fingerprint = yi_usage.config_fingerprint(_capture([args.binary, "--version"]), args.model, mode, suite)
@@ -348,7 +379,7 @@ def run_live(args):
         if spec.get("kind") == "refusal":
             row = refusal_check(spec, args.binary, out)
         elif spec.get("kind") == "cache":
-            row = cache_check(spec, args.binary, args.model, out)
+            row = cache_check(spec, task_dir, args.binary, args.model, out)
             spent += row.get("costUsd") or 0.0
         else:
             spec, row = run_task(task_dir, args.binary, args.model, out=out)
