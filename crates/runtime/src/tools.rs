@@ -302,7 +302,11 @@ impl AgentTool for ToolAdapter {
                     is_error: true,
                 };
             }
-            if let Some(denial) = wall.check(tool.name(), tool.kind(), &args, &context.cwd) {
+            let kind = match tool.kind_for(&args) {
+                yi_tools::ToolKind::Write => yi_tools::ToolKind::Write,
+                _ => tool.kind(),
+            };
+            if let Some(denial) = wall.check(tool.name(), kind, &args, &context.cwd) {
                 return ToolOutcome {
                     result: yi_loop::tool::error_tool_result_kind(
                         &denial,

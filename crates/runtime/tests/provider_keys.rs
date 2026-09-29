@@ -77,6 +77,7 @@ async fn stream(provider: &ProviderStream, model: &Model) -> Vec<AssistantMessag
         tool_choice: None,
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::OneShot,
     };
     let signal = yi_loop::interrupt::InterruptSignal::default();
