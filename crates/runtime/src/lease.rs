@@ -153,9 +153,8 @@ impl SubagentHost {
     fn journal(&self, record: &LeaseRecord) -> Result<(), String> {
         let store =
             (self.options.store)().ok_or("the parent has no transcript to journal a lease on")?;
-        let data = serde_json::to_value(record).map_err(|error| error.to_string())?;
         yi_session::lock_session(&store)
-            .append_custom("main", LEASE_ENTRY, Some(data))
+            .append_custom_record(record)
             .map(drop)
             .map_err(|error| format!("the lease journal refused the record: {error}"))
     }

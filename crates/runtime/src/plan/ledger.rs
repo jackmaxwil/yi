@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use yi_types::plan::contract::Resolution;
 use yi_types::plan::doc::{BlockedOn, Check, Plan, PlanId, TodoLabel, TodoState, TodoStateName};
-use yi_types::plan::ledger::{PLAN_OP_ENTRY_TYPE, PlanOpRecord};
+use yi_types::plan::ledger::PlanOpRecord;
 use yi_types::url::Durability;
 
 /// The op stream's writer, beside its readers: every applied op becomes one durable custom
@@ -15,9 +15,8 @@ impl super::ops::OpSink for SessionOpSink {
         let Some(session) = (self.0)() else {
             return Err("no session to record into".to_owned());
         };
-        let payload = serde_json::to_value(&record).map_err(|error| error.to_string())?;
         yi_session::lock_session(&session)
-            .append_custom("main", PLAN_OP_ENTRY_TYPE, Some(payload))
+            .append_custom_record(&record)
             .map(|_entry| ())
             .map_err(|error| error.to_string())
     }
@@ -135,30 +134,7 @@ impl super::ops::PlanEngine {
 
 /// Every `custom{plan_op}` entry this session recorded, oldest first.
 pub fn records(session: &yi_session::SharedSession) -> Vec<PlanOpRecord> {
-    let entries = yi_session::lock_session(session)
-        .find_entries(&yi_session::EntryQuery {
-            custom_type: Some(PLAN_OP_ENTRY_TYPE.to_owned()),
-            order: yi_session::EntryOrder::OldestFirst,
-            ..yi_session::EntryQuery::default()
-        })
-        .unwrap_or_default();
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let yi_types::entry::Entry::Custom {
-                custom_type,
-                data: Some(data),
-                ..
-            } = entry
-            else {
-                return None;
-            };
-            if custom_type != PLAN_OP_ENTRY_TYPE {
-                return None;
-            }
-            serde_json::from_value::<PlanOpRecord>(data.clone()).ok()
-        })
-        .collect()
+    yi_session::lock_session(session).custom_records(yi_session::EntryOrder::OldestFirst, None)
 }
 
 pub fn owned_roots(session: &yi_session::SharedSession) -> Vec<PlanId> {
