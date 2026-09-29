@@ -1084,6 +1084,11 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
         yi_dir.join("daemon.ledger.json"),
         r#"{"sessions":{"s-gone":{"cwd":"/nonexistent/yi-gone-root","unseen":0,"lastEventMs":1}}}"#,
     )?;
+    std::fs::create_dir_all(yi_dir.join("catalog"))?;
+    std::fs::write(
+        yi_dir.join("catalog/openrouter.json"),
+        r#"{"openai-completions":{"x/hand-edited":{"id":"x/hand-edited"}}}"#,
+    )?;
     let seen = workspace.yi_env(&["doctor"], NO_KERNEL)?;
     assert_eq!(seen.status.code(), Some(1), "{}", stdout(&seen));
     let lines = doctor_lines(&seen);
@@ -1102,6 +1107,12 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
     assert!(
         lines.iter().any(|l| l.starts_with("ok    home")),
         "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("FAIL  catalog") && l.contains("x/hand-edited")),
+        "a cache entry that does not load is named: {lines:?}"
     );
     // D209: where yi runs decides what a contained command and a placement can reach.
     assert!(
