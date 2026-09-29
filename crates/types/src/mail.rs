@@ -89,3 +89,7 @@ pub struct Receipt {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub presented: String,
 }
+
+impl crate::entry::CustomRecord for Envelope {
+    const TYPE: &'static str = "agent_message";
+}

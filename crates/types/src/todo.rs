@@ -444,3 +444,11 @@ pub struct TodoInterceptRecord {
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
+
+impl crate::entry::CustomRecord for TodoInterceptRecord {
+    const TYPE: &'static str = TODO_INTERCEPT_ENTRY_TYPE;
+}
+
+impl crate::entry::CustomRecord for TodoRecord {
+    const TYPE: &'static str = TODO_ENTRY_TYPE;
+}

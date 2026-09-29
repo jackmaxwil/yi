@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use serde_json::Value;
-use yi_types::entry::Entry;
+use yi_types::entry::{CustomRecord, Entry};
 use yi_types::message::AgentMessage;
 use yi_types::record::LaneRecord;
 use yi_types::wire::{Fact, Mutation};
@@ -207,6 +207,39 @@ impl SessionStore {
         };
         self.append_entry(entry, lane)?;
         Ok(id)
+    }
+
+    pub fn append_custom_record<T: CustomRecord>(
+        &mut self,
+        record: &T,
+    ) -> Result<String, SessionError> {
+        let data = serde_json::to_value(record)
+            .map_err(|error| SessionError::InvalidPayload(format!("{}: {error}", T::TYPE)))?;
+        self.append_custom("main", T::TYPE, Some(data))
+    }
+
+    /// Records a newer build wrote in a shape this one cannot read are skipped, never an error.
+    pub fn custom_records<T: CustomRecord>(
+        &self,
+        order: EntryOrder,
+        limit: Option<usize>,
+    ) -> Vec<T> {
+        let query = EntryQuery {
+            custom_type: Some(T::TYPE.to_owned()),
+            order,
+            limit,
+            ..EntryQuery::default()
+        };
+        let entries = self.find_entries(&query).unwrap_or_default();
+        entries
+            .into_iter()
+            .filter_map(|entry| match entry {
+                Entry::Custom {
+                    data: Some(data), ..
+                } => serde_json::from_value(data).ok(),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn create_lane(&mut self, lane: &str, at: Option<&str>) -> Result<(), SessionError> {
