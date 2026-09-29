@@ -310,3 +310,30 @@ async fn a_grep_rewrite_is_a_write_the_wall_refuses() -> TestResult {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn a_walled_subtree_holds_against_a_rewrite_and_an_env_prefix() -> TestResult {
+    let root = Scratch::new("yi-wall-subtree")?;
+    std::fs::create_dir_all(root.join("tests"))?;
+    let file = root.join("tests/a.rs");
+    std::fs::write(&file, "fn unsafe_thing() {}\n")?;
+    let wall = Wall {
+        deny_write: vec![root.join("tests")],
+        deny_read: Vec::new(),
+        deny_url: Vec::new(),
+        container: None,
+    };
+    let mut args = serde_json::Map::new();
+    args.insert("pattern".to_owned(), serde_json::json!("unsafe_thing"));
+    args.insert("replace".to_owned(), serde_json::json!("safe_thing"));
+    args.insert("apply".to_owned(), serde_json::json!(true));
+    let (denial, is_error) = run_walled_tool(wall.clone(), "grep", args, &root).await?;
+    assert!(is_error && denial.contains("deny_write"), "{denial}");
+    let mut args = serde_json::Map::new();
+    let command = format!("env rm -f {}", file.display());
+    args.insert("command".to_owned(), serde_json::json!(command));
+    let (denial, is_error) = run_walled_tool(wall, "bash", args, &root).await?;
+    assert!(is_error && denial.contains("deny_write"), "{denial}");
+    assert_eq!(std::fs::read_to_string(&file)?, "fn unsafe_thing() {}\n");
+    Ok(())
+}
