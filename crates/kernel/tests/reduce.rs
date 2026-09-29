@@ -65,6 +65,49 @@ fn oversized_attachment_fails_the_cell_instead_of_silently_dropping() {
     assert!(cell.attachments.is_empty());
 }
 
+/// An attachment's data is written into a kitty escape and sent to the provider as is, so
+/// only strict base64 of the image its mime_type names is kept (#817). The images are
+/// Pillow's 1x1 encodes, the JPEG cut to its first twelve bytes.
+#[test]
+fn an_attachment_is_kept_only_as_base64_of_the_image_it_names() {
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4IScHAAK2AQU0pnWqAAAAAElFTkSuQmCC";
+    let gif = "R0lGODdhAQABAIEAAMgeHgAAAAAAAAAAACwAAAAAAQABAAAIBAABBAQAOw==";
+    let webp =
+        "UklGRjoAAABXRUJQVlA4IC4AAACwAQCdASoBAAEAAUAmJaACdLoABDAAAP7x3I/4DdfFtMv/vYL/3YL/3YL/WwAA";
+    let jpeg = "/9j/4AAQSkZJRgAB";
+    let cases = [
+        ("image/png", png, true),
+        ("image/gif", gif, true),
+        ("image/webp", webp, true),
+        ("image/jpeg", jpeg, true),
+        (
+            "image/png",
+            "AAAA\u{1b}\\\u{1b}]52;c;ZWNobyBwd25lZA==\u{7}",
+            false,
+        ),
+        ("image/png", jpeg, false),
+        ("image/png", &png[..png.len() - 1], false),
+        ("image/png", &format!("{png}=AAA"), false),
+    ];
+    for (mime_type, data, kept) in cases {
+        let mut cell = cell(65_536);
+        let content =
+            json!({"data": {ATTACHMENT_DISPLAY_MIME: {"mime_type": mime_type, "data": data}}});
+        reduce(&mut cell, &message("display_data", "req", content), None);
+        assert_eq!(
+            cell.attachments.len(),
+            usize::from(kept),
+            "{mime_type} {data:?}"
+        );
+        assert_eq!(
+            cell.stderr.contains("attachment dropped"),
+            !kept,
+            "{mime_type} {data:?}: {}",
+            cell.stderr
+        );
+    }
+}
+
 #[test]
 fn diff_error_result_and_idle_reduce_into_the_cell() {
     let mut cell = cell(65_536);
