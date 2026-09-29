@@ -1,0 +1,5 @@
+[
+  {"consumer": "skill", "message": "2990f761ef69", "answer": "land", "confidence": 0.91, "model": "english", "latencyMs": 212, "fired": false},
+  {"consumer": "skill", "message": "9c1d0e4b7a21", "latencyMs": 1000, "fired": false, "error": "the classifier did not answer within 1000 ms"},
+  {"consumer": "approve", "message": "5b8f2c6d9e10", "answer": "true", "confidence": 0.97, "model": "english", "latencyMs": 190, "fired": true, "verdictClass": "contained"}
+]

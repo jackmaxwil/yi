@@ -8,7 +8,6 @@ description: >
   several subsystems and several constraints. Do NOT use for a three-step
   task; the todo list is the list.
 trigger: plan this, create a plan, write a plan
-scope: text
 ---
 
 # plan
@@ -73,7 +72,7 @@ files in and out of scope, the binding constraints, and how to report.
 Pass `deny_write` on the acceptance instrument so a child reports a
 mismatch instead of editing the standard.
 
-    h = await rlm.run(brief, isolation='worktree')
+    h = await rlm.run(brief, role='root', isolation='worktree')
     await rlm.wait(120)
     r = await h.result(timeout=420)
 

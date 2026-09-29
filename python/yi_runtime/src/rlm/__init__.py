@@ -552,17 +552,56 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     child's ``fetch`` refuses, so ``["kernel://"]`` walls a whole scheme.
     ``context_keys`` is the child's whole view of this kernel: those variables are
     serialized into its brief and nothing else of this namespace reaches it.
-    ``check`` makes it a protocol child — it owes a ``{"value": …, "discoveries":
+    ``check`` makes a ``role="root"`` child a protocol child (a reader refuses it) — it owes a ``{"value": …, "discoveries":
     […]}`` answer, and ``result`` withholds that answer while the check is red.
     ``deadline_s`` and ``tokens`` are the child's lease, drawn from this session's own: an
     ask past what is left here is refused with both numbers, never clamped. ``parent_close``
     is ``"terminate"`` (default, 30 s grace) or ``"request_cancel"``; work is kept either way.
+    A bare call makes a question-child (``role="reader"``, the default; ``role="root"`` is a
+    full child with this session's prompt and tools): a short reader prompt instead of this session's,
+    ``tools`` from ``["read", "grep"]`` (both by default, ``[]`` for one request), at most
+    ``turns`` requests (3; the last is told to answer, and a tool call in it is refused), writes walled off, and no kernel. It stands
+    outside the child cap; its finish reaches you like any child's unless ``result`` took it. ``partition`` is
+    a list of URLs (``local://path#L1-40@TAG``, ``history://…``, ``plan://…``) resolved now and
+    inlined into its brief as numbered, fenced lines, for any role; a kernel value rides
+    ``context_keys``. ``schema`` (a reader's) names the answer's shape in its question and, on a
+    reader with ``tools=[]`` or ``turns=1``, asks the provider for it (the capped last turn
+    still carries a reader's tools, so it gets the schema only in its question): strictly where the schema closes every
+    object, as guidance otherwise.
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
     kwargs = _resolve_context(kwargs)
     payload = await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs})
     return _spawn_handle_from_payload(payload)
+
+
+@_public
+async def ask(
+    question: str,
+    partition: "list[str] | tuple[str, ...]" = (),
+    *,
+    schema: dict[str, Any] | None = None,
+    timeout: float = 540.0,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Ask one question-child and return its answer; it is reaped either way.
+
+        answers = await asyncio.gather(*(
+            rlm.ask("Can this function panic? Quote the line.", [url], schema=PANIC) for url in urls))
+
+    ``schema`` goes to the child too: its question names it and the provider is asked for that
+    shape where it can enforce one; the answer is checked against it here either way.
+    ``kwargs`` are ``run``'s (``tools``, ``turns``, ``model``, ``thinking``, ``context_keys``).
+    """
+    if schema is not None:
+        kwargs["schema"] = schema
+    urls = [partition] if isinstance(partition, str) else list(partition)
+    handle = await run(question, role="reader", partition=urls, **kwargs)
+    try:
+        return await handle.result(schema=schema, timeout=timeout)
+    finally:
+        await delete_subagent(handle)
 
 
 @_public

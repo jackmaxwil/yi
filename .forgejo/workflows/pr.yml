@@ -163,7 +163,34 @@ jobs:
               --model openrouter/deepseek/deepseek-v4-flash-0731 --cap-usd 1 --out "live-again-$n" || true
             runs+=("live-again-$n/run.json")
           done
+      # An OpenRouter Claude route caches nothing without explicit marks, and the DeepSeek run above
+      # cannot see that: its upstream caches on its own (#742). `cache-warm-claude` is a tool loop
+      # whose every warm request must read 90% of the previous request's whole prompt, writes
+      # included, so a lost or misplaced tail mark is red. The verdict is the cache's alone (its
+      # reward); a red doctor row is the report's. The pin is this route's, not the ledger's, so it
+      # is not EVAL_ROUTING. The job stays advisory; a red here names a real loss. If this step is
+      # ever made required, a red run is rerun once before it counts, as the ledger's `again` rule does.
+      - name: a Claude route reads its warm prefix
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CLAUDE_ROUTING: '{"order":["amazon-bedrock"],"allow_fallbacks":false}'
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then echo "inconclusive: no OPENROUTER_API_KEY secret"; exit 0; fi
+          EVAL_ROUTING="$CLAUDE_ROUTING" python3 evals/run.py --live --task cache-warm-claude --binary target/debug/yi \
+            --model openrouter/anthropic/claude-haiku-4.5 --cap-usd 0.2 --out live-claude || true
+          python3 - <<'EOF'
+          import json, sys
+          try:
+              row = json.load(open("live-claude/run.json"))["rows"][0]
+          except (OSError, ValueError, KeyError, IndexError) as error:
+              sys.exit(print(f"inconclusive: {error}"))
+          print(f"cache reward {row.get('reward')}, {row.get('status')}: {row.get('detail') or 'ok'}; warm shares {row.get('warmShares')}")
+          sys.exit(0 if row.get("status") == "inconclusive" or row.get("reward") == 1 else 1)
+          EOF
       - name: post the live report
+        # Steps stop at the first red one; the DeepSeek verdict is owed either way.
+        if: always()
         env:
           FORGEJO_API_URL: ${{ github.api_url }}
           FORGEJO_REPOSITORY: ${{ github.repository }}

@@ -6,7 +6,7 @@ use std::error::Error;
 
 use serde_json::{Map, Value, json};
 use yi_ai::anthropic::{AnthropicOptions, Thinking, build_params};
-use yi_ai::faux::{faux_assistant_message, faux_tool_call};
+use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_ai::openai::{self, OpenAiOptions};
 use yi_runtime::{
     AgentSession, PermissionMode, ProviderStream, SessionConfig, identity_fragment, mode_fragment,
@@ -54,13 +54,12 @@ fn openai_model() -> Model {
     }
 }
 
-/// The catalog flag, not the provider, is what earns a root breakpoint.
+/// The fetched-catalog shape (#742): no cache flag exists, and the route alone earns the marks.
 fn openrouter_model() -> Model {
     Model {
         id: "anthropic/claude-haiku-4.5".to_owned(),
         provider: "openrouter".to_owned(),
         base_url: "https://openrouter.ai/api/v1".to_owned(),
-        compat: Some(json!({"cacheControlFormat": "anthropic", "thinkingFormat": "openrouter"})),
         ..openai_model()
     }
 }
@@ -68,7 +67,6 @@ fn openrouter_model() -> Model {
 fn options() -> AnthropicOptions {
     AnthropicOptions {
         thinking: Thinking::Off,
-        cache: true,
         ..AnthropicOptions::default()
     }
 }
@@ -125,7 +123,7 @@ fn session_tool_defs() -> Result<Vec<ToolDef>, Box<dyn Error>> {
                 .collect(),
         },
     );
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: String::new(),
@@ -241,6 +239,10 @@ fn context(messages: Vec<AgentMessage>) -> Result<LlmContext, Box<dyn Error>> {
     Ok(LlmContext {
         system_prompt: system_prompt(),
         messages,
+        transient: Vec::new(),
+        schema: None,
+        shared_through: None,
+        reuse: yi_types::model::Reuse::Loop,
         tools: Some(tool_defs()?),
         tool_choice: None,
     })
@@ -266,8 +268,10 @@ fn prefix_bytes(params: &Value) -> Result<usize, Box<dyn Error>> {
     Ok(system.len().saturating_add(tools.len()))
 }
 
-/// The breakpoint moves to the newest message every turn and is not part of
-/// the prefix hash, so it is the one key a stability check must ignore.
+/// The breakpoint moves to the newest message every turn and is not part of the prefix hash.
+/// Nothing else is forgiven: a plain string that became a part to carry a mark is a different
+/// prompt once OpenRouter merges it with the user message beside it (#742, live: request 3
+/// read 13,900 of 22,373 tokens).
 fn strip_cache_control(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -357,9 +361,8 @@ fn the_openai_cached_prefix_survives_a_turn() -> TestResult {
     )
 }
 
-/// An Anthropic model behind OpenRouter gets one root breakpoint that OpenRouter
-/// moves to the newest block itself, so the check is the same as OpenAI's plus
-/// the marker being present on both turns and no OpenAI-only key leaking in.
+/// An Anthropic model behind OpenRouter marks its system block and newest message, never the
+/// root, so the check is OpenAI's plus both marks on both turns and no OpenAI-only key.
 #[test]
 fn the_openrouter_cached_prefix_survives_a_turn() -> TestResult {
     let model = openrouter_model();
@@ -370,7 +373,11 @@ fn the_openrouter_cached_prefix_survives_a_turn() -> TestResult {
     let first = openai::build_params(&model, &context(first_turn())?, &options);
     let second = openai::build_params(&model, &context(second_turn())?, &options);
     for params in [&first, &second] {
-        assert_eq!(params["cache_control"], json!({"type": "ephemeral"}));
+        let messages = params["messages"].as_array().ok_or("messages")?;
+        let marked = |message: &Value| message["content"][0]["cache_control"].is_object();
+        assert!(params.get("cache_control").is_none(), "{params}");
+        assert!(messages.first().is_some_and(marked), "{params}");
+        assert!(messages.last().is_some_and(marked), "{params}");
         assert!(params.get("prompt_cache_key").is_none());
     }
     assert_prefix_survives_a_turn(&first, &second)
@@ -505,6 +512,7 @@ fn frozen_block(cwd: &std::path::Path, home: &std::path::Path) -> Result<String,
         user_system: String::new(),
         schema_instruction: None,
         context_window: 128_000,
+        global_skills: Vec::new(),
     });
     host.start(None, false);
     Ok(host
@@ -622,6 +630,7 @@ fn two_fresh_sessions_send_the_same_system_prompt_and_tools() -> TestResult {
             user_system: String::new(),
             schema_instruction: None,
             context_window: 128_000,
+            global_skills: Vec::new(),
         });
         host.start(None, false);
         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -655,39 +664,102 @@ fn report_the_prefix_size() -> TestResult {
     Ok(())
 }
 
-/// The environment block trails the last persisted user block, so the cached prefix a
-/// provider matches is the same with or without it.
+/// Body indexes of the history messages carrying a mark, the system message left out.
+fn marked_history(params: &Value) -> Vec<usize> {
+    params["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter(|(_, message)| !matches!(message["role"].as_str(), Some("system" | "developer")))
+        .filter(|(_, message)| {
+            message["content"]
+                .as_array()
+                .is_some_and(|parts| parts.iter().any(|part| part["cache_control"].is_object()))
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Pops the environment off a rendered body: it is the last message, and no part of it
+/// carries a mark.
+fn strip_env(params: &yi_ai::breakpoints::Encoded, turn: u32) -> Result<Value, Box<dyn Error>> {
+    let mut out = params.clone().into_value();
+    let messages = out["messages"].as_array_mut().ok_or("messages")?;
+    let last = messages.pop().ok_or("no messages")?;
+    let text = last["content"]
+        .as_str()
+        .or_else(|| last["content"][0]["text"].as_str())
+        .unwrap_or("");
+    assert!(text.contains(&format!("turn: {turn}")), "{last}");
+    let marked = last["content"]
+        .as_array()
+        .is_some_and(|parts| parts.iter().any(|part| part["cache_control"].is_object()));
+    assert!(
+        !marked,
+        "the environment block is never a breakpoint: {last}"
+    );
+    Ok(out)
+}
+
+/// The D51 invariant over a scripted tool loop, on both dialects: the environment rides
+/// `transient` and renders last and bare, every history message request k sent is byte-
+/// identical in request k+1, and request k+1's previous-tail mark sits exactly where request
+/// k's tail mark was, so it is a read and never a write (#743).
 #[test]
-fn the_environment_block_does_not_move_the_cached_prefix() -> TestResult {
+fn a_tool_loop_keeps_its_prefix_and_reads_the_previous_tail_on_both_dialects() -> TestResult {
     let env = |turn: u32| {
         user(&format!(
             "<environment>\ncwd: /x\nturn: {turn}\n</environment>"
         ))
     };
-    let mut first = first_turn();
-    first.push(env(1));
+    let mut third = second_turn();
+    let last_user = third.pop().ok_or("second turn ends with a user")?;
+    third.push(faux_assistant_message(
+        vec![faux_text("it exports advisor")],
+        StopReason::Stop,
+    ));
+    third.push(last_user);
     let mut second = second_turn();
-    second.push(env(2));
-    let a = build_params(&model(), &context(first)?, &options());
-    let b = build_params(&model(), &context(second)?, &options());
-    let strip_env = |params: &Value| -> Result<Value, Box<dyn Error>> {
-        let mut out = params.clone();
-        let messages = out["messages"].as_array_mut().ok_or("messages")?;
-        let last = messages.pop().ok_or("no messages")?;
-        assert!(
-            last["content"][0].get("cache_control").is_none(),
-            "the environment block is never a breakpoint: {last}"
-        );
-        Ok(out)
-    };
-    let (a_prefix, b_prefix) = (strip_env(&a)?, strip_env(&b)?);
-    assert_prefix_survives_a_turn(&a_prefix, &b_prefix)?;
-    let ahead = a_prefix["messages"]
-        .as_array()
-        .and_then(|m| m.last())
-        .and_then(|m| m["content"].as_array())
-        .and_then(|blocks| blocks.last())
-        .ok_or("no block ahead of the environment")?;
-    assert_eq!(ahead["cache_control"]["type"], "ephemeral", "{ahead}");
+    second.truncate(3);
+    let requests: Vec<LlmContext> = [first_turn(), second, third]
+        .into_iter()
+        .zip(1..)
+        .map(|(messages, turn)| {
+            let mut ctx = context(messages)?;
+            ctx.transient = vec![env(turn)];
+            Ok::<_, Box<dyn Error>>(ctx)
+        })
+        .collect::<Result<_, _>>()?;
+    let anthropic: Vec<yi_ai::breakpoints::Encoded> = requests
+        .iter()
+        .map(|ctx| build_params(&model(), ctx, &options()))
+        .collect();
+    let openrouter: Vec<yi_ai::breakpoints::Encoded> = requests
+        .iter()
+        .map(|ctx| openai::build_params(&openrouter_model(), ctx, &OpenAiOptions::default()))
+        .collect();
+    for (dialect, bodies) in [("anthropic", anthropic), ("openrouter", openrouter)] {
+        let prefixes: Vec<Value> = bodies
+            .iter()
+            .zip(1..)
+            .map(|(body, turn)| strip_env(body, turn))
+            .collect::<Result<_, _>>()?;
+        for pair in prefixes.windows(2) {
+            let (earlier, later) = (&pair[0], &pair[1]);
+            assert_prefix_survives_a_turn(earlier, later)?;
+            let tail = marked_history(earlier);
+            let next = marked_history(later);
+            assert_eq!(
+                tail.last(),
+                next.get(next.len().wrapping_sub(2)),
+                "{dialect}: the previous tail is re-marked where it was: {tail:?} then {next:?}"
+            );
+            assert!(
+                next.last().is_some_and(|last| Some(last) > tail.last()),
+                "{dialect}: the tail moves forward: {tail:?} then {next:?}"
+            );
+        }
+    }
     Ok(())
 }

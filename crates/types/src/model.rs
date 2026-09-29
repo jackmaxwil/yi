@@ -282,15 +282,71 @@ pub enum ToolChoice {
     Tool(ForcedTool),
 }
 
+/// Whether a later request reads this request's tail, said by the caller (D295). A missing
+/// value means `Loop`, the side whose failure is one spare write rather than a total miss.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reuse {
+    /// The next request continues this conversation: its tail is read again.
+    #[default]
+    Loop,
+    /// A single call (a title, a branch summary): the tail is never read again.
+    OneShot,
+    /// The conversation's last turn (`tool_choice: none`): nothing follows it.
+    LastTurn,
+    /// The conversation's own request shape, sent once and then left (a compaction on the
+    /// session's model): the previous tail is read, and no tail of its own is written.
+    ReadOnly,
+}
+
+impl Reuse {
+    pub fn is_loop(&self) -> bool {
+        *self == Self::Loop
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmContext {
     pub system_prompt: String,
     pub messages: Vec<crate::message::AgentMessage>,
+    /// Set by the caller, never inferred from the request's shape.
+    #[serde(default, skip_serializing_if = "Reuse::is_loop")]
+    pub reuse: Reuse,
+    /// Per-request facts (the environment block), rendered after every cache mark and
+    /// never carrying one: such an entry is written every request and read by none (D295).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transient: Vec<crate::message::AgentMessage>,
+    /// A structured-output schema. Providers render it ahead of tools and system, so a
+    /// prefix key hashes it first; read by structured outputs, unread by the adapters yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
+    /// The last message index siblings share byte for byte, set when a sibling sent the same
+    /// run within the cache's life (D309); no encoder reads it until cache stage C3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_through: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+}
+
+/// The assistant diagnostic that records [`LlmContext::stable_key`] per request (C5).
+pub const CACHE_DIAGNOSTIC: &str = "cache";
+
+impl LlmContext {
+    /// A hash of the inputs every request of a conversation shares: schema, tools, system.
+    /// A change between two requests is a miss yi caused (design §7, invariant 3).
+    pub fn stable_key(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let rendered = serde_json::json!([self.schema, self.tools, self.system_prompt]);
+        let digest = Sha256::digest(rendered.to_string().as_bytes());
+        digest
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -329,6 +385,35 @@ mod tests {
     }
 
     #[test]
+    fn transient_and_schema_ride_only_when_set() -> Result<(), Box<dyn std::error::Error>> {
+        let context = LlmContext {
+            system_prompt: "s".to_owned(),
+            messages: Vec::new(),
+            transient: vec![crate::message::AgentMessage::host_user(
+                crate::message::UserContent::Text("<environment>".to_owned()),
+                0,
+            )],
+            schema: Some(serde_json::json!({"type": "object"})),
+            shared_through: None,
+            reuse: super::Reuse::OneShot,
+            tools: None,
+            tool_choice: None,
+        };
+        let wire = serde_json::to_string(&context)?;
+        assert!(wire.contains(r#""transient":[{"#), "{wire}");
+        assert!(wire.contains(r#""schema":{"type":"object"}"#), "{wire}");
+        assert!(wire.contains(r#""reuse":"one_shot""#), "{wire}");
+        assert_eq!(serde_json::from_str::<LlmContext>(&wire)?, context);
+        let older: LlmContext = serde_json::from_str(r#"{"systemPrompt":"s","messages":[]}"#)?;
+        assert_eq!(
+            older.reuse,
+            super::Reuse::Loop,
+            "a missing value is the loop"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn med_parses_on_both_paths_and_never_serializes() -> Result<(), Box<dyn std::error::Error>> {
         for spelling in ["med", "medium"] {
             assert_eq!(Effort::from_str(spelling), Ok(Effort::Medium));
@@ -337,5 +422,45 @@ mod tests {
         }
         assert_eq!(serde_json::to_string(&Effort::Medium)?, "\"medium\"");
         Ok(())
+    }
+
+    /// The key moves with each input it covers, and not with the history or the tail.
+    #[test]
+    fn the_stable_key_moves_with_schema_tools_and_system_only() {
+        let base = LlmContext {
+            system_prompt: "s".to_owned(),
+            messages: Vec::new(),
+            transient: Vec::new(),
+            schema: None,
+            shared_through: None,
+            reuse: super::Reuse::Loop,
+            tools: Some(vec![super::ToolDef {
+                name: "read".to_owned(),
+                description: "d".to_owned(),
+                parameters: serde_json::json!({}),
+                freeform: None,
+            }]),
+            tool_choice: None,
+        };
+        let key = base.stable_key();
+        let mut system = base.clone();
+        system.system_prompt.push('!');
+        let mut tools = base.clone();
+        if let Some(tool) = tools.tools.iter_mut().flatten().next() {
+            tool.description.push('!');
+        }
+        let mut schema = base.clone();
+        schema.schema = Some(serde_json::json!({"type": "object"}));
+        for moved in [system, tools, schema] {
+            assert_ne!(moved.stable_key(), key);
+        }
+        let mut history = base.clone();
+        history
+            .transient
+            .push(crate::message::AgentMessage::host_user(
+                crate::message::UserContent::Text("<environment>".to_owned()),
+                0,
+            ));
+        assert_eq!(history.stable_key(), key);
     }
 }

@@ -209,7 +209,7 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   `openai-codex`), `openai-completions` (`openrouter`, `google`); any other api is faux. Catalog:
   deflated bundle overlaid by `~/.yi/catalog/<provider>.json`. Model: `--model`, else
   `models.primary`, else `model`; none is built in.
-- Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
+- Credentials: env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `LAYA_API_KEY`,
   `GEMINI_API_KEY`), else the yi-oauth store; OAuth refreshes before use, falling back to disk.
 - Retry before the response body only: 408, 409, 429, 5xx, transport errors; 3 attempts, 300 s
   wall; `retry-after(-ms)` if ≤ 60 s, else 0.5 s·2ⁿ ≤ 8 s, no jitter; read timeout 60 s.
@@ -222,8 +222,8 @@ yi-ai streams one assistant message per request as `AssistantMessageEvent`s on a
   a per-provider flock; profiles are the user's `~/.yi/oauth/<provider>.json`, Yi ships none.
 - Owner: [`crates/runtime/src/provider.rs`](../crates/runtime/src/provider.rs),
   [`crates/ai/src/`](../crates/ai/src/), [`crates/oauth/src/`](../crates/oauth/src/)
-- State: `models { primary, summarizer, advisor, autoReview }` in `~/.yi/config.json`
-  ([`config.rs`](../crates/types/src/config.rs)), advisor and autoReview off until named;
+- State: `models { primary, summarizer, advisor, autoReview, classifier }` in `~/.yi/config.json`
+  ([`config.rs`](../crates/types/src/config.rs)), advisor, autoReview and classifier off until named;
   [`RetryPolicy`](../crates/ai/src/retry.rs). Shapes: [`model.rs`](../crates/types/src/model.rs).
 - Settled by: D34, D57, D128, D191, D197, D231
 
@@ -238,7 +238,9 @@ extension `Host` whose synchronous extensions turn session events into effects.
   (`lang-rust`, `~/.yi/extensions/*.json`), `orchestrate`, `grid`, `route-telemetry`, `memory`.
 - Yard text never enters a slot. It renders as `<<<yi-external <id> source="…" trust="…">>>`,
   `<id>` = first 16 hex of the text's content hash; `<<<` is escaped, control chars stripped.
-  Project instruction files (`AGENTS.md`, `CLAUDE.md`) and project skills render here. Project
+  Project instruction files (`AGENTS.md`, `CLAUDE.md`; 48 KiB each, a pair equal but for HTML
+  comment lines rides once, the granted one if either is; a file whose bytes are `HEAD`'s blob is
+  granted) and project skills render here. Project
   packs load only when `~/.yi/trust.json` (`yi trust`) grants their content hash.
 - The table persists as `custom{ext_state}` on change and is restored on resume.
 - The environment block is a `host_user` message appended per request by `transform_context`,
@@ -247,7 +249,10 @@ extension `Host` whose synchronous extensions turn session events into effects.
   `host::probe_at` (DMI, cpuinfo, container markers, SSH, WSL), probed once; SSH is re-read.
 - Reminders fire on evidence: `orchestrate` attaches silently at turn end only after an edit and
   more calls than its lever; `edit_before_read`, `files_matched`, `failed_check_after_edit` remind.
-  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in); ≤ 2 `skill://` hints a turn.
+  `RuleEngine` reads `~/.yi/rules` and `.yi/rules` (none built in). A `skill://` hint answers
+  only a message the user typed, placed right behind it: ≤ 2 a message, a typed `$name` always.
+  With `models.classifier` set, a local sidecar is also asked which triggered skill the message
+  calls for (`classify` entry); it points only at or above `classifier.threshold`.
 - Next-step lines: `affordance::render` over the compiled-in `graph.json` walks 2 hops from the
   last call over edges whose condition is `always` or a host-asserted fact from the closed
   `PREDICATES`, by weight, ≤ 2 `next:` lines (3 for `todo`). `Graph::check` bounds edges (400),
@@ -264,7 +269,7 @@ extension `Host` whose synchronous extensions turn session events into effects.
   SessionStart, PromptSubmitted, ToolCall, ToolResult, TurnEnd, Usage, Compacted }`, `Effect {
   AttachFragment, DetachFragment, AttachExternal, Remind, Record }`.
 - Shapes: [`graph.rs`](../crates/types/src/graph.rs) (`Graph`, `Edge`, `Relation`, `Predicate`).
-- Settled by: D138, D139, D187, D188, D196, D209, D219, D220, D231.
+- Settled by: D138, D139, D187, D188, D196, D209, D219, D220, D231, D289.
 
 ## 7. Tool
 A `yi_tools::Tool` adapted to the loop's `AgentTool`; the set is fixed at session build.
@@ -324,9 +329,11 @@ MCP is a CLI, never a tool. `yi mcp` runs one-shot: `connect <server> @s`, `clos
 `login`, `logout`, `grep`, `skill`; per session `tools-list|get|call`, `resources-list|read`,
 `prompts-list`, `ping`. It speaks JSON-RPC itself, only yi-cli depends on it, `mcp.enabled` gates
 it. A bare name resolves in `~/.yi/mcp.json`, `.mcp.json`, `.vscode/mcp.json`, `.cursor/mcp.json`.
-The kernel shells out: `rlm.mcp.list_tools|call_tool|reload|close` run `$YI_BIN mcp … --json`.
+The kernel shells out: `rlm.mcp.list_tools|call_tool|reload|close` run `$YI_BIN mcp … --json`;
+`connect` alone goes through the host, from `~/.yi/mcp.json`. A stdio server starts in `~/.yi`,
+outside every sandbox's writable roots, so its command is an absolute path or on `PATH`.
 
-- Owner: [`mcp-cli`](../crates/mcp-cli/src/lib.rs). Settled by: D36, D71.
+- Owner: [`mcp-cli`](../crates/mcp-cli/src/lib.rs). Settled by: D36, D71, D296.
 
 ### 7.7 Checkpoints
 A shadow gitdir `~/.yi/checkpoints/<xxh32 of project>/`, the project as work tree, one lock per
@@ -340,33 +347,42 @@ with no paired end restores unscoped and says so. Turn start and end capture int
 
 ### 7.8 Skills
 Roots `{.yi,.agents,.pi,.claude}/skills` under cwd, then home; first root wins a name;
-`<name>/SKILL.md` walked 2 levels. Frontmatter at discovery, body via `read`; `$name` arms the
-skill as a rule. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
+`<name>/SKILL.md` walked 2 levels. The catalog lists every repository skill and every
+`~/.yi/skills` skill, but another home-root skill only when config `skills.global` names it; a
+child's lists none of those. Frontmatter at discovery, body via `read`; `$name` or a
+`trigger:` needle in a message the user typed points at the skill. Bundled: `skills/yi` (`just install-skills`), and Python skills `attach-image`,
 `compact`, `goal`, `memory` shipped in the binary for the kernel venv.
 
-- Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139.
+- Owner: [`skills.rs`](../crates/runtime/src/skills.rs). Settled by: D139, D290, D292.
 
 ## 8. Permission
 A pure `decide` over the call, mode, rules, grants, holds and catastrophic context.
 
-- Modes `Ask`, `Auto`, `Yolo`; default `Auto` (`--confirm`, `--auto`, `--yolo`); one prompt
+- Modes `Ask`, `Auto`, `Yolo`; default `permissions.mode`, else `Auto` (`--confirm`, `--auto`, `--yolo`); one prompt
   fragment each. Order: catastrophic (every mode), configured deny, session rule or grant,
   configured allow/ask, hold, mode. `Auto` allows reads, in-tree writes and provably safe
   commands, contains the unproven, asks for destructive and egress segments. Commands are
   decided per segment; an unparseable command is its own input.
 - `git_dirs` reads `.git`, `gitdir:` and `commondir` with bounded reads, trusting a pointer only
   to a `HEAD`; catastrophic matching covers every spelling and reads through wrappers.
-- `refused_scopes` records a contained failure by program and verb; a later use asks. "Always
-  allow" keeps a `Grant` (directory, tree root, program+verb), in memory, ≤ 1024 rules.
+- A contained failure is remembered by the path the sandbox denied, and a later write under its
+  directory asks (in home, any mention); with no path, `refused_scopes` remembers the program and
+  verb and a later use asks. "Always allow" keeps a `Grant` (directory, tree root, program+verb),
+  in memory, ≤ 1024 rules.
 - Sandbox: Seatbelt `/usr/bin/sandbox-exec`, macOS only; writable cwd, git dirs minus
   `hooks config commondir gitdir`, session dir, tmp; reads deny `~/.ssh ~/.gnupg ~/.aws ~/.kube
   ~/.docker`; no network. Without it, `Contain` becomes a reviewable `Ask`.
+- With `classifier.approve` and `LAYA_API_KEY`, a reviewable auto-mode ask first gets one `noul`
+  from the classifier sidecar: P(safe) ≥ 0.9 (0.98 if destructive) allows, ≤ 0.05 asks the user,
+  else on to the reviewer; an ask it may judge left unanswered 120 s is settled by that judgement.
 - With `models.autoReview` set, a reviewable ask goes to the reviewer (30 s); non-allow denies
   with a request id `ask_user` replays; `ActionLedger` (256) makes an approval single-use.
+- Every settled ask is journaled as a `permission` custom entry: the ask, the verdict, and
+  whether the user, the reviewer or nobody answered.
 - Owner: [`decide`](../crates/permission/src/decide.rs), [`sandbox`](../crates/tools/src/sandbox.rs)
 - State: `PermissionMode { Ask, Auto, Yolo }`, `Decision { Allow, Contain, Deny, Ask { title,
   description, reviewable } }`, `Class { Safe, Destructive, Egress, Unknown }`.
-- Shapes: [`types`](../crates/types/src/permission.rs). Settled by: D15, D26, D81, D205, D206, D207.
+- Shapes: [`types`](../crates/types/src/permission.rs). Settled by: D15, D26, D81, D205, D206, D207, D293, D301.
 
 ## 9. Kernel
 A persistent IPython process per session that reaches the host only through host requests.
@@ -462,7 +478,23 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - Every child enters through `SubagentHost::admit`; `rlm.run` answers
   `{rlm_child_id, next, name, session_dir, model}` at admission and the run proceeds detached.
 - kwargs are a whitelist: `name, model, thinking, fork, isolation, deny_write, deny_read,
-  deny_url, context, check, deadline_s, tokens, parent_close`; `fork=all` refuses a model.
+  deny_url, context, check, deadline_s, tokens, parent_close, role, partition, tools, turns,
+  schema`;
+  `fork=all` refuses a model.
+- A child's request is made of its brief (D307). `partition` is a list of Urls resolved at spawn
+  through the parent's `Resolver` (walled as its reads, `kernel://` refused) and inlined before the
+  prompt as numbered lines in untrusted yard fences, 64 KiB of lines at most, cut at a whole line
+  with a `[… kept …]` row naming the cap and the rest. A worker spawn that names no `role` is
+  `role="reader"` (D308); a plan delegation, a juror and a service are `root`. A reader is a
+  question-child: `prompts/reader.md` is its whole system prompt, `tools` a subset of `read` and
+  `grep` (both by default), `turns` its request cap (3, at most 10; the last is the last word, whose tool calls are refused,
+  after a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
+  gate rules bind it, and it has no extension, kernel, plan, schedule,
+  checkpoint or environment block; a fork or an isolation refuses; 64 held readers refuse the next
+  until one is reaped. `rlm.ask(question, partition,
+  schema=…)` runs one, reads its result and reaps it. A reader's `schema` is named in its
+  question and sent as structured output only by a reader with `tools=[]` or `turns=1` (the turn cap's last word still carries the tools, so a reader that keeps its tools gets the schema in its question and `result`'s check only), strictly only where it closes every object (D309); its
+  partition is its own first message, marked `shared_through` when a sibling sent it within 300 s.
 - `isolation` is `none`, `worktree` or `container:<image>` (D286), from `rlm.run` or a plan
   delegation's `spec.isolation`. A container child claims the same lane, branch and merge as a
   worktree child; `docker run -d --rm` starts one container of the image over it at spawn, the
@@ -474,8 +506,8 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   with a notice.
 - Admission refuses at lever `family.cap` (16) live sessions, at depth `rlm.maxDepth` (1,
   clamped 1..=3) but for a juror, at `family.max_children` (8) workers, and on a taken name.
-- `Standing { Worker, Juror, Service }`: juror and service stand outside the worker cap; lease,
-  wall and family cap bind all three. A service (`rlm.service(name, brief, restart=3)`)
+- `Standing { Worker, Juror, Reader, Service }`: juror, reader and service stand outside the worker cap; lease,
+  wall and family cap bind them all. A service (`rlm.service(name, brief, restart=3)`)
   respawns on its `ChildRecord` after `Failed { Provider | KernelDeath }`, ≤ 10 per 10 min.
   A judge seats `policy.n` jurors from the cheapest other model family, else `Abstain` (§13).
 - The wall only reduces and `under(parent)` makes it hereditary; it refuses at the tool adapter
@@ -497,7 +529,7 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
 - Shapes: [`types/src/subagent.rs`](../crates/types/src/subagent.rs) (`ChildUpdate` on
   `_yi/subagent_update`), [`types/src/lease.rs`](../crates/types/src/lease.rs) (`Lease`,
   `LeaseRecord`, `ParentClose`); child dirs `<parent rlm dir>/sub-<8 hex>`
-- Settled by: D165, D210, D215, D216, D218, D234
+- Settled by: D165, D210, D215, D216, D218, D234, D307, D308, D309
 
 ## 12. Mailbox
 A family message: an envelope in the receiver's inbox before delivery, then its one queue.
@@ -732,17 +764,18 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `lanes [reap <slot>]`, `trust [list\|revoke]`, `gate <cmd>`, `fetch <url>` | Lane slots (§14); repository trust (§8); the permission decision for a command, exit 1 when refused (§8); one resolve through the wall (§10) |
 | `plan lint\|report\|fuse reset\|repair\|accept\|resolve\|<op>`, `why <file>:<line>\|<plan>/<todo>`, `todo [list]` | Plan ops as the owner; blame to commit to todo to goal; the newest todo list (§13) |
 | `memory list\|show\|search\|forget\|import\|stats\|check\|rebuild`, `catalog [refresh [provider]]`, `doctor [--fix]` | Memory stores (docs/memory.md); the model catalog (§5); session invariants checked, safe ones repaired |
-| `login`, `logout`, `mcp …`, `version` | Provider credentials; the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
+| `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
-- The default permission mode is `auto`; `--confirm` selects `ask`, `--yolo` selects `yolo` (§8).
+- The default permission mode is `permissions.mode`, else `auto`; `--confirm` selects `ask`, `--yolo` selects `yolo` (§8).
 - Exit codes: 0 ok; 1 error; 2 usage, bad flag, bad config or refused build; 3 an answer failing
   `--schema`. Under `--json` an agent failure is in-band and exits 0. Errors print `error: …`.
 - `~/.yi/config.json` is the only config file, parsed once; every struct is `deny_unknown_fields`
   and `migrate` drops keys an older build read, reporting each. Keys: `model`, `thinking`,
-  `models{primary,summarizer,advisor,autoReview}`, `bash{autoBackgroundMs}`, `plans{dir}`,
+  `models{primary,summarizer,advisor,autoReview,classifier}`, `bash{autoBackgroundMs}`, `plans{dir}`,
   `plan{staleReminderTurns}`, `mcp{enabled,tokenStore}`, `kernel{prewarm}`, `console{autoSide}`,
   `edit{freeformGrammar}`, `keys{<action>:<key>}`, `tui{pace}`, `lanes{enabled,slots,land}`,
-  `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`.
+  `catalog{enabled,refreshHours}`, `telemetry{enabled}`, `routing`, `rlm{maxDepth}`,
+  `classifier{url,timeoutMs,threshold,approve,allowAt,allowDestructiveAt,askAt,askTimeoutSecs}`, `permissions{mode}`.
 - The default cargo feature `tui` gates `yi-tui` and `yi-console`; without it both verbs exit 2.
 - Owner: [`main.rs`](../crates/cli/src/main.rs); config:
   [`config.rs`](../crates/types/src/config.rs)
