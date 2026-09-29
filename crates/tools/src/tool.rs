@@ -20,8 +20,8 @@ pub struct ToolContext {
     pub cancelled: CancelFlag,
     /// None means a reducer must hand back the raw text instead.
     pub recovery_dir: Option<PathBuf>,
-    /// How long a command may hold the turn before it keeps running as a job.
-    /// None, the default, never backgrounds anything.
+    /// How long a command may hold the turn before it keeps running as a job, when the call
+    /// passes no `wait`. None, the default, backgrounds only a call that does.
     pub auto_background: Option<std::time::Duration>,
     /// Set when the permission layer contained this call rather than asking.
     pub sandbox: Option<crate::sandbox::Sandbox>,
