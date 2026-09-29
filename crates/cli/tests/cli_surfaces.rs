@@ -252,6 +252,60 @@ fn ask_reads_a_prompt_past_the_argument_cap_from_stdin() -> TestResult {
     Ok(())
 }
 
+/// A `--schema` answer is the newest message holding a matching value. A reader narrated
+/// "`lines[0]`" before a read, or answered and then wrapped up its todos in prose; both exited 3.
+#[test]
+fn a_schema_answer_is_the_newest_message_that_matches() -> TestResult {
+    use yi_runtime::faux::{faux_assistant_message, faux_text, faux_tool_call};
+    use yi_types::message::StopReason::{Stop, ToolUse};
+    let workspace = Workspace::new("schema-newest")?;
+    std::fs::write(workspace.project().join("r.rs"), "let lines = vec![1];\n")?;
+    let json = r#"{"refuted": true, "reason": "r.rs never indexes past 0"}"#;
+    let read = || {
+        faux_tool_call(
+            "c0",
+            "read",
+            json!({"path": "r.rs"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        )
+    };
+    let runs = [
+        [
+            (
+                vec![faux_text("Let me read `lines[0]` first."), read()],
+                ToolUse,
+            ),
+            (vec![faux_text(json)], Stop),
+        ],
+        [
+            (vec![faux_text(json), read()], ToolUse),
+            (vec![faux_text("The JSON {above} is my answer.")], Stop),
+        ],
+    ];
+    let schema = r#"{"type":"object","required":["refuted","reason"],"properties":{"refuted":{"type":"boolean"},"reason":{"type":"string"}}}"#;
+    for (n, run) in runs.into_iter().enumerate() {
+        let lines = run
+            .into_iter()
+            .map(|(content, stop)| serde_json::to_string(&faux_assistant_message(content, stop)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let script = workspace.project().join(format!("script-{n}.jsonl"));
+        std::fs::write(&script, lines.join("\n"))?;
+        let script = script.display().to_string();
+        let answered = ask(
+            &workspace,
+            "break the claim",
+            &["--faux", &script, "--schema", schema],
+        )?;
+        let said = String::from_utf8_lossy(&answered.stderr).into_owned();
+        assert_eq!(answered.status.code(), Some(0), "run {n}: {said}");
+        let value: Value = serde_json::from_str(stdout(&answered).trim())?;
+        assert_eq!(value.get("refuted"), Some(&json!(true)), "run {n}: {value}");
+    }
+    Ok(())
+}
+
 #[test]
 fn sessions_rm_removes_the_session() -> TestResult {
     let workspace = Workspace::new("rm")?;
