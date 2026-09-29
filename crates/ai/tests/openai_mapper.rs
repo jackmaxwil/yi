@@ -66,6 +66,10 @@ fn build_params_openai_shape() -> Result<(), Box<dyn Error>> {
     assert_eq!(params["max_completion_tokens"], 4096);
     assert_eq!(params["reasoning_effort"], "high");
     assert_eq!(params["prompt_cache_key"], "session-1");
+    assert!(
+        params.get("session_id").is_none(),
+        "OpenRouter's key off OpenRouter"
+    );
     assert_eq!(params["messages"][0]["role"], "developer");
     assert_eq!(params["tools"][0]["function"]["name"], "bash");
     let non_reasoning = build_params(&model(false), &context(), &OpenAiOptions::default());

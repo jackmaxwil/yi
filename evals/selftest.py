@@ -353,6 +353,39 @@ def check_compaction_share():
     assert "compaction" not in row, row
 
 
+def check_sibling_share():
+    """#745: the sibling scenario judges the second request no root reply carries. The rows are
+    OpenRouter's, from live runs on GLM 5.3 flash: pinned to Z.AI the second sibling read 6,720 of
+    6,773 tokens; pinned to Parasail, in one run, it read 0."""
+    task = run.LIVE / "cache-warm-siblings"
+    spec = json.loads((task / "task.json").read_text())
+    root = [(13312, 0, 0, True), (53, 6720, 0, False), (14118, 0, 0, True)]
+    rows = {}
+    with tempfile.TemporaryDirectory() as directory:
+        fake = Path(directory) / "yi"
+        fake.write_text(
+            "#!/usr/bin/env python3\nimport json, pathlib, sys\n"
+            "rows = json.loads(pathlib.Path(__file__).with_suffix('.json').read_text())\n"
+            "sessions = pathlib.Path(sys.argv[sys.argv.index('--session-dir') + 1]) / 'cwd'\n"
+            "sessions.mkdir(parents=True, exist_ok=True)\n"
+            "with (sessions / 's.telemetry.jsonl').open('w') as sink:\n"
+            "    for i, r, w, replied in rows:\n"
+            "        sink.write(json.dumps({'span': 'request', 'input': i, 'cacheRead': r, 'cacheWrite': w}) + '\\n')\n"
+            "        if replied:\n"
+            "            print(json.dumps({'type': 'message_end', 'message': {'role': 'assistant',"
+            " 'usage': {'input': i, 'cacheRead': r, 'cacheWrite': w, 'output': 1}}}))\n"
+        )
+        fake.chmod(0o755)
+        for name, usage in (("read", root[:1] + [(6772, 0, 0, False)] + root[1:]),
+                            ("missed", root[:1] + [(6772, 0, 0, False), (6773, 0, 0, False)] + root[2:]),
+                            ("alone", root[:1] + [(6772, 0, 0, False)] + root[2:])):
+            fake.with_suffix(".json").write_text(json.dumps(usage))
+            rows[name] = run.cache_check(spec, task, str(fake), "m", Path(directory) / name)
+    assert rows["read"]["status"] == "pass" and rows["read"]["siblings"][1]["share"] == 0.9922, rows["read"]
+    assert rows["missed"]["detail"].startswith("the second sibling read 0 of its 6773"), rows["missed"]
+    assert rows["alone"]["status"] == "inconclusive", rows["alone"]
+
+
 def check_session_extras():
     """Pier's three extra columns, off a committed v4 session fixture."""
     extras = yi_usage.session_extras(SESSIONS)
@@ -930,6 +963,7 @@ CHECKS = (
     check_unknown_usage_is_not_a_free_turn,
     check_warm_share,
     check_compaction_share,
+    check_sibling_share,
     check_session_extras,
     check_fingerprint,
     check_driver_ceiling,

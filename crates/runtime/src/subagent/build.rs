@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use serde_json::{Map, Value};
+
 use yi_types::message::{AgentMessage, Content};
 
 use super::{ChildActivity, ChildBuild, Standing, SubagentHost};
@@ -215,4 +217,43 @@ impl SubagentHost {
         self.publish(child_id);
         running
     }
+}
+
+pub(super) fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
+    let mut unsupported: Vec<&str> = kwargs
+        .keys()
+        .map(String::as_str)
+        .filter(|key| {
+            !matches!(
+                *key,
+                "name"
+                    | "model"
+                    | "thinking"
+                    | "fork"
+                    | "isolation"
+                    | "deny_write"
+                    | "deny_read"
+                    | "deny_url"
+                    | "context"
+                    | "check"
+                    | "deadline_s"
+                    | "tokens"
+                    | "parent_close"
+                    | "role"
+                    | "partition"
+                    | "tools"
+                    | "turns"
+                    | "schema"
+                    | "readers"
+            )
+        })
+        .collect();
+    if unsupported.is_empty() {
+        return Ok(());
+    }
+    unsupported.sort_unstable();
+    Err(format!(
+        "Unsupported rlm.run kwargs: {}",
+        unsupported.join(", ")
+    ))
 }

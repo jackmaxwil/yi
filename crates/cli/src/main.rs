@@ -451,7 +451,7 @@ fn build_session(
         .unwrap_or(false)
         .then(|| Arc::new(yi_runtime::Telemetry::default()));
     let provider = Arc::new(
-        yi_runtime::ProviderStream::new(None)
+        yi_runtime::ProviderStream::new(session_id.map(str::to_owned))
             .with_long_cache(interactive)
             .with_proxy(proxy.clone())
             .with_routing(config().routing.clone())

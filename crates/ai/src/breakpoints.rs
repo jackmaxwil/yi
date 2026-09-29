@@ -19,11 +19,13 @@ pub enum Ttl {
 /// `messages`; `transient` has none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Position {
-    /// The end of the first system block, the universal prefix every session and child of
-    /// the same identity shares; kept until the system prompt is constant (C2, C3).
+    /// The end of the first system block, the universal prefix every session of the same
+    /// identity shares; the first to give way when the other breakpoints fill the slots.
     UniversalEnd,
     /// The end of tools and system: the floor that survives any messages-tier invalidation.
     SystemEnd,
+    /// The end of the run siblings share, a reader's partition (`shared_through`, D309, D314).
+    SharedEnd(usize),
     /// The last user-role message ahead of the last reply: where the previous request's
     /// tail sat, a free read that also covers a lookback the appended blocks would overflow.
     PrevTail(usize),
@@ -35,7 +37,7 @@ impl Position {
     pub fn index(self) -> Option<usize> {
         match self {
             Self::UniversalEnd | Self::SystemEnd => None,
-            Self::PrevTail(index) | Self::Tail(index) => Some(index),
+            Self::SharedEnd(index) | Self::PrevTail(index) | Self::Tail(index) => Some(index),
         }
     }
 
@@ -44,8 +46,7 @@ impl Position {
         match self {
             Self::UniversalEnd => (0, 0),
             Self::SystemEnd => (1, 0),
-            Self::PrevTail(index) => (2, index),
-            Self::Tail(index) => (3, index),
+            Self::SharedEnd(index) | Self::PrevTail(index) | Self::Tail(index) => (2, index),
         }
     }
 }
@@ -145,26 +146,26 @@ fn is_tail_kind(message: &AgentMessage) -> bool {
 }
 
 impl Breakpoints {
-    /// `messages` is the transformed history, never `transient`; cells are prompt order, and
-    /// under fewer slots the universal end goes first, then the previous tail.
-    pub fn build(policy: &CachePolicy, messages: &[AgentMessage], reuse: Reuse) -> Self {
-        let slots = policy.engine.slots();
-        let stable = |position| {
-            Some(Breakpoint {
-                position,
-                ttl: policy.stable_ttl,
-            })
+    /// `messages` is the transformed history, never `transient`; `shared` indexes it. Short of
+    /// slots, it keeps the system end, tail, shared end, previous tail, universal end, in order.
+    pub fn build(
+        policy: &CachePolicy,
+        messages: &[AgentMessage],
+        reuse: Reuse,
+        shared: Option<usize>,
+    ) -> Self {
+        let mut kept: Vec<Breakpoint> = Vec::with_capacity(SLOTS + 1);
+        let mut keep = |position: Position, ttl| {
+            let at = position.index();
+            if at.is_none() || kept.iter().all(|mark| mark.position.index() != at) {
+                kept.push(Breakpoint { position, ttl });
+            }
         };
-        let five = |position| {
-            Some(Breakpoint {
-                position,
-                ttl: Ttl::Min5,
-            })
-        };
-        let mut marks = [None, stable(Position::SystemEnd), None, None];
+        keep(Position::SystemEnd, policy.stable_ttl);
+        let (mut tail, mut prev_tail) = (None, None);
         if matches!(reuse, Reuse::Loop | Reuse::ReadOnly) {
-            let tail = messages.iter().rposition(is_tail_kind);
-            let prev_tail = tail
+            let last = messages.iter().rposition(is_tail_kind);
+            prev_tail = last
                 .and_then(|tail| {
                     messages
                         .get(..tail)?
@@ -172,24 +173,28 @@ impl Breakpoints {
                         .rposition(|message| matches!(message, AgentMessage::Assistant { .. }))
                 })
                 .and_then(|reply| messages.get(..reply)?.iter().rposition(is_tail_kind));
-            // A read-only request's previous tail takes the slot its own tail would have had.
-            let (prev_slots, tail) = match reuse {
-                Reuse::ReadOnly => (2, None),
-                _ => (3, tail),
-            };
-            if let Some(tail) = tail
-                && slots >= 2
-            {
-                marks[3] = five(Position::Tail(tail));
-            }
-            if let Some(prev) = prev_tail
-                && slots >= prev_slots
-            {
-                marks[2] = five(Position::PrevTail(prev));
-            }
+            // A read-only request writes no tail of its own; its previous tail is the read.
+            tail = last.filter(|_| reuse == Reuse::Loop);
         }
+        let history = [
+            tail.map(Position::Tail),
+            shared
+                .filter(|index| *index < messages.len())
+                .map(Position::SharedEnd),
+            prev_tail.map(Position::PrevTail),
+        ];
+        for position in history.into_iter().flatten() {
+            keep(position, Ttl::Min5);
+        }
+        let slots = policy.engine.slots();
         if slots >= SLOTS {
-            marks[0] = stable(Position::UniversalEnd);
+            keep(Position::UniversalEnd, policy.stable_ttl);
+        }
+        kept.truncate(slots);
+        kept.sort_by_key(|mark| mark.position.rank());
+        let mut marks = [None; SLOTS];
+        for (cell, mark) in marks.iter_mut().zip(kept) {
+            *cell = Some(mark);
         }
         Self { marks }
     }
@@ -345,7 +350,7 @@ pub fn encode(
             }
             (
                 Dialect::AnthropicBlocks | Dialect::OpenRouterParts,
-                Position::PrevTail(index) | Position::Tail(index),
+                Position::SharedEnd(index) | Position::PrevTail(index) | Position::Tail(index),
             ) => {
                 let Some(at) = origins.iter().position(|origin| *origin == Some(index)) else {
                     continue;

@@ -250,6 +250,24 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(reaped, ["sub-1", "sub-1"])
 
+    async def test_gathered_readers_over_one_partition_say_how_many_share_it(self) -> None:
+        sent: list[dict] = []
+
+        async def fake_host(kind: str, payload: dict) -> dict:
+            sent.append(payload["kwargs"])
+            return {"rlm_child_id": "sub-1", "name": "q", "session_dir": "/tmp/q", "model": "m"}
+
+        with mock.patch.object(rlm, "host_request", fake_host):
+            await asyncio.gather(
+                rlm.run("first?", partition=["local://a.txt"]),
+                rlm.run("second?", partition=["local://a.txt"]),
+                rlm.run("other?", partition=["local://b.txt"]),
+                rlm.run("shaped?", partition=["local://a.txt"], tools=[]),
+            )
+            await rlm.run("alone?", partition=["local://a.txt"])
+        self.assertEqual([kwargs.get("readers") for kwargs in sent], [2, 2, None, None, None])
+        self.assertEqual(rlm._SENDING, {})
+
     async def test_module_result_refuses_a_non_dict_schema_before_any_host_round_trip(
         self,
     ) -> None:

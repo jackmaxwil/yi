@@ -84,6 +84,8 @@ fn build_params_honors_the_openrouter_compat_flags() -> TestResult {
     assert!(params.get("reasoning_effort").is_none());
     assert!(params.get("store").is_none());
     assert!(params.get("prompt_cache_key").is_none());
+    // The family's affinity key: OpenRouter keeps one session's requests on one upstream.
+    assert_eq!(params["session_id"], "session-1");
     assert!(
         params.get("cache_control").is_none(),
         "an automatic-cache route gets no breakpoint"

@@ -572,8 +572,31 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
     kwargs = _resolve_context(kwargs)
-    payload = await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs})
+    partition = kwargs.get("partition")
+    if not partition:
+        return _spawn_handle_from_payload(await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs}))
+    # Runs gathered together all register before any sends: each tells the host how many share
+    # its partition, so the first reader writes the cache entry the others read (D314).
+    shape = [kwargs.get(name) for name in ("role", "model", "tools", "schema")]
+    key = json.dumps([partition, shape], default=str)
+    live, peak = _SENDING.get(key, (0, 0))
+    _SENDING[key] = (live + 1, max(peak, live + 1))
+    try:
+        await asyncio.sleep(0)
+        if _SENDING[key][1] > 1:
+            kwargs["readers"] = _SENDING[key][1]
+        payload = await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs})
+    finally:
+        live, peak = _SENDING[key]
+        if live > 1:
+            _SENDING[key] = (live - 1, peak)
+        else:
+            del _SENDING[key]
     return _spawn_handle_from_payload(payload)
+
+
+# Per partition and reader shape: runs still sending, and the most that were at once.
+_SENDING: dict[str, tuple[int, int]] = {}
 
 
 @_public
