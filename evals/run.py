@@ -334,8 +334,8 @@ def cache_check(spec, task_dir, binary, model, out):
     row["status"], row["detail"] = status_of(row, spec, events_text)
     if row["status"] == "fail" and floor is None:
         row["detail"] = f"warm turns read 0 cached tokens over {len(turns)} requests ({row['input']} input)"
-    elif row["status"] == "fail" and len(requests) < least:
-        # A short loop is the scenario's problem, never a cache red.
+    elif row["status"] == "fail" and len(requests) < least and min(shares, default=1.0) >= floor:
+        # A short loop that read well so far is the scenario's problem; one that already missed is red.
         row["status"], row["detail"] = "inconclusive", f"{len(requests)} requests, the scenario needs {least}"
     elif row["status"] == "fail":
         worst = shares.index(min(shares))

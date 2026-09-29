@@ -555,8 +555,8 @@ scenario asks one session its `turns` in order (`--continue` after the first)
 and passes only when the warm turns read cached tokens; with `minWarmShare`
 every request after the first, a tool loop's own included, must read that share
 of the previous request's whole prompt (fresh, read and written tokens) over at
-least `minRequests` (a shorter loop is `inconclusive`), and its row lists each
-`warmShares`. An `"onlyByName": true` scenario runs only under `--task`:
+least `minRequests` (a shorter loop is `inconclusive` unless a request already
+missed, which is `fail`), and its row lists each `warmShares`. An `"onlyByName": true` scenario runs only under `--task`:
 `cache-warm-claude` judges a Claude route's marks, which a route that caches by
 itself does not have. Every scenario ends
 `pass`, `fail` or `inconclusive` — timeout, no key, provider trouble, budget —

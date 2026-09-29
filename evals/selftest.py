@@ -300,13 +300,15 @@ def check_warm_share():
             " 'usage': {'input': i, 'cacheRead': r, 'cacheWrite': w, 'output': 1}}}))\n"
         )
         fake.chmod(0o755)
-        for name, usage in (("held", held), ("no-tail", no_tail), ("reshaped", reshaped), ("no-loop", held[:2])):
+        for name, usage in (("held", held), ("no-tail", no_tail), ("reshaped", reshaped), ("no-loop", held[:2]), ("cold-short", [(206, 0, 14336), (235, 0, 14336)])):
             fake.with_suffix(".json").write_text(json.dumps(usage))
             rows[name] = run.cache_check(spec, task, str(fake), "m", Path(directory) / name)
     assert rows["held"]["reward"] == 1 and rows["held"]["warmShares"] == [0.9858, 0.9895, 0.992], rows["held"]
     detail = rows["no-tail"]["detail"]
     assert rows["no-tail"]["reward"] == 0 and detail.startswith("request 3 read 14336 of"), detail
     assert rows["reshaped"]["detail"].startswith("request 3 read 13900 of"), rows["reshaped"]
+    cold = rows["cold-short"]
+    assert cold["status"] == "fail" and cold["detail"].startswith("request 2 read 0 of"), cold
     short = rows["no-loop"]
     assert short["status"] == "inconclusive" and short["detail"].startswith("2 requests"), short
 
