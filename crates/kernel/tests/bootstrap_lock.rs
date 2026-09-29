@@ -95,9 +95,9 @@ fn a_boot_sweeps_only_the_venvs_nothing_uses() -> Result<(), Box<dyn std::error:
     let current = venv("kernel-venv-cccc0000")?;
     let old = venv("kernel-venv-aaaa0000")?;
     let building = venv("kernel-venv-bbbb0000")?;
-    let lock = yi.join("kernel-venv-bbbb0000.bootstrap.lock");
-    std::fs::create_dir(&lock)?;
-    std::fs::write(lock.join("pid"), format!("{}\n", std::process::id()))?;
+    let lock = yi.join("kernel-venv-bbbb0000.bootstrap.flock");
+    let building_lock = std::fs::File::create(&lock)?;
+    building_lock.lock()?;
     let running = venv("kernel-venv-dddd0000")?;
     let python = running.join("bin").join("python");
     std::fs::write(&python, "#!/bin/sh\nsleep 30\n")?;
@@ -118,8 +118,9 @@ fn a_boot_sweeps_only_the_venvs_nothing_uses() -> Result<(), Box<dyn std::error:
     kernel.wait()?;
     assert_eq!(removed, std::slice::from_ref(&old));
     assert!(!old.exists());
-    for kept in [&current, &building, &running, &fresh, &other, &lock] {
+    for kept in [&current, &building, &running, &fresh, &other] {
         assert!(kept.is_dir(), "{} was swept", kept.display());
     }
+    assert!(lock.is_file(), "a held lock was swept");
     Ok(())
 }
