@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, UserContent};
+use yi_types::message::AgentMessage;
 
 use crate::AgentSession;
 
@@ -70,35 +70,5 @@ impl SpendAlarm {
 /// Queues each alert as a shown notice, never a wake: an alert must not buy another turn.
 pub fn attach(session: &AgentSession, every: NonZeroU64) {
     let mut alarm = SpendAlarm::new(every);
-    announce(session, SPEND_ALERT_TYPE, move |event| alarm.observe(event));
-}
-
-/// Delivers each text `observe` returns as a shown notice of `custom_type`, never a wake.
-pub fn announce(
-    session: &AgentSession,
-    custom_type: &'static str,
-    mut observe: impl FnMut(&AgentEvent) -> Option<String> + Send + 'static,
-) {
-    let mut events = session.subscribe();
-    let deliver = session.deliver_hook();
-    tokio::spawn(async move {
-        loop {
-            match events.recv().await {
-                Ok(event) => {
-                    if let Some(text) = observe(&event) {
-                        let notice = AgentMessage::Custom {
-                            custom_type: custom_type.to_owned(),
-                            content: UserContent::Text(text),
-                            display: true,
-                            details: None,
-                            timestamp: yi_session::now_ms(),
-                        };
-                        deliver(notice, false);
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
+    session.show_notices(SPEND_ALERT_TYPE, move |event| alarm.observe(event));
 }

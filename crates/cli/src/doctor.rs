@@ -266,17 +266,42 @@ fn lanes_consistent(site: &Site) -> Finding {
     ok(format!("{} slot(s) consistent", views.len()))
 }
 
-/// The newest session here, replayed: its misses by cause, failing when the tripwire fired.
+/// Never a failure: a session's history is not install health and the user cannot clear it.
+/// The newest session here, read line by line and never repaired, since it may be live.
 fn cache_reads(site: &Site) -> Finding {
-    let cwd = site.cwd.display().to_string();
-    let Ok((id, entries)) = crate::stats::main_entries(&site.sessions, &cwd, "") else {
+    let dir = site
+        .sessions
+        .join(yi_runtime::session_store::session_directory_name(
+            &site.cwd.to_string_lossy(),
+        ));
+    let newest = std::fs::read_dir(&dir).ok().and_then(|files| {
+        files
+            .flatten()
+            .map(|file| file.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+            .max()
+    });
+    let Some(path) = newest else {
         return ok("no session here");
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => return ok(format!("{} unreadable: {error}", path.display())),
     };
     let mut tracker = yi_runtime::cache_miss::MissTracker::default();
     let mut causes = std::collections::BTreeMap::<&str, u32>::new();
     let mut notice = None;
-    for entry in &entries {
-        if let Some(cause) = tracker.entry(entry) {
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value["kind"] != "entry" || value.get("lane").is_some_and(|lane| lane != "main") {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_value(value) else {
+            continue;
+        };
+        if let Some(cause) = tracker.observe_entry(&entry) {
             *causes.entry(cause.label()).or_default() += 1;
         }
         notice = notice.or_else(|| tracker.take_notice());
@@ -285,11 +310,9 @@ fn cache_reads(site: &Site) -> Finding {
         .iter()
         .map(|(cause, count)| format!("{cause} {count}"))
         .collect();
-    let row = format!("session {id}: misses [{}]", misses.join(", "));
-    match notice {
-        Some(notice) => fail(format!("{row}; {notice}")),
-        None => ok(row),
-    }
+    let name = path.file_stem().unwrap_or_default().to_string_lossy();
+    let row = format!("session {name}: misses [{}]", misses.join(", "));
+    ok(notice.map_or(row.clone(), |notice| format!("{row}; {notice}")))
 }
 
 /// Runs before the config loads, so a config that will not parse is a row, not a death.

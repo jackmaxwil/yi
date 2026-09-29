@@ -1,10 +1,11 @@
 //! Cache outcomes as a fold over the session JSONL (design C5): a request that reads more than
 //! 1,024 tokens less than the prompt before it gets one named cause, and two unexplained total
 //! misses in a row on a write-billed route raise one shown notice. No LLM, nothing stored.
+//! A cause names only what usage shows: which marks were sent is not in the record.
 
 use yi_ai::breakpoints::Engine;
 use yi_types::entry::Entry;
-use yi_types::event::AgentEvent;
+use yi_types::event::{AgentEvent, Wait};
 use yi_types::message::AgentMessage;
 use yi_types::model::CACHE_DIAGNOSTIC;
 
@@ -13,6 +14,8 @@ use crate::AgentSession;
 pub const CACHE_ALERT_TYPE: &str = "cache_alert";
 
 const SLACK: u64 = 1024;
+/// Below the largest minimum cacheable prompt (Claude Haiku 4.5), a total miss is expected.
+const MIN_CACHEABLE: u64 = 4096;
 // ponytail: the 5m TTL for every route; an ADAPT 1h conversation (C6) needs the plan's TTL here.
 const TTL_MS: u64 = 5 * 60 * 1000;
 
@@ -24,10 +27,11 @@ pub enum MissCause {
     StableKeyChanged,
     Expired,
     UpstreamSwitch,
-    /// The previous request wrote an entry no later request sends again.
-    TailWrite,
-    /// A write-billed route that neither wrote nor read: no breakpoint reached it.
-    NoMarks,
+    /// The previous request wrote and this one did not read it back: an eviction, a mark on a
+    /// tail no later request sends, or a route the fold cannot see.
+    WriteNotRead,
+    /// A write-billed route that neither wrote nor read: no mark sent, or every mark ignored.
+    NothingCached,
     Unexplained,
 }
 
@@ -38,8 +42,8 @@ impl MissCause {
             Self::StableKeyChanged => "stable key changed",
             Self::Expired => "gap exceeded TTL",
             Self::UpstreamSwitch => "upstream switch",
-            Self::TailWrite => "automatic mark on tail",
-            Self::NoMarks => "no marks",
+            Self::WriteNotRead => "previous write not read",
+            Self::NothingCached => "nothing written or read",
             Self::Unexplained => "unexplained",
         }
     }
@@ -69,11 +73,16 @@ fn tokens(count: i64) -> u64 {
 }
 
 impl MissTracker {
-    pub fn entry(&mut self, entry: &Entry) -> Option<MissCause> {
+    pub fn observe_entry(&mut self, entry: &Entry) -> Option<MissCause> {
         match entry {
             Entry::Message {
                 message, timestamp, ..
-            } => self.message(message, *timestamp),
+            } => self.observe(message, *timestamp),
+            // A declared reset: the history is rewritten, so the next request owes no read.
+            Entry::Compaction { .. } | Entry::BranchSummary { .. } => {
+                self.last = None;
+                None
+            }
             Entry::Custom { custom_type, .. } if custom_type == "ext_state" => {
                 self.system_moved = self.last.is_some();
                 None
@@ -82,7 +91,7 @@ impl MissTracker {
         }
     }
 
-    pub fn message(&mut self, message: &AgentMessage, at: u64) -> Option<MissCause> {
+    pub fn observe(&mut self, message: &AgentMessage, at: u64) -> Option<MissCause> {
         let AgentMessage::Assistant {
             api,
             provider,
@@ -136,18 +145,18 @@ impl MissTracker {
                 } else if differs(&last.upstream, &request.upstream) {
                     MissCause::UpstreamSwitch
                 } else if last.write > 0 {
-                    MissCause::TailWrite
+                    MissCause::WriteNotRead
                 } else if read == 0 && billed {
-                    MissCause::NoMarks
+                    MissCause::NothingCached
                 } else {
                     MissCause::Unexplained
                 }
             });
         let unexplained = matches!(
             cause,
-            Some(MissCause::TailWrite | MissCause::NoMarks | MissCause::Unexplained)
+            Some(MissCause::WriteNotRead | MissCause::NothingCached | MissCause::Unexplained)
         );
-        self.total_misses = if unexplained && read == 0 && billed {
+        self.total_misses = if unexplained && read == 0 && billed && prompt >= MIN_CACHEABLE {
             self.total_misses.saturating_add(1)
         } else {
             0
@@ -177,9 +186,15 @@ impl MissTracker {
 /// Watches the session's own requests and shows the notice when the tripwire fires.
 pub fn attach(session: &AgentSession) {
     let mut tracker = MissTracker::default();
-    crate::spend::announce(session, CACHE_ALERT_TYPE, move |event| {
-        if let AgentEvent::MessageEnd { message } = event {
-            tracker.message(message, yi_session::now_ms());
+    session.show_notices(CACHE_ALERT_TYPE, move |event| {
+        match event {
+            AgentEvent::MessageEnd { message } => {
+                tracker.observe(message, yi_session::now_ms());
+            }
+            AgentEvent::Wait {
+                wait: Some(Wait::Compaction { .. }),
+            } => tracker.last = None,
+            _ => {}
         }
         tracker.take_notice()
     });
