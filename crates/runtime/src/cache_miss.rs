@@ -3,9 +3,10 @@
 //! misses in a row on a write-billed route raise one shown notice. No LLM, nothing stored.
 //! A cause names only what usage shows: which marks were sent is not in the record.
 //! The same fold estimates the next gap and write for the cost-minimising TTL choice (D315):
-//! [`TtlEstimate::cheapest`] writes a loop request's history for an hour when the session has
-//! paused between five minutes and an hour before, and the hour's write premium on the tokens
-//! the request writes costs less than the expected rewrite a five-minute entry would pay.
+//! [`TtlEstimate::cheapest`] writes a loop request's history for an hour when the hour's write
+//! premium on the tokens the request writes costs less than the expected rewrite a five-minute
+//! entry would pay, the chance of that rewrite being the session's own share of pauses between
+//! five minutes and an hour.
 
 use std::sync::Arc;
 
@@ -25,15 +26,9 @@ const SLACK: u64 = 1024;
 const MIN_CACHEABLE: u64 = 4096;
 const FIVE_MINUTES_MS: u64 = 5 * 60 * 1000;
 const HOUR_MS: u64 = 60 * 60 * 1000;
-/// The prior for the gap bands (within five minutes, within the hour, longer): the 600 gaps
-/// between consecutive requests in yi's own sessions of 2026-09 split 588, 8 and 4 (measured
-/// between reply ends: those records predate `elapsed_ms`). Only the middle band moves
-/// the choice: a shorter gap reads either entry, a longer one reads neither. It is fitted on
-/// the same sessions the replay test reads; it weighs 0.027 of a gap there.
-const PRIOR_GAPS: [u32; 3] = [588, 8, 4];
-/// The prior weighs as two gaps: one pause in a session of few requests counts for a third of
-/// its gaps, not a half.
-const PRIOR_WEIGHT: f64 = 2.0;
+/// Pseudo-gaps added to the short band: one pause early in a short session counts for a third
+/// of its gaps rather than a half.
+const SHORT_PSEUDO_GAPS: f64 = 2.0;
 
 /// Why a request read less than the prompt before it, in the order the causes are tested.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -241,7 +236,7 @@ impl MissTracker {
         Some(TtlEstimate {
             last_start: last.at,
             last_ttl: last.ttl,
-            prompt: last.prompt,
+            last_prompt: last.prompt,
             growth: self.growth,
             gaps: self.gaps,
         })
@@ -259,7 +254,7 @@ impl MissTracker {
 pub struct TtlEstimate {
     pub last_start: u64,
     pub last_ttl: Ttl,
-    pub prompt: u64,
+    pub last_prompt: u64,
     pub growth: Option<u64>,
     pub gaps: [u32; 3],
 }
@@ -283,13 +278,13 @@ impl TtlEstimate {
     /// falls between five minutes and an hour; within five minutes either entry is read, past
     /// the hour neither is. A one-hour mark reads a live five-minute entry at its own position
     /// (probe F8), so switching costs no more than this. `w1` is twice the input price, as
-    /// Anthropic prices it; the catalog has no field for it. An unknown growth is priced as the
-    /// whole prompt. A session that has not yet paused between five minutes and an hour keeps
-    /// five minutes: yi's recorded middle-band pauses sit in few sessions (6 of 8 in one), so a
-    /// session that has shown none is a driven one, which the prior's share would only tax.
+    /// Anthropic prices it; the catalog has no field for it. A growth never seen is priced as
+    /// the whole prompt. The chance of a middle gap is the session's own share of them, with
+    /// [`SHORT_PSEUDO_GAPS`] added to the short band, so a session that has not yet paused that
+    /// long keeps five minutes.
     pub fn cheapest(&self, model: &Model, now: u64) -> Ttl {
         let [short, middle, long] = self.gaps;
-        if middle == 0 || !matches!(Engine::of(model), Engine::Breakpoint { hour: true, .. }) {
+        if !matches!(Engine::of(model), Engine::Breakpoint { hour: true, .. }) {
             return Ttl::Min5;
         }
         let price = |number: &serde_json::Number| number.as_f64().unwrap_or(0.0);
@@ -301,17 +296,15 @@ impl TtlEstimate {
         if input <= 0.0 || write <= 0.0 {
             return Ttl::Min5;
         }
-        let growth = self.growth.unwrap_or(self.prompt);
-        let prompt = tokens_f64(self.prompt.saturating_add(self.growth.unwrap_or(0)));
+        let growth = self.growth.unwrap_or(self.last_prompt);
+        let prompt = tokens_f64(self.last_prompt.saturating_add(self.growth.unwrap_or(0)));
         let written = if now.saturating_sub(self.last_start) <= lifetime_ms(self.last_ttl) {
             tokens_f64(growth)
         } else {
             prompt
         };
         let seen = f64::from(short) + f64::from(middle) + f64::from(long);
-        let [prior_short, prior_middle, prior_long] = PRIOR_GAPS.map(f64::from);
-        let prior_middle = prior_middle / (prior_short + prior_middle + prior_long);
-        let middle = (f64::from(middle) + PRIOR_WEIGHT * prior_middle) / (seen + PRIOR_WEIGHT);
+        let middle = f64::from(middle) / (seen + SHORT_PSEUDO_GAPS);
         if written * (2.0 * input - write) < middle * prompt * (write - read) {
             Ttl::Hour1
         } else {
@@ -322,9 +315,8 @@ impl TtlEstimate {
 
 /// Watches the session's own requests, shows the notice when the tripwire fires, and hands
 /// the fold's estimate to the session's provider for its next loop request.
-// ponytail: a resumed session's tracker starts empty, so its first request after the resume
-// goes out for five minutes and its gaps start from the prior; fold the loaded entries here if
-// that proves too slow.
+// ponytail: a resumed session's tracker starts empty, so it writes five minutes until it pauses
+// again between five minutes and an hour; fold the loaded entries here if that proves too slow.
 pub fn attach(session: &AgentSession) {
     let mut tracker = MissTracker::default();
     let provider = Arc::clone(session.provider_arc());
