@@ -4,7 +4,6 @@ use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 use yi_types::plan::PLAN_SCHEMA;
@@ -36,16 +35,7 @@ const ALLOCATE_SUFFIX_MAX: u32 = 9_999;
 const TEMP_PREFIX: &str = ".plan.";
 const TEMP_SUFFIX: &str = ".tmp";
 
-/// Invariant: unique per call within a process, so a temp path and a lease
-/// hold each name one write and one holder rather than the whole process.
-pub(crate) fn nonce() -> String {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    format!(
-        "{}.{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )
-}
+pub(crate) use yi_session::nonce;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -731,6 +721,7 @@ mod tests {
     use super::*;
     use crate::plan::ops::{Actor, Delegate, Op, OpRequest, PlanEngine, PlanOpError, TodoSpec};
     use crate::scratch::Scratch;
+    use std::sync::atomic::Ordering;
     use yi_types::plan::PlanVersion;
     use yi_types::plan::doc::{
         AgentId, Delegation, PlanTier, RetryCount, Todo, TodoAddr, TodoLabel, TodoState, TouchCount,

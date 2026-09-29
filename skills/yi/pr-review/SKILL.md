@@ -12,7 +12,7 @@ description: >
 
 A draft PR (`WIP: ` title) leaves draft after two review rounds on its head, the last not
 blocked. Each round is one comment whose first line is `<!-- yi-round N -->`; the repository's
-`scripts/pr_review.py` writes it (D308). The probes it runs are the files in `probes/` beside this
+`scripts/pr_review.py` writes it (D318). The probes it runs are the files in `probes/` beside this
 skill: one question each, a brief, a severity scale, and `when` rules the code evaluates.
 
 ## When the forge channel wakes you

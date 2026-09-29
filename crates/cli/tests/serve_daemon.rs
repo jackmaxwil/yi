@@ -118,30 +118,36 @@ fn spawn_daemon_in(dir: &Path, home: Option<&Path>) -> Result<(Child, PathBuf), 
     Ok((child, socket))
 }
 
-fn rlm_dirs(sessions: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+/// A root session's jobs live in `<sessions>/schedules/<session id>/`, so each
+/// armed session has its own ledger that outlives the worker's pid.
+fn ledger_dirs(sessions: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let schedules = sessions.join("schedules");
     let mut dirs = Vec::new();
-    if !sessions.is_dir() {
+    if !schedules.is_dir() {
         return Ok(dirs);
     }
-    for entry in std::fs::read_dir(sessions)? {
-        let entry = entry?;
-        if entry.file_name().to_string_lossy().starts_with("rlm-") {
-            dirs.push(entry.path());
-        }
+    for entry in std::fs::read_dir(schedules)? {
+        dirs.push(entry?.path());
     }
     Ok(dirs)
 }
 
-fn ledger_path(rlm: &Path) -> PathBuf {
-    rlm.join("scheduled-jobs.json")
+fn ledger_path(dir: &Path) -> PathBuf {
+    dir.join("scheduled-jobs.json")
+}
+
+/// `runCount` is always serialized, so a text match passes on a job that never fired.
+fn dispatched(dir: &Path) -> bool {
+    std::fs::read_to_string(ledger_path(dir))
+        .ok()
+        .and_then(|text| serde_json::from_str::<ScheduleState>(&text).ok())
+        .is_some_and(|state| {
+            !state.dispatches.is_empty() || state.jobs.iter().any(|job| job.run_count >= 1)
+        })
 }
 
 fn any_heartbeat_dispatched(sessions: &Path) -> Result<bool, Box<dyn Error>> {
-    Ok(rlm_dirs(sessions)?.into_iter().any(|dir| {
-        std::fs::read_to_string(ledger_path(&dir)).is_ok_and(|contents| {
-            contents.contains("\"dispatches\":[{") || contents.contains("\"runCount\"")
-        })
-    }))
+    Ok(ledger_dirs(sessions)?.iter().any(|dir| dispatched(dir)))
 }
 
 fn wait_until(
@@ -303,18 +309,12 @@ fn two_roots_run_two_workers_that_keep_their_own_schedules() -> TestResult {
         // Both schedulers must keep firing with nobody attached, which is the
         // whole point of a worker that outlives its client.
         std::thread::sleep(Duration::from_secs(13));
-        let dispatched = std::fs::read_dir(dir.join("sessions"))?
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with("rlm-"))
-            .filter_map(|entry| {
-                std::fs::read_to_string(entry.path().join("scheduled-jobs.json")).ok()
-            })
-            .filter(|contents| {
-                contents.contains("\"dispatches\":[{") || contents.contains("\"runCount\"")
-            })
+        let fired = ledger_dirs(&dir.join("sessions"))?
+            .iter()
+            .filter(|ledger| dispatched(ledger))
             .count();
         assert_eq!(
-            dispatched, 2,
+            fired, 2,
             "both roots must have dispatched while no client was attached"
         );
 
@@ -349,8 +349,8 @@ fn two_roots_run_two_workers_that_keep_their_own_schedules() -> TestResult {
     outcome
 }
 
-/// Two roots spawn two workers. Two ACP sessions on a root share one
-/// `rlm-{pid}` ledger and one timer; each session keeps its own heartbeat.
+/// Two roots spawn two workers. Each ACP session keeps its heartbeat in its
+/// own `schedules/<session id>/` ledger, which its worker's timer drives.
 /// The failure is a sibling worker whose jobs never run, a torn
 /// `scheduled-jobs.json`, or the second session cancelling the first.
 #[test]
@@ -424,8 +424,8 @@ fn workers_do_not_lose_heartbeats_or_tear_the_job_ledger() -> TestResult {
 }
 
 fn ledger_dump(sessions: &Path) -> Result<String, Box<dyn Error>> {
-    let dirs = rlm_dirs(sessions)?;
-    let mut out = format!("rlm dirs: {}\n", dirs.len());
+    let dirs = ledger_dirs(sessions)?;
+    let mut out = format!("ledgers: {}\n", dirs.len());
     for dir in dirs {
         let path = ledger_path(&dir);
         let body = std::fs::read_to_string(&path).unwrap_or_else(|error| format!("read: {error}"));
@@ -435,8 +435,8 @@ fn ledger_dump(sessions: &Path) -> Result<String, Box<dyn Error>> {
 }
 
 fn ledgers_are_intact(sessions: &Path) -> Result<bool, Box<dyn Error>> {
-    let dirs = rlm_dirs(sessions)?;
-    if dirs.len() != WORKERS {
+    let dirs = ledger_dirs(sessions)?;
+    if dirs.len() != WORKERS * SESSIONS_PER_WORKER {
         return Ok(false);
     }
     for dir in dirs {
@@ -451,16 +451,15 @@ fn ledgers_are_intact(sessions: &Path) -> Result<bool, Box<dyn Error>> {
         if !state.dispatches.is_empty() {
             return Ok(false);
         }
-        if state.jobs.iter().filter(|job| job.run_count >= 1).count() != SESSIONS_PER_WORKER {
-            return Ok(false);
-        }
-        let mut ids = std::collections::BTreeSet::new();
-        for job in &state.jobs {
-            if job.run_count >= 1 {
-                ids.insert(job.session_id.clone());
-            }
-        }
-        if ids.len() != SESSIONS_PER_WORKER {
+        let owner = dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        let ran: Vec<_> = state.jobs.iter().filter(|job| job.run_count >= 1).collect();
+        if ran.len() != 1
+            || ran
+                .iter()
+                .any(|job| Some(&job.session_id) != owner.as_ref())
+        {
             return Ok(false);
         }
     }

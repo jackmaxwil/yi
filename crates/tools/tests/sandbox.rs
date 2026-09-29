@@ -2,10 +2,9 @@
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use yi_tools::{
-    CancelFlag, Run, Sandbox, SandboxRefusal, denial_hint, run_or_background, sandbox_refusal,
+    Run, Sandbox, SandboxRefusal, ToolContext, denial_hint, run_or_background, sandbox_refusal,
 };
 
 #[path = "../../types/tests/support/scratch.rs"]
@@ -26,9 +25,9 @@ fn workspace(tag: &str) -> Result<(Scratch, PathBuf, PathBuf), Box<dyn Error>> {
 }
 
 fn run(command: &str, cwd: &Path, sandbox: Option<&Sandbox>) -> Result<(i32, String), String> {
-    let cancelled: CancelFlag = Arc::new(|| false);
+    let context = ToolContext::new(cwd.to_path_buf());
     let timeout = std::time::Duration::from_secs(120);
-    match run_or_background(command, cwd, &cancelled, None, timeout, sandbox, None)? {
+    match run_or_background(command, &context, None, timeout, sandbox, None)? {
         Run::Finished(capture) => Ok((
             capture.exit_code.unwrap_or(-1),
             format!("{}{}", capture.stdout, capture.stderr),

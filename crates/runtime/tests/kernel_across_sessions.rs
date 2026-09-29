@@ -123,6 +123,7 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
 
     let mut kwargs = Map::new();
     kwargs.insert("name".to_owned(), Value::String("helper".to_owned()));
+    kwargs.insert("role".to_owned(), Value::String("root".to_owned()));
     host.spawn("bind the answer".to_owned(), kwargs)?;
     assert!(
         wait_for_status(&host, "helper", "completed").await,
@@ -211,7 +212,7 @@ async fn printed(
     let service = Arc::clone(kernel);
     let outcome = tokio::task::spawn_blocking(move || {
         let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
-        yi_tools::KernelBridge::execute_cell(service.as_ref(), code, &cancelled)
+        yi_tools::KernelBridge::execute_cell(service.as_ref(), code, &cancelled, None)
     })
     .await??;
     Ok(format!(
@@ -294,7 +295,7 @@ async fn a_read_of_a_busy_kernel_gives_up_within_its_deadline() -> TestResult {
         tokio::task::spawn_blocking(move || {
             let cancelled: yi_tools::CancelFlag =
                 Arc::new(move || stop.load(std::sync::atomic::Ordering::SeqCst));
-            yi_tools::KernelBridge::execute_cell(service.as_ref(), code, &cancelled)
+            yi_tools::KernelBridge::execute_cell(service.as_ref(), code, &cancelled, None)
         })
     };
     run("x = 1").await??;
@@ -344,6 +345,7 @@ async fn a_slow_read_of_an_idle_kernel_is_not_called_busy() -> TestResult {
             define.as_ref(),
             "import time\nclass Slow:\n    def __repr__(self):\n        end = time.monotonic() + 7\n        while time.monotonic() < end:\n            try:\n                time.sleep(0.1)\n            except KeyboardInterrupt:\n                pass\n        return 'slow'\nslow = Slow()",
             &cancelled,
+            None,
         )
     })
     .await??;

@@ -19,7 +19,7 @@ async fn cell(
     let service = Arc::clone(service);
     tokio::task::spawn_blocking(move || {
         let cancelled: CancelFlag = Arc::new(|| false);
-        KernelBridge::execute_cell(service.as_ref(), &code, &cancelled)
+        KernelBridge::execute_cell(service.as_ref(), &code, &cancelled, None)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -377,7 +377,8 @@ print(await bash(bound))"#;
 }
 
 /// Incident: a child kernel's writable roots stopped at its own `sub-*` directory, so its
-/// `rlm.put` to the family board it shares with its parent failed with EPERM.
+/// `rlm.put` to the family board it shares with its parent failed with EPERM. Then (#757) the
+/// profile granted `family/<id>` while nothing made `family/`, so the kernel's mkdir was denied.
 #[tokio::test]
 async fn a_contained_kernel_can_write_its_family_board() -> TestResult {
     if !Sandbox::available() {
@@ -387,8 +388,8 @@ async fn a_contained_kernel_can_write_its_family_board() -> TestResult {
     let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
     // Under a tmp root the board would be writable anyway and the test would prove nothing.
     let probe = uncovered(&sandbox, &home).ok_or("no directory outside the sandbox")?;
-    let family = probe.join(format!("yi-family-{}", std::process::id()));
-    std::fs::create_dir_all(&family)?;
+    let sessions = probe.join(format!("yi-family-{}", std::process::id()));
+    let family = sessions.join("family").join("01test");
     let kernel = service(project, home, sandbox, Some(family.clone()));
     let put = cell(
         &kernel,
@@ -397,12 +398,93 @@ async fn a_contained_kernel_can_write_its_family_board() -> TestResult {
     .await;
     kernel.dispose().await;
     let written = family.join("shard.dill").is_file();
-    let _ = std::fs::remove_dir_all(&family);
+    let _ = std::fs::remove_dir_all(&sessions);
     let put = put?;
     assert!(
         written,
         "the board refused the put: {} {:?}",
         put.result.stderr, put.result.error
+    );
+    Ok(())
+}
+
+/// Incident (#757): `rlm.put` from the root kernel raised PermissionError on
+/// `~/.yi/sessions/family`, and a `bash()` job could not write the board either.
+#[tokio::test]
+async fn a_root_kernels_board_takes_puts_and_bash_jobs() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home, _session) = workspace("board")?;
+    let bare = Sandbox::for_workspace(&project, &home, None);
+    // Under a tmp root the corpus would be writable anyway and the test would prove nothing.
+    let probe = uncovered(&bare, &home).ok_or("no directory outside the sandbox")?;
+    let corpus = probe.join(format!("yi-board-{}", std::process::id()));
+    std::fs::create_dir_all(&corpus)?;
+    let rlm_dir = corpus.join("rlm-1");
+    let session = root_session(&project, &home, &rlm_dir, Some(corpus.clone()), None, None);
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let board = rlm_dir.join("family");
+    let code = format!(
+        "try:\n    rlm.put('shard', [1])\nexcept OSError as e:\n    print(e)\nprint(await bash(\"echo x > '{}' && echo ok\"))",
+        board.join("by-job.txt").display()
+    );
+    let ran = cell(&kernel, code).await;
+    kernel.dispose().await;
+    let (put, job) = (
+        board.join("shard.dill").is_file(),
+        board.join("by-job.txt").is_file(),
+    );
+    let _ = std::fs::remove_dir_all(&corpus);
+    let ran = ran?;
+    assert!(
+        put && job,
+        "the root kernel's board refused a write (put {put}, bash {job}): {} {:?}",
+        ran.result.stdout,
+        ran.result.error
+    );
+    Ok(())
+}
+
+/// Incident (#855 review): a kernel whose board did not exist yet planted it as a link to
+/// `~/.docker`, and the host's `family://` read followed it past the kernel's read denial.
+/// `outside` stands in for the credential dir, which a test must never write.
+#[tokio::test]
+async fn a_link_planted_as_the_board_is_replaced_not_followed() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home, _session) = workspace("board-link")?;
+    let bare = Sandbox::for_workspace(&project, &home, None);
+    let probe = uncovered(&bare, &home).ok_or("no directory outside the sandbox")?;
+    let corpus = probe.join(format!("yi-board-link-{}", std::process::id()));
+    let (rlm_dir, outside) = (corpus.join("rlm-1"), corpus.join("outside"));
+    let board = rlm_dir.join("family");
+    std::fs::create_dir_all(&rlm_dir)?;
+    std::fs::create_dir_all(&outside)?;
+    std::fs::write(outside.join("config.json"), "yi-855-probe-secret")?;
+    // A board an older binary let a kernel plant stays a link until the host replaces it.
+    std::os::unix::fs::symlink(&outside, &board)?;
+    let session = root_session(&project, &home, &rlm_dir, Some(corpus.clone()), None, None);
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let (board_text, outside_text) = (board.display(), outside.display());
+    let code = format!(
+        "import os\ntry:\n    os.rmdir(r'{board_text}')\n    os.symlink(r'{outside_text}', r'{board_text}')\nexcept OSError as e:\n    print(e)\ntry:\n    print(await fetch('family://config'))\nexcept Exception as e:\n    print(e)"
+    );
+    let ran = cell(&kernel, code).await;
+    kernel.dispose().await;
+    let real = std::fs::symlink_metadata(&board).is_ok_and(|seen| seen.is_dir());
+    let kept = std::fs::read_to_string(outside.join("config.json")).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&corpus);
+    let stdout = ran?.result.stdout;
+    assert!(
+        real && kept == "yi-855-probe-secret" && !stdout.contains("yi-855-probe-secret"),
+        "a board link was kept ({}) or followed: {stdout}",
+        !real
     );
     Ok(())
 }

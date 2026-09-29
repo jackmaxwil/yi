@@ -15,6 +15,7 @@ pub use crate::kernel_bootstrap::{
 use crate::kernel_variables::{
     VariableReply, dump_variable_code, parse_variable_reply, read_variable_code, render_value,
 };
+use crate::wiring::make_board;
 
 pub type HostHandlerFn = dyn Fn(Map<String, Value>) -> HostFuture + Send + Sync;
 
@@ -329,7 +330,8 @@ impl KernelService {
         sandbox
             .writable
             .extend(state.map(std::path::Path::to_path_buf));
-        Some(kernel_profile(&sandbox, self.options.family_dir.as_deref()).kernel_prefix())
+        let family = self.options.family_dir.as_deref().map(make_board);
+        Some(kernel_profile(&sandbox, family.as_deref()).kernel_prefix())
     }
 
     fn kernel_env(&self, state: Option<&std::path::Path>) -> Vec<(String, String)> {
@@ -602,7 +604,7 @@ impl KernelService {
     }
 
     pub async fn execute_user_cell(&self, code: &str, cancelled: &CancelFlag) -> ToolOutput {
-        match self.execute_async(code, cancelled).await {
+        match self.execute_async(code, cancelled, None).await {
             Ok(outcome) => yi_tools::cell_output(code, outcome),
             Err(message) => yi_tools::error_output(message),
         }
@@ -630,6 +632,7 @@ impl KernelService {
         &self,
         code: &str,
         cancelled: &CancelFlag,
+        recovery_dir: Option<&std::path::Path>,
     ) -> Result<KernelCellOutcome, String> {
         let mut kernel_restarted = false;
         let mut notes = Vec::new();
@@ -658,11 +661,13 @@ impl KernelService {
                     abort.fire();
                 })
             };
+            let spill = yi_tools::CellSpill::new(recovery_dir);
             let outcome = manager
                 .execute(
                     code,
                     ExecuteOptions {
                         abort: Some(abort),
+                        on_stream: Some(spill.sink()),
                         ..ExecuteOptions::default()
                     },
                 )
@@ -670,6 +675,7 @@ impl KernelService {
             watcher.abort();
             match outcome {
                 Ok(result) => {
+                    notes.extend(spill.note(yi_kernel::DEFAULT_MAX_OUTPUT_CHARS));
                     if !kernel_restarted && let Ok(mut restarted) = self.restarted.lock() {
                         *restarted = None;
                     }
@@ -718,10 +724,11 @@ impl KernelBridge for KernelService {
         &self,
         code: &str,
         cancelled: &CancelFlag,
+        recovery_dir: Option<&std::path::Path>,
     ) -> Result<KernelCellOutcome, String> {
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| "ipython requires a tokio runtime".to_owned())?;
-        handle.block_on(self.execute_async(code, cancelled))
+        handle.block_on(self.execute_async(code, cancelled, recovery_dir))
     }
 }
 

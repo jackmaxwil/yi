@@ -1,10 +1,11 @@
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 use yi_types::kernel::{ExecuteResult, ExecuteStatus, KernelAttachment};
 use yi_types::message::Content;
 
+use crate::spill::Spill;
 use crate::tool::{
     CancelFlag, Tool, ToolContext, ToolKind, ToolOutput, detail_text, error_output, require_str,
     text_output,
@@ -18,8 +19,51 @@ pub struct KernelCellOutcome {
 
 /// yi-runtime implements this over yi-kernel; yi-tools never depends on it.
 pub trait KernelBridge: Send + Sync {
-    fn execute_cell(&self, code: &str, cancelled: &CancelFlag)
-    -> Result<KernelCellOutcome, String>;
+    /// A stream cut for the model spills whole under `recovery_dir`, named in `notes`.
+    fn execute_cell(
+        &self,
+        code: &str,
+        cancelled: &CancelFlag,
+        recovery_dir: Option<&Path>,
+    ) -> Result<KernelCellOutcome, String>;
+}
+
+type StreamSink = dyn FnMut(&str, &str) + Send;
+
+/// A cell's stdout and stderr as they arrived, and each stream's characters (D316).
+#[derive(Clone)]
+pub struct CellSpill(Arc<Mutex<(Spill, [usize; 2])>>);
+
+impl CellSpill {
+    pub fn new(dir: Option<&Path>) -> Self {
+        Self(Arc::new(Mutex::new((Spill::new(dir), [0; 2]))))
+    }
+
+    /// The kernel's uncapped `on_stream` hook.
+    pub fn sink(&self) -> Box<StreamSink> {
+        let spill = self.clone();
+        Box::new(move |name, text| {
+            let slot = match name {
+                "stdout" => 0,
+                "stderr" => 1,
+                _ => return,
+            };
+            if let Ok(mut held) = spill.0.lock()
+                && let Some(chars) = held.1.get_mut(slot)
+            {
+                *chars = chars.saturating_add(text.chars().count());
+                held.0.write(text.as_bytes());
+            }
+        })
+    }
+
+    /// The pointer when a stream passed `cap`. ponytail: an `execute_result` repr past it has no
+    /// stream hook, so it stays cut with no file; add one when it matters.
+    pub fn note(&self, cap: usize) -> Option<String> {
+        let mut held = self.0.lock().ok()?;
+        let cut = held.1.iter().any(|chars| *chars > cap);
+        if cut { held.0.keep() } else { None }
+    }
 }
 
 pub struct IpythonTool {
@@ -44,7 +88,7 @@ impl Tool for IpythonTool {
     }
 
     fn description(&self) -> &str {
-        "Execute Python in this session's kernel: one process, yours alone, that boots on the first cell and keeps its variables across your calls and across compaction (a snapshot revives them; a restart after a hang says so and starts empty). Nothing here is shared with bash; the cwd is. `await` works at top level; `rlm` is preloaded (`help(rlm.run)`); `%%bash` runs a shell in the kernel's env and `%pip install x` adds a package; pandas (with openpyxl) reads spreadsheets, and `anydoc` and `pdf_inspector` (`extract_text`) read documents read cannot show. Output over 64 KiB is cut; a cell is interrupted after 600 s, so split longer work across cells. Children run their own kernels: `rlm.status()` shows them, `rlm.put/get` and `kernel://<name>/<var>` move objects between kernels whole, and a child reads yours through `kernel://main/<var>`."
+        "Execute Python in this session's kernel: one process, yours alone, that boots on the first cell and keeps its variables across your calls and across compaction (a snapshot revives them; a restart after a hang says so and starts empty). Nothing here is shared with bash; the cwd is. `await` works at top level; `rlm` is preloaded (`help(rlm.run)`); `%%bash` runs a shell in the kernel's env and `%pip install x` adds a package; pandas (with openpyxl) reads spreadsheets, and `anydoc` and `pdf_inspector` (`extract_text`) read documents read cannot show. A cell's stdout or stderr past 65,536 characters is cut, and the cut names [full output: path], a file with all of it (the first 256 MiB), which read opens; a displayed value past that is cut with no file; a cell is interrupted after 600 s, so split longer work across cells. Children run their own kernels: `rlm.status()` shows them, `rlm.put/get` and `kernel://<name>/<var>` move objects between kernels whole, and a child reads yours through `kernel://main/<var>`."
     }
 
     fn schema(&self) -> Value {
@@ -81,7 +125,8 @@ impl Tool for IpythonTool {
             Ok(code) => code,
             Err(message) => return error_output(message),
         };
-        let outcome = match self.bridge.execute_cell(code, &context.cancelled) {
+        let (cancelled, dir) = (&context.cancelled, context.recovery_dir.as_deref());
+        let outcome = match self.bridge.execute_cell(code, cancelled, dir) {
             Ok(outcome) => outcome,
             Err(message) => return error_output(message),
         };

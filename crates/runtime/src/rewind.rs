@@ -95,6 +95,7 @@ pub async fn summarize_branch(session: &AgentSession, stub: BranchStub) {
         .and_then(|compactor| compactor.summarizer.clone())
         .unwrap_or_else(|| session.model());
     let context = LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: BRANCH_SUMMARY_PROMPT.to_owned(),
         messages: vec![AgentMessage::host_user(
             UserContent::Text(yi_context::serialize_conversation(&stub.messages)),
@@ -102,13 +103,16 @@ pub async fn summarize_branch(session: &AgentSession, stub: BranchStub) {
         )],
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::OneShot,
         tools: None,
         tool_choice: None,
     };
     let signal = yi_loop::interrupt::InterruptSignal::default();
+    let off = model.clamp_effort(yi_types::model::Effort::Off);
     let Ok(summary) =
-        crate::compaction::complete_text(session.provider_arc(), &model, &context, &signal).await
+        crate::compaction::complete_text(session.provider_arc(), &model, &context, off, &signal)
+            .await
     else {
         return;
     };
