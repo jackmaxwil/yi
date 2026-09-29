@@ -18,7 +18,7 @@ mod tty;
 mod why;
 
 use std::sync::Arc;
-use yi_types::config::{ConfigMigration, RlmConfig, UserConfig};
+use yi_types::config::{ConfigMigration, DEFAULT_MAX_DEPTH, RlmConfig, UserConfig};
 
 use lanes::{claim_lane, configured_lanes, release_lane, run_lanes};
 
@@ -260,24 +260,26 @@ fn configured_model() -> Option<String> {
 }
 
 static CONFIG: std::sync::OnceLock<yi_types::config::UserConfig> = std::sync::OnceLock::new();
+static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
 /// The one config load, strict, before dispatch — a typo that reads as an unset default
 /// is the failure nobody sees. It lives here because no fs or `$HOME` may reach yi-types.
 fn load_config() -> Result<(), String> {
-    let Some(home) = std::env::var_os("HOME") else {
-        return set_config(yi_types::config::UserConfig::default());
-    };
+    let home = std::path::PathBuf::from(
+        std::env::var_os("HOME").ok_or("HOME is not set; yi needs an absolute HOME")?,
+    );
     // Incident: a relative HOME put the lane's worktree beside the repo and the checkout
     // that followed failed to spawn, naming the wrong step.
-    if !std::path::Path::new(&home).is_absolute() {
+    if !home.is_absolute() {
         return Err(format!(
             "HOME is relative ({}); yi needs an absolute HOME",
-            home.to_string_lossy()
+            home.display()
         ));
     }
+    let home = HOME.get_or_init(|| home);
     setup::early();
-    yi_runtime::set_catalog_cache_dir(std::path::Path::new(&home).join(".yi/catalog"));
-    let (config, migrations) = read_config(std::path::Path::new(&home))?;
+    yi_runtime::set_catalog_cache_dir(home.join(".yi/catalog"));
+    let (config, migrations) = read_config(home)?;
     for migration in migrations {
         eprintln!("warning: {migration}");
     }
@@ -311,6 +313,12 @@ fn config() -> &'static yi_types::config::UserConfig {
     CONFIG.get_or_init(yi_types::config::UserConfig::default)
 }
 
+/// The absolute HOME [`load_config`] checked; every `~/.yi` path in the binary joins onto it.
+/// `doctor` runs before that check, so it reads HOME unchecked in order to report it.
+fn home() -> &'static std::path::Path {
+    HOME.get_or_init(|| std::env::var_os("HOME").map(Into::into).unwrap_or_default())
+}
+
 /// The `thinking` field in the user config, overridden by `--thinking`.
 fn configured_thinking() -> Option<Effort> {
     config().thinking
@@ -325,40 +333,32 @@ fn configured_auto_background() -> Option<std::time::Duration> {
     (millis > 0).then(|| std::time::Duration::from_millis(millis))
 }
 
-/// §5: an unset role falls back to the primary model. Naming `models.advisor` is what turns
-/// the LLM reviewer on (D28/D50); an unknown selector warns and leaves the advisor silent.
-fn advisor_model() -> Option<Model> {
-    let spec = configured_roles().advisor?;
+/// §5: an unset role falls back to the primary model; an unknown selector warns, naming what
+/// happens instead, and the role stays unset.
+fn role_model(role: &str, spec: Option<String>, instead: &str) -> Option<Model> {
+    let spec = spec?;
     let resolved = resolve(&spec);
     if resolved.is_none() {
-        eprintln!("warning: unknown advisor model {spec}; the advisor stays silent");
+        eprintln!("warning: unknown {role} model {spec}; {instead}");
     }
     resolved
 }
 
-/// Naming `models.autoReview` is the switch for the §8 permission reviewer
-/// (D81); an unknown selector warns and auto mode stays deterministic.
+/// Naming `models.advisor` is what turns the LLM reviewer on (D28/D50).
+fn advisor_model() -> Option<Model> {
+    let spec = configured_roles().advisor;
+    role_model("advisor", spec, "the advisor stays silent")
+}
+
+/// Naming `models.autoReview` is the switch for the §8 permission reviewer (D81).
 fn auto_review_model() -> Option<Model> {
-    let spec = configured_roles().auto_review?;
-    let resolved = resolve(&spec);
-    if resolved.is_none() {
-        eprintln!("warning: unknown autoReview model {spec}; the auto reviewer stays off");
-    }
-    resolved
+    let spec = configured_roles().auto_review;
+    role_model("autoReview", spec, "the auto reviewer stays off")
 }
 
 fn summarizer_model(args: &Args) -> Option<Model> {
-    let spec = configured_roles().summarizer?;
-    match resolve(&spec) {
-        Some(model) => Some(model),
-        None => {
-            eprintln!(
-                "warning: unknown summarizer model {spec}; using {}",
-                args.model
-            );
-            None
-        }
-    }
+    let spec = configured_roles().summarizer;
+    role_model("summarizer", spec, &format!("using {}", args.model))
 }
 
 fn effective_cwd(args: &Args) -> std::path::PathBuf {
@@ -488,9 +488,7 @@ fn build_session(
         session.set_telemetry(telemetry);
     }
     let cwd = effective_cwd(args);
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_default();
+    let home = home().to_path_buf();
     let claiming = yi_types::trace::span("build_session.claim_lane");
     let claimed = claim_lane(args, &home, session_id);
     drop(claiming);
@@ -540,9 +538,7 @@ fn build_session(
             tool_execution: yi_loop_default(),
             cwd: work.clone(),
             home: home.clone(),
-            lane_slots: configured_lanes()
-                .slots
-                .unwrap_or(yi_runtime::lane::DEFAULT_SLOTS),
+            lane_slots: lanes::lane_slots(),
             mcp_read: Some(std::sync::Arc::new(McpOneShot)),
             broker: Some(broker),
             tools: std::sync::Arc::new(move || {
@@ -553,7 +549,10 @@ fn build_session(
                 )
             }),
             depth: 0,
-            max_depth: config().rlm.as_ref().map_or(1, RlmConfig::depth),
+            max_depth: config()
+                .rlm
+                .as_ref()
+                .map_or(DEFAULT_MAX_DEPTH, RlmConfig::depth),
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
             family_dir: session_id.map(|id| sessions::board_dir(&default_session_dir(args), id)),
             sessions_dir: Some(default_session_dir(args)),
@@ -684,11 +683,8 @@ fn run_plan(args: &Args) -> i32 {
 
 fn run_trust(args: &Args) -> i32 {
     let cwd = effective_cwd(args);
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_default();
     let root = yi_runtime::ext::git_root(&cwd).unwrap_or(cwd.clone());
-    let gate = yi_runtime::TrustGate::new(&home);
+    let gate = yi_runtime::TrustGate::new(home());
     match args.prompt.trim() {
         "list" => {
             for (root, count) in gate.grants() {
@@ -707,7 +703,7 @@ fn run_trust(args: &Args) -> i32 {
             }
         },
         "" => {
-            let sources = yi_runtime::ext::contributions(&root, &home);
+            let sources = yi_runtime::ext::contributions(&root, home());
             if sources.is_empty() {
                 println!("{} contributes no instructions or packs", root.display());
                 return 0;
@@ -761,15 +757,9 @@ fn session_provider(session: &AgentSession) -> &std::sync::Arc<ProviderStream> {
 }
 
 fn default_session_dir(args: &Args) -> std::path::PathBuf {
-    args.session_dir.as_ref().map_or_else(
-        || {
-            std::env::var_os("HOME").map_or_else(
-                || std::path::PathBuf::from(".yi/sessions"),
-                |home| std::path::Path::new(&home).join(".yi/sessions"),
-            )
-        },
-        std::path::PathBuf::from,
-    )
+    args.session_dir
+        .as_ref()
+        .map_or_else(|| home().join(".yi/sessions"), std::path::PathBuf::from)
 }
 
 /// A flag names what the user wants now, a resumed session what they wanted last time.
@@ -881,10 +871,7 @@ fn run_undo(args: &Args) -> i32 {
     if args.prompt.trim() == "list" {
         return list_checkpoints(&store, args.json);
     }
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_default();
-    match yi_runtime::undo(&store, &cwd, &home) {
+    match yi_runtime::undo(&store, &cwd, home()) {
         yi_runtime::UndoOutcome::Restored { changes, scoped } => {
             report_undo(&changes, scoped, args.json);
             0

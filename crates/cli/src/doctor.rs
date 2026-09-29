@@ -103,11 +103,20 @@ fn classifier_answers(site: &Site) -> Finding {
 }
 
 fn catalog_age(site: &Site) -> Finding {
-    let hours = read_config(&site.home)
-        .ok()
-        .and_then(|(config, _)| config.catalog.and_then(|catalog| catalog.refresh_hours))
-        .unwrap_or(yi_runtime::DEFAULT_REFRESH_HOURS);
+    let config = read_config(&site.home)
+        .map(|(config, _)| config)
+        .unwrap_or_default();
     let dir = site.home.join(".yi/catalog");
+    let rejected = yi_runtime::catalog_rejected(&dir);
+    if let Some(first) = rejected.first() {
+        return fail(format!(
+            "did not load: {first} ({} in all); `yi catalog refresh`",
+            rejected.len()
+        ));
+    }
+    let Some(hours) = crate::catalog::refresh_hours(config.catalog.as_ref()) else {
+        return ok("refresh off (`catalog.enabled: false`); caches stay as last written");
+    };
     let now = crate::catalog::clock();
     let stale: Vec<String> = yi_runtime::CATALOG_PROVIDERS
         .iter()
@@ -117,13 +126,7 @@ fn catalog_age(site: &Site) -> Finding {
         })
         .map(|provider| (*provider).to_owned())
         .collect();
-    let rejected = yi_runtime::catalog_rejected(&dir);
-    if let Some(first) = rejected.first() {
-        fail(format!(
-            "did not load: {first} ({} in all); `yi catalog refresh`",
-            rejected.len()
-        ))
-    } else if stale.is_empty() {
+    if stale.is_empty() {
         ok("bundled floor, caches current and younger than the refresh age")
     } else {
         fail(format!(
@@ -227,10 +230,7 @@ fn ledger_roots_exist(site: &Site) -> Finding {
 
 fn lanes_consistent(site: &Site) -> Finding {
     use yi_runtime::lane::{LaneError, Pool, SlotView, land::lane_line};
-    let slots = crate::lanes::configured_lanes()
-        .slots
-        .unwrap_or(yi_runtime::lane::DEFAULT_SLOTS);
-    let pool = match Pool::open(&site.home, &site.cwd, slots) {
+    let pool = match Pool::open(&site.home, &site.cwd, crate::lanes::lane_slots()) {
         Ok(pool) => pool,
         Err(LaneError::NotARepo(_)) => return ok("not a repository"),
         Err(error) => return fail(error.to_string()),
@@ -331,9 +331,7 @@ pub(crate) fn early() {
 
 pub(crate) fn run(args: &Args) -> i32 {
     let site = Site {
-        home: std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default(),
+        home: crate::home().to_path_buf(),
         cwd: effective_cwd(args),
         sessions: crate::default_session_dir(args),
         fix: args.fix,
