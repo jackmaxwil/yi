@@ -40,10 +40,11 @@ struct Site {
 type Check = fn(&Site) -> Finding;
 
 /// The rows, in the order a reader wants them: what the process is, then what it owns.
-const ROWS: [(&str, Check); 10] = [
+const ROWS: [(&str, Check); 11] = [
     ("host", host_environment),
     ("home", home_absolute),
     ("config", config_parses),
+    ("classifier", classifier_answers),
     ("catalog", catalog_age),
     ("python-runtime", python_runtime_present),
     ("kernel-toolchain", kernel_toolchain),
@@ -67,6 +68,9 @@ fn home_absolute(site: &Site) -> Finding {
 }
 
 fn config_parses(site: &Site) -> Finding {
+    if !site.home.join(".yi/config.json").exists() {
+        return ok("none yet; `yi setup` writes one");
+    }
     match read_config(&site.home) {
         Ok((_, migrations)) => ok(migrations
             .iter()
@@ -74,6 +78,25 @@ fn config_parses(site: &Site) -> Finding {
                 format!("{row}; {migration}")
             })),
         Err(error) => fail(error),
+    }
+}
+
+fn classifier_answers(site: &Site) -> Finding {
+    let Ok((config, _)) = read_config(&site.home) else {
+        return ok("see config");
+    };
+    let Some(model) = config.models.and_then(|roles| roles.classifier) else {
+        return ok("off; `yi setup` offers it");
+    };
+    let url = config
+        .classifier
+        .and_then(|block| block.url)
+        .unwrap_or_else(|| yi_runtime::classifier::DEFAULT_URL.to_owned());
+    match yi_runtime::classifier::probe(&url, &model) {
+        Ok(()) => ok(format!("{model} answers at {url}")),
+        Err(error) => fail(format!(
+            "no answer at {url} ({error}); start laya-serve or run `yi setup`"
+        )),
     }
 }
 

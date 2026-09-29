@@ -1,0 +1,10 @@
+--- a/Makefile
++++ b/Makefile
+@@ -10,6 +10,7 @@
+ test:
+ 	@cargo test --features=serde
+ 	@cargo test --features=std
++	@cargo clippy --all-targets
+ 	@cargo test
+ 
+ docs: build

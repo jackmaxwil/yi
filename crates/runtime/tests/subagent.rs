@@ -400,7 +400,7 @@ async fn a_negative_or_non_numeric_timeout_is_refused_naming_it() -> TestResult 
         thinking_level: None,
         tool_execution: yi_loop::ExecutionMode::Sequential,
     };
-    let provider = std::sync::Arc::new(yi_runtime::ProviderStream::new(None, None));
+    let provider = std::sync::Arc::new(yi_runtime::ProviderStream::new(None));
     let session = yi_runtime::AgentSession::new(config, provider);
     yi_runtime::mailbox::register_receive(&session, &family.host, &mut registry);
     for asked in [json!(-5_000), json!("soon")] {
