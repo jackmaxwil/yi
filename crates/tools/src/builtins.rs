@@ -214,6 +214,8 @@ fn file_id(_meta: &fs::Metadata) -> Option<FileId> {
 pub(crate) struct Walked {
     pub(crate) walled: usize,
     pub(crate) stopped: bool,
+    /// The root is guarded, so nothing under it was walked.
+    pub(crate) refused: bool,
 }
 
 impl Walked {
@@ -223,10 +225,13 @@ impl Walked {
             self.walled
         );
         let stopped = format!("[the walk stopped after {WALK_CAP} entries: name a narrower path]");
+        let refused = "[no walk enters this directory: it is a home, a system root or a key store; \
+                       give path= a directory under the working tree]";
         (self.walled > 0)
             .then_some(walled)
             .into_iter()
             .chain(self.stopped.then_some(stopped))
+            .chain(self.refused.then(|| refused.to_owned()))
             .collect()
     }
 }
@@ -239,6 +244,15 @@ const WALK_CAP: usize = 200_000;
 pub(crate) fn walk_files(
     root: &Path,
     deny: &[PathBuf],
+    visit: &mut dyn FnMut(&Path) -> bool,
+) -> Walked {
+    walk_capped(root, deny, WALK_CAP, visit)
+}
+
+fn walk_capped(
+    root: &Path,
+    deny: &[PathBuf],
+    cap: usize,
     visit: &mut dyn FnMut(&Path) -> bool,
 ) -> Walked {
     let mut walked = Walked::default();
@@ -260,6 +274,7 @@ pub(crate) fn walk_files(
         || denied_file(&guarded, fs::metadata(&real))
         || (real.ancestors()).any(|dir| denied_file(&trees, fs::metadata(dir)))
     {
+        walked.refused = true;
         return walked;
     }
     let mut ignore = crate::ignore::Ignore::default();
@@ -280,7 +295,7 @@ pub(crate) fn walk_files(
         let mut entries: Vec<fs::DirEntry> = entries.flatten().collect();
         entries.sort_by_key(fs::DirEntry::file_name);
         seen = seen.saturating_add(entries.len());
-        if seen > WALK_CAP {
+        if seen > cap {
             walked.stopped = true;
             return walked;
         }
@@ -1011,6 +1026,34 @@ mod tests {
     use super::{BashTool, broad_search};
     use crate::Tool;
     use std::time::Duration;
+
+    /// A walk that reaches its cap says so, matched or not, and visits nothing past it.
+    #[test]
+    fn a_walk_past_its_cap_stops_and_says_so() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("yi-walk-cap-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("d"))?;
+        for name in ["a", "b", "d/c", "d/e"] {
+            std::fs::write(root.join(name), "x")?;
+        }
+        let mut visited = 0_usize;
+        let walked = super::walk_capped(&root, &[], 4, &mut |_| {
+            visited += 1;
+            true
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            walked.stopped && visited == 2,
+            "stopped {} after {visited}",
+            walked.stopped
+        );
+        assert!(
+            walked
+                .notices()
+                .iter()
+                .any(|row| row.contains("the walk stopped"))
+        );
+        Ok(())
+    }
 
     #[test]
     fn the_bash_description_names_the_reducer_floor() {

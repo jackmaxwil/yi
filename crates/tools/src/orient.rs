@@ -197,7 +197,12 @@ fn skeletons(
         files.len() < SKELETON_SCAN
     });
     if files.is_empty() {
-        return Err("no source files under the working directory".to_owned());
+        let rows = ["no source files under the working directory".to_owned()];
+        return Err(rows
+            .into_iter()
+            .chain(walled.notices())
+            .collect::<Vec<_>>()
+            .join("\n"));
     }
     // Incident: name order spent the whole layer on the alphabetically first
     // crate, so a symbol's own file was never shown.

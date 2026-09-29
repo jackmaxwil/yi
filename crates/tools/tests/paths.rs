@@ -231,6 +231,44 @@ fn a_glob_never_walks_into_a_key_store() -> TestResult {
     Ok(())
 }
 
+/// A walk that starts at a home, a system root or inside a key store walks nothing, and says so
+/// with the remedy: yi started in `~` answered "No matches found" to every grep.
+#[cfg(unix)]
+#[test]
+fn a_walk_from_a_guarded_directory_says_it_was_refused() -> TestResult {
+    let scratch = Scratch::new("yi-paths-refused")?;
+    let home = scratch.join("home");
+    fs::create_dir_all(home.join(".ssh/keys"))?;
+    fs::write(
+        home.join(".ssh/keys/id_ed25519"),
+        "FAKE PRIVATE KEY MARKER\n",
+    )?;
+    fs::write(home.join("notes.md"), "NOTE MARKER\n")?;
+    let elsewhere = scratch.join("elsewhere");
+    fs::create_dir_all(&elsewhere)?;
+    std::os::unix::fs::symlink(home.join(".ssh"), elsewhere.join("link"))?;
+    std::os::unix::fs::symlink(&home, elsewhere.join("h"))?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let refused = "no walk enters this directory";
+    let answers = [
+        read(&home, &[("path", "**/*.md")]),
+        grep(
+            &ToolContext::new(home.clone()),
+            &[("pattern", "NOTE MARKER")],
+        ),
+        read(&elsewhere, &[("path", "h/**")]),
+        read(&elsewhere, &[("path", "link/keys/*")]),
+    ];
+    for answer in answers {
+        assert!(
+            answer.contains(refused) && !answer.contains("MARKER\n"),
+            "a refused walk says so and yields nothing: {answer}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn find_lists_references_for_a_definition_in_files_of_its_type() -> TestResult {
     let scratch = Scratch::new("yi-paths-refs")?;
