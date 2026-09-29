@@ -146,67 +146,7 @@ pub fn wall_refusal(tool_name: &str, path: &str, list: &str) -> String {
 /// Invariant: walled when it or an ancestor is a deny entry by spelling or file identity, so a
 /// symlink (dangling too), `..` or letter case cannot reach around it; hard links can.
 pub fn walled(deny: &[PathBuf], path: &Path) -> bool {
-    !deny.is_empty() && walled_via(deny, &identities(deny), path, LINK_HOPS)
-}
-
-/// As many links as the kernel follows before `ELOOP`.
-const LINK_HOPS: u8 = 40;
-
-/// A missing tail is judged by its existing head, and a dangling link just past that head by
-/// where it points, so a refusal never tells a file behind the wall from a missing one.
-fn walled_via(deny: &[PathBuf], ids: &[FileId], path: &Path, hops: u8) -> bool {
-    if lexically_walled(deny, path) {
-        return true;
-    }
-    let Some((head, real)) =
-        (path.ancestors()).find_map(|head| Some((head, fs::canonicalize(head).ok()?)))
-    else {
-        return false;
-    };
-    if (real.ancestors()).any(|dir| denied_file(ids, fs::metadata(dir))) {
-        return true;
-    }
-    let mut rest = path.strip_prefix(head).unwrap_or(path).components();
-    let Some(Ok(target)) = rest.next().map(|next| fs::read_link(head.join(next))) else {
-        return false;
-    };
-    let target = real.join(target).join(rest.as_path());
-    hops > 0 && walled_via(deny, ids, &target, hops.saturating_sub(1))
-}
-
-fn lexically_walled(deny: &[PathBuf], path: &Path) -> bool {
-    !deny.is_empty() && {
-        let normalized = yi_permission::lexical_normalize(path);
-        deny.iter()
-            .any(|denied| normalized.starts_with(yi_permission::lexical_normalize(denied)))
-    }
-}
-
-type FileId = (u64, u64);
-
-fn identities(deny: &[PathBuf]) -> Vec<FileId> {
-    deny.iter()
-        .filter_map(|denied| file_id(&fs::metadata(denied).ok()?))
-        .collect()
-}
-
-fn denied_file(ids: &[FileId], meta: std::io::Result<fs::Metadata>) -> bool {
-    !ids.is_empty()
-        && meta
-            .ok()
-            .and_then(|meta| file_id(&meta))
-            .is_some_and(|id| ids.contains(&id))
-}
-
-#[cfg(unix)]
-fn file_id(meta: &fs::Metadata) -> Option<FileId> {
-    use std::os::unix::fs::MetadataExt;
-    Some((meta.dev(), meta.ino()))
-}
-
-#[cfg(not(unix))]
-fn file_id(_meta: &fs::Metadata) -> Option<FileId> {
-    None
+    yi_permission::beneath(deny, path)
 }
 
 /// What a walk left out: entries a wall covers, and whether it stopped at [`WALK_CAP`].
@@ -261,19 +201,11 @@ fn walk_capped(
         return walked;
     }
     let root = yi_permission::lexical_normalize(root);
-    let ids = identities(deny);
+    let ids = yi_permission::identities(deny);
     let gate = yi_permission::CatastrophicContext::detect(&root);
-    let (trees, exact) = yi_permission::read_guarded_dirs(&gate);
-    let (trees, guarded) = (
-        identities(&trees),
-        [identities(&trees), identities(&exact)].concat(),
-    );
     // Judged by identity, so letter case, a link, `/private` or a firmlink name no way in.
-    let real = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
-    if yi_permission::read_is_catastrophic(&real, &gate)
-        || denied_file(&guarded, fs::metadata(&real))
-        || (real.ancestors()).any(|dir| denied_file(&trees, fs::metadata(dir)))
-    {
+    let guard = yi_permission::ReadGuard::new(&gate);
+    if guard.denies(&root) {
         walked.refused = true;
         return walked;
     }
@@ -305,12 +237,15 @@ fn walk_capped(
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            let guarded_dir = file_type.is_dir() && denied_file(&guarded, entry.metadata());
-            if guarded_dir || yi_permission::read_is_catastrophic(&path, &gate) {
+            // Every guarded identity is a directory's, so a file's is read only under a wall.
+            let meta = (file_type.is_dir() || !ids.is_empty())
+                .then(|| entry.metadata().ok())
+                .flatten();
+            if guard.denies_entry(&path, meta.as_ref()) {
                 continue;
             }
-            if lexically_walled(deny, &path)
-                || (!ids.is_empty() && denied_file(&ids, entry.metadata()))
+            if yi_permission::lexically_beneath(deny, &path)
+                || yi_permission::denied_file(&ids, meta.as_ref())
             {
                 walked.walled = walked.walled.saturating_add(1);
             } else if file_type.is_dir() {

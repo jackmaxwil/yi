@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use yi_types::permission::{RuleDecision, RuleKind};
 
 use crate::catastrophic::{
-    CatastrophicContext, command_reads_credentials, command_targets_catastrophic, is_catastrophic,
-    read_is_catastrophic, resolve,
+    CatastrophicContext, absolute, command_reads_credentials, command_targets_catastrophic,
+    is_catastrophic, read_is_catastrophic, resolve,
 };
 use crate::rules::{ConfigRule, ConfigRuleAction, SessionRules};
 
@@ -130,14 +130,16 @@ pub fn decide(
     holds: &[Hold],
     catastrophic_context: &CatastrophicContext,
 ) -> Decision {
-    // A call that only reads is judged by what a read can do (D180).
-    let protected = match call.reads_only && !call.irreversible {
-        true => read_is_catastrophic,
-        false => is_catastrophic,
-    };
+    // A call that only reads is judged by what a read can do, on the file it opens (D180, D322).
+    let reads = call.reads_only && !call.irreversible;
     for target in call.targets {
+        let opened = absolute(target, catastrophic_context);
         let target = resolve(target, catastrophic_context);
-        if protected(&target, catastrophic_context) {
+        let protected = match reads {
+            true => read_is_catastrophic(&opened, catastrophic_context),
+            false => is_catastrophic(&target, catastrophic_context),
+        };
+        if protected {
             return Decision::Deny {
                 reason: format!(
                     "{} targets a protected path ({}); this is denied in every mode.",
