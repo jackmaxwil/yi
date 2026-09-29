@@ -1082,3 +1082,44 @@ fn attribute_to_shared(shared: &Arc<Shared>, child: &Usage) {
         }
     }
 }
+
+/// Invariant: `notify_waiters` stores no permit, so this registers before `poll` reads state.
+pub(crate) async fn until<T>(
+    notify: &tokio::sync::Notify,
+    mut poll: impl FnMut() -> std::ops::ControlFlow<T, Option<std::time::Instant>>,
+) -> T {
+    loop {
+        let mut woken = std::pin::pin!(notify.notified());
+        woken.as_mut().enable();
+        match poll() {
+            std::ops::ControlFlow::Break(done) => return done,
+            std::ops::ControlFlow::Continue(Some(at)) => {
+                let at = tokio::time::Instant::from_std(at);
+                let _ = tokio::time::timeout_at(at, woken).await;
+            }
+            std::ops::ControlFlow::Continue(None) => woken.await,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::ControlFlow;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_wake_fired_while_polling_is_not_lost() -> Result<(), tokio::time::error::Elapsed> {
+        let notify = tokio::sync::Notify::new();
+        let mut polls = 0;
+        let woke = super::until(&notify, || {
+            polls += 1;
+            if polls > 1 {
+                return ControlFlow::Break(polls);
+            }
+            notify.notify_waiters();
+            ControlFlow::Continue(None)
+        });
+        assert_eq!(tokio::time::timeout(Duration::from_secs(1), woke).await?, 2);
+        Ok(())
+    }
+}
