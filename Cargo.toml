@@ -54,7 +54,7 @@ globset = { version = "0.4", default-features = false }
 # requires); the full Unicode tables stay out. The engine crates underneath
 # were already in the lock via globset. Ledger row records the measured delta.
 regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl", "unicode-gencat", "unicode-bool", "unicode-script"] }
-xxhash-rust = { version = "0.8", default-features = false, features = ["xxh32"] }
+xxhash-rust = { version = "0.8", default-features = false, features = ["xxh32", "xxh3"] }
 sha2 = { version = "0.10", default-features = false }
 hmac = { version = "0.12", default-features = false }
 tokio = { version = "1", default-features = false, features = ["rt", "sync", "time", "macros", "process", "io-util", "net"] }

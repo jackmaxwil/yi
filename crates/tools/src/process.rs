@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::jobs::LiveOutput;
-use crate::reduce::Spill;
+use crate::spill::Spill;
 use crate::tool::CancelFlag;
 
 pub const OUTPUT_CAP: usize = 30_000;
@@ -27,15 +27,15 @@ pub struct CommandCapture {
     pub cancelled: bool,
     pub truncated: bool,
     pub kill_error: Option<String>,
-    /// Every byte of both streams, as they arrived, when a stream was cut or ran past the
-    /// reducer's floor and a recovery dir was given.
-    pub spill: Option<std::path::PathBuf>,
+    /// When a stream was cut and a recovery dir was given, the pointer to a file with every byte
+    /// of both streams, interleaved as they arrived.
+    pub spill: Option<String>,
 }
 
 impl CommandCapture {
     /// What a cut capture ends with: the spill that holds every byte, else the bare cut.
     pub fn cut_note(&self) -> Option<String> {
-        let kept = (self.spill.as_ref()).map(|path| format!("[full output: {}]", path.display()));
+        let kept = self.spill.clone();
         self.truncated
             .then(|| kept.unwrap_or_else(|| "[output truncated]".to_owned()))
     }
@@ -327,9 +327,7 @@ pub(crate) fn run_captured_live(
     }
 
     let truncated = stdout_truncated || stderr_truncated;
-    // Past the floor the reducer may cut too, and it points at this copy.
-    let large = stdout.len().saturating_add(stderr.len()) > crate::reduce::REDUCE_FLOOR;
-    let spill = spill.lock().ok().filter(|_| truncated || large);
+    let spill = spill.lock().ok().filter(|_| truncated);
     Ok(CommandCapture {
         stdout,
         stderr,

@@ -686,6 +686,10 @@ impl Tool for BashTool {
             &capture.stderr,
             exit_code_for_reduce,
             capture.spill.as_deref(),
+            context
+                .recovery_dir
+                .as_deref()
+                .filter(|_| !capture.truncated),
             max_lines,
         );
         if !reduced.text.is_empty() {

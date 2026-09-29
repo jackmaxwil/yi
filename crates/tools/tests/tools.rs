@@ -761,31 +761,82 @@ fn a_capped_bash_stream_keeps_the_tail_with_the_verdict() -> TestResult {
 }
 
 /// Dogfood 2026-09-27: a cut stream named no file, and the reducer's tee kept the cut text under
-/// a `[full output: P]` label. Held in memory, then past 64 KiB in a file, every byte survives.
+/// a `[full output: P]` label. Held in memory, through a file, left unreduced (`--verbose`) or
+/// split over both streams (interleaved as they arrived), every line survives.
 #[test]
 fn a_cut_bash_stream_names_a_file_with_every_byte() -> TestResult {
     let dir = temp_dir("bash-spill")?;
     let mut context = ToolContext::new(dir.to_path_buf());
     context.recovery_dir = Some(dir.join("tool-output"));
-    for count in [8_000, 20_000] {
-        let command = json!(format!("seq 1 {count}"));
-        let output = BashTool::default().execute(args(&[("command", command)]), &context);
+    let cases = [
+        ("seq 1 8000", 8_000),
+        ("seq 1 20000", 20_000),
+        ("seq 1 8000 # --verbose", 8_000),
+        ("seq 1 8000; seq 8001 16000 >&2", 16_000),
+    ];
+    for (command, count) in cases {
+        let output = BashTool::default().execute(args(&[("command", json!(command))]), &context);
         let text = output_text(&output);
         let path = (text.lines().last())
             .and_then(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
-            .ok_or_else(|| format!("the pointer is not last: {text}"))?;
-        let whole: String = (1..=count).map(|n| format!("{n}\n")).collect();
-        assert_eq!(fs::read_to_string(path)?, whole, "seq 1 {count}");
+            .ok_or_else(|| format!("{command}: the pointer is not last: {text}"))?;
+        let bytes: usize = (1..=count).map(|n| format!("{n}\n").len()).sum();
+        let whole = fs::read_to_string(path)?;
+        assert_eq!(whole.len(), bytes, "{command}");
+        let mut rows: Vec<u32> = whole.lines().flat_map(str::parse).collect();
+        rows.sort_unstable();
+        assert!(
+            rows.iter().copied().eq(1..=count),
+            "{command}: {} rows",
+            rows.len()
+        );
         let read = read_tool().execute(args(&[("path", json!(path))]), &context);
-        assert!(!read.is_error && output_text(&read).contains("\n100:100\n"));
+        assert!(
+            !read.is_error && output_text(&read).contains(":100\n"),
+            "{command}"
+        );
     }
+    // Kept only where a pointer names it: a 13,893-byte output left whole leaves no file.
+    let whole =
+        BashTool::default().execute(args(&[("command", json!("seq 1 3000 # -v"))]), &context);
+    assert!(!output_text(&whole).contains("[full output:"));
+    // `seq 1 8000` twice is one file: equal bytes share their name.
+    assert_eq!(
+        fs::read_dir(dir.join("tool-output"))?.count(),
+        cases.len() - 1
+    );
+    Ok(())
+}
+
+/// A job past its wait reports its cut the same way, once it settles.
+#[test]
+fn a_backgrounded_jobs_report_names_its_spill() -> TestResult {
+    let dir = temp_dir("jobs-spill")?;
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
+    let after = Some(std::time::Duration::from_millis(100));
+    let limit = std::time::Duration::from_secs(60);
+    let run =
+        yi_tools::run_or_background("sleep 1; seq 1 20000", &context, after, limit, None, None)?;
+    let yi_tools::Run::Backgrounded(id) = run else {
+        return Err("the job finished before its wait".into());
+    };
+    yi_tools::jobs::registry().wait_settled(Some(id), limit);
+    let output = yi_tools::jobs::registry()
+        .report(id)
+        .ok_or("no report")?
+        .output;
+    let path = (output.lines().last())
+        .and_then(|line| line.strip_prefix("[full output: ")?.strip_suffix(']'))
+        .ok_or("the report names no spill")?;
+    assert_eq!(fs::read_to_string(path)?.lines().count(), 20_000);
     Ok(())
 }
 
 #[test]
 fn a_lossy_reduction_without_a_tee_returns_raw() -> TestResult {
     let raw: String = (1..4_000).map(|n| format!("line-{n}\n")).collect();
-    let reduced = yi_tools::reduce("ls -R", &raw, "", 0, None, None);
+    let reduced = yi_tools::reduce("ls -R", &raw, "", 0, None, None, None);
     assert_eq!(reduced.text, raw);
     assert!(reduced.recovery.is_none());
     Ok(())
@@ -794,7 +845,7 @@ fn a_lossy_reduction_without_a_tee_returns_raw() -> TestResult {
 #[test]
 fn a_verbose_command_is_left_alone() -> TestResult {
     let raw: String = (1..4_000).map(|n| format!("line-{n}\n")).collect();
-    let reduced = yi_tools::reduce("cargo test -- --nocapture", &raw, "", 0, None, None);
+    let reduced = yi_tools::reduce("cargo test -- --nocapture", &raw, "", 0, None, None, None);
     assert_eq!(reduced.text, raw);
     assert!(reduced.recovery.is_none());
     Ok(())
@@ -810,7 +861,7 @@ fn a_failing_cargo_run_keeps_its_diagnostics() -> TestResult {
     raw.push_str("error[E0425]: cannot find value `nope` in this scope\n");
     raw.push_str("  --> src/lib.rs:3:5\n");
     let dir = temp_dir("reduce-cargo")?;
-    let reduced = yi_tools::reduce("cargo build", &raw, "", 101, Some(&dir), None);
+    let reduced = yi_tools::reduce("cargo build", &raw, "", 101, None, Some(&dir), None);
     assert!(reduced.text.contains("E0425"), "{}", reduced.text);
     assert!(reduced.out_bytes < reduced.raw_bytes);
     Ok(())
