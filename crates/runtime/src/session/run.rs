@@ -271,7 +271,12 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
             compactor,
             Arc::clone(&provider),
             model.clone(),
-            Arc::clone(&system_prompt),
+            {
+                let (system, tools) = (context.system_prompt.clone(), context.tools.clone());
+                Arc::new(move || {
+                    crate::compaction::LoopRequest::new(system.clone(), &tools, effort)
+                })
+            },
             Arc::new(move || store_of(&stores)),
             crate::compaction::CompactReports {
                 waiting: Arc::new(move |wait| {
