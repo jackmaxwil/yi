@@ -661,8 +661,11 @@ impl SubagentHost {
             crate::levers::get().family_cap,
         );
         require_kwargs(&kwargs)?;
-        let reader = reader::parse(&kwargs)?;
         let mut kwargs = kwargs;
+        if matches!(standing, Standing::Worker) && !kwargs.contains_key("role") {
+            kwargs.insert("role".to_owned(), Value::from("reader"));
+        }
+        let reader = reader::parse(&kwargs)?;
         let standing = match (&reader, standing) {
             (Some(_), Standing::Worker) => Standing::Reader,
             (_, standing) => standing,
@@ -679,9 +682,9 @@ impl SubagentHost {
         let overrides =
             optional_string(&kwargs, "model")?.or(optional_string(&kwargs, "thinking")?);
         if reader.is_some() && (fork != Fork::None || isolation != Isolation::None) {
-            return Err(
-                "a reader gets a partition, not a fork, and writes nothing to isolate".to_owned(),
-            );
+            return Err(reader::full_child(
+                "a reader gets a partition, not a fork, and writes nothing to isolate",
+            ));
         }
         if fork == Fork::All && overrides.is_some() {
             return Err(

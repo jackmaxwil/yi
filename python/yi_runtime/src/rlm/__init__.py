@@ -552,12 +552,13 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     child's ``fetch`` refuses, so ``["kernel://"]`` walls a whole scheme.
     ``context_keys`` is the child's whole view of this kernel: those variables are
     serialized into its brief and nothing else of this namespace reaches it.
-    ``check`` makes it a protocol child — it owes a ``{"value": …, "discoveries":
+    ``check`` makes a ``role="root"`` child a protocol child (a reader refuses it) — it owes a ``{"value": …, "discoveries":
     […]}`` answer, and ``result`` withholds that answer while the check is red.
     ``deadline_s`` and ``tokens`` are the child's lease, drawn from this session's own: an
     ask past what is left here is refused with both numbers, never clamped. ``parent_close``
     is ``"terminate"`` (default, 30 s grace) or ``"request_cancel"``; work is kept either way.
-    ``role="reader"`` makes a question-child: a short reader prompt instead of this session's,
+    A bare call makes a question-child (``role="reader"``, the default; ``role="root"`` is a
+    full child with this session's prompt and tools): a short reader prompt instead of this session's,
     ``tools`` from ``["read", "grep"]`` (both by default, ``[]`` for one request), at most
     ``turns`` requests (3; the last is told to answer, and a tool call in it is refused), writes walled off, and no kernel. It stands
     outside the child cap; its finish reaches you like any child's unless ``result`` took it. ``partition`` is
