@@ -14,6 +14,7 @@ use crate::session::AgentSession;
 
 mod build;
 pub mod models;
+pub mod reader;
 mod record;
 mod runs;
 pub(crate) mod service;
@@ -81,7 +82,7 @@ pub(crate) struct Children {
     records: HashMap<String, ChildRecord>,
     pub(crate) epoch: u64,
     /// Children being built outside the lock; each holds a slot, its name and its tokens.
-    building: Vec<(String, u64)>,
+    building: Vec<(String, u64, bool)>,
     /// Removed names at their reap's epoch: a cursor from before the reap reads them as moved.
     removed: std::collections::VecDeque<(String, u64)>,
     forgotten: u64,
@@ -98,13 +99,13 @@ impl Children {
             .records
             .values()
             .filter_map(|record| record.lease.tokens);
-        held.chain(self.building.iter().map(|(_, tokens)| *tokens))
+        held.chain(self.building.iter().map(|(_, tokens, _)| *tokens))
             .fold(0, u64::saturating_add)
     }
 
     /// A build whose record is listed: its reservation is the record's from here on.
     pub(crate) fn release_build(&mut self, name: &str) {
-        self.building.retain(|(held, _)| held != name);
+        self.building.retain(|(held, _, _)| held != name);
     }
 
     pub(crate) fn touch(&mut self, key: &str, cause: crate::family::Cause) -> u64 {
@@ -169,6 +170,7 @@ pub struct ChildBuild<'a> {
     /// The child's lease: its own clock and the tokens its own children may draw on.
     pub deadline: Option<std::time::Duration>,
     pub tokens: Option<u64>,
+    pub reader: Option<reader::Reader>,
 }
 
 pub type ChildFactory = dyn Fn(ChildBuild<'_>) -> Result<AgentSession, String> + Send + Sync;
@@ -229,6 +231,7 @@ pub struct SubagentHost {
     pub(crate) stuck: Mutex<std::collections::HashSet<String>>,
     /// The board a long reply is kept on: the wiring's, set once after construction (D242).
     pub(crate) family: std::sync::OnceLock<PathBuf>,
+    pub(crate) resolver: std::sync::OnceLock<Arc<crate::fetch::Resolver>>,
 }
 
 impl SubagentHost {
@@ -416,6 +419,10 @@ fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
                     | "deadline_s"
                     | "tokens"
                     | "parent_close"
+                    | "role"
+                    | "partition"
+                    | "tools"
+                    | "turns"
             )
         })
         .collect();
@@ -505,10 +512,15 @@ impl SubagentHost {
             told: Mutex::new(None),
             stuck: Mutex::default(),
             family: std::sync::OnceLock::new(),
+            resolver: std::sync::OnceLock::new(),
         }
     }
 
     /// The lane split, shared with the plan engine so verification and workers count one pool.
+    pub fn set_resolver(&self, resolver: Arc<crate::fetch::Resolver>) {
+        let _first_wins = self.resolver.set(resolver);
+    }
+
     pub fn capacity(&self) -> Arc<crate::plan::capacity::Capacity> {
         Arc::clone(&self.capacity)
     }
@@ -649,6 +661,15 @@ impl SubagentHost {
             crate::levers::get().family_cap,
         );
         require_kwargs(&kwargs)?;
+        let reader = reader::parse(&kwargs)?;
+        let mut kwargs = kwargs;
+        let standing = match (&reader, standing) {
+            (Some(_), Standing::Worker) => Standing::Reader,
+            (_, standing) => standing,
+        };
+        if reader.is_some() {
+            reader::walls_writes(&mut kwargs);
+        }
         let requested_name = optional_string(&kwargs, "name")?;
         let fork = parse_fork(&kwargs)?;
         let isolation = parse_isolation(&kwargs)?;
@@ -657,6 +678,11 @@ impl SubagentHost {
         let ask = crate::lease::Ask::from_kwargs(&kwargs)?;
         let overrides =
             optional_string(&kwargs, "model")?.or(optional_string(&kwargs, "thinking")?);
+        if reader.is_some() && (fork != Fork::None || isolation != Isolation::None) {
+            return Err(
+                "a reader gets a partition, not a fork, and writes nothing to isolate".to_owned(),
+            );
+        }
         if fork == Fork::All && overrides.is_some() {
             return Err(
                 "fork=all inherits the parent's model and thinking; drop the override".to_owned(),
@@ -674,12 +700,18 @@ impl SubagentHost {
             ));
         }
         let mut cast = self.cast(&kwargs)?;
+        let prompt = reader::brief(
+            self.resolver.get(),
+            &kwargs,
+            prompt,
+            &cast.2,
+            &self.options.cwd,
+        )?;
         let model = cast.0.clone();
         let (session_dir, child_id) = self.create_child_dir(&self.options.parent_session_dir)?;
         let session_name =
             requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
-        let capped = matches!(standing, Standing::Worker);
-        let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask, capped)?;
+        let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask, &standing)?;
         if let Isolation::Container(image) = &isolation {
             crate::node::placeable(&self.options.home, image)?;
         }
@@ -1080,7 +1112,9 @@ impl SubagentHost {
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let prompt = prompt.ok_or("rlm.run requires a prompt")?;
-                host.spawn(prompt, kwargs)
+                tokio::task::spawn_blocking(move || host.spawn(prompt, kwargs))
+                    .await
+                    .map_err(|error| format!("rlm.run task failed: {error}"))?
             })
         });
         let host = Arc::clone(self);
