@@ -70,6 +70,10 @@ pub struct MemoryPointer {
     pub extra: Map<String, Value>,
 }
 
+impl crate::entry::CustomRecord for MemoryPointer {
+    const TYPE: &'static str = MEMORY_ENTRY_TYPE;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

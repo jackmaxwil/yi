@@ -5,9 +5,7 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
-use yi_types::classifier::{
-    CLASSIFY_ENTRY, ClassifyRecord, DecisionRequest, DecisionResponse, Question,
-};
+use yi_types::classifier::{ClassifyRecord, DecisionRequest, DecisionResponse, Question};
 use yi_types::config::UserConfig;
 use yi_types::message::{AgentMessage, UserContent};
 
@@ -513,10 +511,8 @@ pub fn attach(session: &AgentSession, cwd: &Path, home: &Path, config: &UserConf
 fn journal(session: &AgentSession) -> Record {
     let store = session.store_handle();
     Arc::new(move |record| {
-        let (Some(store), Ok(data)) = (store(), serde_json::to_value(&record)) else {
-            return;
-        };
-        let _journaled =
-            yi_session::lock_session(&store).append_custom("main", CLASSIFY_ENTRY, Some(data));
+        if let Some(store) = store() {
+            let _journaled = yi_session::lock_session(&store).append_custom_record(&record);
+        }
     })
 }

@@ -741,14 +741,9 @@ fn journal_into(
     store: Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>,
 ) -> crate::permission::Journal {
     Arc::new(move |record| {
-        let (Some(store), Ok(data)) = (store(), serde_json::to_value(&record)) else {
-            return;
-        };
-        let _journaled = yi_session::lock_session(&store).append_custom(
-            "main",
-            yi_types::permission::PERMISSION_ENTRY,
-            Some(data),
-        );
+        if let Some(store) = store() {
+            let _journaled = yi_session::lock_session(&store).append_custom_record(&record);
+        }
     })
 }
 
