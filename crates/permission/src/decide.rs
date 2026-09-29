@@ -131,7 +131,7 @@ pub fn decide(
     catastrophic_context: &CatastrophicContext,
 ) -> Decision {
     // Every call is judged by what a read can do, on the file it opens: an edit shows the lines
-    // it refuses and a write replaces a key (D322). Only a call that reads stops there (D180).
+    // it refuses and a write replaces a key (D323). Only a call that reads stops there (D180).
     let reads = call.reads_only && !call.irreversible;
     for target in call.targets {
         let opened = absolute(target, catastrophic_context);

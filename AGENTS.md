@@ -509,7 +509,8 @@ predecessor and is not authored — a row edited there changes nothing.
 A branch is finished when its pull request is merged on the forge, not when its tests pass
 here. The steps between the two are where sessions fail, so they are verbs, not habits:
 `just ratchet`, `just commit`, `just push`, `just pr open`, `just pr status`, `just pr merge`,
-or `just land` for the last three at once. The yi-forge skill is the procedure; this is the law.
+or `just land` to open the PR as a draft the review bot reads; it merges after `just pr ready`
+passes on two clean rounds. The yi-forge skill is the procedure; this is the law.
 
 - Baselines move in their own `Ratchet: …` commit, never beside the code commit: a raised
   ceiling moves first (040) — `just commit` refuses a code commit while a ratchet is red — a

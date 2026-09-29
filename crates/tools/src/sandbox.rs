@@ -43,7 +43,7 @@ impl Sandbox {
         writable.dedup();
         Self {
             writable,
-            // The stores the read gate refuses, so a contained `cat` meets the same list (D322).
+            // The stores the read gate refuses, so a contained `cat` meets the same list (D323).
             deny_read: yi_permission::credential_stores(home),
             deny_write,
             loopback: false,
