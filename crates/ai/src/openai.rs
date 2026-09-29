@@ -380,7 +380,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     // its own prefix and no explicit breakpoint is known to be accepted (design §11).
     if model.base_url.contains("openrouter.ai") {
         let breakpoints = Breakpoints::build(
-            &CachePolicy::of(model, false),
+            &CachePolicy::of(model, context.cache_ttl, context.cache_ttl),
             &history,
             context.reuse,
             context.shared_through,

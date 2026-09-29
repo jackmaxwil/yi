@@ -2377,3 +2377,70 @@ async fn a_provider_retry_reaches_the_surfaces_as_a_wait() {
         })]
     );
 }
+
+/// A retry that really waits: its backoff announced, 400 ms spent, then the reply.
+struct Backoff;
+
+impl yi_loop::run::StreamFn for Backoff {
+    fn stream(
+        &self,
+        _model: &Model,
+        _context: &LlmContext,
+        _effort: yi_types::model::Effort,
+        _signal: &InterruptSignal,
+    ) -> Receiver<AssistantMessageEvent> {
+        let (sender, receiver) = tokio::sync::mpsc::channel(64);
+        let events = stream_with_deltas(&faux_assistant_message(
+            vec![faux_text("ok")],
+            StopReason::Stop,
+        ));
+        tokio::spawn(async move {
+            let wait = yi_types::event::Wait::Retry {
+                attempt: 1,
+                of: 3,
+                delay_ms: 400,
+                cause: "HTTP 429".to_owned(),
+            };
+            let _ = sender.send(AssistantMessageEvent::Waiting { wait }).await;
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            for event in events {
+                let _ = sender.send(event).await;
+            }
+        });
+        receiver
+    }
+}
+
+/// A request's recorded `elapsed_ms` runs from the attempt that was answered, not from before a
+/// retry's backoff (#873): the cache fold subtracts it from the reply's end to find the start a
+/// TTL runs from, so a backoff counted in it would stretch the gap before the request.
+#[tokio::test]
+async fn a_retry_backoff_is_not_counted_in_the_requests_elapsed_time() {
+    let mut context = LoopContext {
+        system_prompt: "sys".to_owned(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let (_events, mut emit) = collector();
+    run_loop(
+        &mut context,
+        vec![user("hi")],
+        &LoopConfig::new(faux_model()),
+        &InterruptSignal::default(),
+        &mut emit,
+        &Backoff,
+    )
+    .await;
+    let elapsed = context.messages.iter().find_map(|message| match message {
+        AgentMessage::Assistant { diagnostics, .. } => diagnostics
+            .iter()
+            .flatten()
+            .find(|note| note.diagnostic_type == "cache")?
+            .details
+            .as_ref()?
+            .get("elapsed_ms")?
+            .as_u64(),
+        _ => None,
+    });
+    assert!(elapsed.is_some_and(|elapsed| elapsed < 200), "{elapsed:?}");
+}

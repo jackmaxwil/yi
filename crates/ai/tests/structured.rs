@@ -32,6 +32,7 @@ fn model() -> Model {
 
 fn asking(schema: Value) -> LlmContext {
     LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "s".to_owned(),
         messages: vec![AgentMessage::host_user(
             UserContent::Text("q".to_owned()),

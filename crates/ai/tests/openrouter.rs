@@ -24,6 +24,7 @@ fn target_model() -> Result<Model, Box<dyn Error>> {
 
 pub(crate) fn history_context() -> LlmContext {
     LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "be terse".to_owned(),
         messages: vec![
             AgentMessage::host_user(UserContent::Text("hi".to_owned()), 0),

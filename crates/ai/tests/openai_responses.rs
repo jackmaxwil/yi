@@ -36,6 +36,7 @@ fn model(reasoning: bool) -> Model {
 
 fn context() -> LlmContext {
     LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "be terse".to_owned(),
         messages: vec![AgentMessage::host_user(
             UserContent::Text("hi".to_owned()),

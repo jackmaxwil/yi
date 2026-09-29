@@ -412,6 +412,7 @@ impl Compactor {
         let summarizer = self.summarizer.as_ref().unwrap_or(model);
         let warm = summarizer == model;
         let request = |window_messages: &[AgentMessage], warm: bool| LlmContext {
+            cache_ttl: yi_types::model::Ttl::Min5,
             system_prompt: loop_request.system_prompt.clone(),
             messages: {
                 let mut converted = convert_to_llm(window_messages);

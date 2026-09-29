@@ -71,6 +71,7 @@ fn key(secret: &str) -> Resolved {
 
 async fn stream(provider: &ProviderStream, model: &Model) -> Vec<AssistantMessageEvent> {
     let context = LlmContext {
+        cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: String::new(),
         messages: vec![],
         tools: None,
