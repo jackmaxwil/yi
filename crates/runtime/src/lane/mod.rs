@@ -539,26 +539,20 @@ impl Pool {
         yi_session::replace_file(&path, &bytes).map_err(io_error(&path))
     }
 
-    /// Invariant: the kernel drops this flock with the process; a crash cannot wedge the pool.
     fn lock(&self) -> Result<File, LaneError> {
-        std::fs::create_dir_all(&self.dir).map_err(io_error(&self.dir))?;
         let path = self.dir.join("pool.lock");
-        let file = File::create(&path).map_err(io_error(&path))?;
-        file.lock().map_err(io_error(&path))?;
-        Ok(file)
+        yi_session::lock_file(&path).map_err(io_error(&path))
     }
 
     /// Invariant: held while a live process holds the `.held` flock; named under a free one is an orphan.
     fn probe(&self, slot: SlotIndex) -> Result<(File, Option<String>), LaneError> {
         let path = self.held_path(slot);
-        let file = File::create(&path).map_err(io_error(&path))?;
-        match file.try_lock() {
-            Ok(()) => Ok((file, None)),
-            Err(std::fs::TryLockError::WouldBlock) => {
-                let session = self.read_state(slot)?.session.unwrap_or_default();
-                Ok((file, Some(session)))
-            }
-            Err(std::fs::TryLockError::Error(source)) => Err(LaneError::Io { path, source }),
+        match yi_session::try_lock_file(&path).map_err(io_error(&path))? {
+            Ok(file) => Ok((file, None)),
+            Err(file) => Ok((
+                file,
+                Some(self.read_state(slot)?.session.unwrap_or_default()),
+            )),
         }
     }
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use yi_types::message::{AgentMessage, UserContent};
+use yi_types::message::AgentMessage;
 use yi_types::plan::canonical::DIGEST_PREFIX;
 use yi_types::plan::doc::{AgentId, Check, Delegation, Isolation, TodoAddr, TodoLabel};
 use yi_types::schedule::DeliveryMode;
@@ -163,13 +163,7 @@ fn parse_url(rendered: String) -> Result<Url, String> {
 
 pub(super) fn say(deliver: &DeliverFn, text: String) {
     deliver(
-        AgentMessage::Custom {
-            custom_type: "plan_relevance".to_owned(),
-            content: UserContent::Text(text),
-            display: true,
-            details: None,
-            timestamp: yi_session::now_ms(),
-        },
+        AgentMessage::host_note("plan_relevance", text, yi_session::now_ms()),
         DeliveryMode::Steer,
     );
 }
@@ -367,6 +361,7 @@ pub(crate) mod tests {
     use yi_loop::ExecutionMode;
     use yi_types::backoff::backoff;
     use yi_types::message::StopReason;
+    use yi_types::message::UserContent;
     use yi_types::model::{Model, ModelCost};
     use yi_types::plan::doc::{GoalText, SpawnSpec, TodoState};
     use yi_types::url::Durability;

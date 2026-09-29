@@ -169,15 +169,8 @@ pub async fn admit(
         for index in 0..card.slots.get() {
             let path = dir.join(format!("{index}.held"));
             let io = |error: std::io::Error| format!("{}: {error}", path.display());
-            let mut file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&path)
-                .map_err(io)?;
-            match file.try_lock() {
-                Ok(()) => {
+            match yi_session::try_lock_file(&path).map_err(io)? {
+                Ok(mut file) => {
                     let text = format!("{holder}\n{}", family.as_deref().unwrap_or_default());
                     file.set_len(0)
                         .and_then(|()| file.write_all(text.as_bytes()))
@@ -193,7 +186,7 @@ pub async fn admit(
                         waited,
                     });
                 }
-                Err(std::fs::TryLockError::WouldBlock) => {
+                Err(mut file) => {
                     let mut text = String::new();
                     let _a_holder_mid_write_reads_blank = file.read_to_string(&mut text);
                     let mut lines = text.lines();
@@ -203,7 +196,6 @@ pub async fn admit(
                     ));
                     kin |= family.is_some() && lines.next() == family.as_deref();
                 }
-                Err(std::fs::TryLockError::Error(error)) => return Err(io(error)),
             }
         }
         if kin {

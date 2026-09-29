@@ -105,3 +105,7 @@ impl ParentClose {
         }
     }
 }
+
+impl crate::entry::CustomRecord for LeaseRecord {
+    const TYPE: &'static str = "lease";
+}

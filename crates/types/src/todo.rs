@@ -21,49 +21,13 @@ pub const PHASE_NAME_MAX: usize = 80;
 #[serde(try_from = "String", into = "String")]
 pub struct PhaseName(String);
 
-impl PhaseName {
-    pub fn new(name: impl Into<String>) -> Result<Self, DocError> {
-        let name = name.into();
-        let name = name.trim().to_owned();
-        if name.is_empty() {
-            return Err(DocError::LabelEmpty);
-        }
-        if name.chars().count() > PHASE_NAME_MAX {
-            return Err(DocError::LabelTooLong {
-                label: name,
-                max: PHASE_NAME_MAX,
-            });
-        }
-        if name.contains(['\n', '\r']) {
-            return Err(DocError::LabelNewline { label: name });
-        }
-        Ok(Self(name))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for PhaseName {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl TryFrom<String> for PhaseName {
-    type Error = DocError;
-
-    fn try_from(name: String) -> Result<Self, Self::Error> {
-        Self::new(name)
-    }
-}
-
-impl From<PhaseName> for String {
-    fn from(name: PhaseName) -> Self {
-        name.0
-    }
-}
+crate::plan::ids::text_newtype!(PhaseName, DocError, |name| crate::plan::ids::one_line(
+    name.trim().to_owned(),
+    PHASE_NAME_MAX,
+    DocError::LabelEmpty,
+    |label, max| DocError::LabelTooLong { label, max },
+    |label| DocError::LabelNewline { label },
+));
 
 /// A checklist row's trailing `user://<n>` tokens are its intent, cut from the label.
 pub fn split_cited(text: &str) -> (&str, Vec<Url>) {
@@ -443,4 +407,12 @@ pub struct TodoInterceptRecord {
     pub cycle_total: u32,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl crate::entry::CustomRecord for TodoInterceptRecord {
+    const TYPE: &'static str = TODO_INTERCEPT_ENTRY_TYPE;
+}
+
+impl crate::entry::CustomRecord for TodoRecord {
+    const TYPE: &'static str = TODO_ENTRY_TYPE;
 }
