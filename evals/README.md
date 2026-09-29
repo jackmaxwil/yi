@@ -562,7 +562,9 @@ itself does not have. With `minCompactionShare` only the compaction is judged:
 the request span in the session's telemetry that no reply's usage matches must
 read that share of the loop request before it, and a session that never
 compacted is `inconclusive`; `cache-warm-compaction` asks for one after seven
-reads (#746). Every scenario ends
+reads (#746). With `minSiblingShare` the second request no root reply
+carries, the second of two tool-less readers over one partition, must read that
+share of its own prompt; `cache-warm-siblings` asks for the pair (#745). Every scenario ends
 `pass`, `fail` or `inconclusive` — timeout, no key, provider trouble, budget —
 and only `fail` is red. `--allow-faux` runs the lane's plumbing offline. The
 run's HOME is fresh and has `telemetry.enabled`, so `run.json` carries
