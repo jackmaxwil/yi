@@ -29,7 +29,8 @@ pub trait StreamFn: Send + Sync {
     ) -> Receiver<AssistantMessageEvent>;
 }
 
-fn synthesized_error_message(model: &Model, text: &str) -> AgentMessage {
+/// An errored reply carrying `text`, for a turn that fails before or outside a request.
+pub fn synthesized_error_message(model: &Model, text: &str) -> AgentMessage {
     AgentMessage::Assistant {
         content: Vec::new(),
         api: model.api.clone(),
@@ -629,6 +630,7 @@ async fn stream_assistant_response<S: StreamFn>(
         let _span = yi_types::trace::span("loop.stream_open");
         stream.stream(model, &llm_context, effort, signal)
     };
+    let stable_key = llm_context.stable_key();
     drop(llm_context);
     let mut first_event = true;
     let mut first_token = true;
@@ -722,7 +724,7 @@ async fn stream_assistant_response<S: StreamFn>(
         }
         None => None,
     };
-    let final_message = final_message.unwrap_or_else(|| {
+    let mut final_message = final_message.unwrap_or_else(|| {
         if signal.is_fired() || timed_out {
             aborted_message(
                 added_partial.then(|| context.messages.last()).flatten(),
@@ -732,6 +734,23 @@ async fn stream_assistant_response<S: StreamFn>(
             synthesized_error_message(model, "Provider stream ended without a terminal event")
         }
     });
+    if let AgentMessage::Assistant {
+        diagnostics,
+        timestamp,
+        ..
+    } = &mut final_message
+    {
+        let mut details = Map::new();
+        details.insert("stable".to_owned(), stable_key.into());
+        diagnostics.get_or_insert_with(Vec::new).push(
+            yi_types::message::AssistantMessageDiagnostic {
+                diagnostic_type: yi_types::model::CACHE_DIAGNOSTIC.to_owned(),
+                timestamp: *timestamp,
+                error: None,
+                details: Some(details),
+            },
+        );
+    }
     if added_partial {
         if let Some(last) = context.messages.last_mut() {
             *last = final_message.clone();

@@ -71,10 +71,13 @@ pub enum Engine {
 
 impl Engine {
     pub fn of(model: &Model) -> Self {
-        let id = model.id.trim_start_matches('~');
-        if model.api == "anthropic-messages"
-            || id.starts_with("anthropic/")
-            || id.starts_with("claude-")
+        Self::of_route(&model.api, &model.provider, &model.id)
+    }
+
+    /// The same prior from what an assistant record names, for a replay with no catalog.
+    pub fn of_route(api: &str, provider: &str, id: &str) -> Self {
+        let id = id.trim_start_matches('~');
+        if api == "anthropic-messages" || id.starts_with("anthropic/") || id.starts_with("claude-")
         {
             return Self::Breakpoint {
                 slots: SLOTS,
@@ -85,10 +88,7 @@ impl Engine {
             return Self::Snapshot;
         }
         // OpenAI's explicit mode takes three breakpoints beside its automatic one, at one TTL.
-        if id.starts_with("openai/")
-            || model.provider == "openai"
-            || model.provider == "openai-codex"
-        {
+        if id.starts_with("openai/") || provider == "openai" || provider == "openai-codex" {
             return Self::Breakpoint {
                 slots: 3,
                 hour: false,
@@ -162,7 +162,7 @@ impl Breakpoints {
             })
         };
         let mut marks = [None, stable(Position::SystemEnd), None, None];
-        if reuse == Reuse::Loop {
+        if matches!(reuse, Reuse::Loop | Reuse::ReadOnly) {
             let tail = messages.iter().rposition(is_tail_kind);
             let prev_tail = tail
                 .and_then(|tail| {
@@ -172,15 +172,20 @@ impl Breakpoints {
                         .rposition(|message| matches!(message, AgentMessage::Assistant { .. }))
                 })
                 .and_then(|reply| messages.get(..reply)?.iter().rposition(is_tail_kind));
+            // A read-only request's previous tail takes the slot its own tail would have had.
+            let (prev_slots, tail) = match reuse {
+                Reuse::ReadOnly => (2, None),
+                _ => (3, tail),
+            };
             if let Some(tail) = tail
                 && slots >= 2
             {
                 marks[3] = five(Position::Tail(tail));
-                if let Some(prev) = prev_tail
-                    && slots >= 3
-                {
-                    marks[2] = five(Position::PrevTail(prev));
-                }
+            }
+            if let Some(prev) = prev_tail
+                && slots >= prev_slots
+            {
+                marks[2] = five(Position::PrevTail(prev));
             }
         }
         if slots >= SLOTS {
@@ -200,8 +205,8 @@ pub enum Dialect {
     /// Anthropic Messages: `cache_control` on the first and last system blocks (the last tool
     /// when there is no system) and on the last block of the message a breakpoint names.
     AnthropicBlocks,
-    /// openai-completions through OpenRouter: `cache_control` on the last part of the system
-    /// message and of a named message; the one-part system has no room for the universal end.
+    /// openai-completions through OpenRouter: `cache_control` on the last text part of the
+    /// system message and of a named message; the one-part system has no room for the universal end.
     OpenRouterParts,
 }
 
@@ -251,13 +256,18 @@ fn ephemeral(ttl: Ttl) -> Value {
     }
 }
 
-fn mark_last_part(message: &mut Value, control: Value) {
-    if let Some(text) = message["content"].as_str() {
-        message["content"] = json!([{"type": "text", "text": text}]);
-    }
+/// Marks the message's last block, or on OpenRouter its last text part: OpenRouter documents
+/// `cache_control` on text parts only, so an image part never carries one, as in pi. A message
+/// with no text part goes unmarked there; the previous tail still reads. Content is already
+/// blocks or parts on both wires (D51).
+fn mark_last_part(message: &mut Value, control: Value, dialect: Dialect) {
+    let takes_mark = |part: &&mut Value| match dialect {
+        Dialect::AnthropicBlocks => true,
+        Dialect::OpenRouterParts => part["type"] == "text",
+    };
     if let Some(part) = message["content"]
         .as_array_mut()
-        .and_then(|parts| parts.last_mut())
+        .and_then(|parts| parts.iter_mut().rev().find(takes_mark))
     {
         part["cache_control"] = control;
     }
@@ -272,6 +282,26 @@ pub fn encode(
     origins: &[Option<usize>],
     transient: Vec<Value>,
 ) -> Encoded {
+    match dialect {
+        // D51: one shape every request, as the Messages adapter already renders. OpenRouter
+        // merges adjacent user messages, and a string beside the part a mark made renders as
+        // a different prompt once the mark moves on: live, request 3 of a tool loop read only
+        // the system prefix (#742).
+        Dialect::OpenRouterParts => {
+            for message in params
+                .get_mut("messages")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+                .filter(|message| message["role"] != "assistant")
+            {
+                if let Some(text) = message["content"].as_str() {
+                    message["content"] = json!([{"type": "text", "text": text}]);
+                }
+            }
+        }
+        Dialect::AnthropicBlocks => {}
+    }
     for mark in breakpoints.marks() {
         let control = ephemeral(mark.ttl);
         match (dialect, mark.position) {
@@ -310,7 +340,7 @@ pub fn encode(
                         matches!(message["role"].as_str(), Some("system" | "developer"))
                     })
                 {
-                    mark_last_part(system, control);
+                    mark_last_part(system, control, dialect);
                 }
             }
             (
@@ -325,7 +355,7 @@ pub fn encode(
                     .and_then(Value::as_array_mut)
                     .and_then(|messages| messages.get_mut(at))
                 {
-                    mark_last_part(message, control);
+                    mark_last_part(message, control, dialect);
                 }
             }
         }

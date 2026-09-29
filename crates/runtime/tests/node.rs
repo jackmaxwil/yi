@@ -37,6 +37,27 @@ fn at_once() -> CancelFlag {
     Arc::new(|| true)
 }
 
+/// Dies with a pid-only staging name: every kernel booting in one process staged the card at
+/// one path, and a boot whose rename lost failed with the file gone.
+#[test]
+fn kernels_computing_the_card_at_once_all_read_it() -> TestResult {
+    let dir = Scratch::new("yi-node-card-race")?;
+    let home = dir.to_path_buf();
+    let boots: Vec<_> = (0..8)
+        .map(|_| {
+            let home = home.clone();
+            std::thread::spawn(move || node::card(&home).map(|card| card.slots))
+        })
+        .collect();
+    let mut slots = Vec::new();
+    for boot in boots {
+        slots.push(boot.join().map_err(|_| "a boot panicked")??);
+    }
+    slots.dedup();
+    assert_eq!(slots.len(), 1, "every boot read one card: {slots:?}");
+    Ok(())
+}
+
 #[test]
 fn a_card_is_computed_once_and_an_edit_to_it_sticks() -> TestResult {
     let slots = |cpus| node::computed(cpus, 8, false, "n".to_owned()).slots.get();

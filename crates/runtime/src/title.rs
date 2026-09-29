@@ -70,6 +70,7 @@ pub async fn title_session(session: &AgentSession) -> Result<Option<String>, Str
         session.provider(),
         &model,
         &context,
+        model.clamp_effort(yi_types::model::Effort::Off),
         &InterruptSignal::default(),
     )
     .await?;

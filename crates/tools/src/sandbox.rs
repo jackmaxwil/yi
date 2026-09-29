@@ -422,7 +422,7 @@ pub fn denial_hint(refusal: &SandboxRefusal) -> String {
                 "writing"
             };
             format!(
-                "next: the sandbox refused writing `{}` ({CONTAINED}); the next call {rule} under `{}` outside those asks instead of running contained, and is refused where nobody can answer",
+                "next: the sandbox refused writing `{}` ({CONTAINED}); the next call {rule} under `{}` outside those asks: approving widens that run by that directory, or runs it outside the sandbox where the directory is protected; nobody to answer refuses it",
                 path.display(),
                 dir.display()
             )
@@ -431,7 +431,7 @@ pub fn denial_hint(refusal: &SandboxRefusal) -> String {
             let needs = if scopes.len() == 1 { "needs" } else { "need" };
             let scopes: Vec<String> = scopes.iter().map(|scope| format!("`{scope}`")).collect();
             format!(
-                "next: the sandbox refused this ({CONTAINED}); {} now {needs} permission: the next call using it asks instead of running contained, and is refused where nobody can answer",
+                "next: the sandbox refused this ({CONTAINED}); {} now {needs} permission: the next call using it asks, and approving runs that one call outside the sandbox; nobody to answer refuses it",
                 scopes.join(", ")
             )
         }
