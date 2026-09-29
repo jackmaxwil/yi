@@ -252,7 +252,7 @@ pub const CHORDS: [Chord; 20] = [
 ];
 
 /// One hint-row key and its drop rank: the row sheds the lowest rank first, whole,
-/// and `KEEP` never.
+/// and `KEEP` never. The prefix row sheds `g palette` first: `⌥/` already names it.
 type Hint = (&'static str, u8);
 const KEEP: u8 = u8::MAX;
 
@@ -285,7 +285,8 @@ const ALT_HINTS: [Hint; 6] = [
     ("⌥? keys", KEEP),
 ];
 
-/// The hint row that fits `width` cells: keys drop whole, by rank, never cut mid-key.
+/// The hint row, indented three cells, that fits `width` cells: keys drop whole, by
+/// rank, never cut mid-key.
 pub fn hint(prefix_armed: bool, cmd: bool, width: usize) -> String {
     let (items, sep): (&[Hint], &str) = if prefix_armed {
         (&PREFIX_HINTS, " ")
@@ -301,11 +302,47 @@ pub fn hint(prefix_armed: bool, cmd: bool, width: usize) -> String {
             .filter(|(_, rank)| *rank >= floor)
             .map(|(text, _)| *text)
             .collect();
-        let row = kept.join(sep);
-        // Every glyph in these rows is one cell wide, so chars count cells.
-        if floor == KEEP || row.chars().count() <= width {
+        let row = format!("   {}", kept.join(sep));
+        if floor == KEEP || ratatui::text::Line::raw(row.as_str()).width() <= width {
             return row;
         }
         floor += 1;
+    }
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::hint;
+
+    #[test]
+    fn the_row_drops_whole_keys_by_rank_to_fit() {
+        let full = "   ⌥/ command palette   ⌥n new session   ⌥b sidebar   ⌥⇧J notebook   ⌥g diff   ⌥? keys";
+        let no_notebook = "   ⌥/ command palette   ⌥n new session   ⌥b sidebar   ⌥g diff   ⌥? keys";
+        let cases = [
+            (false, false, 86, full),
+            (false, false, 85, no_notebook),
+            (false, false, 71, no_notebook),
+            (
+                false,
+                false,
+                70,
+                "   ⌥/ command palette   ⌥n new session   ⌥g diff   ⌥? keys",
+            ),
+            (false, false, 0, "   ⌥? keys"),
+            (
+                false,
+                true,
+                63,
+                "   ⌘P command palette   ⌘⇧N new session   ⌘G diff   ⌘? keys",
+            ),
+            (true, false, 18, "   PREFIX  q leave"),
+        ];
+        for (armed, cmd, width, want) in cases {
+            assert_eq!(
+                hint(armed, cmd, width),
+                want,
+                "armed {armed} cmd {cmd} width {width}"
+            );
+        }
     }
 }

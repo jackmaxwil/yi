@@ -1788,12 +1788,10 @@ fn the_hint_row_keeps_whole_keys() -> TestResult {
     )?;
     let last = frame.lines().last().unwrap_or_default();
     let last = last.trim_end_matches(['"', ',', ' ']);
-    assert!(last.ends_with("⌥? keys"), "the row keeps ⌥? keys: {last:?}");
     assert!(
-        last.contains("⌥/ command palette"),
-        "the palette outranks: {last:?}"
+        last.ends_with("   ⌥/ command palette   ⌥n new session   ⌥b sidebar   ⌥g diff   ⌥? keys"),
+        "the notebook drops whole and ⌥? keys stays: {last:?}"
     );
-    assert!(!last.contains("⌥⇧J"), "the notebook drops first: {last:?}");
     Ok(())
 }
 
