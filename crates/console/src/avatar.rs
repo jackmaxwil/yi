@@ -152,10 +152,14 @@ pub struct Avatars {
     ids: HashMap<String, ImageId>,
     placed: HashMap<String, (u16, u16, u16, u16)>,
     motion: HashMap<String, Motion>,
+    forgotten: bool,
 }
 
 impl Avatars {
     pub fn sync(&mut self, out: &mut impl Write, rows: &[Placement]) {
+        if std::mem::take(&mut self.forgotten) {
+            self.hide_all(out);
+        }
         let wanted: Vec<&str> = rows.iter().map(|place| place.key.as_str()).collect();
         let gone: Vec<String> = self
             .placed
@@ -239,12 +243,10 @@ impl Avatars {
             .min()
     }
 
-    /// Incident: a resize clears the screen, and kitty drops every placement with the cells
-    /// under it; the ledger still said placed, so the tiles showed until the row moved.
+    /// Incident: a ledger that outlived a resize left tiles unplaced, and one that dropped its ids
+    /// left their images on screen; the next sync deletes what was placed, then places again.
     pub fn forget(&mut self) {
-        self.placed.clear();
-        self.ids.clear();
-        self.motion.clear();
+        self.forgotten = true;
     }
 
     pub fn hide_all(&mut self, out: &mut impl Write) {
@@ -281,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn a_forgotten_ledger_places_again_after_a_clear() {
+    fn a_forgotten_ledger_deletes_what_it_placed() {
         let place = Placement {
             col: 2,
             row: 0,
@@ -305,9 +307,13 @@ mod tests {
         avatars.forget();
         let mut after = Vec::new();
         avatars.sync(&mut after, std::slice::from_ref(&place));
+        let after = String::from_utf8_lossy(&after);
+        assert!(after.contains("a=p,i="), "placed again after a clear");
+        // Incident: a resize that changed no size drew no clear, and the dropped ids
+        // left their images on screen with nothing left to delete them.
         assert!(
-            String::from_utf8_lossy(&after).contains("a=p,i="),
-            "placed again after a clear"
+            after.contains(&format!("a=d,d=I,i={FIRST_ID},")),
+            "the image placed before the forget is deleted: {after:?}"
         );
     }
 

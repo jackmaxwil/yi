@@ -136,7 +136,7 @@ fn owner(op: Op) -> OpRequest {
 
 /// A session with its own list `first`, `gate`, and an engine whose sink is the mirror.
 fn mirrored(dir: &Scratch) -> Result<(AgentSession, Arc<TodoStore>, PlanEngine), Box<dyn Error>> {
-    let session = session(Arc::new(ProviderStream::new(None, None)));
+    let session = session(Arc::new(ProviderStream::new(None)));
     session.attach_store(memory_store())?;
     let todos = TodoStore::new(session.store_handle(), "main");
     todos.apply(
@@ -393,7 +393,7 @@ fn a_mirrored_list_with_a_running_child_does_not_nag() -> TestResult {
 #[tokio::test]
 async fn a_plan_opened_through_the_tool_is_the_sessions_todo_list() -> TestResult {
     let root = Scratch::new("yi-todo-mirror-wired")?;
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut args: Map<String, Value> = Map::new();
     args.insert("op".to_owned(), json!("init"));
     args.insert("goal".to_owned(), json!("ship the widget"));
@@ -712,31 +712,61 @@ fn a_todo_set_or_init_under_a_plan_writes_the_owners_rows_beside_it() -> TestRes
 }
 
 /// Dies with the batch checked against the owner's rows only: `gate` joins beside the plan's
-/// `gate`, and the next projection drops it without a word.
+/// `gate`, and the next projection drops it without a word. Dies too with a refusal that does not
+/// name the plan, which leaves a model that echoed the rendered list into a `set` guessing why,
+/// and with the plan named for a repeat of the owner's own row or of a finished plan's leftover.
 #[test]
-fn appending_a_plan_rows_label_is_refused() -> TestResult {
+fn a_repeat_of_an_open_plans_row_is_refused_naming_the_plan() -> TestResult {
     use yi_tools::{Tool, ToolContext};
     let dir = Scratch::new("yi-todo-mirror-dup")?;
     let (_session, todos, _engine) = mirrored(&dir)?;
     let before = todos.list();
+    let plan = plan_of(&before).ok_or("the list names no plan")?.to_owned();
     let tool = yi_runtime::todo::tool::TodoTool::new(Arc::clone(&todos));
-    let args = json!({"op": "append", "items": ["gate"]});
-    let output = tool.execute(
-        args.as_object().cloned().unwrap_or_default(),
-        &ToolContext::new(dir.to_path_buf()),
-    );
-    let text: String = output
-        .result
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert!(output.is_error, "a plan row's label was taken: {text}");
-    assert!(text.contains("todo \"gate\""), "{text}");
-    assert_eq!(todos.list(), before);
+    let run = |args: Value| {
+        let output = tool.execute(
+            args.as_object().cloned().unwrap_or_default(),
+            &ToolContext::new(dir.to_path_buf()),
+        );
+        let text: String = output
+            .result
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        (output.is_error, text)
+    };
+    let named = |label: &str| format!("todo {label:?} is a row of plan {plan}");
+    let plain = |label: &str| format!("todo {label:?} is already in the list");
+    let echo = text::checklist(&before).join("\n");
+    for (args, want) in [
+        (json!({"op": "append", "items": ["gate"]}), named("gate")),
+        (json!({"op": "set", "list": echo}), named("delegated job")),
+        (json!({"op": "append", "items": ["first"]}), plain("first")),
+    ] {
+        let (is_error, text) = run(args);
+        assert!(is_error && text.contains(&want), "{text}");
+        assert_eq!(todos.list(), before);
+    }
+    let cli = PlanEngine::new(PlanStore::open(dir.to_path_buf())?, Arc::new(Child));
+    let label = TodoLabel::new("gate")?;
+    cli.apply(owner(Op::Drop {
+        label,
+        disposition: None,
+    }))?;
+    let label = TodoLabel::new("delegated job")?;
+    let cause = "closed from the command line".to_owned();
+    cli.apply(owner(Op::Fail {
+        label,
+        cause,
+        disposition: None,
+    }))?;
+    let (is_error, text) = run(json!({"op": "append", "items": ["gate"]}));
+    assert!(is_error && text.contains(&plain("gate")), "{text}");
+    assert_eq!(plan_of(&todos.list()), None);
     Ok(())
 }
 

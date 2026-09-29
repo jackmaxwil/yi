@@ -35,6 +35,9 @@ def _python():
 PYTHON = _python()
 IGNORE = shutil.ignore_patterns(".git", ".venv", "__pycache__", "*.pyc")
 BROKEN = (1, 12)  # a mutation must turn between 1 and 12 passing tests red
+# Incident, 2026-09-28: at load average 88 pyparsing's 20 s suite overran 180 s while grading, and
+# nine trials scored 0 for a grader that never ran.
+GRADE_TIMEOUT = 600
 SWAPS = {"<": "<=", "<=": "<", ">": ">=", ">=": ">", "==": "!=", "!=": "==", "+": "-", "-": "+",
          "and": "or", "or": "and"}
 # One unittest run, reported as {test id: ok | fail | skip}; an import error counts as a failed id.
@@ -130,7 +133,9 @@ def _apply(text, site):
 
 def _hide(root, spec, tests):
     """{test file: its text without the given tests}, or None when one is not a literal method of
-    its class (a generated or inherited test cannot be cut out without taking others with it)."""
+    its class or of a base class in the same module (a generated test has no text to cut). An
+    inherited test is cut where it is defined: pyparsing runs its suite once per subclass, with
+    and without packrat, and a bug breaks every copy."""
     wanted = {}
     for test in tests:
         module, cls, method = test.rsplit(".", 2)
@@ -141,14 +146,25 @@ def _hide(root, spec, tests):
     for relative, methods in wanted.items():
         text = (Path(root) / relative).read_text()
         tree = ast.parse(text)
+        classes = {c.name: c for c in tree.body if isinstance(c, ast.ClassDef)}
+
+        def define(cls, method, seen=()):
+            c = classes.get(cls)
+            if c is None or cls in seen:
+                return None
+            for f in c.body:
+                if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.name == method:
+                    return f
+            bases = (b.id for b in c.bases if isinstance(b, ast.Name))
+            return next(filter(None, (define(b, method, (*seen, cls)) for b in bases)), None)
+
         cut = set()
         for cls, method in methods:
-            found = [f for c in tree.body if isinstance(c, ast.ClassDef) and c.name == cls for f in c.body
-                     if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.name == method]
-            if not found:
+            found = define(cls, method)
+            if found is None:
                 return None
-            first = min([found[0].lineno] + [d.lineno for d in found[0].decorator_list])
-            cut.update(range(first - 1, found[0].end_lineno))
+            first = min([found.lineno] + [d.lineno for d in found.decorator_list])
+            cut.update(range(first - 1, found.end_lineno))
         body = "".join(line for i, line in enumerate(text.splitlines(keepends=True)) if i not in cut)
         try:
             ast.parse(body)
@@ -211,21 +227,29 @@ def _plan(seed, level):
             visible = {t for t, outcome in _suite(work, spec).items() if outcome != "ok"} & passing
             if hidden is None or visible:
                 raise RuntimeError(f"the tests {name} seed {seed} breaks cannot all be hidden: {sorted(visible)[:3]}")
-    # A test module none of whose tests pass on the pristine repo (an import it cannot satisfy, as
-    # Markdown's test_apis needs PyYAML) stays out of the workspace: the agent is asked to make the
-    # whole suite pass, and those were never its to fix.
+    plan = {"repo": name, "sites": chosen, "f2p": broken, "p2p": sorted(passing - set(broken)), "drop": _dead(pristine),
+            "notes": {t: notes.get(t, "") for t in broken}}
+    CACHE.mkdir(parents=True, exist_ok=True)
+    cached.write_text(json.dumps(plan))
+    return plan
+
+
+def _dead(pristine):
+    """Test modules none of whose tests pass on the pristine repo (an import it cannot satisfy, as
+    Markdown's test_apis needs PyYAML). They stay out of the workspace: the agent is asked to make
+    the whole suite pass, and those were never its to fix."""
     modules = {}
     for test, outcome in pristine.items():
         # An import failure is reported as `unittest.loader._FailedTest.<module>`.
         failed = test.startswith("unittest.loader._FailedTest.")
         module = test.removeprefix("unittest.loader._FailedTest.") if failed else test.rsplit(".", 2)[0]
         modules.setdefault(module, set()).add(outcome)
-    dead = sorted(m for m, outcomes in modules.items() if "ok" not in outcomes and "skip" not in outcomes)
-    plan = {"repo": name, "sites": chosen, "f2p": broken, "p2p": sorted(passing - set(broken)), "drop": dead,
-            "notes": {t: notes.get(t, "") for t in broken}}
-    CACHE.mkdir(parents=True, exist_ok=True)
-    cached.write_text(json.dumps(plan))
-    return plan
+    return sorted(m for m, outcomes in modules.items() if "ok" not in outcomes and "skip" not in outcomes)
+
+
+def _runner(spec):
+    return (f"#!/bin/sh\ncd \"$(dirname \"$0\")\" && PYTHONPATH={spec.get('pythonpath', '.')} exec {PYTHON} "
+            f"-m unittest discover -s {spec['tests']} -t . \"$@\"\n")
 
 
 def make(seed, level=1):
@@ -246,11 +270,9 @@ def make(seed, level=1):
         reports = "\n".join(f"- {t}: {plan['notes'][t]}" for t in shown)
         prompt = (f"This directory is the {plan['repo']} library. Bugs were introduced in the library code under "
                   f"{spec['src']}/. Its maintainers' tests caught them with these failures:\n{reports}\nThose tests "
-                  "are not in this directory, so ./run_tests.sh passes as it is. Reproduce the failures, then fix "
+                  "are not in this directory, so ./run_tests.sh does not show them. Reproduce the failures, then fix "
                   "the library code. Do not modify the tests.")
-    runner = (f"#!/bin/sh\ncd \"$(dirname \"$0\")\" && PYTHONPATH={spec.get('pythonpath', '.')} exec {PYTHON} "
-              f"-m unittest discover -s {spec['tests']} -t . \"$@\"\n")
-    return {"prompt": prompt, "tree": str(repo), "patch": patch, "files": {"run_tests.sh": runner},
+    return {"prompt": prompt, "tree": str(repo), "patch": patch, "files": {"run_tests.sh": _runner(spec)},
             "drop": [_module_path(m, spec) for m in plan.get("drop", []) if _module_path(m, spec)],
             "timeoutSec": 600}
 
@@ -266,18 +288,31 @@ def check(seed, workspace, level=1):
     the pristine repo's, whatever the workspace did to its own."""
     plan = _plan(seed, level)
     spec = REPOS[plan["repo"]]
-    total = len(plan["f2p"]) + 1
+    return grade(spec["path"], workspace, spec, plan["f2p"], plan["p2p"])
+
+
+def grade(base, workspace, spec, f2p, p2p):
+    """The workspace's library dropped into a copy of `base` (the tree whose tests judge it), then
+    the suite: each of `f2p` passing is a point, and all of `p2p` passing is one more. A suite that
+    never reported is judged against `base` itself under the same limit: when that fails too, the
+    host could not run the grader and the score is None (unmeasured), not 0."""
+    total = len(f2p) + 1
     library = Path(workspace) / spec["src"]
     if not library.is_dir():
         return 0, total
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp) / "repo"
-        shutil.copytree(spec["path"], work, ignore=IGNORE)
-        shutil.rmtree(work / spec["src"])
+        shutil.copytree(base, work, ignore=IGNORE)
+        shutil.rmtree(work / spec["src"], ignore_errors=True)
         shutil.copytree(library, work / spec["src"], ignore=IGNORE)
-        results = _suite(work, spec)
-    fixed = sum(1 for t in plan["f2p"] if results.get(t) == "ok")
-    clean = all(results.get(t) == "ok" for t in plan["p2p"])
+        results = _suite(work, spec, GRADE_TIMEOUT)
+        if not results:
+            pristine = Path(tmp) / "pristine"
+            shutil.copytree(base, pristine, ignore=IGNORE)
+            if not _suite(pristine, spec, GRADE_TIMEOUT):
+                return None, total
+    fixed = sum(1 for t in f2p if results.get(t) == "ok")
+    clean = all(results.get(t) == "ok" for t in p2p)
     return fixed + int(clean and bool(results)), total
 
 

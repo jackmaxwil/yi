@@ -1,4 +1,4 @@
-# The review bot (D303): up to two read-only rounds on a same-repo draft's new head, posted as
+# The review bot (D308): up to two read-only rounds on a same-repo draft's new head, posted as
 # yi-bot. fgj reads the bot's token from FGJ_TOKEN, so it is never an argument or a file on disk.
 # Shadow mode and no fixer: a round is a comment, and nothing here blocks, pushes or merges.
 name: review

@@ -139,3 +139,20 @@ fn an_unknown_tool_surfaces_the_servers_error() -> Result<(), Box<dyn Error>> {
     assert!(message.contains("no such tool"), "{message}");
     Ok(())
 }
+
+/// A relative command resolves against `~/.yi`, where servers start, not the caller's cwd, and
+/// the failure says so instead of a bare ENOENT.
+#[test]
+fn a_relative_command_that_does_not_resolve_names_where_servers_start() {
+    let spec = McpServerSpec::Stdio {
+        command: "./scripts/yi-no-such-server.py".to_owned(),
+        args: Vec::new(),
+        env: Map::new(),
+    };
+    let error = one_shot(&spec, Op::Ping).expect_err("no such server");
+    assert!(
+        error.contains("could not start `./scripts/yi-no-such-server.py` (MCP servers start in ")
+            && error.contains("; use an absolute path or one on PATH)"),
+        "{error}"
+    );
+}
