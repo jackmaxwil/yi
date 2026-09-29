@@ -418,7 +418,8 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900):
         command += ["--model", os.environ["YI_REVIEW_MODEL"]]
     # Measured: 2 of the first 10 replayed rounds lost a lens to two malformed answers in a row.
     for _ in range(3):
-        out = subprocess.run(command + [prompt], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        # A whole diff passes Linux's 128 KiB cap on one argument, so the prompt goes on stdin.
+        out = subprocess.run(command + ["-"], input=prompt, capture_output=True, text=True,
                              timeout=deadline + 120, check=False)
         if out.returncode == 0:
             return json.loads(out.stdout)

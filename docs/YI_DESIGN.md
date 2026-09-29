@@ -751,6 +751,7 @@ Owner: [`advisor/mod.rs`](../crates/runtime/src/advisor/mod.rs). Shapes:
 | `login`, `logout`, `setup`, `mcp …`, `version` | Provider credentials; the model, saved permission mode and optional classifier, offered once on the first terminal launch with no config (D300); the MCP client (§7.6), refused unless `mcp.enabled`; `yi <version>` |
 
 - The default permission mode is `permissions.mode`, else `auto`; `--confirm` selects `ask`, `--yolo` selects `yolo` (§8).
+- `yi ask -` reads the prompt from stdin: one argument past Linux's 128 KiB cap is refused before `yi` starts.
 - Exit codes: 0 ok; 1 error; 2 usage, bad flag, bad config or refused build; 3 an answer failing
   `--schema`. Under `--json` an agent failure is in-band and exits 0. Errors print `error: …`.
 - `~/.yi/config.json` is the only config file, parsed once; every struct is `deny_unknown_fields`

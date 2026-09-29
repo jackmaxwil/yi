@@ -197,6 +197,61 @@ fn fresh_ask_starts_its_own_session() -> TestResult {
     Ok(())
 }
 
+/// A review round's prompt is a whole diff; one argv string past Linux's 128 KiB cap is E2BIG, so
+/// `yi ask -` reads the prompt from stdin, all of it, and an empty stdin is a usage error.
+#[test]
+fn ask_reads_a_prompt_past_the_argument_cap_from_stdin() -> TestResult {
+    use std::io::Write;
+    use std::process::Stdio;
+    let workspace = Workspace::new("ask-stdin")?;
+    let run = |text: &str| -> Result<Output, Box<dyn Error>> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the contract is the spawned binary's stdin, exit code and stdout"
+        )]
+        let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args(["ask", "--model", "faux/faux-1", "--json", "-"])
+            .arg("--session-dir")
+            .arg(workspace.0.join("home/sessions"))
+            .arg("--cwd")
+            .arg(workspace.project())
+            .env("HOME", workspace.0.join("home"))
+            .current_dir(workspace.project())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .take()
+            .ok_or("stdin")?
+            .write_all(text.as_bytes())?;
+        Ok(child.wait_with_output()?)
+    };
+    let prompt = format!(
+        "diff --git a/r.rs b/r.rs\n{}end of the round",
+        "+    let café = seats(finding, probes);\n".repeat(5_000)
+    );
+    assert!(prompt.len() > 128 * 1024, "{}", prompt.len());
+    let answered = run(&prompt)?;
+    assert_eq!(answered.status.code(), Some(0), "{answered:?}");
+    let asked = stdout(&answered)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| event.get("type").and_then(Value::as_str) == Some("agent_end"))
+        .and_then(|end| end.pointer("/messages/0/content").cloned());
+    assert_eq!(
+        asked.as_ref().and_then(Value::as_str),
+        Some(prompt.as_str()),
+        "the model is asked all of stdin"
+    );
+
+    let empty = run("")?;
+    assert_eq!(empty.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&empty.stderr).contains("no prompt on stdin"));
+    Ok(())
+}
+
 #[test]
 fn sessions_rm_removes_the_session() -> TestResult {
     let workspace = Workspace::new("rm")?;
