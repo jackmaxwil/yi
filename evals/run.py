@@ -289,11 +289,10 @@ def prompt_and_read_per_request(events):
     return out
 
 
-def compaction_request(sessions, requests):
-    """(prompt, read, cost) of the compaction and the prompt of the loop request before it. The
-    compaction is the request span whose usage no reply carries, the largest if several (#746)."""
-    loop = list(requests)
-    best, before = None, 0
+def unmatched_requests(sessions, requests):
+    """((prompt, read, cost), prompt of the loop request before it) of every request span whose
+    usage no reply of the session carries, in order: a compaction, or a child's request (#745)."""
+    loop, found, before = list(requests), [], 0
     for path in sorted(Path(sessions).rglob("*.telemetry.jsonl")):
         for span in yi_usage.json_lines(path)[0]:
             if span.get("span") != "request":
@@ -303,9 +302,15 @@ def compaction_request(sessions, requests):
             if (prompt, read) in loop:
                 loop.remove((prompt, read))
                 before = prompt
-            elif best is None or prompt > best[0][0]:
-                best = ((prompt, read, span.get("costUsd")), before)
-    return best
+            else:
+                found.append(((prompt, read, span.get("costUsd")), before))
+    return found
+
+
+def compaction_request(sessions, requests):
+    """(prompt, read, cost) of the compaction and the prompt of the loop request before it. The
+    compaction is the request span whose usage no reply carries, the largest if several (#746)."""
+    return max(unmatched_requests(sessions, requests), key=lambda found: found[0][0], default=None)
 
 
 def cache_check(spec, task_dir, binary, model, out):
@@ -351,6 +356,13 @@ def cache_check(spec, task_dir, binary, model, out):
             compacted = {"prompt": prompt, "read": read, "before": before, "costUsd": cost,
                          "share": round(read / before, 4) if before else 0.0}
         held = bool(compacted) and compacted["share"] >= compaction_floor
+    siblings, sibling_floor = None, spec.get("minSiblingShare")
+    if sibling_floor is not None:
+        # Each tool-less reader is one request no root reply carries; the second reads the first's prefix.
+        siblings = [{"prompt": prompt, "read": read, "costUsd": cost,
+                     "share": round(read / prompt, 4) if prompt else 0.0}
+                    for (prompt, read, cost), _ in unmatched_requests(sessions, requests)]
+        held = len(siblings) >= 2 and siblings[1]["share"] >= sibling_floor
     row = {"task": spec["id"], "reward": 1 if held else 0, "exit": exit_code, "timedOut": timed_out,
            "wallSec": round(time.monotonic() - started, 2), "requests": len(requests),
            "warmRead": warm_read, "warmInput": sum(turn["input"] or 0 for turn in turns[1:]),
@@ -363,8 +375,17 @@ def cache_check(spec, task_dir, binary, model, out):
         row["compaction"] = compacted
         row["costUsd"] = None if row["costUsd"] is None or compacted["costUsd"] is None else (
             row["costUsd"] + compacted["costUsd"])
+    if siblings is not None:
+        row["siblings"] = siblings
+        costs = [sibling["costUsd"] for sibling in siblings]
+        row["costUsd"] = None if row["costUsd"] is None or None in costs else row["costUsd"] + sum(costs)
     row["status"], row["detail"] = status_of(row, spec, events_text)
-    if row["status"] == "fail" and compaction_floor is not None and not compacted:
+    if row["status"] == "fail" and sibling_floor is not None and len(siblings) < 2:
+        row["status"], row["detail"] = "inconclusive", f"{len(siblings)} child requests, the scenario needs 2"
+    elif row["status"] == "fail" and sibling_floor is not None:
+        row["detail"] = (f"the second sibling read {siblings[1]['read']} of its {siblings[1]['prompt']}-token "
+                         f"prompt ({siblings[1]['share']:.1%} < {sibling_floor:.0%})")
+    elif row["status"] == "fail" and compaction_floor is not None and not compacted:
         row["status"], row["detail"] = "inconclusive", "the session never compacted"
     elif row["status"] == "fail" and compaction_floor is not None:
         row["detail"] = (f"the compaction read {compacted['read']} of the previous request's "

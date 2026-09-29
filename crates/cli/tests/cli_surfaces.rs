@@ -1499,3 +1499,87 @@ fn a_contained_bash_call_cannot_write_the_session_corpus() -> TestResult {
     );
     Ok(())
 }
+
+/// Every request body a loopback proxy standing in for openrouter.ai reads, each answered `ok`.
+fn openrouter_proxy() -> Result<(u16, std::sync::mpsc::Receiver<Value>), Box<dyn Error>> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let (sender, bodies) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream);
+            let (mut length, mut line) = (0usize, String::new());
+            while reader.read_line(&mut line).unwrap_or(0) > 0 && !line.trim().is_empty() {
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+                line.clear();
+            }
+            let mut body = vec![0u8; length];
+            let _ = reader.read_exact(&mut body);
+            let _ = sender.send(serde_json::from_slice(&body).unwrap_or(Value::Null));
+            let reply = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+            let _ = write!(
+                reader.into_inner(),
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+        }
+    });
+    Ok((port, bodies))
+}
+
+/// A root session sends its own id as OpenRouter's affinity key, the one its children inherit
+/// (D314): `build_session` hands the session id to the stream.
+#[test]
+fn a_root_session_sends_its_id_as_the_openrouter_session() -> TestResult {
+    let workspace = Workspace::new("family-key")?;
+    let catalog = workspace.0.join("home/.yi/catalog");
+    std::fs::create_dir_all(&catalog)?;
+    let entry = json!({"openai-completions": {"probe/flash": {
+        "id": "probe/flash", "name": "probe", "api": "openai-completions", "provider": "openrouter",
+        "baseUrl": "http://openrouter.ai.invalid/api/v1", "reasoning": false, "input": ["text"],
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+        "contextWindow": 100000, "maxTokens": 256}}});
+    std::fs::write(catalog.join("openrouter.json"), entry.to_string())?;
+    let (port, bodies) = openrouter_proxy()?;
+    let proxy = format!("http://127.0.0.1:{port}");
+    let answered = workspace.yi_env(
+        &["ask", "--model", "openrouter/probe/flash", "--json", "hi"],
+        &[
+            ("OPENROUTER_API_KEY", "sk-test"),
+            ("HTTPS_PROXY", &proxy),
+            NO_KERNEL[0],
+        ],
+    )?;
+    let body = bodies
+        .try_iter()
+        .find(|body| body.get("messages").is_some())
+        .ok_or_else(|| format!("no request: {}", String::from_utf8_lossy(&answered.stderr)))?;
+    let session = files_under(&workspace.0.join("home/sessions"))
+        .into_iter()
+        .filter_map(|path| path.file_name()?.to_str().map(str::to_owned))
+        .find_map(|name| {
+            let id = name.strip_suffix(".jsonl")?.split_once('_')?.1;
+            (!id.contains('.')).then(|| id.to_owned())
+        })
+        .ok_or("no session file")?;
+    assert_eq!(body["session_id"], session.as_str(), "{body}");
+    Ok(())
+}
+
+fn files_under(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(files_under(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found
+}

@@ -261,6 +261,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
         &CachePolicy::of(model, options.cache_1h),
         &history,
         context.reuse,
+        context.shared_through,
     );
     let (messages, origins) = convert_messages(&history);
     let mut params = json!({

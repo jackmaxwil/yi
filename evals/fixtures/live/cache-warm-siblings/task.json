@@ -1,0 +1,11 @@
+{
+  "id": "cache-warm-siblings",
+  "kind": "cache",
+  "onlyByName": true,
+  "timeoutSec": 300,
+  "turns": [
+    "In IPython run exactly this one cell, then reply with the single word done: a = await rlm.ask(\"Which bird flew in entry 0181?\", [\"local://kestrel-annex.txt\"], tools=[]); b = await rlm.ask(\"Which bird dived in entry 0182?\", [\"local://kestrel-annex.txt\"], tools=[]); print(a, b)"
+  ],
+  "minSiblingShare": 0.9,
+  "note": "two tool-less readers over one ~5k-token partition, one after the other: each is one request no root reply carries, and the second must read 90% of its own prompt (fresh, read and written tokens), the reader prompt and the partition the first one sent, which differ only in its question (#745). Runs only under --task"
+}
