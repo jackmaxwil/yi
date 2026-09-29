@@ -241,19 +241,11 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     } = parts.clone();
     let capture = start_capture(&shared);
     let assembling = yi_types::trace::span("turn.context");
-    let system = {
-        let _span = yi_types::trace::span("turn.system_prompt");
-        system_prompt()
-    };
-    // D306: the first request's bytes are the conversation's; a change here would invalidate
-    // every cache tier, so a debug build refuses it.
-    debug_assert_eq!(
-        shared.system_prompt_sent.get_or_init(|| system.clone()),
-        &system,
-        "the system prompt changed after the first request"
-    );
     let mut context = LoopContext {
-        system_prompt: system,
+        system_prompt: {
+            let _span = yi_types::trace::span("turn.system_prompt");
+            system_prompt()
+        },
         messages: shared
             .messages
             .lock()
@@ -347,6 +339,11 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
         }
         let _ = emit_shared.events.send(event);
     };
+    if cfg!(debug_assertions)
+        && let Some(errored) = first_system_prompt_broken(&shared, &context.system_prompt, &model)
+    {
+        return failed_turn(&shared, prompt, errored, &mut emit);
+    }
     shared.signal.reset_if_epoch(admitted_epoch);
     run_loop(
         &mut context,
@@ -367,6 +364,56 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
         if let Some(event) = event {
             dispatch_ext(&shared, &event);
         }
+    }
+}
+
+/// D306: the first request's bytes are the conversation's. In a debug build a later turn whose
+/// bytes differ ends before any request with this errored reply, fast and loud, and the
+/// session still settles idle; a release build rests on `ext::Host::frozen` alone.
+fn first_system_prompt_broken(
+    shared: &Shared,
+    system: &str,
+    model: &yi_types::model::Model,
+) -> Option<AgentMessage> {
+    let first = shared.first_system_prompt.get_or_init(|| system.to_owned());
+    if first == system {
+        return None;
+    }
+    let at = first
+        .bytes()
+        .zip(system.bytes())
+        .position(|(a, b)| a != b)
+        .unwrap_or(first.len().min(system.len()));
+    let text = format!(
+        "the system prompt changed after the first request: {} bytes, was {}, first difference at byte {at}",
+        system.len(),
+        first.len()
+    );
+    Some(yi_loop::synthesized_error_message(model, &text))
+}
+
+/// Ends a turn before any request with `errored` as its reply, through the events a run emits,
+/// so the transcript, the store and every front end see the same failed turn.
+fn failed_turn(
+    shared: &Shared,
+    prompt: AgentMessage,
+    errored: AgentMessage,
+    emit: &mut impl FnMut(AgentEvent),
+) {
+    emit(AgentEvent::AgentStart);
+    for message in [&prompt, &errored] {
+        emit(AgentEvent::MessageStart {
+            message: message.clone(),
+        });
+        emit(AgentEvent::MessageEnd {
+            message: message.clone(),
+        });
+    }
+    emit(AgentEvent::AgentEnd {
+        messages: vec![prompt.clone(), errored.clone()],
+    });
+    if let Ok(mut messages) = shared.messages.lock() {
+        messages.extend([prompt, errored]);
     }
 }
 

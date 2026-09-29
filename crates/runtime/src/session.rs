@@ -71,7 +71,7 @@ struct Shared {
     environment: Mutex<Option<Arc<EnvironmentFn>>>,
     reuse: Mutex<yi_types::model::Reuse>,
     /// The system bytes the first request sent; every later request must send the same (D306).
-    system_prompt_sent: OnceLock<String>,
+    first_system_prompt: OnceLock<String>,
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
@@ -180,7 +180,7 @@ impl AgentSession {
                 on_turn_start: Mutex::new(None),
                 environment: Mutex::new(None),
                 reuse: Mutex::new(yi_types::model::Reuse::Loop),
-                system_prompt_sent: OnceLock::new(),
+                first_system_prompt: OnceLock::new(),
                 lane: Mutex::new(None),
                 telemetry: Mutex::new(None),
                 todos: Mutex::new(None),
@@ -241,7 +241,7 @@ impl AgentSession {
         if let Some(host) = self.extensions()
             && let Ok(mut host) = host.lock()
         {
-            host.set_notice(Arc::new(move |message| {
+            host.set_deliver(Arc::new(move |message| {
                 deliver(message, false);
             }));
         }

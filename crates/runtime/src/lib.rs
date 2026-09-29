@@ -54,6 +54,10 @@ pub use checkpoint::{
     wire_turn_checkpoints,
 };
 pub use compaction::{CompactStatus, Compactor};
+
+/// Hands the session a message for its transcript: the classifier's verdicts and the
+/// extension host's reminders and late fragments ride it.
+pub type Deliver = std::sync::Arc<dyn Fn(yi_types::message::AgentMessage) + Send + Sync>;
 pub use ext::{ExtOptions, Host as ExtensionHost, Trust, TrustGate};
 pub use kernel::{
     HostRegistry, KernelService, KernelServiceOptions, ipython_tool, restore_notice_text,

@@ -857,6 +857,29 @@ async fn a_typed_message_s_skill_pointer_enters_right_behind_it() -> Result<(), 
 /// D306: the system prompt is constant for a conversation. An orchestrate signal on the third
 /// turn leaves the bytes the first request sent, and the protocol rides the transcript once, as
 /// a `fragment` message between the prompt that raised it and the reply.
+/// The transcript's kinds in order; a custom entry shows its kind and its first clause.
+fn shape(session: &AgentSession) -> Vec<String> {
+    use yi_types::message::UserContent;
+    session
+        .messages()
+        .into_iter()
+        .filter_map(|message| match message {
+            AgentMessage::User { .. } => Some("user".to_owned()),
+            AgentMessage::Assistant { .. } => Some("assistant".to_owned()),
+            AgentMessage::CompactionSummary { .. } => Some("summary".to_owned()),
+            AgentMessage::Custom {
+                custom_type,
+                content: UserContent::Text(text),
+                ..
+            } => Some(format!(
+                "{custom_type}: {}",
+                text.split(['.', '\n']).next().unwrap_or_default()
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone()
 -> Result<(), Box<dyn Error>> {
@@ -901,25 +924,8 @@ async fn an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone()
         first,
         "the third turn must send the first request's system bytes"
     );
-    let shape: Vec<String> = session
-        .messages()
-        .into_iter()
-        .filter_map(|message| match message {
-            AgentMessage::User { .. } => Some("user".to_owned()),
-            AgentMessage::Assistant { .. } => Some("assistant".to_owned()),
-            AgentMessage::Custom {
-                custom_type,
-                content: UserContent::Text(text),
-                ..
-            } => Some(format!(
-                "{custom_type}: {}",
-                text.lines().next().unwrap_or_default()
-            )),
-            _ => None,
-        })
-        .collect();
     assert_eq!(
-        shape,
+        shape(&session),
         [
             "user",
             "assistant",
@@ -947,5 +953,103 @@ async fn an_orchestrate_signal_on_turn_three_leaves_the_system_prompt_alone()
         text.starts_with("<yi_internal_context source=\"fragment\">\n# Orchestrate"),
         "{text}"
     );
+    Ok(())
+}
+
+/// D306: a permission-mode flip through the broker rides once as the current mode's fragment,
+/// and a compaction, which drops every internal message, is followed by every late slot's
+/// current text on the next request: the mode, then the orchestrate protocol.
+#[tokio::test]
+async fn a_mode_flip_and_the_protocol_survive_a_compaction() -> Result<(), Box<dyn Error>> {
+    use yi_context::{Settings, Tokens};
+    let dir = Scratch::new("yi-faux-late-compaction")?;
+    let provider = Arc::new(ProviderStream::new(None));
+    let reply = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+    // Turns 1 and 2 weigh about 2k tokens each, so a 3k retained tail keeps turn 3 (its
+    // 8 KB protocol fragment included) and summarizes the rest.
+    provider.queue_faux(vec![
+        reply(&format!("reply 1 {}", "y".repeat(8_000))),
+        reply(&format!("reply 2 {}", "y".repeat(8_000))),
+        reply("reply 3"),
+        reply("## Goal\nThe summary"),
+        reply("reply 4"),
+    ]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    let broker = Arc::new(yi_runtime::permission::PermissionBroker::new(
+        yi_runtime::PermissionMode::Auto,
+        dir.to_path_buf(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    ));
+    session.use_tools(Vec::new(), dir.to_path_buf(), Some(Arc::clone(&broker)));
+    session.enable_compaction_with(Settings {
+        enabled: true,
+        reserve_tokens: Tokens(1_000),
+        keep_recent_tokens: Tokens(3_000),
+    });
+    session.install_extensions(yi_runtime::ext::install(yi_runtime::ext::ExtOptions {
+        cwd: dir.to_path_buf(),
+        home: dir.to_path_buf(),
+        mode: yi_runtime::PermissionMode::Auto,
+        user_system: String::new(),
+        schema_instruction: None,
+        context_window: 128_000,
+        global_skills: Vec::new(),
+    }));
+    session.prompt("hi")?;
+    session.wait_idle().await;
+    let first = session.system_prompt();
+    broker.set_mode_and_fragment(yi_runtime::PermissionMode::Ask, &session);
+    session.prompt("thanks")?;
+    session.wait_idle().await;
+    assert_eq!(
+        shape(&session)[2..],
+        ["user", "fragment: Permission mode: ask", "assistant"],
+        "the broker's flip rides once, as the current mode"
+    );
+    assert_eq!(session.system_prompt(), first);
+    session.prompt("plan this: split the crate in two")?;
+    session.wait_idle().await;
+    assert!(
+        session.compact_now().await,
+        "a scheduled compaction applies at once when idle"
+    );
+    let compacted = shape(&session);
+    assert_eq!(
+        compacted.first().map(String::as_str),
+        Some("summary"),
+        "{compacted:?}"
+    );
+    assert!(
+        compacted.iter().all(|kind| !kind.starts_with("fragment")),
+        "a compaction drops every internal message: {compacted:?}"
+    );
+    session.prompt("go on")?;
+    session.wait_idle().await;
+    let after = shape(&session);
+    let last_user = after
+        .iter()
+        .rposition(|kind| kind == "user")
+        .ok_or("no user")?;
+    assert_eq!(
+        after[last_user..],
+        [
+            "user",
+            "fragment: Permission mode: ask",
+            "fragment: # Orchestrate",
+            "assistant",
+        ],
+        "the next request carries every late slot's current text: {after:?}"
+    );
+    assert_eq!(session.system_prompt(), first);
     Ok(())
 }
