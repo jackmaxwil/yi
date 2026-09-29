@@ -259,6 +259,9 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     let mut config = LoopConfig::new(model.clone());
     config.effort = effort;
     config.guards = crate::levers::get().loop_guards();
+    if let Some(shape) = shared.shape.get() {
+        (config.schema, config.shared_through) = (shape.schema.clone(), shape.shared_through);
+    }
     config.tool_execution = tool_execution;
     config.reuse = shared.reuse.lock().map(|reuse| *reuse).unwrap_or_default();
     config.convert_to_llm = Box::new(yi_context::convert_to_llm);

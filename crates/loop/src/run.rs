@@ -611,7 +611,8 @@ async fn stream_assistant_response<S: StreamFn>(
         system_prompt: context.system_prompt.clone(),
         messages: llm_messages,
         transient,
-        schema: None,
+        schema: config.schema.clone().filter(|_| tool_defs.is_empty()),
+        shared_through: config.shared_through,
         reuse,
         tools: if tool_defs.is_empty() {
             None

@@ -285,5 +285,6 @@ edited by hand.
 - [D312](adr/d312.md) - an approval stays contained unless its question said otherwise (amends D207,...
 - [D311](adr/d311.md) - cache outcomes are a fold over the session JSONL
 - [D308](adr/d308.md) - a worker spawn that names no `role` is a reader (`role="reader"`)
+- [D309](adr/d309.md) - a reader's `schema` reaches the provider (`yi_ai
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

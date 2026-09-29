@@ -9,7 +9,7 @@ use crate::provider::resolve_model;
 use yi_types::model::{Effort, Model};
 
 /// What a build is made from, read off the spawn's kwargs: the model, the effort, the wall.
-pub(super) type Cast = (
+pub(crate) type Cast = (
     Model,
     Effort,
     crate::wall::Wall,

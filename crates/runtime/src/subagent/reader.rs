@@ -21,13 +21,15 @@ pub(crate) fn full_child(refusal: &str) -> String {
 pub struct Reader {
     pub tools: Vec<String>,
     pub turns: u32,
+    pub schema: Option<Value>,
+    pub shared_through: Option<usize>,
 }
 
 pub(crate) fn parse(kwargs: &Map<String, Value>) -> Result<Option<Reader>, String> {
     let role = super::optional_string(kwargs, "role")?;
     match role.as_deref() {
         None | Some("root") => {
-            if let Some(key) = ["tools", "turns"]
+            if let Some(key) = ["tools", "turns", "schema"]
                 .iter()
                 .find(|key| kwargs.contains_key(**key))
             {
@@ -43,6 +45,8 @@ pub(crate) fn parse(kwargs: &Map<String, Value>) -> Result<Option<Reader>, Strin
         Some("reader") => Ok(Some(Reader {
             tools: tools_of(kwargs)?,
             turns: turns_of(kwargs)?,
+            schema: schema_of(kwargs)?,
+            shared_through: None,
         })),
         Some(other) => Err(format!(
             "rlm.run role must be \"reader\" or \"root\", got {other}"
@@ -70,6 +74,16 @@ fn tools_of(kwargs: &Map<String, Value>) -> Result<Vec<String>, String> {
             READER_TOOLS.join(" and ")
         ))),
         None => Ok(names),
+    }
+}
+
+fn schema_of(kwargs: &Map<String, Value>) -> Result<Option<Value>, String> {
+    match kwargs.get("schema") {
+        None | Some(Value::Null) => Ok(None),
+        Some(schema @ Value::Object(_)) => Ok(Some(schema.clone())),
+        Some(other) => Err(format!(
+            "rlm.run schema must be a JSON schema object, got {other}"
+        )),
     }
 }
 
@@ -103,14 +117,21 @@ pub fn session(
         provider,
     );
     child.set_turn_cap(reader.turns);
+    child.set_request_shape(crate::session::RequestShape {
+        schema: reader.schema.clone(),
+        shared_through: reader.shared_through,
+    });
     child.set_wall(build.wall);
     if let Some(rules) = rules {
         child.set_rules_engine(rules);
     }
-    let named = tools
+    let named: Vec<_> = tools
         .into_iter()
         .filter(|tool| reader.turns > 1 && reader.tools.iter().any(|name| name == tool.name()))
         .collect();
+    if named.is_empty() {
+        child.set_reuse(yi_types::model::Reuse::OneShot);
+    }
     child.use_tools(named, cwd, broker);
     child
 }
@@ -211,19 +232,58 @@ pub(crate) fn walls_writes(kwargs: &mut Map<String, Value>) {
 }
 
 pub(crate) fn brief(
-    resolver: Option<&Arc<crate::fetch::Resolver>>,
+    host: &super::SubagentHost,
     kwargs: &Map<String, Value>,
     prompt: String,
-    wall: &crate::wall::Wall,
-    cwd: &Path,
-) -> Result<String, String> {
+    cast: &mut super::build::Cast,
+) -> Result<(Option<String>, String), String> {
     let named = entries(kwargs)?;
-    match (named.is_empty(), resolver) {
-        (true, _) => Ok(prompt),
-        (false, Some(resolver)) => Ok(format!(
-            "{}{prompt}",
-            partition(resolver, &named, wall, cwd)?
-        )),
-        (false, None) => Err("this session resolves no partition".to_owned()),
+    let fenced = match (named.is_empty(), host.resolver.get()) {
+        (true, _) => None,
+        (false, Some(resolver)) => Some(partition(resolver, &named, &cast.2, &host.options.cwd)?),
+        (false, None) => return Err("this session resolves no partition".to_owned()),
+    };
+    let Some(reader) = cast.3.as_mut() else {
+        return Ok((None, format!("{}{prompt}", fenced.unwrap_or_default())));
+    };
+    let question = match &reader.schema {
+        Some(schema) => {
+            format!("{prompt}\n\nReply with one JSON object matching this schema:\n{schema}")
+        }
+        None => prompt,
+    };
+    Ok((fenced, question))
+}
+
+pub(crate) fn share(
+    host: &super::SubagentHost,
+    seed: Option<&String>,
+    cast: &mut super::build::Cast,
+) {
+    if let (Some(reader), Some(text)) = (cast.3.as_mut(), seed) {
+        reader.shared_through = seen_recently(host, text).then_some(0);
     }
+}
+
+const SHARED_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn seen_recently(host: &super::SubagentHost, text: &str) -> bool {
+    let Ok(mut seen) = host.partitions.lock() else {
+        return false;
+    };
+    let now = std::time::Instant::now();
+    seen.retain(|_, at| now.duration_since(*at) < SHARED_WINDOW);
+    seen.insert(crate::fetch::content_hash(text), now).is_some()
+}
+
+pub(crate) fn seed(child: &AgentSession, partition: Option<String>) {
+    let Some(text) = partition else {
+        return;
+    };
+    let message = crate::session::user_message(&text);
+    if let Some(store) = child.store() {
+        let _kept_in_memory_either_way =
+            yi_session::lock_session(&store).append_message("main", message.clone());
+    }
+    child.seed_messages(vec![message]);
 }

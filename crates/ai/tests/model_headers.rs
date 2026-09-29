@@ -49,6 +49,7 @@ fn context() -> LlmContext {
         messages: vec![],
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::Loop,
         tools: None,
         tool_choice: None,

@@ -241,6 +241,7 @@ fn context(messages: Vec<AgentMessage>) -> Result<LlmContext, Box<dyn Error>> {
         messages,
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::Loop,
         tools: Some(tool_defs()?),
         tool_choice: None,

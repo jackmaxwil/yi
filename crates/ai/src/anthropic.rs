@@ -322,6 +322,9 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
             }
         }
     }
+    if let Some(format) = context.schema.as_ref().and_then(crate::schema::anthropic) {
+        params["output_config"]["format"] = format;
+    }
     // The per-request facts render after every breakpoint, so none can land on them.
     let (transient, _) = convert_messages(&transform_messages(
         &context.transient,
