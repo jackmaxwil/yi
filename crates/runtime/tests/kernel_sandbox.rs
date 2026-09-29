@@ -62,7 +62,7 @@ fn service(
 
 /// A directory this process can write that no root of `sandbox` covers: HOME, or the shared
 /// user directory when a run put HOME under tmp, which the sandbox grants whole.
-fn uncovered(sandbox: &Sandbox, home: &std::path::Path) -> Option<PathBuf> {
+pub(crate) fn uncovered(sandbox: &Sandbox, home: &std::path::Path) -> Option<PathBuf> {
     let resolve =
         |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let roots: Vec<PathBuf> = sandbox.writable.iter().map(|root| resolve(root)).collect();
