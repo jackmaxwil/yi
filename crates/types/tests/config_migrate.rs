@@ -1,5 +1,5 @@
 use serde_json::Value;
-use yi_types::config::{ConfigMigration, UserConfig, migrate, parse};
+use yi_types::config::{UserConfig, migrate, parse};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -30,23 +30,22 @@ fn a_config_with_nothing_to_migrate_keeps_the_strict_errors() -> TestResult {
     Ok(())
 }
 
+/// The sentence `yi` and `yi doctor` print for the dropped key.
+const GATES: &str =
+    "the config's `gates` key is ignored: the artifact and closure stop gates are gone; delete it";
+
 #[test]
 fn a_config_naming_gates_migrates_to_the_current_shape_once() -> TestResult {
     let after: Value = serde_json::from_str(AFTER)?;
     let mut config: Value = serde_json::from_str(BEFORE)?;
-    assert_eq!(migrate(&mut config), [ConfigMigration::RemovedGates]);
+    let applied = migrate(&mut config);
+    let said: Vec<String> = applied.iter().map(ToString::to_string).collect();
+    assert_eq!(said, [GATES]);
     assert_eq!(config, after, "before migrates to after");
     assert!(migrate(&mut config).is_empty(), "after migrates to itself");
     assert_eq!(config, after);
     let (loaded, migrations) = parse(BEFORE)?;
-    assert_eq!(
-        (loaded, migrations),
-        (parse(AFTER)?.0, vec![ConfigMigration::RemovedGates])
-    );
-    assert!(
-        ConfigMigration::RemovedGates
-            .to_string()
-            .contains("`gates`")
-    );
+    assert_eq!(loaded, parse(AFTER)?.0);
+    assert_eq!(migrations, applied);
     Ok(())
 }

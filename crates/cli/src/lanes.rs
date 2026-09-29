@@ -6,6 +6,12 @@ pub(crate) fn configured_lanes() -> yi_types::lane::LanesConfig {
     config().lanes.clone().unwrap_or_default()
 }
 
+pub(crate) fn lane_slots() -> u8 {
+    configured_lanes()
+        .slots
+        .unwrap_or(yi_runtime::lane::DEFAULT_SLOTS)
+}
+
 fn resume_id(args: &Args) -> Option<String> {
     match &args.resume {
         Resume::Fresh => None,
@@ -34,8 +40,7 @@ pub(crate) fn claim_lane(
 ) -> Result<Claimed, String> {
     use yi_runtime::lane::{LaneError, Pool, land::claim_root};
     let lanes = configured_lanes();
-    let slots = lanes.slots.unwrap_or(yi_runtime::lane::DEFAULT_SLOTS);
-    let pool = match Pool::open(home, &effective_cwd(args), slots) {
+    let pool = match Pool::open(home, &effective_cwd(args), lane_slots()) {
         Ok(pool) => pool,
         Err(LaneError::NotARepo(_)) => return Ok((None, None)),
         Err(error) => return Err(error.to_string()),
@@ -126,13 +131,8 @@ pub(crate) fn release_lane(lane: Option<&yi_runtime::lane::land::LaneHandle>) {
 }
 
 pub(crate) fn run_lanes(args: &Args) -> i32 {
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_default();
-    let slots = configured_lanes()
-        .slots
-        .unwrap_or(yi_runtime::lane::DEFAULT_SLOTS);
-    let pool = match yi_runtime::lane::Pool::open(&home, &effective_cwd(args), slots) {
+    let pool = match yi_runtime::lane::Pool::open(crate::home(), &effective_cwd(args), lane_slots())
+    {
         Ok(pool) => pool,
         Err(error) => {
             eprintln!("error: {error}");
