@@ -3,7 +3,9 @@
 
 Polls `fgj api --hostname <host> repos/<owner>/<repo>/actions/tasks` (one record per job)
 and emits a run once every job in it has ended: `failure` if any job failed, `cancelled`
-if any was cancelled, else `success`. The protocol is adapters/README.md.
+if any was cancelled, else `success`. `forgejo://<host>/<owner>/<repo>/pulls` instead emits
+each open PR's head once per sha, so a subscription wakes on a new PR and on every push.
+The protocol is adapters/README.md.
 """
 import json
 import os
@@ -34,11 +36,38 @@ def conclusion(jobs):
     return "success"
 
 
+def heads(host, repo, seen):
+    done = subprocess.run(
+        ["fgj", "api", "--hostname", host, f"repos/{repo}/pulls?state=open&limit=50"],
+        capture_output=True, text=True,
+    )
+    if done.returncode != 0:
+        sys.stderr.write(done.stderr)
+        sys.exit(1)
+    for pr in json.loads(done.stdout):
+        key = f"pr-{pr['number']}-{pr['head']['sha'][:12]}"
+        if key in seen:
+            continue
+        seen.add(key)
+        data = {
+            "pr": pr["number"],
+            "sha": pr["head"]["sha"],
+            "branch": pr["head"]["ref"],
+            "title": pr["title"],
+            # The draft marker `just pr open` writes and the title rule accepts (D318).
+            "draft": pr["title"].startswith("WIP: "),
+        }
+        print(json.dumps({"id": key, "at": int(time.time() * 1000), "data": data}), flush=True)
+
+
 def main():
     target, _, every = sys.argv[1].removeprefix("forgejo://").partition("?every=")
     host, _, repo = target.partition("/")
     threading.Thread(target=hang_up_with_the_host, daemon=True).start()
     seen = set()
+    while repo.endswith("/pulls"):
+        heads(host, repo.removesuffix("/pulls"), seen)
+        time.sleep(seconds(every))
     while True:
         done = subprocess.run(
             ["fgj", "api", "--hostname", host, f"repos/{repo}/actions/tasks?limit=50"],
