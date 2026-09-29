@@ -778,6 +778,23 @@ mod tests {
             .err()
             .ok_or("a board link was served")?;
         assert!(matches!(error, FetchError::Denied { .. }), "{error}");
+        // The board itself a link, planted before the host made it (#757): refused, then replaced.
+        let parent = Scratch::new("yi-fetch-board-linked")?;
+        let board = parent.join("family");
+        std::os::unix::fs::symlink(&elsewhere, &board)?;
+        std::fs::write(elsewhere.join("config.json"), "{}")?;
+        assert!(crate::wiring::write_board(&board.join("reply-2.json"), b"spilled").is_err());
+        let linked = Resolver::new(elsewhere.to_path_buf(), Wall::default())
+            .with_family_dir(board.clone())
+            .fetch(&"family://config".parse()?)
+            .err()
+            .ok_or("a linked board was read")?;
+        assert!(matches!(linked, FetchError::Denied { .. }), "{linked}");
+        crate::wiring::make_board(&board);
+        assert!(std::fs::symlink_metadata(&board)?.is_dir());
+        assert!(
+            elsewhere.join("config.json").is_file() && !elsewhere.join("reply-2.json").exists()
+        );
         Ok(())
     }
 

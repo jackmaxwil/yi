@@ -60,7 +60,6 @@ fn openrouter_model() -> Model {
         id: "anthropic/claude-haiku-4.5".to_owned(),
         provider: "openrouter".to_owned(),
         base_url: "https://openrouter.ai/api/v1".to_owned(),
-        compat: Some(json!({"thinkingFormat": "openrouter"})),
         ..openai_model()
     }
 }
