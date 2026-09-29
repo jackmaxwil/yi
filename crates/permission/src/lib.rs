@@ -20,6 +20,8 @@ pub use review::{
 };
 pub use rules::{
     ConfigRule, ConfigRuleAction, Grant, PathGlob, RuleStateError, SessionRules,
-    canonical_command_identity, canonical_tool_identity, grants,
+    canonical_command_identity, canonical_tool_identity, grants, write_grant,
 };
-pub use safety::{Class, Parsed, Verdict, classify, parse, refused_scopes, verdict, write_targets};
+pub use safety::{
+    Class, Parsed, Verdict, classify, needs_host, parse, refused_scopes, verdict, write_targets,
+};
