@@ -12,7 +12,7 @@ def materialize(task, root):
 
 class Generators(unittest.TestCase):
     def test_every_family_is_seeded_red_untouched_and_green_solved(self):
-        self.assertEqual(sorted(gen.FAMILIES), ["bugfix", "logs", "mutate", "reconcile"])
+        self.assertEqual(sorted(gen.FAMILIES), ["bugfix", "logs", "mutate", "reconcile", "revert"])
         for name, family in gen.SYNTHETIC.items():
             for level in gen.LEVELS:
                 for seed in (1, 2, 7):

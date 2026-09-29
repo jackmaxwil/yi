@@ -70,7 +70,7 @@ async fn a_faux_turn_leaves_a_request_and_a_turn_span_beside_the_session() -> Te
         ..CreateOptions::default()
     })?;
     let telemetry = Arc::new(Telemetry::default());
-    let provider = ProviderStream::new(None, None).with_telemetry(Some(Arc::clone(&telemetry)));
+    let provider = ProviderStream::new(None).with_telemetry(Some(Arc::clone(&telemetry)));
     provider.queue_faux(vec![reply_with_usage("hello", 120, 30)]);
     let session = AgentSession::new(
         SessionConfig {
@@ -123,7 +123,7 @@ async fn a_wake_built_before_a_model_switch_runs_the_woken_turn_on_the_new_model
     let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-telemetry".to_owned());
     let store = repo.create(CreateOptions::default())?;
     let telemetry = Arc::new(Telemetry::default());
-    let provider = ProviderStream::new(None, None).with_telemetry(Some(Arc::clone(&telemetry)));
+    let provider = ProviderStream::new(None).with_telemetry(Some(Arc::clone(&telemetry)));
     provider.queue_faux(vec![reply_with_usage("woke", 1, 1)]);
     let session = AgentSession::new(
         SessionConfig {
@@ -271,6 +271,11 @@ fn error_classes_render_a_closed_vocabulary() {
     assert_eq!(
         ErrorClass::from_provider_text("model went away").to_string(),
         "provider:error"
+    );
+    // A child on a provider with no credential is a missing key, not a provider outage.
+    assert_eq!(
+        ErrorClass::from_provider_text(&yi_runtime::auth::missing_message("anthropic")).to_string(),
+        "refusal:no_key"
     );
     // Ledger row 0017's three dead streams, each its own class (issue #256).
     assert_eq!(

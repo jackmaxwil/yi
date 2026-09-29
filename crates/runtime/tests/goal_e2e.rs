@@ -196,7 +196,7 @@ fn budget_crossing_limits_the_goal_and_delivers_one_reminder() -> TestResult {
 
 #[tokio::test]
 async fn active_goal_continues_past_idle_until_a_failing_turn_blocks_it() -> TestResult {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(vec![faux_assistant_message(
         vec![faux_text("first turn")],
         StopReason::Stop,

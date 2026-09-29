@@ -33,7 +33,9 @@ Server formats accepted by `connect`:
 - `<config-file>` — the file's only entry
 
 Stdio (command-based) entries launch a local process for the duration of one
-command — only connect to configs you trust. Session names auto-generate from
+command — only connect to configs you trust. Every server starts in `~/.yi`,
+never in the workspace, so its command must be an absolute path or on `PATH`
+(`./scripts/server.py` does not resolve). Session names auto-generate from
 the entry name when `@session` is omitted.
 
 ## Session states
