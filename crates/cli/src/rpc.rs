@@ -115,20 +115,11 @@ impl RpcState {
         Ok(())
     }
 
-    /// Invariant: the peer is anything running as the user, so a submit carries no principal;
-    /// only this process's own prompt mints `user://<n>`, for the one request it was asked about.
     async fn submit_plan(
         &self,
-        service: &yi_runtime::plan::PlanService,
+        service: &Arc<yi_runtime::plan::PlanService>,
         payload: &Map<String, Value>,
     ) -> Result<Value, String> {
-        if payload.contains_key("actor") {
-            return Err(yi_runtime::plan::tool::ArgError::ActorArg.to_string());
-        }
-        let (engine, actor) = service
-            .engine()
-            .ok_or_else(|| "no plan engine is attached".to_owned())?;
-        let submission = yi_runtime::plan::authority::submission_of(payload)?;
         let confirmer =
             self.session
                 .permission_broker()
@@ -136,20 +127,9 @@ impl RpcState {
                     broker,
                     store: Arc::clone(&self.store),
                 });
+        let (service, payload) = (Arc::clone(service), payload.clone());
         tokio::task::spawn_blocking(move || {
-            let applied = yi_runtime::plan::authority::submit(
-                &engine,
-                &actor,
-                confirmer.as_ref(),
-                submission,
-            )
-            .map_err(|error| error.to_string())?;
-            Ok(json!({
-                "plan": applied.outcome.plan.id.as_str(),
-                "revision": applied.outcome.plan.touched.0,
-                "text": applied.text(),
-                "notices": applied.outcome.notices,
-            }))
+            yi_runtime::plan::authority::submit_request(&service, &payload, confirmer.as_ref())
         })
         .await
         .map_err(|error| format!("plan.submit task failed: {error}"))?
@@ -213,34 +193,10 @@ impl RpcState {
             }
             "goal" => match self.session.goal_service() {
                 Some(service) => {
-                    let outcome = match text_arg("action") {
-                        "get" => service.get(),
-                        "create" => service.create(
-                            text_arg("objective"),
-                            payload.get("tokenBudget").and_then(Value::as_u64),
-                            payload
-                                .get("check")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                            payload.get("checkTimeoutMs").and_then(Value::as_u64),
-                        ),
-                        "update" => {
-                            let service = std::sync::Arc::clone(&service);
-                            let status = text_arg("status").to_owned();
-                            match tokio::task::spawn_blocking(move || service.update(&status)).await
-                            {
-                                Ok(outcome) => outcome,
-                                Err(error) => Err(format!("goal.update task failed: {error}")),
-                            }
-                        }
-                        "objective" => service.set_objective(
-                            text_arg("objective"),
-                            payload.get("citation").and_then(Value::as_str),
-                        ),
-                        other => Err(format!(
-                            "unknown goal action {other}; use get|create|update|objective"
-                        )),
-                    };
+                    let payload = payload.clone();
+                    let outcome = tokio::task::spawn_blocking(move || service.act(&payload))
+                        .await
+                        .unwrap_or_else(|error| Err(format!("goal task failed: {error}")));
                     match outcome {
                         Ok(goal) => data_frame(id, "goal", json!({"goal": goal})),
                         Err(error) => error_frame(id, "goal", &error),
