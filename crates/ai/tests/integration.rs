@@ -5,6 +5,7 @@
 mod scratch;
 
 mod anthropic_mapper;
+mod compat;
 mod decide;
 mod effort_catalog;
 mod faux_events;
