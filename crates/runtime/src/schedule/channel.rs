@@ -45,14 +45,10 @@ fn io(path: &Path, error: impl std::fmt::Display) -> String {
     format!("{}: {error}", path.display())
 }
 
-/// Invariant: the fresh copy is synced before the rename, so a power cut leaves the old file or
-/// the whole new one; an emptied buffer would restart its offsets under every subscription's ack.
-fn replace(path: &Path, fresh: &Path, text: &str) -> Result<(), String> {
-    let mut file = File::create(fresh).map_err(|error| io(fresh, error))?;
-    file.write_all(text.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|error| io(fresh, error))?;
-    std::fs::rename(fresh, path).map_err(|error| io(path, error))
+/// Invariant: synced before the rename, so a power cut leaves the old file or the whole new one;
+/// an emptied buffer would restart its offsets under every subscription's ack.
+fn replace(path: &Path, text: &str) -> Result<(), String> {
+    yi_session::replace_file(path, text.as_bytes()).map_err(|error| io(path, error))
 }
 
 fn valid_name(name: &str) -> bool {
@@ -112,17 +108,7 @@ impl Channel {
 
     fn lock(&self) -> Result<File, String> {
         let path = self.path.with_extension("lock");
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|error| io(dir, error))?;
-        }
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
-            .map_err(|error| io(&path, error))?;
-        file.lock().map_err(|error| io(&path, error))?;
-        Ok(file)
+        yi_session::lock_file(&path).map_err(|error| io(&path, error))
     }
 
     pub fn meta(&self) -> Result<ChannelMeta, String> {
@@ -134,7 +120,7 @@ impl Channel {
     fn write_meta(&self, meta: &ChannelMeta) -> Result<(), String> {
         let path = self.path.with_extension("json");
         let text = serde_json::to_string_pretty(meta).map_err(|error| io(&path, error))?;
-        replace(&path, &self.path.with_extension("json.tmp"), &text)
+        replace(&path, &text)
     }
 
     /// Makes the channel on first use; retention is required, and one already made keeps its own.
@@ -295,8 +281,7 @@ impl Channel {
             .filter(|(index, entry)| !droppable(*index, entry))
             .filter_map(|(_, entry)| serde_json::to_string(entry).ok())
             .collect();
-        let fresh = self.path.with_extension("jsonl.tmp");
-        replace(&self.path, &fresh, &format!("{}\n", kept.join("\n")))
+        replace(&self.path, &format!("{}\n", kept.join("\n")))
     }
 }
 

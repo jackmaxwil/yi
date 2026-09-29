@@ -13,7 +13,8 @@ mod store;
 pub use error::SessionError;
 pub use id::{IdGenerator, age_label, nonce, now_ms, session_title, validate_session_id};
 pub use jsonl::{
-    JsonlRepo, create_flat_session, load_session, replace_file, session_directory_name,
+    JsonlRepo, create_flat_session, load_session, lock_file, replace_file, session_directory_name,
+    try_lock_file,
 };
 pub use query::{
     BranchBounds, CreateOptions, EntryOrder, EntryQuery, ForkPosition, ForkScope, HistoryHit,
