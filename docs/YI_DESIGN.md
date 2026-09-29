@@ -591,9 +591,9 @@ State ([`doc.rs`](../crates/types/src/plan/doc.rs), [`op.rs`](../crates/types/sr
 
 - Shapes: `.yi/plans/<root>/ops.jsonl` (gitignored) of `JournalRecord`
   ([`ledger.rs`](../crates/types/src/plan/ledger.rs)), `.yi/plans/<id>/{plan.json, artifacts/}`,
-  `.yi/plans/.lease`, `.yi/schemas/plan.schema.json`. Surfaces: the `plan` tool, host requests
+  `.yi/plans/.lock` (an OS file lock naming its holder's pid), `.yi/schemas/plan.schema.json`. Surfaces: the `plan` tool, host requests
   `plan.get` and `plan.op`, RPC `plan`, `yi plan`. The session holds `Fact::Plan` as a pointer.
-- Settled by: D192, D193, D223.
+- Settled by: D192, D193, D223, D313.
 
 ### 13.1 Contracts
 A `Contract` ([`contract.rs`](../crates/types/src/plan/contract.rs)) is 1..=16 items
