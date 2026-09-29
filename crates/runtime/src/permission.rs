@@ -105,6 +105,8 @@ struct Reviewed<'a> {
 pub struct PermissionBroker {
     sandbox: Option<yi_tools::Sandbox>,
     contained_failures: Mutex<std::collections::BTreeSet<yi_tools::SandboxRefusal>>,
+    /// Directories an "always" on a widened retry made writable to every later contained run.
+    kept_writes: Mutex<Vec<PathBuf>>,
     mode: Mutex<PermissionMode>,
     config_rules: Vec<ConfigRule>,
     session_rules: Mutex<SessionRules>,
@@ -127,8 +129,37 @@ pub struct PermissionBroker {
 pub struct CallOutcome {
     pub allowed: bool,
     pub reason: String,
-    /// The call runs inside the platform sandbox rather than freely.
-    pub contained: bool,
+    pub containment: Containment,
+}
+
+/// What an allowed call runs as. Only bash reads it, and only where a sandbox exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Containment {
+    /// Inside the sandbox, with these directories writable besides the holder's tree.
+    Contained {
+        widen: Vec<PathBuf>,
+    },
+    Uncontained,
+}
+
+/// Never widened, even through a link: `$HOME`, `~/.yi` (harness, MCP store, config, sessions,
+/// daemon socket), a credential store, or a git path the host runs.
+fn protected(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let yi = home.iter().map(|home| home.join(".yi"));
+    let overlaps = |guarded: &PathBuf| {
+        let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
+        [guarded, &real]
+            .iter()
+            .any(|guarded| dir.starts_with(guarded) || guarded.starts_with(dir))
+    };
+    home.as_deref()
+        .is_some_and(|home| dir == home || home.canonicalize().is_ok_and(|real| dir == real))
+        || (sandbox.deny_read.iter())
+            .chain(&sandbox.deny_write)
+            .cloned()
+            .chain(yi)
+            .any(|guarded| overlaps(&guarded))
 }
 
 pub(crate) fn extract_targets(
@@ -171,6 +202,7 @@ impl PermissionBroker {
         Self {
             sandbox: None,
             contained_failures: Mutex::new(std::collections::BTreeSet::new()),
+            kept_writes: Mutex::new(Vec::new()),
             mode: Mutex::new(mode),
             config_rules,
             session_rules: Mutex::new(SessionRules::new()),
@@ -252,13 +284,84 @@ impl PermissionBroker {
         }
     }
 
-    fn contained_and_failed(&self, sandbox: &yi_tools::Sandbox, command: Option<&str>) -> bool {
-        let retries = |refusal: &yi_tools::SandboxRefusal| {
-            command.is_some_and(|command| refusal.retried_by(sandbox, &self.cwd, command))
-        };
-        self.contained_failures
+    fn retried_refusal(&self, command: Option<&str>) -> Option<yi_tools::SandboxRefusal> {
+        let (sandbox, command) = (self.sandbox.as_ref()?, command?);
+        let failures = self.contained_failures.lock().ok()?;
+        // The deepest refused path: a refusal at `~/x` would otherwise claim every retry in home.
+        (failures.iter())
+            .filter(|refusal| refusal.retried_by(sandbox, &self.cwd, command))
+            .max_by_key(|refusal| match refusal {
+                yi_tools::SandboxRefusal::Path(path) => path.components().count(),
+                yi_tools::SandboxRefusal::Scopes(_) => 0,
+            })
+            .cloned()
+    }
+
+    fn containment_with(&self, refused: Option<PathBuf>) -> Containment {
+        let mut widen = self
+            .kept_writes
             .lock()
-            .is_ok_and(|failures| failures.iter().any(retries))
+            .map(|kept| kept.clone())
+            .unwrap_or_default();
+        widen.extend(refused);
+        Containment::Contained { widen }
+    }
+
+    /// What approving a bash call runs as, and the clause its question adds: a call needing the
+    /// network or a credential store leaves; a refused write's retry widens by its unprotected dir.
+    fn approved_containment(
+        &self,
+        command: Option<&str>,
+        refusal: Option<&yi_tools::SandboxRefusal>,
+    ) -> (Containment, String) {
+        let (Some(sandbox), Some(command)) = (&self.sandbox, command) else {
+            return (Containment::Uncontained, String::new());
+        };
+        let outside = |why: &str| {
+            let note = format!("; approving runs this one call outside the sandbox ({why})");
+            (Containment::Uncontained, note)
+        };
+        if yi_permission::needs_host(command) {
+            return outside("network");
+        }
+        if yi_permission::command_reads_credentials(command, &self.context).is_some() {
+            return outside("credential stores");
+        }
+        match refusal {
+            None => (self.containment_with(None), String::new()),
+            Some(yi_tools::SandboxRefusal::Scopes(_)) => outside("the refusal named no path"),
+            Some(yi_tools::SandboxRefusal::Path(path)) => {
+                let dir = path.parent().unwrap_or(path);
+                let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+                if protected(sandbox, &dir) {
+                    return outside(&format!("`{}` is protected", dir.display()));
+                }
+                let note = format!("; approving widens this run by `{}`", dir.display());
+                (self.containment_with(Some(dir)), note)
+            }
+        }
+    }
+
+    /// A contained call's profile: the holder's tree (a lane child shares its parent's broker),
+    /// the approved directories, and the wall, enforced rather than read off the command text.
+    pub fn sandbox_for(
+        &self,
+        cwd: &Path,
+        wall: &crate::wall::Wall,
+        widen: &[PathBuf],
+    ) -> Option<yi_tools::Sandbox> {
+        let base = self.sandbox.as_ref()?;
+        let mut profile = match std::env::var_os("HOME").filter(|_| cwd != self.cwd) {
+            Some(home) => yi_tools::Sandbox {
+                deny_read: base.deny_read.clone(),
+                ..yi_tools::Sandbox::for_workspace(cwd, Path::new(&home), None)
+            },
+            None => base.clone(),
+        };
+        profile.writable.extend_from_slice(widen);
+        profile.deny_write.extend_from_slice(&wall.deny_write);
+        profile.deny_read.extend_from_slice(&wall.deny_read);
+        Some(profile)
     }
 
     /// A question with no tool call behind it, asked once and answered once: an allow-always
@@ -415,74 +518,95 @@ impl PermissionBroker {
             &self.context,
         );
         drop(session_rules);
-        let grants = yi_permission::grants(&call, &self.context);
-        match decision {
-            Decision::Allow { reason } => CallOutcome {
-                allowed: true,
-                reason,
-                contained: false,
-            },
-            // Containment is an allowance the sandbox enforces; without one
-            // there is nothing to enforce it, so the question stands.
-            Decision::Contain { reason } => match &self.sandbox {
-                Some(sandbox) if !self.contained_and_failed(sandbox, command) => CallOutcome {
+        let refusal = self.retried_refusal(command);
+        let (title, description, reviewable, reason) = match decision {
+            Decision::Allow { reason } => {
+                return CallOutcome {
                     allowed: true,
                     reason,
-                    contained: true,
-                },
-                // A containment Yi cannot enforce is the same class of unknown
-                // as an unprovable command, so the reviewer may see it too.
-                _ => self.gated_ask(
-                    &PermissionAsk {
-                        title: &format!("{tool_name} requires permission"),
-                        description: &format!("{reason}: {display}"),
-                        patch: preview,
-                        changes: &targets,
-                        grants: &grants,
-                        tool_call_id: Some(tool_call_id),
-                    },
-                    Reviewed {
-                        reviewable: true,
-                        tool_name,
-                        command,
-                        reason: &reason,
-                    },
-                    tool_call_id,
-                    rule_kind,
-                    &canonical,
-                    &display,
-                ),
-            },
-            Decision::Deny { reason } => CallOutcome {
-                allowed: false,
+                    containment: Containment::Uncontained,
+                };
+            }
+            Decision::Deny { reason } => return self.denied(reason),
+            Decision::Contain { reason } if self.sandbox.is_some() && refusal.is_none() => {
+                return CallOutcome {
+                    allowed: true,
+                    reason,
+                    containment: self.containment_with(None),
+                };
+            }
+            // A containment Yi cannot enforce, or one the sandbox already refused, is the same
+            // class of unknown as an unprovable command, so the reviewer may see it too.
+            Decision::Contain { reason } => (
+                format!("{tool_name} requires permission"),
+                format!("{reason}: {display}"),
+                true,
                 reason,
-                contained: false,
-            },
+            ),
             Decision::Ask {
                 title,
                 description,
                 reviewable,
-            } => self.gated_ask(
-                &PermissionAsk {
-                    title: &title,
-                    description: &description,
-                    patch: preview,
-                    changes: &targets,
-                    grants: &grants,
-                    tool_call_id: Some(tool_call_id),
-                },
-                Reviewed {
-                    reviewable,
-                    tool_name,
-                    command,
-                    reason: &description,
-                },
-                tool_call_id,
-                rule_kind,
-                &canonical,
-                &display,
-            ),
+            } => (title, description.clone(), reviewable, description),
+        };
+        let (containment, note) = self.approved_containment(command, refusal.as_ref());
+        // An "always" on a widened retry keeps the directory, never a rule that would run the
+        // command itself outside the sandbox.
+        let kept = match (&containment, &refusal) {
+            (Containment::Contained { widen }, Some(yi_tools::SandboxRefusal::Path(_))) => {
+                widen.last().map(|dir| yi_permission::write_grant(dir))
+            }
+            _ => None,
+        };
+        let grants = match &kept {
+            Some(grant) => vec![grant.clone()],
+            None => yi_permission::grants(&call, &self.context),
+        };
+        let outcome = self.gated_ask(
+            &PermissionAsk {
+                title: &title,
+                description: &format!("{description}{note}"),
+                patch: preview,
+                changes: &targets,
+                grants: &grants,
+                tool_call_id: Some(tool_call_id),
+            },
+            Reviewed {
+                reviewable,
+                tool_name,
+                command,
+                reason: &reason,
+            },
+            tool_call_id,
+            rule_kind,
+            &canonical,
+            &display,
+        );
+        if !outcome.allowed {
+            return outcome;
         }
+        if let (Some(grant), Some(refusal), Containment::Contained { widen }) =
+            (&kept, &refusal, &containment)
+            && self.keeps(grant)
+            && let (Ok(mut kept), Ok(mut failures), Some(dir)) = (
+                self.kept_writes.lock(),
+                self.contained_failures.lock(),
+                widen.last(),
+            )
+        {
+            kept.push(dir.clone());
+            failures.remove(refusal);
+        }
+        CallOutcome {
+            containment,
+            ..outcome
+        }
+    }
+
+    fn keeps(&self, grant: &yi_permission::Grant) -> bool {
+        self.session_rules.lock().is_ok_and(|rules| {
+            rules.decision_for(grant.kind, &grant.canonical) == Some(RuleDecision::Allow)
+        })
     }
 
     /// The §8 auto-review gate. Off (no role named) or out of jurisdiction, this is exactly
@@ -523,7 +647,7 @@ impl PermissionBroker {
                     return CallOutcome {
                         allowed: true,
                         reason: format!("allowed by the classifier (P(safe) {safe:.2})"),
-                        contained: false,
+                        containment: Containment::Uncontained,
                     };
                 }
                 crate::classifier::Judgement::AskUser(_)
@@ -574,7 +698,7 @@ impl PermissionBroker {
                 let allowed = CallOutcome {
                     allowed: true,
                     reason: format!("allowed by the user answering request {request}"),
-                    contained: false,
+                    containment: Containment::Uncontained,
                 };
                 return (allowed, None);
             }
@@ -610,7 +734,7 @@ impl PermissionBroker {
             crate::auto_review::ReviewOutcome::Allow => CallOutcome {
                 allowed: true,
                 reason: "allowed by the auto reviewer".to_owned(),
-                contained: false,
+                containment: Containment::Uncontained,
             },
             crate::auto_review::ReviewOutcome::Deny { reason } => {
                 let stored = Self::stored(ask, rule_kind, canonical, display, reason.clone());
@@ -660,7 +784,7 @@ impl PermissionBroker {
         CallOutcome {
             allowed: false,
             reason,
-            contained: false,
+            containment: Containment::Uncontained,
         }
     }
 
@@ -805,7 +929,7 @@ impl PermissionBroker {
                 "No one answered within {waited} s and the classifier did not clear it. {}",
                 ask.text()
             ),
-            contained: false,
+            containment: Containment::Uncontained,
         }
     }
 
@@ -868,7 +992,7 @@ impl PermissionBroker {
                 };
                 return CallOutcome {
                     allowed: false,
-                    contained: false,
+                    containment: Containment::Uncontained,
                     reason: crate::gate::Report::reason_of(&crate::gate::compile_ask(asked, false)),
                 };
             }
@@ -895,13 +1019,13 @@ impl PermissionBroker {
             CallOutcome {
                 allowed: true,
                 reason: "allowed by user".to_owned(),
-                contained: false,
+                containment: Containment::Uncontained,
             }
         } else {
             CallOutcome {
                 allowed: false,
                 reason: format!("The user denied this call. {rendered}"),
-                contained: false,
+                containment: Containment::Uncontained,
             }
         }
     }
