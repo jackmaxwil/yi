@@ -88,7 +88,7 @@ pub struct RuntimeWiring {
     pub parent_link: Option<ParentLink>,
     /// The wall reduction: paths this session may not touch (plan §3.4 wall).
     pub wall: crate::wall::Wall,
-    /// D13 `bash.autoBackgroundMs`; None keeps every command in the turn.
+    /// `bash.autoBackgroundMs`, for a call that passes no `wait`; None backgrounds only one that does.
     pub auto_background: Option<std::time::Duration>,
     /// `--deadline`: the run's wall clock, counted down in the environment block and enforced.
     pub deadline: Option<std::time::Duration>,
@@ -668,21 +668,19 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
     session.set_advisor(advisor);
 }
 
-/// A job finishing between turns reports through the §4.3 follow-up queue, so the
-/// model hears about it without a turn being interrupted.
-fn wire_job_completions(session: &AgentSession) {
+/// A job of this session's cwd reports through the §4.3 follow-up queue, read at a running
+/// turn's end; an idle session hears it only after its next turn (#820 wakes it).
+fn wire_job_completions(session: &AgentSession, cwd: PathBuf) {
     let follow_up = session.follow_up_hook();
     tokio::spawn(async move {
         let settled = job_settled();
         loop {
             let mut next = std::pin::pin!(settled.notified());
             next.as_mut().enable();
-            for report in yi_tools::jobs::registry().take_finished() {
+            for report in yi_tools::jobs::registry().take_finished(&cwd) {
+                let (job, headline) = (report.id, report.headline());
                 follow_up(&format!(
-                    "<async_result job=\"{}\" exit=\"{}\">{}\n{}</async_result>",
-                    report.id,
-                    report.exit_code.unwrap_or(-1),
-                    report.command,
+                    "<async_result job=\"{job}\">{headline}\n{}</async_result>",
                     report.output
                 ));
             }
@@ -872,7 +870,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         wiring.broker.clone(),
         wiring.auto_background,
     );
-    wire_job_completions(session);
+    wire_job_completions(session, wiring.cwd.clone());
     host
 }
 
