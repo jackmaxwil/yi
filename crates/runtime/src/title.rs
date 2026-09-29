@@ -62,6 +62,7 @@ pub async fn title_session(session: &AgentSession) -> Result<Option<String>, Str
         )]),
         transient: Vec::new(),
         schema: None,
+        shared_through: None,
         reuse: yi_types::model::Reuse::OneShot,
         tools: None,
         tool_choice: None,

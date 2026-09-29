@@ -278,10 +278,13 @@ edited by hand.
 - [D302](adr/d302.md) - a sandbox refusal is remembered by the path it denied, and by program and...
 - [D300](adr/d300.md) - a new user is set up by `yi setup`, offered once on the first terminal launch
 - [D301](adr/d301.md) - the classifier may approve an auto-mode ask, and settles one nobody answers,...
+- [D307](adr/d307.md) - a child's request is made of its brief
 - [D310](adr/d310.md) - the system prompt is constant for a conversation
 - [D306](adr/d306.md) - the request facts that follow from a model's family and transport are derived
 - [D305](adr/d305.md) - a bash call's `wait` backgrounds its command, and `timeout_secs` bounds a...
 - [D312](adr/d312.md) - an approval stays contained unless its question said otherwise (amends D207,...
 - [D311](adr/d311.md) - cache outcomes are a fold over the session JSONL
+- [D308](adr/d308.md) - a worker spawn that names no `role` is a reader (`role="reader"`)
+- [D309](adr/d309.md) - a reader's `schema` reaches the provider (`yi_ai
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

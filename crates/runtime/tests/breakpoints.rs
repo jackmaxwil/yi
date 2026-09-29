@@ -164,6 +164,7 @@ fn context(case: &Case) -> LlmContext {
             .map(|turn| user(&format!("<environment>\nturn: {turn}\n</environment>")))
             .collect(),
         schema: None,
+        shared_through: None,
         reuse: case.reuse,
         tools: case.tools.then(|| vec![tool()]),
         tool_choice: (case.reuse == Reuse::LastTurn).then_some(ToolChoice::None),
@@ -357,6 +358,7 @@ fn a_tool_less_loop_still_marks_its_previous_tail_and_tail() -> Result<(), Box<d
         ],
         transient: vec![user("<environment>\nturn: 3\n</environment>")],
         schema: None,
+        shared_through: None,
         reuse: Reuse::Loop,
         tools: None,
         tool_choice: None,

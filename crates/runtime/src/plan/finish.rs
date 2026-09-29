@@ -761,6 +761,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         let name = format!("{}/stray", out.plan.id);
         kwargs.insert("name".to_owned(), serde_json::Value::String(name));
+        kwargs.insert("role".to_owned(), serde_json::Value::from("root"));
         rig.host.spawn("work".to_owned(), kwargs)?;
         let started = std::time::Instant::now();
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;

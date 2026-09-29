@@ -419,3 +419,63 @@ async fn the_request_carries_the_configured_reuse() {
         assert_eq!(seen, vec![expected], "configured {configured:?}");
     }
 }
+
+/// Records whether each request carried the answer schema.
+struct SchemaRecorder(Arc<Mutex<Vec<bool>>>);
+
+impl yi_loop::run::StreamFn for SchemaRecorder {
+    fn stream(
+        &self,
+        _model: &Model,
+        context: &LlmContext,
+        _effort: Effort,
+        _signal: &InterruptSignal,
+    ) -> Receiver<AssistantMessageEvent> {
+        if let Ok(mut seen) = self.0.lock() {
+            seen.push(context.schema.is_some());
+        }
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let message = faux_assistant_message(vec![faux_text("{}")], StopReason::Stop);
+        let _ = sender.try_send(AssistantMessageEvent::Done {
+            reason: StopReason::Stop,
+            message,
+        });
+        receiver
+    }
+}
+
+/// Some providers refuse a response schema beside function calling, so only a request that
+/// offers no tools asks for the shape.
+#[tokio::test]
+async fn the_answer_schema_rides_only_a_request_without_tools() {
+    for (tools, expected) in [
+        (Vec::new(), true),
+        (vec![Arc::new(Noop) as Arc<dyn AgentTool>], false),
+    ] {
+        let mut config = LoopConfig::new(faux_model());
+        config.schema = Some(serde_json::json!({"type": "object"}));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut context = LoopContext {
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            tools,
+        };
+        let mut emit = |_: AgentEvent| {};
+        let prompt = vec![AgentMessage::host_user(
+            yi_types::message::UserContent::Text("hi".to_owned()),
+            0,
+        )];
+        let stream = SchemaRecorder(Arc::clone(&seen));
+        run_loop(
+            &mut context,
+            prompt,
+            &config,
+            &InterruptSignal::default(),
+            &mut emit,
+            &stream,
+        )
+        .await;
+        let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
+        assert_eq!(seen, vec![expected]);
+    }
+}

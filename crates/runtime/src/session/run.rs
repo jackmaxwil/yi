@@ -11,6 +11,7 @@ use super::{
     record_store_error, store_of,
 };
 
+const TURN_CAP_WORD: &str = "[turns] No more tool calls: answer now from what you have, and name what is missing if it does not decide the question.";
 const LAST_WORD: &str = "[deadline] Time is up: no more tool calls. Write your final answer now from what you have, and say plainly what is unfinished.";
 
 /// Invariant: asked under the session's status lock when a turn would present the message, so
@@ -258,6 +259,9 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     let mut config = LoopConfig::new(model.clone());
     config.effort = effort;
     config.guards = crate::levers::get().loop_guards();
+    if let Some(shape) = shared.shape.get() {
+        (config.schema, config.shared_through) = (shape.schema.clone(), shape.shared_through);
+    }
     config.tool_execution = tool_execution;
     config.reuse = shared.reuse.lock().map(|reuse| *reuse).unwrap_or_default();
     config.convert_to_llm = Box::new(yi_context::convert_to_llm);
@@ -296,21 +300,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     wire_environment(&mut config, &shared);
     let gate = Arc::clone(&capture);
     config.side_work = Some(Box::new(move || Box::pin(settled(Arc::clone(&gate)))));
-    // Not the interrupt: the turn in flight ends and settles, and no request follows.
-    let stop = Arc::clone(&shared);
-    config.should_stop_after_turn = Some(Box::new(move |_| {
-        stop.winding_down() || stop.last_word_due()
-    }));
-    // Incident: the wind-down ended three confirmation runs on a tool call, with no answer.
-    let clock = Arc::clone(&shared);
-    config.last_word = Some(Box::new(move |_| {
-        let cancelled = clock.cancelled.load(std::sync::atomic::Ordering::SeqCst);
-        let out_of_time = clock.deadline.get().is_some_and(|at| at.winding_down());
-        let out_of_time = out_of_time || clock.last_word_due();
-        (out_of_time && !cancelled).then(|| super::user_message(LAST_WORD))
-    }));
-    let due = Arc::clone(&shared);
-    config.last_word_due = Some(Box::new(move || due.last_word_due()));
+    wire_last_word(&mut config, &shared);
     let emit_shared = Arc::clone(&shared);
     let mut emit = move |event: AgentEvent| {
         emit_shared.time_turn(&event);
@@ -445,6 +435,36 @@ async fn settled(capture: Capture) {
         let _span = yi_types::trace::span("turn.start_hook_wait");
         let _hook_failure_never_fails_a_turn = handle.await;
     }
+}
+
+/// The stop test and the last word: the deadline's, the wind-down's and the turn cap's.
+fn wire_last_word(config: &mut LoopConfig, shared: &Arc<Shared>) {
+    // Not the interrupt: the turn in flight ends and settles, and no request follows.
+    let stop = Arc::clone(shared);
+    let capped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (turns, cap_hit) = (std::sync::atomic::AtomicU32::new(0), Arc::clone(&capped));
+    let cap = shared.turn_cap.get().copied();
+    config.should_stop_after_turn = Some(Box::new(move |_| {
+        let taken = turns
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .saturating_add(1);
+        let at_cap = cap.is_some_and(|cap| taken >= cap.saturating_sub(1));
+        cap_hit.store(at_cap, std::sync::atomic::Ordering::SeqCst);
+        stop.winding_down() || stop.last_word_due() || at_cap
+    }));
+    // Incident: the wind-down ended three confirmation runs on a tool call, with no answer.
+    let clock = Arc::clone(shared);
+    config.last_word = Some(Box::new(move |_| {
+        let cancelled = clock.cancelled.load(std::sync::atomic::Ordering::SeqCst);
+        let out_of_time = clock.deadline.get().is_some_and(|at| at.winding_down());
+        let out_of_time = out_of_time || clock.last_word_due();
+        if capped.load(std::sync::atomic::Ordering::SeqCst) && !out_of_time && !cancelled {
+            return Some(super::user_message(TURN_CAP_WORD));
+        }
+        (out_of_time && !cancelled).then(|| super::user_message(LAST_WORD))
+    }));
+    let due = Arc::clone(shared);
+    config.last_word_due = Some(Box::new(move || due.last_word_due()));
 }
 
 fn wire_environment(config: &mut LoopConfig, shared: &Arc<Shared>) {
