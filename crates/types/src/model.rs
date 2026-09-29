@@ -324,6 +324,24 @@ pub struct LlmContext {
     pub tool_choice: Option<ToolChoice>,
 }
 
+/// The assistant diagnostic that records [`LlmContext::stable_key`] per request (C5).
+pub const CACHE_DIAGNOSTIC: &str = "cache";
+
+impl LlmContext {
+    /// The prefix every request of a conversation shares, in render order: schema, tools,
+    /// system. A change between two requests is a miss yi caused (design §7, invariant 3).
+    pub fn stable_key(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let rendered = serde_json::json!([self.schema, self.tools, self.system_prompt]);
+        let digest = Sha256::digest(rendered.to_string().as_bytes());
+        digest
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Effort, ForcedTool, LlmContext, TOOL_NAME_MAX, ToolChoiceError};

@@ -69,16 +69,25 @@ impl SpendAlarm {
 
 /// Queues each alert as a shown notice, never a wake: an alert must not buy another turn.
 pub fn attach(session: &AgentSession, every: NonZeroU64) {
+    let mut alarm = SpendAlarm::new(every);
+    announce(session, SPEND_ALERT_TYPE, move |event| alarm.observe(event));
+}
+
+/// Delivers each text `observe` returns as a shown notice of `custom_type`, never a wake.
+pub fn announce(
+    session: &AgentSession,
+    custom_type: &'static str,
+    mut observe: impl FnMut(&AgentEvent) -> Option<String> + Send + 'static,
+) {
     let mut events = session.subscribe();
     let deliver = session.deliver_hook();
-    let mut alarm = SpendAlarm::new(every);
     tokio::spawn(async move {
         loop {
             match events.recv().await {
                 Ok(event) => {
-                    if let Some(text) = alarm.observe(&event) {
+                    if let Some(text) = observe(&event) {
                         let notice = AgentMessage::Custom {
-                            custom_type: SPEND_ALERT_TYPE.to_owned(),
+                            custom_type: custom_type.to_owned(),
                             content: UserContent::Text(text),
                             display: true,
                             details: None,
