@@ -682,9 +682,9 @@ impl SubagentHost {
         let overrides =
             optional_string(&kwargs, "model")?.or(optional_string(&kwargs, "thinking")?);
         if reader.is_some() && (fork != Fork::None || isolation != Isolation::None) {
-            return Err(
-                "a reader gets a partition, not a fork, and writes nothing to isolate".to_owned(),
-            );
+            return Err(reader::full_child(
+                "a reader gets a partition, not a fork, and writes nothing to isolate",
+            ));
         }
         if fork == Fork::All && overrides.is_some() {
             return Err(
