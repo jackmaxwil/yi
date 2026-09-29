@@ -34,7 +34,7 @@ HOST = WEB.removeprefix("https://")
 
 
 def git(*args, check=False):
-    out = subprocess.run(("git", "-C", str(ROOT)) + args, capture_output=True, text=True, check=False)
+    out = subprocess.run(("git", "-C", str(ROOT)) + args, capture_output=True, text=True, errors="replace", check=False)
     if check and out.returncode != 0:
         raise SystemExit(f"git {' '.join(args)}: {out.stderr.strip()}")
     return out.stdout.strip()
@@ -412,11 +412,21 @@ def cmd_edit(args):
 
 
 def cmd_ready(args):
+    import pr_review
+
     number = pull_number(args.number)
-    title = pull(number)["title"]
+    pr = pull(number)
+    title = pr["title"]
     if not title.startswith(DRAFT):
         print(f"#{number} is not a draft")
         return 0
+    rounds = pr_review.rounds_of(pr_review.comments(repo(), number), pr_review.authors())
+    errs = pr_review.ready_problems(rounds, pr["head"]["sha"])
+    for err in errs:
+        print(f"  {err}")
+    if errs and pr_review.MODE == "blocking" and not getattr(args, "force", False):
+        print(f"ready: refused — #{number} stays a draft")
+        return 1
     answer = fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
     if not answer or answer.get("message"):
         print(f"#{number} not readied: {(answer or {}).get('message', 'the forge answered 404')}")
@@ -621,7 +631,7 @@ def cmd_land(args):
     if code:
         return code
     # `just land` is the owner asking for this merge now, so it readies its own draft.
-    args.number = None
+    args.number, args.force = None, True
     if cmd_ready(args):
         return 1
     args.wait = True
@@ -700,15 +710,21 @@ def selfcheck():
     finally:
         subprocess.run = real_run
     assert stopped == 1, "a hard-cap breach stops the push lane"
+    import pr_review
+
     real_fgj, real_pull = globals()["fgj_api"], globals()["pull"]
-    globals()["pull"] = lambda n: {"number": n, "title": DRAFT + "Keep the gate"}
+    real_rounds = pr_review.comments, pr_review.authors
+    globals()["pull"] = lambda n: {"number": n, "title": DRAFT + "Keep the gate", "head": {"sha": "abc1234"}}
     globals()["fgj_api"] = lambda method, path, payload=None: {"message": "edits are forbidden"}
+    pr_review.comments, pr_review.authors = (lambda repo, number: []), (lambda: set())
     try:
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()) as said:
             stopped = cmd_ready(argparse.Namespace(number=7))
     finally:
         globals()["fgj_api"], globals()["pull"] = real_fgj, real_pull
+        pr_review.comments, pr_review.authors = real_rounds
     assert stopped == 1, "a refused title PATCH stops the ready verb"
+    assert "0 review round(s)" in said.getvalue(), "ready says what the rounds still owe"
     real_measure = gate.measure
     gate.measure = lambda: (([], [], 0, ([], [])), None)
     body_file = pathlib.Path(tempfile.gettempdir()) / "forge_pr_selfcheck_body.md"
@@ -773,10 +789,21 @@ def build_parser():
     edit.add_argument("--title")
     edit.add_argument("--body")
     edit.set_defaults(run=cmd_edit)
-    for name, run in (("status", cmd_status), ("ready", cmd_ready), ("update", cmd_update), ("rerun", cmd_rerun)):
+    import pr_review
+
+    for name, run in (("status", cmd_status), ("ready", cmd_ready), ("update", cmd_update), ("rerun", cmd_rerun),
+                      ("review", pr_review.cmd_review), ("fix", pr_review.cmd_fix)):
         sub = pr.add_parser(name)
         sub.add_argument("number", nargs="?")
         sub.set_defaults(run=run)
+    pr.choices["review"].add_argument("--dry-run", action="store_true", help="print the round, post nothing")
+    pr.choices["review"].add_argument("--again", action="store_true", help="read a head the rule says is read enough")
+    pr.add_parser("sweep").set_defaults(run=pr_review.cmd_sweep)
+    replay = pr.add_parser("replay")
+    replay.add_argument("numbers", nargs="+", type=int)
+    replay.add_argument("--label", required=True, help="what the PR is known to be: bad, kept, closed")
+    replay.add_argument("--out", required=True, help="the JSON-lines file each reading is appended to")
+    replay.set_defaults(run=pr_review.cmd_replay)
     merge = pr.add_parser("merge")
     merge.add_argument("number", nargs="?")
     merge.add_argument("--no-wait", dest="wait", action="store_false")

@@ -18,6 +18,21 @@ pub(super) fn run(args: &Args) -> i32 {
         .deadline
         .and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)));
     let interactive = std::io::stdin().is_terminal();
+    // Incident: a review round's prompt passed Linux's 128 KiB cap on one argument (E2BIG).
+    let prompt = match args.prompt.as_str() {
+        "-" => match std::io::read_to_string(std::io::stdin()) {
+            Ok(text) if !text.is_empty() => text,
+            Ok(_) => {
+                eprintln!("error: no prompt on stdin");
+                return 2;
+            }
+            Err(error) => {
+                eprintln!("error: reading the prompt from stdin: {error}");
+                return 2;
+            }
+        },
+        given => given.to_owned(),
+    };
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -55,7 +70,6 @@ pub(super) fn run(args: &Args) -> i32 {
         }
     }
     let json = args.json;
-    let prompt = args.prompt.clone();
     let schema = match args.schema.as_deref().map(yi_runtime::schema::Schema::load) {
         Some(Ok(schema)) => Some(schema),
         Some(Err(error)) => {
