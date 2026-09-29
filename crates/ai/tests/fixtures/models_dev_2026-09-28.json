@@ -1,0 +1,198 @@
+{
+ "openrouter": {
+  "api": "https://openrouter.ai/api/v1",
+  "doc": "https://openrouter.ai/models",
+  "env": [
+   "OPENROUTER_API_KEY"
+  ],
+  "id": "openrouter",
+  "models": {
+   "anthropic/claude-opus-5.5": {
+    "attachment": true,
+    "canonical_model_id": "anthropic/claude-opus-5-5",
+    "cost": {
+     "cache_read": 0.2,
+     "cache_write": 5,
+     "input": 4,
+     "output": 20
+    },
+    "description": "Flagship Claude model for deep reasoning, coding, and long-horizon agents",
+    "family": "claude-opus",
+    "id": "anthropic/claude-opus-5.5",
+    "knowledge": "2026-06",
+    "last_updated": "2026-09-22",
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "Claude Opus 5.5",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "release_date": "2026-09-22",
+    "structured_output": true,
+    "temperature": true,
+    "tool_call": true
+   },
+   "deepseek/deepseek-v4.1-flash": {
+    "attachment": true,
+    "canonical_model_id": "deepseek/deepseek-v4.1-flash",
+    "cost": {
+     "cache_read": 0.006,
+     "input": 0.3,
+     "output": 1.2
+    },
+    "description": "Fast DeepSeek model for efficient chat, coding help, and agent loops",
+    "family": "deepseek-flash",
+    "id": "deepseek/deepseek-v4.1-flash",
+    "knowledge": "2025-05",
+    "last_updated": "2026-09-10",
+    "limit": {
+     "context": 1048576,
+     "output": 943718
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "DeepSeek V4.1 Flash",
+    "open_weights": true,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "toggle"
+     },
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "high",
+       "max"
+      ]
+     }
+    ],
+    "release_date": "2026-09-10",
+    "structured_output": true,
+    "temperature": true,
+    "tool_call": true
+   },
+   "~deepseek/deepseek-flash-latest": {
+    "attachment": true,
+    "cost": {
+     "cache_read": 0.01,
+     "input": 0.05,
+     "output": 0.6
+    },
+    "description": "Fast DeepSeek model for efficient chat, coding help, and agent loops",
+    "family": "deepseek-flash",
+    "id": "~deepseek/deepseek-flash-latest",
+    "last_updated": "2026-09-14",
+    "limit": {
+     "context": 1048576,
+     "output": 943718
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "DeepSeek Flash Latest",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "toggle"
+     },
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "high",
+       "max"
+      ]
+     }
+    ],
+    "release_date": "2026-09-14",
+    "structured_output": true,
+    "temperature": true,
+    "tool_call": true
+   },
+   "~deepseek/deepseek-pro-latest": {
+    "attachment": false,
+    "cost": {
+     "cache_read": 0.08832,
+     "input": 0.22592,
+     "output": 1.9584
+    },
+    "description": "Flagship DeepSeek model for coding, reasoning, and agentic work",
+    "family": "deepseek",
+    "id": "~deepseek/deepseek-pro-latest",
+    "last_updated": "2026-09-14",
+    "limit": {
+     "context": 1048576,
+     "output": 943718
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "DeepSeek Pro Latest",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "toggle"
+     },
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "high",
+       "max"
+      ]
+     }
+    ],
+    "release_date": "2026-09-14",
+    "structured_output": true,
+    "temperature": true,
+    "tool_call": true
+   }
+  },
+  "name": "OpenRouter",
+  "npm": "@openrouter/ai-sdk-provider"
+ }
+}
