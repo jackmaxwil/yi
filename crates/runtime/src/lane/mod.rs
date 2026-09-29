@@ -536,7 +536,7 @@ impl Pool {
             path: path.clone(),
             source,
         })?;
-        std::fs::write(&path, bytes).map_err(io_error(&path))
+        yi_session::replace_file(&path, &bytes).map_err(io_error(&path))
     }
 
     /// Invariant: the kernel drops this flock with the process; a crash cannot wedge the pool.
