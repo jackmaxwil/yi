@@ -289,6 +289,25 @@ def prompt_and_read_per_request(events):
     return out
 
 
+def compaction_request(sessions, requests):
+    """(prompt, read, cost) of the compaction and the prompt of the loop request before it. The
+    compaction is the request span whose usage no reply carries, the largest if several (#746)."""
+    loop = list(requests)
+    best, before = None, 0
+    for path in sorted(Path(sessions).rglob("*.telemetry.jsonl")):
+        for span in yi_usage.json_lines(path)[0]:
+            if span.get("span") != "request":
+                continue
+            read = span.get("cacheRead") or 0
+            prompt = (span.get("input") or 0) + read + (span.get("cacheWrite") or 0)
+            if (prompt, read) in loop:
+                loop.remove((prompt, read))
+                before = prompt
+            elif best is None or prompt > best[0][0]:
+                best = ((prompt, read, span.get("costUsd")), before)
+    return best
+
+
 def cache_check(spec, task_dir, binary, model, out):
     """A cache scenario asks one session several times; the warm turns must read the cache.
     With `minWarmShare`, every request after the first must read that share of the previous
@@ -323,6 +342,15 @@ def cache_check(spec, task_dir, binary, model, out):
     shares = [read / prompt if prompt else 0.0 for (prompt, _), (_, read) in zip(requests, requests[1:])]
     floor, least = spec.get("minWarmShare"), spec.get("minRequests", 2)
     held = bool(warm_read) if floor is None else (len(requests) >= least and min(shares, default=0.0) >= floor)
+    compacted, compaction_floor = None, spec.get("minCompactionShare")
+    if compaction_floor is not None:
+        # The loop's own requests after a compaction start a new prefix: only the compaction is judged.
+        found = compaction_request(sessions, requests)
+        if found:
+            (prompt, read, cost), before = found
+            compacted = {"prompt": prompt, "read": read, "before": before, "costUsd": cost,
+                         "share": round(read / before, 4) if before else 0.0}
+        held = bool(compacted) and compacted["share"] >= compaction_floor
     row = {"task": spec["id"], "reward": 1 if held else 0, "exit": exit_code, "timedOut": timed_out,
            "wallSec": round(time.monotonic() - started, 2), "requests": len(requests),
            "warmRead": warm_read, "warmInput": sum(turn["input"] or 0 for turn in turns[1:]),
@@ -331,8 +359,17 @@ def cache_check(spec, task_dir, binary, model, out):
         row[key] = sum(turn.get(key) or 0 for turn in turns)
     costs = [turn.get("costUsd") for turn in turns]
     row["costUsd"] = None if not turns or None in costs else sum(costs)
+    if compacted:
+        row["compaction"] = compacted
+        row["costUsd"] = None if row["costUsd"] is None or compacted["costUsd"] is None else (
+            row["costUsd"] + compacted["costUsd"])
     row["status"], row["detail"] = status_of(row, spec, events_text)
-    if row["status"] == "fail" and floor is None:
+    if row["status"] == "fail" and compaction_floor is not None and not compacted:
+        row["status"], row["detail"] = "inconclusive", "the session never compacted"
+    elif row["status"] == "fail" and compaction_floor is not None:
+        row["detail"] = (f"the compaction read {compacted['read']} of the previous request's "
+                         f"{compacted['before']}-token prompt ({compacted['share']:.1%} < {compaction_floor:.0%})")
+    elif row["status"] == "fail" and floor is None:
         row["detail"] = f"warm turns read 0 cached tokens over {len(turns)} requests ({row['input']} input)"
     elif row["status"] == "fail" and len(requests) < least and min(shares, default=1.0) >= floor:
         # A short loop that read well so far is the scenario's problem; one that already missed is red.
