@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 use yi_types::kernel::{ExecuteResult, ExecuteStatus, KernelAttachment};
 use yi_types::message::Content;
 
-use crate::reduce::Spill;
+use crate::spill::Spill;
 use crate::tool::{
     CancelFlag, Tool, ToolContext, ToolKind, ToolOutput, detail_text, error_output, require_str,
     text_output,
@@ -62,8 +62,7 @@ impl CellSpill {
     pub fn note(&self, cap: usize) -> Option<String> {
         let mut held = self.0.lock().ok()?;
         let cut = held.1.iter().any(|chars| *chars > cap);
-        let path = if cut { held.0.keep()? } else { return None };
-        Some(format!("[full output: {}]", path.display()))
+        if cut { held.0.keep() } else { None }
     }
 }
 
