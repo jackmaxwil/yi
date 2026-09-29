@@ -218,6 +218,7 @@ struct Collected {
     binary_skipped: usize,
     documents_searched: usize,
     documents_unsearched: Vec<String>,
+    walled: usize,
 }
 
 /// A search converts at most this many documents it has no copy of; the rest are counted.
@@ -287,6 +288,7 @@ fn clip(line: &str) -> (String, bool) {
 fn collect(
     cwd: &Path,
     root: &Path,
+    deny: &[PathBuf],
     matcher: &regex::Regex,
     include: Option<&globset::GlobMatcher>,
     options: &Options,
@@ -372,11 +374,12 @@ fn collect(
         });
         !collection_capped
     };
-    if root.is_file() {
+    let walled = if root.is_file() {
         search_file(root);
+        0
     } else {
-        walk_files(root, &mut search_file);
-    }
+        walk_files(root, deny, &mut search_file)
+    };
     Collected {
         files,
         total,
@@ -384,6 +387,7 @@ fn collect(
         binary_skipped,
         documents_searched,
         documents_unsearched,
+        walled,
     }
 }
 
@@ -539,6 +543,7 @@ impl GrepTool {
     pub(crate) fn references(
         &self,
         root: &Path,
+        deny: &[PathBuf],
         identifier: &str,
         skip: Option<(&str, usize)>,
         cap: usize,
@@ -558,7 +563,7 @@ impl GrepTool {
             replace: None,
             apply: false,
         };
-        let collected = collect(root, root, &matcher, None, &options, None);
+        let collected = collect(root, root, deny, &matcher, None, &options, None);
         let mut rows: Vec<String> = Vec::new();
         let mut taken = 0_usize;
         let mut total = 0_usize;
@@ -577,6 +582,7 @@ impl GrepTool {
             taken = taken.saturating_add(page.len());
             rows.extend(self.render_file(file, &page, 0, true, false));
         }
+        rows.extend(crate::builtins::walled_notice(collected.walled));
         (rows, total)
     }
 
@@ -662,6 +668,7 @@ impl GrepTool {
                 .iter()
                 .map(|path| format!("skipped (not UTF-8): {path}")),
         );
+        rows.extend(crate::builtins::walled_notice(collected.walled));
         let mut output = text_output(rows.join("\n"));
         output.result.details = json!({
             "hits": collected.total,
@@ -774,7 +781,25 @@ fn page_args(
     Ok((context_asked, context_ignored, offset, root))
 }
 
+fn walled_write(
+    collected: &Collected,
+    options: &Options,
+    context: &ToolContext,
+) -> Option<ToolOutput> {
+    if !options.apply {
+        return None;
+    }
+    let file = collected.files.iter().find(|file| {
+        crate::builtins::walled(&context.deny_write, &context.cwd.join(&file.display))
+    })?;
+    Some(error_output_kind(
+        crate::builtins::wall_refusal("grep", &file.display, "deny_write"),
+        yi_types::event::ToolErrorKind::Denied,
+    ))
+}
+
 fn cut_notices(collected: &Collected, context_asked: usize, rows: &mut Vec<String>) {
+    rows.extend(crate::builtins::walled_notice(collected.walled));
     if collected.collection_capped {
         rows.push(format!(
             "[match collection stopped at {COLLECTION_CAP} before every file was scanned — narrow with path, include, or type]"
@@ -892,12 +917,16 @@ impl Tool for GrepTool {
         let collected = collect(
             &context.cwd,
             &root,
+            &context.deny_read,
             &matcher,
             include.as_ref(),
             &options,
             self.document_search(&options, context),
         );
         if let Some(replacement) = &options.replace {
+            if let Some(refused) = walled_write(&collected, &options, context) {
+                return refused;
+            }
             return self.replace(&collected, &matcher, replacement, &options);
         }
         let page_cap = if options.block {
