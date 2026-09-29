@@ -143,33 +143,150 @@ pub fn wall_refusal(tool_name: &str, path: &str, list: &str) -> String {
     )
 }
 
-pub(crate) fn walled(deny: &[PathBuf], path: &Path) -> bool {
-    if deny.is_empty() {
-        return false;
+/// Invariant: walled when it or an ancestor is a deny entry by spelling or file identity, so a
+/// symlink (dangling too), `..` or letter case cannot reach around it; hard links can.
+pub fn walled(deny: &[PathBuf], path: &Path) -> bool {
+    !deny.is_empty() && walled_via(deny, &identities(deny), path, LINK_HOPS)
+}
+
+/// As many links as the kernel follows before `ELOOP`.
+const LINK_HOPS: u8 = 40;
+
+/// A missing tail is judged by its existing head, and a dangling link just past that head by
+/// where it points, so a refusal never tells a file behind the wall from a missing one.
+fn walled_via(deny: &[PathBuf], ids: &[FileId], path: &Path, hops: u8) -> bool {
+    if lexically_walled(deny, path) {
+        return true;
     }
-    let normalized = yi_permission::lexical_normalize(path);
+    let Some((head, real)) =
+        (path.ancestors()).find_map(|head| Some((head, fs::canonicalize(head).ok()?)))
+    else {
+        return false;
+    };
+    if (real.ancestors()).any(|dir| denied_file(ids, fs::metadata(dir))) {
+        return true;
+    }
+    let mut rest = path.strip_prefix(head).unwrap_or(path).components();
+    let Some(Ok(target)) = rest.next().map(|next| fs::read_link(head.join(next))) else {
+        return false;
+    };
+    let target = real.join(target).join(rest.as_path());
+    hops > 0 && walled_via(deny, ids, &target, hops.saturating_sub(1))
+}
+
+fn lexically_walled(deny: &[PathBuf], path: &Path) -> bool {
+    !deny.is_empty() && {
+        let normalized = yi_permission::lexical_normalize(path);
+        deny.iter()
+            .any(|denied| normalized.starts_with(yi_permission::lexical_normalize(denied)))
+    }
+}
+
+type FileId = (u64, u64);
+
+fn identities(deny: &[PathBuf]) -> Vec<FileId> {
     deny.iter()
-        .any(|denied| normalized.starts_with(yi_permission::lexical_normalize(denied)))
+        .filter_map(|denied| file_id(&fs::metadata(denied).ok()?))
+        .collect()
 }
 
-pub(crate) fn walled_notice(left_out: usize) -> Option<String> {
-    (left_out > 0).then(|| {
-        format!(
-            "[{left_out} paths left out: the reviewer wall's deny_read covers them, and no call reaches them this run]"
-        )
-    })
+fn denied_file(ids: &[FileId], meta: std::io::Result<fs::Metadata>) -> bool {
+    !ids.is_empty()
+        && meta
+            .ok()
+            .and_then(|meta| file_id(&meta))
+            .is_some_and(|id| ids.contains(&id))
 }
 
-/// Name order within each directory: the filesystem's own order differs between machines, and
-/// every cap and page over this walk would keep a different set. Returns the walled entries.
+#[cfg(unix)]
+fn file_id(meta: &fs::Metadata) -> Option<FileId> {
+    use std::os::unix::fs::MetadataExt;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_id(_meta: &fs::Metadata) -> Option<FileId> {
+    None
+}
+
+/// What a walk left out: entries a wall covers, and whether it stopped at [`WALK_CAP`].
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Walked {
+    pub(crate) walled: usize,
+    pub(crate) stopped: bool,
+    /// The root is guarded, so nothing under it was walked.
+    pub(crate) refused: bool,
+}
+
+impl Walked {
+    pub(crate) fn notices(self) -> Vec<String> {
+        let walled = format!(
+            "[{} paths left out: the reviewer wall's deny_read covers them, and no call reaches them this run]",
+            self.walled
+        );
+        let stopped = format!("[the walk stopped after {WALK_CAP} entries: name a narrower path]");
+        let refused = "[no walk enters this directory: it is a home, a system root or a key store; \
+                       give path= a directory under the working tree]";
+        (self.walled > 0)
+            .then_some(walled)
+            .into_iter()
+            .chain(self.stopped.then_some(stopped))
+            .chain(self.refused.then(|| refused.to_owned()))
+            .collect()
+    }
+}
+
+/// Entries one walk visits at most, so `/usr/**` ends.
+const WALK_CAP: usize = 200_000;
+
+/// Name order: filesystem order differs by machine and every cap would keep a different set.
+/// Links are never followed, so each entry is judged by its own path and identity alone.
 pub(crate) fn walk_files(
     root: &Path,
     deny: &[PathBuf],
     visit: &mut dyn FnMut(&Path) -> bool,
-) -> usize {
-    let mut left_out = 0_usize;
+) -> Walked {
+    walk_capped(root, deny, WALK_CAP, visit)
+}
+
+fn walk_capped(
+    root: &Path,
+    deny: &[PathBuf],
+    cap: usize,
+    visit: &mut dyn FnMut(&Path) -> bool,
+) -> Walked {
+    let mut walked = Walked::default();
+    if walled(deny, root) {
+        walked.walled = 1;
+        return walked;
+    }
+    let root = yi_permission::lexical_normalize(root);
+    let ids = identities(deny);
+    let gate = yi_permission::CatastrophicContext::detect(&root);
+    let (trees, exact) = yi_permission::read_guarded_dirs(&gate);
+    let (trees, guarded) = (
+        identities(&trees),
+        [identities(&trees), identities(&exact)].concat(),
+    );
+    // Judged by identity, so letter case, a link, `/private` or a firmlink name no way in.
+    let real = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+    if yi_permission::read_is_catastrophic(&real, &gate)
+        || denied_file(&guarded, fs::metadata(&real))
+        || (real.ancestors()).any(|dir| denied_file(&trees, fs::metadata(dir)))
+    {
+        walked.refused = true;
+        return walked;
+    }
     let mut ignore = crate::ignore::Ignore::default();
-    let mut stack = vec![root.to_path_buf()];
+    // Rules above the root bind it, from the nearest repository top down; a root that is one
+    // takes none from above.
+    let above: Vec<&Path> = root.ancestors().collect();
+    if let Some(top) = above.iter().position(|dir| dir.join(".git").exists()) {
+        (above.iter().take(top.saturating_add(1)).skip(1).rev())
+            .for_each(|dir| ignore.push_dir(dir));
+    }
+    let mut seen = 0_usize;
+    let mut stack = vec![root];
     while let Some(dir) = stack.pop() {
         ignore.push_dir(&dir);
         let Ok(entries) = fs::read_dir(&dir) else {
@@ -177,25 +294,36 @@ pub(crate) fn walk_files(
         };
         let mut entries: Vec<fs::DirEntry> = entries.flatten().collect();
         entries.sort_by_key(fs::DirEntry::file_name);
+        seen = seen.saturating_add(entries.len());
+        if seen > cap {
+            walked.stopped = true;
+            return walked;
+        }
         let mut subdirs: Vec<PathBuf> = Vec::new();
         for entry in entries {
             let path = entry.path();
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            if walled(deny, &path) {
-                left_out = left_out.saturating_add(1);
+            let guarded_dir = file_type.is_dir() && denied_file(&guarded, entry.metadata());
+            if guarded_dir || yi_permission::read_is_catastrophic(&path, &gate) {
+                continue;
+            }
+            if lexically_walled(deny, &path)
+                || (!ids.is_empty() && denied_file(&ids, entry.metadata()))
+            {
+                walked.walled = walked.walled.saturating_add(1);
             } else if file_type.is_dir() {
                 if !ignore.ignored(&path, true) {
                     subdirs.push(path);
                 }
             } else if file_type.is_file() && !ignore.ignored(&path, false) && !visit(&path) {
-                return left_out;
+                return walked;
             }
         }
         stack.extend(subdirs.into_iter().rev());
     }
-    left_out
+    walked
 }
 
 /// Every other verb keeps the `Exec` default: the flag warns about blast
@@ -898,6 +1026,34 @@ mod tests {
     use super::{BashTool, broad_search};
     use crate::Tool;
     use std::time::Duration;
+
+    /// A walk that reaches its cap says so, matched or not, and visits nothing past it.
+    #[test]
+    fn a_walk_past_its_cap_stops_and_says_so() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("yi-walk-cap-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("d"))?;
+        for name in ["a", "b", "d/c", "d/e"] {
+            std::fs::write(root.join(name), "x")?;
+        }
+        let mut visited = 0_usize;
+        let walked = super::walk_capped(&root, &[], 4, &mut |_| {
+            visited += 1;
+            true
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            walked.stopped && visited == 2,
+            "stopped {} after {visited}",
+            walked.stopped
+        );
+        assert!(
+            walked
+                .notices()
+                .iter()
+                .any(|row| row.contains("the walk stopped"))
+        );
+        Ok(())
+    }
 
     #[test]
     fn the_bash_description_names_the_reducer_floor() {

@@ -9,7 +9,7 @@ mod safety;
 
 pub use catastrophic::{
     CatastrophicContext, command_reads_credentials, git_dirs, is_catastrophic, lexical_normalize,
-    resolve_target, wraps,
+    read_guarded_dirs, read_is_catastrophic, resolve_target, wraps,
 };
 pub use decide::{
     Decision, Hold, HoldPattern, HoldSource, ParseOutcome, PermissionMode, ToolCall, decide,
