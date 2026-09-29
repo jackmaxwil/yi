@@ -245,3 +245,18 @@ fn a_morph_moves_every_point_and_duplicates_none() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn planning_moves_at_every_progress() {
+    for (done, total) in [(0, 0), (2, 5), (5, 5), (8, 9), (3, 10), (3, 30)] {
+        let state = Some(OrbState::Planning { done, total });
+        let (a, b) = (pose(state, 0.0), pose(state, 1.0));
+        let swept = a
+            .iter()
+            .zip(&b)
+            .any(|(p, q)| (p.alpha - q.alpha).abs() > 0.1);
+        assert!(swept, "Planning {done}/{total} has no band under the sweep");
+        let moved = seen_step(&a, &b).0;
+        assert!(moved > 0.01, "Planning {done}/{total} never moves a dot");
+    }
+}
