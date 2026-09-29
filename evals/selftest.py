@@ -277,6 +277,15 @@ def check_unknown_usage_is_not_a_free_turn():
         assert total is None, f"unmeasurable spend answered {total} instead of refusing"
         assert tb21_cost.main([str(runs), "--hard", "25"]) == 2, "the probe must stop"
     assert yi_usage.parse_events(EVENTS)["costUnknownTurns"] == 0, "recorded turns are known"
+    # Owner, 2026-09-28: "a failed request that returned nothing count as $0". A Z.AI 520 before
+    # any token left three trials of row 0071 unpriced though nothing was generated or billed.
+    failed = {"type": "message_end", "message": {"role": "assistant", "content": [], "stopReason": "error",
+              "errorMessage": "error code: 520", "usage": {"input": 0, "output": 0, "unknown": True}}}
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "yi.jsonl"
+        path.write_text(EVENTS.read_text().rstrip("\n") + "\n" + json.dumps(failed) + "\n")
+        usage = yi_usage.parse_events(path)
+        assert usage["costUnknownTurns"] == 0 and usage["costUsd"] == yi_usage.parse_events(EVENTS)["costUsd"], usage
 
 
 def check_warm_share():
