@@ -358,7 +358,7 @@ fn read_dir(display_path: &str, path: &Path, deny: &[std::path::PathBuf]) -> Too
     rows.extend(
         crate::builtins::Walked {
             walled,
-            stopped: false,
+            ..Default::default()
         }
         .notices(),
     );
@@ -385,7 +385,12 @@ impl HashlineReadTool {
         });
         matches.sort();
         if matches.is_empty() {
-            return error_output(format!("no file matches {pattern:?}"));
+            let notices = walled.notices().into_iter();
+            let rows: Vec<String> = [format!("no file matches {pattern:?}")]
+                .into_iter()
+                .chain(notices)
+                .collect();
+            return error_output(rows.join("\n"));
         }
         let mut sections = vec![if matches.len() >= GLOB_FILES_CAP {
             format!(
