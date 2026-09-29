@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use yi_types::plan::canonical::{CanonicalError, Digest};
+use yi_types::plan::canonical::{CanonicalError, Chained, Digest};
 use yi_types::plan::ledger::{JournalRecord, Seq};
 
 /// Bytes per record, newline included; a transaction that would exceed it is refused first.
