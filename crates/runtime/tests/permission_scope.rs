@@ -224,3 +224,22 @@ fn always_on_a_widened_retry_keeps_the_dir_and_the_sandbox() -> TestResult {
     );
     Ok(())
 }
+
+/// A glob walks from its literal head: `~/.ss?/*` walks the home and `/*/x*` the whole disk,
+/// though no spelling of them names a key store. The gate judges the head the walk starts at.
+#[test]
+fn a_glob_is_judged_by_the_directory_its_walk_starts_from() {
+    let broker = PermissionBroker::new(
+        PermissionMode::Yolo,
+        PathBuf::from("/home/user/project"),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    );
+    for pattern in ["~/.ss?/*", "~/*/id_*", "/Users/*/.ssh/*", "/*/x*"] {
+        let mut args = Map::new();
+        args.insert("path".to_owned(), json!(pattern));
+        let outcome = broker.decide_call("read", ToolKind::Read, false, "c1", &args, None);
+        assert!(!outcome.allowed, "read {pattern} walks past the read gate");
+    }
+}
