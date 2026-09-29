@@ -189,12 +189,8 @@ pub(crate) fn read_board(path: &Path) -> std::io::Result<String> {
 
 /// A fresh file created exclusively, then renamed over `path`: rename replaces a link.
 pub(crate) fn write_board(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
     refuse_linked_board(path)?;
-    let fresh = path.with_extension("tmp");
-    let _a_stale_file_or_link_is_only_unlinked = std::fs::remove_file(&fresh);
-    std::fs::File::create_new(&fresh)?.write_all(bytes)?;
-    std::fs::rename(&fresh, path)
+    yi_session::replace_file(path, bytes)
 }
 
 impl RuntimeWiring {

@@ -95,10 +95,7 @@ impl<'a> Journal<'a> {
     }
 
     fn replace(&self, file: &str, text: &str) -> Result<(), StoreError> {
-        let staging = self.dir.join(format!(".{file}.tmp"));
-        fs::write(&staging, text)
-            .and_then(|()| fs::rename(&staging, self.dir.join(file)))
-            .map_err(io(file))
+        yi_session::replace_file(&self.dir.join(file), text.as_bytes()).map_err(io(file))
     }
 
     pub fn append(
@@ -143,10 +140,8 @@ impl<'a> Journal<'a> {
         if path.is_file() {
             return Ok(hash);
         }
-        fs::create_dir_all(self.dir.join(OBJECTS)).map_err(io(OBJECTS))?;
-        let staging = self.dir.join(OBJECTS).join(format!(".{}.tmp", hash.hex()));
-        fs::write(&staging, text)
-            .and_then(|()| fs::rename(&staging, &path))
+        fs::create_dir_all(self.dir.join(OBJECTS))
+            .and_then(|()| yi_session::replace_file(&path, text.as_bytes()))
             .map_err(io(OBJECTS))?;
         Ok(hash)
     }
