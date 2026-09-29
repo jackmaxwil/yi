@@ -356,7 +356,7 @@ def check_compaction_share():
 def check_sibling_share():
     """#745: the sibling scenario judges the second request no root reply carries. The rows are
     OpenRouter's, from live runs on GLM 5.3 flash: pinned to Z.AI the second sibling read 6,720 of
-    6,773 tokens; pinned to Parasail, whose replicas share no cache, it read 0."""
+    6,773 tokens; pinned to Parasail, in one run, it read 0."""
     task = run.LIVE / "cache-warm-siblings"
     spec = json.loads((task / "task.json").read_text())
     root = [(13312, 0, 0, True), (53, 6720, 0, False), (14118, 0, 0, True)]
