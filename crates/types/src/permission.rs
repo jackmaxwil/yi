@@ -90,3 +90,7 @@ pub struct PermissionRecord {
     #[serde(default, flatten)]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
+
+impl crate::entry::CustomRecord for PermissionRecord {
+    const TYPE: &'static str = PERMISSION_ENTRY;
+}

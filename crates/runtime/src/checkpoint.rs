@@ -72,9 +72,8 @@ fn append_checkpoint(
         at,
         after: after.map(|tree| tree.as_str().to_owned()),
     };
-    let payload = serde_json::to_value(&data).map_err(|error| error.to_string())?;
     yi_session::lock_session(store)
-        .append_custom("main", CHECKPOINT_ENTRY_TYPE, Some(payload))
+        .append_custom_record(&data)
         .map(|_id| ())
         .map_err(|error| error.to_string())
 }

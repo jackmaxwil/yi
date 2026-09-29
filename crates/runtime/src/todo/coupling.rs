@@ -4,7 +4,7 @@ use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserCont
 use yi_types::model::{ForcedTool, ToolChoice};
 use yi_types::plan::doc::{BlockedOn, Todo, TodoState, TodoStateName};
 use yi_types::todo::PhaseName;
-use yi_types::todo::{TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord, TodoList};
+use yi_types::todo::{TodoInterceptRecord, TodoList};
 
 use super::{DEFAULT_PHASE, Op, TodoStore, text, tool};
 use crate::goal::StoreHandle;
@@ -648,14 +648,8 @@ fn record_intercept(store: &StoreHandle, rung: u8, reason: &str, fingerprint: &s
         cycle_total: total,
         extra,
     };
-    let Ok(payload) = serde_json::to_value(&record) else {
-        return;
-    };
-    let _a_ledger_write_never_fails_a_turn = yi_session::lock_session(&session).append_custom(
-        "main",
-        TODO_INTERCEPT_ENTRY_TYPE,
-        Some(payload),
-    );
+    let _a_ledger_write_never_fails_a_turn =
+        yi_session::lock_session(&session).append_custom_record(&record);
 }
 
 fn rehydrate(store: &StoreHandle) -> Cycle {
@@ -663,19 +657,9 @@ fn rehydrate(store: &StoreHandle) -> Cycle {
     let Some(session) = store() else {
         return cycle;
     };
-    let entries = yi_session::lock_session(&session)
-        .find_entries(&yi_session::EntryQuery {
-            custom_type: Some(TODO_INTERCEPT_ENTRY_TYPE.to_owned()),
-            order: yi_session::EntryOrder::NewestFirst,
-            limit: Some(1),
-            ..yi_session::EntryQuery::default()
-        })
-        .unwrap_or_default();
-    if let Some(yi_types::entry::Entry::Custom {
-        data: Some(data), ..
-    }) = entries.into_iter().next()
-        && let Ok(record) = serde_json::from_value::<TodoInterceptRecord>(data)
-    {
+    let newest = yi_session::lock_session(&session)
+        .custom_records::<TodoInterceptRecord>(yi_session::EntryOrder::NewestFirst, Some(1));
+    if let Some(record) = newest.into_iter().next() {
         cycle.intercepts = record.cycle_total;
         cycle.rung = record.rung;
         cycle.last_fingerprint = Some(record.fingerprint);

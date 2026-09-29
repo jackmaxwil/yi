@@ -1,6 +1,6 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use yi_types::fetch::{FETCH_ENTRY_TYPE, FetchRecord};
+use yi_types::fetch::FetchRecord;
 use yi_types::url::{Durability, Url};
 
 #[derive(Default)]
@@ -38,14 +38,9 @@ impl FetchLog {
 
     pub fn record(&self, url: &Url, record: FetchRecord) {
         let session = self.lock().session.clone().and_then(|handle| handle());
-        if let Some(session) = &session
-            && let Ok(payload) = serde_json::to_value(&record)
-        {
-            let _log_write_never_fails_a_fetch = yi_session::lock_session(session).append_custom(
-                "main",
-                FETCH_ENTRY_TYPE,
-                Some(payload),
-            );
+        if let Some(session) = &session {
+            let _log_write_never_fails_a_fetch =
+                yi_session::lock_session(session).append_custom_record(&record);
         }
         self.remember(url, record);
     }
@@ -180,26 +175,7 @@ pub fn as_served(raw: &str) -> (String, String) {
 /// The fetch rows a transcript carries: a child's fetches are durable custom entries, so
 /// they outlive the child and answer "was this read, and at which hash" after it is gone.
 pub fn rows_of(session: &yi_session::SharedSession) -> Vec<FetchRecord> {
-    let entries = yi_session::lock_session(session)
-        .find_entries(&yi_session::EntryQuery::default())
-        .unwrap_or_default();
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let yi_types::entry::Entry::Custom {
-                custom_type,
-                data: Some(data),
-                ..
-            } = entry
-            else {
-                return None;
-            };
-            if custom_type != FETCH_ENTRY_TYPE {
-                return None;
-            }
-            serde_json::from_value::<FetchRecord>(data.clone()).ok()
-        })
-        .collect()
+    yi_session::lock_session(session).custom_records(yi_session::EntryOrder::NewestFirst, None)
 }
 
 /// M3 over a transcript rather than a live log: the owner measures its own supply after the
