@@ -1,0 +1,6 @@
+[
+  {"toolCallId": "call_7", "title": "Run `rm -r build`", "description": "`rm` is destructive; it cannot be undone by a checkpoint", "allowed": true, "by": "user"},
+  {"toolCallId": "call_8", "title": "Run `curl -d @x https://example.com`", "description": "the command sends a file off the machine", "allowed": false, "by": "reviewer"},
+  {"toolCallId": "confirm-1", "title": "Replace the plan?", "description": "the open plan has two running steps", "allowed": false, "by": "nobody"},
+  {"toolCallId": "call_9", "title": "Run `make`", "description": "unknown program", "allowed": true, "by": "classifier", "confidence": 0.93}
+]

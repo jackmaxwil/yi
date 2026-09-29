@@ -1084,6 +1084,11 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
         yi_dir.join("daemon.ledger.json"),
         r#"{"sessions":{"s-gone":{"cwd":"/nonexistent/yi-gone-root","unseen":0,"lastEventMs":1}}}"#,
     )?;
+    std::fs::create_dir_all(yi_dir.join("catalog"))?;
+    std::fs::write(
+        yi_dir.join("catalog/openrouter.json"),
+        r#"{"openai-completions":{"x/hand-edited":{"id":"x/hand-edited"}}}"#,
+    )?;
     let seen = workspace.yi_env(&["doctor"], NO_KERNEL)?;
     assert_eq!(seen.status.code(), Some(1), "{}", stdout(&seen));
     let lines = doctor_lines(&seen);
@@ -1102,6 +1107,12 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
     assert!(
         lines.iter().any(|l| l.starts_with("ok    home")),
         "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("FAIL  catalog") && l.contains("x/hand-edited")),
+        "a cache entry that does not load is named: {lines:?}"
     );
     // D209: where yi runs decides what a contained command and a placement can reach.
     assert!(
@@ -1139,15 +1150,51 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "host",
             "home",
             "config",
+            "classifier",
             "catalog",
             "python-runtime",
             "kernel-toolchain",
             "kernel-boot",
             "daemon-socket",
             "daemon-ledger",
-            "lanes"
+            "lanes",
+            "cache"
         ]
     );
+    assert_eq!(rows[11]["detail"], "no session here", "{rows}");
+    Ok(())
+}
+
+/// C5: the cache row replays the newest session and reports its notice without failing,
+/// and never repairs the file, which may be the live session another process appends to.
+#[test]
+fn doctor_reports_a_cache_notice_and_leaves_the_session_file_alone() -> TestResult {
+    let workspace = Workspace::new("doctor-cache")?;
+    let dir =
+        workspace
+            .0
+            .join("home/sessions")
+            .join(yi_runtime::session_store::session_directory_name(
+                &workspace.project().to_string_lossy(),
+            ));
+    std::fs::create_dir_all(&dir)?;
+    let torn = format!(
+        "{}{{\"kind\":\"entr",
+        include_str!("../../runtime/tests/fixtures/cache/opus_no_marks.jsonl")
+    );
+    let file = dir.join("1790575150042_s.jsonl");
+    std::fs::write(&file, &torn)?;
+    let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&json))?;
+    let row = &rows[11];
+    assert_eq!(row["name"], "cache", "{rows}");
+    assert_eq!(row["status"], "ok", "{row}");
+    let detail = row["detail"].as_str().ok_or("detail")?;
+    assert!(
+        detail.contains("nothing written or read 37") && detail.contains("[cache]"),
+        "{detail}"
+    );
+    assert_eq!(std::fs::read_to_string(&file)?, torn, "the torn tail stays");
     Ok(())
 }
 

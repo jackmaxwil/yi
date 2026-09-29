@@ -142,10 +142,15 @@ impl ActionLedger {
 
     #[must_use]
     pub fn ask_of(&self, request: RequestId) -> Option<&ReviewedAsk> {
+        self.entry_of(request).map(|(ask, _)| ask)
+    }
+
+    #[must_use]
+    pub fn entry_of(&self, request: RequestId) -> Option<(&ReviewedAsk, ActionState)> {
         self.entries
             .iter()
             .find(|entry| entry.request == request)
-            .map(|entry| &entry.ask)
+            .map(|entry| (&entry.ask, entry.state))
     }
 
     pub fn resolve(&mut self, request: RequestId, verdict: UserVerdict) -> bool {
@@ -161,6 +166,10 @@ impl ActionLedger {
             UserVerdict::Denied => ActionState::UserDenied,
         };
         true
+    }
+
+    pub fn forget(&mut self, action: ActionId) {
+        self.entries.retain(|entry| entry.action != action);
     }
 
     /// Single use: an approval is spent by the first identical call, so one yes never becomes

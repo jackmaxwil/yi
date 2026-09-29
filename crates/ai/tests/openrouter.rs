@@ -7,9 +7,9 @@ use yi_ai::openai::{ChunkMapper, OpenAiOptions, build_params};
 use yi_ai::request::ProxyConfig;
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{
-    AgentMessage, Content, RAW_STOP_IN_BAND_ERROR, StopReason, Usage, UserContent,
+    AgentMessage, Content, ENVIRONMENT_TAG, RAW_STOP_IN_BAND_ERROR, StopReason, Usage, UserContent,
 };
-use yi_types::model::{Effort, LlmContext, Model};
+use yi_types::model::{Effort, LlmContext, Model, SYSTEM_BLOCK_SEPARATOR};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -22,7 +22,7 @@ fn target_model() -> Result<Model, Box<dyn Error>> {
         .ok_or_else(|| format!("bundled catalog is missing openrouter/{TARGET}").into())
 }
 
-fn history_context() -> LlmContext {
+pub(crate) fn history_context() -> LlmContext {
     LlmContext {
         system_prompt: "be terse".to_owned(),
         messages: vec![
@@ -48,6 +48,10 @@ fn history_context() -> LlmContext {
             },
             AgentMessage::host_user(UserContent::Text("again".to_owned()), 0),
         ],
+        transient: Vec::new(),
+        schema: None,
+        shared_through: None,
+        reuse: yi_types::model::Reuse::Loop,
         tools: None,
         tool_choice: None,
     }
@@ -90,13 +94,203 @@ fn build_params_honors_the_openrouter_compat_flags() -> TestResult {
     Ok(())
 }
 
-/// OpenRouter only forwards a breakpoint it is told about, and an Anthropic
-/// route without one re-bills the whole prefix every turn.
+/// A tool-loop request as the loop sends it: a three-block system prompt, a tool round trip,
+/// and the per-request environment block in `transient`, rendered last.
+fn tool_loop_context() -> LlmContext {
+    let mut context = history_context();
+    context.system_prompt = ["identity", "mode", "yard"].join(SYSTEM_BLOCK_SEPARATOR);
+    // A loop request carries its tool table, as the loop sends it.
+    context.tools = Some(vec![yi_types::model::ToolDef {
+        name: "bash".to_owned(),
+        description: "run".to_owned(),
+        parameters: json!({"type": "object", "properties": {"command": {"type": "string"}}}),
+        freeform: None,
+    }]);
+    context.messages.push(AgentMessage::Assistant {
+        content: vec![Content::ToolCall {
+            id: "call_1".to_owned(),
+            name: "bash".to_owned(),
+            arguments: serde_json::Map::from_iter([("command".to_owned(), json!("ls"))]),
+            thought_signature: None,
+            namespace: None,
+        }],
+        api: "openai-completions".to_owned(),
+        provider: "openrouter".to_owned(),
+        model: TARGET.to_owned(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: Usage::zero(),
+        stop_reason: StopReason::ToolUse,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 0,
+    });
+    context.messages.push(AgentMessage::ToolResult {
+        tool_call_id: "call_1".to_owned(),
+        tool_name: "bash".to_owned(),
+        content: vec![Content::Text {
+            text: "Cargo.toml\nsrc".to_owned(),
+            text_signature: None,
+        }],
+        details: None,
+        usage: None,
+        added_tool_names: None,
+        is_error: false,
+        timestamp: 0,
+    });
+    context.transient.push(AgentMessage::host_user(
+        UserContent::Text(format!("{ENVIRONMENT_TAG}\nturn: 3\n</environment>")),
+        0,
+    ));
+    context
+}
+
+fn marks(params: &serde_json::Value) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    for (index, message) in params["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        for part in message["content"].as_array().into_iter().flatten() {
+            if !part["cache_control"].is_null() {
+                found.push((index, message["role"].as_str().unwrap_or("").to_owned()));
+            }
+        }
+    }
+    found
+}
+
+/// Row 91 of the dogfood ledger: a Claude id newer than the bundle comes from the fetched
+/// catalog with no cache flag, and with no mark Anthropic caches nothing (#742). The
+/// breakpoints sit on the system, the previous request's tail (the user turn ahead of the last reply)
+/// and the tail, and the environment in `transient` stays bare (#743).
 #[test]
-fn anthropic_routed_models_get_a_root_breakpoint() -> TestResult {
-    let model = model("anthropic/claude-haiku-4.5")?;
-    let params = build_params(&model, &history_context(), &OpenAiOptions::default());
-    assert_eq!(params["cache_control"], json!({"type": "ephemeral"}));
+fn a_claude_newer_than_the_bundle_marks_its_system_and_the_block_before_the_environment()
+-> TestResult {
+    let fetched = Model {
+        id: "anthropic/claude-opus-5.5".to_owned(),
+        ..model("anthropic/claude-opus-5")?
+    };
+    let params = build_params(&fetched, &tool_loop_context(), &OpenAiOptions::default());
+    let messages = params["messages"].as_array().ok_or("messages")?;
+    assert_eq!(
+        marks(&params),
+        [
+            (0, "system".to_owned()),
+            (3, "user".to_owned()),
+            (5, "tool".to_owned())
+        ]
+    );
+    assert_eq!(
+        messages[0]["content"][0]["text"],
+        "identity\n\nmode\n\nyard"
+    );
+    assert_eq!(messages[5]["content"][0]["text"], "Cargo.toml\nsrc");
+    let environment = messages.last().ok_or("no environment")?;
+    assert!(environment["content"].is_string(), "{environment}");
+    assert!(
+        params.get("cache_control").is_none(),
+        "a root mark lands on the environment"
+    );
+    Ok(())
+}
+
+/// Every OpenRouter route gets the same three marks and never a root one: Anthropic and
+/// OpenAI's explicit engines need them, the automatic ones ignore them, and Gemini keeps
+/// only the system mark because it re-snapshots whatever the last mark covers.
+#[test]
+fn every_openrouter_route_marks_the_stable_prefix_and_never_the_environment() -> TestResult {
+    let context = tool_loop_context();
+    let routes: Vec<Model> = Catalog::bundled()
+        .models()
+        .into_iter()
+        .filter(|model| model.provider == "openrouter" && model.api == "openai-completions")
+        .collect();
+    assert!(routes.len() > 100, "{} routes", routes.len());
+    for model in routes {
+        let params = build_params(&model, &context, &OpenAiOptions::default());
+        let found = marks(&params);
+        let last = params["messages"]
+            .as_array()
+            .map_or(0, Vec::len)
+            .saturating_sub(1);
+        assert!(params.get("cache_control").is_none(), "{}", model.id);
+        assert_eq!(
+            found.first().map(|(index, _)| *index),
+            Some(0),
+            "{}",
+            model.id
+        );
+        assert!(
+            found.iter().all(|(index, _)| *index != last),
+            "{}: {found:?}",
+            model.id
+        );
+        let expected = if model.id.contains("gemini") { 1 } else { 3 };
+        assert_eq!(found.len(), expected, "{}: {found:?}", model.id);
+    }
+    Ok(())
+}
+
+/// OpenRouter documents `cache_control` on text parts only (#742): a turn that ends in an image
+/// keeps its tail mark on its last text part, and no image part carries one.
+#[test]
+fn an_image_turn_marks_its_last_text_part_and_never_the_image() -> TestResult {
+    let text = |text: &str| Content::Text {
+        text: text.to_owned(),
+        text_signature: None,
+    };
+    let mut context = tool_loop_context();
+    context.messages.push(AgentMessage::host_user(
+        UserContent::Blocks(vec![
+            text("compare these"),
+            text("the second is newer"),
+            Content::Image {
+                data: "iVBORw0KGgo=".to_owned(),
+                mime_type: "image/png".to_owned(),
+            },
+        ]),
+        0,
+    ));
+    let params = build_params(
+        &model("anthropic/claude-haiku-4.5")?,
+        &context,
+        &OpenAiOptions::default(),
+    );
+    let messages = params["messages"].as_array().ok_or("messages")?;
+    let turn = messages.len().checked_sub(2).ok_or("no turn")?;
+    let marked: Vec<(usize, usize)> = messages
+        .iter()
+        .enumerate()
+        .flat_map(|(index, message)| {
+            let parts = message["content"].as_array().cloned().unwrap_or_default();
+            parts
+                .into_iter()
+                .enumerate()
+                .filter(|(_, part)| !part["cache_control"].is_null())
+                .map(move |(at, _)| (index, at))
+        })
+        .collect();
+    assert_eq!(marked.last(), Some(&(turn, 1)), "{marked:?}");
+    assert_eq!(messages[turn]["content"][2]["type"], "image_url");
+    Ok(())
+}
+
+#[test]
+fn a_direct_openai_compatible_route_gets_no_marks_and_no_separator() -> TestResult {
+    let direct = Model {
+        base_url: "https://api.deepseek.com/v1".to_owned(),
+        provider: "deepseek".to_owned(),
+        ..target_model()?
+    };
+    let params = build_params(&direct, &tool_loop_context(), &OpenAiOptions::default());
+    assert!(marks(&params).is_empty());
+    assert_eq!(params["messages"][0]["content"], "identity\n\nmode\n\nyard");
     Ok(())
 }
 

@@ -447,6 +447,7 @@ impl App {
             Reply::Fresh { name } => {
                 self.options.session_name = name;
                 self.cost_total = 0.0;
+                self.requests = 0;
                 self.cost_unknown = false;
                 self.context_used = 0;
                 self.pending_clear = true;

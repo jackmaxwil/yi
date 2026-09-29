@@ -62,3 +62,31 @@ pub enum PermissionResponse {
     Selected { option: String },
     Cancelled,
 }
+
+/// The custom entry type a session journals each settled ask under.
+pub const PERMISSION_ENTRY: &str = "permission";
+
+/// Who settled an ask. `Nobody` is a denial because no one could be asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Answerer {
+    User,
+    Reviewer,
+    Classifier,
+    Nobody,
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// One settled permission ask as the session journals it: the question, the verdict, whose.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRecord {
+    pub tool_call_id: String,
+    pub title: String,
+    pub description: String,
+    pub allowed: bool,
+    pub by: Answerer,
+    #[serde(default, flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+}

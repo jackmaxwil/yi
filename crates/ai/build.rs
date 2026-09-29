@@ -1,5 +1,5 @@
-//! The three model catalogs are 170,536 bytes of JSON the binary carried raw; deflated
-//! here they are 11,845. `miniz_oxide` is already in the graph, via `yi-orb`.
+//! The five model catalogs are 146,182 bytes of JSON the binary would carry raw; deflated
+//! here they are 11,857. `miniz_oxide` is already in the graph, via `yi-orb`.
 use std::io::Write;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
