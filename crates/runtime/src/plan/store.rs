@@ -262,7 +262,13 @@ impl PlanStore {
         match std::fs::read_to_string(&ignore) {
             Ok(text) if text.lines().any(|line| line == LEASE_NAME) => {}
             Ok(text) => {
-                std::fs::write(&ignore, format!("{text}{LEASE_NAME}\n")).map_err(io_at(&ignore))?
+                let sep = if text.is_empty() || text.ends_with('\n') {
+                    ""
+                } else {
+                    "\n"
+                };
+                std::fs::write(&ignore, format!("{text}{sep}{LEASE_NAME}\n"))
+                    .map_err(io_at(&ignore))?;
             }
             Err(_) => std::fs::write(&ignore, GITIGNORE).map_err(io_at(&ignore))?,
         }
@@ -991,7 +997,7 @@ mod tests {
     fn an_older_ignore_file_gains_the_lock_once() -> Fallible {
         let temp = TempStore::new("ignore-lock")?;
         std::fs::create_dir_all(&temp.dir)?;
-        std::fs::write(temp.dir.join(".gitignore"), "*/ops.jsonl\n")?;
+        std::fs::write(temp.dir.join(".gitignore"), "*/ops.jsonl")?;
         drop(temp.store.lease()?);
         drop(temp.store.lease()?);
         assert_eq!(
