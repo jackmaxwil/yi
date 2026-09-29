@@ -440,10 +440,12 @@ trailing blanks and the counts drift (the duplicated-list bug).
   because a trailer nothing can resolve indexes nothing: it is what makes `git blame` → commit →
   todo → goal → the user's own words resolve with no inference, and the index only holds what was
   trailered when it landed, so it is written from the first such commit rather than added later.
-- A PR body is the cold-reader narrative in .github/PULL_REQUEST_TEMPLATE.md — summary, user
-  outcomes, UI changes, files-edited map, schema changes, LOC and justification, architecture
-  notes, screenshots — with zero checkboxes: gate proof lives in the CI status checks alone,
-  where it cannot be ticked by hand.
+- A PR body is the cold-reader narrative in .github/PULL_REQUEST_TEMPLATE.md — why needed,
+  summary, user outcomes, seen red, UI changes, files-edited map, schema changes, deleted /
+  alternatives, risk and rollback, performance, architecture notes — every section written and
+  no template comment left, with zero checkboxes: gate proof lives in the CI status checks
+  alone, where it cannot be ticked by hand. A PR opens as a `WIP: ` draft; `just pr ready N`
+  takes the marker off.
 - Commit messages containing backticks or `$(` go through `git commit -F -` with a quoted
   heredoc, never `-m` — zsh command-substitutes inside double quotes and mangles the message.
 - A change that adds a feature-ledger row, or whose net src growth exceeds the free band, carries

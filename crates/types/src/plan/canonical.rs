@@ -8,6 +8,33 @@ use sha2::{Digest as _, Sha256};
 
 pub const DIGEST_PREFIX: &str = "sha256:";
 
+/// A journal line chained on digests: `sha256(prev ‖ canonical(record without "digest"))`, one
+/// canonical JSON line per record; the plan journal and the memory journal both chain this way.
+pub trait Chained: Serialize {
+    /// # Errors
+    /// The record does not serialize to canonical JSON.
+    fn digest_of(&self, prev: Option<&Digest>) -> Result<Digest, CanonicalError> {
+        let mut value = serde_json::to_value(self).map_err(|error| CanonicalError::Serialize {
+            detail: error.to_string(),
+        })?;
+        if let Value::Object(map) = &mut value {
+            map.remove("digest");
+        }
+        Ok(Digest::chained(prev, &canonical_bytes(&value)?))
+    }
+
+    /// # Errors
+    /// The record does not serialize to canonical JSON.
+    fn line(&self) -> Result<Vec<u8>, CanonicalError> {
+        let value = serde_json::to_value(self).map_err(|error| CanonicalError::Serialize {
+            detail: error.to_string(),
+        })?;
+        let mut bytes = canonical_bytes(&value)?;
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
+}
+
 /// A sha256 digest: 32 bytes in memory, `sha256:<64 lowercase hex>` on the wire.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]

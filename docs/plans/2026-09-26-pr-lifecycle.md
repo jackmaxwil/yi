@@ -8,6 +8,50 @@ depends: docs/plans/2026-09-24-seven-primitives.md, built first (owner decision 
 marks:   ✓ exists on main · ✚ new here · ◇ new in seven-primitives, not yet built
 ```
 
+## Built, and where the build left this plan
+
+Stage 0 is D318 (#667). Stages 1-4 are D319 and D320 (#668-#670): `scripts/pr_review.py`
+behind `just pr review|fix|sweep`, and the Forgejo adapter's `/pulls` mode. Stage 5, the
+flip from shadow to blocking, waits for the replay. Three departures, each forced by what
+the tree turned out to hold:
+
+- **Rounds run as a script over `yi ask`, not as review-pod todos.** No verb runs a plan
+  program headlessly, and `verify_quotes` needs a kernel host (outside one it drops every
+  quote). The script keeps the pod's shape: readers with one brief each, a quote the host
+  checks, and a writer whose accept is a command (the commit hooks). Each lens and refuter
+  call is a yi session under `~/.yi/sessions/pr-rounds`, which is the ledger of the round.
+- **Duplicates are `Closes #N` and shared windows of added text, not `grid diff`.** The
+  windows separate the compaction PRs (16 to 35 shared 6-line windows pairwise) from
+  unrelated pairs (at most 2) without building a chart per candidate. The "sweep cluster"
+  below (#405, #406, #409) shares no window: those PRs were held over benchmark data and
+  were never duplicates. The claim in §1.3 was wrong.
+- **A high finding has to quote a line the diff added.** #733's rounds 4 and 5 blocked on
+  claims about lines the PR never touched (a trigger's default event types, stated wrong).
+  Kept as medium, a claim about the codebase still reaches the fixer without blocking.
+- **The replay so far (2026-09-28, `openrouter/z-ai/glm-5.3-flash`).** Ten labelled PRs read
+  as rounds, with the diff rule above applied:
+
+  | label | PRs | answered | a high finding survives | clean |
+  | --- | --- | --- | --- | --- |
+  | bad (#344, #346, #350, #352, #356) | 5 | 4 | 3 (#344, #350, #352) | 1 (#356) |
+  | kept (#491, #518, #520, #524, #525) | 5 | 4 | 0 | 4 |
+
+  #346 and #525 lost a lens to malformed answers twice (a third try is now allowed). One
+  round costs about $0.28 and eight and a half minutes (510 s) on a 293-line change (#733 at `0813a8ef`: 232 insertions, 61 deletions); the cost and time come from the session logs under `~/.yi/sessions/pr-rounds`, and the rows from `~/Development/yi-ergo/replay/2026-09-28.jsonl`. The flip to blocking waits
+  on the owner: the sample is ten PRs, and "bad" meant merged without being asked for, which
+  a code review can only partly see.
+- **The channel runs a verb, not the lifecycle plan.** A subscription creates a todo and
+  wakes the session; it cannot start a plan or run a command. So the todo's note is
+  `just pr sweep`, which is idempotent on the rounds already posted.
+
+- **The script is the product for now; the exam comes later.** A redesign as seven-primitives'
+  exam (probes verified against external attempts) was reviewed on 2026-09-28 and does not hold
+  on main without core verification changes: the submit path merges what it verifies, attempts
+  move only on a retry from failed, the writer floor needs a critical command, and the jury
+  answers one vote rather than findings. The owner chose "Script now, exam later". So the probes
+  are already files in the shape the exam reads (`skills/yi/pr-review/probes/`), and the exam
+  gets its own plan when it is built on its merits.
+
 ## 0. Summary
 
 Every PR opens as a draft (`WIP:` title). A saved plan definition, `pr-lifecycle`, takes
@@ -60,8 +104,9 @@ Counted on the forge (apex/yi, `fgj api repos/apex/yi/pulls`, 2026-09-26):
 
 ### 1.3 Thrash and duplicates
 
-The compaction cluster (#159, #170, #172, #174) and the sweep cluster (#405, #406, #409)
-all closed unmerged. No check ever compares an open PR with another PR.
+The compaction cluster (#159, #170, #172, #174) closed unmerged, four attempts at one
+change. (The sweep PRs #405, #406, #409 also closed unmerged, but over benchmark data, not
+as duplicates; see the build notes above.) No check ever compares an open PR with another PR.
 
 ### 1.4 The template is present but unfilled
 
@@ -205,7 +250,8 @@ Every PR opens as `WIP: <subject>`. Forgejo disables the merge button on it nati
 The `title` rule accepts exactly `WIP: ` in front of a subject and judges the rest.
 `WIP`, `wip` and `fixup!` stay refused everywhere else. When round 2 or later is clean
 on the head, the lifecycle strips the prefix (owner: "WIP prefix + bot strips"). The title
-edit has to re-run the `title` job, so that job listens for `edited` (open question 1).
+edit needs no rerun of the `title` job: the job judged the subject after the prefix, which is
+the title the strip leaves (D318).
 
 ### 3.9 The lease
 
@@ -320,7 +366,7 @@ by prompt through a new verb, `just pr review <n>` (stage 1), the degenerate tri
 | --- | --- | --- | --- |
 | **0. Template and draft** (#667) | template v2; the filled check; `WIP: ` title rule; `/land` body fix | the 30 placeholder bodies go red under the check | fixtures first: those 30 bodies red, 50 clean bodies green; `WIP: Valid subject` green, `WIP` alone red |
 | **1. Rounds in shadow** (#668) | lens briefs; refuters; round marker; `pr-lifecycle` by prompt; comments with `mode=shadow` | replay on the labelled set: #334-#364 (bad), #366 (revert), the 23 closed unmerged, and 40 merged-and-kept | the known-bad set is flagged high, the kept set stays mostly clean; the thresholds are recorded as data |
-| **2. Duplicates** (#669) | the intake duplicate check | the compaction cluster and the sweep cluster each flagged against their siblings | fixture pairs, red and green |
+| **2. Duplicates** (#669) | the intake duplicate check | the compaction cluster flagged against its siblings; the sweep PRs left alone | fixture pairs, red and green |
 | **3. Fixer and delta** (#670) | arbiter fixer with walls; delta rounds; `/override` | the §4 walkthrough end to end on a planted bug | the fixer's wall refuses a hand edit to a baseline; a delta round catches a planted regression pushed after clean |
 | **4. On the channel** (#679) | after seven-primitives stages 4 and 6: the subscription, the adapter's outward writes (comment, title), self-authored rounds from the channel | a PR opened from Claude Code is reviewed with no verb run | the poll loops in §7 are gone and the line count falls |
 | **5. Blocking** (#680) | flip `mode=shadow` to `blocking` once stage 1's criteria hold on the live PRs too (owner: "Shadow, then block") | a merge refused until round 2 is clean | the calibration query reports precision on the labelled set |
@@ -349,11 +395,13 @@ regressions, performance drains, etc"
 
 ## 10. Open questions
 
-1. Forgejo Actions' default `pull_request` types are `opened`, `synchronize` and `reopened`.
-   Does stripping `WIP:` fire `edited`, and does the `title` job need `types:` to
-   include it? PR #377: a body edit left the title run stale.
-2. Does Forgejo 15 refuse a merge of a `WIP:` PR through the API, or only in the UI?
-   If only the UI refuses it, `just pr merge` needs the same refusal.
+1. Settled by stage 0 (D318): stripping `WIP:` leaves the subject the `title` job already
+   judged, so no rerun is needed for the title edit. A body edit reruns nothing: the
+   workflow deliberately omits the `edited` event, so a body fixed by `just pr edit
+   --body` is re-judged only by the next push's synchronize (or locally by `edit`, which
+   runs the same template check `pr open` does).
+2. Whether Forgejo 15's merge API refuses a `WIP:` PR as its UI does is unverified;
+   `just pr merge` stops on a draft either way (D318).
 3. The duplicate thresholds: `grid diff` overlap and window-hash matches. Set them from
    stage 2's fixture pairs.
 4. Stacked PRs have a base other than main. A delta round and a duplicate check should

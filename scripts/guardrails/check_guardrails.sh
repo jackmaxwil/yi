@@ -80,6 +80,10 @@ run "$PY" scripts/guardrails/check_pr_metadata.py --selfcheck
 # The landing verbs decide from the forge's answers — behind, failed, ready — and a
 # decision read wrong retries a refusal forever; only this flag walks the table.
 run "$PY" scripts/forge_pr.py --selfcheck
+# A review round is posted from model answers the script cannot trust, so the host's own
+# decisions are the gate: the quote check, the refute tally, the marker's author, the
+# delta range and the fixer's wall; only this flag walks them without a forge or a model.
+run "$PY" scripts/pr_review.py --selfcheck
 # The orphan scans are heuristics over text, so the flag is where they are proved to
 # judge anything at all: each scan is disabled in turn and the selfcheck must fail
 # for that scan's own reason (D109).

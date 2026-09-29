@@ -451,13 +451,7 @@ fn typed_text(message: &AgentMessage) -> Option<String> {
 }
 
 pub(crate) fn reminder(text: String) -> AgentMessage {
-    AgentMessage::Custom {
-        custom_type: "reminder".to_owned(),
-        content: UserContent::Text(text),
-        display: true,
-        details: None,
-        timestamp: yi_session::now_ms(),
-    }
+    AgentMessage::host_note("reminder", text, yi_session::now_ms())
 }
 
 impl RuleEngine {
