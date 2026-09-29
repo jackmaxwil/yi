@@ -96,6 +96,7 @@ async fn a_reaped_childs_booted_kernel_process_is_gone() -> TestResult {
     let factory_slot = Arc::clone(&kernel_slot);
     let (events, _keep) = tokio::sync::broadcast::channel(64);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 4,
@@ -105,7 +106,7 @@ async fn a_reaped_childs_booted_kernel_process_is_gone() -> TestResult {
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
-            let provider = Arc::new(ProviderStream::new(None, None));
+            let provider = Arc::new(ProviderStream::new(None));
             provider.queue_faux(vec![faux_assistant_message(
                 vec![faux_text("done")],
                 StopReason::Stop,

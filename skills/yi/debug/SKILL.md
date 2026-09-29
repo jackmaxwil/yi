@@ -7,7 +7,6 @@ description: >
   differently from what the code says, or the user reports a bug. Do NOT
   use to run the suite for a status check (that is the gate skill).
 trigger: panicked at, error[E, FAILED, thread ', test result: FAILED
-scope: result
 ---
 
 # debug

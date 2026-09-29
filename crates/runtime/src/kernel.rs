@@ -15,6 +15,7 @@ pub use crate::kernel_bootstrap::{
 use crate::kernel_variables::{
     VariableReply, dump_variable_code, parse_variable_reply, read_variable_code, render_value,
 };
+use crate::wiring::make_board;
 
 pub type HostHandlerFn = dyn Fn(Map<String, Value>) -> HostFuture + Send + Sync;
 
@@ -217,13 +218,10 @@ pub fn snapshot_paths(base: &std::path::Path, key: Option<&str>) -> (PathBuf, Pa
 /// The profile a contained kernel runs under, and its `bash()` jobs with it (D241).
 pub(crate) fn kernel_profile(
     sandbox: &yi_tools::Sandbox,
-    home: &std::path::Path,
     family_dir: Option<&std::path::Path>,
 ) -> yi_tools::Sandbox {
+    // ~/.yi stays read-only: the MCP session store is the host's alone (D296).
     let mut profile = sandbox.clone();
-    // Only what the kernel side writes under ~/.yi; the venv stays read-only.
-    let yi = home.join(".yi");
-    profile.writable.push(yi.join("mcp"));
     // Invariant: a child's root stops at its `sub-*` dir; its family board (D240) is a sibling.
     profile
         .writable
@@ -332,14 +330,8 @@ impl KernelService {
         sandbox
             .writable
             .extend(state.map(std::path::Path::to_path_buf));
-        Some(
-            kernel_profile(
-                &sandbox,
-                &self.options.home,
-                self.options.family_dir.as_deref(),
-            )
-            .kernel_prefix(),
-        )
+        let family = self.options.family_dir.as_deref().map(make_board);
+        Some(kernel_profile(&sandbox, family.as_deref()).kernel_prefix())
     }
 
     fn kernel_env(&self, state: Option<&std::path::Path>) -> Vec<(String, String)> {

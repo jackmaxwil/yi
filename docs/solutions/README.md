@@ -96,6 +96,7 @@ edited by hand.
 - [D110](adr/d110.md) - the comment cap drops from three lines to two
 - [D114](adr/d114.md) - D54 matches results, paths, and skill pointers
 - [D115](adr/d115.md) - compaction's recall half is an extractive view plus store-native grep
+- [D117](adr/d117.md) - the model's seat decides the tool surface
 - [D118](adr/d118.md) - the daemon's session ledger lives on disk beside the socket
 - [D119](adr/d119.md) - a root session is worktree-first, on a pooled lane
 - [D120](adr/d120.md) - git is the registry of lanes
@@ -148,7 +149,6 @@ edited by hand.
 - [D168](adr/d168.md) - a reasoning cut is not a length strike
 - [D169](adr/d169.md) - host-written memory, one markdown file per fact
 - [D170](adr/d170.md) - a catalog model's `headers` reach the wire
-- [D171](adr/d171.md) - `read` converts a file that is not UTF-8 through the kernel venv, never...
 - [D171](adr/d171.md) - `read` converts a file that is not text through the kernel venv, never...
 - [D172](adr/d172.md) - the public mirror is a derived history, not the forge's
 - [D173](adr/d173.md) - the ledger row says what it could not measure
@@ -264,5 +264,27 @@ edited by hand.
 - [D277](adr/d277.md) - a memory store journals its ops and keeps bodies as objects
 - [D278](adr/d278.md) - notes are ranked by BM25 behind `memory.search`
 - [D279](adr/d279.md) - `history.search` ranks this repository's past sessions
+- [D291](adr/d291.md) - an OpenRouter request marks its own cache breakpoints, per block and never...
+- [D292](adr/d292.md) - a skill pointer answers only what the user typed (revises D114, D139 and D196)
+- [D293](adr/d293.md) - a settled permission ask is journaled in the session
+- [D298](adr/d298.md) - a displayed refusal counts as a view
+- [D294](adr/d294.md) - credentials resolve per provider (revises the one-cell stream credential of...
+- [D296](adr/d296.md) - the MCP session store is host-only
+- [D297](adr/d297.md) - an optional `classifier` model role asks a local sidecar which skill a typed...
+- [D295](adr/d295.md) - every request's cache breakpoints come from one typed value, and...
+- [D289](adr/d289.md) - the project rules load whole and once, lanes included
+- [D290](adr/d290.md) - the catalog lists home-root skills only by name
+- [D299](adr/d299.md) - the last word forces no tool choice (amends D235)
+- [D302](adr/d302.md) - a sandbox refusal is remembered by the path it denied, and by program and...
+- [D300](adr/d300.md) - a new user is set up by `yi setup`, offered once on the first terminal launch
+- [D301](adr/d301.md) - the classifier may approve an auto-mode ask, and settles one nobody answers,...
+- [D307](adr/d307.md) - a child's request is made of its brief
+- [D310](adr/d310.md) - the system prompt is constant for a conversation
+- [D306](adr/d306.md) - the request facts that follow from a model's family and transport are derived
+- [D305](adr/d305.md) - a bash call's `wait` backgrounds its command, and `timeout_secs` bounds a...
+- [D312](adr/d312.md) - an approval stays contained unless its question said otherwise (amends D207,...
+- [D311](adr/d311.md) - cache outcomes are a fold over the session JSONL
+- [D308](adr/d308.md) - a worker spawn that names no `role` is a reader (`role="reader"`)
+- [D309](adr/d309.md) - a reader's `schema` reaches the provider (`yi_ai
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

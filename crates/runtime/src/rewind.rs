@@ -100,12 +100,18 @@ pub async fn summarize_branch(session: &AgentSession, stub: BranchStub) {
             UserContent::Text(yi_context::serialize_conversation(&stub.messages)),
             0,
         )],
+        transient: Vec::new(),
+        schema: None,
+        shared_through: None,
+        reuse: yi_types::model::Reuse::OneShot,
         tools: None,
         tool_choice: None,
     };
     let signal = yi_loop::interrupt::InterruptSignal::default();
+    let off = model.clamp_effort(yi_types::model::Effort::Off);
     let Ok(summary) =
-        crate::compaction::complete_text(session.provider_arc(), &model, &context, &signal).await
+        crate::compaction::complete_text(session.provider_arc(), &model, &context, off, &signal)
+            .await
     else {
         return;
     };

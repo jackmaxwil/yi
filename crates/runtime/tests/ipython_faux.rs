@@ -45,7 +45,7 @@ fn home() -> PathBuf {
 
 #[tokio::test]
 async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut call_args = serde_json::Map::new();
     call_args.insert(
         "code".to_owned(),
@@ -128,7 +128,7 @@ async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Bo
 /// Six of eight dogfood trials called `rlm` without `await`: such a spawn runs once, after the cell.
 #[tokio::test]
 async fn an_unawaited_spawn_runs_once_after_the_cell_and_says_so() -> Result<(), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut call_args = serde_json::Map::new();
     call_args.insert("code".to_owned(), serde_json::json!("print(rlm.run('x'))"));
     provider.queue_faux(vec![
@@ -209,7 +209,7 @@ async fn an_unawaited_spawn_runs_once_after_the_cell_and_says_so() -> Result<(),
 /// harbor killed the container (the 2026-09-10 harness audit, B6).
 #[tokio::test]
 async fn a_cell_that_never_returns_is_aborted_at_the_ceiling() -> Result<(), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
+    let provider = Arc::new(ProviderStream::new(None));
     let mut call_args = serde_json::Map::new();
     call_args.insert(
         "code".to_owned(),
