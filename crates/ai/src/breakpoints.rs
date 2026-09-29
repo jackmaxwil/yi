@@ -24,7 +24,7 @@ pub enum Position {
     UniversalEnd,
     /// The end of tools and system: the floor that survives any messages-tier invalidation.
     SystemEnd,
-    /// The end of the run a sibling sent within the cache's life (`shared_through`, D309).
+    /// The end of the run siblings share, a reader's partition (`shared_through`, D309, D314).
     SharedEnd(usize),
     /// The last user-role message ahead of the last reply: where the previous request's
     /// tail sat, a free read that also covers a lookback the appended blocks would overflow.
