@@ -89,22 +89,3 @@ pub(crate) fn restore_before(
         yi_runtime::UndoOutcome::Failed(error) => Err((INTERNAL_ERROR, error)),
     }
 }
-
-pub(crate) fn undo_text(session: &AgentSession, cwd: &std::path::Path) -> String {
-    if session.status() == yi_runtime::Status::Running {
-        return "/undo: the current turn is still running (esc stops it)".to_owned();
-    }
-    let Some(store) = session.store() else {
-        return "/undo: this session has no store to read checkpoints from".to_owned();
-    };
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_default();
-    match yi_runtime::undo(&store, cwd, &home) {
-        yi_runtime::UndoOutcome::Restored { changes, scoped } => {
-            format!("/undo: {}", yi_runtime::describe_undo(&changes, scoped))
-        }
-        yi_runtime::UndoOutcome::NoCheckpoint => "/undo: no checkpoint to restore".to_owned(),
-        yi_runtime::UndoOutcome::Failed(error) => format!("/undo: {error}"),
-    }
-}
