@@ -723,15 +723,24 @@ impl PermissionBroker {
     /// The `ask_user` seam: one open request, replayed verbatim to the human.
     pub fn resolve_request(&self, request: u64, tool_call_id: &str) -> String {
         let request = RequestId::new(request);
-        let Some(stored) = self
+        let Some((stored, state)) = self
             .ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .ask_of(request)
-            .cloned()
+            .entry_of(request)
+            .map(|(ask, state)| (ask.clone(), state))
         else {
             return format!("There is no open request {request}.");
         };
+        match state {
+            ActionState::DeniedPendingUser => {}
+            ActionState::UserApproved => {
+                return crate::auto_review::resolution_text(&stored.display, UserVerdict::Approved);
+            }
+            ActionState::UserDenied => {
+                return crate::auto_review::resolution_text(&stored.display, UserVerdict::Denied);
+            }
+        }
         // The asker blocks on a human; the ledger lock is released first so a
         // concurrent decision is not held behind the answer.
         let Some(asker) = &self.asker else {
