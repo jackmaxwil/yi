@@ -27,6 +27,7 @@ drain() {
 run "$PY" scripts/guardrails/check_manifests.py
 run "$PY" scripts/guardrails/check_boundaries.py
 run "$PY" scripts/guardrails/check_filenames.py
+run "$PY" scripts/guardrails/check_workflows.py
 run "$PY" scripts/guardrails/check_agents_md.py
 run "$PY" scripts/guardrails/check_commit_style.py
 run "$PY" scripts/guardrails/check_glob_reexport.py
@@ -65,6 +66,7 @@ run "$PY" scripts/guardrails/check_binary_size.py --selfcheck
 # The size-report comment is upserted by marker, and a marker that stops matching
 # posts a duplicate rather than failing; only this flag exercises the routing.
 run "$PY" scripts/forgejo_pr_comment.py --selfcheck
+run "$PY" scripts/guardrails/check_workflows.py --selfcheck
 run "$PY" scripts/live_report.py --selfcheck
 run "$PY" scripts/live_ledger.py --selfcheck
 run "$PY" scripts/merge_baseline.py --selfcheck
