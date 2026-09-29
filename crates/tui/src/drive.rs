@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
 use yi_runtime::{AgentSession, SubagentHost};
 
-use crate::app::{App, AskRequest, TuiOptions};
+use crate::app::{App, TuiOptions};
+use crate::approval::AskRequest;
 use crate::capture::{RecordingBackend, write_still};
 use crate::colors::Theme;
 use crate::keymap::{KeyCodeValue, SingleKey, default_keymap};
@@ -309,6 +310,11 @@ pub fn run_headless(
                 frame_index += 1;
                 last_frame = frame;
             }
+        }
+        if let Some((x, y, symbol)) = terminal.backend().first_control_cell() {
+            eprintln!("error: a control character reached a cell: {symbol:?} at ({x}, {y})");
+            exit_code = 1;
+            break;
         }
     }
 

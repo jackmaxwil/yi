@@ -80,6 +80,7 @@ pub fn family(
     let plug = Arc::clone(&unplugged);
     let (events, _keep) = tokio::sync::broadcast::channel(256);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        provider: Arc::new(ProviderStream::new(None)),
         depth: 0,
         max_depth: 1,
         max_children: 8,
@@ -97,7 +98,7 @@ pub fn family(
                     tokens: build.tokens,
                 });
             }
-            let provider = Arc::new(ProviderStream::new(None, None));
+            let provider = Arc::new(ProviderStream::new(None));
             let mut script = Vec::new();
             if let Some(command) = hold {
                 let mut args = serde_json::Map::new();

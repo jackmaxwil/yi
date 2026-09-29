@@ -219,6 +219,37 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args, ("sub-1",))
         self.assertEqual(kwargs, {"schema": {"type": "object"}})
 
+    async def test_ask_spawns_a_reader_reads_its_answer_and_reaps_it(self) -> None:
+        sent: list[tuple[str, dict]] = []
+
+        async def fake_host(kind: str, payload: dict) -> dict:
+            sent.append((kind, payload))
+            return {"rlm_child_id": "sub-1", "name": "q", "session_dir": "/tmp/q", "model": "m"}
+
+        async def fake_result(self, *, schema=None, timeout=540.0) -> dict:
+            return {"text": "line 2", "schema": schema}
+
+        reaped: list[str] = []
+
+        async def fake_delete(target) -> None:
+            reaped.append(target.rlm_child_id)
+
+        with mock.patch.object(rlm, "host_request", fake_host), mock.patch.object(
+            rlm.RLMSpawnHandle, "result", fake_result
+        ), mock.patch.object(rlm, "delete_subagent", fake_delete):
+            answer = await rlm.ask("which line?", ("local://notes.txt",), schema={"type": "object"})
+            await rlm.ask("which line?", "local://notes.txt")
+        self.assertEqual(answer, {"text": "line 2", "schema": {"type": "object"}})
+        self.assertEqual([kind for kind, _ in sent], ["rlm.run", "rlm.run"])
+        self.assertEqual(
+            [payload["kwargs"] for _, payload in sent],
+            [
+                {"role": "reader", "partition": ["local://notes.txt"], "schema": {"type": "object"}},
+                {"role": "reader", "partition": ["local://notes.txt"]},
+            ],
+        )
+        self.assertEqual(reaped, ["sub-1", "sub-1"])
+
     async def test_module_result_refuses_a_non_dict_schema_before_any_host_round_trip(
         self,
     ) -> None:

@@ -1,4 +1,4 @@
-use yi_types::plan::doc::{AgentId, BlockedOn, Todo, TodoLabel, TodoState, TodoStateName};
+use yi_types::plan::doc::{AgentId, BlockedOn, Todo, TodoState, TodoStateName};
 use yi_types::todo::{PhaseName, TodoId, TodoList, TodoPhase};
 
 use super::{DEFAULT_PHASE, TodoError};
@@ -106,14 +106,10 @@ pub fn parse(source: &str) -> Result<TodoList, TodoError> {
     if list.items().next().is_none() {
         return Err(TodoError::Empty);
     }
-    let mut seen: Vec<&TodoLabel> = Vec::new();
-    for item in list.items() {
-        if seen.contains(&&item.label) {
-            return Err(TodoError::Duplicate {
-                label: item.label.to_string(),
-            });
-        }
-        seen.push(&item.label);
+    if let Some(label) = list.duplicates().first() {
+        return Err(TodoError::Duplicate {
+            label: label.to_string(),
+        });
     }
     Ok(list)
 }
@@ -131,8 +127,14 @@ pub fn merge(old: &TodoList, mut new: TodoList) -> TodoList {
     new
 }
 
+/// The prior row is the one the row's id names among those with its label, else the first.
 fn carry(old: &TodoList, row: &mut Todo) {
-    let Some(prior) = old.items().find(|prior| prior.label == row.label) else {
+    let named = |prior: &&Todo| prior.label == row.label && row.id.is_some() && prior.id == row.id;
+    let Some(prior) = old
+        .items()
+        .find(named)
+        .or_else(|| old.items().find(|prior| prior.label == row.label))
+    else {
         return;
     };
     if row.id.is_none() {

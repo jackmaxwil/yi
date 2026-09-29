@@ -11,7 +11,7 @@ use yi_permission::{
 };
 use yi_tools::ToolKind;
 use yi_types::event::AgentEvent;
-use yi_types::permission::{RuleDecision, RuleKind};
+use yi_types::permission::{Answerer, PermissionRecord, RuleDecision, RuleKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskOutcome {
@@ -28,6 +28,53 @@ pub struct PermissionAsk<'a> {
     pub patch: Option<&'a str>,
     pub changes: &'a [PathBuf],
     pub grants: &'a [yi_permission::Grant],
+    pub tool_call_id: Option<&'a str>,
+}
+
+struct OwnedAsk {
+    title: String,
+    description: String,
+    patch: Option<String>,
+    changes: Vec<PathBuf>,
+    grants: Vec<yi_permission::Grant>,
+    tool_call_id: Option<String>,
+}
+
+impl OwnedAsk {
+    fn of(ask: &PermissionAsk<'_>) -> Self {
+        Self {
+            title: ask.title.to_owned(),
+            description: ask.description.to_owned(),
+            patch: ask.patch.map(str::to_owned),
+            changes: ask.changes.to_vec(),
+            grants: ask.grants.to_vec(),
+            tool_call_id: ask.tool_call_id.map(str::to_owned),
+        }
+    }
+
+    fn ask(&self) -> PermissionAsk<'_> {
+        PermissionAsk {
+            title: &self.title,
+            description: &self.description,
+            patch: self.patch.as_deref(),
+            changes: &self.changes,
+            grants: &self.grants,
+            tool_call_id: self.tool_call_id.as_deref(),
+        }
+    }
+}
+
+fn ask_within(
+    asker: &Asker,
+    ask: &PermissionAsk<'_>,
+    limit: std::time::Duration,
+) -> Option<AskOutcome> {
+    let (owned, asker) = (OwnedAsk::of(ask), Arc::clone(asker));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _gone_if_expired = sender.send(asker(&owned.ask()));
+    });
+    receiver.recv_timeout(limit).ok()
 }
 
 impl PermissionAsk<'_> {
@@ -44,6 +91,7 @@ impl PermissionAsk<'_> {
 }
 
 pub type Asker = Arc<dyn Fn(&PermissionAsk<'_>) -> AskOutcome + Send + Sync>;
+pub type Journal = Arc<dyn Fn(PermissionRecord) + Send + Sync>;
 
 /// What the reviewer is told about a call, and whether it may see it at all.
 #[derive(Clone, Copy)]
@@ -56,7 +104,9 @@ struct Reviewed<'a> {
 
 pub struct PermissionBroker {
     sandbox: Option<yi_tools::Sandbox>,
-    contained_failures: Mutex<std::collections::BTreeSet<String>>,
+    contained_failures: Mutex<std::collections::BTreeSet<yi_tools::SandboxRefusal>>,
+    /// Directories an "always" on a widened retry made writable to every later contained run.
+    kept_writes: Mutex<Vec<PathBuf>>,
     mode: Mutex<PermissionMode>,
     config_rules: Vec<ConfigRule>,
     session_rules: Mutex<SessionRules>,
@@ -69,14 +119,47 @@ pub struct PermissionBroker {
     /// nothing in this file behaves differently from before it existed.
     reviewer: std::sync::OnceLock<Arc<crate::auto_review::Reviewer>>,
     ledger: Mutex<ActionLedger>,
+    asking: Mutex<std::collections::BTreeSet<RequestId>>,
     confirms: AtomicU64,
+    journal: std::sync::OnceLock<Journal>,
+    approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
+    prompts_close_on_settle: std::sync::atomic::AtomicBool,
 }
 
 pub struct CallOutcome {
     pub allowed: bool,
     pub reason: String,
-    /// The call runs inside the platform sandbox rather than freely.
-    pub contained: bool,
+    pub containment: Containment,
+}
+
+/// What an allowed call runs as. Only bash reads it, and only where a sandbox exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Containment {
+    /// Inside the sandbox, with these directories writable besides the holder's tree.
+    Contained {
+        widen: Vec<PathBuf>,
+    },
+    Uncontained,
+}
+
+/// Never widened, even through a link: `$HOME`, `~/.yi` (harness, MCP store, config, sessions,
+/// daemon socket), a credential store, or a git path the host runs.
+fn protected(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let yi = home.iter().map(|home| home.join(".yi"));
+    let overlaps = |guarded: &PathBuf| {
+        let real = guarded.canonicalize().unwrap_or_else(|_| guarded.clone());
+        [guarded, &real]
+            .iter()
+            .any(|guarded| dir.starts_with(guarded) || guarded.starts_with(dir))
+    };
+    home.as_deref()
+        .is_some_and(|home| dir == home || home.canonicalize().is_ok_and(|real| dir == real))
+        || (sandbox.deny_read.iter())
+            .chain(&sandbox.deny_write)
+            .cloned()
+            .chain(yi)
+            .any(|guarded| overlaps(&guarded))
 }
 
 pub(crate) fn extract_targets(
@@ -119,6 +202,7 @@ impl PermissionBroker {
         Self {
             sandbox: None,
             contained_failures: Mutex::new(std::collections::BTreeSet::new()),
+            kept_writes: Mutex::new(Vec::new()),
             mode: Mutex::new(mode),
             config_rules,
             session_rules: Mutex::new(SessionRules::new()),
@@ -129,8 +213,45 @@ impl PermissionBroker {
             events,
             reviewer: std::sync::OnceLock::new(),
             ledger: Mutex::new(ActionLedger::new()),
+            asking: Mutex::new(std::collections::BTreeSet::new()),
             confirms: AtomicU64::new(0),
+            journal: std::sync::OnceLock::new(),
+            approver: std::sync::OnceLock::new(),
+            prompts_close_on_settle: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    pub fn set_journal(&self, journal: Journal) {
+        let _first_wiring_wins = self.journal.set(journal);
+    }
+
+    pub fn set_approver(&self, approver: Arc<crate::classifier::Approver>) {
+        let _first_wiring_wins = self.approver.set(approver);
+    }
+
+    pub fn prompts_close_on_settle(&self) {
+        self.prompts_close_on_settle.store(true, Ordering::Relaxed);
+    }
+
+    fn settle(&self, tool_call_id: &str, ask: &PermissionAsk<'_>, allowed: bool, by: Answerer) {
+        self.resolved(tool_call_id, allowed);
+        if let Some(journal) = self.journal.get() {
+            journal(PermissionRecord {
+                tool_call_id: tool_call_id.to_owned(),
+                title: ask.title.to_owned(),
+                description: ask.text(),
+                allowed,
+                by,
+                extra: std::collections::BTreeMap::new(),
+            });
+        }
+    }
+
+    fn resolved(&self, tool_call_id: &str, allowed: bool) {
+        let _ = self.events.send(AgentEvent::PermissionResolved {
+            tool_call_id: tool_call_id.to_owned(),
+            allowed,
+        });
     }
 
     /// A second call is a child session re-wiring the same broker; the first
@@ -155,21 +276,92 @@ impl PermissionBroker {
         self.sandbox.as_ref()
     }
 
-    /// The sandbox is the first attempt and the question the second, remembered by program and
-    /// verb: a retry that only reshapes the refused command must not be contained again.
-    pub fn note_containment_failure(&self, command: &str) {
+    /// The sandbox is the first attempt and the question the second, remembered by the refused
+    /// path so unrelated work stays contained, or by program and verb when none was found.
+    pub fn note_containment_failure(&self, refusal: yi_tools::SandboxRefusal) {
         if let Ok(mut failures) = self.contained_failures.lock() {
-            failures.extend(yi_permission::refused_scopes(command));
+            failures.insert(refusal);
         }
     }
 
-    fn contained_and_failed(&self, command: Option<&str>) -> bool {
-        let scopes = command
-            .map(yi_permission::refused_scopes)
-            .unwrap_or_default();
-        self.contained_failures
+    fn retried_refusal(&self, command: Option<&str>) -> Option<yi_tools::SandboxRefusal> {
+        let (sandbox, command) = (self.sandbox.as_ref()?, command?);
+        let failures = self.contained_failures.lock().ok()?;
+        // The deepest refused path: a refusal at `~/x` would otherwise claim every retry in home.
+        (failures.iter())
+            .filter(|refusal| refusal.retried_by(sandbox, &self.cwd, command))
+            .max_by_key(|refusal| match refusal {
+                yi_tools::SandboxRefusal::Path(path) => path.components().count(),
+                yi_tools::SandboxRefusal::Scopes(_) => 0,
+            })
+            .cloned()
+    }
+
+    fn containment_with(&self, refused: Option<PathBuf>) -> Containment {
+        let mut widen = self
+            .kept_writes
             .lock()
-            .is_ok_and(|failures| scopes.iter().any(|scope| failures.contains(scope)))
+            .map(|kept| kept.clone())
+            .unwrap_or_default();
+        widen.extend(refused);
+        Containment::Contained { widen }
+    }
+
+    /// What approving a bash call runs as, and the clause its question adds: a call needing the
+    /// network or a credential store leaves; a refused write's retry widens by its unprotected dir.
+    fn approved_containment(
+        &self,
+        command: Option<&str>,
+        refusal: Option<&yi_tools::SandboxRefusal>,
+    ) -> (Containment, String) {
+        let (Some(sandbox), Some(command)) = (&self.sandbox, command) else {
+            return (Containment::Uncontained, String::new());
+        };
+        let outside = |why: &str| {
+            let note = format!("; approving runs this one call outside the sandbox ({why})");
+            (Containment::Uncontained, note)
+        };
+        if yi_permission::needs_host(command) {
+            return outside("network");
+        }
+        if yi_permission::command_reads_credentials(command, &self.context).is_some() {
+            return outside("credential stores");
+        }
+        match refusal {
+            None => (self.containment_with(None), String::new()),
+            Some(yi_tools::SandboxRefusal::Scopes(_)) => outside("the refusal named no path"),
+            Some(yi_tools::SandboxRefusal::Path(path)) => {
+                let dir = path.parent().unwrap_or(path);
+                let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+                if protected(sandbox, &dir) {
+                    return outside(&format!("`{}` is protected", dir.display()));
+                }
+                let note = format!("; approving widens this run by `{}`", dir.display());
+                (self.containment_with(Some(dir)), note)
+            }
+        }
+    }
+
+    /// A contained call's profile: the holder's tree (a lane child shares its parent's broker),
+    /// the approved directories, and the wall, enforced rather than read off the command text.
+    pub fn sandbox_for(
+        &self,
+        cwd: &Path,
+        wall: &crate::wall::Wall,
+        widen: &[PathBuf],
+    ) -> Option<yi_tools::Sandbox> {
+        let base = self.sandbox.as_ref()?;
+        let mut profile = match std::env::var_os("HOME").filter(|_| cwd != self.cwd) {
+            Some(home) => yi_tools::Sandbox {
+                deny_read: base.deny_read.clone(),
+                ..yi_tools::Sandbox::for_workspace(cwd, Path::new(&home), None)
+            },
+            None => base.clone(),
+        };
+        profile.writable.extend_from_slice(widen);
+        profile.deny_write.extend_from_slice(&wall.deny_write);
+        profile.deny_read.extend_from_slice(&wall.deny_read);
+        Some(profile)
     }
 
     /// A question with no tool call behind it, asked once and answered once: an allow-always
@@ -189,10 +381,13 @@ impl PermissionBroker {
             .asker
             .as_ref()
             .map_or(AskOutcome::Reject, |asker| asker(ask));
-        let _ = self.events.send(AgentEvent::PermissionResolved {
-            tool_call_id,
-            allowed: matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_)),
-        });
+        let by = if self.asker.is_some() {
+            Answerer::User
+        } else {
+            Answerer::Nobody
+        };
+        let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
+        self.settle(&tool_call_id, ask, allowed, by);
         outcome
     }
 
@@ -323,72 +518,95 @@ impl PermissionBroker {
             &self.context,
         );
         drop(session_rules);
-        let grants = yi_permission::grants(&call, &self.context);
-        match decision {
-            Decision::Allow { reason } => CallOutcome {
-                allowed: true,
-                reason,
-                contained: false,
-            },
-            // Containment is an allowance the sandbox enforces; without one
-            // there is nothing to enforce it, so the question stands.
-            Decision::Contain { reason } => match &self.sandbox {
-                Some(_) if !self.contained_and_failed(command) => CallOutcome {
+        let refusal = self.retried_refusal(command);
+        let (title, description, reviewable, reason) = match decision {
+            Decision::Allow { reason } => {
+                return CallOutcome {
                     allowed: true,
                     reason,
-                    contained: true,
-                },
-                // A containment Yi cannot enforce is the same class of unknown
-                // as an unprovable command, so the reviewer may see it too.
-                _ => self.gated_ask(
-                    &PermissionAsk {
-                        title: &format!("{tool_name} requires permission"),
-                        description: &format!("{reason}: {display}"),
-                        patch: preview,
-                        changes: &targets,
-                        grants: &grants,
-                    },
-                    Reviewed {
-                        reviewable: true,
-                        tool_name,
-                        command,
-                        reason: &reason,
-                    },
-                    tool_call_id,
-                    rule_kind,
-                    &canonical,
-                    &display,
-                ),
-            },
-            Decision::Deny { reason } => CallOutcome {
-                allowed: false,
+                    containment: Containment::Uncontained,
+                };
+            }
+            Decision::Deny { reason } => return self.denied(reason),
+            Decision::Contain { reason } if self.sandbox.is_some() && refusal.is_none() => {
+                return CallOutcome {
+                    allowed: true,
+                    reason,
+                    containment: self.containment_with(None),
+                };
+            }
+            // A containment Yi cannot enforce, or one the sandbox already refused, is the same
+            // class of unknown as an unprovable command, so the reviewer may see it too.
+            Decision::Contain { reason } => (
+                format!("{tool_name} requires permission"),
+                format!("{reason}: {display}"),
+                true,
                 reason,
-                contained: false,
-            },
+            ),
             Decision::Ask {
                 title,
                 description,
                 reviewable,
-            } => self.gated_ask(
-                &PermissionAsk {
-                    title: &title,
-                    description: &description,
-                    patch: preview,
-                    changes: &targets,
-                    grants: &grants,
-                },
-                Reviewed {
-                    reviewable,
-                    tool_name,
-                    command,
-                    reason: &description,
-                },
-                tool_call_id,
-                rule_kind,
-                &canonical,
-                &display,
-            ),
+            } => (title, description.clone(), reviewable, description),
+        };
+        let (containment, note) = self.approved_containment(command, refusal.as_ref());
+        // An "always" on a widened retry keeps the directory, never a rule that would run the
+        // command itself outside the sandbox.
+        let kept = match (&containment, &refusal) {
+            (Containment::Contained { widen }, Some(yi_tools::SandboxRefusal::Path(_))) => {
+                widen.last().map(|dir| yi_permission::write_grant(dir))
+            }
+            _ => None,
+        };
+        let grants = match &kept {
+            Some(grant) => vec![grant.clone()],
+            None => yi_permission::grants(&call, &self.context),
+        };
+        let outcome = self.gated_ask(
+            &PermissionAsk {
+                title: &title,
+                description: &format!("{description}{note}"),
+                patch: preview,
+                changes: &targets,
+                grants: &grants,
+                tool_call_id: Some(tool_call_id),
+            },
+            Reviewed {
+                reviewable,
+                tool_name,
+                command,
+                reason: &reason,
+            },
+            tool_call_id,
+            rule_kind,
+            &canonical,
+            &display,
+        );
+        if !outcome.allowed {
+            return outcome;
         }
+        if let (Some(grant), Some(refusal), Containment::Contained { widen }) =
+            (&kept, &refusal, &containment)
+            && self.keeps(grant)
+            && let (Ok(mut kept), Ok(mut failures), Some(dir)) = (
+                self.kept_writes.lock(),
+                self.contained_failures.lock(),
+                widen.last(),
+            )
+        {
+            kept.push(dir.clone());
+            failures.remove(refusal);
+        }
+        CallOutcome {
+            containment,
+            ..outcome
+        }
+    }
+
+    fn keeps(&self, grant: &yi_permission::Grant) -> bool {
+        self.session_rules.lock().is_ok_and(|rules| {
+            rules.decision_for(grant.kind, &grant.canonical) == Some(RuleDecision::Allow)
+        })
     }
 
     /// The §8 auto-review gate. Off (no role named) or out of jurisdiction, this is exactly
@@ -402,11 +620,49 @@ impl PermissionBroker {
         canonical: &str,
         display: &str,
     ) -> CallOutcome {
-        let Some(reviewer) = self.reviewer.get().cloned() else {
-            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display);
+        let cwd = self.cwd.to_string_lossy();
+        let call = crate::classifier::Call {
+            tool: reviewed.tool_name,
+            display,
+            command: reviewed.command,
+            reason: reviewed.reason,
+            cwd: &cwd,
+        };
+        let approver =
+            (self.approver.get()).filter(|_| reviewed.reviewable && !self.answered(canonical));
+        let mut prior = None;
+        if let Some(approver) = approver
+            && self.mode() == PermissionMode::Auto
+        {
+            let judgement = approver.judge(&call);
+            prior = Some(judgement);
+            match judgement {
+                crate::classifier::Judgement::Allow(safe) => {
+                    let _ = self.events.send(AgentEvent::PermissionRequested {
+                        tool_call_id: tool_call_id.to_owned(),
+                        title: ask.title.to_owned(),
+                        description: ask.text(),
+                    });
+                    self.settle(tool_call_id, ask, true, Answerer::Classifier);
+                    return CallOutcome {
+                        allowed: true,
+                        reason: format!("allowed by the classifier (P(safe) {safe:.2})"),
+                        containment: Containment::Uncontained,
+                    };
+                }
+                crate::classifier::Judgement::AskUser(_)
+                | crate::classifier::Judgement::Undecided => {}
+            }
+        }
+        let timed = approver
+            .filter(|_| prior.is_some())
+            .and_then(|approver| approver.ask_timeout());
+        let asks_user = matches!(prior, Some(crate::classifier::Judgement::AskUser(_)));
+        let Some(reviewer) = self.reviewer.get().cloned().filter(|_| !asks_user) else {
+            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display, timed);
         };
         if !reviewed.reviewable || self.mode() != PermissionMode::Auto {
-            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display);
+            return self.run_ask(ask, tool_call_id, rule_kind, canonical, display, timed);
         }
         // Invariant: a call the deterministic ladder could not prove is announced and settled
         // whoever answers. The TUI's waiting cell and ACP's RequiresAction read this pair.
@@ -415,12 +671,16 @@ impl PermissionBroker {
             title: ask.title.to_owned(),
             description: ask.text(),
         });
-        let outcome = self.reviewed_outcome(reviewer, ask, reviewed, rule_kind, canonical, display);
-        let _ = self.events.send(AgentEvent::PermissionResolved {
-            tool_call_id: tool_call_id.to_owned(),
-            allowed: outcome.allowed,
-        });
-        outcome
+        match self.reviewed_outcome(reviewer, ask, reviewed, rule_kind, canonical, display) {
+            (outcome, Some(by)) => {
+                self.settle(tool_call_id, ask, outcome.allowed, by);
+                outcome
+            }
+            (outcome, None) => {
+                self.resolved(tool_call_id, outcome.allowed);
+                outcome
+            }
+        }
     }
 
     fn reviewed_outcome(
@@ -431,27 +691,29 @@ impl PermissionBroker {
         rule_kind: RuleKind,
         canonical: &str,
         display: &str,
-    ) -> CallOutcome {
+    ) -> (CallOutcome, Option<Answerer>) {
         let action = ActionId::of(canonical);
         match self.recall(action) {
             Some((request, ActionState::UserApproved)) => {
-                return CallOutcome {
+                let allowed = CallOutcome {
                     allowed: true,
                     reason: format!("allowed by the user answering request {request}"),
-                    contained: false,
+                    containment: Containment::Uncontained,
                 };
+                return (allowed, None);
             }
-            Some((request, ActionState::UserDenied)) => {
-                return self.denied(format!(
-                        "The user denied request {request} for this exact call. It stays denied; take another approach."
-                    ),
+            Some((_, ActionState::UserDenied)) => {
+                let denied = self.denied(
+                    "The user refused this exact call. It stays denied; take another approach rather than re-issuing it.".to_owned(),
                 );
+                return (denied, None);
             }
             // Idempotent by action: a retry of an identical denied call gets the same request
             // back, never a second review or a second question for the user.
             Some((request, ActionState::DeniedPendingUser)) => {
                 let evidence = self.evidence_of(request);
-                return self.denied(Self::escalation_text(&evidence, request));
+                let denied = self.denied(Self::escalation_text(&evidence, request));
+                return (denied, None);
             }
             None => {}
         }
@@ -468,27 +730,38 @@ impl PermissionBroker {
             patch: ask.patch.map(Self::cut_preview),
             reason: reviewed.reason.to_owned(),
         };
-        match self.consult(reviewer, request) {
+        let outcome = match self.consult(reviewer, request) {
             crate::auto_review::ReviewOutcome::Allow => CallOutcome {
                 allowed: true,
                 reason: "allowed by the auto reviewer".to_owned(),
-                contained: false,
+                containment: Containment::Uncontained,
             },
             crate::auto_review::ReviewOutcome::Deny { reason } => {
-                let stored = ReviewedAsk {
-                    title: ask.title.to_owned(),
-                    description: ask.description.to_owned(),
-                    patch: ask.patch.map(str::to_owned),
-                    targets: ask.changes.to_vec(),
-                    display: display.to_owned(),
-                    canonical: canonical.to_owned(),
-                    kind: rule_kind,
-                    grants: ask.grants.to_vec(),
-                    evidence: reason.clone(),
-                };
+                let stored = Self::stored(ask, rule_kind, canonical, display, reason.clone());
                 let request = self.open_request(action, stored);
                 self.denied(Self::escalation_text(&reason, request))
             }
+        };
+        (outcome, Some(Answerer::Reviewer))
+    }
+
+    fn stored(
+        ask: &PermissionAsk<'_>,
+        kind: RuleKind,
+        canonical: &str,
+        display: &str,
+        evidence: String,
+    ) -> ReviewedAsk {
+        ReviewedAsk {
+            title: ask.title.to_owned(),
+            description: ask.description.to_owned(),
+            patch: ask.patch.map(str::to_owned),
+            targets: ask.changes.to_vec(),
+            display: display.to_owned(),
+            canonical: canonical.to_owned(),
+            kind,
+            grants: ask.grants.to_vec(),
+            evidence,
         }
     }
 
@@ -511,8 +784,16 @@ impl PermissionBroker {
         CallOutcome {
             allowed: false,
             reason,
-            contained: false,
+            containment: Containment::Uncontained,
         }
+    }
+
+    fn answered(&self, canonical: &str) -> bool {
+        self.ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .state_of(ActionId::of(canonical))
+            .is_some()
     }
 
     fn recall(&self, action: ActionId) -> Option<(RequestId, ActionState)> {
@@ -565,18 +846,34 @@ impl PermissionBroker {
             })
     }
 
-    /// The `ask_user` seam: one open request, replayed verbatim to the human.
+    /// The `ask_user` seam: a waiting request is asked once; an answered one replies from the ledger.
     pub fn resolve_request(&self, request: u64, tool_call_id: &str) -> String {
         let request = RequestId::new(request);
-        let Some(stored) = self
+        let Some(_asking) = InFlight::claim(&self.asking, request) else {
+            return format!(
+                "Request {request} is already being put to the user by another ask_user call; that call's result carries the answer. Do not ask again."
+            );
+        };
+        let Some((stored, state)) = self
             .ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .ask_of(request)
-            .cloned()
+            .entry_of(request)
+            .map(|(ask, state)| (ask.clone(), state))
         else {
-            return format!("There is no open request {request}.");
+            return format!(
+                "There is no open request {request}: it was answered and used, dropped, or never existed."
+            );
         };
+        match state {
+            ActionState::DeniedPendingUser => {}
+            ActionState::UserApproved => {
+                return crate::auto_review::resolution_text(&stored.display, UserVerdict::Approved);
+            }
+            ActionState::UserDenied => {
+                return crate::auto_review::resolution_text(&stored.display, UserVerdict::Denied);
+            }
+        }
         // The asker blocks on a human; the ledger lock is released first so a
         // concurrent decision is not held behind the answer.
         let Some(asker) = &self.asker else {
@@ -609,11 +906,31 @@ impl PermissionBroker {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .resolve(request, verdict);
-        let _ = self.events.send(AgentEvent::PermissionResolved {
-            tool_call_id: tool_call_id.to_owned(),
-            allowed: verdict == UserVerdict::Approved,
-        });
+        self.settle(
+            tool_call_id,
+            &ask,
+            verdict == UserVerdict::Approved,
+            Answerer::User,
+        );
         crate::auto_review::resolution_text(&stored.display, verdict)
+    }
+
+    fn expired(
+        &self,
+        ask: &PermissionAsk<'_>,
+        tool_call_id: &str,
+        limit: std::time::Duration,
+    ) -> CallOutcome {
+        let waited = limit.as_secs();
+        self.settle(tool_call_id, ask, false, Answerer::Nobody);
+        CallOutcome {
+            allowed: false,
+            reason: format!(
+                "No one answered within {waited} s and the classifier did not clear it. {}",
+                ask.text()
+            ),
+            containment: Containment::Uncontained,
+        }
     }
 
     fn keep_grant(
@@ -651,6 +968,7 @@ impl PermissionBroker {
         rule_kind: RuleKind,
         canonical: &str,
         display: &str,
+        timed: Option<std::time::Duration>,
     ) -> CallOutcome {
         let rendered = ask.text();
         let _ = self.events.send(AgentEvent::PermissionRequested {
@@ -658,13 +976,15 @@ impl PermissionBroker {
             title: ask.title.to_owned(),
             description: rendered.clone(),
         });
-        let outcome = match &self.asker {
-            Some(asker) => asker(ask),
-            None => {
-                let _ = self.events.send(AgentEvent::PermissionResolved {
-                    tool_call_id: tool_call_id.to_owned(),
-                    allowed: false,
-                });
+        let limit = timed.filter(|_| self.prompts_close_on_settle.load(Ordering::Relaxed));
+        let outcome = match (&self.asker, limit) {
+            (Some(asker), Some(limit)) => match ask_within(asker, ask, limit) {
+                Some(outcome) => outcome,
+                None => return self.expired(ask, tool_call_id, limit),
+            },
+            (Some(asker), None) => asker(ask),
+            (None, _) => {
+                self.settle(tool_call_id, ask, false, Answerer::Nobody);
                 let asked = yi_permission::Decision::Ask {
                     title: ask.title.to_owned(),
                     description: rendered,
@@ -672,16 +992,26 @@ impl PermissionBroker {
                 };
                 return CallOutcome {
                     allowed: false,
-                    contained: false,
+                    containment: Containment::Uncontained,
                     reason: crate::gate::Report::reason_of(&crate::gate::compile_ask(asked, false)),
                 };
             }
         };
         let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
-        let _ = self.events.send(AgentEvent::PermissionResolved {
-            tool_call_id: tool_call_id.to_owned(),
-            allowed,
-        });
+        self.settle(tool_call_id, ask, allowed, Answerer::User);
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if allowed {
+            ledger.forget(ActionId::of(canonical));
+        } else {
+            let refusal = "the user refused it when asked".to_owned();
+            let stored = Self::stored(ask, rule_kind, canonical, display, refusal);
+            let request = ledger.open(ActionId::of(canonical), stored);
+            ledger.resolve(request, UserVerdict::Denied);
+        }
+        drop(ledger);
         if let AskOutcome::AllowAlways(index) = outcome {
             self.keep_grant(ask.grants.get(index), rule_kind, canonical, display);
         }
@@ -689,14 +1019,41 @@ impl PermissionBroker {
             CallOutcome {
                 allowed: true,
                 reason: "allowed by user".to_owned(),
-                contained: false,
+                containment: Containment::Uncontained,
             }
         } else {
             CallOutcome {
                 allowed: false,
                 reason: format!("The user denied this call. {rendered}"),
-                contained: false,
+                containment: Containment::Uncontained,
             }
         }
+    }
+}
+
+struct InFlight<'a> {
+    set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
+    request: RequestId,
+}
+
+impl<'a> InFlight<'a> {
+    fn claim(
+        set: &'a Mutex<std::collections::BTreeSet<RequestId>>,
+        request: RequestId,
+    ) -> Option<Self> {
+        let inserted = set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(request);
+        inserted.then(|| Self { set, request })
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.request);
     }
 }

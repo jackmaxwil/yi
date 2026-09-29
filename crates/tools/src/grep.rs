@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 use crate::builtins::walk_files;
-use crate::hashline::normalize::{LineEnding, detect_line_ending, restore_line_endings};
+use crate::hashline::normalize::{Endings, split};
 use crate::hashline::types::BlockResolverRequest;
 use crate::tool::{
     Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, resolve_path, text_output,
@@ -180,8 +180,8 @@ struct FileHits {
     canonical: String,
     normalized: String,
     hits: Vec<usize>,
-    ending: LineEnding,
-    bom: &'static str,
+    endings: Endings,
+    utf8: bool,
 }
 
 fn hits_in(matcher: &regex::Regex, normalized: &str, multiline: bool, def: bool) -> Vec<usize> {
@@ -218,6 +218,7 @@ struct Collected {
     binary_skipped: usize,
     documents_searched: usize,
     documents_unsearched: Vec<String>,
+    walled: usize,
 }
 
 /// A search converts at most this many documents it has no copy of; the rest are counted.
@@ -287,6 +288,7 @@ fn clip(line: &str) -> (String, bool) {
 fn collect(
     cwd: &Path,
     root: &Path,
+    deny: &[PathBuf],
     matcher: &regex::Regex,
     include: Option<&globset::GlobMatcher>,
     options: &Options,
@@ -329,10 +331,17 @@ fn collect(
             binary_skipped = binary_skipped.saturating_add(1);
             return true;
         }
-        let raw = converted.unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
-        let stripped = crate::hashline::normalize::strip_bom(&raw);
-        let ending = detect_line_ending(stripped.text);
-        let normalized = crate::hashline::normalize::normalize_to_lf(stripped.text);
+        let (raw, utf8) = match converted {
+            Some(markdown) => (markdown, true),
+            None => match String::from_utf8(bytes) {
+                Ok(text) => (text, true),
+                Err(error) => (
+                    String::from_utf8_lossy(error.as_bytes()).into_owned(),
+                    false,
+                ),
+            },
+        };
+        let (normalized, endings) = split(&raw);
         let mut hits = hits_in(matcher, &normalized, options.multiline, options.def);
         if hits.is_empty() {
             return true;
@@ -360,16 +369,17 @@ fn collect(
                 .into_owned(),
             normalized,
             hits,
-            ending,
-            bom: stripped.bom,
+            endings,
+            utf8,
         });
         !collection_capped
     };
-    if root.is_file() {
+    let walled = if root.is_file() {
         search_file(root);
+        0
     } else {
-        walk_files(root, &mut search_file);
-    }
+        walk_files(root, deny, &mut search_file)
+    };
     Collected {
         files,
         total,
@@ -377,6 +387,7 @@ fn collect(
         binary_skipped,
         documents_searched,
         documents_unsearched,
+        walled,
     }
 }
 
@@ -532,6 +543,7 @@ impl GrepTool {
     pub(crate) fn references(
         &self,
         root: &Path,
+        deny: &[PathBuf],
         identifier: &str,
         skip: Option<(&str, usize)>,
         cap: usize,
@@ -551,7 +563,7 @@ impl GrepTool {
             replace: None,
             apply: false,
         };
-        let collected = collect(root, root, &matcher, None, &options, None);
+        let collected = collect(root, root, deny, &matcher, None, &options, None);
         let mut rows: Vec<String> = Vec::new();
         let mut taken = 0_usize;
         let mut total = 0_usize;
@@ -570,6 +582,7 @@ impl GrepTool {
             taken = taken.saturating_add(page.len());
             rows.extend(self.render_file(file, &page, 0, true, false));
         }
+        rows.extend(crate::builtins::walled_notice(collected.walled));
         (rows, total)
     }
 
@@ -593,18 +606,16 @@ impl GrepTool {
         let mut changed = 0_usize;
         let mut written = 0_usize;
         let mut failures: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        let mut skipped_hits = 0_usize;
         for file in &collected.files {
-            let after: String = if options.multiline {
-                matcher
-                    .replace_all(&file.normalized, replacement)
-                    .into_owned()
-            } else {
-                file.normalized
-                    .split('\n')
-                    .map(|line| matcher.replace_all(line, replacement))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
+            if !file.utf8 {
+                skipped.push(file.display.clone());
+                skipped_hits = skipped_hits.saturating_add(file.hits.len());
+                continue;
+            }
+            let (after, origins) =
+                replaced(matcher, &file.normalized, replacement, options.multiline);
             if after == file.normalized {
                 continue;
             }
@@ -614,7 +625,7 @@ impl GrepTool {
             if !options.apply {
                 continue;
             }
-            let persisted = format!("{}{}", file.bom, restore_line_endings(&after, file.ending));
+            let persisted = file.endings.restore(&after, &origins);
             match fs::write(&file.canonical, persisted) {
                 Ok(()) => {
                     written = written.saturating_add(1);
@@ -631,7 +642,19 @@ impl GrepTool {
             }
         }
         if changed == 0 {
-            rows.push("No matches found".to_owned());
+            rows.push(if collected.total == 0 {
+                "No matches found".to_owned()
+            } else if skipped.is_empty() {
+                format!(
+                    "nothing changed: each of the {} matches is replaced by itself",
+                    collected.total
+                )
+            } else {
+                format!(
+                    "nothing written: {skipped_hits} of {} matches in files skipped (not UTF-8)",
+                    collected.total
+                )
+            });
         } else if options.apply {
             rows.push(format!("applied to {written} of {changed} files"));
         } else {
@@ -640,15 +663,79 @@ impl GrepTool {
             ));
         }
         rows.extend(failures.iter().map(|failure| format!("failed: {failure}")));
+        rows.extend(
+            skipped
+                .iter()
+                .map(|path| format!("skipped (not UTF-8): {path}")),
+        );
+        rows.extend(crate::builtins::walled_notice(collected.walled));
         let mut output = text_output(rows.join("\n"));
         output.result.details = json!({
             "hits": collected.total,
             "files": collected.files.len(),
             "changed": changed,
             "applied": written,
+            "skipped": skipped.len(),
         });
         output.is_error = !failures.is_empty();
         output
+    }
+}
+
+/// Every match expanded, with each output `\n`'s source line; a per-line join is its line's, matched or not.
+fn replaced(
+    matcher: &regex::Regex,
+    text: &str,
+    replacement: &str,
+    multiline: bool,
+) -> (String, Vec<Option<usize>>) {
+    let mut out = String::with_capacity(text.len());
+    let mut origins = Vec::new();
+    if multiline {
+        substitute(matcher, text, replacement, 0, &mut out, &mut origins);
+    } else {
+        for (index, line) in text.split('\n').enumerate() {
+            if index > 0 {
+                out.push('\n');
+                origins.push(index.checked_sub(1));
+            }
+            substitute(matcher, line, replacement, index, &mut out, &mut origins);
+        }
+    }
+    (out, origins)
+}
+
+/// `text`'s matches expanded onto `out` from source line `first`; a `\n` inside a match is the replacement's, `None`.
+fn substitute(
+    matcher: &regex::Regex,
+    text: &str,
+    replacement: &str,
+    first: usize,
+    out: &mut String,
+    origins: &mut Vec<Option<usize>>,
+) {
+    let mut line = first;
+    let mut cursor = 0_usize;
+    let mut matches = matcher.captures_iter(text);
+    loop {
+        let caps = matches.next();
+        let found = caps.as_ref().and_then(|caps| caps.get(0));
+        let gap = text
+            .get(cursor..found.map_or(text.len(), |found| found.start()))
+            .unwrap_or_default();
+        out.push_str(gap);
+        let kept = gap.matches('\n').count();
+        origins.extend((line..line.saturating_add(kept)).map(Some));
+        line = line.saturating_add(kept);
+        let (Some(caps), Some(found)) = (caps.as_ref(), found) else {
+            return;
+        };
+        let start = out.len();
+        caps.expand(replacement, out);
+        let wrote = out.get(start..).unwrap_or_default().matches('\n').count();
+        origins.resize(origins.len().saturating_add(wrote), None);
+        line = line.saturating_add(found.as_str().matches('\n').count());
+        cursor = found.end();
     }
 }
 
@@ -694,7 +781,25 @@ fn page_args(
     Ok((context_asked, context_ignored, offset, root))
 }
 
+fn walled_write(
+    collected: &Collected,
+    options: &Options,
+    context: &ToolContext,
+) -> Option<ToolOutput> {
+    if !options.apply {
+        return None;
+    }
+    let file = collected.files.iter().find(|file| {
+        crate::builtins::walled(&context.deny_write, &context.cwd.join(&file.display))
+    })?;
+    Some(error_output_kind(
+        crate::builtins::wall_refusal("grep", &file.display, "deny_write"),
+        yi_types::event::ToolErrorKind::Denied,
+    ))
+}
+
 fn cut_notices(collected: &Collected, context_asked: usize, rows: &mut Vec<String>) {
+    rows.extend(crate::builtins::walled_notice(collected.walled));
     if collected.collection_capped {
         rows.push(format!(
             "[match collection stopped at {COLLECTION_CAP} before every file was scanned — narrow with path, include, or type]"
@@ -812,12 +917,16 @@ impl Tool for GrepTool {
         let collected = collect(
             &context.cwd,
             &root,
+            &context.deny_read,
             &matcher,
             include.as_ref(),
             &options,
             self.document_search(&options, context),
         );
         if let Some(replacement) = &options.replace {
+            if let Some(refused) = walled_write(&collected, &options, context) {
+                return refused;
+            }
             return self.replace(&collected, &matcher, replacement, &options);
         }
         let page_cap = if options.block {

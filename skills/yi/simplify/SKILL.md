@@ -8,7 +8,6 @@ description: >
   Do NOT use to hunt bugs (that is a review) or on someone else's diff
   without being asked.
 trigger: simplify, shrink this, smaller diff, subtract first
-scope: text
 ---
 
 # simplify

@@ -239,6 +239,20 @@ fn scope_identity(scope: &str, cwd: &std::path::Path) -> String {
     out
 }
 
+/// "Always" on a widened retry: later contained runs may write under `dir`. It keeps no command
+/// rule, so the commands themselves stay contained.
+pub fn write_grant(dir: &std::path::Path) -> Grant {
+    let mut canonical = String::new();
+    write_identity_field(&mut canonical, "yi-permission-state-v2");
+    write_identity_field(&mut canonical, "write");
+    write_identity_field(&mut canonical, &dir.to_string_lossy());
+    Grant {
+        kind: RuleKind::Command,
+        canonical,
+        label: format!("contained writes under {}", dir.display()),
+    }
+}
+
 fn tree_writes(
     call: &crate::ToolCall<'_>,
     context: &crate::CatastrophicContext,

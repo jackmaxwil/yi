@@ -120,10 +120,8 @@ pub fn card(home: &Path) -> Result<NodeCard, String> {
             let card = computed(cpus, memory_gb(), docker.is_ok(), name);
             let bytes = serde_json::to_vec_pretty(&card).map_err(|error| error.to_string())?;
             // Invariant: renamed into place, so a second process reads a whole card or none.
-            let staged = path.with_extension(format!("json.{}", std::process::id()));
             std::fs::create_dir_all(home.join(".yi"))
-                .and_then(|()| std::fs::write(&staged, bytes))
-                .and_then(|()| std::fs::rename(&staged, &path))
+                .and_then(|()| yi_session::replace_file(&path, &bytes))
                 .map_err(|error| format!("{}: {error}", path.display()))?;
             card
         }

@@ -29,7 +29,8 @@ pub trait StreamFn: Send + Sync {
     ) -> Receiver<AssistantMessageEvent>;
 }
 
-fn synthesized_error_message(model: &Model, text: &str) -> AgentMessage {
+/// An errored reply carrying `text`, for a turn that fails before or outside a request.
+pub fn synthesized_error_message(model: &Model, text: &str) -> AgentMessage {
     AgentMessage::Assistant {
         content: Vec::new(),
         api: model.api.clone(),
@@ -345,8 +346,12 @@ async fn execute_tool_calls(
     (finalized, terminate)
 }
 
-fn fail_truncated_calls(
+const TRUNCATED: &str = "the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.";
+const AFTER_LAST_WORD: &str = "time is up and the run has ended.";
+
+fn fail_calls(
     calls: Vec<ExtractedCall>,
+    why: &str,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> Vec<Finalized> {
     calls
@@ -357,10 +362,7 @@ fn fail_truncated_calls(
                 tool_name: call.name.clone(),
                 args: Value::Object(call.arguments.clone()),
             });
-            let text = format!(
-                "Tool call \"{}\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.",
-                call.name
-            );
+            let text = format!("Tool call \"{}\" was not executed: {why}", call.name);
             let item = Finalized {
                 call,
                 result: error_tool_result(&text),
@@ -589,16 +591,29 @@ async fn stream_assistant_response<S: StreamFn>(
         .as_ref()
         .map(|tail| tail())
         .unwrap_or_default();
-    let llm_messages = {
+    // The tail is per-request fact, not history: it rides `transient`, which every provider
+    // renders after its cache marks and none may mark (D295).
+    let (llm_messages, transient) = {
         let _span = yi_types::trace::span("loop.convert_to_llm");
-        let mut converted = (config.convert_to_llm)(&context.messages);
-        converted.extend((config.convert_to_llm)(&tail));
-        converted
+        (
+            (config.convert_to_llm)(&context.messages),
+            (config.convert_to_llm)(&tail),
+        )
     };
     let tool_defs: Vec<ToolDef> = context.tools.iter().map(|tool| tool.definition()).collect();
+    // The loop says whether its tail is read again: the forced-none last word is the end.
+    let reuse = if tool_choice == Some(yi_types::model::ToolChoice::None) {
+        yi_types::model::Reuse::LastTurn
+    } else {
+        config.reuse
+    };
     let llm_context = LlmContext {
         system_prompt: context.system_prompt.clone(),
         messages: llm_messages,
+        transient,
+        schema: config.schema.clone().filter(|_| tool_defs.is_empty()),
+        shared_through: config.shared_through,
+        reuse,
         tools: if tool_defs.is_empty() {
             None
         } else {
@@ -616,6 +631,7 @@ async fn stream_assistant_response<S: StreamFn>(
         let _span = yi_types::trace::span("loop.stream_open");
         stream.stream(model, &llm_context, effort, signal)
     };
+    let stable_key = llm_context.stable_key();
     drop(llm_context);
     let mut first_event = true;
     let mut first_token = true;
@@ -709,7 +725,7 @@ async fn stream_assistant_response<S: StreamFn>(
         }
         None => None,
     };
-    let final_message = final_message.unwrap_or_else(|| {
+    let mut final_message = final_message.unwrap_or_else(|| {
         if signal.is_fired() || timed_out {
             aborted_message(
                 added_partial.then(|| context.messages.last()).flatten(),
@@ -719,6 +735,23 @@ async fn stream_assistant_response<S: StreamFn>(
             synthesized_error_message(model, "Provider stream ended without a terminal event")
         }
     });
+    if let AgentMessage::Assistant {
+        diagnostics,
+        timestamp,
+        ..
+    } = &mut final_message
+    {
+        let mut details = Map::new();
+        details.insert("stable".to_owned(), stable_key.into());
+        diagnostics.get_or_insert_with(Vec::new).push(
+            yi_types::message::AssistantMessageDiagnostic {
+                diagnostic_type: yi_types::model::CACHE_DIAGNOSTIC.to_owned(),
+                timestamp: *timestamp,
+                error: None,
+                details: Some(details),
+            },
+        );
+    }
     if added_partial {
         if let Some(last) = context.messages.last_mut() {
             *last = final_message.clone();
@@ -847,7 +880,6 @@ pub async fn run_loop<S: StreamFn>(
                 };
                 if let Some(word) = config.last_word.as_ref().and_then(|word| word(&snapshot)) {
                     last_word_said = true;
-                    tool_choice = Some(ToolChoice::None);
                     pending = vec![word];
                     has_more_tool_calls = false;
                     continue;
@@ -887,7 +919,9 @@ pub async fn run_loop<S: StreamFn>(
             if !calls.is_empty() {
                 let (finalized, terminate) = if reason == StopReason::Length {
                     length_stops = length_stops.saturating_add(1);
-                    (fail_truncated_calls(calls, emit), false)
+                    (fail_calls(calls, TRUNCATED, emit), false)
+                } else if last_word_said {
+                    (fail_calls(calls, AFTER_LAST_WORD, emit), true)
                 } else {
                     length_stops = 0;
                     side_work(config).await;
@@ -960,7 +994,6 @@ pub async fn run_loop<S: StreamFn>(
                     .and_then(|word| word(&snapshot))
                 {
                     last_word_said = true;
-                    tool_choice = Some(ToolChoice::None);
                     pending = vec![word];
                     continue;
                 }

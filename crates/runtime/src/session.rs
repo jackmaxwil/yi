@@ -48,6 +48,12 @@ pub struct SessionConfig {
     pub tool_execution: ExecutionMode,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RequestShape {
+    pub schema: Option<serde_json::Value>,
+    pub shared_through: Option<usize>,
+}
+
 struct Shared {
     ext: Mutex<Option<Arc<Mutex<crate::ext::Host>>>>,
     model: Mutex<Model>,
@@ -69,10 +75,16 @@ struct Shared {
     coupling: Mutex<Option<TurnCoupling>>,
     waits: Mutex<Option<Arc<dyn Fn() -> u64 + Send + Sync>>>,
     environment: Mutex<Option<Arc<EnvironmentFn>>>,
+    reuse: Mutex<yi_types::model::Reuse>,
+    /// The system bytes the first request sent; every later request must send the same (D310).
+    first_system_prompt: OnceLock<String>,
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
+    rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     deadline: OnceLock<Deadline>,
+    turn_cap: OnceLock<u32>,
+    shape: OnceLock<RequestShape>,
     turn_time: Mutex<(Option<std::time::Instant>, Option<Duration>)>,
     cancelled: std::sync::atomic::AtomicBool,
     /// The kill switch's hold: no wake starts a turn until it lifts; a typed prompt still does.
@@ -145,7 +157,6 @@ pub struct AgentSession {
     goal: Mutex<Option<Arc<crate::goal::GoalService>>>,
     plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
     memory: Mutex<Option<Arc<crate::memory::Activity>>>,
-    rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     wall: Mutex<crate::wall::Wall>,
     kernel: Arc<Mutex<Option<Arc<crate::kernel::KernelService>>>>,
 }
@@ -176,13 +187,18 @@ impl AgentSession {
                 signal: InterruptSignal::default(),
                 on_turn_start: Mutex::new(None),
                 environment: Mutex::new(None),
+                reuse: Mutex::new(yi_types::model::Reuse::Loop),
+                first_system_prompt: OnceLock::new(),
                 lane: Mutex::new(None),
                 telemetry: Mutex::new(None),
                 todos: Mutex::new(None),
+                rules: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
                 coupling: Mutex::new(None),
                 waits: Mutex::new(None),
                 deadline: OnceLock::new(),
+                turn_cap: OnceLock::new(),
+                shape: OnceLock::new(),
                 turn_time: Mutex::new((None, None)),
                 cancelled: false.into(),
                 held: false.into(),
@@ -198,7 +214,6 @@ impl AgentSession {
             goal: Mutex::new(None),
             plan: Mutex::new(None),
             memory: Mutex::new(None),
-            rules: Mutex::new(None),
             wall: Mutex::new(crate::wall::Wall::default()),
             kernel: Arc::new(Mutex::new(None)),
         }
@@ -232,11 +247,13 @@ impl AgentSession {
         if let Ok(mut slot) = self.shared.ext.lock() {
             *slot = Some(Arc::new(Mutex::new(host)));
         }
-        let notice = self.notice_hook();
+        let deliver = self.deliver_hook();
         if let Some(host) = self.extensions()
             && let Ok(mut host) = host.lock()
         {
-            host.set_notice(notice);
+            host.set_deliver(Arc::new(move |message| {
+                deliver(message, false);
+            }));
         }
     }
 
@@ -267,6 +284,18 @@ impl AgentSession {
         self.shared.deadline.get_or_init(|| Deadline::new(total));
     }
 
+    pub fn set_turn_cap(&self, turns: u32) {
+        self.shared.turn_cap.get_or_init(|| turns);
+    }
+
+    pub fn set_request_shape(&self, shape: RequestShape) {
+        self.shared.shape.get_or_init(|| shape);
+    }
+
+    pub fn request_shape(&self) -> Option<RequestShape> {
+        self.shared.shape.get().cloned()
+    }
+
     pub(crate) fn deadline(&self) -> Option<Deadline> {
         self.shared.deadline.get().copied()
     }
@@ -274,6 +303,22 @@ impl AgentSession {
     pub fn set_environment(&self, hook: Arc<EnvironmentFn>) {
         if let Ok(mut slot) = self.shared.environment.lock() {
             *slot = Some(hook);
+        }
+    }
+
+    /// A session whose one prompt is never continued (the auto-reviewer) says so, and its
+    /// tail is never marked (D295).
+    pub fn reuse(&self) -> yi_types::model::Reuse {
+        self.shared
+            .reuse
+            .lock()
+            .map(|reuse| *reuse)
+            .unwrap_or_default()
+    }
+
+    pub fn set_reuse(&self, reuse: yi_types::model::Reuse) {
+        if let Ok(mut slot) = self.shared.reuse.lock() {
+            *slot = reuse;
         }
     }
 
@@ -360,7 +405,7 @@ impl AgentSession {
     }
 
     pub fn set_rules_engine(&self, engine: Arc<crate::rules::RuleEngine>) {
-        if let Ok(mut slot) = self.rules.lock() {
+        if let Ok(mut slot) = self.shared.rules.lock() {
             *slot = Some(engine);
         }
     }
@@ -379,7 +424,8 @@ impl AgentSession {
     }
 
     pub fn rules_engine(&self) -> Option<Arc<crate::rules::RuleEngine>> {
-        self.rules
+        self.shared
+            .rules
             .lock()
             .ok()
             .and_then(|slot| slot.as_ref().map(Arc::clone))
@@ -883,14 +929,16 @@ impl AgentSession {
             return false;
         }
         let messages = self.messages();
-        let model = self.model();
+        let (model, effort) = hooks::settings_of(&self.shared);
+        let request =
+            crate::compaction::LoopRequest::new(self.system_prompt(), &self.tools(), effort);
         let store = self.store();
         let signal = yi_loop::interrupt::InterruptSignal::default();
         let replaced = compactor
             .maybe_compact(
                 &messages,
                 &model,
-                &self.system_prompt(),
+                &request,
                 self.provider.as_ref(),
                 store.as_ref(),
                 &signal,
@@ -1062,5 +1110,46 @@ fn attribute_to_shared(shared: &Arc<Shared>, child: &Usage) {
         if let Err(error) = recorded {
             record_store_error(shared, &error);
         }
+    }
+}
+
+/// Invariant: `notify_waiters` stores no permit, so this registers before `poll` reads state.
+pub(crate) async fn until<T>(
+    notify: &tokio::sync::Notify,
+    mut poll: impl FnMut() -> std::ops::ControlFlow<T, Option<std::time::Instant>>,
+) -> T {
+    loop {
+        let mut woken = std::pin::pin!(notify.notified());
+        woken.as_mut().enable();
+        match poll() {
+            std::ops::ControlFlow::Break(done) => return done,
+            std::ops::ControlFlow::Continue(Some(at)) => {
+                let at = tokio::time::Instant::from_std(at);
+                let _ = tokio::time::timeout_at(at, woken).await;
+            }
+            std::ops::ControlFlow::Continue(None) => woken.await,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::ControlFlow;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_wake_fired_while_polling_is_not_lost() -> Result<(), tokio::time::error::Elapsed> {
+        let notify = tokio::sync::Notify::new();
+        let mut polls = 0;
+        let woke = super::until(&notify, || {
+            polls += 1;
+            if polls > 1 {
+                return ControlFlow::Break(polls);
+            }
+            notify.notify_waiters();
+            ControlFlow::Continue(None)
+        });
+        assert_eq!(tokio::time::timeout(Duration::from_secs(1), woke).await?, 2);
+        Ok(())
     }
 }
