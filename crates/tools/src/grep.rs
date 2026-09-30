@@ -296,15 +296,6 @@ fn type_glob(name: &str) -> Option<&'static str> {
         .map(|(_, glob)| *glob)
 }
 
-fn clip(line: &str) -> (String, bool) {
-    if line.chars().count() > LINE_CLIP {
-        let clipped: String = line.chars().take(LINE_CLIP).collect();
-        (format!("{clipped}\u{2026}"), true)
-    } else {
-        (line.to_owned(), false)
-    }
-}
-
 fn collect(
     cwd: &Path,
     root: &Path,
@@ -507,7 +498,7 @@ impl GrepTool {
                     continue;
                 };
                 let number = row.saturating_add(1) as u64;
-                let (shown, clipped) = clip(text);
+                let (shown, clipped) = crate::tool::clip(text, LINE_CLIP);
                 if !clipped {
                     seen.push(number);
                 }
