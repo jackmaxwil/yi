@@ -285,8 +285,7 @@ pub fn register(registry: &mut crate::kernel::HostRegistry, sessions_dir: PathBu
                 .to_owned();
             let number = |key: &str, default: usize| {
                 payload
-                    .get(key)
-                    .and_then(Value::as_u64)
+                    .u64_of(key)
                     .map_or(default, |n| usize::try_from(n).unwrap_or(default))
             };
             let (offset, limit) = (number("offset", 0), number("limit", PAGE));

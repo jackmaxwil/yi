@@ -86,8 +86,7 @@ struct Verbs {
 
 fn text(payload: &Map<String, Value>, key: &str, verb: &str) -> Result<String, String> {
     payload
-        .get(key)
-        .and_then(Value::as_str)
+        .str_of(key)
         .map(str::to_owned)
         .ok_or_else(|| format!("{verb}: {key} must be a string"))
 }
