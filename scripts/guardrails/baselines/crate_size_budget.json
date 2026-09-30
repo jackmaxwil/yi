@@ -4,7 +4,7 @@
   "cli": 5817,
   "console": 9648,
   "context": 1603,
-  "kernel": 4670,
+  "kernel": 4736,
   "loop": 1447,
   "mcp-cli": 2318,
   "oauth": 1207,
@@ -12,7 +12,7 @@
   "permission": 2065,
   "runtime": 54328,
   "session": 2006,
-  "tools": 14073,
+  "tools": 14130,
   "tui": 14772,
   "types": 9510
 }
