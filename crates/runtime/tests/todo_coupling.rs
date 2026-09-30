@@ -655,6 +655,37 @@ fn numbers_match_the_extractor_regex() {
     assert!(numbers_of("12 of 99").is_empty());
     assert_eq!(numbers_of("ran 4567 tests, 4567 again"), vec!["4567"]);
     assert_eq!(numbers_of("(1088) and 2500. then 777"), vec!["1088", "777"]);
+    assert!(numbers_of("per .ruler/040 and crates/v2/300/x").is_empty());
+    assert_eq!(numbers_of("`line 1234` then 5000 `x 6000`"), vec!["5000"]);
+}
+
+/// Dies with "The turn produced no output" after the model accepted a flagged path fragment:
+/// `.ruler/040` was flagged, the send-back asked for a quote per number, and the model wrote its
+/// whole answer again; an empty stop is now the answer that says every number was a name.
+#[test]
+fn an_empty_stop_answers_the_unsourced_send_back() -> TestResult {
+    let r = rig("unsourced-ack")?;
+    let hooks = prelude_hooks(&r);
+    let snapshot = |message| TurnSnapshot {
+        message,
+        tool_results: &[],
+    };
+    let claim = stop("The rule in D240 says 2500 checks run.");
+    let first = (hooks.intercept_stop)(&snapshot(&claim)).ok_or("an unsourced number re-drives")?;
+    let (_, _, text) = custom_type(&first);
+    assert!(text.contains("end the turn with no text"), "{text}");
+    assert!(!text.contains("quote the tool result"), "{text}");
+    let empty = stop("");
+    assert!(
+        (hooks.intercept_stop)(&snapshot(&empty)).is_none(),
+        "the empty stop right after the send-back ends the turn"
+    );
+    let later = (hooks.intercept_stop)(&snapshot(&empty));
+    assert!(
+        later.is_some(),
+        "an empty stop that answers nothing is still re-driven"
+    );
+    Ok(())
 }
 
 #[test]

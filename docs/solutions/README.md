@@ -308,5 +308,6 @@ edited by hand.
 - [D335](adr/d335.md) - kept permission rules are ledger entries and flow down only (#600 stage 2c;...
 - [D336](adr/d336.md) - one status vocabulary for every surface
 - [D337](adr/d337.md) - a compaction never replaces the history without a summary, except to make...
+- [D338](adr/d338.md) - a flagged number costs one line, not a rewrite (amends D151)
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
