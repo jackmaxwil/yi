@@ -1,4 +1,3 @@
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 use yi_types::permission::{RuleDecision, RuleKind, SessionPermissionRule, SessionPermissionState};
 
@@ -17,33 +16,21 @@ pub enum RuleStateError {
     CapReached,
 }
 
-fn digest(canonical: &str) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
-    hasher.finalize().into()
-}
-
-fn write_identity_field(out: &mut String, field: &str) {
-    out.push_str(&format!("{}:", field.len()));
-    out.push_str(field);
-    out.push('\n');
+/// Each field as `<byte length>:<field>\n` after the version tag, so no field runs into the next.
+fn identity(fields: &[&str]) -> String {
+    ["yi-permission-state-v2"]
+        .iter()
+        .chain(fields)
+        .map(|field| format!("{}:{field}\n", field.len()))
+        .collect()
 }
 
 pub fn canonical_command_identity(command: &str, cwd: &str) -> String {
-    let mut out = String::new();
-    write_identity_field(&mut out, "yi-permission-state-v2");
-    write_identity_field(&mut out, "command");
-    write_identity_field(&mut out, command);
-    write_identity_field(&mut out, cwd);
-    out
+    identity(&["command", command, cwd])
 }
 
 pub fn canonical_tool_identity(tool_name: &str, arguments_json: &str) -> String {
-    let mut out = String::new();
-    write_identity_field(&mut out, "yi-permission-state-v2");
-    write_identity_field(&mut out, tool_name);
-    write_identity_field(&mut out, arguments_json);
-    out
+    identity(&[tool_name, arguments_json])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,20 +45,15 @@ pub enum ConfigRuleAction {
 #[derive(Debug, Clone)]
 pub struct ConfigRule {
     pub tool: String,
-    pub pattern: globset::GlobMatcher,
+    pub pattern: PathGlob,
     pub action: ConfigRuleAction,
 }
 
 impl ConfigRule {
     pub fn new(tool: &str, pattern: &str, action: ConfigRuleAction) -> Result<Self, String> {
-        let matcher = globset::GlobBuilder::new(pattern)
-            .literal_separator(false)
-            .build()
-            .map_err(|error| format!("invalid permission pattern {pattern:?}: {error}"))?
-            .compile_matcher();
         Ok(Self {
             tool: tool.to_owned(),
-            pattern: matcher,
+            pattern: PathGlob::new(pattern)?,
             action,
         })
     }
@@ -99,14 +81,16 @@ impl PathGlob {
     pub fn is_match(&self, subject: &str) -> bool {
         self.0.is_match(subject)
     }
+
+    pub fn glob(&self) -> &globset::Glob {
+        self.0.glob()
+    }
 }
 
-/// Session rule state over the yi-types wire shape: digests are recomputed
-/// from `canonical` on load and never trusted from disk.
+/// Session rule state over the yi-types wire shape, matched on each rule's `canonical`.
 #[derive(Default)]
 pub struct SessionRules {
     state: SessionPermissionState,
-    digests: Vec<[u8; 32]>,
 }
 
 impl SessionRules {
@@ -116,12 +100,7 @@ impl SessionRules {
 
     pub fn load(state: SessionPermissionState) -> Result<Self, RuleStateError> {
         validate(&state)?;
-        let digests = state
-            .rules
-            .iter()
-            .map(|rule| digest(&rule.canonical))
-            .collect();
-        Ok(Self { state, digests })
+        Ok(Self { state })
     }
 
     pub fn state(&self) -> &SessionPermissionState {
@@ -129,15 +108,11 @@ impl SessionRules {
     }
 
     pub fn decision_for(&self, kind: RuleKind, canonical: &str) -> Option<RuleDecision> {
-        let wanted = digest(canonical);
         self.state
             .rules
             .iter()
-            .zip(&self.digests)
-            .find(|(rule, rule_digest)| {
-                rule.kind == kind && **rule_digest == wanted && rule.canonical == canonical
-            })
-            .map(|(rule, _)| rule.decision)
+            .find(|rule| rule.kind == kind && rule.canonical == canonical)
+            .map(|rule| rule.decision)
     }
 
     pub fn insert(
@@ -178,7 +153,6 @@ impl SessionRules {
             decision,
             generation: id,
         });
-        self.digests.push(digest(canonical));
         Ok(())
     }
 }
@@ -223,32 +197,19 @@ pub struct Grant {
 }
 
 fn dir_identity(dir: &std::path::Path) -> String {
-    let mut out = String::new();
-    write_identity_field(&mut out, "yi-permission-state-v2");
-    write_identity_field(&mut out, "dir");
-    write_identity_field(&mut out, &dir.to_string_lossy());
-    out
+    identity(&["dir", &dir.to_string_lossy()])
 }
 
 fn scope_identity(scope: &str, cwd: &std::path::Path) -> String {
-    let mut out = String::new();
-    write_identity_field(&mut out, "yi-permission-state-v2");
-    write_identity_field(&mut out, "scope");
-    write_identity_field(&mut out, scope);
-    write_identity_field(&mut out, &cwd.to_string_lossy());
-    out
+    identity(&["scope", scope, &cwd.to_string_lossy()])
 }
 
 /// "Always" on a widened retry: later contained runs may write under `dir`. It keeps no command
 /// rule, so the commands themselves stay contained.
 pub fn write_grant(dir: &std::path::Path) -> Grant {
-    let mut canonical = String::new();
-    write_identity_field(&mut canonical, "yi-permission-state-v2");
-    write_identity_field(&mut canonical, "write");
-    write_identity_field(&mut canonical, &dir.to_string_lossy());
     Grant {
         kind: RuleKind::Command,
-        canonical,
+        canonical: identity(&["write", &dir.to_string_lossy()]),
         label: format!("contained writes under {}", dir.display()),
     }
 }
