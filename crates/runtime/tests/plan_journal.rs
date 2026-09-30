@@ -978,3 +978,56 @@ fn the_verification_fixture_carries_the_shapes_the_kernel_writes() -> TestResult
     }
     Ok(())
 }
+
+/// The memory journal reads under the plan journal's rules: a torn last line is the bytes a crash
+/// cut short, set aside beside the journal with its bytes kept, and every whole record replays.
+#[test]
+fn a_memory_journal_sets_its_torn_tail_aside() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = Scratch::new("yi-memory-torn")?;
+    let store = yi_runtime::memory::Store::new(dir.join("memory"));
+    std::fs::create_dir_all(store.dir())?;
+    std::fs::write(
+        store.dir().join("alpha.md"),
+        "---\nname: alpha\ndescription: a note written by hand\n---\n\nThe body of alpha.\n",
+    )?;
+    std::fs::write(
+        store.dir().join("MEMORY.md"),
+        "- [alpha](alpha.md) — a note written by hand\n",
+    )?;
+    store.reconcile()?;
+    let journal = store.dir().join("ops.jsonl");
+    let whole = std::fs::read_to_string(&journal)?;
+    assert!(whole.contains("\"adopt\""), "{whole}");
+    std::fs::write(&journal, format!("{whole}{{\"at\":1,\"na"))?;
+    let rebuilt = store.rebuild()?;
+    assert_eq!((rebuilt.live, rebuilt.broken), (1, None));
+    assert_eq!(
+        std::fs::read_to_string(&journal)?,
+        whole,
+        "the torn bytes left the journal"
+    );
+    let aside: Vec<String> = std::fs::read_dir(store.dir())?
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("ops.torn."))
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .collect();
+    assert_eq!(
+        aside,
+        ["{\"at\":1,\"na"],
+        "the torn bytes are kept beside it"
+    );
+    // A torn run longer than a record may be is torn too: the next append must land on a clean
+    // line, not glue itself to the run.
+    std::fs::write(&journal, format!("{whole}{}", "x".repeat(RECORD_CAP + 10)))?;
+    let rebuilt = store.rebuild()?;
+    assert_eq!(
+        rebuilt.broken, None,
+        "the set-aside run is not a broken line"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&journal)?,
+        whole,
+        "the long torn run left the journal"
+    );
+    Ok(())
+}
