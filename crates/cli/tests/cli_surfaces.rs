@@ -1084,15 +1084,27 @@ fn an_unset_home_is_refused_and_writes_nothing_here() -> TestResult {
         clippy::disallowed_methods,
         reason = "the contract is the spawned binary's exit code and what it wrote"
     )]
-    let refused = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args(["ask", "--model", "faux/faux-1", "hi"])
-        .env_remove("HOME")
-        .current_dir(workspace.project())
-        .output()?;
+    let homeless = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args(args)
+            .env_remove("HOME")
+            .envs(NO_KERNEL.iter().copied())
+            .current_dir(workspace.project())
+            .output()
+    };
+    let refused = homeless(&["ask", "--model", "faux/faux-1", "hi"])?;
     let complaint = String::from_utf8_lossy(&refused.stderr);
     assert!(!workspace.project().join(".yi").exists(), "{complaint}");
     assert_eq!(refused.status.code(), Some(2), "{complaint}");
     assert!(complaint.contains("HOME is not set"), "{complaint}");
+    // `doctor` runs before the check, so it is the one surface that reports it.
+    let lines = doctor_lines(&homeless(&["doctor"])?);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("FAIL  home") && l.ends_with("HOME is not set")),
+        "{lines:?}"
+    );
     Ok(())
 }
 
@@ -1127,6 +1139,10 @@ fn doctor_passes_an_old_catalog_when_refresh_is_off() -> TestResult {
         .and_then(|rows| rows.iter().find(|row| row["name"] == "catalog"))
         .ok_or_else(|| format!("no catalog row: {rows}"))?;
     assert_eq!(row["status"], "ok", "{row}");
+    assert_eq!(
+        row["detail"],
+        "refresh off (`catalog.enabled: false`); caches stay as last written"
+    );
     Ok(())
 }
 
