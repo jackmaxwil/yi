@@ -32,13 +32,15 @@ fn field_hint(field: &str) -> &'static str {
         "output" => {
             "; output is a url of the product (tree://<child>/<path> or file:///abs/path), omitted when there is none, and a check's output line belongs to the todo tool's evidence"
         }
-        "todos" | "delegation" => {
+        "todos" | "delegation" | "title" | "deps" | "accept" => {
             "; a todo is {label, after?, delegation?: {spec: {role?, isolation?}, accept: {command: \"...\"}}}"
         }
-        "contract" => {
+        "contract" | "check" | "acceptance" => {
             "; a contract is {class, items: [{id, critical, weight, decider: {cmd: \"shell command\"}}]}, or omit it and a worktree delegation's accept {command} is its contract"
         }
         "evidence" => "; evidence is the todo tool's field, done takes output (a url) or nothing",
+        "after" => "; a todo's after is a list of labels; add_edge's after is one label",
+        "intent" => "; intent is a list of user://<n> addresses, not prose",
         // Incident: three worktree children quoted the attempt nine times between them; the
         // refusal named the wanted type without saying it was the todo's own counter.
         "attempt" => {
@@ -783,6 +785,10 @@ const CHILD_DESCRIPTION: &str = "The plan that dispatched you, read-only: op=vie
 /// Invariant: a flat object, because one provider rebuilds the schema from `properties` and
 /// `required` alone, so a root `oneOf` would vanish there. No live state: cached prefix.
 pub fn schema() -> Value {
+    let contract = json!({"type": "object", "required": ["class", "items"], "properties": {
+        "class": {"type": "string", "enum": ["writer", "reader", "inline"]}, "covers": {"type": "array", "items": {"type": "string"}, "description": "globs whose writes preview the cmd items"}, "threshold": {"type": "integer", "minimum": 1, "maximum": 1000}, "min_coverage": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "items": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["id", "critical", "weight", "decider"], "properties": {"id": {"type": "string"}, "critical": {"type": "boolean"}, "weight": {"type": "integer", "minimum": 1, "maximum": 100},
+            "decider": {"type": "object", "description": "{cmd: \"shell command that exits 0 only when the item holds\"}, or {cmd: {checker: command, timeout_ms}} (default 60000); {schema: {schema: artifact}}; {example: {cases: artifact, runner: artifact, timeout_ms}}; an artifact is {digest, media_type, length}"}}}}}});
     json!({
             "type": "object",
             "properties": {
@@ -794,12 +800,11 @@ pub fn schema() -> Value {
                 "list": {"type": "string", "description": "set: the checklist, one `- [ ] label` per line (`[>]` running, `[x]` done), nested by two-space indent; trailing `user://<n>` tokens cite the user's messages the row serves"},
                 "plan": {"type": "string", "description": "Sub-plan id; omit for the root plan"},
                 "goal": {"type": "string", "description": "init: the whole deliverable in one line"},
-                "todos": {
-                    "type": "array",
-                    "items": {"type": "object"},
-                    "description": "init/append/decompose/supersede: [{label (at most 80 chars), intent?: [user://<n> of each user message it serves; default the latest], waived?: [{address, reason}], after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, covers?: [glob], items: [{id, critical: bool, weight: 1..100, decider: {cmd: \"shell command\"} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract, as does container:<image>, the same worktree with its bash run in a container of that image; done runs the contract (an artifact is {digest, media_type, length})",
-                    "minItems": 1
-                },
+                "todos": {"type": "array", "minItems": 1, "description": "init/append/decompose/supersede: the todos. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract, as does container:<image>, the same worktree with its bash run in a container of that image; done runs the contract", "items": {"type": "object", "required": ["label"], "properties": {
+                    "label": {"type": "string", "maxLength": TODO_LABEL_MAX, "description": "the todo's name, imperative, at most 80 chars"}, "after": {"type": "array", "items": {"type": "string"}, "description": "labels of the todos this one waits on"},
+                    "intent": {"type": "array", "items": {"type": "string"}, "description": "user://<n> of each user message it serves; default the latest"}, "waived": {"type": "array", "items": {"type": "object"}, "description": "[{address, reason}]: a user message the plan leaves unserved"},
+                    "delegation": {"type": "object", "description": "{spec: {role?, model?, effort?, isolation?}, accept: {command} | {stated}, context?: [url], output?: {schema: url}}"},
+                    "contract": contract}}},
                 "label": {"type": "string", "description": "drop/block/unblock/start/done/fail/retry/decompose: the todo"},
                 "labels": {"type": "array", "items": {"type": "string"}, "description": "reorder: every label of the plan, in the new priority order"},
                 "todo": {"type": "string", "description": "add_edge: the todo that waits"},

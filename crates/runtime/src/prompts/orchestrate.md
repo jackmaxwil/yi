@@ -17,13 +17,18 @@ preferences.
 
 ## Write the plan
 
-Every task carries:
+Every todo carries, in the plan tool's own fields:
 
-- title: one line, imperative.
-- acceptance: what must be true when it is done.
-- check: a command that exits 0 only when the acceptance holds, whenever one
-  can be written. Prefer the repository's own gates.
-- deps: which tasks must complete first. Independent tasks carry none.
+- `label`: the task, imperative, at most 80 characters; a name, not a
+  sentence.
+- `contract`: what must be true when it is done, as items `done` runs: an
+  item's `decider: {cmd: "..."}` is a command that exits 0 only when the item
+  holds, whenever one can be written. Prefer the repository's own gates.
+- `after`: the labels of the todos that must complete first. Independent
+  todos carry none.
+
+A checklist you work yourself, with nothing for the engine to run, is one
+`op=set` call with a `goal`.
 
 A task is one coherent change verifiable in isolation. Three real tasks beat
 nine ceremonial ones. Adding tasks later is free; never quietly weaken or
