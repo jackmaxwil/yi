@@ -614,7 +614,7 @@ fn lenient_segments(command: &str) -> Vec<Vec<String>> {
     segments
 }
 
-/// Programs a contained run cannot serve, having no network.
+/// Programs a contained run cannot serve, having no network beyond loopback.
 const HOST_PROGRAMS: [&str; 7] = ["curl", "http", "rsync", "scp", "sftp", "ssh", "wget"];
 
 /// Whether an approval of `command` must run it outside the sandbox: a network program, a git

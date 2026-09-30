@@ -54,7 +54,15 @@ pub fn random_hex(bytes: usize) -> Result<String, String> {
     Ok(out)
 }
 
-pub fn make_connection(tmp_root: &Path) -> Result<Connection, String> {
+/// One directory per kernel, each hidden from every sandbox profile but its own kernel's: a
+/// connection file's key runs code in that kernel, and a contained process reaches loopback.
+pub fn connection_root(home: &Path) -> PathBuf {
+    home.join(".yi").join("kernel-connections")
+}
+
+/// A connection file in `dir`, made afresh with whatever a dead kernel left there removed
+/// unfollowed, or with no `dir` in a new directory under [`connection_root`].
+pub fn make_connection(home: &Path, dir: Option<&Path>) -> Result<Connection, String> {
     let info = ConnectionInfo {
         ip: "127.0.0.1".to_owned(),
         transport: "tcp".to_owned(),
@@ -67,10 +75,23 @@ pub fn make_connection(tmp_root: &Path) -> Result<Connection, String> {
         key: random_hex(16)?,
         kernel_name: "python3".to_owned(),
     };
-    let temp_dir = mkdtemp(tmp_root, "yi-kernel-")?;
+    let root = connection_root(home);
+    std::fs::create_dir_all(&root)
+        .map_err(|error| format!("create {}: {error}", root.display()))?;
+    set_mode(&root, 0o700)?;
+    let temp_dir = match dir {
+        Some(dir) => {
+            let _ = std::fs::remove_dir_all(dir);
+            std::fs::create_dir(dir)
+                .map_err(|error| format!("create {}: {error}", dir.display()))?;
+            set_mode(dir, 0o700)?;
+            dir.to_path_buf()
+        }
+        None => mkdtemp(&root, "yi-kernel-")?,
+    };
     let path = temp_dir.join("connection.json");
     let text = serde_json::to_string_pretty(&info).map_err(|error| error.to_string())?;
-    write_mode_600(&path, text.as_bytes())?;
+    write_new_600(&path, text.as_bytes())?;
     Ok(Connection {
         info,
         path,
@@ -93,9 +114,16 @@ fn mkdtemp(root: &Path, prefix: &str) -> Result<PathBuf, String> {
     Err("mkdtemp: exhausted retries".to_owned())
 }
 
-fn write_mode_600(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    std::fs::write(path, bytes).map_err(|error| format!("write {}: {error}", path.display()))?;
-    set_mode(path, 0o600)
+/// Created, never opened through a link: `create_new` refuses one planted at `path`.
+fn write_new_600(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    (options.open(path))
+        .and_then(|mut file| file.write_all(bytes))
+        .map_err(|error| format!("write {}: {error}", path.display()))
 }
 
 #[cfg(unix)]
