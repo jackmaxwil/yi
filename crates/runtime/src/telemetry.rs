@@ -56,7 +56,8 @@ fn fill_usage(span: &mut Span, usage: &Usage) {
     span.output = Some(usage.output);
     span.cache_read = Some(usage.cache_read);
     span.cache_write = Some(usage.cache_write);
-    span.cost_usd = usage.cost.total.as_f64();
+    // An unreported usage has no cost to record: absent, not a measured zero.
+    span.cost_usd = usage.cost.total.as_f64().filter(|_| !usage.unknown);
 }
 
 impl Telemetry {

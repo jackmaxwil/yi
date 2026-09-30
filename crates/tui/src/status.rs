@@ -80,6 +80,26 @@ impl TurnTokens {
     }
 }
 
+/// Dollars spent by a turn or a session, and whether a reply came back without usage: that
+/// reply's cost is missing, so the dollars are a floor.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Spend {
+    cost: f64,
+    floor: bool,
+}
+
+impl Spend {
+    pub(crate) fn record(&mut self, usage: &yi_types::message::Usage) {
+        self.cost += usage.cost.total.as_f64().unwrap_or(0.0);
+        self.floor |= usage.unknown;
+    }
+
+    /// `None` until something was spent or went unreported.
+    pub(crate) fn label(self) -> Option<String> {
+        (self.cost > 0.0 || self.floor).then(|| yi_types::message::fmt_cost(self.cost, self.floor))
+    }
+}
+
 pub(crate) fn fmt_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000 {
         let m = tokens as f64 / 1_000_000.0;
