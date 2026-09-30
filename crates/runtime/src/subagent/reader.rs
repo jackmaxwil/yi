@@ -38,7 +38,7 @@ impl Role {
 
     const fn default_tools(self) -> &'static [&'static str] {
         match self {
-            Self::Reader => &["read", "grep"],
+            Self::Reader => self.allowed_tools(),
             Self::Worker => &["read", "grep", "edit", "write"],
         }
     }
@@ -132,7 +132,7 @@ fn tools_of(kwargs: &Map<String, Value>, role: Role) -> Result<Vec<String>, Stri
 fn spoken(names: &[&str]) -> String {
     match names.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-        _ => names.join(""),
+        _ => names.join(", "),
     }
 }
 

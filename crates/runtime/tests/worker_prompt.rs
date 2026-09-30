@@ -43,15 +43,19 @@ async fn a_worker_is_sent_its_role_and_the_project_rules_and_nothing_of_the_root
         system.contains("Indent with tabs, never spaces."),
         "{system}"
     );
+    let text: String = body["system"]
+        .as_array()
+        .ok_or("no system blocks")?
+        .iter()
+        .filter_map(|block| block["text"].as_str())
+        .collect();
     for root_only in [
         yi_runtime::identity_fragment(),
         yi_runtime::doctrine_fragment(),
     ] {
-        let first = root_only.lines().next().unwrap_or_default();
-        assert!(
-            !system.contains(first),
-            "{first} reached the worker: {system}"
-        );
+        for line in root_only.lines().filter(|line| line.len() > 40) {
+            assert!(!text.contains(line), "{line} reached the worker: {text}");
+        }
     }
     assert!(!system.contains("release-notes"), "{system}");
     let tools: Vec<&str> = body["tools"]
