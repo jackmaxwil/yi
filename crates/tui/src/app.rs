@@ -198,7 +198,7 @@ pub struct App {
     /// When the landing last arrived; the row's age is this clock, not a wire field.
     pub(crate) landing_at: Option<Instant>,
     pub(crate) context_used: u64,
-    pub(crate) spent: crate::status::Spend,
+    pub(crate) spent: crate::status::Money,
     turn_started: Instant,
     turn_tools: u64,
     pub(crate) last_tool: Option<String>,
@@ -212,7 +212,7 @@ pub struct App {
     turn_tokens: crate::status::TurnTokens,
     /// Requests seen; past the first one a read is expected, so the footer shows `0% cached`.
     pub(crate) requests: u64,
-    turn_spent: crate::status::Spend,
+    turn_spent: crate::status::Money,
     pub(crate) width: usize,
     pub(crate) rows: usize,
     pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
@@ -314,7 +314,7 @@ impl App {
             landing: None,
             landing_at: None,
             context_used: 0,
-            spent: crate::status::Spend::default(),
+            spent: crate::status::Money::default(),
             turn_started: Instant::now(),
             turn_tools: 0,
             last_tool: None,
@@ -327,7 +327,7 @@ impl App {
             pen: None,
             turn_tokens: crate::status::TurnTokens::default(),
             requests: 0,
-            turn_spent: crate::status::Spend::default(),
+            turn_spent: crate::status::Money::default(),
             width,
             rows: 24,
             pane_hold: None,
@@ -987,7 +987,7 @@ impl App {
         self.model_since = None;
         self.last_tool = None;
         self.turn_tokens = crate::status::TurnTokens::default();
-        self.turn_spent = crate::status::Spend::default();
+        self.turn_spent = crate::status::Money::default();
     }
 
     /// One dim row closes a turn with what it cost, so the price of an answer is read

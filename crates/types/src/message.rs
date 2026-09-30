@@ -143,13 +143,14 @@ impl Usage {
     }
 }
 
-/// The one spelling of money wherever yi prints it: 3 decimals under $1, 2 from $1 up.
-/// `floor` is true when some reply in the sum came back without a usage object: its cost is
-/// missing, not zero, so the figure is a lower bound, `≥$0.450`, or `$?` with nothing known.
-pub fn fmt_cost(total: f64, floor: bool) -> String {
-    let mark = if floor { "≥" } else { "" };
-    if floor && total <= 0.0 {
+/// yi's one spelling of money: 3 decimals under $1, 2 above. `lower_bound`: a reply in the sum
+/// came back without usage, so its cost is missing, not zero (`≥$0.450`, or `$?` alone).
+pub fn fmt_cost(total: f64, lower_bound: bool) -> String {
+    let mark = if lower_bound { "≥" } else { "" };
+    if lower_bound && total <= 0.0 {
         "$?".to_owned()
+    } else if total > 0.0 && total < 0.0005 {
+        format!("{mark}<$0.001")
     } else if total < 0.9995 {
         format!("{mark}${total:.3}")
     } else {

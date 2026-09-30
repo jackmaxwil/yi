@@ -250,7 +250,7 @@ pub const CHORDS: [Chord; 21] = [
         None,
     ),
     chord(
-        "status: ≥$ is a floor; a reply came back without its usage",
+        "status: ≥$ is a lower bound; a reply came back without its usage",
         "",
         "",
         "",

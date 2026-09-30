@@ -174,7 +174,7 @@ impl AgentSession {
     }
 
     /// Summed under the lock, not over a history clone; `None` when poisoned, never a fake `0.0`.
-    /// The flag is true when a reply came back without usage, so the sum is a floor.
+    /// The flag is true when a reply came back without usage, so the sum is a lower bound.
     pub fn cost_handle(&self) -> Arc<dyn Fn() -> Option<(f64, bool)> + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || {
@@ -183,9 +183,9 @@ impl AgentSession {
                 AgentMessage::Assistant { usage, .. } => Some(usage),
                 _ => None,
             });
-            Some(usages.fold((0.0, false), |(cost, floor), usage| {
+            Some(usages.fold((0.0, false), |(cost, lower_bound), usage| {
                 let spent = usage.cost.total.as_f64().unwrap_or(0.0);
-                (cost + spent, floor || usage.unknown)
+                (cost + spent, lower_bound || usage.unknown)
             }))
         })
     }

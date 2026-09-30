@@ -217,6 +217,12 @@ fn money_prints_one_way_and_marks_a_floor() {
     assert_eq!(fmt_cost(0.45, true), "≥$0.450");
     assert_eq!(fmt_cost(0.0, true), "$?");
     assert_eq!(fmt_cost(0.9996, false), "$1.00");
+    assert_eq!(
+        fmt_cost(0.0004, false),
+        "<$0.001",
+        "a spend that rounds to $0.000 is not free"
+    );
+    assert_eq!(fmt_cost(0.0, false), "$0.000");
     assert_eq!(fmt_cost(17.034, true), "≥$17.03");
 }
 
