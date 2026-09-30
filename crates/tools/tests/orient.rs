@@ -232,9 +232,10 @@ fn crowded(tag: &str) -> Result<Scratch, Box<dyn Error>> {
 #[test]
 fn skeletons_rank_the_file_defining_the_symbol_first() -> TestResult {
     let dir = crowded("symbol-rank")?;
+    let heads: String = (0..12).map(|n| format!("pub fn f{n}() {{}}\n")).collect();
     fs::write(
         dir.join("zz_needle.rs"),
-        "pub fn needle_target() -> u8 {\n    7\n}\n",
+        format!("pub fn needle_target() -> u8 {{\n    7\n}}\n{heads}"),
     )?;
     let mut input = Map::new();
     input.insert("symbol".to_owned(), json!("needle_target"));
@@ -243,6 +244,12 @@ fn skeletons_rank_the_file_defining_the_symbol_first() -> TestResult {
     assert!(
         layer.contains("zz_needle.rs\n  pub fn needle_target() -> u8"),
         "the only file defining the symbol must keep its skeleton: {layer}"
+    );
+    assert!(
+        layer.contains(
+            "  pub fn f10() {}\n  [12 of 13 heads, cap 12 per file — grep def=true for all]"
+        ),
+        "a file cut at its head cap must say so: {layer}"
     );
     assert!(
         layer.contains(
