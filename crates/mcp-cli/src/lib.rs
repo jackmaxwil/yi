@@ -160,8 +160,9 @@ fn do_connect(
             } else {
                 McpSessionState::Disconnected
             };
+            let unauthorized = state == McpSessionState::Unauthorized;
             let _ = store.set_state(&name, state);
-            if state == McpSessionState::Unauthorized {
+            if unauthorized {
                 return fail(
                     &format!("@{name}: unauthorized. Run: yi mcp login {server}"),
                     3,

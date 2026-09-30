@@ -83,6 +83,7 @@ fn manager_with_snapshot(snapshot: Option<KernelSnapshotConfig>) -> Result<Kerne
         on_progress: None,
         snapshot,
         wrap: None,
+        connection_dir: None,
     })
 }
 
@@ -109,6 +110,7 @@ async fn a_kernel_cannot_import_debugpy_and_keeps_the_given_python_path() -> Tes
         on_progress: None,
         snapshot: None,
         wrap: None,
+        connection_dir: None,
     })?;
     let shadowed = kernel
         .execute("import debugpy", ExecuteOptions::default())
@@ -624,6 +626,7 @@ async fn the_kernel_boots_on_system_python_when_uv_is_absent() -> TestResult {
         on_progress: None,
         snapshot: None,
         wrap: None,
+        connection_dir: None,
     })?;
     let result = kernel
         .execute(

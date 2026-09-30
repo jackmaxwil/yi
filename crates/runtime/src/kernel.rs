@@ -225,7 +225,6 @@ pub(crate) fn kernel_profile(
     profile
         .writable
         .extend(family_dir.map(std::path::Path::to_path_buf));
-    profile.loopback = true;
     profile.writable.sort();
     profile.writable.dedup();
     profile
@@ -234,7 +233,8 @@ pub(crate) fn kernel_profile(
 /// Boots on first cell, memoizes the manager, retries a failed start, owns busy recovery.
 pub struct KernelService {
     options: KernelServiceOptions,
-    sandbox: tokio::sync::Mutex<Option<yi_tools::Sandbox>>,
+    /// Named once, so the prefix that re-allows it stays equal across boots (#599).
+    connection_dir: PathBuf,
     manager: tokio::sync::Mutex<Option<Arc<KernelManager>>>,
     last_error: Mutex<Option<String>>,
     on_death: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -249,8 +249,11 @@ pub struct KernelService {
 
 impl KernelService {
     pub fn new(options: KernelServiceOptions) -> Self {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = yi_kernel::connection::connection_root(&options.home);
         Self {
-            sandbox: tokio::sync::Mutex::new(options.sandbox.clone()),
+            connection_dir: root.join(format!("{}-{n}", std::process::id())),
             options,
             manager: tokio::sync::Mutex::new(None),
             last_error: Mutex::new(None),
@@ -310,16 +313,6 @@ impl KernelService {
         state
     }
 
-    pub async fn set_sandbox(&self, sandbox: Option<yi_tools::Sandbox>) {
-        let mut slot = self.sandbox.lock().await;
-        if *slot == sandbox {
-            return;
-        }
-        *slot = sandbox;
-        drop(slot);
-        self.kill().await;
-    }
-
     fn kernel_wrap(
         &self,
         sandbox: Option<&yi_tools::Sandbox>,
@@ -330,7 +323,7 @@ impl KernelService {
             .writable
             .extend(state.map(std::path::Path::to_path_buf));
         let family = self.options.family_dir.as_deref().map(make_board);
-        Some(kernel_profile(&sandbox, family.as_deref()).kernel_prefix())
+        Some(kernel_profile(&sandbox, family.as_deref()).kernel_prefix(&self.connection_dir))
     }
 
     fn kernel_env(&self, state: Option<&std::path::Path>) -> Vec<(String, String)> {
@@ -389,7 +382,7 @@ impl KernelService {
         let state = self.options.session_dir.as_deref().and_then(|dir| {
             crate::kernel_state::state_dir(dir, self.options.per_session_state, key.as_deref())
         });
-        let wrap = self.kernel_wrap(self.sandbox.lock().await.as_ref(), state.as_deref());
+        let wrap = self.kernel_wrap(self.options.sandbox.as_ref(), state.as_deref());
         let snapshot = state.as_deref().map(|dir| {
             let (path, manifest_path) = snapshot_paths(dir, key.as_deref());
             yi_kernel::client::KernelSnapshotConfig {
@@ -445,6 +438,7 @@ impl KernelService {
             on_progress: Some(booting.progress()),
             snapshot,
             wrap,
+            connection_dir: Some(self.connection_dir.clone()),
         })?);
         manager.hold_until_exit(admitted.slot);
         *self.waited.lock().map_err(|error| error.to_string())? = admitted.waited;

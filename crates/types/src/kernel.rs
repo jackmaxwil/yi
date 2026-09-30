@@ -100,12 +100,15 @@ pub struct KernelError {
     pub traceback: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExecuteStatus {
     Ok,
     Error,
     Aborted,
+    /// A state a newer Yi wrote; it re-emits verbatim.
+    #[serde(untagged)]
+    Other(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
