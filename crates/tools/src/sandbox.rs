@@ -16,6 +16,9 @@ pub struct Sandbox {
     pub deny_read: Vec<PathBuf>,
     /// Paths inside a writable root that host code runs or reads back (D205).
     pub deny_write: Vec<PathBuf>,
+    /// Stores only the host writes, the session corpus above all (its JSONL is the ledger kept
+    /// rules replay from): denied to writes, save a writable root nested inside one.
+    pub host_owned: Vec<PathBuf>,
 }
 
 /// Loopback for every profile (D329). Seatbelt's `localhost` is every address of this host and
@@ -49,6 +52,7 @@ impl Sandbox {
             // The stores the read gate refuses, so a contained `cat` meets the same list (D323).
             deny_read: yi_permission::credential_stores(home),
             deny_write,
+            host_owned: vec![home.join(".yi/sessions")],
         }
     }
 
@@ -70,7 +74,25 @@ impl Sandbox {
             .and_then(|path| path.strip_prefix("/dev/ttys"))
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|byte| byte.is_ascii_digit()));
         let granted = tty || path == Path::new("/dev/null") || path == Path::new("/dev/ptmx");
-        !granted && (!under(&self.writable) || under(&self.deny_write) || under(&self.deny_read))
+        let owned = self.host_owned.iter().any(|store| {
+            let (store, exempt) = (resolve_aliases(store), self.exempt(store));
+            path.starts_with(&store) && !exempt.iter().any(|root| path.starts_with(root))
+        });
+        !granted
+            && (!under(&self.writable)
+                || under(&self.deny_write)
+                || under(&self.deny_read)
+                || owned)
+    }
+
+    /// The writable roots strictly inside a host-owned store: a child's own directory, the
+    /// family board, a kernel's state.
+    fn exempt(&self, store: &Path) -> Vec<PathBuf> {
+        let store = resolve_aliases(store);
+        (self.writable.iter())
+            .map(|root| resolve_aliases(root))
+            .filter(|root| root.starts_with(&store) && *root != store)
+            .collect()
     }
 
     /// `-D` bindings keep paths out of the policy text. A denied path binds twice: as spelled,
@@ -105,6 +127,13 @@ impl Sandbox {
             params.push((
                 format!("DENY_READ_{index}_RESOLVED"),
                 yi_permission::resolve_links(root),
+            ));
+        }
+        for (index, store) in self.host_owned.iter().enumerate() {
+            params.push((format!("HOST_OWNED_{index}"), resolve_aliases(store)));
+            params.push((
+                format!("HOST_OWNED_{index}_RESOLVED"),
+                yi_permission::resolve_links(store),
             ));
         }
         for (index, dir) in parents.iter().enumerate() {
@@ -173,6 +202,7 @@ impl Sandbox {
             .collect();
         let mut parents: Vec<PathBuf> = (self.deny_write.iter())
             .chain(&self.deny_read)
+            .chain(&self.host_owned)
             .flat_map(|path| [resolve_aliases(path), yi_permission::resolve_links(path)])
             .flat_map(|path| {
                 path.ancestors()
@@ -234,6 +264,23 @@ impl Sandbox {
             anchors.push(format!(
                 "(deny file-write* (subpath (param \"{key}\")) (subpath (param \"{key}_RESOLVED\")))"
             ));
+        }
+        for (index, store) in self.host_owned.iter().enumerate() {
+            let exempt = self.exempt(store);
+            let keep: String = (self.writable.iter().enumerate())
+                .filter(|(_, root)| exempt.contains(&resolve_aliases(root)))
+                .map(|(root, _)| {
+                    format!(" (require-not (subpath (param \"WRITABLE_ROOT_{root}\")))")
+                })
+                .collect();
+            for key in [
+                format!("HOST_OWNED_{index}"),
+                format!("HOST_OWNED_{index}_RESOLVED"),
+            ] {
+                anchors.push(format!(
+                    "(deny file-write* (require-all (subpath (param \"{key}\")){keep}))"
+                ));
+            }
         }
         for index in 0..parents {
             anchors.push(format!(

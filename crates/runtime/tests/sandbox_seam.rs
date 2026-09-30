@@ -21,7 +21,7 @@ use yi_types::model::{Model, ModelCost};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn faux_model() -> Model {
+pub(crate) fn faux_model() -> Model {
     let zero = || serde_json::Number::from(0u64);
     Model {
         id: "faux-1".to_owned(),
@@ -46,7 +46,7 @@ fn faux_model() -> Model {
     }
 }
 
-fn bash_call(id: &str, command: &str) -> AgentMessage {
+pub(crate) fn bash_call(id: &str, command: &str) -> AgentMessage {
     let mut arguments = Map::new();
     arguments.insert("command".to_owned(), json!(command));
     faux_assistant_message(
@@ -55,7 +55,7 @@ fn bash_call(id: &str, command: &str) -> AgentMessage {
     )
 }
 
-fn results(session: &AgentSession) -> Vec<String> {
+pub(crate) fn results(session: &AgentSession) -> Vec<String> {
     session
         .messages()
         .iter()
@@ -169,12 +169,13 @@ fn confined_to(project: &Path) -> Sandbox {
         writable: vec![project.to_path_buf()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        host_owned: Vec::new(),
     }
 }
 
 /// The production profile over a scratch tree, and a directory it does not cover: tmp is
 /// writable there, so a probe under it would pass vacuously.
-fn workspace(tag: &str) -> Result<(Scratch, PathBuf, Sandbox, PathBuf), Box<dyn Error>> {
+pub(crate) fn workspace(tag: &str) -> Result<(Scratch, PathBuf, Sandbox, PathBuf), Box<dyn Error>> {
     let root = Scratch::new(tag)?;
     let project = root.join("project");
     std::fs::create_dir_all(&project)?;
@@ -413,10 +414,10 @@ async fn a_refusal_deep_in_long_output_is_remembered() -> TestResult {
 
 /// A directory under the uncovered probe, removed on drop: a probe left behind would be
 /// writable-by-accident evidence for the next run.
-struct Probe(PathBuf);
+pub(crate) struct Probe(pub(crate) PathBuf);
 
 impl Probe {
-    fn new(under: &Path, tag: &str) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn new(under: &Path, tag: &str) -> Result<Self, Box<dyn Error>> {
         let dir = under.join(format!("yi-a2-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
@@ -742,7 +743,7 @@ async fn an_allowed_network_command_says_it_ran_outside() -> TestResult {
 }
 
 /// An asker that answers "always" first and refuses after, counting the questions.
-fn always_once() -> (Asker, Arc<std::sync::atomic::AtomicUsize>) {
+pub(crate) fn always_once() -> (Asker, Arc<std::sync::atomic::AtomicUsize>) {
     let asks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = Arc::clone(&asks);
     let asker: Asker =
