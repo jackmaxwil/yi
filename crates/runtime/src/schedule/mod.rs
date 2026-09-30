@@ -1098,7 +1098,10 @@ impl HeartbeatService {
                     for job in &mut state.jobs {
                         if job.session_id != owner
                             || !is_heartbeat_job(job)
-                            || matches!(job.status, JobStatus::Completed | JobStatus::Cancelled)
+                            || matches!(
+                                job.status,
+                                JobStatus::Completed | JobStatus::Cancelled | JobStatus::Other(_)
+                            )
                         {
                             continue;
                         }
