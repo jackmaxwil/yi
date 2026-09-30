@@ -1030,11 +1030,12 @@ fn render_job_line(job: &Job) -> String {
     format!(
         "{} [{}{}] {} — {} (runs: {}, next: {})",
         job.id,
-        match job.status {
+        match &job.status {
             JobStatus::Active => "active",
             JobStatus::Paused => "paused",
             JobStatus::Completed => "completed",
             JobStatus::Cancelled => "cancelled",
+            JobStatus::Other(status) => status.as_str(),
         },
         if job.halted { ", halted" } else { "" },
         job.channel
@@ -1097,11 +1098,14 @@ impl HeartbeatService {
                     for job in &mut state.jobs {
                         if job.session_id != owner
                             || !is_heartbeat_job(job)
-                            || matches!(job.status, JobStatus::Completed | JobStatus::Cancelled)
+                            || matches!(
+                                job.status,
+                                JobStatus::Completed | JobStatus::Cancelled | JobStatus::Other(_)
+                            )
                         {
                             continue;
                         }
-                        job.status = target;
+                        job.status = target.clone();
                         if target == JobStatus::Active && job.next_run_at.is_none() {
                             job.next_run_at = next_run_at_for_schedule(&job.schedule, now_ms)
                                 .ok()

@@ -268,28 +268,36 @@ async fn follow(
     let (mut last_stop, mut said_anything) = (None, false);
     loop {
         let next = match patience(holding, ends) {
-            None => events.recv().await,
+            None => yi_runtime::next_event(&mut events).await,
             Some(wait) if wait.is_zero() => {
                 ended = true;
                 break;
             }
-            Some(wait) => match tokio::time::timeout(wait, events.recv()).await {
-                Ok(next) => next,
-                Err(_) if holds(holding && working(), ends) => continue,
-                Err(_) => {
-                    ended = true;
-                    break;
+            Some(wait) => {
+                match tokio::time::timeout(wait, yi_runtime::next_event(&mut events)).await {
+                    Ok(next) => next,
+                    Err(_) if holds(holding && working(), ends) => continue,
+                    Err(_) => {
+                        ended = true;
+                        break;
+                    }
                 }
-            },
+            }
         };
         let event = match next {
-            Ok(event) => event,
+            Some(Ok(event)) => event,
             // A slow reader is not the end of the run: breaking here exited 0 mid-turn.
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                eprintln!("warning: {missed} events dropped behind a slow reader");
+            Some(Err(gap)) => {
+                match serde_json::to_string(&gap) {
+                    Ok(line) if json => println!("{line}"),
+                    _ => eprintln!(
+                        "warning: {} events dropped behind a slow reader",
+                        gap.dropped
+                    ),
+                }
                 continue;
             }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            None => break,
         };
         if json && let Ok(line) = serde_json::to_string(&event) {
             println!("{line}");

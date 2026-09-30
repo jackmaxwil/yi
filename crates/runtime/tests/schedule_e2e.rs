@@ -713,7 +713,7 @@ async fn the_kernel_vocabulary_cannot_reach_a_sibling_session() -> TestResult {
             .jobs
             .iter()
             .find(|job| job.id == b_id)
-            .map(|job| job.status),
+            .map(|job| job.status.clone()),
         Some(JobStatus::Active),
         "a sibling session's heartbeat was cancelled from another session"
     );

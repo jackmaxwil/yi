@@ -73,6 +73,7 @@ async fn boot_once(python: PathBuf, home: PathBuf) -> Result<String, String> {
         on_progress: None,
         snapshot: None,
         wrap: None,
+        connection_dir: None,
     })?;
     manager.start().await?;
     let start_ms = started.elapsed().as_millis();
