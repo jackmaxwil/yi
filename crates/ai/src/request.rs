@@ -395,11 +395,18 @@ pub fn note_upstream(output: &mut AgentMessage, upstream: &str) {
 
 pub fn fail_message(output: &mut AgentMessage, text: &str) -> crate::EventOut {
     if let AgentMessage::Assistant {
+        content,
         stop_reason,
         error_message,
+        usage,
         ..
     } = output
     {
+        // A refused status (`send_with_retry`'s `HTTP {status}`) generated nothing, so its
+        // usage is a known zero; a stream cut after it began may have billed and stays unknown.
+        if content.is_empty() && text.starts_with("HTTP ") {
+            *usage = Usage::zero();
+        }
         *stop_reason = StopReason::Error;
         *error_message = Some(text.to_owned());
     }

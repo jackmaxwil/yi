@@ -1153,6 +1153,45 @@ fn an_unfocused_child_turn_reaches_the_status_cost() -> TestResult {
     Ok(())
 }
 
+/// Dies with `$0.45+?` in the status row and `$0.450` in the footer: two formatters spelled
+/// one amount two ways, and `+?` said nothing about what was missing. A reply without usage
+/// makes the total a floor, and both rows say so the same way.
+#[test]
+fn one_amount_one_spelling() -> TestResult {
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let mut known = priced("known", 0.45);
+    if let yi_types::message::AgentMessage::Assistant { usage, .. } = &mut known {
+        (usage.input, usage.output) = (1000, 50);
+    }
+    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd { message: known });
+    let mut lost = priced("lost", 0.0);
+    if let yi_types::message::AgentMessage::Assistant { usage, .. } = &mut lost {
+        *usage = yi_types::message::Usage::unknown();
+    }
+    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd { message: lost });
+    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let contents = terminal.backend().contents();
+    let footer = contents
+        .lines()
+        .find(|row| row.contains(" in / "))
+        .ok_or_else(|| format!("no footer: {contents}"))?;
+    assert!(footer.contains("≥$0.450"), "{footer}");
+    let status = contents
+        .lines()
+        .rev()
+        .find(|row| row.contains("faux-1"))
+        .ok_or_else(|| format!("no status row: {contents}"))?;
+    assert!(status.contains("≥$0.450"), "{status}");
+    assert!(!contents.contains("+?"), "{contents}");
+    Ok(())
+}
+
 /// Strip `TestBackend`'s per-row quoting and the trailing blanks a terminal
 /// screen and a text dump disagree about, so the two can be compared at all.
 fn screen_lines(text: &str) -> Vec<String> {

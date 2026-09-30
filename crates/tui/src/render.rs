@@ -203,10 +203,7 @@ pub fn layout_chat(
         landing: app.landing.as_ref().and_then(|landing| {
             crate::status::landing_segment(landing, app.landing_at.map(|at| at.elapsed()))
         }),
-        cost: (app.cost_total > 0.0 || app.cost_unknown).then(|| {
-            let mark = if app.cost_unknown { "+?" } else { "" };
-            format!("${:.2}{mark}", app.cost_total)
-        }),
+        cost: app.spent.label(),
         session_name: if app.status_name_hidden {
             String::new()
         } else {

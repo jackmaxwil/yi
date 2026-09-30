@@ -143,6 +143,20 @@ impl Usage {
     }
 }
 
+/// The one spelling of money wherever yi prints it: 3 decimals under $1, 2 from $1 up.
+/// `floor` is true when some reply in the sum came back without a usage object: its cost is
+/// missing, not zero, so the figure is a lower bound, `≥$0.450`, or `$?` with nothing known.
+pub fn fmt_cost(total: f64, floor: bool) -> String {
+    let mark = if floor { "≥" } else { "" };
+    if floor && total <= 0.0 {
+        "$?".to_owned()
+    } else if total < 0.9995 {
+        format!("{mark}${total:.3}")
+    } else {
+        format!("{mark}${total:.2}")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiagnosticErrorInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
