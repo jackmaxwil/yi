@@ -56,8 +56,9 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
         "a contained process must not replace its own boundary"
     );
     assert!(
-        !policy.contains("network-outbound") && !policy.contains("(allow network"),
-        "no network rule at all is how egress stays off: {policy}"
+        policy.contains("(allow network-outbound (remote ip \"localhost:*\"))")
+            && !policy.contains("\"*:"),
+        "loopback is the one network, for every profile: {policy}"
     );
 
     let params = sandbox.params();
@@ -83,23 +84,35 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
     assert!(args.iter().any(|arg| arg == "--"));
     assert!(args.iter().any(|arg| arg.starts_with("-DWRITABLE_ROOT_0=")));
 
-    let kernel = sandbox.kernel_policy();
+    let (_, offline) = sandbox.wrap_offline("sh", &[]);
     assert!(
-        kernel.contains("network-bind") && kernel.contains("localhost"),
-        "the kernel profile needs loopback ZMQ"
+        offline
+            .get(1)
+            .is_some_and(|policy| !policy.contains("network")),
+        "the offline profile has no network rule at all"
     );
     assert!(
-        !sandbox.policy().contains("network-outbound")
-            && !sandbox.policy().contains("(allow network"),
-        "bash wrap stays egress-off"
+        args.iter().any(|arg| arg.starts_with("JAVA_TOOL_OPTIONS=")
+            && arg.ends_with("-Djava.net.preferIPv4Stack=true")),
+        "a JVM gets IPv4 sockets, which reach loopback"
     );
-    assert!(
-        !kernel.contains("network-outbound") && !kernel.contains("system-socket"),
-        "the kernel binds and accepts; it never connects out, not even to localhost"
-    );
-    let (program, prefix) = sandbox.kernel_prefix();
+
+    let own = Path::new("/home/user/.yi/kernel-connections/1-0");
+    let (program, prefix) = sandbox.kernel_prefix(own);
     assert_eq!(program, "/usr/bin/sandbox-exec");
-    assert_eq!(prefix.last().map(String::as_str), Some("--"));
+    assert!(
+        prefix
+            .iter()
+            .any(|arg| arg == "-DOWN_CONNECTION=/home/user/.yi/kernel-connections/1-0")
+            && !args.iter().any(|arg| arg.contains("OWN_CONNECTION")),
+        "only the kernel's own prefix re-allows its connection file"
+    );
+    let command = prefix.iter().skip_while(|arg| *arg != "--").nth(1);
+    assert_eq!(
+        command.map(String::as_str),
+        Some("/usr/bin/env"),
+        "the kernel starts through `env -u`, which drops secret-named variables"
+    );
     Ok(())
 }
 
@@ -110,7 +123,6 @@ fn a_denial_is_only_claimed_when_the_output_says_so() {
         writable: vec![cwd.to_path_buf()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
-        loopback: false,
     };
     let hint = |code, output: &str, command: &str| {
         sandbox_refusal(&sandbox, cwd, Some(code), output, command)
@@ -157,7 +169,6 @@ fn home_project() -> Result<(Sandbox, PathBuf), Box<dyn Error>> {
         writable: vec![PathBuf::from("/work"), home.join("project")],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
-        loopback: false,
     };
     Ok((sandbox, home))
 }
@@ -407,7 +418,6 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
         deny_write: Vec::new(),
-        loopback: false,
     };
 
     let (code, output) = run("echo contained > inside.txt", &project, Some(&sandbox))?;
@@ -466,6 +476,151 @@ fn a_contained_command_cannot_read_yi_tokens() -> TestResult {
     Ok(())
 }
 
+/// Runs each command contained from `cwd` and returns those whose output carries `secret`.
+fn leaks(
+    commands: &[String],
+    cwd: &Path,
+    sandbox: &Sandbox,
+    secret: &str,
+) -> Result<Vec<String>, String> {
+    let mut leaked = Vec::new();
+    for command in commands {
+        let (_, output) = run(command, cwd, Some(sandbox))?;
+        if output.contains(secret) {
+            leaked.push(command.clone());
+        }
+    }
+    Ok(leaked)
+}
+
+/// #598: keys kept outside yi's token stores were readable from every sandbox. The scratch HOME
+/// sits under a writable temp root, so renaming a store's parent is a live way around too.
+#[test]
+fn a_contained_command_reads_no_key_by_any_spelling() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home) = workspace("keys")?;
+    let keys = [
+        ".netrc",
+        ".git-credentials",
+        ".npmrc",
+        ".pypirc",
+        ".cargo/credentials",
+        ".cargo/credentials.toml",
+        ".config/gh/hosts.yml",
+        ".config/fgj/config.yaml",
+        ".config/gcloud/credentials.db",
+        ".yi/oauth/acme.json",
+        ".password-store/github.gpg",
+    ];
+    for key in keys {
+        let path = home.join(key);
+        std::fs::create_dir_all(path.parent().ok_or("a key has a parent")?)?;
+        std::fs::write(&path, "KEY-598")?;
+    }
+    std::os::unix::fs::symlink(home.join(".config"), project.join("cfg"))?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let home_text = home.display();
+    let mut commands: Vec<String> = keys
+        .iter()
+        .flat_map(|key| {
+            let upper = key.to_uppercase();
+            [
+                format!("cat {home_text}/{key}"),
+                format!("cat {home_text}/{upper}"),
+            ]
+        })
+        .collect();
+    commands.extend([
+        "cat cfg/gh/hosts.yml".to_owned(),
+        format!("ln {home_text}/.netrc hard; cat hard"),
+        format!("mv {home_text}/.config {home_text}/moved; cat {home_text}/moved/gh/hosts.yml"),
+        format!("mv {home_text}/.yi {home_text}/yi2; cat {home_text}/yi2/oauth/acme.json"),
+    ]);
+    let leaked = leaks(&commands, &project, &sandbox, "KEY-598")?;
+    assert!(leaked.is_empty(), "a key was read: {leaked:#?}");
+    Ok(())
+}
+
+/// #889: a wall spelled through a link bound nothing, since Seatbelt matches the real path, and
+/// a walled file inside the writable tree left by a renamed parent or a hard link.
+#[test]
+fn a_walled_path_is_unreadable_however_either_side_spells_it() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home) = workspace("wall")?;
+    std::fs::create_dir_all(project.join("a/secrets"))?;
+    std::fs::write(project.join("a/secrets/key.txt"), "WALLED-598")?;
+    std::os::unix::fs::symlink(project.join("a"), project.join("via"))?;
+    std::fs::create_dir_all(project.join("a/locked"))?;
+    let mut sandbox = Sandbox::for_workspace(&project, &home, None);
+    sandbox.deny_read.push(project.join("via/secrets"));
+    sandbox.deny_write.push(project.join("via/locked"));
+    assert!(
+        sandbox.denies_write(&project.join("via/secrets/planted")),
+        "the refusal hint must name a write under a read-walled path"
+    );
+    let commands = [
+        "cat a/secrets/key.txt",
+        "cat A/SECRETS/KEY.TXT",
+        "cat via/secrets/key.txt",
+        "ln a/secrets/key.txt hard; cat hard",
+        "mv a/secrets out; cat out/key.txt",
+        "mv a b; cat b/secrets/key.txt",
+    ]
+    .map(str::to_owned);
+    let leaked = leaks(&commands, &project, &sandbox, "WALLED-598")?;
+    assert!(leaked.is_empty(), "a walled file was read: {leaked:#?}");
+    for target in ["a/secrets/planted", "a/locked/planted"] {
+        let (code, output) = run(&format!("echo x > {target}"), &project, Some(&sandbox))?;
+        assert!(
+            code != 0 && !project.join(target).exists(),
+            "{target}: a wall spelled through a link binds writes too: {output}"
+        );
+    }
+    Ok(())
+}
+
+/// #906: `*_API_KEY` and the like reached every contained command's environment.
+#[test]
+fn a_contained_command_inherits_no_secret_variable() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let secrets = [
+        "YI_598_API_KEY",
+        "YI_598_TOKEN",
+        "YI_598_CLIENT_SECRET",
+        "YI_598_PGPASSWORD",
+        "YI_598_CREDENTIALS",
+        "DATABASE_URL",
+        "GITHUB_PAT",
+        "BW_SESSION",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "PASSWORD_STORE_DIR",
+        "SSH_AUTH_SOCK",
+    ];
+    let settings = ["TOKENIZERS_PARALLELISM", "PYTHON_KEYRING_BACKEND"];
+    for name in secrets.iter().chain(&settings) {
+        // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.
+        unsafe { std::env::set_var(name, format!("ENV-598-{name}")) };
+    }
+    let (_root, project, home) = workspace("env")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    // The messages never print the environment: it holds whatever keys the runner has.
+    let (code, contained) = run("env", &project, Some(&sandbox))?;
+    let seen = |name: &str| contained.contains(&format!("ENV-598-{name}"));
+    let leaked: Vec<&str> = secrets.into_iter().filter(|name| seen(name)).collect();
+    let stripped: Vec<&str> = settings.into_iter().filter(|name| !seen(name)).collect();
+    assert!(
+        code == 0 && contained.contains("PATH=") && leaked.is_empty() && stripped.is_empty(),
+        "a contained `env` exited {code}, saw {leaked:?}, lost the settings {stripped:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
     if !Sandbox::available() {
@@ -476,7 +631,6 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
         deny_write: Vec::new(),
-        loopback: false,
     };
 
     let ordinary = format!("cat {}", home.join("notes.md").display());
@@ -492,23 +646,171 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
     Ok(())
 }
 
-/// Egress is off because the base policy denies by default and no network rule
-/// is ever added. Skipped when the machine has no network to lose.
+/// What a contained script reports, one word per probe: loopback works both ways, and nothing
+/// past it answers, however the address is spelled. Every refusal must be EPERM, the sandbox's
+/// errno, so a machine with no network cannot pass it by timing out.
+const NETWORK_PROBE: &str = r#"
+import socket, sys
+host_port, unix_path = int(sys.argv[1]), sys.argv[2]
+def probe(word, attempt):
+    try:
+        attempt()
+        print(word + '-ok')
+    except PermissionError:
+        print(word + '-refused')
+    except OSError as error:
+        print(word + '-' + type(error).__name__)
+def loop():
+    server = socket.socket(); server.bind(('127.0.0.1', 0)); server.listen(1)
+    client = socket.create_connection(server.getsockname(), 3); server.accept()[0].send(b'x')
+    assert client.recv(1) == b'x'
+def connect(family, address):
+    return lambda: socket.socket(family).connect(address)
+def host():
+    assert socket.create_connection(('127.0.0.1', host_port), 3).recv(4) == b'HOST'
+def unix():
+    sock = socket.socket(socket.AF_UNIX); sock.connect(unix_path)
+probe('loop', loop)
+probe('host', host)
+probe('v4', connect(socket.AF_INET, ('1.1.1.1', 443)))
+probe('mapped', connect(socket.AF_INET6, ('::ffff:1.1.1.1', 443)))
+probe('v6', connect(socket.AF_INET6, ('2606:4700:4700::1111', 443)))
+probe('udp', lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b'x', ('1.1.1.1', 53)))
+probe('unix', unix)
+try:
+    socket.getaddrinfo('example.com', 443)
+    print('dns-ok')
+except socket.gaierror:
+    print('dns-refused')
+"#;
+
+/// #599: every contained spawn gets loopback, so a test suite that binds 127.0.0.1 runs; the
+/// rest of the network stays off, and so do unix sockets (the daemon's, docker's, ssh-agent's),
+/// even one inside a writable root.
 #[cfg(target_os = "macos")]
 #[test]
-fn a_contained_command_has_no_network() -> TestResult {
+fn a_contained_command_has_loopback_and_no_other_network() -> TestResult {
     if !Sandbox::available() {
         return Ok(());
     }
     let (_root, project, home) = workspace("network")?;
-    let probe = "curl -m 5 -sS -o /dev/null https://example.com";
-    let (code, _) = run(probe, &project, None)?;
-    if code != 0 {
+    std::fs::write(project.join("probe.py"), NETWORK_PROBE)?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let unix_path = project.join("host.sock");
+    let unix = std::os::unix::net::UnixListener::bind(&unix_path)?;
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let _ = std::io::Write::write_all(&mut &stream, b"HOST");
+        }
+    });
+    std::thread::spawn(move || for _ in unix.incoming() {});
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let command = format!("/usr/bin/python3 probe.py {port} {}", unix_path.display());
+    let (code, output) = run(&command, &project, Some(&sandbox))?;
+    let words: Vec<&str> = (output.lines())
+        .filter(|line| line.contains('-') && !line.contains(' '))
+        .collect();
+    assert_eq!(
+        (code, words),
+        (
+            0,
+            vec![
+                "loop-ok",
+                "host-ok",
+                "v4-refused",
+                "mapped-refused",
+                "v6-refused",
+                "udp-refused",
+                "unix-refused",
+                "dns-refused"
+            ]
+        ),
+        "{output}"
+    );
+    Ok(())
+}
+
+/// #599: past loopback a contained run fails at the resolver, since the base policy grants no
+/// DNS lookup; curl says `Could not resolve host`, Python `nodename nor servname`. Either reads
+/// as the sandbox's refusal, not as the network being down.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_contained_resolver_failure_reads_as_the_sandbox() -> TestResult {
+    if !Sandbox::available() {
         return Ok(());
     }
+    let (_root, project, home) = workspace("resolver")?;
     let sandbox = Sandbox::for_workspace(&project, &home, None);
-    let (code, output) = run(probe, &project, Some(&sandbox))?;
-    assert_ne!(code, 0, "the sandbox must refuse egress: {output}");
+    for command in [
+        "curl -sS -m 5 -o /dev/null https://example.com",
+        "/usr/bin/python3 -c \"import socket; socket.getaddrinfo('example.com', 443)\"",
+    ] {
+        let (code, output) = run(command, &project, Some(&sandbox))?;
+        let hint = sandbox_refusal(&sandbox, &project, Some(code), &output, command)
+            .map(|refusal| denial_hint(&refusal))
+            .unwrap_or_default();
+        assert!(
+            code != 0 && hint.contains("no network beyond 127.0.0.1 and ::1"),
+            "`{command}` exited {code} with no sandbox hint: {output}"
+        );
+    }
+    Ok(())
+}
+
+/// Review of #925 (F3): a JVM opens dual-stack sockets and dials 127.0.0.1 as `::ffff:127.0.0.1`,
+/// which Seatbelt refuses, so Gradle, Maven and sbt lost loopback. Skipped with no JDK here.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_contained_jvm_reaches_loopback() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home) = workspace("jvm")?;
+    let (code, java_home) = run("/usr/libexec/java_home", &project, None)?;
+    if code != 0 {
+        eprintln!("skipped: no JDK");
+        return Ok(());
+    }
+    std::fs::write(
+        project.join("Probe.java"),
+        "import java.net.*;\npublic class Probe {\n  public static void main(String[] args) throws Exception {\n    for (String host : new String[] {\"127.0.0.1\", \"localhost\"}) {\n      try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getByName(host));\n           Socket client = new Socket(host, server.getLocalPort())) {\n        server.accept().close();\n        System.out.println(\"jvm-\" + host + \"-ok\");\n      }\n    }\n  }\n}\n",
+    )?;
+    let java = format!("{}/bin/java", java_home.trim());
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let (code, output) = run(&format!("'{java}' Probe.java"), &project, Some(&sandbox))?;
+    assert!(
+        code == 0 && output.contains("jvm-127.0.0.1-ok") && output.contains("jvm-localhost-ok"),
+        "{output}"
+    );
+    Ok(())
+}
+
+/// Plan row F's demo: a contained `cargo test` whose test binds 127.0.0.1 passes.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_contained_cargo_test_binds_loopback() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home) = workspace("cargo")?;
+    std::fs::create_dir_all(project.join("src"))?;
+    std::fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )?;
+    std::fs::write(
+        project.join("src/lib.rs"),
+        "#[test]\nfn binds_loopback() {\n    use std::io::{Read, Write};\n    let server = std::net::TcpListener::bind(\"127.0.0.1:0\").unwrap();\n    let mut client = std::net::TcpStream::connect(server.local_addr().unwrap()).unwrap();\n    server.accept().unwrap().0.write_all(b\"ok\").unwrap();\n    let mut got = [0; 2];\n    client.read_exact(&mut got).unwrap();\n    assert_eq!(&got, b\"ok\");\n}\n",
+    )?;
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let (code, output) = run(
+        &format!("'{cargo}' test --offline -q"),
+        &project,
+        Some(&sandbox),
+    )?;
+    assert!(code == 0 && output.contains("1 passed"), "{output}");
     Ok(())
 }
 

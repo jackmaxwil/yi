@@ -371,10 +371,17 @@ async fn a_child_going_stuck_wakes_a_wait() -> TestResult {
 /// too with a repeat of either spinning: the second wait at the same state refuses, naming it.
 #[tokio::test]
 async fn a_wait_returns_at_once_on_a_question_and_on_a_settled_family() -> TestResult {
+    // The kernel's `rlm` matches fragments of these sentences; its unittest lane reads this file.
+    let texts: Value = serde_json::from_str(include_str!(
+        "../../../python/yi_runtime/tests/vectors/host_texts.json"
+    ))?;
+    let text = |key: &str| texts[key].as_str().unwrap_or_default().to_owned();
     let parent = Arc::new(session((0..4).map(|_| said("noted")).collect()));
     let (_root, host, _store) = family(&parent, Child::Asks)?;
     spawn(&host, "asker")?;
     assert!(reaches(&host, "needs_you").await, "the child asks");
+    let running = host.result("asker", None).err().unwrap_or_default();
+    assert_eq!(running, text("still_running"));
     let started = Instant::now();
     let asks = host.wait(60_000, None).await?;
     assert_eq!(
@@ -384,7 +391,7 @@ async fn a_wait_returns_at_once_on_a_question_and_on_a_settled_family() -> TestR
     let again = host.wait(60_000, asks["cursor"].as_u64()).await;
     let refused = again.err().unwrap_or_default();
     assert!(
-        refused.starts_with("asker is asking you") && refused.contains("reply_to="),
+        refused.starts_with(&text("asking")) && refused.contains("reply_to="),
         "{refused}"
     );
     let (id, ..) = host.open_requests().pop().ok_or("no question")?;
@@ -398,10 +405,7 @@ async fn a_wait_returns_at_once_on_a_question_and_on_a_settled_family() -> TestR
     assert_eq!(settled["state"], "settled", "{settled:?}");
     assert_eq!(settled["finished"], json!(["asker"]));
     let again = host.wait(60_000, settled["cursor"].as_u64()).await;
-    assert_eq!(
-        again.err().as_deref(),
-        Some("the family is settled: nothing is running; stop waiting")
-    );
+    assert_eq!(again.err(), Some(text("settled")));
     assert!(
         started.elapsed() < Duration::from_secs(10),
         "{:?}",

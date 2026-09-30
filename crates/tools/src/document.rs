@@ -694,7 +694,7 @@ fn command_for(
         let mut sandbox = Sandbox::for_workspace(dir, &documents.home, None);
         sandbox.writable = vec![dir.to_path_buf()];
         sandbox.deny_write = Vec::new();
-        let (program, wrapped) = sandbox.wrap(&python, &[]);
+        let (program, wrapped) = sandbox.wrap_offline(&python, &[]);
         let mut command = crate::process::command(program);
         command.args(wrapped);
         command
@@ -766,7 +766,7 @@ fn run(
     if let (Some(blank), Some(total)) = (count("ocr"), count("page_count")) {
         let page = pages.first().copied().unwrap_or(1);
         return Err(Converted::Refused(format!(
-            "no text layer on any of the {blank} PDF page(s) read of {total} (image-only or vector art), so there is no text to show; to see page {page}, render it to PNG in ipython: `%pip install pymupdf`, then `import pymupdf; p = \"/tmp/page-{page}.png\"; pymupdf.open({source})[{index}].get_pixmap(dpi=200).save(p); print(await attach_image(p))`",
+            "no text layer on any of the {blank} PDF page(s) read of {total} (image-only or vector art), so there is no text to show; to see page {page}, render it to PNG in ipython, if its kernel has pymupdf: `import pymupdf; p = \"/tmp/page-{page}.png\"; pymupdf.open({source})[{index}].get_pixmap(dpi=200).save(p); print(await attach_image(p))`",
             source = python_str(source),
             index = page.saturating_sub(1),
         )));
@@ -779,4 +779,33 @@ fn run(
         str::to_owned,
     );
     Err(Converted::Refused(reason))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    /// Review of #925 (F2): the converter parses untrusted files, so its profile keeps no network,
+    /// not even the loopback every other contained spawn has.
+    #[test]
+    fn the_converter_runs_with_no_network() {
+        if !super::Sandbox::available() {
+            return;
+        }
+        let converter = super::Converter {
+            python: PathBuf::from("/usr/bin/python3"),
+            formats: Vec::new(),
+        };
+        let documents = super::Documents::fixed(PathBuf::from("/home/u"), converter.clone());
+        let dir = Path::new("/work/cache");
+        let command = super::command_for(&documents, &converter, dir, dir, dir, &[]);
+        let args: Vec<String> = (command.get_args())
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let policy = args.iter().find(|arg| arg.contains("(deny default)"));
+        assert!(
+            policy.is_some_and(|policy| !policy.contains("network")),
+            "{args:?}"
+        );
+    }
 }
