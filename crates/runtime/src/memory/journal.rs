@@ -84,7 +84,12 @@ impl<'a> Journal<'a> {
     /// last line is set aside beside the journal with its bytes kept.
     pub fn replay(&self) -> Result<Replay, StoreError> {
         let log = self.log();
-        let lines = log.lines().map_err(journal)?;
+        let mut lines = log.lines().map_err(journal)?;
+        // An unterminated run past the cap is torn too: the next append would glue onto it.
+        if lines.lines.last().is_some_and(|line| line.next.is_none()) {
+            let run = lines.lines.pop().map(|line| line.offset);
+            lines.torn = lines.torn.or(run.map(|offset| (offset, Vec::new())));
+        }
         let mut replay = Replay::default();
         for (at, line) in lines.lines.iter().enumerate() {
             let record = line
@@ -102,10 +107,7 @@ impl<'a> Journal<'a> {
             }
             replay.records.push(record);
         }
-        // An unterminated run past the cap is torn too: the next append would glue onto it.
-        let unterminated = lines.lines.last().filter(|line| line.next.is_none());
-        let torn = lines.torn.map(|(offset, _)| offset);
-        if let Some(offset) = torn.or(unterminated.map(|line| line.offset)) {
+        if let Some((offset, _)) = lines.torn {
             log.set_aside(offset, &yi_session::nonce())
                 .map_err(journal)?;
         }

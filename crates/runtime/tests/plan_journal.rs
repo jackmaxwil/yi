@@ -1019,7 +1019,11 @@ fn a_memory_journal_sets_its_torn_tail_aside() -> Result<(), Box<dyn std::error:
     // A torn run longer than a record may be is torn too: the next append must land on a clean
     // line, not glue itself to the run.
     std::fs::write(&journal, format!("{whole}{}", "x".repeat(RECORD_CAP + 10)))?;
-    store.rebuild()?;
+    let rebuilt = store.rebuild()?;
+    assert_eq!(
+        rebuilt.broken, None,
+        "the set-aside run is not a broken line"
+    );
     assert_eq!(
         std::fs::read_to_string(&journal)?,
         whole,
