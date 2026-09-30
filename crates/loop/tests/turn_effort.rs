@@ -494,3 +494,102 @@ async fn the_answer_schema_rides_only_a_request_without_tools() {
         assert_eq!(seen, vec![expected]);
     }
 }
+
+/// Answers from `responses` and records every request's messages.
+struct Transcript {
+    seen: Arc<Mutex<Vec<Vec<AgentMessage>>>>,
+    responses: Mutex<Vec<AgentMessage>>,
+}
+
+impl yi_loop::run::StreamFn for Transcript {
+    fn stream(
+        &self,
+        _model: &Model,
+        context: &LlmContext,
+        _effort: Effort,
+        _signal: &InterruptSignal,
+    ) -> Receiver<AssistantMessageEvent> {
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.push(context.messages.clone());
+        }
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let message = match self.responses.lock() {
+            Ok(mut queue) if !queue.is_empty() => queue.remove(0),
+            _ => faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+        };
+        let _ = sender.try_send(AssistantMessageEvent::Done {
+            reason: StopReason::Stop,
+            message,
+        });
+        receiver
+    }
+}
+
+/// #946 F5: the steering read after the compaction hook skips the last word, whose tool calls
+/// are refused; a steer typed during the turn waits for the run after it.
+#[tokio::test]
+async fn a_last_word_carries_no_steer_read_after_the_compaction_hook() {
+    let mut config = LoopConfig::new(faux_model());
+    config.should_stop_after_turn = Some(Box::new(|_| true));
+    config.last_word = Some(Box::new(|_| {
+        Some(AgentMessage::host_user(
+            yi_types::message::UserContent::Text("[deadline] Time is up".to_owned()),
+            0,
+        ))
+    }));
+    config.maybe_compact = Some(Box::new(|_: &[AgentMessage], _: &Model, _| {
+        Box::pin(async { None })
+    }));
+    let reads = Arc::new(Mutex::new(0));
+    let counter = Arc::clone(&reads);
+    // The first two reads open the run; a steer typed during turn one lands on any later read.
+    config.get_steering_messages = Some(Box::new(move || {
+        let read = counter.lock().map(|mut reads| {
+            *reads += 1;
+            *reads
+        });
+        match read {
+            Ok(read) if read > 2 => vec![AgentMessage::host_user(
+                yi_types::message::UserContent::Text("steer: also check the docs".to_owned()),
+                0,
+            )],
+            _ => Vec::new(),
+        }
+    }));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let stream = Transcript {
+        seen: Arc::clone(&seen),
+        responses: Mutex::new(vec![faux_assistant_message(
+            vec![faux_tool_call("call-1", "noop", serde_json::Map::new())],
+            StopReason::ToolUse,
+        )]),
+    };
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(Noop)],
+    };
+    let prompt = yi_types::message::UserContent::Text("hi".to_owned());
+    run_loop(
+        &mut context,
+        vec![AgentMessage::host_user(prompt, 0)],
+        &config,
+        &InterruptSignal::default(),
+        &mut |_| {},
+        &stream,
+    )
+    .await;
+
+    let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
+    assert_eq!(seen.len(), 2, "the turn and the last word");
+    let steered = seen.last().into_iter().flatten().any(|message| {
+        matches!(message, AgentMessage::User {
+            content: yi_types::message::UserContent::Text(text), ..
+        } if text.starts_with("steer:"))
+    });
+    assert!(
+        !steered,
+        "the last word carries no steer: {:#?}",
+        seen.last()
+    );
+}

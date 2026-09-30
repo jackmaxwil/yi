@@ -900,13 +900,7 @@ impl App {
                 display: true,
                 details,
                 ..
-            } => {
-                let cell = Cell::Advisory {
-                    source: asks::mail_source(custom_type, details.as_ref()),
-                    text: user_text(content),
-                };
-                self.commit_cell(&cell);
-            }
+            } => self.commit_cell(&asks::custom_cell(custom_type, content, details.as_ref())),
             _ => {}
         }
     }

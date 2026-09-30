@@ -2,7 +2,7 @@ use serde_json::Value;
 use yi_types::subagent::ChildFlag;
 
 use super::App;
-use crate::cell::TaskStatus;
+use crate::cell::{Cell, TaskStatus};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ReplyTarget {
@@ -37,6 +37,23 @@ impl App {
 
     pub(crate) fn reply_title(&self) -> Option<String> {
         self.reply_bound.as_ref().map(|bound| bound.title.clone())
+    }
+}
+
+/// A compaction note reads as the host line it always was; any other shown custom message is a
+/// callout sourced by its type or its mail envelope.
+pub(crate) fn custom_cell(
+    custom_type: &str,
+    content: &yi_types::message::UserContent,
+    details: Option<&Value>,
+) -> Cell {
+    let text = crate::transcript::user_text(content);
+    if custom_type == yi_runtime::compaction::COMPACTION_NOTICE {
+        return Cell::Notice { text };
+    }
+    Cell::Advisory {
+        source: mail_source(custom_type, details),
+        text,
     }
 }
 

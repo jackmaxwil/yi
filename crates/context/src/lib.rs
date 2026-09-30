@@ -22,7 +22,7 @@ pub use account::{
 pub use attribution::{CHILD_USAGE_CAUSE, attribute_child_usage};
 pub use budget::{Bytes, SourceBudgets, Truncated, fit};
 pub use convert::convert_to_llm;
-pub use cut::{Cut, select_cut};
+pub use cut::{Cut, is_cut_point, select_cut};
 pub use details::FileOps;
 pub use floor::{RETENTION_FLOOR_BUDGET, retain_floor};
 pub use policy::{Settings, should_compact};
