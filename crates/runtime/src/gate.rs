@@ -19,6 +19,7 @@ pub struct Report {
     pub decision: Decision,
     pub segments: Vec<Segment>,
     pub unparsed: bool,
+    pub sandboxed: bool,
 }
 
 impl Report {
@@ -59,7 +60,7 @@ impl Report {
             "mode": mode_label(self.mode),
             "decision": self.outcome(),
             "reason": self.reason(),
-            "sandboxed": matches!(self.decision, Decision::Contain { .. }),
+            "sandboxed": self.sandboxed,
             "unparsed": self.unparsed,
             "segments": self.segments.iter().map(|segment| json!({
                 "argv": segment.argv,
@@ -127,14 +128,8 @@ pub fn explain(command: &str, mode: PermissionMode, cwd: &Path) -> Report {
         targets: &[],
         command: Some(command),
     };
-    let decision = match decide(
-        &call,
-        mode,
-        &[],
-        &SessionRules::new(),
-        &[],
-        &CatastrophicContext::detect(cwd),
-    ) {
+    let context = CatastrophicContext::detect(cwd);
+    let decision = match decide(&call, mode, &[], &SessionRules::new(), &[], &context) {
         Decision::Contain { reason } if !yi_tools::Sandbox::available() => Decision::Ask {
             title: format!("{} requires permission", call.tool_name),
             description: format!("{reason}: {command}"),
@@ -142,12 +137,22 @@ pub fn explain(command: &str, mode: PermissionMode, cwd: &Path) -> Report {
         },
         other => other,
     };
+    let sandboxed = match decision {
+        Decision::Contain { .. } => true,
+        Decision::Allow { .. } => {
+            yi_tools::Sandbox::available()
+                && mode != PermissionMode::Yolo
+                && crate::permission::leaves_sandbox(command, &context).is_none()
+        }
+        Decision::Ask { .. } | Decision::Deny { .. } => false,
+    };
     Report {
         command: command.to_owned(),
         mode,
         decision,
         segments,
         unparsed,
+        sandboxed,
     }
 }
 
