@@ -975,6 +975,7 @@ fn compaction_drops_the_host_nudges_it_retained() -> Result<(), Box<dyn Error>> 
     // The other four under their producers' own type names; "discovery" has no named const.
     let note = |kind: &str| AgentMessage::host_note(kind, "a host nudge".to_owned(), 0);
     let user = AgentMessage::user_input(UserContent::Text("keep me".to_owned()), 0);
+    let reply = faux_assistant_message(vec![faux_text("read")], StopReason::Stop);
     let kept = yi_context::drop_internal(&[
         nudge,
         note(yi_loop::REPEAT_BREAK_CUSTOM_TYPE),
@@ -982,7 +983,13 @@ fn compaction_drops_the_host_nudges_it_retained() -> Result<(), Box<dyn Error>> 
         note(yi_runtime::spend::SPEND_ALERT_TYPE),
         note("discovery"),
         user.clone(),
+        reply.clone(),
     ]);
-    assert_eq!(kept, [user], "only the user's message survives");
+    assert_eq!(kept, [user, reply.clone()], "only the user's turn survives");
+    // A nudge queued after the last reply has not been read: a repeat break or a spend alert is
+    // raised once, so dropping it here would lose it for good.
+    let unread = note(yi_loop::REPEAT_BREAK_CUSTOM_TYPE);
+    let tail = [reply.clone(), unread.clone()];
+    assert_eq!(yi_context::drop_internal(&tail), tail);
     Ok(())
 }

@@ -60,7 +60,6 @@ pub fn internal_source_of_custom(custom_type: &str) -> Option<&'static str> {
     }
 }
 
-/// Per-window host nudges the model reads unwrapped, as a redrive's pinned bytes require.
 const HOST_NUDGES: [&str; 5] = [
     "todo_nudge",
     "length_redrive",
@@ -69,17 +68,23 @@ const HOST_NUDGES: [&str; 5] = [
     "discovery",
 ];
 
-/// Removes wrapped internal context and the host nudges, so per-window injections die with it.
+/// Removes wrapped internal context, so per-window injections die with it, and every host
+/// nudge a reply followed: one queued after the last reply is unread, and some are raised once.
 pub fn drop_internal(messages: &[AgentMessage]) -> Vec<AgentMessage> {
+    let last_reply = messages
+        .iter()
+        .rposition(|message| matches!(message, AgentMessage::Assistant { .. }));
     messages
         .iter()
-        .filter(|message| {
+        .enumerate()
+        .filter(|(index, message)| {
             if let AgentMessage::Custom { custom_type, .. } = message {
+                let read = last_reply.is_some_and(|reply| reply > *index);
                 return internal_source_of_custom(custom_type).is_none()
-                    && !HOST_NUDGES.contains(&custom_type.as_str());
+                    && !(read && HOST_NUDGES.contains(&custom_type.as_str()));
             }
             internal_source(message).is_none()
         })
-        .cloned()
+        .map(|(_, message)| message.clone())
         .collect()
 }
