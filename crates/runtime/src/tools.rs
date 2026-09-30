@@ -351,7 +351,7 @@ impl AgentTool for ToolAdapter {
                             context.sandbox = reporter.sandbox_for(&context.cwd, &wall, widen);
                             contained = context.sandbox.as_ref().map(|_| reporter);
                         } else if wall.container.is_none() {
-                            outside = reporter.outside_notice(tool.name(), &outcome);
+                            outside = reporter.outside_notice(tool.name(), &args, &outcome);
                         }
                     }
                     Ok(outcome) => {

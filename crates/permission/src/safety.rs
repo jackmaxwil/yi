@@ -620,19 +620,39 @@ const HOST_PROGRAMS: [&str; 7] = ["curl", "http", "rsync", "scp", "sftp", "ssh",
 /// Whether an approval of `command` must run it outside the sandbox: a network program, a git
 /// network verb, or a package install, none of which works without the network.
 pub fn needs_host(command: &str) -> bool {
-    let segments = match parse(command) {
+    command_segments(command)
+        .iter()
+        .any(|argv| host_need(argv).is_some())
+}
+
+/// The command's segments, split leniently where the strict parse gives up.
+pub fn command_segments(command: &str) -> Vec<Vec<String>> {
+    match parse(command) {
         Parsed::Segments(segments) => segments,
         Parsed::Unparsed => lenient_segments(command),
+    }
+}
+
+/// Why one segment cannot run contained: `network` for a network program or git verb, `installs`
+/// for an install verb (a recipe named `install` writes outside the tree as a package manager does).
+pub fn host_need(argv: &[String]) -> Option<&'static str> {
+    let scope = scope(argv)?;
+    let (name, verb) = scope.split_once(' ').unwrap_or((scope.as_str(), ""));
+    let remote = |argv: &[String]| {
+        let mut words = argv
+            .iter()
+            .map(String::as_str)
+            .skip_while(|word| *word != "remote");
+        matches!(words.nth(1), Some("update" | "prune"))
     };
-    segments.iter().filter_map(|argv| scope(argv)).any(|scope| {
-        let (name, verb) = scope.split_once(' ').unwrap_or((scope.as_str(), ""));
-        let git_network = matches!(
-            verb,
-            "clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule"
-        );
-        let install = matches!(verb, "add" | "install" | "login" | "publish");
-        HOST_PROGRAMS.contains(&name) || if name == "git" { git_network } else { install }
-    })
+    let git_network = matches!(
+        verb,
+        "clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule"
+    ) || (verb == "remote" && remote(argv));
+    if HOST_PROGRAMS.contains(&name) || (name == "git" && git_network) {
+        return Some("network");
+    }
+    (name != "git" && matches!(verb, "add" | "install" | "login" | "publish")).then_some("installs")
 }
 
 /// Options that move a command's tree or repository, and so its blast radius, elsewhere.

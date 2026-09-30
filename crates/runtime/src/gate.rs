@@ -83,6 +83,31 @@ pub fn compile_ask(decision: Decision, attached: bool) -> Decision {
     }
 }
 
+/// A refused call's retry with no one to ask: what runs it, which is never an allow rule.
+pub(crate) fn headless_refusal(
+    sandbox: Option<&yi_tools::Sandbox>,
+    refusal: &yi_tools::SandboxRefusal,
+) -> String {
+    const HEAD: &str = "Permission required but no interactive surface is available: the sandbox refused this command's last contained run";
+    match refusal {
+        yi_tools::SandboxRefusal::Path(path) => {
+            let dir = path.parent().unwrap_or(path);
+            let widen =
+                match sandbox.is_some_and(|sandbox| crate::permission::protected(sandbox, dir)) {
+                    true => format!("`{}` is protected, so no approval widens it", dir.display()),
+                    false => format!("an interactive run asks to widen it by `{}`", dir.display()),
+                };
+            format!(
+                "{HEAD} writing `{}`, and {widen}. Rerun with --yolo, or keep the writes inside the working tree (for a build, set CARGO_TARGET_DIR under it).",
+                path.display()
+            )
+        }
+        yi_tools::SandboxRefusal::Scopes(_) => format!(
+            "{HEAD}, naming no path (a nested sandbox, or the network past loopback), and only an interactive approval runs it outside. Rerun with --yolo."
+        ),
+    }
+}
+
 pub fn mode_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Ask => "ask",

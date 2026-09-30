@@ -195,8 +195,10 @@ omitted]`, `[showing lines A-B of N]`, `[full output: path]` and
 pointer names where. A number that was in the cut part is not a number
 you have. Read the pointer before citing anything past the cut.
 
-Outside yolo mode every command runs contained where a sandbox exists,
-unless it needs the network or a credential store and says so: no
+Outside yolo mode every command runs contained where a sandbox exists.
+It leaves only when it needs the network, an install or a credential
+store, when its question said so, or when an "always" passed that exact
+command after a refusal naming no path, and each says so. Contained: no
 network beyond loopback, no unix socket, writes only under the working
 tree, its git directories, and tmp. A test that binds a unix socket or
 reaches past loopback fails there for that reason. The
