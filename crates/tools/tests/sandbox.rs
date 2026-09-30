@@ -592,6 +592,7 @@ fn a_contained_command_inherits_no_secret_variable() -> TestResult {
         "DATABASE_URL",
         "GITHUB_PAT",
         "BW_SESSION",
+        "GOOGLE_APPLICATION_CREDENTIALS",
     ];
     let settings = [
         "TOKENIZERS_PARALLELISM",

@@ -361,6 +361,12 @@ fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
         "rg token ~",
         "cat '~/.yi/oauth/acme.json'",
         "cat /home/*/.netrc",
+        "cat ~/{.netrc,x}",
+        "cat ~/[.]netrc",
+        "cat \"$HOME\"/.npmrc",
+        "cat /home/user/\\.netrc",
+        "grep -r oauth_token /",
+        "find /home -name .npmrc",
     ] {
         assert!(
             command_reads_credentials(command, &lexical).is_some(),
@@ -391,6 +397,8 @@ fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
         workspace_git: Vec::new(),
     };
     let mut commands = vec![
+        // `cfg` is `~/.config`, so the kernel opens `~/.netrc`; popped first, it is `<root>/.netrc`.
+        "cat cfg/../.netrc".to_owned(),
         "cat cfg/gh/hosts.yml".to_owned(),
         "grep -r token cfg".to_owned(),
         "cat cfg/*/hosts.yml".to_owned(),
