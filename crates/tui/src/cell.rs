@@ -709,7 +709,7 @@ impl TaskCell {
             (_, Some((glyph, state, _))) => (glyph, state, theme.warning),
             (TaskStatus::Running, None) => (pulse, activity, theme.purple),
             (TaskStatus::Done, None) => ('↳', "done", theme.purple),
-            (TaskStatus::Failed, None) => ('✗', "failed", theme.error),
+            (TaskStatus::Failed, None) => ('✕', "failed", theme.error),
         };
         let (name, hash) = humanize(&self.description);
         let hash = if hash.is_empty() {

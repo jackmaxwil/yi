@@ -29,7 +29,7 @@ pub enum SessionStatus {
 impl SessionStatus {
     pub fn glyph(self) -> &'static str {
         match self {
-            Self::Blocked => "✕",
+            Self::Blocked => "?",
             Self::Working => "◐",
             Self::DoneUnseen => "●",
             Self::Idle => "○",

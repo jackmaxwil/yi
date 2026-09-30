@@ -2443,7 +2443,7 @@ fn a_card_the_roster_stopped_listing_ends_as_gone() -> TestResult {
     app.sync_children(&host.children_view());
     let committed = flat_lines(&app.take_commits());
     assert!(
-        committed.iter().any(|line| line.contains("✗ Trace sub")),
+        committed.iter().any(|line| line.contains("✕ Trace sub")),
         "the orphan card is finished and committed: {committed:?}"
     );
     assert!(
@@ -2502,7 +2502,7 @@ fn a_kernel_cell_that_spawns_and_deletes_leaves_no_live_card() -> TestResult {
     });
     let committed = flat_lines(&app.take_commits());
     assert!(
-        committed.iter().any(|line| line.contains("✗ Trace sub")),
+        committed.iter().any(|line| line.contains("✕ Trace sub")),
         "the deleted child's card is finished and committed: {committed:?}"
     );
     assert!(
