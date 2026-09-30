@@ -195,23 +195,27 @@ fn turn(session: &str, seq: u64, prompt: &str, reply: &AgentMessage) -> Vec<Valu
     frames
 }
 
+/// `extra` is Yi's own fields, which ride `_meta.yi` beside the name.
 fn session_result(frame: &Value, session: &str, name: Option<&str>, extra: Value) -> Value {
-    let mut result = json!({
-        "sessionId": session,
-        "name": name,
-        "configOptions": [
-            {"configId": "model", "name": "Model",
-             "kind": {"type": "select", "value": "faux/faux-1", "options": []}},
-            {"configId": "thought_level", "name": "Thinking level",
-             "kind": {"type": "select", "value": "medium", "options": []}},
-        ],
-    });
-    if let (Some(map), Some(more)) = (result.as_object_mut(), extra.as_object()) {
+    let mut yi = json!({"name": name});
+    if let (Some(map), Some(more)) = (yi.as_object_mut(), extra.as_object()) {
         for (key, value) in more {
             map.insert(key.clone(), value.clone());
         }
     }
-    ok(frame, result)
+    ok(
+        frame,
+        json!({
+            "sessionId": session,
+            "configOptions": [
+                {"configId": "model", "name": "Model", "type": "select",
+                 "currentValue": "faux/faux-1", "options": []},
+                {"configId": "thought_level", "name": "Thinking level", "type": "select",
+                 "currentValue": "medium", "options": []},
+            ],
+            "_meta": {"yi": yi},
+        }),
+    )
 }
 
 fn read_request(reader: &mut BufReader<UnixStream>) -> Option<Value> {
@@ -297,7 +301,7 @@ fn init_reply(frame: &Value) -> Vec<Value> {
         json!({
             "protocolVersion": 2,
             "info": {"name": "yi", "version": "test"},
-            "capabilities": {},
+            "capabilities": {"session": {"delete": {}}},
             "authMethods": [],
         }),
     )]
@@ -409,8 +413,10 @@ fn two_session_list(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
         json!({"sessions": [
-            {"sessionId": "s-alpha", "name": "s-alpha", "attached": false},
-            {"sessionId": "s-beta", "name": "s-beta", "attached": false},
+            {"sessionId": "s-alpha", "cwd": "/tmp/demo-root", "title": "s-alpha",
+             "_meta": {"yi": {"attached": false}}},
+            {"sessionId": "s-beta", "cwd": "/tmp/demo-root", "title": "s-beta",
+             "_meta": {"yi": {"attached": false}}},
         ]}),
     )]
 }
@@ -419,8 +425,8 @@ fn ledger_list(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
         json!({"sessions": [
-            {"sessionId": "s-beta", "name": "s-beta", "cwd": "/tmp/demo-root", "attached": false,
-             "unseen": 2, "lastState": "idle", "lastEventMs": 1},
+            {"sessionId": "s-beta", "title": "s-beta", "cwd": "/tmp/demo-root",
+             "_meta": {"yi": {"attached": false, "unseen": 2, "lastState": "idle", "lastEventMs": 1}}},
         ]}),
     )]
 }
@@ -826,7 +832,7 @@ fn background_session_notifies_after_delay() -> TestResult {
             Step::Expect("session/resume", |frame| {
                 vec![ok(
                     frame,
-                    json!({"sessionId": "s-beta", "name": "s-beta", "configOptions": []}),
+                    json!({"configOptions": [], "_meta": {"yi": {"name": "s-beta"}}}),
                 )]
             }),
             Step::Expect("_yi/seen", |frame| {
@@ -962,8 +968,8 @@ fn markdown_viewer_pane_renders_file() -> TestResult {
 
 fn resume_with_offset(frame: &Value) -> Vec<Value> {
     let mut frames = resume_alpha(frame);
-    if let Some(Value::Object(map)) = frames.last_mut().map(|reply| &mut reply["result"]) {
-        map.insert("replayedTo".to_owned(), json!(2));
+    if let Some(reply) = frames.last_mut() {
+        reply["result"]["_meta"]["yi"]["replayedTo"] = json!(2);
     }
     frames
 }
@@ -1185,7 +1191,7 @@ fn cmd_j_toggles_the_notebook_pane() -> TestResult {
 fn new_session_reply(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
-        json!({"sessionId": "s-new", "name": "s-new", "configOptions": []}),
+        json!({"sessionId": "s-new", "configOptions": [], "_meta": {"yi": {"name": "s-new"}}}),
     )]
 }
 
@@ -1533,7 +1539,9 @@ fn landing_from_review_asks_for_a_second_press() -> TestResult {
 fn unnamed_list(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
-        json!({"sessions": [{"sessionId": "s-alpha", "attached": false}]}),
+        json!({"sessions": [
+            {"sessionId": "s-alpha", "cwd": "/tmp/demo-root", "_meta": {"yi": {"attached": false}}},
+        ]}),
     )]
 }
 
@@ -1594,8 +1602,8 @@ fn other_root_ledger(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
         json!({"sessions": [
-            {"sessionId": "s-gamma", "name": "s-gamma", "cwd": "/tmp/other-root", "attached": false,
-             "unseen": 0, "lastState": "idle", "lastEventMs": 1},
+            {"sessionId": "s-gamma", "title": "s-gamma", "cwd": "/tmp/other-root",
+             "_meta": {"yi": {"attached": false, "unseen": 0, "lastState": "idle", "lastEventMs": 1}}},
         ]}),
     )]
 }
@@ -2079,10 +2087,10 @@ fn named_list(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
         json!({"sessions": [
-            {"sessionId": "s-alpha", "attached": false, "name": "fix login bug",
-             "createdAt": now - 3 * 3_600_000},
-            {"sessionId": "s-beta", "attached": false, "name": "release notes",
-             "createdAt": now - 5 * 60_000},
+            {"sessionId": "s-alpha", "cwd": "/tmp/demo-root", "title": "fix login bug",
+             "_meta": {"yi": {"attached": false, "createdAt": now - 3 * 3_600_000}}},
+            {"sessionId": "s-beta", "cwd": "/tmp/demo-root", "title": "release notes",
+             "_meta": {"yi": {"attached": false, "createdAt": now - 5 * 60_000}}},
         ]}),
     )]
 }
@@ -2109,8 +2117,9 @@ fn two_root_ledger(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
         json!({"sessions": [
-            {"sessionId": "s-gamma", "name": "s-gamma", "cwd": "/tmp/other-root", "attached": false,
-             "unseen": 0, "lastState": "idle", "lastEventMs": now_ms()},
+            {"sessionId": "s-gamma", "title": "s-gamma", "cwd": "/tmp/other-root",
+             "_meta": {"yi": {"attached": false, "unseen": 0, "lastState": "idle",
+                              "lastEventMs": now_ms()}}},
         ]}),
     )]
 }
@@ -2239,8 +2248,9 @@ fn named_after_prompt(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
         json!({"sessions": [
-            {"sessionId": "s-alpha", "cwd": "/tmp/demo-root", "attached": true,
-             "unseen": 0, "lastState": "idle", "lastEventMs": now_ms(), "name": "fix login"},
+            {"sessionId": "s-alpha", "cwd": "/tmp/demo-root", "title": "fix login",
+             "_meta": {"yi": {"attached": true, "unseen": 0, "lastState": "idle",
+                              "lastEventMs": now_ms()}}},
         ]}),
     )]
 }
@@ -2296,8 +2306,9 @@ fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
 fn forty_session_list(frame: &Value) -> Vec<Value> {
     let sessions: Vec<Value> = (0..40)
         .map(|n| {
-            json!({"sessionId": format!("s-{n:02}"), "name": format!("s-{n:02}"),
-                       "attached": false, "createdAt": 1000 + n})
+            json!({"sessionId": format!("s-{n:02}"), "cwd": "/tmp/demo-root",
+                   "title": format!("s-{n:02}"),
+                   "_meta": {"yi": {"attached": false, "createdAt": 1000 + n}}})
         })
         .collect();
     vec![ok(frame, json!({"sessions": sessions}))]
@@ -2564,10 +2575,10 @@ fn config_frame(model: &str, effort: &str) -> Value {
     update(
         "s-alpha",
         json!({"sessionUpdate": "_yi/config", "configOptions": [
-            {"configId": "model", "name": "Model",
-             "kind": {"type": "select", "value": model, "options": []}},
-            {"configId": "thought_level", "name": "Thinking level",
-             "kind": {"type": "select", "value": effort, "options": []}},
+            {"configId": "model", "name": "Model", "type": "select",
+             "currentValue": model, "options": []},
+            {"configId": "thought_level", "name": "Thinking level", "type": "select",
+             "currentValue": effort, "options": []},
         ]}),
     )
 }
@@ -3002,10 +3013,10 @@ fn sibling_roots_ledger(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
         json!({"sessions": [
-            {"sessionId": "s-fix", "name": "fix", "cwd": "/tmp/yi-feature-auth-fix",
-             "attached": false, "unseen": 0, "lastState": "idle", "lastEventMs": 1},
-            {"sessionId": "s-ui", "name": "ui", "cwd": "/tmp/yi-feature-auth-ui",
-             "attached": false, "unseen": 0, "lastState": "idle", "lastEventMs": 1},
+            {"sessionId": "s-fix", "title": "fix", "cwd": "/tmp/yi-feature-auth-fix",
+             "_meta": {"yi": {"attached": false, "unseen": 0, "lastState": "idle", "lastEventMs": 1}}},
+            {"sessionId": "s-ui", "title": "ui", "cwd": "/tmp/yi-feature-auth-ui",
+             "_meta": {"yi": {"attached": false, "unseen": 0, "lastState": "idle", "lastEventMs": 1}}},
         ]}),
     )]
 }

@@ -233,8 +233,8 @@ fn reconnect_keeps_heartbeats() -> TestResult {
             "session/resume",
             json!({"sessionId": session_id, "cwd": dir.display().to_string()}),
         )?;
-        assert_eq!(
-            resume["result"]["sessionId"], session_id,
+        assert!(
+            resume["result"]["configOptions"].is_array(),
             "resume must route to the surviving worker: {resume}"
         );
         Ok(())
@@ -330,14 +330,13 @@ fn two_roots_run_two_workers_that_keep_their_own_schedules() -> TestResult {
                 .find(|entry| entry["sessionId"] == session.as_str())
                 .ok_or_else(|| format!("the supervisor must still know {session}: {list}"))?;
             assert_eq!(
-                entry["name"], "sanity",
+                entry["title"], "sanity",
                 "the ledger names a session from its first prompt: {entry}"
             );
             let resume =
                 reconnected.request("3", "session/resume", json!({"sessionId": session}))?;
-            assert_eq!(
-                resume["result"]["sessionId"],
-                session.as_str(),
+            assert!(
+                resume["result"]["configOptions"].is_array(),
                 "resume must route to the surviving worker: {resume}"
             );
         }
@@ -409,9 +408,8 @@ fn workers_do_not_lose_heartbeats_or_tear_the_job_ledger() -> TestResult {
                 "session/resume",
                 json!({"sessionId": session_id, "cwd": cwd}),
             )?;
-            assert_eq!(
-                resume["result"]["sessionId"],
-                session_id.as_str(),
+            assert!(
+                resume["result"]["configOptions"].is_array(),
                 "resume must route to the surviving worker: {resume}"
             );
         }
@@ -538,7 +536,7 @@ fn a_returning_client_sees_one_unseen_and_the_branch_verbatim() -> TestResult {
                 .and_then(|rows| {
                     rows.iter()
                         .find(|row| row["sessionId"] == session_id.as_str())
-                        .filter(|row| row["lastState"] == "idle")
+                        .filter(|row| row["_meta"]["yi"]["lastState"] == "idle")
                         .cloned()
                 })
                 .is_some())
@@ -555,11 +553,13 @@ fn a_returning_client_sees_one_unseen_and_the_branch_verbatim() -> TestResult {
         // Running then idle both happened unattended; the event stream between them is
         // dozens of frames and must not count.
         assert!(
-            row["unseen"].as_u64().is_some_and(|n| (1..=2).contains(&n)),
+            row["_meta"]["yi"]["unseen"]
+                .as_u64()
+                .is_some_and(|n| (1..=2).contains(&n)),
             "the missed transitions, not the event stream: {row}"
         );
         assert_eq!(
-            row["name"], "fan this out",
+            row["title"], "fan this out",
             "the ledger names the session: {row}"
         );
 
@@ -585,7 +585,7 @@ fn a_returning_client_sees_one_unseen_and_the_branch_verbatim() -> TestResult {
             "user and assistant entries: {entries:?}"
         );
         let response = frames.last().ok_or("no response")?;
-        assert_eq!(response["result"]["name"], "fan this out");
+        assert_eq!(response["result"]["_meta"]["yi"]["name"], "fan this out");
         Ok(())
     })();
 
@@ -626,7 +626,8 @@ fn the_ledger_survives_a_daemon_restart() -> TestResult {
         let mut second = DaemonClient::connect(&socket)?;
         second.request("1", "initialize", json!({"protocolVersion": 2}))?;
         wait_until(Instant::now() + Duration::from_secs(20), || {
-            Ok(listed_row(&mut second, &session_id)?.is_some_and(|row| row["lastState"] == "idle"))
+            Ok(listed_row(&mut second, &session_id)?
+                .is_some_and(|row| row["_meta"]["yi"]["lastState"] == "idle"))
         })?;
         second.request("s", "_yi/shutdown", json!({}))?;
         wait_until(Instant::now() + Duration::from_secs(5), || {
@@ -640,18 +641,20 @@ fn the_ledger_survives_a_daemon_restart() -> TestResult {
         third.request("1", "initialize", json!({"protocolVersion": 2}))?;
         let row = listed_row(&mut third, &session_id)?
             .ok_or("the restarted daemon must list the session")?;
-        assert_eq!(row["name"], "keep me", "the name survives: {row}");
+        assert_eq!(row["title"], "keep me", "the name survives: {row}");
         assert_eq!(
             row["cwd"],
             dir.display().to_string(),
             "the root survives: {row}"
         );
         assert_eq!(
-            row["lastState"], "idle",
+            row["_meta"]["yi"]["lastState"], "idle",
             "no worker outlived the daemon: {row}"
         );
         assert!(
-            row["unseen"].as_u64().is_some_and(|n| n >= 1),
+            row["_meta"]["yi"]["unseen"]
+                .as_u64()
+                .is_some_and(|n| n >= 1),
             "the unseen turn survives: {row}"
         );
         Ok(())
@@ -672,11 +675,15 @@ fn shutdown_stops_the_daemon_and_its_worker() -> TestResult {
     let (mut daemon, socket) = spawn_daemon(&dir)?;
     let outcome = (|| -> TestResult {
         let mut client = DaemonClient::connect(&socket)?;
-        client.request(
+        let init = client.request(
             "i",
             "initialize",
             json!({"protocolVersion": 2, "clientInfo": {"name": "t"}}),
         )?;
+        // A strict client reads a missing `session` object as an agent with no sessions.
+        if !init["result"]["capabilities"]["session"]["delete"].is_object() {
+            return Err(format!("the daemon must advertise sessions: {init}").into());
+        }
         new_session(&mut client, "n", &root)?;
         let reply = client.request("s", "_yi/shutdown", json!({}))?;
         if reply.get("result").is_none() {

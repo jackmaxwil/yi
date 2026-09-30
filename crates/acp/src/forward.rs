@@ -180,6 +180,16 @@ impl Parent {
         for update in to_updates(event, &mut self.ids) {
             self.forward.emit(update);
         }
+        for prompt in self.ids.take_inserted() {
+            let inserted = yi_types::acp::AcpPromptResult {
+                message_id: prompt.message_id,
+            };
+            crate::respond(
+                &self.forward.sink,
+                prompt.request,
+                Ok(serde_json::json!(inserted)),
+            );
+        }
         match event {
             AgentEvent::ChildUpdate { .. } => self.adopt_children(),
             AgentEvent::MessageEnd { .. }
@@ -208,7 +218,12 @@ pub(crate) async fn forward_parent(
     while let Some(next) = yi_runtime::next_event(&mut events).await {
         match next {
             Ok(event) => parent.reduce(&event),
-            Err(gap) => parent.forward.gap(gap.dropped),
+            Err(gap) => {
+                parent.forward.gap(gap.dropped);
+                // Invariant: a lag may have dropped an insertion; a refusal beats a success naming it.
+                let lost = "the update stream lagged past this prompt's insertion";
+                crate::refuse(&parent.forward.sink, parent.ids.waiting(), -32603, lost);
+            }
         }
     }
 }
