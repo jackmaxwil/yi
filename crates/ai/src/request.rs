@@ -311,7 +311,11 @@ pub fn pump_sse_with_resend(
     let mut first_error: Option<String> = None;
     loop {
         let sent_us = yi_types::trace::now_us();
-        let response = send()?;
+        // A resend's refusal must not read as the first request's: that one may have billed.
+        let response = send().map_err(|text| match &first_error {
+            Some(first) => format!("resend refused: {text} (first attempt: {first})"),
+            None => text,
+        })?;
         let mut delivered = false;
         let pumped = pump_sse(response, stop, |event| {
             if !delivered {
@@ -397,9 +401,15 @@ pub fn fail_message(output: &mut AgentMessage, text: &str) -> crate::EventOut {
     if let AgentMessage::Assistant {
         stop_reason,
         error_message,
+        usage,
         ..
     } = output
     {
+        // A 4xx from `send_with_retry` refused the request before it ran: a known zero. A 5xx
+        // may come from a gateway after the upstream billed, and a cut stream may have billed.
+        if text.starts_with("HTTP 4") {
+            *usage = Usage::zero();
+        }
         *stop_reason = StopReason::Error;
         *error_message = Some(text.to_owned());
     }

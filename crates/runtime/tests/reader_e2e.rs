@@ -797,12 +797,17 @@ async fn a_workers_reminder_fires_again_after_it_compacts() -> TestResult {
         vec![faux_text("## Goal\nwrite out.txt three times")],
         StopReason::Stop,
     );
+    // The first request's prompt latches the window's prefix; a zero usage no longer does.
+    let mut first = write_call("c1", "out.txt", &"x".repeat(120_000));
+    if let AgentMessage::Assistant { usage, .. } = &mut first {
+        (usage.input, usage.total_tokens) = (1_000, 1_000);
+    }
     let mut second = write_call("c2", "out.txt", &"y".repeat(120_000));
     if let AgentMessage::Assistant { usage, .. } = &mut second {
         (usage.input, usage.total_tokens) = (60_000, 60_000);
     }
     let script: Script = Arc::new(Mutex::new(vec![
-        write_call("c1", "out.txt", &"x".repeat(120_000)),
+        first,
         second,
         summary,
         write_call("c3", "out.txt", "three\n"),
