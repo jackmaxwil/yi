@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::args::Args;
 use serde_json::{Map, Value};
 use yi_types::memory::MemoryPointer;
 use yi_types::plan::canonical::Digest;
@@ -92,7 +93,7 @@ fn text(payload: &Map<String, Value>, key: &str, verb: &str) -> Result<String, S
 }
 
 fn scope_of(payload: &Map<String, Value>, verb: &str) -> Result<Vec<Scope>, String> {
-    match payload.get("scope").and_then(Value::as_str) {
+    match payload.str_of("scope") {
         None => Ok(vec![Scope::Repo, Scope::Global]),
         Some(raw) => Scope::parse(raw)
             .map(|scope| vec![scope])
@@ -102,8 +103,7 @@ fn scope_of(payload: &Map<String, Value>, verb: &str) -> Result<Vec<Scope>, Stri
 
 fn search_call(query: &str, payload: &Map<String, Value>, limit: usize) -> String {
     let scope = payload
-        .get("scope")
-        .and_then(Value::as_str)
+        .str_of("scope")
         .map_or_else(String::new, |raw| format!(", scope={}", Value::from(raw)));
     format!(
         "memory.search({}{scope}, limit={limit})",
@@ -214,8 +214,7 @@ impl Verbs {
         self.root_only("memory.search")?;
         let query = text(payload, "query", "memory.search")?;
         let limit = payload
-            .get("limit")
-            .and_then(Value::as_u64)
+            .u64_of("limit")
             .map_or(SEARCH_LIMIT, |n| usize::try_from(n).unwrap_or(SEARCH_LIMIT))
             .max(1);
         let scopes = scope_of(payload, "memory.search")?;
@@ -251,7 +250,7 @@ impl Verbs {
     }
 
     fn closest(&self, payload: &Map<String, Value>) -> Option<(Scope, Note, String)> {
-        let query = payload.get("name").and_then(Value::as_str)?;
+        let query = payload.str_of("name")?;
         let scopes = scope_of(payload, "memory.read").ok()?;
         let stores: Vec<Store> = scopes.iter().map(|scope| self.store(*scope)).collect();
         let hits = ranked(&stores.iter().collect::<Vec<_>>(), query);

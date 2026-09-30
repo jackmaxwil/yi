@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::args::Args;
 use serde_json::{Map, Value, json};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Usage};
@@ -843,7 +844,7 @@ impl SubagentHost {
     }
 
     fn status_read(&self, payload: &Map<String, Value>) -> Map<String, Value> {
-        let reply = self.status_of(payload.get("name").and_then(Value::as_str));
+        let reply = self.status_of(payload.str_of("name"));
         self.shown_by(reply, payload)
     }
 
@@ -1030,7 +1031,7 @@ impl SubagentHost {
         registry.register("rlm.wait", move |payload| {
             let timeout = timeout_of(&payload);
             let kept = seen.load(std::sync::atomic::Ordering::Relaxed);
-            let given = payload.get("cursor").and_then(Value::as_u64);
+            let given = payload.u64_of("cursor");
             let cursor = given.or((kept > 0).then_some(kept));
             let (host, seen) = (Arc::clone(&host), Arc::clone(&seen));
             Box::pin(async move {
@@ -1046,10 +1047,7 @@ impl SubagentHost {
         self.register_service(registry);
         let host = Arc::clone(self);
         registry.register("rlm.result", move |payload| {
-            let target = payload
-                .get("target")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let target = payload.str_of("target").map(str::to_owned);
             let schema = payload
                 .get("schema")
                 .cloned()
@@ -1065,10 +1063,7 @@ impl SubagentHost {
         });
         let host = Arc::clone(self);
         registry.register("rlm.run", move |payload| {
-            let prompt = payload
-                .get("prompt")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let prompt = payload.str_of("prompt").map(str::to_owned);
             let kwargs = payload
                 .get("kwargs")
                 .and_then(Value::as_object)
@@ -1094,10 +1089,7 @@ impl SubagentHost {
         });
         let host = Arc::clone(self);
         registry.register("rlm.delete_subagent", move |payload| {
-            let target = payload
-                .get("target")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let target = payload.str_of("target").map(str::to_owned);
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let target = target.ok_or("rlm.delete_subagent requires a target")?;
@@ -1110,10 +1102,7 @@ impl SubagentHost {
         ] {
             let host = Arc::clone(self);
             registry.register(method, move |payload| {
-                let target = payload
-                    .get("target")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
+                let target = payload.str_of("target").map(str::to_owned);
                 let host = Arc::clone(&host);
                 Box::pin(async move {
                     let target = target.ok_or_else(|| format!("{method} requires a target"))?;
@@ -1127,10 +1116,9 @@ impl SubagentHost {
         }
         let host = Arc::clone(self);
         registry.register("rlm.find_models", move |payload| {
-            let query = payload.get("query").and_then(Value::as_str);
+            let query = payload.str_of("query");
             let limit = payload
-                .get("limit")
-                .and_then(Value::as_u64)
+                .u64_of("limit")
                 .map(|limit| usize::try_from(limit).unwrap_or(8))
                 .unwrap_or(8);
             let reply = host.find_models(query.unwrap_or_default(), limit);
