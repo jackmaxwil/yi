@@ -111,8 +111,10 @@ config raises it, eight children per parent, sixteen live per family.
 
 ## Patterns
 
-A bare `rlm.run` is a question-child: it reads and answers once. Every
-pattern here but map-reduce spawns `role="root"`, a full child.
+A bare `rlm.run` is a question-child: it reads and answers once. A child
+that makes one change is `role="worker"`: the project's rules, edit tools,
+its partition, no kernel. Every pattern here but map-reduce spawns
+`role="root"`, a full child.
 
 - Map-reduce: `rlm.ask` per shard with a `schema`; you reduce the
   answers with pandas in your kernel.
