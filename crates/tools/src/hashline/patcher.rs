@@ -230,6 +230,16 @@ impl<'a> Patcher<'a> {
             candidates.sort();
             candidates.dedup();
             candidates.retain(|candidate| self.canonical_path(candidate) != canonical_path);
+            // The broker judged the authored path only; a rebound one meets its gates here (D323).
+            let gate = yi_permission::CatastrophicContext::detect(&self.cwd);
+            candidates.retain(|candidate| {
+                let path = self.resolve_path(candidate);
+                !yi_permission::read_is_catastrophic(&path, &gate)
+                    && !yi_permission::is_catastrophic(
+                        &yi_permission::lexical_normalize(&path),
+                        &gate,
+                    )
+            });
             if candidates.len() == 1 {
                 let resolved = candidates.remove(0);
                 parse_warnings.push(path_recovered_from_tag_message(

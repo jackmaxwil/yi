@@ -144,7 +144,7 @@ impl Resolver {
             }
             (normalized, "workspace-file", root)
         };
-        let text = read_text(url, &self.resolved(url, path, &root)?)?;
+        let text = super::read_text(url, &self.resolved(url, path, &root)?, self.workspace())?;
         Ok((apply_fragment(url, text)?, served_by.to_owned()))
     }
 
@@ -181,7 +181,7 @@ impl Resolver {
         };
         let legacy = self.plans_dir().join(format!("{plan_id}.md"));
         let (plan, body) = if legacy.is_file() {
-            let text = read_text(url, &legacy)?;
+            let text = super::read_text(url, &legacy, self.workspace())?;
             if slug.is_none() {
                 return Ok((text, "plan-file".to_owned()));
             }
@@ -386,12 +386,14 @@ impl Resolver {
                 refusal,
             });
         }
-        std::fs::read_to_string(&path)
-            .map(|text| (text, format!("member-tree {agent}")))
-            .map_err(|_| FetchError::NotFound {
+        match super::read_text(url, &path, &root) {
+            Ok(text) => Ok((text, format!("member-tree {agent}"))),
+            Err(FetchError::NotFound { .. }) => Err(FetchError::NotFound {
                 url: url.to_string(),
                 what: format!("{rel} in the checkout of {agent}"),
-            })
+            }),
+            Err(error) => Err(error),
+        }
     }
 
     /// The object behind `kernel://<agent>/<var>`, dilled by its own kernel into the family
@@ -571,20 +573,6 @@ fn user_text(url: &Url, content: &UserContent) -> Result<String, FetchError> {
                 message: error.to_string(),
             })
         }
-    }
-}
-
-fn read_text(url: &Url, path: &Path) -> Result<String, FetchError> {
-    match std::fs::read_to_string(path) {
-        Ok(raw) => Ok(normalize_to_lf(strip_bom(&raw).text)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(FetchError::NotFound {
-            url: url.to_string(),
-            what: path.display().to_string(),
-        }),
-        Err(error) => Err(FetchError::Backend {
-            url: url.to_string(),
-            message: error.to_string(),
-        }),
     }
 }
 
