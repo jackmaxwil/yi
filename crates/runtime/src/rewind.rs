@@ -1,5 +1,5 @@
 use yi_types::entry::Entry;
-use yi_types::message::{AgentMessage, Content, UserContent};
+use yi_types::message::{AgentMessage, UserContent};
 use yi_types::model::LlmContext;
 
 use crate::session::{AgentSession, Status};
@@ -139,14 +139,7 @@ pub async fn summarize_branch(session: &AgentSession, stub: BranchStub) {
 pub(crate) fn user_text(content: &UserContent) -> String {
     match content {
         UserContent::Text(text) => text.clone(),
-        UserContent::Blocks(blocks) => blocks
-            .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
+        UserContent::Blocks(blocks) => yi_types::message::join_text(blocks, " "),
     }
 }
 

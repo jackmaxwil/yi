@@ -36,15 +36,7 @@ fn files_matched(name: &str, result: &yi_types::event::ToolResult) -> u32 {
 }
 
 fn result_text(result: &yi_types::event::ToolResult) -> String {
-    result
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    yi_types::message::join_text(&result.content, "\n")
 }
 
 /// The predicates that hold after this call; the needles are the states the old

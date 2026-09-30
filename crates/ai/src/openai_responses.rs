@@ -155,14 +155,7 @@ fn convert_tool_result(
         "function_call_output"
     };
     let (call_id, _) = call_and_item(tool_call_id);
-    let text: String = content
-        .iter()
-        .filter_map(|block| match block {
-            Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text: String = yi_types::message::join_text(content, "\n");
     let images: Vec<Value> = if vision {
         content
             .iter()
