@@ -347,7 +347,7 @@ fn wire_fetch(
             let url: yi_types::url::Url = raw
                 .parse()
                 .map_err(|error: yi_types::url::UrlError| format!("{raw}: {error}"))?;
-            let page = crate::fetch::Page::from_payload(&payload)?;
+            let page = crate::fetch::Page::from_payload(&payload, "fetch")?;
             // a family member asks for the object; the owner dills it to the family dir (D164).
             if payload.get("object").and_then(Value::as_bool) == Some(true) {
                 if page.is_some() {
