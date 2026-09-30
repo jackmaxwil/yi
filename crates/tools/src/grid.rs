@@ -14,7 +14,7 @@ const CHECK_LINES: usize = 40;
 const NO_DEFINITIONS: i32 = 2;
 
 pub(crate) enum GridLayer {
-    Scoped { lines: Vec<String>, outside: usize },
+    Drift { lines: Vec<String>, outside: usize },
     Unavailable(Unavailable),
 }
 
@@ -28,8 +28,8 @@ pub(crate) enum Unavailable {
 impl GridLayer {
     pub(crate) fn name(&self) -> &'static str {
         match self {
-            Self::Scoped { lines, .. } if lines.is_empty() => "clean",
-            Self::Scoped { .. } => "findings",
+            Self::Drift { lines, .. } if lines.is_empty() => "clean",
+            Self::Drift { .. } => "findings",
             Self::Unavailable(Unavailable::NoBinary) => "no-binary",
             Self::Unavailable(Unavailable::Timeout { .. }) => "timeout",
             Self::Unavailable(Unavailable::Exit { .. }) => "exit",
@@ -39,7 +39,7 @@ impl GridLayer {
 
     pub(crate) fn render(&self) -> String {
         let reason = match self {
-            Self::Scoped { lines, outside } => return scoped(lines, *outside),
+            Self::Drift { lines, outside } => return drift_text(lines, *outside),
             Self::Unavailable(Unavailable::NoBinary) => "no grid binary".to_owned(),
             Self::Unavailable(Unavailable::Timeout { ms }) => format!("no answer in {ms} ms"),
             Self::Unavailable(Unavailable::Exit { code }) => format!("exit {code}"),
@@ -49,7 +49,7 @@ impl GridLayer {
     }
 }
 
-fn scoped(lines: &[String], outside: usize) -> String {
+fn drift_text(lines: &[String], outside: usize) -> String {
     let head = if lines.is_empty() {
         "[grid check: clean]"
     } else {
@@ -156,7 +156,7 @@ pub(crate) fn check(context: &ToolContext, files: &[String]) -> GridLayer {
             .map(|at| field(row, &format!("/{at}")));
             format!("{kind} {dependent} <-{relation}- {changed} at {file}:{line}")
         };
-        Ok(GridLayer::Scoped {
+        Ok(GridLayer::Drift {
             lines: mine.iter().map(line).collect(),
             outside: outside.len(),
         })
