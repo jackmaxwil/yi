@@ -2271,7 +2271,7 @@ fn the_first_prompt_names_the_session_row() -> TestResult {
 }
 
 /// One session, `s-alpha`, with its children as `_yi/subagent_update` sends them.
-fn family(
+fn session_with_children(
     mode: SidebarMode,
     name: &str,
     children: &[Value],
@@ -2299,7 +2299,7 @@ fn family(
     Ok(app)
 }
 
-fn child_update(name: &str, status: &str, flag: Option<Value>) -> Value {
+fn wire_child(name: &str, status: &str, flag: Option<Value>) -> Value {
     let mut update = json!({"id": format!("c-{name}"), "name": name, "status": status,
         "activity": "executing", "toolUseCount": 2, "tokenCount": 100});
     if let Some(flag) = flag {
@@ -2322,10 +2322,10 @@ fn last_mark(row: &str) -> Option<(usize, char)> {
 fn a_child_row_hangs_off_its_session_with_the_glyph_in_the_column() -> TestResult {
     let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
     let children = [
-        child_update("grep-bot", "running", None),
-        child_update("edit-bot", "error", None),
+        wire_child("grep-bot", "running", None),
+        wire_child("edit-bot", "error", None),
     ];
-    let app = family(SidebarMode::Rail, "fix login", &children)?;
+    let app = session_with_children(SidebarMode::Rail, "fix login", &children)?;
     let rows: Vec<String> = yi_console::sidebar::sidebar_lines(&app, &theme, 60)
         .iter()
         .map(|row| row.line.to_string())
@@ -2352,10 +2352,10 @@ fn a_child_row_hangs_off_its_session_with_the_glyph_in_the_column() -> TestResul
 fn full_sidebar_child_glyphs_share_the_session_column() -> TestResult {
     let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
     let children = [
-        child_update("grep-bot", "running", None),
-        child_update("构建-🔧-bot", "completed", None),
+        wire_child("grep-bot", "running", None),
+        wire_child("构建-🔧-bot", "completed", None),
     ];
-    let app = family(SidebarMode::Full, "修复登录 fix", &children)?;
+    let app = session_with_children(SidebarMode::Full, "修复登录 fix", &children)?;
     let rows: Vec<String> = yi_console::sidebar::sidebar_lines(&app, &theme, 60)
         .iter()
         .map(|row| row.line.to_string())
@@ -2384,11 +2384,11 @@ fn one_glyph_one_meaning() -> TestResult {
     let asks = json!({"state": "needs_you", "note": "asks r1: which file?"});
     let stuck = json!({"state": "stuck", "note": "idle 300s"});
     let children = [
-        child_update("asker", "running", Some(asks)),
-        child_update("broke", "error", None),
-        child_update("stalled", "running", Some(stuck)),
+        wire_child("asker", "running", Some(asks)),
+        wire_child("broke", "error", None),
+        wire_child("stalled", "running", Some(stuck)),
     ];
-    let app = family(SidebarMode::Rail, "fix login", &children)?;
+    let app = session_with_children(SidebarMode::Rail, "fix login", &children)?;
     let marks: Vec<char> = yi_console::sidebar::sidebar_lines(&app, &theme, 60)
         .iter()
         .skip(2)
