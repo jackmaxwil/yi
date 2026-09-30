@@ -214,6 +214,21 @@ pub fn write_grant(dir: &std::path::Path) -> Grant {
     }
 }
 
+/// The directory a [`write_grant`] names, read back from its canonical identity.
+pub fn write_grant_dir(canonical: &str) -> Option<std::path::PathBuf> {
+    let (length, dir) = canonical
+        .strip_prefix(&identity(&["write"]))?
+        .split_once(':')?;
+    let dir = dir.strip_suffix('\n')?;
+    (length.parse() == Ok(dir.len())).then(|| dir.into())
+}
+
+/// Whether a rule keeps one exact command, the only kind a pathless refusal lets leave the
+/// sandbox (the session pass of D331).
+pub fn is_exact_command(canonical: &str) -> bool {
+    canonical.starts_with(&identity(&["command"]))
+}
+
 fn tree_writes(
     call: &crate::ToolCall<'_>,
     context: &crate::CatastrophicContext,

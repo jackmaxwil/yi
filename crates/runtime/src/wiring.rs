@@ -17,7 +17,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             let cwd = build
                 .cwd
                 .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
-            let broker = wiring.broker.clone();
+            let broker = child_broker(&wiring, &build.wall);
             let tools = (wiring.tools)();
             let rules = crate::rules::discover_armed(&cwd, &wiring.home).rules;
             let rules = Some(Arc::new(crate::rules::RuleEngine::new(rules)));
@@ -58,6 +58,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
         let host = attach_runtime(
             &mut child,
             RuntimeWiring {
+                broker: child_broker(&wiring, &build.wall),
                 depth: wiring.depth.saturating_add(1),
                 rlm_dir: build.session_dir.to_path_buf(),
                 family_dir: Some(wiring.family_dir()),
@@ -73,6 +74,14 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
         host.set_grant(child.wall(), build.tokens);
         Ok(child)
     })
+}
+
+/// Rules flow down only: a child's broker starts from a copy of its parent's (#600).
+fn child_broker(
+    wiring: &RuntimeWiring,
+    wall: &crate::wall::Wall,
+) -> Option<Arc<crate::permission::PermissionBroker>> {
+    (wiring.broker.as_ref()).map(|broker| Arc::new(broker.for_child(wall)))
 }
 
 /// Carried again by every child one level deeper.
@@ -256,6 +265,20 @@ impl RuntimeWiring {
             .filter(|_| self.depth == 0)
             .unwrap_or(&self.rlm_dir)
             .clone()
+    }
+}
+
+/// A kernel `bash()` job's profile, built as it spawns: the kernel's own plus every write
+/// grant kept since, so a grant reaches a kernel that was running before it (#600).
+fn job_profile(
+    wiring: &RuntimeWiring,
+) -> impl Fn() -> Option<yi_tools::Sandbox> + Send + Sync + 'static {
+    let (profile, broker) = (wiring.exec_sandbox(), wiring.broker.clone());
+    move || {
+        let mut profile = profile.clone()?;
+        let kept = broker.iter().flat_map(|broker| broker.kept_writes());
+        profile.writable.extend(kept);
+        Some(profile)
     }
 }
 
@@ -744,9 +767,9 @@ fn wire_job_completions(session: &AgentSession, cwd: PathBuf) {
     });
 }
 
-fn journal_into(
+pub(crate) fn journal_into<T: yi_types::entry::CustomRecord + 'static>(
     store: Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>,
-) -> crate::permission::Journal {
+) -> crate::permission::Journal<T> {
     Arc::new(move |record| {
         if let Some(store) = store() {
             let _journaled = yi_session::lock_session(&store).append_custom_record(&record);
@@ -791,7 +814,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
-    registry.register_exec(wiring.cwd.clone(), wiring.exec_sandbox());
+    registry.register_exec(wiring.cwd.clone(), job_profile(&wiring));
     crate::kernel_state::register_host_stores(&mut registry, &wiring);
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort

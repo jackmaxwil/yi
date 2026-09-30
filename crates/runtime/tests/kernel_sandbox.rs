@@ -516,6 +516,59 @@ print(await bash(bound))"#;
     Ok(())
 }
 
+/// #600 stage 2c: a `bash()` job ran under the profile captured when the session was wired, so a
+/// grant kept later, here replayed from the ledger on `--continue`, never reached the kernel's jobs.
+#[tokio::test]
+async fn a_kernel_bash_job_takes_a_grant_kept_after_wiring() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, home, _session) = workspace("grant")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let probe = uncovered(&sandbox, &home).ok_or("no directory outside the sandbox")?;
+    let granted = probe.join(format!("yi-job-grant-{}", std::process::id()));
+    std::fs::create_dir_all(&granted)?;
+    let (events, _keep) = tokio::sync::broadcast::channel(16);
+    let broker = Arc::new(
+        yi_runtime::permission::PermissionBroker::new(
+            yi_runtime::PermissionMode::Auto,
+            project.clone(),
+            Vec::new(),
+            None,
+            events,
+        )
+        .with_sandbox(Some(sandbox)),
+    );
+    let session = root_session(&project, &home, &root.join("rlm"), None, Some(broker), None);
+    let store = crate::support::memory_store("job-grant");
+    let grant = yi_permission::write_grant(&granted);
+    let rule = serde_json::json!({
+        "id": 1, "kind": "command", "canonical": grant.canonical,
+        "displayIdentity": grant.label, "decision": "allow", "generation": 1
+    });
+    yi_session::lock_session(&store).append_custom("main", "permission_rule", Some(rule))?;
+    session.attach_store(store)?;
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let made = granted.join("made");
+    let code = format!(
+        "print(await bash(\"touch '{}' && echo made\"))",
+        made.display()
+    );
+    let ran = cell(&kernel, code).await;
+    kernel.dispose().await;
+    let wrote = made.is_file();
+    let _ = std::fs::remove_dir_all(&granted);
+    let ran = ran?;
+    assert!(
+        wrote,
+        "the job's profile lacks the kept grant: {}",
+        ran.result.stdout
+    );
+    Ok(())
+}
+
 /// Incident: a child kernel's writable roots stopped at its own `sub-*` directory, so its
 /// `rlm.put` to the family board it shares with its parent failed with EPERM. Then (#757) the
 /// profile granted `family/<id>` while nothing made `family/`, so the kernel's mkdir was denied.

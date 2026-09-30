@@ -585,6 +585,9 @@ impl AgentSession {
         if let Ok(mut slot) = self.permission.lock() {
             slot.clone_from(&permission);
         }
+        if let Some(broker) = &permission {
+            broker.set_rule_journal(crate::wiring::journal_into(self.store_handle()));
+        }
         let adapters = tools
             .into_iter()
             .map(|tool| {
@@ -647,6 +650,19 @@ impl AgentSession {
             for message in crate::mail::unread(&entries) {
                 run::push(&mut queue, Queued::new(message, false, None));
             }
+        }
+        if let Some(broker) = self.permission_broker() {
+            let kept = entries.iter().filter_map(|entry| match entry {
+                Entry::Custom {
+                    custom_type,
+                    data: Some(data),
+                    ..
+                } if custom_type == yi_types::permission::PERMISSION_RULE_ENTRY => {
+                    serde_json::from_value(data.clone()).ok()
+                }
+                _ => None,
+            });
+            broker.replay(kept.collect(), &self.wall());
         }
         let id = yi_session::lock_session(&store).metadata().id.clone();
         if let Ok(mut slot) = self.shared.store.lock() {
