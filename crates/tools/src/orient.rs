@@ -85,7 +85,8 @@ fn packet(symbol: Option<&str>, context: &ToolContext) -> String {
     let (roots, near, heat, skeleton) = std::thread::scope(|scope| {
         let roots = scope.spawn(|| {
             let _span = yi_types::trace::span("context.grid");
-            crate::grid::layer(context, &["roots"])
+            let chart = crate::grid::chart_root(root).unwrap_or(root);
+            crate::grid::layer(chart, &["roots"], &context.cancelled)
         });
         let near = scope.spawn(|| {
             let _span = yi_types::trace::span("context.grid");
@@ -148,8 +149,15 @@ fn clamp(name: &str, body: String) -> String {
 
 fn neighborhood(symbol: Option<&str>, context: &ToolContext) -> LayerBody {
     let symbol = symbol.ok_or_else(|| "no symbol argument was given".to_owned())?;
+    let chart = crate::grid::chart_root(&context.cwd).ok_or_else(|| {
+        "no .grid chart in or above the working directory — bash: grid survey charts it".to_owned()
+    })?;
     let pattern = crate::grid::scope_pattern(symbol);
-    crate::grid::layer(context, &["scope", &pattern, "--depth", "1"])
+    crate::grid::layer(
+        chart,
+        &["scope", &pattern, "--depth", "1"],
+        &context.cancelled,
+    )
 }
 
 fn skeletons(

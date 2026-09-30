@@ -318,7 +318,7 @@ fn the_grid_layers_are_asked_at_once() -> TestResult {
 /// Dogfood 2026-09-27: `symbol=HashlineEditTool` said nothing is called that, because grid
 /// matches every dot-separated segment, and the miss kept only its first line. The fake answers
 /// `**.alpha` and `**.tool.alpha`, and anything else with grid's real miss, closest names and all;
-/// it leaves a `ran` marker, which an uncharted tree must never see.
+/// its `scope` leaves a `ran` marker, which an uncharted tree must never see.
 #[cfg(unix)]
 #[test]
 fn a_bare_symbol_reaches_grid_under_any_path_and_a_miss_keeps_its_names() -> TestResult {
@@ -331,9 +331,10 @@ fn a_bare_symbol_reaches_grid_under_any_path_and_a_miss_keeps_its_names() -> Tes
         fs::write(
             &grid,
             format!(
-                "#!/bin/sh\n: > ran\ncase \"$1 $2\" in\n\
-                 'scope **.alpha'|'scope **.tool.alpha') echo \"scope $2 answered\";;\n\
-                 scope*) /bin/cat '{}' >&2; exit 2;;\nesac\n",
+                "#!/bin/sh\ncase \"$1 $2\" in\n\
+                 'scope **.alpha'|'scope **.tool.alpha') : > ran; echo \"scope $2 answered\";;\n\
+                 scope*) /bin/cat '{}' >&2; exit 2;;\n\
+                 roots*) echo \"roots answered\"; exit 0;;\nesac\n",
                 miss.display()
             ),
         )?;
@@ -355,14 +356,15 @@ fn a_bare_symbol_reaches_grid_under_any_path_and_a_miss_keeps_its_names() -> Tes
         input.insert("symbol".to_owned(), json!(symbol));
         run(Path::new(&dir), input)
     };
-    // grid would survey an uncharted tree and write `.grid/` into it.
+    // grid scope leaves `.grid/` in an uncharted tree; grid roots reads the files alone.
     let uncharted = ask("alpha");
     assert!(!Path::new(&dir).join("ran").exists(), "{uncharted}");
     assert!(uncharted.contains("absent: no .grid chart"), "{uncharted}");
+    assert!(uncharted.contains("roots answered"), "{uncharted}");
     fs::create_dir_all(Path::new(&dir).join(".grid"))?;
     let bare = ask("alpha");
     assert!(bare.contains("scope **.alpha answered"), "{bare}");
-    let pathed = ask("tool::alpha");
+    let pathed = ask("crate::tool::alpha");
     assert!(pathed.contains("scope **.tool.alpha answered"), "{pathed}");
     let missed = ask("scale");
     assert!(missed.contains("  drift.user.total"), "{missed}");
