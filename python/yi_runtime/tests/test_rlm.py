@@ -21,6 +21,9 @@ from unittest import mock
 
 import rlm
 
+# The host sentences the handle matches on, as the host words them; the Rust side pins the same file.
+HOST_TEXTS = json.loads((pathlib.Path(__file__).parent / "vectors" / "host_texts.json").read_text())
+
 # FakeHost replaces rlm.host_request for good; a test of the real reply path restores this one.
 REAL_HOST_REQUEST = rlm.host_request
 
@@ -135,7 +138,7 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
         async def woken_then_answer(*args, **kwargs):
             results.append(1)
             if len(results) == 1:
-                raise RuntimeError('child "n" is still running')
+                raise RuntimeError(HOST_TEXTS["still_running"])
             return {"text": "ok"}
 
         with mock.patch.object(rlm, "wait", wait_finished), mock.patch.object(
@@ -153,7 +156,7 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
             return reply
 
         async def still_running(*args, **kwargs):
-            raise RuntimeError('child "n" is still running')
+            raise RuntimeError(HOST_TEXTS["still_running"])
 
         with mock.patch.object(rlm, "wait", wait_asking), mock.patch.object(
             rlm, "result", still_running
@@ -190,7 +193,7 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
         async def refuse_then_answer(*args, **kwargs):
             results.append(1)
             if len(results) == 1:
-                raise RuntimeError('child "n" is still running')
+                raise RuntimeError(HOST_TEXTS["still_running"])
             return {"text": "ok"}
 
         with mock.patch.object(rlm, "wait", wait_blocked_then_finished), mock.patch.object(
@@ -795,21 +798,22 @@ class ReplyTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_helper_pauses_on_a_repeat_the_host_refused(self) -> None:
         """Dies with the refusal of a repeated ``asks`` or ``settled`` wait ending the helper
         that watches one child while another asks."""
-        seen: list[int] = []
+        for refusal in (f"{HOST_TEXTS['asking']} parent-1: answer it", HOST_TEXTS["settled"]):
+            seen: list[int] = []
 
-        async def fake_host_request(kind, payload=None):
-            if kind == "rlm.wait":
-                seen.append(payload.get("cursor", -1))
-                if len(seen) == 1:
-                    raise RuntimeError('other is asking you parent-1: answer it with rlm.send("other", ...)')
-                return _wait_reply("finished")
-            if kind == "rlm.result":
-                return {"text": "done"}
-            return {}
+            async def fake_host_request(kind, payload=None, refusal=refusal):
+                if kind == "rlm.wait":
+                    seen.append(payload.get("cursor", -1))
+                    if len(seen) == 1:
+                        raise RuntimeError(refusal)
+                    return _wait_reply("finished")
+                if kind == "rlm.result":
+                    return {"text": "done"}
+                return {}
 
-        with mock.patch.object(rlm, "host_request", fake_host_request):
-            self.assertEqual(await _handle().result(timeout=5), {"text": "done"})
-        self.assertEqual(len(seen), 2)
+            with mock.patch.object(rlm, "host_request", fake_host_request):
+                self.assertEqual(await _handle().result(timeout=5), {"text": "done"})
+            self.assertEqual(len(seen), 2, refusal)
 
 
 class ControlCommTests(unittest.TestCase):

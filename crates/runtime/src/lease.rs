@@ -12,6 +12,7 @@ use yi_types::message::AgentMessage;
 use yi_types::plan::op::Choice;
 use yi_types::subagent::ChildExit;
 
+use crate::args::Args;
 use crate::mail::Draft;
 use crate::subagent::{ChildRecord, Children, PARENT_NAME, Step, SubagentHost};
 
@@ -251,10 +252,7 @@ impl SubagentHost {
     pub(crate) fn register_stops(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
         let host = Arc::clone(self);
         registry.register("rlm.interrupt", move |payload| {
-            let target = payload
-                .get("target")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let target = payload.str_of("target").map(str::to_owned);
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let target = target.ok_or("rlm.interrupt requires a target")?;
@@ -263,9 +261,9 @@ impl SubagentHost {
         });
         let host = Arc::clone(self);
         registry.register("rlm.revoke", move |payload| {
-            let text = |key: &str| payload.get(key).and_then(Value::as_str).map(str::to_owned);
+            let text = |key: &str| payload.str_of(key).map(str::to_owned);
             let (target, reason) = (text("target"), text("reason").unwrap_or_default());
-            let grace = payload.get("grace_ms").and_then(Value::as_u64);
+            let grace = payload.u64_of("grace_ms");
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let target = target.ok_or("rlm.revoke requires a target")?;

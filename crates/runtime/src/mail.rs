@@ -7,6 +7,7 @@ use tokio::sync::oneshot;
 use yi_types::mail::{Envelope, Kind, MailId};
 use yi_types::message::{AgentMessage, UserContent};
 
+use crate::args::Args;
 use crate::subagent::{PARENT_NAME, SubagentHost};
 
 pub(crate) const INBOX_ENTRY: &str = "agent_message";
@@ -54,7 +55,7 @@ impl Draft {
     }
 
     pub(crate) fn from_payload(payload: &Map<String, Value>) -> Result<(String, Self), String> {
-        let text_of = |key: &str| payload.get(key).and_then(Value::as_str);
+        let text_of = |key: &str| payload.str_of(key);
         let target = text_of("target").unwrap_or_default().to_owned();
         let text = text_of("message").ok_or("agent_message.send requires a message")?;
         let reply_to = text_of("reply_to").map(|id| MailId(id.to_owned()));
@@ -78,11 +79,11 @@ impl Draft {
             .transpose()?;
         let draft = Self {
             text: text.to_owned(),
-            followup: payload.get("followup").and_then(Value::as_bool) == Some(true),
+            followup: payload.bool_of("followup") == Some(true),
             kind,
             conversation: text_of("conversation").map(|id| MailId(id.to_owned())),
             reply_to,
-            deadline_ms: payload.get("deadline_ms").and_then(Value::as_u64),
+            deadline_ms: payload.u64_of("deadline_ms"),
             reference,
             id: None,
             answered_by: None,

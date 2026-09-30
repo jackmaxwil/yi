@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use crate::args::Args;
 use serde_json::{Map, Value, json};
 use yi_types::plan::canonical::{Digest, canonical_digest};
 use yi_types::plan::doc::{PlanId, TodoLabel, TouchCount};
@@ -66,15 +67,11 @@ fn parse_artifacts(payload: &Map<String, Value>) -> Result<Vec<(String, String)>
 
 fn parse_payload(payload: &Map<String, Value>) -> Result<Payload, String> {
     let request_id = payload
-        .get("request_id")
-        .and_then(Value::as_str)
+        .str_of("request_id")
         .filter(|id| !id.is_empty())
         .ok_or("plan.op requires a request_id")?
         .to_owned();
-    let op = payload
-        .get("op")
-        .and_then(Value::as_str)
-        .ok_or("plan.op requires an op name")?;
+    let op = payload.str_of("op").ok_or("plan.op requires an op name")?;
     let plan = match payload.get("plan") {
         None | Some(Value::Null) => None,
         Some(Value::String(id)) => Some(PlanId::new(id).map_err(|error| error.to_string())?),
