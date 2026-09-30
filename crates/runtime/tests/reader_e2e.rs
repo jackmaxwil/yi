@@ -77,14 +77,14 @@ fn family_with(
     let notice_sink = Arc::clone(&notices);
     let shapes: Arc<Mutex<Vec<Shape>>> = Arc::default();
     let shape_sink = Arc::clone(&shapes);
-    let cwd = workspace.clone();
+    let (cwd, home) = (workspace.clone(), root.join("home"));
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
         max_depth: 1,
         max_children,
         parent_session_dir: root.join("family"),
         cwd: workspace.clone(),
-        home: root.join("home"),
+        home: home.clone(),
         lane_slots: 1,
         provider: Arc::new(ProviderStream::new(None)),
         defaults: Arc::new(|| (faux_model(), Effort::Medium)),
@@ -111,7 +111,7 @@ fn family_with(
                 build,
                 &reader,
                 yi_tools::builtin_tools(),
-                cwd.clone(),
+                (cwd.clone(), &home),
                 None,
                 rules.clone(),
             );
@@ -615,5 +615,88 @@ async fn a_refused_sibling_marks_no_partition_shared() -> TestResult {
         .map(|(shape, _)| shape.as_ref().and_then(|shape| shape.shared_through))
         .collect();
     assert_eq!(marks, vec![None], "the refused spawn sent nothing to share");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_worker_writes_where_a_reader_is_walled_and_holds_a_worker_slot() -> TestResult {
+    let mut args = Map::new();
+    args.insert("path".to_owned(), Value::from("out.txt"));
+    args.insert("content".to_owned(), Value::from("done\n"));
+    let call = faux_assistant_message(
+        vec![faux_tool_call("c1", "write", args)],
+        StopReason::ToolUse,
+    );
+    let script: Script = Arc::new(Mutex::new(vec![call, reply("wrote out.txt")]));
+    use yi_runtime::rules::{RuleDoc, RuleEngine, RuleGap, RuleMode, RuleScope};
+    let rule = RuleDoc {
+        name: "tell-owner".to_owned(),
+        body: "tell the owner what you wrote".to_owned(),
+        path: std::path::PathBuf::from("/rules/tell-owner.md"),
+        needles: vec!["out.txt".to_owned()],
+        scope: RuleScope::Tool("write".to_owned()),
+        gap: RuleGap::Once,
+        mode: RuleMode::Remind,
+        paths: Vec::new(),
+        after: 1,
+    };
+    let rules = Some(Arc::new(RuleEngine::new(vec![rule])));
+    let family = family_with(1, script, rules, None)?;
+    family.host.spawn(
+        "Write done to out.txt".to_owned(),
+        kwargs(json!({"name": "w", "role": "worker"})),
+    )?;
+    let refused = family.host.spawn(
+        "work".to_owned(),
+        kwargs(json!({"name": "w2", "role": "root"})),
+    );
+    assert!(
+        refused.is_err_and(|error| error.contains("child limit")),
+        "a worker stands inside the worker cap"
+    );
+    let rows = transcript(&family, "w").await?;
+    let written = std::fs::read_to_string(family.root.join("ws").join("out.txt"));
+    assert_eq!(written.ok().as_deref(), Some("done\n"), "{rows:?}");
+    let reminded = std::fs::read_dir(family.root.join("family"))?
+        .flatten()
+        .flat_map(|dir| {
+            std::fs::read_dir(dir.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+        })
+        .filter_map(|file| std::fs::read_to_string(file.path()).ok())
+        .any(|text| text.contains("tell the owner what you wrote"));
+    assert!(reminded, "the user's reminder reached the worker: {rows:?}");
+    let tools = family.children.lock().map_err(|_| "poisoned")?;
+    let names = tools.first().ok_or("no worker built")?.clone();
+    assert_eq!(names, ["read", "edit", "write", "grep"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_worker_is_refused_a_fork_a_check_and_the_kernel() -> TestResult {
+    let family = family(4, Arc::default())?;
+    let refused = |args: Value| family.host.spawn("w".to_owned(), kwargs(args)).err();
+    let fork = refused(json!({"role": "worker", "fork": "all"})).ok_or("fork admitted")?;
+    assert_eq!(
+        fork,
+        "a worker gets a partition, not a fork; role=\"root\" spawns a full child"
+    );
+    let check =
+        refused(json!({"role": "worker", "check": "true"})).ok_or("a worker check admitted")?;
+    assert!(
+        check.contains("a worker answers once and runs no check"),
+        "{check}"
+    );
+    let kernel =
+        refused(json!({"role": "worker", "tools": ["ipython"]})).ok_or("ipython admitted")?;
+    assert_eq!(
+        kernel,
+        "a worker may call read, grep, edit, write, bash and get_context, not ipython; \
+         role=\"root\" spawns a full child"
+    );
+    let turns = refused(json!({"role": "worker", "turns": 41})).ok_or("41 turns admitted")?;
+    assert_eq!(turns, "rlm.run turns must be 1 to 40, got 41");
     Ok(())
 }

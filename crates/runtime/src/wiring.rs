@@ -22,7 +22,13 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             let rules = crate::rules::discover_armed(&cwd, &wiring.home).rules;
             let rules = Some(Arc::new(crate::rules::RuleEngine::new(rules)));
             return Ok(crate::subagent::reader::session(
-                provider, build, &reader, tools, cwd, broker, rules,
+                provider,
+                build,
+                &reader,
+                tools,
+                (cwd, &wiring.home),
+                broker,
+                rules,
             ));
         }
         let mut child = AgentSession::new(
