@@ -338,9 +338,6 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
                 if let Ok(mut last) = emit_shared.last_usage.lock() {
                     *last = Some(usage.clone());
                 }
-                if let Some(compactor) = &compactor {
-                    compactor.on_usage(usage);
-                }
                 dispatch_ext(
                     &emit_shared,
                     &crate::ext::Event::Usage {

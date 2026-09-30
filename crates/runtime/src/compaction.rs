@@ -2,15 +2,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use yi_context::{
-    Prefill, Preparation, Scope, Settings, Tokens, Window, compose_summary, convert_to_llm,
-    drop_internal, estimate_context, estimate_message, is_cut_point, prepare_compaction, prompts,
-    should_compact,
+    Preparation, Settings, Tokens, Window, compose_summary, convert_to_llm, drop_internal,
+    estimate_context, estimate_message, is_cut_point, prepare_compaction, prompts,
+    serialize_conversation, should_compact,
 };
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
 use yi_types::entry::Entry;
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, StopReason, Usage, UserContent};
+use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::model::{Effort, LlmContext, Model, Reuse, ToolDef};
 
 use crate::provider::ProviderStream;
@@ -69,8 +69,7 @@ impl CompactOutcome {
     }
 }
 
-/// Bytes/3, not the chars/4 the trigger uses: code and JSON run denser, and a rescue that
-/// undercounts still overflows.
+/// Bytes/3, not chars/4: code and JSON run denser, and a count that runs short overflows.
 fn wide(tokens: Tokens) -> Tokens {
     Tokens(tokens.0.saturating_mul(4).div_ceil(3))
 }
@@ -235,7 +234,6 @@ pub struct Compactor {
     /// §5 `summarizer` role. The window math stays on the turn's own model: a cheaper
     /// summarizer with a smaller window must not make compaction look overdue.
     pub summarizer: Option<Model>,
-    scope: Scope,
     window: Mutex<Window>,
     pending: AtomicBool,
     running: AtomicBool,
@@ -358,7 +356,6 @@ impl Compactor {
         Self {
             settings: Settings::default(),
             summarizer: None,
-            scope: Scope::BodyAfterPrefix,
             window: Mutex::new(Window::new_initial(initial_window_id)),
             pending: AtomicBool::new(false),
             running: AtomicBool::new(false),
@@ -421,25 +418,6 @@ impl Compactor {
         self.running.load(Ordering::Relaxed)
     }
 
-    /// Input-side tokens only: the reply is body, not prefix.
-    pub fn on_usage(&self, usage: &Usage) {
-        // Invariant: a `ServerObserved` prefill latches for the whole window, so an unreported
-        // usage, or a refusal's zero (no prompt is zero tokens), would pin it at zero.
-        let input_side = usage
-            .input
-            .saturating_add(usage.cache_read)
-            .saturating_add(usage.cache_write);
-        if usage.unknown || input_side == 0 {
-            return;
-        }
-        let mut window = lock_window(&self.window);
-        if window.prefill_tokens().is_none() {
-            window.observe_prefill(Prefill::ServerObserved(Tokens(
-                u64::try_from(input_side).unwrap_or(0),
-            )));
-        }
-    }
-
     pub fn status(&self, messages: &[AgentMessage], model: &Model) -> CompactStatus {
         let tokens = estimate_context(messages).tokens;
         let context_window = model.context_window;
@@ -466,10 +444,13 @@ impl Compactor {
         if self.unsaved.load(Ordering::Relaxed) {
             return false;
         }
+        // The whole request, prefix included, leaves the reserve for the summary request (#947):
+        // the provider's count, then bytes/3 as the rescue charges it.
         let estimate = estimate_context(messages);
-        let prefill = lock_window(&self.window).prefill_tokens();
-        let scoped = yi_context::account::scoped_tokens(estimate.tokens, self.scope, prefill);
-        should_compact(scoped, Tokens(model.context_window), &self.settings)
+        let sent = estimate
+            .usage_tokens
+            .saturating_add(wide(estimate.trailing_tokens));
+        should_compact(sent, Tokens(model.context_window), &self.settings)
     }
 
     /// No summary, no room (D337): keep the first user message, the work's opening and the earlier
@@ -604,6 +585,12 @@ impl Compactor {
             system_prompt: loop_request.system_prompt.clone(),
             messages: {
                 let mut converted = convert_to_llm(window_messages);
+                // A cold attempt sends no tools, and Anthropic refuses tool blocks without them
+                // (#948): it reads the history as text.
+                if !warm {
+                    let text = serialize_conversation(&converted);
+                    converted = vec![AgentMessage::host_user(UserContent::Text(text), 0)];
+                }
                 let key = yi_context::user_key(window_messages, inputs.as_deref().unwrap_or(&[]));
                 converted.push(directive_message(&prepared, instructions.as_deref(), &key));
                 converted

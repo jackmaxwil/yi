@@ -2,10 +2,10 @@ use std::error::Error;
 
 use serde_json::json;
 use yi_context::{
-    Attributed, BriefLine, Bytes, CompiledView, FileOps, KEY_ROWS, Prefill, Scope, Settings,
-    Tokens, Window, attribute_child_usage, compile_view, compose_summary, context_tokens,
-    drop_internal, estimate_context, fit, internal_source, prepare_compaction, project,
-    retain_floor, select_cut, serialize_conversation, should_compact, user_key, wrap_internal,
+    Attributed, BriefLine, Bytes, CompiledView, FileOps, KEY_ROWS, Settings, Tokens, Window,
+    attribute_child_usage, compile_view, compose_summary, context_tokens, drop_internal,
+    estimate_context, fit, internal_source, prepare_compaction, project, retain_floor, select_cut,
+    serialize_conversation, should_compact, user_key, wrap_internal,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage, UserContent};
@@ -178,20 +178,6 @@ fn a_reply_without_usage_leaves_the_last_known_context_standing() -> TestResult 
 fn context_tokens_falls_back_to_component_sum() -> TestResult {
     assert_eq!(context_tokens(&usage(100, 50, 0)), Tokens(150));
     assert_eq!(context_tokens(&usage(100, 50, 4000)), Tokens(4000));
-    Ok(())
-}
-
-#[test]
-fn body_after_prefix_scope_subtracts_the_prefill_baseline() -> TestResult {
-    let total = Tokens(50_000);
-    assert_eq!(
-        yi_context::account::scoped_tokens(total, Scope::BodyAfterPrefix, Some(Tokens(30_000))),
-        Tokens(20_000)
-    );
-    assert_eq!(
-        yi_context::account::scoped_tokens(total, Scope::Total, Some(Tokens(30_000))),
-        total
-    );
     Ok(())
 }
 
@@ -518,16 +504,11 @@ fn attribution_preserves_the_parent_context_size() -> TestResult {
 #[test]
 fn window_chain_advances_ids() -> TestResult {
     let mut window = Window::new_initial("w0".to_owned());
-    window.observe_prefill(Prefill::Estimated(Tokens(10)));
     let ids = window.advance("w1".to_owned());
     assert_eq!(ids.first, "w0");
     assert_eq!(ids.previous.as_deref(), Some("w0"));
     assert_eq!(ids.id, "w1");
     assert_eq!(ids.number, 1);
-    assert_eq!(window.prefill_tokens(), None);
-    window.observe_prefill(Prefill::ServerObserved(Tokens(42)));
-    window.observe_prefill(Prefill::Estimated(Tokens(7)));
-    assert_eq!(window.prefill_tokens(), Some(Tokens(42)));
     Ok(())
 }
 
