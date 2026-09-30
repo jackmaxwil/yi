@@ -2086,6 +2086,53 @@ fn grep_replace_previews_then_applies_and_tags() -> TestResult {
     Ok(())
 }
 
+/// A grep apply lands files the way `write` and `edit` do: a rewrite that breaks a Python file
+/// says so, and the result carries the patch a diff pane renders.
+#[test]
+fn a_grep_apply_carries_the_syntax_verdict_and_its_patch() -> TestResult {
+    let dir = temp_dir("grep-apply-land")?;
+    fs::write(dir.join("a.py"), "x = 1\n")?;
+    let applied = GrepTool::default().execute(
+        args(&[
+            ("pattern", json!("= 1")),
+            ("replace", json!("= (")),
+            ("apply", json!(true)),
+        ]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    let text = output_text(&applied);
+    assert!(text.contains("a.py: syntax: error line 1"), "{text}");
+    let patch = applied.result.details["patch"]
+        .as_str()
+        .ok_or(text.clone())?;
+    assert!(
+        patch.contains("-x = 1") && patch.contains("+x = ("),
+        "{patch}"
+    );
+    Ok(())
+}
+
+/// Approval of a write is approval of the named path; through a symlink the bytes land at its
+/// target, a file nobody reviewed.
+#[test]
+fn a_write_through_a_symlink_is_refused() -> TestResult {
+    let dir = temp_dir("write-symlink")?;
+    fs::write(dir.join("target.txt"), "kept\n")?;
+    std::os::unix::fs::symlink(dir.join("target.txt"), dir.join("link.txt"))?;
+    let refused = WriteTool::default().execute(
+        args(&[("path", json!("link.txt")), ("content", json!("lost\n"))]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    assert!(refused.is_error, "{}", output_text(&refused));
+    assert!(
+        output_text(&refused).contains("is a symlink"),
+        "{}",
+        output_text(&refused)
+    );
+    assert_eq!(fs::read_to_string(dir.join("target.txt"))?, "kept\n");
+    Ok(())
+}
+
 fn preview_args() -> Map<String, Value> {
     args(&[
         ("pattern", json!("old_([a-z]+)")),

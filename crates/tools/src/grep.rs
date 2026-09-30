@@ -624,6 +624,13 @@ impl GrepTool {
         let mut changed = 0_usize;
         let mut written = 0_usize;
         let mut failures: Vec<String> = Vec::new();
+        let mut patches = String::new();
+        let mut syntax: Option<String> = None;
+        let home = self
+            .hashline
+            .as_ref()
+            .and_then(crate::hashline::tool::documents)
+            .map(|documents| documents.home);
         let mut skipped: Vec<String> = Vec::new();
         let mut skipped_hits = 0_usize;
         for file in &collected.files {
@@ -644,9 +651,14 @@ impl GrepTool {
                 continue;
             }
             let persisted = file.endings.restore(&after, &origins);
-            match fs::write(&file.canonical, persisted) {
-                Ok(()) => {
+            match crate::builtins::land(home.as_deref(), Path::new(&file.canonical), &persisted) {
+                Ok(verdict) => {
                     written = written.saturating_add(1);
+                    patches.push_str(patch.as_str());
+                    if let Some(line) = verdict.filter(|line| line != "syntax: ok") {
+                        rows.push(format!("{}: {line}", file.display));
+                        syntax.get_or_insert(line);
+                    }
                     if let Some(state) = &self.hashline {
                         crate::hashline::tool::record_view_snapshot(
                             state,
@@ -659,6 +671,7 @@ impl GrepTool {
                 Err(error) => failures.push(format!("{}: {error}", file.display)),
             }
         }
+        let syntax = syntax.or_else(|| (written > 0).then(|| "syntax: ok".to_owned()));
         if changed == 0 {
             rows.push(if collected.total == 0 {
                 "No matches found".to_owned()
@@ -688,13 +701,23 @@ impl GrepTool {
         );
         rows.extend(collected.walled.notices());
         let mut output = text_output(rows.join("\n"));
-        output.result.details = json!({
-            "hits": collected.total,
-            "files": collected.files.len(),
-            "changed": changed,
-            "applied": written,
-            "skipped": skipped.len(),
-        });
+        if !patches.is_empty() {
+            output.result.details =
+                crate::diff::patch_details(&crate::diff::GitPatch::from_text(patches));
+        }
+        if let Value::Object(details) = &mut output.result.details {
+            details.extend([
+                ("hits".to_owned(), json!(collected.total)),
+                ("files".to_owned(), json!(collected.files.len())),
+                ("changed".to_owned(), json!(changed)),
+                ("applied".to_owned(), json!(written)),
+                ("skipped".to_owned(), json!(skipped.len())),
+                (
+                    "syntax".to_owned(),
+                    syntax.map_or(Value::Null, Value::String),
+                ),
+            ]);
+        }
         output.is_error = !failures.is_empty();
         output
     }
