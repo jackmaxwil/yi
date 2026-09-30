@@ -323,7 +323,7 @@ fn a_url_read_through_the_read_tool_keeps_its_window() -> Result<(), Box<dyn Err
     input.insert("limit".to_owned(), 0.into());
     let (refused, is_error) = text_of(input.clone());
     assert!(
-        is_error && refused.contains("\"limit\" must be at least 1"),
+        is_error && refused.contains("read \"limit\" must be at least 1"),
         "{refused}"
     );
     input.insert("limit".to_owned(), 1.into());
