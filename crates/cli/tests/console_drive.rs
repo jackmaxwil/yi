@@ -3,6 +3,7 @@
 //! and prompts it; second run reattaches from nothing and replays.
 
 use std::error::Error;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -34,9 +35,11 @@ fn spawn_daemon(dir: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
         .stderr(Stdio::null())
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() {
+    // Incident: the socket file exists between bind() and listen(), and a
+    // connect in that gap is refused; under load the gap outlasted the poll.
+    while UnixStream::connect(&socket).is_err() {
         if Instant::now() > deadline {
-            return Err("daemon socket never appeared".into());
+            return Err("daemon socket never accepted a connection".into());
         }
         std::thread::sleep(Duration::from_millis(50));
     }
