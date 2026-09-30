@@ -2208,6 +2208,40 @@ async fn a_respawned_reader_service_keeps_its_write_wall() -> TestResult {
     Ok(())
 }
 
+/// Dies with the control: enroll only at admission and a respawned reader service, which has
+/// no kernel, leaves its seat, so the family admits one reader past its cap.
+#[tokio::test]
+async fn a_respawned_reader_service_keeps_its_family_seat() -> TestResult {
+    let harness = harness(0, 1, "serving")?;
+    harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
+    let mut asked = Map::new();
+    asked.insert("role".to_owned(), Value::from("reader"));
+    harness
+        .host
+        .service("index", "serve".to_owned(), asked, 3)?;
+    assert!(
+        serves(&harness, "index", 2, "finished").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let cap = yi_runtime::levers::get().family_cap;
+    let reader = |name: String| {
+        let mut asked = Map::new();
+        asked.insert("role".to_owned(), Value::from("reader"));
+        asked.insert("name".to_owned(), Value::String(name));
+        harness.host.spawn("ask".to_owned(), asked)
+    };
+    for index in 1..cap {
+        reader(format!("r{index}"))?;
+    }
+    let refused = reader("over".to_owned());
+    assert!(
+        refused.is_err_and(|refusal| refusal.contains("the family holds")),
+        "the respawned service holds no seat"
+    );
+    Ok(())
+}
+
 /// Dies with the control: bill the kept transcript whole and the crashed run's unknown usage
 /// spends the successor's reservation too, leaving the parent nothing to lend.
 #[tokio::test]

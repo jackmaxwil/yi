@@ -121,7 +121,7 @@ impl KernelServiceMap {
         kernels.saturating_add(self.kernelless().len())
     }
 
-    pub fn hold(&self, session: &Arc<crate::session::AgentSession>) {
+    pub fn enroll(&self, session: &Arc<crate::session::AgentSession>) {
         if session.kernel_service().is_none() {
             self.kernelless().push(Arc::downgrade(session));
         }

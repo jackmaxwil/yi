@@ -707,7 +707,7 @@ impl SubagentHost {
             child.seed_messages(seed);
         }
         let session = Arc::new(child);
-        self.options.family_live.hold(&session);
+        self.options.family_live.enroll(&session);
         let lead = stagger.and_then(|stagger| stagger.arm(&session));
         if matches!(standing, Standing::Service(_)) {
             service::watch_kernel(&session);
