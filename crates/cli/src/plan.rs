@@ -68,9 +68,7 @@ fn apply(line: &str, options: &Options) -> i32 {
             .with_output_resolve(Arc::new(resolver));
         // The same snapshot the session mints (plan section 6.5): a contracted `done` from the
         // CLI reads the shadow gitdir tree, not a walk of the whole workspace.
-        if let Some(snapshotter) = std::env::var_os("HOME")
-            .and_then(|home| shadow_tree(&PathBuf::from(home), &options.cwd, &plans))
-        {
+        if let Some(snapshotter) = shadow_tree(crate::home(), &options.cwd, &plans) {
             engine = engine.with_snapshotter(snapshotter);
         }
         let submission = Submission {
