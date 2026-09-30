@@ -23,14 +23,7 @@ pub const COMMITMENT_VERBS: [&str; 4] = ["will", "next", "then", "instead"];
 pub const CONCLUSION_VERBS: [&str; 3] = ["because", "so", "root cause"];
 
 pub fn assistant_text(content: &[Content]) -> String {
-    content
-        .iter()
-        .filter_map(|block| match block {
-            Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    yi_types::message::join_text(content, "\n")
 }
 
 pub fn split_sentences(text: &str) -> Vec<&str> {
@@ -180,14 +173,7 @@ pub fn digest_line(item: &LogItem<'_>, user_budget: usize, prose_budget: usize) 
             is_error,
             ..
         } => {
-            let text: String = content
-                .iter()
-                .filter_map(|block| match block {
-                    Content::Text { text, .. } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
+            let text: String = yi_types::message::join_text(content, " ");
             let tail: String = text
                 .chars()
                 .rev()

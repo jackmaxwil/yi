@@ -1,5 +1,5 @@
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, Content};
+use yi_types::message::AgentMessage;
 use yi_types::subagent::ChildExit;
 
 use super::{ChildActivity, ChildId, ChildRecord, ChildUpdate};
@@ -196,14 +196,7 @@ impl ChildRecord {
                 let tokens = u64::try_from(usage.total_tokens).unwrap_or(0);
                 self.token_count = self.token_count.saturating_add(tokens);
                 self.activity = ChildActivity::Waiting;
-                let text: String = content
-                    .iter()
-                    .filter_map(|block| match block {
-                        Content::Text { text, .. } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let text: String = yi_types::message::join_text(content, "\n");
                 if !text.is_empty() {
                     self.answer_preview = Some(preview(&text));
                 }

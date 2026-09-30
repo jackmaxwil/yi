@@ -13,8 +13,7 @@ pub use catastrophic::{
     read_is_catastrophic, resolve_target, wraps,
 };
 pub use decide::{
-    Decision, Hold, HoldPattern, HoldSource, ParseOutcome, PermissionMode, ToolCall, decide,
-    mode_fragment, parse_command,
+    Decision, Hold, HoldPattern, HoldSource, PermissionMode, ToolCall, decide, mode_fragment,
 };
 pub use review::{
     ActionId, ActionLedger, ActionState, LEDGER_CAP, RequestId, ReviewedAsk, UserVerdict,
