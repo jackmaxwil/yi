@@ -204,12 +204,7 @@ fn ensure_daemon(args: &Args, socket: &std::path::Path) {
 
 pub fn daemon_socket(args: &Args) -> std::path::PathBuf {
     args.socket.clone().map_or_else(
-        || {
-            std::env::var_os("HOME").map_or_else(
-                || std::path::PathBuf::from(".yi/daemon.sock"),
-                |home| std::path::Path::new(&home).join(".yi/daemon.sock"),
-            )
-        },
+        || crate::home().join(".yi/daemon.sock"),
         std::path::PathBuf::from,
     )
 }
@@ -322,9 +317,7 @@ pub(crate) fn session_extensions(
     yi_runtime::ext::install(yi_runtime::ExtOptions {
         context_window,
         cwd: work.to_path_buf(),
-        home: std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_default(),
+        home: crate::home().to_path_buf(),
         mode: args.mode,
         user_system: args.system.clone(),
         schema_instruction: args

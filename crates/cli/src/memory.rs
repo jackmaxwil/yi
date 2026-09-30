@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use yi_runtime::memory::{Note, Store, block, global_dir, ranked, repo_dir};
 
@@ -113,19 +113,17 @@ fn rebuild(stores: &[(&'static str, Store)]) -> i32 {
 
 pub fn run(args: &crate::Args) -> i32 {
     let cwd = crate::effective_cwd(args);
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let home = crate::home();
     let stores = [
-        ("repo", Store::new(repo_dir(&home, &cwd))),
-        ("global", Store::new(global_dir(&home))),
+        ("repo", Store::new(repo_dir(home, &cwd))),
+        ("global", Store::new(global_dir(home))),
     ];
     let line = args.prompt.trim();
     let (verb, rest) = line
         .split_once(' ')
         .map_or((line, ""), |(verb, rest)| (verb, rest.trim()));
     match (verb, rest) {
-        ("" | "list", "") => list(&home, &cwd, &stores),
+        ("" | "list", "") => list(home, &cwd, &stores),
         ("stats", "") => stats(&stores),
         ("check", "") => check(&stores),
         ("rebuild", "") => rebuild(&stores),
