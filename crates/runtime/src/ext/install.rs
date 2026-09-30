@@ -72,9 +72,9 @@ pub fn install(options: ExtOptions) -> Host {
     host
 }
 
-pub fn narrow(cwd: &Path, home: &Path, role: &str, mode: PermissionMode) -> Host {
+pub fn narrow(cwd: &Path, home: &Path, identity: &str, mode: PermissionMode) -> Host {
     let mut host = Host::new(cwd.to_path_buf());
-    host.attach(Slot::new(Rank::Identity, "identity"), role.to_owned());
+    host.attach(Slot::new(Rank::Identity, "identity"), identity.to_owned());
     host.attach(
         Slot::new(Rank::Mode, "permission"),
         yi_permission::mode_fragment(mode).to_owned(),

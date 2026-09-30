@@ -13,7 +13,7 @@ use yi_types::model::{Effort, Model, ModelCost, Reuse};
 type TestResult = Result<(), Box<dyn Error>>;
 type Script = Arc<Mutex<Vec<AgentMessage>>>;
 
-fn faux_model() -> Model {
+fn faux_model(context_window: u64) -> Model {
     let zero = || serde_json::Number::from(0u64);
     Model {
         id: "faux-1".to_owned(),
@@ -30,7 +30,7 @@ fn faux_model() -> Model {
             cache_write: zero(),
             tiers: None,
         },
-        context_window: 128_000,
+        context_window,
         max_tokens: 16_384,
         compat: None,
         thinking_level_map: None,
@@ -44,6 +44,7 @@ struct Family {
     children: Arc<Mutex<Vec<Vec<String>>>>,
     notices: Arc<Mutex<Vec<String>>>,
     shapes: Arc<Mutex<Vec<Shape>>>,
+    turns: Arc<Mutex<Vec<u32>>>,
 }
 
 type Shape = (Option<yi_runtime::session::RequestShape>, Reuse);
@@ -51,18 +52,37 @@ type Shape = (Option<yi_runtime::session::RequestShape>, Reuse);
 type Rules = Option<Arc<yi_runtime::rules::RuleEngine>>;
 type Hook = Arc<dyn Fn() + Send + Sync>;
 
+/// `during` runs inside a reader's build, while its reservation is held.
+struct Setup {
+    rules: Rules,
+    during: Option<Hook>,
+    broker: Option<Arc<yi_runtime::PermissionBroker>>,
+    window: u64,
+}
+
+impl Default for Setup {
+    fn default() -> Self {
+        Self {
+            rules: None,
+            during: None,
+            broker: None,
+            window: 128_000,
+        }
+    }
+}
+
 fn family(max_children: usize, script: Script) -> std::io::Result<Family> {
-    family_with(max_children, script, None, None)
+    family_with(max_children, script, Setup::default())
 }
 
 /// A reader is built by the runtime's own `reader::session`; any other child is a plain one.
-/// `during` runs inside a reader's build, while its reservation is held.
-fn family_with(
-    max_children: usize,
-    script: Script,
-    rules: Rules,
-    during: Option<Hook>,
-) -> std::io::Result<Family> {
+fn family_with(max_children: usize, script: Script, setup: Setup) -> std::io::Result<Family> {
+    let Setup {
+        rules,
+        during,
+        broker,
+        window,
+    } = setup;
     let root = Scratch::new("yi-reader")?;
     let workspace = root.join("ws");
     std::fs::create_dir_all(&workspace)?;
@@ -77,6 +97,8 @@ fn family_with(
     let notice_sink = Arc::clone(&notices);
     let shapes: Arc<Mutex<Vec<Shape>>> = Arc::default();
     let shape_sink = Arc::clone(&shapes);
+    let turns: Arc<Mutex<Vec<u32>>> = Arc::default();
+    let turns_sink = Arc::clone(&turns);
     let (cwd, home) = (workspace.clone(), root.join("home"));
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
@@ -87,7 +109,7 @@ fn family_with(
         home: home.clone(),
         lane_slots: 1,
         provider: Arc::new(ProviderStream::new(None)),
-        defaults: Arc::new(|| (faux_model(), Effort::Medium)),
+        defaults: Arc::new(move || (faux_model(window), Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             let provider = Arc::new(ProviderStream::new(None));
             let queued = script.lock().map(|mut s| std::mem::take(&mut *s));
@@ -112,7 +134,7 @@ fn family_with(
                 &reader,
                 yi_tools::builtin_tools(),
                 (cwd.clone(), &home),
-                None,
+                broker.clone(),
                 rules.clone(),
             );
             let names = child
@@ -122,6 +144,9 @@ fn family_with(
                 .collect();
             if let Ok(mut sink) = names_sink.lock() {
                 sink.push(names);
+            }
+            if let Ok(mut sink) = turns_sink.lock() {
+                sink.push(reader.turns);
             }
             if let Ok(mut sink) = shape_sink.lock() {
                 sink.push((child.request_shape(), child.reuse()));
@@ -151,6 +176,7 @@ fn family_with(
         children: tool_names,
         notices,
         shapes,
+        turns,
     })
 }
 
@@ -443,7 +469,14 @@ async fn a_reader_is_gated_by_the_users_rules() -> TestResult {
     };
     let script: Script = Arc::new(Mutex::new(vec![read_call("notes.txt"), reply("denied")]));
     let rules = Some(Arc::new(RuleEngine::new(vec![rule])));
-    let family = family_with(4, script, rules, None)?;
+    let family = family_with(
+        4,
+        script,
+        Setup {
+            rules,
+            ..Setup::default()
+        },
+    )?;
     family.host.spawn(
         "Read the notes.".to_owned(),
         kwargs(json!({"name": "gated", "role": "reader"})),
@@ -495,7 +528,14 @@ async fn a_reader_being_built_holds_no_worker_slot() -> TestResult {
             slot.get_or_insert(spawned.map(|_| ()));
         }
     });
-    let family = family_with(1, script, None, Some(during))?;
+    let family = family_with(
+        1,
+        script,
+        Setup {
+            during: Some(during),
+            ..Setup::default()
+        },
+    )?;
     let _ = host_cell.set(Arc::downgrade(&family.host));
     family.host.spawn(
         "ask".to_owned(),
@@ -641,7 +681,14 @@ async fn a_worker_writes_where_a_reader_is_walled_and_holds_a_worker_slot() -> T
         after: 1,
     };
     let rules = Some(Arc::new(RuleEngine::new(vec![rule])));
-    let family = family_with(1, script, rules, None)?;
+    let family = family_with(
+        1,
+        script,
+        Setup {
+            rules,
+            ..Setup::default()
+        },
+    )?;
     family.host.spawn(
         "Write done to out.txt".to_owned(),
         kwargs(json!({"name": "w", "role": "worker"})),
@@ -671,6 +718,8 @@ async fn a_worker_writes_where_a_reader_is_walled_and_holds_a_worker_slot() -> T
     let tools = family.children.lock().map_err(|_| "poisoned")?;
     let names = tools.first().ok_or("no worker built")?.clone();
     assert_eq!(names, ["read", "edit", "write", "grep"]);
+    let turns = family.turns.lock().map_err(|_| "poisoned")?.clone();
+    assert_eq!(turns, [12], "a worker's default turn cap");
     Ok(())
 }
 
@@ -698,5 +747,111 @@ async fn a_worker_is_refused_a_fork_a_check_and_the_kernel() -> TestResult {
     );
     let turns = refused(json!({"role": "worker", "turns": 41})).ok_or("41 turns admitted")?;
     assert_eq!(turns, "rlm.run turns must be 1 to 40, got 41");
+    Ok(())
+}
+
+fn write_call(id: &str, path: &str, content: &str) -> AgentMessage {
+    let mut args = Map::new();
+    args.insert("path".to_owned(), Value::from(path));
+    args.insert("content".to_owned(), Value::from(content));
+    faux_assistant_message(vec![faux_tool_call(id, "write", args)], StopReason::ToolUse)
+}
+
+#[tokio::test]
+async fn a_worker_in_ask_mode_is_refused_the_write_nobody_approved() -> TestResult {
+    let script: Script = Arc::new(Mutex::new(vec![
+        write_call("c1", "out.txt", "done\n"),
+        reply("could not write"),
+    ]));
+    let broker = Arc::new(yi_runtime::PermissionBroker::new(
+        yi_permission::PermissionMode::Ask,
+        std::env::temp_dir(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    ));
+    let family = family_with(
+        1,
+        script,
+        Setup {
+            broker: Some(broker),
+            ..Setup::default()
+        },
+    )?;
+    family.host.spawn(
+        "Write done to out.txt".to_owned(),
+        kwargs(json!({"name": "asked", "role": "worker"})),
+    )?;
+    let rows = transcript(&family, "asked").await?;
+    assert!(
+        !family.root.join("ws").join("out.txt").exists(),
+        "an unapproved write landed: {rows:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_workers_reminder_fires_again_after_it_compacts() -> TestResult {
+    use yi_runtime::rules::{RuleDoc, RuleEngine, RuleGap, RuleMode, RuleScope};
+    let summary = faux_assistant_message(
+        vec![faux_text("## Goal\nwrite out.txt three times")],
+        StopReason::Stop,
+    );
+    let mut second = write_call("c2", "out.txt", &"y".repeat(120_000));
+    if let AgentMessage::Assistant { usage, .. } = &mut second {
+        (usage.input, usage.total_tokens) = (60_000, 60_000);
+    }
+    let script: Script = Arc::new(Mutex::new(vec![
+        write_call("c1", "out.txt", &"x".repeat(120_000)),
+        second,
+        summary,
+        write_call("c3", "out.txt", "three\n"),
+        reply("wrote all three"),
+    ]));
+    let rule = RuleDoc {
+        name: "tell-owner".to_owned(),
+        body: "tell the owner what you wrote".to_owned(),
+        path: std::path::PathBuf::from("/rules/tell-owner.md"),
+        needles: vec!["out".to_owned()],
+        scope: RuleScope::Tool("write".to_owned()),
+        gap: RuleGap::Once,
+        mode: RuleMode::Remind,
+        paths: Vec::new(),
+        after: 1,
+    };
+    let family = family_with(
+        1,
+        script,
+        Setup {
+            rules: Some(Arc::new(RuleEngine::new(vec![rule]))),
+            window: 40_000,
+            ..Setup::default()
+        },
+    )?;
+    family.host.spawn(
+        "Write out.txt three times".to_owned(),
+        kwargs(json!({"name": "long", "role": "worker"})),
+    )?;
+    let rows = transcript(&family, "long").await?;
+    let files: Vec<String> = std::fs::read_dir(family.root.join("family"))?
+        .flatten()
+        .flat_map(|dir| {
+            std::fs::read_dir(dir.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+        })
+        .filter_map(|file| std::fs::read_to_string(file.path()).ok())
+        .collect();
+    let text = files.join("\n");
+    assert!(
+        text.contains("\"compaction\""),
+        "the worker compacted: {rows:?}"
+    );
+    assert_eq!(
+        text.matches("tell the owner what you wrote").count(),
+        2,
+        "the reminder fires once before the compaction and once after: {rows:?}"
+    );
     Ok(())
 }
