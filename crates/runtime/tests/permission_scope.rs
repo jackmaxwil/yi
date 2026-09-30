@@ -285,6 +285,108 @@ fn a_configured_allow_does_not_carry_a_compound_out() -> TestResult {
     Ok(())
 }
 
+/// Re-review of #933, R2: text the strict parser gives up on fell to the lenient split, which
+/// folded a hidden command into the leaving segment's argv, so it left with it unasked.
+#[test]
+fn an_unparsed_command_never_leaves_unasked() -> TestResult {
+    let cargo =
+        yi_runtime::ConfigRule::new("bash", "cargo *", yi_runtime::ConfigRuleAction::Allow)?;
+    let cat = yi_runtime::ConfigRule::new("bash", "cat *", yi_runtime::ConfigRuleAction::Allow)?;
+    let (broker, asks) = counted(vec![cargo, cat], |_| AskOutcome::Reject);
+    let hidden = [
+        "cargo add serde\nsort -o /Users/Shared/x in",
+        "cargo add serde $(sort -o /Users/Shared/x in)",
+        "cargo add serde `sort -o /Users/Shared/x in`",
+        "cargo add \"$(sort -o /Users/Shared/x in)\"",
+        "cargo add serde <(sort -o /Users/Shared/x in)",
+        "cargo add serde &sort -o /Users/Shared/x in",
+        "cat ~/.netrc\nsort -o /Users/Shared/x in",
+        "cat ~/.netrc $(sort -o /Users/Shared/x in)",
+    ];
+    for (index, command) in hidden.iter().enumerate() {
+        let id = format!("c{index}");
+        let outcome =
+            broker.decide_call("bash", ToolKind::Exec, true, &id, &bash_args(command), None);
+        assert!(
+            !outcome.allowed,
+            "{command:?} left unasked: {}",
+            outcome.reason
+        );
+    }
+    assert_eq!(*asks.lock().map_err(|_| "poisoned")?, hidden.len());
+    Ok(())
+}
+
+/// Re-review of #933, R3: with no one to ask, a split compound's denial said "add an allow
+/// rule", which it had; splitting it or `--yolo` is what runs it.
+#[test]
+fn a_headless_compound_says_to_split_it() -> TestResult {
+    let rule = yi_runtime::ConfigRule::new("bash", "cargo *", yi_runtime::ConfigRuleAction::Allow)?;
+    let project = PathBuf::from("/nonexistent/project");
+    let broker = PermissionBroker::new(
+        PermissionMode::Auto,
+        project.clone(),
+        vec![rule],
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    )
+    .with_sandbox(Some(yi_tools::Sandbox {
+        writable: vec![project],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+    }));
+    let args = bash_args("cargo test && cargo add serde");
+    let outcome = broker.decide_call("bash", ToolKind::Exec, true, "c1", &args, None);
+    assert!(
+        !outcome.allowed
+            && outcome
+                .reason
+                .contains("Split it into separate calls, or rerun with --yolo")
+            && !outcome.reason.contains("allow rule"),
+        "{}",
+        outcome.reason
+    );
+    Ok(())
+}
+
+/// Re-review of #933, R1: `git remote update` is a proven read that runs `uploadpack` from `-c`
+/// on the host, and sending it out unasked gave a shell. It asks, as `git fetch` does; no `-c`
+/// makes a read verb leave.
+#[test]
+fn a_git_remote_update_asks_and_no_config_override_leaves() -> TestResult {
+    let (broker, asks) = counted(Vec::new(), |_| AskOutcome::Reject);
+    for command in [
+        "git -c remote.x.url=. -c \"remote.x.uploadpack=touch /Users/Shared/pwn; git-upload-pack\" remote update x",
+        "git -c core.hooksPath=h remote prune origin",
+        "git remote -v update",
+    ] {
+        let outcome =
+            broker.decide_call("bash", ToolKind::Exec, true, "c", &bash_args(command), None);
+        assert!(
+            !outcome.allowed,
+            "{command} ran unasked: {}",
+            outcome.reason
+        );
+        assert!(yi_runtime::tools::refuse_armed(command, false, Some(&broker), "").is_some());
+    }
+    assert_eq!(*asks.lock().map_err(|_| "poisoned")?, 6);
+    for command in [
+        "git -c core.pager=x log -1",
+        "git -c remote.x.uploadpack=y status",
+        "git --config-env=core.pager=P diff",
+        "git -c x=y remote -v",
+    ] {
+        let outcome =
+            broker.decide_call("bash", ToolKind::Exec, true, "c", &bash_args(command), None);
+        assert!(
+            outcome.allowed && outcome.containment != Containment::Uncontained,
+            "{command} left the sandbox: {}",
+            outcome.reason
+        );
+    }
+    Ok(())
+}
+
 /// The session pass covers only a refusal naming no path: an exact rule whose run was refused
 /// writing a path asks to widen by it (review of #933, mutant M9).
 #[test]

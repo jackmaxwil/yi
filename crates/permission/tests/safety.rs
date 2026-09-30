@@ -480,6 +480,11 @@ fn each_segment_says_why_it_leaves() {
     assert_eq!(need("git remote prune origin"), [Some("network")]);
     assert_eq!(need("git remote -v"), [None]);
     assert_eq!(
+        need("timeout 9 git -c a=b remote update"),
+        [Some("network")]
+    );
+    assert!(matches!(verdict("git remote update"), Verdict::Ask { .. }));
+    assert_eq!(
         need("cargo test && cargo add serde"),
         [None, Some("installs")]
     );

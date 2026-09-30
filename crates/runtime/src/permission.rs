@@ -159,8 +159,13 @@ pub(crate) fn leaves_sandbox(
         .iter()
         .map(|argv| yi_permission::host_need(argv).or_else(|| reads(&argv.join(" "))))
         .collect();
+    // Only a strict parse splits truly: the lenient split folds `$(…)` or a newline into argv.
+    let parsed = matches!(
+        yi_permission::parse(command),
+        yi_permission::Parsed::Segments(_)
+    );
     match needs.iter().flatten().next() {
-        Some(why) => Some((why, needs.iter().all(Option::is_some))),
+        Some(why) => Some((why, parsed && needs.iter().all(Option::is_some))),
         None => reads(command).map(|why| (why, false)),
     }
 }
@@ -604,8 +609,12 @@ impl PermissionBroker {
         let passed = session_rules.decision_for(rule_kind, &canonical) == Some(RuleDecision::Allow);
         drop(session_rules);
         let refusal = self.retried_refusal(command);
+        let mut split = None;
         let (title, description, reviewable, reason) = match decision {
             Decision::Allow { reason } => {
+                split = (command.and_then(|command| leaves_sandbox(command, &self.context)))
+                    .filter(|(_, every)| !every)
+                    .map(|(why, _)| why);
                 match self.allowed_outcome(command, refusal.as_ref(), passed, reason) {
                     Ok(outcome) => return outcome,
                     Err(reason) => (
@@ -681,17 +690,17 @@ impl PermissionBroker {
             &canonical,
             &display,
         );
-        match (&refusal, outcome.allowed) {
-            // Nobody could answer; say what works rather than "add an allow rule", which a
-            // refused allowed call already had.
-            (Some(refusal), false) if self.asker.is_none() => {
-                return self.denied(crate::gate::headless_refusal(
-                    self.sandbox.as_ref(),
-                    refusal,
-                ));
-            }
-            (_, false) => return outcome,
-            (_, true) => {}
+        if !outcome.allowed {
+            // Nobody could answer; say what works, never "add an allow rule", which it had.
+            return match (split, &refusal) {
+                (Some(why), _) if self.asker.is_none() => {
+                    self.denied(crate::gate::headless_split(why))
+                }
+                (None, Some(refusal)) if self.asker.is_none() => self.denied(
+                    crate::gate::headless_refusal(self.sandbox.as_ref(), refusal),
+                ),
+                _ => outcome,
+            };
         }
         if let (Some(grant), Some(refusal), Containment::Contained { widen, .. }) =
             (&kept, &refusal, &containment)
