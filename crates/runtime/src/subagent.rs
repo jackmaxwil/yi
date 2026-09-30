@@ -853,7 +853,7 @@ impl SubagentHost {
         reply: Map<String, Value>,
         ask: &Map<String, Value>,
     ) -> Map<String, Value> {
-        let quiet = ask.get("quiet").and_then(Value::as_bool) == Some(true);
+        let quiet = ask.bool_of("quiet") == Some(true);
         let notes = match (reply.get("members"), reply.get("notes")) {
             (Some(Value::Array(members)), _) => {
                 members.iter().filter_map(|m| m.get("note")).collect()
