@@ -339,3 +339,29 @@ fn an_event_gap_line_round_trips_byte_for_byte() -> Result<(), Box<dyn std::erro
     assert_eq!(serde_json::to_string(&gap)?, line);
     Ok(())
 }
+
+/// A status a newer Yi writes survives an older reader: it decodes to `Other` and re-emits
+/// verbatim. The job store is the recorded 0.382.0 file with its one status edited.
+#[test]
+fn an_unknown_status_on_four_wire_enums_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::{kernel::ExecuteStatus, mcp::McpSessionState, schedule::JobStatus};
+    use yi_types::{schedule::ScheduleState, subagent::ChildStatus};
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/scheduled-jobs-v1-unknown-status.json");
+    let stored = fs::read_to_string(path)?;
+    let state: ScheduleState = serde_json::from_str(&stored)?;
+    let job = state.jobs.first().ok_or("the recorded job")?;
+    assert_eq!(job.status, JobStatus::Other("archived".to_owned()));
+    assert_eq!(serde_json::to_string_pretty(&state)?, stored);
+    let child: ChildStatus = serde_json::from_str("\"paused\"")?;
+    assert_eq!(child, ChildStatus::Other("paused".to_owned()));
+    let execute: ExecuteStatus = serde_json::from_str("\"skipped\"")?;
+    let session: McpSessionState = serde_json::from_str("\"draining\"")?;
+    let written = [
+        serde_json::to_string(&child)?,
+        serde_json::to_string(&execute)?,
+        serde_json::to_string(&session)?,
+    ];
+    assert_eq!(written, ["\"paused\"", "\"skipped\"", "\"draining\""]);
+    Ok(())
+}
