@@ -203,6 +203,60 @@ async fn a_kernel_reaches_loopback_and_no_other_kernels_key() -> TestResult {
     Ok(())
 }
 
+/// Review of #925 (F1): the kernel's re-allow was bound to its directory as resolved on disk,
+/// where its own profile writes; a process outliving it planted a link, and the next boot
+/// re-allowed the link's target.
+#[tokio::test]
+async fn a_link_planted_at_the_kernels_own_directory_grants_nothing() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home, session) = workspace("own-link")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
+    let probe = uncovered(&sandbox, &home).ok_or("no directory outside the sandbox")?;
+    let target = probe.join(format!("yi-own-link-{}", std::process::id()));
+    std::fs::create_dir_all(&target)?;
+    let kernel = service(project.clone(), home.clone(), sandbox, None);
+    let own = cell(
+        &kernel,
+        "import ipykernel, os\nprint(os.path.dirname(ipykernel.get_connection_file()))".to_owned(),
+    )
+    .await?
+    .result
+    .stdout
+    .trim()
+    .to_owned();
+    let plant = format!(
+        "import subprocess\nsubprocess.Popen(['/bin/sh', '-c', 'for i in $(seq 400); do [ -e \"$0/connection.json\" ] || {{ ln -s \"$1\" \"$0\"; exit; }}; sleep 0.05; done', r'{own}', r'{}'], start_new_session=True)",
+        target.display()
+    );
+    cell(&kernel, plant).await?;
+    kernel.kill().await;
+    let own = PathBuf::from(own);
+    for _ in 0..100 {
+        if own.is_symlink() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let planted = own.is_symlink();
+    let escape = target.join("escape.txt");
+    let code = format!(
+        "try:\n    open(r'{}', 'w').write('x')\n    print('wrote')\nexcept OSError as e:\n    print('denied', e.errno)",
+        escape.display()
+    );
+    let next = cell(&kernel, code).await;
+    kernel.dispose().await;
+    let escaped = escape.exists();
+    let _ = std::fs::remove_dir_all(&target);
+    let next = next?.result.stdout;
+    assert!(
+        planted && !escaped && next.contains("denied 1"),
+        "planted {planted}, escaped {escaped}: {next}"
+    );
+    Ok(())
+}
+
 /// A root session wired the way `yi` wires one, with `sessions_dir` as its session corpus.
 fn root_session(
     project: &std::path::Path,

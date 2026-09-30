@@ -679,7 +679,7 @@ fn unshare_works() -> bool {
     })
 }
 
-/// Seatbelt on macOS (loopback the only network, the cache dir the one writable root), a user and network
+/// Seatbelt on macOS (no network, the cache dir as the one writable root), a user and network
 /// namespace on Linux where `unshare` allows one; a parser escape needs neither.
 fn command_for(
     documents: &Documents,
@@ -694,7 +694,7 @@ fn command_for(
         let mut sandbox = Sandbox::for_workspace(dir, &documents.home, None);
         sandbox.writable = vec![dir.to_path_buf()];
         sandbox.deny_write = Vec::new();
-        let (program, wrapped) = sandbox.wrap(&python, &[]);
+        let (program, wrapped) = sandbox.wrap_offline(&python, &[]);
         let mut command = crate::process::command(program);
         command.args(wrapped);
         command
@@ -779,4 +779,33 @@ fn run(
         str::to_owned,
     );
     Err(Converted::Refused(reason))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    /// Review of #925 (F2): the converter parses untrusted files, so its profile keeps no network,
+    /// not even the loopback every other contained spawn has.
+    #[test]
+    fn the_converter_runs_with_no_network() {
+        if !super::Sandbox::available() {
+            return;
+        }
+        let converter = super::Converter {
+            python: PathBuf::from("/usr/bin/python3"),
+            formats: Vec::new(),
+        };
+        let documents = super::Documents::fixed(PathBuf::from("/home/u"), converter.clone());
+        let dir = Path::new("/work/cache");
+        let command = super::command_for(&documents, &converter, dir, dir, dir, &[]);
+        let args: Vec<String> = (command.get_args())
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let policy = args.iter().find(|arg| arg.contains("(deny default)"));
+        assert!(
+            policy.is_some_and(|policy| !policy.contains("network")),
+            "{args:?}"
+        );
+    }
 }
