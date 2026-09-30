@@ -56,6 +56,7 @@ pub fn internal_source_of_custom(custom_type: &str) -> Option<&'static str> {
         "reminder" => Some("reminder"),
         "classifier" => Some("classifier"),
         "fragment" => Some("fragment"),
+        "todo_intercept" => Some("todo"),
         _ => None,
     }
 }
