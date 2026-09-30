@@ -38,11 +38,16 @@ impl HostRegistry {
 
     /// The host half of the kernel's `bash()` handle: five `exec.*` requests over
     /// [`yi_tools::jobs`]. A spawned job is handle-owned; only `exec.release` retires it.
-    pub fn register_exec(&mut self, cwd: PathBuf, sandbox: Option<yi_tools::Sandbox>) {
+    /// `sandbox` builds each job's profile as it spawns, so a grant kept since reaches it.
+    pub fn register_exec(
+        &mut self,
+        cwd: PathBuf,
+        sandbox: impl Fn() -> Option<yi_tools::Sandbox> + Send + Sync + 'static,
+    ) {
         let spawned = Arc::clone(&self.handles);
         self.register("exec.spawn", move |payload| {
             let cwd = cwd.clone();
-            let sandbox = sandbox.clone();
+            let sandbox = sandbox();
             let spawned = Arc::clone(&spawned);
             Box::pin(async move {
                 let command = payload
@@ -982,7 +987,7 @@ mod tests {
 
     fn exec_registry() -> HostRegistry {
         let mut registry = HostRegistry::default();
-        registry.register_exec(std::env::temp_dir(), None);
+        registry.register_exec(std::env::temp_dir(), || None);
         registry
     }
 

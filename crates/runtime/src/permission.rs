@@ -12,7 +12,11 @@ use yi_permission::{
 use yi_tools::ToolKind;
 use yi_tools::hashline::types::FileOp;
 use yi_types::event::AgentEvent;
-use yi_types::permission::{Answerer, PermissionRecord, RuleDecision, RuleKind};
+use yi_types::permission::{
+    Answerer, PermissionRecord, RuleDecision, RuleKind, SessionPermissionRule,
+};
+
+mod kept;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskOutcome {
@@ -92,7 +96,7 @@ impl PermissionAsk<'_> {
 }
 
 pub type Asker = Arc<dyn Fn(&PermissionAsk<'_>) -> AskOutcome + Send + Sync>;
-pub type Journal = Arc<dyn Fn(PermissionRecord) + Send + Sync>;
+pub type Journal<T = PermissionRecord> = Arc<dyn Fn(T) + Send + Sync>;
 
 /// What the reviewer is told about a call, and whether it may see it at all.
 #[derive(Clone, Copy)]
@@ -106,12 +110,12 @@ struct Reviewed<'a> {
 pub struct PermissionBroker {
     sandbox: Option<yi_tools::Sandbox>,
     contained_failures: Mutex<std::collections::BTreeSet<yi_tools::SandboxRefusal>>,
-    /// Directories an "always" on a widened retry made writable to every later contained run.
-    kept_writes: Mutex<Vec<PathBuf>>,
-    mode: Mutex<PermissionMode>,
+    /// Shared with every child: a mode switch or a hold reaches the whole family.
+    mode: Arc<Mutex<PermissionMode>>,
     config_rules: Vec<ConfigRule>,
+    /// The holder's own: a child starts from a copy ([`PermissionBroker::for_child`]).
     session_rules: Mutex<SessionRules>,
-    holds: Mutex<Vec<Hold>>,
+    holds: Arc<Mutex<Vec<Hold>>>,
     context: CatastrophicContext,
     cwd: PathBuf,
     asker: Option<Asker>,
@@ -123,6 +127,8 @@ pub struct PermissionBroker {
     asking: Mutex<std::collections::BTreeSet<RequestId>>,
     confirms: AtomicU64,
     journal: std::sync::OnceLock<Journal>,
+    /// Appends each kept rule to the holder's own session JSONL, the one ledger of them.
+    rule_journal: std::sync::OnceLock<Journal<SessionPermissionRule>>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
     prompts_close_on_settle: std::sync::atomic::AtomicBool,
 }
@@ -242,11 +248,10 @@ impl PermissionBroker {
         Self {
             sandbox: None,
             contained_failures: Mutex::new(std::collections::BTreeSet::new()),
-            kept_writes: Mutex::new(Vec::new()),
-            mode: Mutex::new(mode),
+            mode: Arc::new(Mutex::new(mode)),
             config_rules,
             session_rules: Mutex::new(SessionRules::new()),
-            holds: Mutex::new(Vec::new()),
+            holds: Arc::new(Mutex::new(Vec::new())),
             context: CatastrophicContext::detect(&cwd),
             cwd,
             asker,
@@ -256,6 +261,7 @@ impl PermissionBroker {
             asking: Mutex::new(std::collections::BTreeSet::new()),
             confirms: AtomicU64::new(0),
             journal: std::sync::OnceLock::new(),
+            rule_journal: std::sync::OnceLock::new(),
             approver: std::sync::OnceLock::new(),
             prompts_close_on_settle: std::sync::atomic::AtomicBool::new(false),
         }
@@ -338,11 +344,7 @@ impl PermissionBroker {
     }
 
     fn containment_with(&self, refused: Option<PathBuf>, gate_allowed: bool) -> Containment {
-        let mut widen = self
-            .kept_writes
-            .lock()
-            .map(|kept| kept.clone())
-            .unwrap_or_default();
+        let mut widen = self.kept_writes();
         widen.extend(refused);
         Containment::Contained {
             widen,
@@ -702,16 +704,11 @@ impl PermissionBroker {
                 _ => outcome,
             };
         }
-        if let (Some(grant), Some(refusal), Containment::Contained { widen, .. }) =
+        if let (Some(grant), Some(refusal), Containment::Contained { .. }) =
             (&kept, &refusal, &containment)
             && self.keeps(grant)
-            && let (Ok(mut kept), Ok(mut failures), Some(dir)) = (
-                self.kept_writes.lock(),
-                self.contained_failures.lock(),
-                widen.last(),
-            )
+            && let Ok(mut failures) = self.contained_failures.lock()
         {
-            kept.push(dir.clone());
             failures.remove(refusal);
         }
         CallOutcome {
@@ -1064,24 +1061,6 @@ impl PermissionBroker {
             ),
             containment: Containment::Uncontained,
         }
-    }
-
-    fn keep_grant(
-        &self,
-        grant: Option<&yi_permission::Grant>,
-        kind: RuleKind,
-        canonical: &str,
-        display: &str,
-    ) {
-        let (kind, canonical, label) = match grant {
-            Some(grant) => (grant.kind, grant.canonical.as_str(), grant.label.as_str()),
-            None => (kind, canonical, display),
-        };
-        let _cap_is_soft = self
-            .session_rules
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(kind, canonical, label, RuleDecision::Allow);
     }
 
     /// A long patch is cut: the prompt is a decision aid, not the file.
