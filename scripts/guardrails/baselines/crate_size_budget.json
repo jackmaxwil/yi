@@ -2,7 +2,7 @@
   "acp": 3014,
   "ai": 5474,
   "cli": 5831,
-  "console": 9648,
+  "console": 9647,
   "context": 1603,
   "kernel": 4636,
   "loop": 1447,
@@ -12,7 +12,7 @@
   "permission": 2063,
   "runtime": 54322,
   "session": 2006,
-  "tools": 14064,
+  "tools": 14063,
   "tui": 14772,
   "types": 9531
 }
