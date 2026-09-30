@@ -1,7 +1,7 @@
 {
   "acp": 3014,
   "ai": 5487,
-  "cli": 5902,
+  "cli": 5906,
   "console": 9654,
   "context": 1603,
   "kernel": 4777,
@@ -13,6 +13,6 @@
   "runtime": 54825,
   "session": 2006,
   "tools": 14299,
-  "tui": 14823,
+  "tui": 14847,
   "types": 9553
 }
