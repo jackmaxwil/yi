@@ -507,8 +507,15 @@ pub fn run_rpc(
             }
         }
         state.session.wait_idle().await;
-        while let Ok(event) = events.try_recv() {
-            if let Ok(value) = serde_json::to_value(&event) {
+        loop {
+            let value = match events.try_recv() {
+                Ok(event) => serde_json::to_value(&event),
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(dropped)) => {
+                    serde_json::to_value(yi_types::event::EventGap { dropped })
+                }
+                Err(_) => break,
+            };
+            if let Ok(value) = value {
                 write_line(&value);
             }
         }
