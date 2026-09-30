@@ -937,15 +937,18 @@ impl AgentSession {
         }
     }
 
-    /// Running sessions compact at the next message boundary inside the tool
-    /// loop, idle sessions immediately. True when one was applied now.
-    pub async fn compact_now(&self) -> bool {
+    /// Running sessions compact at the next boundary of the tool loop, idle ones now and say
+    /// what they did; a failure returns at once and also queues a notice for the next prompt.
+    pub async fn compact_now(
+        &self,
+    ) -> Result<crate::compaction::CompactOutcome, crate::compaction::CompactError> {
+        use crate::compaction::CompactOutcome;
         let Some(compactor) = &self.compactor else {
-            return false;
+            return Ok(CompactOutcome::NotApplied);
         };
         compactor.schedule();
         if self.status() == Status::Running {
-            return false;
+            return Ok(CompactOutcome::NotApplied);
         }
         let messages = self.messages();
         let (model, effort) = hooks::settings_of(&self.shared);
@@ -964,9 +967,12 @@ impl AgentSession {
             )
             .await;
         match replaced {
-            Ok(Some(new_messages)) => {
+            Ok(Some(replaced)) => {
                 if let Ok(mut slot) = self.shared.messages.lock() {
-                    *slot = new_messages;
+                    *slot = replaced.messages;
+                }
+                if let Some(elision) = replaced.elision {
+                    run::queue_compaction_notice(&self.parts(), &elision.to_string());
                 }
                 dispatch_ext(&self.shared, &crate::ext::Event::Compacted);
                 if let Ok(slot) = self.on_compacted.lock()
@@ -974,12 +980,14 @@ impl AgentSession {
                 {
                     hook();
                 }
-                true
+                Ok(replaced
+                    .elision
+                    .map_or(CompactOutcome::Summarized, CompactOutcome::Elided))
             }
-            Ok(None) => false,
+            Ok(None) => Ok(CompactOutcome::NotApplied),
             Err(error) => {
-                run::unsaved_compaction(&self.parts(), &error);
-                false
+                run::failed_compaction(&self.parts(), &error);
+                Err(error)
             }
         }
     }
