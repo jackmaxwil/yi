@@ -2,8 +2,7 @@
 
 use crate::{Args, config, proxy_from_env, yi_ai_key};
 
-fn refresh_hours() -> Option<u64> {
-    let catalog = config().catalog.as_ref();
+pub(crate) fn refresh_hours(catalog: Option<&yi_types::config::CatalogConfig>) -> Option<u64> {
     if catalog.and_then(|c| c.enabled) == Some(false) {
         return None;
     }
@@ -35,7 +34,7 @@ pub(crate) fn spawn_refresh(
     key: Option<&yi_runtime::auth::Secret>,
     proxy: Option<&yi_runtime::ProxyConfig>,
 ) {
-    let Some(hours) = refresh_hours() else {
+    let Some(hours) = refresh_hours(config().catalog.as_ref()) else {
         return;
     };
     let Some(dir) = yi_runtime::catalog_cache_dir() else {
