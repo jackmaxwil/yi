@@ -155,7 +155,7 @@ pub fn detail_text(text: &str) -> Value {
     Value::String(format!("{head}\n… truncated at {DETAIL_CAP} bytes"))
 }
 
-pub(crate) fn clip(line: &str, cols: usize) -> (String, bool) {
+pub fn clip(line: &str, cols: usize) -> (String, bool) {
     match line.char_indices().nth(cols) {
         Some((end, _)) => (
             format!("{}\u{2026}", line.get(..end).unwrap_or_default()),
