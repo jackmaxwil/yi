@@ -104,6 +104,9 @@ pub struct KernelOptions {
     pub on_progress: Option<Arc<ProgressFn>>,
     pub snapshot: Option<KernelSnapshotConfig>,
     pub wrap: Option<(String, Vec<String>)>,
+    /// The directory `wrap`'s profile re-allows for this kernel's connection file; `None` makes
+    /// a fresh one per start under [`crate::connection::connection_root`].
+    pub connection_dir: Option<PathBuf>,
 }
 
 pub type StreamFn = dyn FnMut(&str, &str) + Send;
@@ -151,6 +154,7 @@ pub(crate) struct Inner {
     pub(crate) env: Vec<(String, String)>,
     pub(crate) username: String,
     pub(crate) home: PathBuf,
+    pub(crate) connection_dir: Option<PathBuf>,
     pub(crate) runtime_source_dir: PathBuf,
     pub(crate) host: Option<Arc<dyn HostHandlers>>,
     pub(crate) on_progress: Option<Arc<ProgressFn>>,
@@ -433,11 +437,11 @@ impl Inner {
                 && !current.settled
             {
                 current.settled = true;
+                let aborted = current.abort.as_ref().is_some_and(AbortFlag::is_fired)
+                    || matches!(force_status, Some(ExecuteStatus::Aborted));
                 if let Some(status) = force_status {
                     current.cell.status = status;
                 }
-                let aborted = current.abort.as_ref().is_some_and(AbortFlag::is_fired)
-                    || matches!(force_status, Some(ExecuteStatus::Aborted));
                 let duration =
                     u64::try_from(current.started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let cell = std::mem::replace(
@@ -584,6 +588,7 @@ impl KernelManager {
                 env: options.env,
                 username: options.username,
                 home: options.home,
+                connection_dir: options.connection_dir,
                 runtime_source_dir: options.runtime_source_dir,
                 host: options.host,
                 on_progress: options.on_progress,
@@ -679,7 +684,7 @@ impl KernelManager {
             return Err("Kernel start superseded".to_owned());
         }
 
-        let connection = make_connection(&std::env::temp_dir())?;
+        let connection = make_connection(&inner.home, inner.connection_dir.as_deref())?;
         if let Ok(mut slot) = inner.temp_dir.lock() {
             *slot = Some(connection.temp_dir.clone());
         }
@@ -1161,7 +1166,7 @@ mod tests {
     fn a_manager_dropped_without_shutdown_removes_its_connection_dir()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = Scratch::new("yi-kernel-drop")?;
-        let connection = crate::connection::make_connection(&root)?;
+        let connection = crate::connection::make_connection(&root, None)?;
         let manager = KernelManager::new(KernelOptions {
             python: None,
             cwd: None,
@@ -1173,6 +1178,7 @@ mod tests {
             on_progress: None,
             snapshot: None,
             wrap: None,
+            connection_dir: None,
         })?;
         if let Ok(mut slot) = manager.inner.temp_dir.lock() {
             *slot = Some(connection.temp_dir.clone());
