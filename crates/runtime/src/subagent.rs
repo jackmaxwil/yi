@@ -448,14 +448,7 @@ pub(crate) fn answer_text(messages: &[AgentMessage]) -> Option<String> {
 pub(crate) fn last_assistant_text(messages: &[AgentMessage]) -> Option<String> {
     messages.iter().rev().find_map(|message| match message {
         AgentMessage::Assistant { content, .. } => {
-            let text = content
-                .iter()
-                .filter_map(|content| match content {
-                    yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+            let text = yi_types::message::join_text(content, "\n");
             if text.is_empty() { None } else { Some(text) }
         }
         _ => None,

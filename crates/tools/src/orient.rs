@@ -133,25 +133,17 @@ fn joined(layer: std::thread::ScopedJoinHandle<'_, LayerBody>) -> LayerBody {
         .unwrap_or_else(|_| Err("the layer's thread panicked".to_owned()))
 }
 
-fn clamp(name: &str, mut body: String) -> String {
+fn clamp(name: &str, body: String) -> String {
     if body.len() <= LAYER_CAP {
         return body;
     }
-    let mut end = LAYER_CAP;
-    while end > 0 && !body.is_char_boundary(end) {
-        end = end.saturating_sub(1);
-    }
+    let mut end = body.floor_char_boundary(LAYER_CAP);
     // A cut mid-row reads as a row; the last whole one is where the layer ends.
     if let Some(row_end) = body.get(..end).and_then(|kept| kept.rfind('\n')) {
         end = row_end;
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "walked back to a char boundary above"
-    )]
-    body.truncate(end);
-    body.push_str(&format!("\n[{name} truncated at {LAYER_CAP} bytes]"));
-    body
+    let kept = body.get(..end).unwrap_or_default();
+    format!("{kept}\n[{name} truncated at {LAYER_CAP} bytes]")
 }
 
 fn grid(context: &ToolContext, args: &[&str]) -> LayerBody {
@@ -233,7 +225,8 @@ fn skeletons(
     let mut cap = format!("the {SKELETON_FILES}-file cap");
     for (_, _, name) in ranked.iter().take(SKELETON_FILES) {
         let mut block = format!("{name}\n");
-        for line in skeleton_lines(&root.join(name)) {
+        let text = std::fs::read_to_string(root.join(name)).unwrap_or_default();
+        for line in skeleton(&text, SKELETON_LINES).0 {
             block.push_str(&format!("  {line}\n"));
         }
         // Whole files only: the layer clamp cuts from the end, and this footer is what it cut.
@@ -287,25 +280,20 @@ fn order_line(ranked: &[(u8, usize, String)], symbol: Option<&str>) -> String {
     }
 }
 
-fn skeleton_lines(path: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let all = skeleton_of(&text, usize::MAX);
-    let total = all.len();
-    let mut lines: Vec<String> = all.into_iter().take(SKELETON_LINES).collect();
-    if total > SKELETON_LINES {
-        lines.push(format!("[{SKELETON_LINES} of {total} heads]"));
-    }
-    lines
-}
-
-pub(crate) fn skeleton_of(text: &str, cap: usize) -> Vec<String> {
-    text.lines()
+pub(crate) fn skeleton(text: &str, cap: usize) -> (Vec<String>, usize) {
+    let mut heads: Vec<String> = text
+        .lines()
         .filter(|line| DECL_HEADS.iter().any(|head| line.starts_with(head)))
         .map(decl_head)
-        .take(cap)
-        .collect()
+        .collect();
+    let total = heads.len();
+    if total > cap {
+        heads.truncate(cap);
+        heads.push(format!(
+            "[{cap} of {total} heads, cap {cap} per file — grep def=true for all]"
+        ));
+    }
+    (heads, total)
 }
 
 /// Visibility, export and storage words that may open a declaration before its keyword.
