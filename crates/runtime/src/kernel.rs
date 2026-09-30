@@ -36,9 +36,8 @@ impl HostRegistry {
             .insert(request_type.to_owned(), Arc::new(handler));
     }
 
-    /// The host half of the kernel's `bash()` handle: five `exec.*` requests over
-    /// [`yi_tools::jobs`]. A spawned job is handle-owned; only `exec.release` retires it.
-    /// `sandbox` builds each job's profile as it spawns, so a grant kept since reaches it.
+    /// The kernel's `bash()`: five `exec.*` requests over [`yi_tools::jobs`], each job handle-owned
+    /// until `exec.release`, its profile built as it spawns so a grant kept since reaches it.
     pub fn register_exec(
         &mut self,
         cwd: PathBuf,

@@ -74,6 +74,8 @@ pub struct CatastrophicContext {
     /// The workspace `.git` directory (design §8 addition): denied in every
     /// mode including yolo — losing it loses the undo story for everything.
     pub workspace_git: Vec<PathBuf>,
+    /// Stores only the host writes: the session corpus, whose JSONL kept rules replay from.
+    pub host_owned: Vec<PathBuf>,
 }
 
 impl CatastrophicContext {
@@ -82,6 +84,10 @@ impl CatastrophicContext {
             home_dir: home_dir(),
             working_dir: Some(cwd.to_path_buf()),
             workspace_git: workspace_git(cwd),
+            host_owned: home_dir()
+                .map(|home| home.join(".yi/sessions"))
+                .into_iter()
+                .collect(),
         }
     }
 }
@@ -235,10 +241,9 @@ pub fn is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
     {
         return true;
     }
-    if context
-        .workspace_git
-        .iter()
-        .any(|git| path.starts_with(lexical_normalize(git)))
+    if (context.workspace_git.iter())
+        .chain(&context.host_owned)
+        .any(|guarded| path.starts_with(lexical_normalize(guarded)))
     {
         return true;
     }

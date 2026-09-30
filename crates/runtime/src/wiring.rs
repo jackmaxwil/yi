@@ -17,7 +17,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             let cwd = build
                 .cwd
                 .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
-            let broker = child_broker(&wiring, &build.wall);
+            let broker = child_broker(&wiring, &build.wall, &cwd);
             let tools = (wiring.tools)();
             let rules = crate::rules::discover_armed(&cwd, &wiring.home).rules;
             let rules = Some(Arc::new(crate::rules::RuleEngine::new(rules)));
@@ -58,7 +58,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
         let host = attach_runtime(
             &mut child,
             RuntimeWiring {
-                broker: child_broker(&wiring, &build.wall),
+                broker: child_broker(&wiring, &build.wall, &child_cwd),
                 depth: wiring.depth.saturating_add(1),
                 rlm_dir: build.session_dir.to_path_buf(),
                 family_dir: Some(wiring.family_dir()),
@@ -80,8 +80,9 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
 fn child_broker(
     wiring: &RuntimeWiring,
     wall: &crate::wall::Wall,
+    cwd: &Path,
 ) -> Option<Arc<crate::permission::PermissionBroker>> {
-    (wiring.broker.as_ref()).map(|broker| Arc::new(broker.for_child(wall)))
+    (wiring.broker.as_ref()).map(|broker| Arc::new(broker.for_child(wall, cwd)))
 }
 
 /// Carried again by every child one level deeper.
@@ -230,6 +231,7 @@ impl RuntimeWiring {
     fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {
         let private = (self.depth > 0 || self.sessions_dir.is_none()).then(|| self.kernel_dir());
         let mut sandbox = crate::workspace_sandbox(&self.cwd, &self.home, private.as_deref())?;
+        sandbox.host_owned.extend(self.sessions_dir.clone());
         sandbox.deny_write.extend_from_slice(&self.wall.deny_write);
         sandbox.deny_read.extend_from_slice(&self.wall.deny_read);
         Some(sandbox)

@@ -361,11 +361,11 @@ async fn a_walled_child_does_not_inherit_the_parents_pass() -> TestResult {
     host.spawn("judge it".to_owned(), root_child(&wall))?;
     let finished = || Value::Object(host.status())["members"][0]["state"] == "finished";
     until(|| victim.exists() || finished()).await;
-    assert!(finished(), "the juror ran: {:?}", host.status());
     assert!(
         !victim.exists(),
         "the juror's retry ran outside its wall on the parent's pass"
     );
+    assert!(finished(), "the juror ran: {:?}", host.status());
     assert_eq!(asks.load(Ordering::SeqCst), 2, "the juror's retry asks");
     Ok(())
 }
@@ -438,4 +438,237 @@ async fn until(done: impl Fn() -> bool) {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+}
+
+/// One `permission_rule` entry in the record's own shape, as the broker journals it.
+fn ledger(
+    store: &yi_session::SharedSession,
+    kind: &str,
+    canonical: &str,
+    label: &str,
+) -> Result<String, Box<dyn Error>> {
+    let rule = json!({
+        "id": 1, "kind": kind, "canonical": canonical,
+        "displayIdentity": label, "decision": "allow", "generation": 1
+    });
+    Ok(yi_session::lock_session(store).append_custom("main", RULE_ENTRY, Some(rule))?)
+}
+
+fn kept_of(session: &AgentSession) -> Vec<String> {
+    (session.permission_broker()).map_or_else(Vec::new, |broker| broker.kept_rules())
+}
+
+/// Review of #938: an exact `write` call's identity began as a write grant's does, so the
+/// call's arguments, file content and all, were read back as a directory and rode the
+/// `sandbox-exec` argv of every later contained spawn, where `ps` shows them.
+#[tokio::test]
+async fn an_exact_write_call_is_no_write_grant_and_rides_no_argv() -> TestResult {
+    let (_root, project, sandbox, probe) = workspace("yi-kept-exact-write")?;
+    let outside = Probe::new(&probe, "env")?;
+    let secret = "SECRET=hunter2";
+    let mut args = Map::new();
+    args.insert("path".to_owned(), json!(outside.0.join(".env")));
+    args.insert("content".to_owned(), json!(secret));
+    let provider = Arc::new(ProviderStream::new(None));
+    let session = new_session(&provider);
+    let (always, asks) = answering(AskOutcome::AllowAlways(0));
+    let gate = broker(&session, &project, sandbox, always);
+    let kind = yi_tools::ToolKind::Write;
+    let outcome = gate.decide_call("write", kind, false, "write-1", &args, None);
+    assert!(outcome.allowed, "{}", outcome.reason);
+    assert_eq!(
+        asks.load(Ordering::SeqCst),
+        1,
+        "the write asked and was kept"
+    );
+    assert_eq!(gate.kept_rules().len(), 1, "{:?}", gate.kept_rules());
+    let widen = widen_of(&gate, "touch x");
+    let profile = gate
+        .sandbox_for(&project, &Wall::default(), &widen)
+        .ok_or("no profile")?;
+    let (_, argv) = profile.wrap("true", &[]);
+    let kept = format!("{:?} {argv:?}", gate.kept_writes());
+    assert!(
+        !kept.contains("hunter2"),
+        "a kept call rides the argv: {kept}"
+    );
+    Ok(())
+}
+
+/// A session with the builtin tools under a broker for `project` and a JSONL store `a` that
+/// kept one pass after its first message, whose id is returned with the store's repo.
+fn switching(tag: &str) -> Result<(Scratch, AgentSession, JsonlRepo, String), Box<dyn Error>> {
+    let (root, project, sandbox, _probe) = workspace(tag)?;
+    let mut repo = JsonlRepo::new(root.join("sessions"), project.to_string_lossy());
+    let store = repo.create(CreateOptions {
+        id: Some("a".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let pass =
+        yi_permission::canonical_command_identity("python3 nest.py", &project.to_string_lossy());
+    let first =
+        serde_json::from_value(json!({"role": "user", "content": "run it", "timestamp": 0}))?;
+    let entry = yi_session::lock_session(&store).append_message("main", first)?;
+    ledger(
+        &store,
+        "command",
+        &pass,
+        "this exact command: python3 nest.py",
+    )?;
+    let (refuse, _) = answering(AskOutcome::Reject);
+    let (session, _provider) = held(&project, &project, sandbox, refuse);
+    session.attach_store(store)?;
+    assert_eq!(kept_of(&session).len(), 1, "session a replays its pass");
+    Ok((root, session, repo, entry))
+}
+
+/// Review of #938: the TUI's `/new` resets the session and attaches a new store; the broker
+/// kept session a's pass, so session b listed it and ran under it.
+#[tokio::test]
+async fn a_new_session_keeps_none_of_the_last_ones_rules() -> TestResult {
+    let (_root, session, mut repo, _) = switching("yi-kept-new")?;
+    session.reset();
+    session.attach_store(repo.create(CreateOptions::default())?)?;
+    assert_eq!(kept_of(&session), Vec::<String>::new());
+    Ok(())
+}
+
+/// Rpc `switch_session`: session b's own rules and none of a's.
+#[tokio::test]
+async fn a_switched_to_session_keeps_only_its_own_rules() -> TestResult {
+    let (root, session, mut repo, _) = switching("yi-kept-switch")?;
+    let other = repo.create(CreateOptions {
+        id: Some("b".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let dir = root.join("granted");
+    let grant = yi_permission::write_grant(&dir);
+    ledger(&other, "command", &grant.canonical, &grant.label)?;
+    let path = yi_session::lock_session(&other)
+        .file_path()
+        .cloned()
+        .ok_or("session b has no file")?;
+    drop(other);
+    session.reset();
+    let loaded = yi_session::load_session(&path)?;
+    session.attach_store(Arc::new(std::sync::Mutex::new(loaded)))?;
+    assert_eq!(kept_of(&session), vec![grant.label]);
+    Ok(())
+}
+
+/// Rpc `fork`: a fork taken before the message the rule followed carries none of it.
+#[tokio::test]
+async fn a_fork_from_before_a_rule_keeps_none_of_it() -> TestResult {
+    let (_root, session, mut repo, entry) = switching("yi-kept-fork")?;
+    let scope = yi_session::ForkScope::Branch {
+        entry_id: Some(entry),
+        position: Some(yi_session::ForkPosition::Before),
+    };
+    let forked = repo.fork("a", &scope, CreateOptions::default())?;
+    session.reset();
+    session.attach_store(forked)?;
+    assert_eq!(kept_of(&session), Vec::<String>::new());
+    Ok(())
+}
+
+/// Review of #938: with yi started from `$HOME` (or `--session-dir` inside the tree) the
+/// session's own JSONL sat under a writable root, so a contained bash call or an in-tree
+/// `write` could append a forged pass for the next `--continue` to replay. Nextest runs each
+/// test in its own process, so the HOME set here reaches no other test.
+#[tokio::test]
+async fn the_session_ledger_is_out_of_reach_of_a_contained_write_and_the_write_tool() -> TestResult
+{
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, _project, _sandbox, probe) = workspace("yi-kept-ledger")?;
+    let home = Probe::new(&probe, "home")?;
+    unsafe { std::env::set_var("HOME", &home.0) };
+    let mut repo = JsonlRepo::new(home.0.join(".yi/sessions"), home.0.to_string_lossy());
+    let store = repo.create(CreateOptions::default())?;
+    let file = yi_session::lock_session(&store)
+        .file_path()
+        .cloned()
+        .ok_or("no session file")?;
+    let sandbox = Sandbox::for_workspace(&home.0, &home.0, None);
+    let (refuse, _) = answering(AskOutcome::Reject);
+    let (session, provider) = held(&home.0, &home.0, sandbox, refuse);
+    session.attach_store(store)?;
+    let forged = |line: &str| {
+        let ledger = std::fs::read_to_string(&file).unwrap_or_default();
+        ledger.lines().any(|kept| kept == line)
+    };
+    let echo = format!("echo forged-by-bash >> '{}'", file.display());
+    let ran = turn(&session, &provider, &[&echo]).await?;
+    assert!(
+        !forged("forged-by-bash"),
+        "a contained bash call appended: {}",
+        ran[0]
+    );
+    let mut args = Map::new();
+    args.insert("path".to_owned(), json!(file));
+    args.insert("content".to_owned(), json!("forged-by-write\n"));
+    provider.queue_faux(vec![faux_assistant_message(
+        vec![yi_ai::faux::faux_tool_call("forge-2", "write", args)],
+        StopReason::ToolUse,
+    )]);
+    session.prompt("forge it")?;
+    session.wait_idle().await;
+    let ran = results(&session);
+    assert!(
+        !forged("forged-by-write"),
+        "the write tool wrote it: {ran:?}"
+    );
+    Ok(())
+}
+
+/// Review of #938: a parent's grant reaching its child was untested; a copy of nothing passed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_parents_kept_grant_applies_in_its_child() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, sandbox, probe) = workspace("yi-kept-down")?;
+    let dir = Probe::new(&probe, "down")?;
+    let made = dir.0.join("made");
+    let (asker, asks) = answering(AskOutcome::Reject);
+    let (session, provider, _gate, host) = family_root(&root, &project, sandbox, asker)?;
+    let store = support::memory_store("kept-down");
+    let grant = yi_permission::write_grant(&real(&dir.0));
+    ledger(&store, "command", &grant.canonical, &grant.label)?;
+    session.attach_store(store)?;
+    provider.queue_faux(vec![
+        bash_call("child-1", &format!("touch {}", made.display())),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    host.spawn("use the grant".to_owned(), root_child(&[]))?;
+    let finished = || Value::Object(host.status())["members"][0]["state"] == "finished";
+    until(|| made.exists() || finished()).await;
+    assert!(made.exists(), "the child runs under its parent's grant");
+    assert_eq!(asks.load(Ordering::SeqCst), 0, "and asks nobody");
+    Ok(())
+}
+
+/// Review of #938: a pass is bound to the directory it was kept in, and a child's broker kept
+/// its parent's directory, so an isolated child in another worktree matched it there.
+#[test]
+fn a_child_elsewhere_does_not_inherit_the_pass() -> TestResult {
+    let (root, project, sandbox, _probe) = workspace("yi-kept-elsewhere")?;
+    let provider = Arc::new(ProviderStream::new(None));
+    let session = new_session(&provider);
+    let (refuse, _) = answering(AskOutcome::Reject);
+    let gate = broker(&session, &project, sandbox, refuse);
+    let pass =
+        yi_permission::canonical_command_identity("python3 nest.py", &project.to_string_lossy());
+    let rule: yi_types::permission::SessionPermissionRule = serde_json::from_value(json!({
+        "id": 1, "kind": "command", "canonical": pass,
+        "displayIdentity": "this exact command: python3 nest.py",
+        "decision": "allow", "generation": 1
+    }))?;
+    gate.replay(vec![rule], &Wall::default());
+    let here = gate.for_child(&Wall::default(), &project);
+    let elsewhere = gate.for_child(&Wall::default(), &root.join("lane"));
+    assert_eq!(here.kept_rules().len(), 1);
+    assert_eq!(elsewhere.kept_rules(), Vec::<String>::new());
+    Ok(())
 }
