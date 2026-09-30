@@ -288,6 +288,7 @@ fn the_grid_layers_are_asked_at_once() -> TestResult {
     const NAME: &str = "the_grid_layers_are_asked_at_once";
     let Some(dir) = std::env::var_os("YI_FAKE_GRID") else {
         let dir = Scratch::new("yi-orient-overlap")?;
+        fs::create_dir_all(dir.join(".grid"))?;
         let grid = dir.join("grid");
         fs::write(&grid, "#!/bin/sh\n/bin/sleep 1\necho \"$1 answered\"\n")?;
         fs::set_permissions(&grid, fs::Permissions::from_mode(0o755))?;
@@ -311,5 +312,70 @@ fn the_grid_layers_are_asked_at_once() -> TestResult {
     assert!(packet.contains("roots answered"), "{packet}");
     assert!(packet.contains("scope answered"), "{packet}");
     assert!(took < std::time::Duration::from_millis(1800), "{took:?}");
+    Ok(())
+}
+
+/// Dogfood 2026-09-27: `symbol=HashlineEditTool` said nothing is called that, because grid
+/// matches every dot-separated segment, and the miss kept only its first line. The fake answers
+/// `**.alpha` and `**.tool.alpha`, and anything else with grid's real miss, closest names and all;
+/// it leaves a `ran` marker, which an uncharted tree must never see.
+#[cfg(unix)]
+#[test]
+fn a_bare_symbol_reaches_grid_under_any_path_and_a_miss_keeps_its_names() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    const NAME: &str = "a_bare_symbol_reaches_grid_under_any_path_and_a_miss_keeps_its_names";
+    let Some(dir) = std::env::var_os("YI_FAKE_GRID") else {
+        let dir = Scratch::new("yi-orient-bare")?;
+        let miss = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/grid/scope-miss.txt");
+        let grid = dir.join("grid");
+        fs::write(
+            &grid,
+            format!(
+                "#!/bin/sh\n: > ran\ncase \"$1 $2\" in\n\
+                 'scope **.alpha'|'scope **.tool.alpha') echo \"scope $2 answered\";;\n\
+                 scope*) /bin/cat '{}' >&2; exit 2;;\nesac\n",
+                miss.display()
+            ),
+        )?;
+        fs::set_permissions(&grid, fs::Permissions::from_mode(0o755))?;
+        let rerun = yi_tools::command(std::env::current_exe()?)
+            .args(["--exact", NAME])
+            .env("PATH", &*dir)
+            .env("YI_FAKE_GRID", &*dir)
+            .output()?;
+        let stdout = String::from_utf8_lossy(&rerun.stdout);
+        assert!(
+            rerun.status.success() && stdout.contains("1 passed"),
+            "{stdout}"
+        );
+        return Ok(());
+    };
+    let ask = |symbol: &str| {
+        let mut input = Map::new();
+        input.insert("symbol".to_owned(), json!(symbol));
+        run(Path::new(&dir), input)
+    };
+    // grid would survey an uncharted tree and write `.grid/` into it.
+    let uncharted = ask("alpha");
+    assert!(!Path::new(&dir).join("ran").exists(), "{uncharted}");
+    assert!(uncharted.contains("absent: no .grid chart"), "{uncharted}");
+    fs::create_dir_all(Path::new(&dir).join(".grid"))?;
+    let bare = ask("alpha");
+    assert!(bare.contains("scope **.alpha answered"), "{bare}");
+    let pathed = ask("tool::alpha");
+    assert!(pathed.contains("scope **.tool.alpha answered"), "{pathed}");
+    let missed = ask("scale");
+    assert!(missed.contains("  drift.user.total"), "{missed}");
+    Ok(())
+}
+
+/// `justfile` and `Justfile` are one file on APFS and two on Linux; either way one gate.
+#[test]
+fn a_gate_command_is_listed_once() -> TestResult {
+    let dir = fixture("one-gate")?;
+    fs::write(dir.join("justfile"), "check:\n")?;
+    fs::write(dir.join("Justfile"), "check:\n")?;
+    let packet = run(&dir, Map::new());
+    assert_eq!(packet.matches("just check  (").count(), 1, "{packet}");
     Ok(())
 }

@@ -650,6 +650,7 @@ fn a_block_op_on_a_python_file_replaces_the_indented_body() -> TestResult {
 #[test]
 fn an_edit_to_a_charted_file_carries_a_named_grid_layer() -> TestResult {
     let fixture = Fixture::new("grid-layer")?;
+    fs::create_dir_all(fixture.context.cwd.join(".grid"))?;
     fixture.write("a.rs", "fn a() {}\n")?;
     let tag = fixture.tag_of("a.rs")?;
     let edit = fixture.edit(&format!("[a.rs#{tag}]\nPUT 1.=1:\n+fn a() {{ 1 }}\n"));
