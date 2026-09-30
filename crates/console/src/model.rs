@@ -5,6 +5,7 @@ use ratatui::layout::Direction;
 use yi_tui::app::{CommandReceiver, CommandSender};
 use yi_tui::{AskChoice, UiEvent};
 use yi_types::acp::{AcpPermissionOption, AcpPermissionParams, AcpState};
+use yi_types::status_mark::StatusMark;
 
 use crate::app::port::RemotePort;
 use crate::layout::{PaneId, PaneIds, TileLayout};
@@ -27,14 +28,18 @@ pub enum SessionStatus {
 }
 
 impl SessionStatus {
-    pub fn glyph(self) -> &'static str {
+    pub fn mark(self) -> StatusMark {
         match self {
-            Self::Blocked => "?",
-            Self::Working => "◐",
-            Self::DoneUnseen => "●",
-            Self::Idle => "○",
-            Self::Unknown => "·",
+            Self::Blocked => StatusMark::NeedsYou,
+            Self::Working => StatusMark::Working,
+            Self::DoneUnseen => StatusMark::DoneUnseen,
+            Self::Idle => StatusMark::Idle,
+            Self::Unknown => StatusMark::Unknown,
         }
+    }
+
+    pub fn glyph(self) -> &'static str {
+        self.mark().glyph()
     }
 
     pub fn need(self) -> usize {

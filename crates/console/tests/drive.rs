@@ -2273,17 +2273,18 @@ fn the_first_prompt_names_the_session_row() -> TestResult {
 /// One session, `s-alpha`, with its children as `_yi/subagent_update` sends them.
 fn session_with_children(
     mode: SidebarMode,
+    status: yi_console::model::SessionStatus,
     name: &str,
     children: &[Value],
 ) -> Result<yi_console::app::App, Box<dyn Error>> {
-    use yi_console::model::{SessionId, SessionRow, SessionStatus};
+    use yi_console::model::{SessionId, SessionRow};
     let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
     let mut app = yi_console::app::App::new("/tmp/demo-root".to_owned(), theme);
     app.state.sidebar = mode;
     app.state.upsert_row(SessionRow {
         id: SessionId("s-alpha".to_owned()),
         root: "/tmp/demo-root".to_owned(),
-        status: SessionStatus::Working,
+        status,
         attached: false,
         name: Some(name.to_owned()),
         created_ms: 1000,
@@ -2308,105 +2309,251 @@ fn wire_child(name: &str, status: &str, flag: Option<Value>) -> Value {
     update
 }
 
-/// A row's last mark and the terminal cell it starts at, counted in display cells.
-fn last_mark(row: &str) -> Option<(usize, char)> {
-    let row = row.trim_end();
-    let mark = row.chars().last()?;
-    let before = row.get(..row.len().saturating_sub(mark.len_utf8()))?;
-    Some((ratatui::text::Line::from(before).width(), mark))
+fn needs_you_flag() -> Option<Value> {
+    Some(json!({"state": "needs_you", "note": "asks r1: which file?"}))
+}
+
+/// A row's last mark and the terminal cell ratatui draws it in.
+fn last_mark(line: &ratatui::text::Line<'_>) -> Option<(usize, String)> {
+    let area = ratatui::layout::Rect::new(0, 0, 80, 1);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    buffer.set_line(0, 0, line, 80);
+    buffer
+        .content()
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, cell)| !cell.symbol().trim().is_empty())
+        .map(|(at, cell)| (at, cell.symbol().to_owned()))
+}
+
+fn cell_of(line: &ratatui::text::Line<'_>) -> Option<usize> {
+    last_mark(line).map(|(cell, _)| cell)
 }
 
 /// The rail's child rows read as the session's children: a connector under its
 /// avatar and the status glyph in the session's column, not one cell left of it.
 #[test]
 fn a_child_row_hangs_off_its_session_with_the_glyph_in_the_column() -> TestResult {
+    use yi_console::model::SessionStatus;
     let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
     let children = [
         wire_child("grep-bot", "running", None),
         wire_child("edit-bot", "error", None),
     ];
-    let app = session_with_children(SidebarMode::Rail, "fix login", &children)?;
-    let rows: Vec<String> = yi_console::sidebar::sidebar_lines(&app, &theme, 60)
-        .iter()
-        .map(|row| row.line.to_string())
-        .collect();
+    let app = session_with_children(
+        SidebarMode::Rail,
+        SessionStatus::Working,
+        "fix login",
+        &children,
+    )?;
+    let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 60);
     let [session, _, first, last] = rows.as_slice() else {
-        return Err(format!("session, spacer and two children: {rows:#?}").into());
+        return Err(format!("session, spacer and two children: {}", rows.len()).into());
     };
     for (row, connector) in [(first, '├'), (last, '└')] {
-        assert_eq!(row.chars().nth(2), Some(connector), "{rows:#?}");
+        let text = row.line.to_string();
+        assert_eq!(text.chars().nth(2), Some(connector), "{text}");
+        assert_eq!(row.avatar.as_ref().map(|at| at.col), Some(3), "{text}");
     }
     for row in [session, first, last] {
-        assert_eq!(
-            last_mark(row).map(|(cell, _)| cell),
-            Some(7),
-            "glyph column: {rows:#?}"
-        );
+        assert_eq!(cell_of(&row.line), Some(7), "glyph column: {}", row.line);
     }
     Ok(())
+}
+
+fn full_rows(app: &yi_console::app::App) -> Vec<ratatui::text::Line<'static>> {
+    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
+    yi_console::sidebar::sidebar_lines(app, &theme, 60)
+        .into_iter()
+        .map(|row| row.line)
+        .collect()
+}
+
+fn row_with<'a>(
+    rows: &'a [ratatui::text::Line<'static>],
+    text: &str,
+) -> Result<&'a ratatui::text::Line<'static>, String> {
+    rows.iter()
+        .find(|row| row.to_string().contains(text))
+        .ok_or(format!("no row with {text}: {rows:#?}"))
 }
 
 /// The full sidebar lines a child's glyph up with its session's, whatever the names
 /// hold: a wide character takes two cells, so padding by characters would shift it.
 #[test]
 fn full_sidebar_child_glyphs_share_the_session_column() -> TestResult {
-    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
+    use yi_console::model::SessionStatus;
     let children = [
         wire_child("grep-bot", "running", None),
         wire_child("构建-🔧-bot", "completed", None),
     ];
-    let app = session_with_children(SidebarMode::Full, "修复登录 fix", &children)?;
-    let rows: Vec<String> = yi_console::sidebar::sidebar_lines(&app, &theme, 60)
+    let app = session_with_children(
+        SidebarMode::Full,
+        SessionStatus::Working,
+        "修复登录 fix",
+        &children,
+    )?;
+    let rows = full_rows(&app);
+    let column = cell_of(row_with(&rows, "修复登录")?);
+    let kids: Vec<_> = rows
         .iter()
-        .map(|row| row.line.to_string())
+        .filter(|row| row.to_string().contains("bot"))
         .collect();
-    let session = rows
-        .iter()
-        .find(|row| row.contains("修复登录"))
-        .ok_or(format!("no session row: {rows:#?}"))?;
-    let column = last_mark(session).map(|(cell, _)| cell);
-    let kids: Vec<&String> = rows.iter().filter(|row| row.contains("bot")).collect();
     assert_eq!(kids.len(), 2, "{rows:#?}");
     for (row, connector) in kids.iter().zip(['├', '└']) {
-        assert_eq!(row.chars().nth(2), Some(connector), "{rows:#?}");
-        assert_eq!(last_mark(row).map(|(cell, _)| cell), column, "{rows:#?}");
+        assert_eq!(row.to_string().chars().nth(2), Some(connector), "{row}");
+        assert_eq!(cell_of(row), column, "{row}");
     }
     Ok(())
 }
 
+/// A name longer than the name column is cut in the cells the terminal draws. `⚠️` is
+/// one cell and a zero-width selector a character at a time, but two cells drawn, so a
+/// cut that sums characters keeps a cell too many and pushes the session's `?` past the
+/// sidebar's edge.
+#[test]
+fn a_long_wide_name_is_cut_in_drawn_cells_and_keeps_its_glyph() -> TestResult {
+    use yi_console::model::SessionStatus;
+    let children = [wire_child(
+        "构建-⚠️-a-very-long-child-bot-name",
+        "running",
+        None,
+    )];
+    let mut app = session_with_children(
+        SidebarMode::Full,
+        SessionStatus::Blocked,
+        "修复 ⚠️ fix the login redirect loop now",
+        &children,
+    )?;
+    let edge = usize::from(yi_console::sidebar::width(&mut app));
+    let rows = full_rows(&app);
+    let session = last_mark(row_with(&rows, "修复")?);
+    let child = last_mark(row_with(&rows, "构建")?);
+    assert_eq!(session, Some((28, "?".to_owned())), "{rows:#?}");
+    assert_eq!(child, Some((28, "◐".to_owned())), "{rows:#?}");
+    assert!(28 < edge, "the glyph fits the sidebar: {edge}");
+    Ok(())
+}
+
+/// A control character takes no cell on screen, so it takes none in the name column.
+#[test]
+fn a_control_character_in_a_name_does_not_move_the_glyph() -> TestResult {
+    use yi_console::model::SessionStatus;
+    let children = [wire_child("bell\u{7}bot", "running", None)];
+    let app = session_with_children(
+        SidebarMode::Full,
+        SessionStatus::Working,
+        "tab\there",
+        &children,
+    )?;
+    let rows = full_rows(&app);
+    let session = row_with(&rows, "here")?;
+    let child = row_with(&rows, "bot")?;
+    assert!(
+        !session.to_string().contains('\t') && !child.to_string().contains('\u{7}'),
+        "{rows:#?}"
+    );
+    assert_eq!(cell_of(session), cell_of(child), "{rows:#?}");
+    Ok(())
+}
+
+/// A child that needs you is never hidden behind three finished ones: children show
+/// most in need first, and the rest are counted on the last connector.
+#[test]
+fn a_child_that_needs_you_is_never_hidden_behind_finished_ones() -> TestResult {
+    use yi_console::model::SessionStatus;
+    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
+    let children = [
+        wire_child("one", "completed", None),
+        wire_child("two", "completed", None),
+        wire_child("three", "completed", None),
+        wire_child("asker", "running", needs_you_flag()),
+    ];
+    let app = session_with_children(
+        SidebarMode::Rail,
+        SessionStatus::Working,
+        "fix login",
+        &children,
+    )?;
+    let rows: Vec<String> = yi_console::sidebar::sidebar_lines(&app, &theme, 60)
+        .iter()
+        .skip(2)
+        .map(|row| row.line.to_string())
+        .collect();
+    let starts: Vec<String> = rows.iter().map(|row| row.trim_end().to_owned()).collect();
+    assert_eq!(
+        starts,
+        ["  ├AS  ?", "  ├ON  ○", "  ├TW  ○", "  └ +1"],
+        "{rows:#?}"
+    );
+    Ok(())
+}
+
 /// Owner, 2026-09-28: "? = needs you, ✕ = failed". A failed child no longer wears
-/// the session's needs-you mark, and a child that needs you wears it; every mark is
-/// one cell, so none can push the column.
+/// the session's needs-you mark, a child that needs you wears it in the session's
+/// colour, and every mark is one cell, so none can push the column.
 #[test]
 fn one_glyph_one_meaning() -> TestResult {
     use yi_console::model::SessionStatus;
+    use yi_types::status_mark::StatusMark;
     let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
-    let asks = json!({"state": "needs_you", "note": "asks r1: which file?"});
     let stuck = json!({"state": "stuck", "note": "idle 300s"});
     let children = [
-        wire_child("asker", "running", Some(asks)),
+        wire_child("asker", "running", needs_you_flag()),
         wire_child("broke", "error", None),
         wire_child("stalled", "running", Some(stuck)),
     ];
-    let app = session_with_children(SidebarMode::Rail, "fix login", &children)?;
-    let marks: Vec<char> = yi_console::sidebar::sidebar_lines(&app, &theme, 60)
+    let app = session_with_children(
+        SidebarMode::Rail,
+        SessionStatus::Working,
+        "fix login",
+        &children,
+    )?;
+    let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 60);
+    let marks: Vec<(String, Option<ratatui::style::Color>)> = rows
         .iter()
         .skip(2)
-        .filter_map(|row| last_mark(&row.line.to_string()).map(|(_, mark)| mark))
+        .filter_map(|row| {
+            let glyph = row.line.spans.last()?;
+            Some((glyph.content.to_string(), glyph.style.fg))
+        })
         .collect();
     let needs_you = SessionStatus::Blocked.glyph();
-    assert_eq!(marks, ['?', '✕', '!'], "child marks");
     assert_eq!(needs_you, "?", "a session that needs you");
+    assert_eq!(
+        marks,
+        [
+            ("?".to_owned(), Some(theme.error)),
+            ("✕".to_owned(), Some(theme.error)),
+            ("!".to_owned(), Some(theme.warning)),
+        ],
+        "child marks and colours"
+    );
     let every = [
-        SessionStatus::Blocked,
-        SessionStatus::Working,
-        SessionStatus::DoneUnseen,
-        SessionStatus::Idle,
-        SessionStatus::Unknown,
+        StatusMark::NeedsYou,
+        StatusMark::Working,
+        StatusMark::Stuck,
+        StatusMark::DoneUnseen,
+        StatusMark::Idle,
+        StatusMark::Failed,
+        StatusMark::Unknown,
     ];
-    for glyph in every.iter().map(|status| status.glyph()).chain(["✕", "!"]) {
+    for glyph in every.map(StatusMark::glyph) {
         assert_eq!(ratatui::text::Line::from(glyph).width(), 1, "{glyph}");
     }
+    Ok(())
+}
+
+/// A child's name starts under its session's name, so it needs no more cells than its
+/// own: a 15-cell child name sizes the sidebar at 15, not 18.
+#[test]
+fn a_child_name_sizes_the_sidebar_by_its_own_width() -> TestResult {
+    use yi_console::model::SessionStatus;
+    let children = [wire_child("fifteen-cell-ab", "running", None)];
+    let mut app =
+        session_with_children(SidebarMode::Full, SessionStatus::Working, "fix", &children)?;
+    assert_eq!(yi_console::sidebar::width(&mut app), 15 + 9);
     Ok(())
 }
 

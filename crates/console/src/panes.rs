@@ -2,6 +2,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use yi_tui::colors::Theme;
 use yi_tui::diffview::{self, DiffBudget};
+use yi_types::status_mark::StatusMark;
 
 fn span_of(ms: u64) -> String {
     match ms / 1000 {
@@ -68,7 +69,7 @@ pub fn tape_view(
         match mark.kind {
             MarkKind::User => you[col] = '┃',
             MarkKind::Checkpoint => marks[col] = '◆',
-            MarkKind::Failed => marks[col] = '✗',
+            MarkKind::Failed => marks[col] = StatusMark::Failed.symbol(),
             MarkKind::Compaction => marks[col] = '⌇',
             MarkKind::Other(_) => marks[col] = '·',
         }
@@ -96,7 +97,10 @@ pub fn tape_view(
         ));
     }
     lines.push(Line::styled(
-        "◆ checkpoint  ✗ failed  ⌇ compaction  ┃ you · ←/→ marks · enter rewinds to your turn · u u also restores its files",
+        format!(
+            "◆ checkpoint  {} failed  ⌇ compaction  ┃ you · ←/→ marks · enter rewinds to your turn · u u also restores its files",
+            StatusMark::Failed.glyph()
+        ),
         theme.dim_style(),
     ));
     let title = format!(
