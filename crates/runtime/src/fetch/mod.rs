@@ -287,7 +287,6 @@ impl Page {
                     .and_then(|number| usize::try_from(number).ok())
                     .map(Some)
                     .ok_or_else(|| {
-                        let (value, _) = yi_tools::clip(&value.to_string(), 80);
                         format!("{tool} \"{key}\" must be a non-negative integer, got {value}")
                     }),
             }
