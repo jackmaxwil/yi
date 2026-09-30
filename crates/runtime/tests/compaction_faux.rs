@@ -972,13 +972,17 @@ fn compaction_drops_the_host_nudges_it_retained() -> Result<(), Box<dyn Error>> 
     let Entry::Message { message: nudge, .. } = serde_json::from_str::<Entry>(recorded)? else {
         return Err("the recorded line is not a message entry".into());
     };
-    let repeat = AgentMessage::host_note(
-        yi_loop::REPEAT_BREAK_CUSTOM_TYPE,
-        yi_loop::REPEAT_BREAK_TEXT.to_owned(),
-        0,
-    );
+    // The other four under their producers' own type names; "discovery" has no named const.
+    let note = |kind: &str| AgentMessage::host_note(kind, "a host nudge".to_owned(), 0);
     let user = AgentMessage::user_input(UserContent::Text("keep me".to_owned()), 0);
-    let kept = yi_context::drop_internal(&[nudge.clone(), repeat.clone(), user.clone()]);
+    let kept = yi_context::drop_internal(&[
+        nudge,
+        note(yi_loop::REPEAT_BREAK_CUSTOM_TYPE),
+        note(yi_loop::LENGTH_REDRIVE_CUSTOM_TYPE),
+        note(yi_runtime::spend::SPEND_ALERT_TYPE),
+        note("discovery"),
+        user.clone(),
+    ]);
     assert_eq!(kept, [user], "only the user's message survives");
     Ok(())
 }
