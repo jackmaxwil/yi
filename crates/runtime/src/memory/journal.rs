@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -22,6 +22,20 @@ fn io(file: &str) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
     move |source| StoreError::Io {
         file: file.to_owned(),
         source,
+    }
+}
+
+fn canonical(error: impl std::fmt::Debug) -> StoreError {
+    StoreError::Journal {
+        detail: format!("{error:?}"),
+    }
+}
+
+fn journal(error: crate::plan::journal::JournalError) -> StoreError {
+    match error {
+        crate::plan::journal::JournalError::Io { source, .. }
+        | crate::plan::journal::JournalError::Sync { source, .. } => io(JOURNAL)(source),
+        other => canonical(other),
     }
 }
 
@@ -61,41 +75,43 @@ impl<'a> Journal<'a> {
         self.dir.join(OBJECTS).join(hash.hex())
     }
 
-    pub fn replay(&self) -> Result<Replay, StoreError> {
-        let text = match fs::read(self.dir.join(JOURNAL)) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Replay::default()),
-            Err(error) => return Err(io(JOURNAL)(error)),
-        };
-        let lines: Vec<&str> = text.split_inclusive('\n').collect();
-        let mut replay = Replay::default();
-        for (at, line) in lines.iter().enumerate() {
-            let last = at.saturating_add(1) == lines.len();
-            match serde_json::from_str::<MemoryRecord>(line.trim_end()) {
-                Ok(record) if line.ends_with('\n') => {
-                    let prev = replay.records.last().map(|record| &record.digest);
-                    let chained = record.digest_of(prev).ok() == Some(record.digest);
-                    if !chained && replay.broken.is_none() {
-                        replay.broken = Some(at.saturating_add(1));
-                    }
-                    replay.records.push(record);
-                }
-                _ if last => {
-                    let prefix = text
-                        .get(..text.len().saturating_sub(line.len()))
-                        .unwrap_or_default();
-                    self.replace(JOURNAL, prefix)?;
-                }
-                _ => {
-                    replay.broken.get_or_insert(at.saturating_add(1));
-                }
-            }
-        }
-        Ok(replay)
+    fn log(&self) -> crate::plan::journal::Journal {
+        let fs = std::sync::Arc::new(crate::plan::journal::RealFs);
+        crate::plan::journal::Journal::open(self.dir.join(JOURNAL), fs)
     }
 
-    fn replace(&self, file: &str, text: &str) -> Result<(), StoreError> {
-        yi_session::replace_file(&self.dir.join(file), text.as_bytes()).map_err(io(file))
+    /// A line that is not a record marks the journal broken and replay reads on past it; a torn
+    /// last line is set aside beside the journal with its bytes kept.
+    pub fn replay(&self) -> Result<Replay, StoreError> {
+        let log = self.log();
+        let mut lines = log.lines().map_err(journal)?;
+        // An unterminated run past the cap is torn too: the next append would glue onto it.
+        if lines.lines.last().is_some_and(|line| line.next.is_none()) {
+            let run = lines.lines.pop().map(|line| line.offset);
+            lines.torn = lines.torn.or(run.map(|offset| (offset, Vec::new())));
+        }
+        let mut replay = Replay::default();
+        for (at, line) in lines.lines.iter().enumerate() {
+            let record = line
+                .bytes
+                .as_ref()
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<MemoryRecord>(bytes).ok());
+            let Some(record) = record else {
+                replay.broken.get_or_insert(at.saturating_add(1));
+                continue;
+            };
+            let prev = replay.records.last().map(|record| &record.digest);
+            if record.digest_of(prev).ok() != Some(record.digest) {
+                replay.broken.get_or_insert(at.saturating_add(1));
+            }
+            replay.records.push(record);
+        }
+        if let Some((offset, _)) = lines.torn {
+            log.set_aside(offset, &yi_session::nonce())
+                .map_err(journal)?;
+        }
+        Ok(replay)
     }
 
     pub fn append(
@@ -117,20 +133,9 @@ impl<'a> Journal<'a> {
             extra,
             digest: Digest::of(b""),
         };
-        let record = unsealed
-            .seal(prev.as_ref())
-            .map_err(|error| StoreError::Journal {
-                detail: format!("{error:?}"),
-            })?;
-        let line = record.line().map_err(|error| StoreError::Journal {
-            detail: format!("{error:?}"),
-        })?;
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.dir.join(JOURNAL))
-            .and_then(|mut file| file.write_all(&line))
-            .map_err(io(JOURNAL))?;
+        let record = unsealed.seal(prev.as_ref()).map_err(canonical)?;
+        let line = record.line().map_err(canonical)?;
+        self.log().append_line(&line).map_err(journal)?;
         Ok(record)
     }
 
