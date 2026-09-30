@@ -41,22 +41,17 @@ pub struct ApprovalView {
 
 impl ApprovalView {
     pub fn new(title: String, description: String, grants: Vec<String>) -> Self {
-        let always: Vec<(AskChoice, String)> = match grants.is_empty() {
-            true => vec![(AskChoice::AllowAlways(0), "Always allow".to_owned())],
-            false => grants
-                .iter()
-                .enumerate()
-                .map(|(index, grant)| {
-                    (
-                        AskChoice::AllowAlways(index),
-                        format!("Always allow {grant}"),
-                    )
-                })
-                .collect(),
-        };
-        let mut options = vec![(AskChoice::AllowOnce, "Allow once".to_owned())];
-        options.extend(always);
-        options.push((AskChoice::Reject, "Reject".to_owned()));
+        let labels = grants.iter().map(String::as_str);
+        let listed = yi_types::permission::choices(
+            labels,
+            AskChoice::AllowOnce,
+            AskChoice::AllowAlways,
+            AskChoice::Reject,
+        );
+        let options = listed
+            .into_iter()
+            .map(|(_, label, ask)| (ask, label))
+            .collect();
         Self {
             title,
             description,

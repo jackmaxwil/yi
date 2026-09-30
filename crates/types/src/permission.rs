@@ -94,3 +94,39 @@ pub struct PermissionRecord {
 impl crate::entry::CustomRecord for PermissionRecord {
     const TYPE: &'static str = PERMISSION_ENTRY;
 }
+
+/// Allow once, one "always" per grant (a bare one when the call has none), then reject, as
+/// `(id, label, answer)`: the id is what an ACP client sends back, the answer each surface's own.
+pub fn choices<'a, A>(
+    grants: impl ExactSizeIterator<Item = &'a str>,
+    once: A,
+    always: impl Fn(usize) -> A,
+    reject: A,
+) -> Vec<(String, String, A)> {
+    let mut listed = vec![("allow_once".into(), "Allow once".into(), once)];
+    if grants.len() == 0 {
+        listed.push(("allow_always".into(), "Always allow".into(), always(0)));
+    }
+    for (index, grant) in grants.enumerate() {
+        // Grant 0 keeps the bare id, so a client that knows one always-option still works.
+        let id = match index {
+            0 => "allow_always".into(),
+            _ => format!("allow_always_{index}"),
+        };
+        listed.push((id, format!("Always allow {grant}"), always(index)));
+    }
+    listed.push(("reject_once".into(), "Reject".into(), reject));
+    listed
+}
+
+/// The answer a [`choices`] id names; an id no choice carries rejects.
+pub fn chosen<A>(id: &str, once: A, always: impl Fn(usize) -> A, reject: A) -> A {
+    match id {
+        "allow_once" => once,
+        "allow_always" => always(0),
+        other => other
+            .strip_prefix("allow_always_")
+            .and_then(|index| index.parse().ok())
+            .map_or(reject, always),
+    }
+}

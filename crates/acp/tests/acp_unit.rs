@@ -385,6 +385,68 @@ fn a_host_notice_is_never_a_user_message() -> TestResult {
     Ok(())
 }
 
+/// A client keys its answer on these option ids and kinds; zero, one and two grants keep them.
+#[test]
+fn permission_options_keep_their_bytes_for_zero_one_and_two_grants() -> TestResult {
+    use std::sync::{Arc, Mutex};
+    let grant = |label: &str| yi_runtime::Grant {
+        kind: yi_types::permission::RuleKind::FileMutation,
+        canonical: label.to_owned(),
+        label: label.to_owned(),
+    };
+    let grants = [
+        grant("edits under src"),
+        grant("edits anywhere in this tree"),
+    ];
+    let option = |id: &str, name: &str| {
+        let kind = id.trim_end_matches("_1");
+        json!({"optionId": id, "name": name, "kind": kind})
+    };
+    let (once, reject) = (
+        option("allow_once", "Allow once"),
+        option("reject_once", "Reject"),
+    );
+    let first = option("allow_always", "Always allow edits under src");
+    let expected = [
+        json!([once, option("allow_always", "Always allow"), reject]),
+        json!([once, first, reject]),
+        json!([
+            once,
+            first,
+            option("allow_always_1", "Always allow edits anywhere in this tree"),
+            reject
+        ]),
+    ];
+    for (count, expected) in expected.iter().enumerate() {
+        let pending: Arc<Mutex<std::collections::HashMap<String, std::sync::mpsc::Sender<Value>>>> =
+            Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let (route, record) = (Arc::clone(&pending), Arc::clone(&seen));
+        let sink: yi_acp::LineSink = Arc::new(move |frame: &Value| {
+            if let Ok(mut log) = record.lock() {
+                log.push(frame.clone());
+            }
+            let id = frame.get("id").and_then(Value::as_str).unwrap_or_default();
+            if let Some(sender) = route.lock().ok().and_then(|map| map.get(id).cloned()) {
+                let _ = sender.send(json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": {"outcome": "cancelled"}}}));
+            }
+        });
+        let asker = yi_acp::bridge_asker("s1".to_owned(), sink, pending);
+        asker(&yi_runtime::PermissionAsk {
+            title: "write requires permission",
+            description: "overwrite /repo/src/lib.rs",
+            patch: None,
+            changes: &[],
+            grants: grants.get(..count).ok_or("grants")?,
+            tool_call_id: None,
+        });
+        let log = seen.lock().map_err(|error| error.to_string())?;
+        let request = log.first().ok_or("no request")?;
+        assert_eq!(&request["params"]["options"], expected, "{count} grants");
+    }
+    Ok(())
+}
+
 #[test]
 fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestResult {
     use std::sync::{Arc, Mutex};
