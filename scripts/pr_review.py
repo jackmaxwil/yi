@@ -131,13 +131,13 @@ FIX_SCHEMA = {
 ROUND_KEY = re.compile(r"^<!-- yi-round (\d+) -->$")
 ROUND_META = re.compile(r"^<!-- yi-round-meta (.*) -->$")
 ROUND_FINDINGS = re.compile(r"^<!-- yi-round-findings (.*) -->$", re.M)
-OVERRIDE = re.compile(r"^/override\s+(\S.*)$", re.M)
+OVERRIDE = re.compile(r"^/override\s+(\S.*)$")
 
 
 # --- rounds on the forge ------------------------------------------------------------
 
 
-def parse_round(comment, authors):
+def parse_round(comment, authors, pr=None):
     """A round is a comment in the marker shape from an allowed author; any other is text.
     A marker in a PR body, a diff or another account's comment is not one."""
     if (comment.get("user") or {}).get("login") not in authors:
@@ -151,6 +151,9 @@ def parse_round(comment, authors):
     fields = dict(part.split("=", 1) for part in meta.group(1).split() if "=" in part)
     if not re.fullmatch(r"[0-9a-f]{7,40}", fields.get("sha", "")) or fields.get("verdict") not in ("clean", "blocked", "override"):
         return None
+    # A round posted on one PR says so; copied onto another it reviews nothing there.
+    if pr is not None and fields.get("pr") != str(pr):
+        return None
     found = ROUND_FINDINGS.search(comment.get("body") or "")
     try:
         findings = json.loads(found.group(1).replace("--\\u003e", "-->")) if found else []
@@ -159,10 +162,10 @@ def parse_round(comment, authors):
     return {"n": int(key.group(1)), "id": comment.get("id", 0), "findings": findings, **fields}
 
 
-def rounds_of(comments, authors):
+def rounds_of(comments, authors, pr=None):
     """The rounds in order, each blocked one that an allowed `/override` answered before the
     next round was posted read as `override`."""
-    rounds = sorted((r for r in (parse_round(c, authors) for c in comments) if r), key=lambda r: (r["n"], r["id"]))
+    rounds = sorted((r for r in (parse_round(c, authors, pr) for c in comments) if r), key=lambda r: (r["n"], r["id"]))
     for r, later in zip(rounds, rounds[1:] + [None]):
         reason = override_of(comments, authors, r["id"], later["id"] if later else None)
         if r["verdict"] == "blocked" and reason:
@@ -176,7 +179,8 @@ def override_of(comments, authors, after_id, before_id=None):
         cid = comment.get("id", 0)
         if cid <= after_id or (before_id and cid >= before_id) or (comment.get("user") or {}).get("login") not in authors:
             continue
-        found = OVERRIDE.search(comment.get("body") or "")
+        # Only a first line: an `/override` quoted in a fence or a pasted transcript is text.
+        found = OVERRIDE.match((comment.get("body") or "").split("\n", 1)[0])
         if found:
             return found.group(1).strip()
     return None
@@ -426,7 +430,7 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900):
             return json.loads(out.stdout)
         if out.returncode not in (1, 3):
             break
-    raise Unanswered(f"yi ask exited {out.returncode}: {out.stderr.strip()[-300:]}")
+    raise Unanswered(f"yi ask exited {out.returncode}: {out.stderr.strip()[-600:]}")
 
 
 def read_round(pr, diff, base, sha, tree, answer, probes, full_read=True):
@@ -457,7 +461,7 @@ def authors():
     if named:
         return set(named.split(","))
     me = forge_pr.fgj_api("GET", "user") or {}
-    return {me.get("login"), "forgejo-actions", BOT} - {None}
+    return {me.get("login"), BOT} - {None}
 
 
 @functools.lru_cache(maxsize=None)
@@ -488,7 +492,7 @@ def read_pr(repo, number, allowed):
     its findings. Raises Unanswered when a lens or refuter stays silent."""
     pr = forge_pr.pull(number)
     notes = comments(repo, number)
-    rounds, sha = rounds_of(notes, allowed), pr["head"]["sha"]
+    rounds, sha = rounds_of(notes, allowed, number), pr["head"]["sha"]
     tree = checkout(sha, f"refs/pull/{number}/head")
     try:
         forge_pr.git("fetch", "-q", "origin", pr["base"]["ref"])
@@ -539,7 +543,7 @@ def cmd_review(args):
             print(f"#{number}: another round is running")
             return 0
         allowed = authors()
-        why = skip_reason(rounds_of(comments(repo, number), allowed), forge_pr.pull(number)["head"]["sha"])
+        why = skip_reason(rounds_of(comments(repo, number), allowed, number), forge_pr.pull(number)["head"]["sha"])
         if why and not (args.dry_run or getattr(args, "again", False)):
             print(f"#{number}: no round — {why}")
             return 0
@@ -562,8 +566,12 @@ def cmd_review(args):
             return 1
     said = verdict(findings, None)
     print(f"#{number} round {n}: {said} ({len(findings)} finding(s), {dropped} dropped)")
-    # A blocked round turns its job red, so the PR shows the block where its checks are read.
-    return 1 if MODE == "blocking" and said == "blocked" else 0
+    return job_exit(said)
+
+
+def job_exit(said, mode=None):
+    """A blocked round turns its job red, so the PR shows the block where its checks are read."""
+    return 1 if (mode or MODE) == "blocking" and said == "blocked" else 0
 
 
 def replay_row(read, label):
@@ -627,7 +635,7 @@ def fix_prompt(pr, findings):
 def cmd_fix(args):
     repo, number = forge_pr.repo(), forge_pr.pull_number(args.number)
     pr = forge_pr.pull(number)
-    rounds = rounds_of(comments(repo, number), authors())
+    rounds = rounds_of(comments(repo, number), authors(), number)
     if not rounds or not pr["head"]["sha"].startswith(rounds[-1]["sha"]):
         print(f"#{number}: no round on the head — just pr review {number}")
         return 1
@@ -690,7 +698,7 @@ def cmd_sweep(args):
     for pr in pulls:
         if not pr["title"].startswith(DRAFT):
             continue
-        rounds = rounds_of(comments(repo, pr["number"]), allowed)
+        rounds = rounds_of(comments(repo, pr["number"]), allowed, pr["number"])
         on_head = rounds and pr["head"]["sha"].startswith(rounds[-1]["sha"])
         if not on_head or len(rounds) < 2 and rounds[-1]["verdict"] != "blocked":
             cmd_review(type(args)(number=pr["number"], dry_run=False))
@@ -702,7 +710,7 @@ def cmd_sweep(args):
 
 
 def selfcheck():
-    me = {"jack", "forgejo-actions"}
+    me = {"jack", "yi-bot"}
     finding = {"lens": "correctness", "severity": "high", "claim": "drops the anchor", "path": "a.rs", "line": 2, "quote": "let x = 1;", "fix": "keep it"}
     body = render(2, 588, "4f1c2e9a", "3503ed74", [finding], 3, None, "shadow")
     assert body.startswith("<!-- yi-round 2 -->\n<!-- yi-round-meta pr=588 sha=4f1c2e9a"), body
@@ -731,6 +739,11 @@ def selfcheck():
     assert rounds_of(notes, me)[0]["verdict"] == "clean"
     early = [notes[0], {"id": 5, "user": {"login": "jack"}, "body": "/override too soon"}, notes[1]]
     assert rounds_of(early, me)[1]["verdict"] == "blocked", "an override before a round does not clear it"
+    pasted = [notes[1], {"id": 14, "user": {"login": "jack"}, "body": "Pasting the bot's advice:\n```\n/override trust me\n```"}]
+    assert override_of(pasted, me, 9) is None, "an /override inside quoted text clears nothing"
+    assert parse_round({"id": 9, "user": {"login": "jack"}, "body": body}, me, 588), "a round on its own PR counts"
+    assert parse_round({"id": 9, "user": {"login": "jack"}, "body": body}, me, 589) is None, "a round copied from another PR is text"
+    assert (job_exit("blocked", "blocking"), job_exit("clean", "blocking"), job_exit("blocked", "shadow")) == (1, 0, 0)
 
     assert verdict([dict(finding, severity="medium")], None) == "clean"
     assert verdict([finding], None) == "blocked" and verdict([finding], "why") == "override"

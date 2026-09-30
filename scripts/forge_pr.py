@@ -420,12 +420,12 @@ def cmd_ready(args):
     if not title.startswith(DRAFT):
         print(f"#{number} is not a draft")
         return 0
-    rounds = pr_review.rounds_of(pr_review.comments(repo(), number), pr_review.authors())
+    rounds = pr_review.rounds_of(pr_review.comments(repo(), number), pr_review.authors(), number)
     errs = pr_review.ready_problems(rounds, pr["head"]["sha"])
     for err in errs:
         print(f"  {err}")
     if errs and pr_review.MODE == "blocking":
-        print(f"ready: refused — #{number} stays a draft")
+        print(f"ready: refused — #{number} stays a draft until two review rounds are clean on its head")
         return 1
     answer = fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
     if not answer or answer.get("message"):
@@ -633,7 +633,6 @@ def cmd_land(args):
     # A PR lands through its review rounds: until two are clean on its head it stays a draft.
     args.number = None
     if cmd_ready(args):
-        print("land: opened as a draft; the review bot reads it — `just pr merge` after `just pr ready` passes")
         return 1
     args.wait = True
     return cmd_merge(args)
