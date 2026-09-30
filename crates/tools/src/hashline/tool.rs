@@ -747,7 +747,6 @@ pub struct HashlineEditTool {
 fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotStore) -> String {
     let mut out = vec![result.header.clone()];
     let op = match result.op {
-        SectionOp::Create => "created",
         SectionOp::Update => "updated",
         SectionOp::Delete => "deleted",
         SectionOp::Noop => "unchanged",
@@ -997,7 +996,6 @@ impl Tool for HashlineEditTool {
                 "ops".to_owned(),
                 json!({
                     "updated": count(SectionOp::Update),
-                    "created": count(SectionOp::Create),
                     "deleted": count(SectionOp::Delete),
                     "noop": count(SectionOp::Noop),
                     "moved": results.iter().filter(|result| result.move_dest.is_some()).count(),

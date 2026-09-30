@@ -78,14 +78,6 @@ impl Tool for WriteTool {
             .as_ref()
             .and_then(crate::hashline::tool::documents)
             .map(|documents| documents.home);
-        if let Some(refusal) = crate::document::write_refusal(home.as_deref(), &path) {
-            return error_output(refusal);
-        }
-        if let Some(parent) = path.parent()
-            && let Err(error) = fs::create_dir_all(parent)
-        {
-            return error_output(format!("failed to create {}: {error}", parent.display()));
-        }
         // Read before the write: nothing else reconstructs the ground it replaced. Past the
         // cap no base is read and no patch claimed, since a missing base reads as an add.
         let cap = u64::try_from(DETAIL_CAP).unwrap_or(u64::MAX);
@@ -94,46 +86,76 @@ impl Tool for WriteTool {
             Ok(_) => Some(fs::read_to_string(&path).unwrap_or_default()),
             Err(_) => Some(String::new()),
         };
-        match fs::write(&path, content) {
-            Ok(()) => {
-                // Incident: the tag minted here was never shown, so 30 F0e edits after a write
-                // cited an invented one; the header is the anchor an edit must copy (#473).
-                let tag = self.hashline.as_ref().map(|state| {
-                    crate::hashline::tool::record_write_snapshot(state, &path, content)
-                });
-                let syntax = crate::syntax::verdict(&path);
-                let mut text = String::new();
-                if let Some(tag) = tag {
-                    text.push_str(&crate::hashline::format::format_hashline_header(given, tag));
-                    text.push('\n');
-                }
-                text.push_str(&format!(
-                    "Wrote {} bytes to {}",
-                    content.len(),
-                    path.display()
-                ));
-                if let Some(line) = &syntax {
-                    text.push('\n');
-                    text.push_str(line);
-                }
-                let mut output = text_output(text);
-                if let Some(before) = &before {
-                    let patch = crate::diff::patch(before, content, &path);
-                    if !patch.is_empty() {
-                        output.result.details = crate::diff::patch_details(&patch);
-                    }
-                }
-                if let Value::Object(details) = &mut output.result.details {
-                    details.insert(
-                        "syntax".to_owned(),
-                        syntax.map_or(Value::Null, Value::String),
-                    );
-                }
-                output
-            }
-            Err(error) => error_output(format!("failed to write {}: {error}", path.display())),
+        let syntax = match land(home.as_deref(), &path, content) {
+            Ok(syntax) => syntax,
+            Err(message) => return error_output(message),
+        };
+        // Incident: the tag minted here was never shown, so 30 F0e edits after a write
+        // cited an invented one; the header is the anchor an edit must copy (#473).
+        let tag = self
+            .hashline
+            .as_ref()
+            .map(|state| crate::hashline::tool::record_write_snapshot(state, &path, content));
+        let mut text = String::new();
+        if let Some(tag) = tag {
+            text.push_str(&crate::hashline::format::format_hashline_header(given, tag));
+            text.push('\n');
         }
+        text.push_str(&format!(
+            "Wrote {} bytes to {}",
+            content.len(),
+            path.display()
+        ));
+        if let Some(line) = &syntax {
+            text.push('\n');
+            text.push_str(line);
+        }
+        let mut output = text_output(text);
+        if let Some(before) = &before {
+            let patch = crate::diff::patch(before, content, &path);
+            if !patch.is_empty() {
+                output.result.details = crate::diff::patch_details(&patch);
+            }
+        }
+        if let Value::Object(details) = &mut output.result.details {
+            details.insert(
+                "syntax".to_owned(),
+                syntax.map_or(Value::Null, Value::String),
+            );
+        }
+        output
     }
+}
+
+/// Approval of a diff is not approval of a path: through a symlink the bytes land elsewhere.
+pub(crate) fn symlink_refusal(path: &Path, shown: &str) -> Option<String> {
+    fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        .then(|| {
+            format!(
+                "{shown} is a symlink; refusing to write through it. Edit the target file directly."
+            )
+        })
+}
+
+/// Invariant: the one write of a named file outside `edit`'s patcher, and its syntax verdict.
+pub(crate) fn land(
+    home: Option<&Path>,
+    path: &Path,
+    content: &str,
+) -> Result<Option<String>, String> {
+    if let Some(refusal) = crate::document::write_refusal(home, path)
+        .or_else(|| symlink_refusal(path, &path.display().to_string()))
+    {
+        return Err(refusal);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+    fs::write(path, content)
+        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+    Ok(crate::syntax::verdict(path))
 }
 
 pub fn wall_refusal(tool_name: &str, path: &str, list: &str) -> String {
