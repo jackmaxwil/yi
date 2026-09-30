@@ -192,23 +192,28 @@ def verdict(findings, overridden):
     return "override" if overridden else "blocked"
 
 
-def ready_problems(rounds, head):
-    """What keeps a draft from leaving draft: two rounds, the last on this head and not blocked."""
+def on_head(sha, head):
+    return head.startswith(sha)
+
+
+def ready_problems(rounds, head, holds=on_head):
+    """What keeps a PR from leaving draft or merging: two rounds, the last holding for this
+    head and not blocked. A round holds when only merges from the base came after it."""
     errs = []
     if len(rounds) < 2:
-        errs.append(f"{len(rounds)} review round(s); a draft needs two — just pr review")
-    if rounds and not head.startswith(rounds[-1]["sha"]):
+        errs.append(f"{len(rounds)} review round(s); a PR needs two — just pr review")
+    if rounds and not holds(rounds[-1]["sha"], head):
         errs.append(f"round {rounds[-1]['n']} reviewed {rounds[-1]['sha'][:8]}, not the head {head[:8]} — just pr review")
     elif rounds and rounds[-1]["verdict"] == "blocked":
         errs.append(f"round {rounds[-1]['n']} is blocked — just pr fix, or /override <reason>")
     return errs
 
 
-def skip_reason(rounds, head, wanted=2):
+def skip_reason(rounds, head, wanted=2, holds=on_head):
     """Why a new round on this head would repeat one: a redelivered message, or a sweep racing
     another, must not post again. A head is read at most `wanted` times while clean, and once
     when blocked, which then belongs to the fixer or the owner."""
-    here = [r for r in rounds if head.startswith(r["sha"])]
+    here = [r for r in rounds if holds(r["sha"], head)]
     if here and here[-1]["verdict"] == "blocked":
         return f"round {here[-1]['n']} blocked this head; the fixer or the owner is next"
     if len(here) >= wanted:
@@ -467,6 +472,21 @@ def authors():
     return {me.get("login"), BOT} - {None}
 
 
+def merges_since(sha, head, base, repo=ROOT):
+    """A round still reads this head when nothing on it is new beyond the reviewed commit and
+    the base: bringing a branch up to date adds the base's work, not the PR's."""
+    if head.startswith(sha):
+        return True
+    run = lambda *a: subprocess.run(("git", "-C", str(repo)) + a, capture_output=True, text=True)
+    return run("merge-base", "--is-ancestor", sha, head).returncode == 0 and \
+        not run("rev-list", "--no-merges", head, "--not", sha, base).stdout.strip()
+
+
+def holds_for(number, base="main"):
+    forge_pr.git("fetch", "-q", "origin", f"refs/pull/{number}/head", base)
+    return lambda sha, head: merges_since(sha, head, f"origin/{base}")
+
+
 @functools.lru_cache(maxsize=None)
 def raw_diff(repo, number):
     # Incident: one open PR's diff held a Latin-1 byte and every round died decoding it.
@@ -546,7 +566,9 @@ def cmd_review(args):
             print(f"#{number}: another round is running")
             return 0
         allowed = authors()
-        why = skip_reason(rounds_of(comments(repo, number), allowed, number), forge_pr.pull(number)["head"]["sha"])
+        pr = forge_pr.pull(number)
+        why = skip_reason(rounds_of(comments(repo, number), allowed, number), pr["head"]["sha"],
+                          holds=holds_for(number, pr["base"]["ref"]))
         if why and not (args.dry_run or getattr(args, "again", False)):
             print(f"#{number}: no round — {why}")
             return 0
@@ -862,6 +884,20 @@ def selfcheck():
         (repo_dir / "scripts/guardrails").mkdir(parents=True)
         git("mv", "a.rs", "scripts/guardrails/a.rs")
         assert walled(changed_paths(repo_dir)) == ["scripts/guardrails/a.rs"], "a rename into the wall is seen"
+        git("commit", "-q", "-m", "wall", "--", "scripts/guardrails/a.rs", "a.rs")
+        rev = lambda name: subprocess.run(("git", "-C", str(repo_dir), "rev-parse", name), capture_output=True, text=True).stdout.strip()
+        reviewed = rev("HEAD")
+        git("checkout", "-q", "-b", "base")
+        (repo_dir / "b.rs").write_text("y\n")
+        git("add", "b.rs")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "base work")
+        git("checkout", "-q", "-")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "merge base", "base")
+        assert merges_since(reviewed, rev("HEAD"), "base", repo_dir), "a merge from the base keeps the round"
+        (repo_dir / "c.rs").write_text("z\n")
+        git("add", "c.rs")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "new work")
+        assert not merges_since(reviewed, rev("HEAD"), "base", repo_dir), "new work after the round needs a round"
     finally:
         shutil.rmtree(repo_dir)
     fakes = pathlib.Path(tempfile.mkdtemp(prefix="yi-round-fgj-"))
