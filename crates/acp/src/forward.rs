@@ -54,11 +54,10 @@ impl Forward {
 }
 
 async fn forward_child(mut events: tokio::sync::broadcast::Receiver<AgentEvent>, forward: Forward) {
-    loop {
-        match events.recv().await {
+    while let Some(next) = yi_runtime::next_event(&mut events).await {
+        match next {
             Ok(event) => forward.event(&event),
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => forward.gap(dropped),
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Err(gap) => forward.gap(gap.dropped),
         }
     }
 }
@@ -206,13 +205,10 @@ pub(crate) async fn forward_parent(
     mut events: tokio::sync::broadcast::Receiver<AgentEvent>,
     mut parent: Parent,
 ) {
-    loop {
-        match events.recv().await {
+    while let Some(next) = yi_runtime::next_event(&mut events).await {
+        match next {
             Ok(event) => parent.reduce(&event),
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
-                parent.forward.gap(dropped);
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Err(gap) => parent.forward.gap(gap.dropped),
         }
     }
 }
