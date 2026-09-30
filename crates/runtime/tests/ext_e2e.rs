@@ -394,16 +394,10 @@ fn a_search_over_many_files_escalates_without_a_nudge() -> TestResult {
         None,
     );
     assert!(host.system_prompt().contains("# Orchestrate"));
-    let delivered = seen.lock().map_err(|_| "poisoned")?.clone();
+    let every = delivered(&seen, |_| true);
     assert!(
-        delivered.iter().all(|message| match message {
-            AgentMessage::Custom {
-                content: UserContent::Text(text),
-                ..
-            } => !text.contains("outgrown"),
-            _ => false,
-        }),
-        "a read-only signal loads the protocol quietly: {delivered:?}"
+        every.iter().all(|text| !text.contains("outgrown")),
+        "a read-only signal loads the protocol quietly: {every:?}"
     );
     Ok(())
 }

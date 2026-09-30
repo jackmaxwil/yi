@@ -18,9 +18,10 @@ pub fn wrap_internal(source: &str, text: &str, timestamp: u64) -> AgentMessage {
     } else {
         "internal"
     };
+    let text = text.replace("</yi_internal_context", "<\\/yi_internal_context");
     let body = match source {
         "reminder" | "advisory" => format!("{ADVISORY_LINE}\n{text}"),
-        _ => text.to_owned(),
+        _ => text,
     };
     AgentMessage::host_user(
         UserContent::Text(format!(
