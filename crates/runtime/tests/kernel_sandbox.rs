@@ -241,10 +241,10 @@ fn walled_session(
 }
 
 /// #598, #889: a walled juror's kernel wrote the tree and read walled files, since the wall was
-/// a check at the tool seam and in no profile; and a cell read keys kept outside the token
-/// stores and inherited `*_API_KEY`.
+/// a check at the tool seam and in no profile; and a cell inherited `*_API_KEY`. The stores
+/// themselves are proven in `tools/tests/sandbox.rs` with a scratch HOME, not the runner's.
 #[tokio::test]
-async fn a_walled_kernel_and_its_bash_keep_to_the_wall_and_see_no_key() -> TestResult {
+async fn a_walled_kernel_and_its_bash_keep_to_the_wall_and_inherit_no_key() -> TestResult {
     if !Sandbox::available() {
         return Ok(());
     }
@@ -253,10 +253,6 @@ async fn a_walled_kernel_and_its_bash_keep_to_the_wall_and_see_no_key() -> TestR
     let (root, project, home, _session) = workspace("walled")?;
     std::fs::write(project.join("walled.txt"), "WALLED-598")?;
     std::os::unix::fs::symlink(&project, root.join("via"))?;
-    let oauth = home.join(".yi/oauth");
-    std::fs::create_dir_all(&oauth)?;
-    let profile = oauth.join(format!("yi-598-{}.json", std::process::id()));
-    std::fs::write(&profile, "KEY-598")?;
     let wall = yi_runtime::Wall {
         deny_write: vec![project.clone()],
         deny_read: vec![project.join("walled.txt")],
@@ -270,23 +266,21 @@ async fn a_walled_kernel_and_its_bash_keep_to_the_wall_and_see_no_key() -> TestR
     let via = root.join("via");
     let (tree, via) = (project.display(), via.display());
     let code = format!(
-        "import os\nfor path in (r'{tree}/walled.txt', r'{tree}/WALLED.TXT', r'{via}/walled.txt', r'{key}'):\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)\ntry:\n    open(r'{tree}/by-cell.txt', 'w').write('x')\nexcept OSError as e:\n    print('denied', e.errno)\nprint(os.environ.get('YI_598_PROBE_API_KEY'))\nprint(await bash(\"cat '{tree}/walled.txt' '{key}'; touch '{tree}/by-job.txt'; env\"))",
-        key = profile.display(),
+        "import os\nfor path in (r'{tree}/walled.txt', r'{tree}/WALLED.TXT', r'{via}/walled.txt'):\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)\ntry:\n    open(r'{tree}/by-cell.txt', 'w').write('x')\nexcept OSError as e:\n    print('denied', e.errno)\nprint(os.environ.get('YI_598_PROBE_API_KEY'))\nprint(await bash(\"cat '{tree}/walled.txt'; touch '{tree}/by-job.txt'; env\"))",
     );
     let ran = cell(&kernel, code).await;
     kernel.dispose().await;
-    let _ = std::fs::remove_file(&profile);
     let wrote = ["by-cell.txt", "by-job.txt"].map(|name| project.join(name).exists());
     let stdout = ran?.result.stdout;
-    let read = ["WALLED-598", "KEY-598", "ENV-598"].map(|secret| stdout.contains(secret));
-    // Four reads and a write refused with EPERM, and the job ran: proof the cell got that far.
+    let read = ["WALLED-598", "ENV-598"].map(|secret| stdout.contains(secret));
+    // Three reads and a write refused with EPERM, and the job ran: proof the cell got that far.
     let ran = (
         stdout.matches("denied 1\n").count(),
         stdout.contains("PATH="),
     );
     assert!(
-        wrote == [false, false] && read == [false, false, false] && ran == (5, true),
-        "wrote (cell, job) {wrote:?}, read (walled, key, env) {read:?}, (denials, job ran) {ran:?}"
+        wrote == [false, false] && read == [false, false] && ran == (4, true),
+        "wrote (cell, job) {wrote:?}, read (walled, env) {read:?}, (denials, job ran) {ran:?}"
     );
     Ok(())
 }

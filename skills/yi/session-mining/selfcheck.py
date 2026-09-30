@@ -10,6 +10,7 @@ import error_class
 from extract import (
     DEDUPE_THRESHOLD,
     MASK,
+    MODULE_MISSING,
     RUST_MIRRORS,
     SIGNAL_NAMES,
     dedupe,
@@ -140,6 +141,8 @@ def check_rust_mirrors(root):
             f"{name} drifted from {relative}: rust only "
             f"{sorted(declared - mirrored)}, python only {sorted(mirrored - declared)}"
         )
+    ipython = (root / "crates/tools/src/ipython.rs").read_text()
+    assert MODULE_MISSING in ipython, "the missing-module hint drifted from ipython.rs"
     return len(RUST_MIRRORS)
 
 

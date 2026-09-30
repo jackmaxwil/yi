@@ -548,8 +548,14 @@ fn a_walled_path_is_unreadable_however_either_side_spells_it() -> TestResult {
     std::fs::create_dir_all(project.join("a/secrets"))?;
     std::fs::write(project.join("a/secrets/key.txt"), "WALLED-598")?;
     std::os::unix::fs::symlink(project.join("a"), project.join("via"))?;
+    std::fs::create_dir_all(project.join("a/locked"))?;
     let mut sandbox = Sandbox::for_workspace(&project, &home, None);
     sandbox.deny_read.push(project.join("via/secrets"));
+    sandbox.deny_write.push(project.join("via/locked"));
+    assert!(
+        sandbox.denies_write(&project.join("via/secrets/planted")),
+        "the refusal hint must name a write under a read-walled path"
+    );
     let commands = [
         "cat a/secrets/key.txt",
         "cat A/SECRETS/KEY.TXT",
@@ -561,11 +567,13 @@ fn a_walled_path_is_unreadable_however_either_side_spells_it() -> TestResult {
     .map(str::to_owned);
     let leaked = leaks(&commands, &project, &sandbox, "WALLED-598")?;
     assert!(leaked.is_empty(), "a walled file was read: {leaked:#?}");
-    let (code, output) = run("echo x > a/secrets/planted", &project, Some(&sandbox))?;
-    assert!(
-        code != 0 && !project.join("a/secrets/planted").exists(),
-        "a read-walled directory is not writable either: {output}"
-    );
+    for target in ["a/secrets/planted", "a/locked/planted"] {
+        let (code, output) = run(&format!("echo x > {target}"), &project, Some(&sandbox))?;
+        assert!(
+            code != 0 && !project.join(target).exists(),
+            "{target}: a wall spelled through a link binds writes too: {output}"
+        );
+    }
     Ok(())
 }
 
@@ -575,18 +583,35 @@ fn a_contained_command_inherits_no_secret_variable() -> TestResult {
     if !Sandbox::available() {
         return Ok(());
     }
-    // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.
-    unsafe { std::env::set_var("YI_598_PROBE_API_KEY", "ENV-598") };
+    let secrets = [
+        "YI_598_API_KEY",
+        "YI_598_TOKEN",
+        "YI_598_CLIENT_SECRET",
+        "YI_598_PGPASSWORD",
+        "YI_598_CREDENTIALS",
+        "DATABASE_URL",
+        "GITHUB_PAT",
+        "BW_SESSION",
+    ];
+    let settings = [
+        "TOKENIZERS_PARALLELISM",
+        "PYTHON_KEYRING_BACKEND",
+        "PASSWORD_STORE_DIR",
+    ];
+    for name in secrets.iter().chain(&settings) {
+        // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.
+        unsafe { std::env::set_var(name, format!("ENV-598-{name}")) };
+    }
     let (_root, project, home) = workspace("env")?;
     let sandbox = Sandbox::for_workspace(&project, &home, None);
-    let (_, bare) = run("env", &project, None)?;
-    assert!(bare.contains("ENV-598"), "the probe is set");
     // The messages never print the environment: it holds whatever keys the runner has.
     let (code, contained) = run("env", &project, Some(&sandbox))?;
-    let (ran, leaked) = (contained.contains("PATH="), contained.contains("ENV-598"));
+    let seen = |name: &str| contained.contains(&format!("ENV-598-{name}"));
+    let leaked: Vec<&str> = secrets.into_iter().filter(|name| seen(name)).collect();
+    let stripped: Vec<&str> = settings.into_iter().filter(|name| !seen(name)).collect();
     assert!(
-        code == 0 && ran && !leaked,
-        "a contained `env` exited {code}, ran {ran}, saw the key {leaked}"
+        code == 0 && contained.contains("PATH=") && leaked.is_empty() && stripped.is_empty(),
+        "a contained `env` exited {code}, saw {leaked:?}, lost the settings {stripped:?}"
     );
     Ok(())
 }
