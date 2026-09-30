@@ -2094,6 +2094,50 @@ fn preview_args() -> Map<String, Value> {
     ])
 }
 
+/// A file's skeleton at the per-file cap shows every head; one past it names kept of total, the
+/// cap and the call that lists the rest.
+#[test]
+fn a_skeleton_one_past_its_cap_names_the_cut() -> TestResult {
+    let dir = temp_dir("skeleton-cap")?;
+    let heads = |count: usize| {
+        (0..count)
+            .map(|n| format!("fn f{n}() {{}}\n"))
+            .collect::<String>()
+    };
+    fs::write(dir.join("at.rs"), heads(8))?;
+    fs::write(dir.join("over.rs"), heads(9))?;
+    let listing = read_tool().execute(
+        args(&[("path", json!("."))]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    let text = output_text(&listing);
+    let row = |name: &str| {
+        text.lines()
+            .find(|line| line.starts_with(name))
+            .map(str::to_owned)
+    };
+    let at = row("at.rs:").ok_or(text.clone())?;
+    assert!(at.ends_with("fn f7() {}"), "{text}");
+    let over = row("over.rs:").ok_or(text.clone())?;
+    assert!(
+        over.ends_with("fn f7() {}; [8 of 9 heads, cap 8 per file — grep def=true for all]"),
+        "{text}"
+    );
+    // A glob shows files whole until its byte budget; one past the budget is shown as heads.
+    let padding = "// padding\n".repeat(6_000);
+    fs::write(dir.join("big.rs"), format!("{}{padding}", heads(13)))?;
+    let glob = read_tool().execute(
+        args(&[("path", json!("big*.rs"))]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    let text = output_text(&glob);
+    assert!(
+        text.contains("  fn f11() {}\n  [12 of 13 heads, cap 12 per file — grep def=true for all]"),
+        "{text}"
+    );
+    Ok(())
+}
+
 #[test]
 fn every_cut_view_names_its_cap() -> TestResult {
     let dir = temp_dir("loud-caps")?;
@@ -2129,7 +2173,7 @@ fn every_cut_view_names_its_cap() -> TestResult {
     let listing = read_tool().execute(args(&[("path", json!("."))]), &context);
     let text = output_text(&listing);
     assert!(text.contains("many.rs: fn f0() {}; fn f1() {};"), "{text}");
-    assert!(text.contains("… +37 more"), "{text}");
+    assert!(text.contains("[8 of 45 heads, cap 8 per file"), "{text}");
 
     let grep = GrepTool::default();
     let block = grep.execute(
