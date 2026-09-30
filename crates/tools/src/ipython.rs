@@ -235,8 +235,7 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
         "result": detail_text(result.result.as_deref().unwrap_or_default()),
         "error": result.error,
     });
-    output.is_error =
-        result.status == ExecuteStatus::Error || result.status == ExecuteStatus::Aborted;
+    output.is_error = result.status != ExecuteStatus::Ok;
     // A cell killed at the ceiling reads as any other error, so the graph could not carry a
     // next step for it and one F0e session wrote a second 600 s wait loop (#475).
     if result.status == ExecuteStatus::Aborted
