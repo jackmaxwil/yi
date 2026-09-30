@@ -145,6 +145,9 @@ pub fn parse(command: &str) -> Parsed {
         if let Some(open) = quote {
             if character == open {
                 quote = None;
+            } else if open == '"' && matches!(character, '$' | '`') {
+                // Bash expands these inside double quotes: `"$(rm x)"` runs `rm`.
+                return Parsed::Unparsed;
             } else if character == '\\' && open == '"' {
                 match chars.next() {
                     Some(escaped) => token.push(escaped),
@@ -278,10 +281,7 @@ fn git_class(argv: &[String]) -> Class {
     if destructive {
         return Class::Destructive;
     }
-    if matches!(
-        subcommand,
-        "clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule"
-    ) {
+    if git_network(argv) {
         return Class::Egress;
     }
     if GIT_READ.binary_search(&subcommand).is_ok() {
@@ -294,6 +294,20 @@ fn git_class(argv: &[String]) -> Class {
         return Class::Safe;
     }
     Class::Unknown
+}
+
+/// A git verb that reaches a remote, so it asks and an approval leaves the sandbox; `remote update`
+/// runs `uploadpack` from `-c` on the host, which a proof must never send out unasked.
+fn git_network(argv: &[String]) -> bool {
+    match git_subcommand(argv) {
+        Some("clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule") => true,
+        Some("remote") => (argv.iter())
+            .skip_while(|token| *token != "remote")
+            .skip(1)
+            .find(|token| !token.starts_with('-'))
+            .is_some_and(|verb| matches!(verb.as_str(), "update" | "prune")),
+        _ => false,
+    }
 }
 
 fn subcommand_after<'a>(argv: &'a [String], after: &str) -> Option<&'a str> {
@@ -453,7 +467,8 @@ const VERB_PROGRAMS: [&str; 16] = [
     "pnpm", "rustup", "uv", "yarn",
 ];
 
-fn scope(argv: &[String]) -> Option<String> {
+/// `argv` past the wrappers that run another program (`timeout`, `nice`, `env`, assignments).
+fn unwrapped(argv: &[String]) -> Option<&[String]> {
     let mut argv: &[String] = argv;
     // A wrapper runs another program, so the scope is that program, not `timeout` or `nice`.
     while let Some(first) = argv.first() {
@@ -470,6 +485,11 @@ fn scope(argv: &[String]) -> Option<String> {
             false => break,
         }
     }
+    Some(argv)
+}
+
+fn scope(argv: &[String]) -> Option<String> {
+    let argv = unwrapped(argv)?;
     let name = program(argv.first()?.trim_start_matches('\u{0}'));
     let verb = match name {
         "git" => git_subcommand(argv),
@@ -638,18 +658,8 @@ pub fn command_segments(command: &str) -> Vec<Vec<String>> {
 pub fn host_need(argv: &[String]) -> Option<&'static str> {
     let scope = scope(argv)?;
     let (name, verb) = scope.split_once(' ').unwrap_or((scope.as_str(), ""));
-    let remote = |argv: &[String]| {
-        let mut words = argv
-            .iter()
-            .map(String::as_str)
-            .skip_while(|word| *word != "remote");
-        matches!(words.nth(1), Some("update" | "prune"))
-    };
-    let git_network = matches!(
-        verb,
-        "clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule"
-    ) || (verb == "remote" && remote(argv));
-    if HOST_PROGRAMS.contains(&name) || (name == "git" && git_network) {
+    let git_network = name == "git" && unwrapped(argv).is_some_and(git_network);
+    if HOST_PROGRAMS.contains(&name) || git_network {
         return Some("network");
     }
     (name != "git" && matches!(verb, "add" | "install" | "login" | "publish")).then_some("installs")

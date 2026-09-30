@@ -108,6 +108,13 @@ pub(crate) fn headless_refusal(
     }
 }
 
+/// An allowed compound, part of which must leave the sandbox, with no one to ask.
+pub(crate) fn headless_split(why: &str) -> String {
+    format!(
+        "Permission required but no interactive surface is available: part of this command must run outside the sandbox ({why}) and would take the rest with it. Split it into separate calls, or rerun with --yolo."
+    )
+}
+
 pub fn mode_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Ask => "ask",
