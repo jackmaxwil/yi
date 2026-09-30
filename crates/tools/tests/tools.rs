@@ -2090,6 +2090,9 @@ fn grep_replace_previews_then_applies_and_tags() -> TestResult {
 /// says so, and the result carries the patch a diff pane renders.
 #[test]
 fn a_grep_apply_carries_the_syntax_verdict_and_its_patch() -> TestResult {
+    if !on_path("python3") {
+        return Ok(());
+    }
     let dir = temp_dir("grep-apply-land")?;
     fs::write(dir.join("a.py"), "x = 1\n")?;
     let applied = GrepTool::default().execute(
@@ -2114,6 +2117,7 @@ fn a_grep_apply_carries_the_syntax_verdict_and_its_patch() -> TestResult {
 
 /// Approval of a write is approval of the named path; through a symlink the bytes land at its
 /// target, a file nobody reviewed.
+#[cfg(unix)]
 #[test]
 fn a_write_through_a_symlink_is_refused() -> TestResult {
     let dir = temp_dir("write-symlink")?;
