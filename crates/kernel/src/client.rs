@@ -412,11 +412,11 @@ impl Inner {
                 && !current.settled
             {
                 current.settled = true;
+                let aborted = current.abort.as_ref().is_some_and(AbortFlag::is_fired)
+                    || matches!(force_status, Some(ExecuteStatus::Aborted));
                 if let Some(status) = force_status {
                     current.cell.status = status;
                 }
-                let aborted = current.abort.as_ref().is_some_and(AbortFlag::is_fired)
-                    || matches!(force_status, Some(ExecuteStatus::Aborted));
                 let duration =
                     u64::try_from(current.started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let cell = std::mem::replace(

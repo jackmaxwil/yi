@@ -184,8 +184,8 @@ impl HeartbeatService {
                         .iter_mut()
                         .find(|job| job.id == id && job.session_id == owner);
                     found.map(|job| {
-                        job.status = target;
-                        if let (JobStatus::Active, Some(sub)) = (target, &job.channel) {
+                        job.status = target.clone();
+                        if let (JobStatus::Active, Some(sub)) = (&target, &job.channel) {
                             super::adapter::revive(std::path::Path::new(&sub.path));
                         }
                         if target == JobStatus::Active && job.next_run_at.is_none() {
