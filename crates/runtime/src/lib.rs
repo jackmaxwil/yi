@@ -73,7 +73,7 @@ pub use provider::{
     refresh_catalog, resolve_model, set_catalog_cache_dir,
 };
 pub use rewind::{BranchStub, Rewound, rewind_to, summarize_branch};
-pub use session::{AgentSession, SessionConfig, SessionError, Status};
+pub use session::{AgentSession, SessionConfig, SessionError, Status, next_event};
 pub use skills::{Skill, skills_catalog};
 pub use subagent::{
     ChildBuild, ChildFeed, ChildStatus, ChildUpdate, ChildView, SubagentHost, SubagentHostOptions,
