@@ -138,14 +138,24 @@ pub(super) fn kick(parts: &RunParts) {
     }
 }
 
-pub(super) fn unsaved_compaction(parts: &RunParts, error: &yi_session::SessionError) {
-    record_store_error(&parts.shared, error);
-    let notice =
-        format!("[compaction not saved: {error}; history left uncompacted, /compact retries]");
-    enqueue(
-        parts,
-        Queued::new(super::user_message(&notice), false, None),
-    );
+pub(super) fn failed_compaction(parts: &RunParts, error: &crate::compaction::CompactError) {
+    if let crate::compaction::CompactError::Unsaved(error) = error {
+        record_store_error(&parts.shared, error);
+    }
+    queue_compaction_notice(parts, &format!("[{error}]"));
+}
+
+/// A newer compaction notice replaces one not yet read, so they never pile up in the queue.
+pub(super) fn queue_compaction_notice(parts: &RunParts, notice: &str) {
+    if let Ok(mut queue) = parts.shared.steer.lock() {
+        queue.retain(|held| !compaction_notice(&held.message));
+    }
+    let note = AgentMessage::host_note(crate::compaction::COMPACTION_NOTICE, notice.to_owned(), 0);
+    enqueue(parts, Queued::new(note, false, None));
+}
+
+fn compaction_notice(message: &AgentMessage) -> bool {
+    matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == crate::compaction::COMPACTION_NOTICE)
 }
 
 pub(super) fn follow(parts: &RunParts, message: AgentMessage) -> bool {
@@ -266,18 +276,19 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     config.reuse = shared.reuse.lock().map(|reuse| *reuse).unwrap_or_default();
     config.convert_to_llm = Box::new(yi_context::convert_to_llm);
     if let Some(compactor) = compactor.clone() {
+        compactor.open_run(&prompt);
         let stores = Arc::clone(&shared);
         let notify = Arc::clone(&shared);
         let hook = on_compacted.clone();
-        let unsaved = parts.clone();
+        let failed = parts.clone();
+        let elided = parts.clone();
         let announce = Arc::clone(&shared);
         config.maybe_compact = Some(crate::compaction::loop_hook(
             compactor,
             Arc::clone(&provider),
-            model.clone(),
             {
                 let (system, tools) = (context.system_prompt.clone(), context.tools.clone());
-                Arc::new(move || {
+                Arc::new(move |effort| {
                     crate::compaction::LoopRequest::new(system.clone(), &tools, effort)
                 })
             },
@@ -292,11 +303,29 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
                         hook();
                     }
                 }),
-                unsaved: Arc::new(move |error| unsaved_compaction(&unsaved, error)),
+                failed: Arc::new(move |error| failed_compaction(&failed, error)),
+                elided: Arc::new(move |elision| {
+                    queue_compaction_notice(&elided, &elision.to_string())
+                }),
             },
         ));
     }
     wire_queues_and_coupling(&mut config, &shared, &prompt);
+    // A follow-up delivered inside this run opens the work it does next: a rescue keeps it.
+    if let (Some(compactor), Some(follow)) =
+        (compactor.clone(), config.get_follow_up_messages.take())
+    {
+        config.get_follow_up_messages = Some(Box::new(move || {
+            let taken = follow();
+            if let Some(opening) = taken
+                .iter()
+                .find(|message| matches!(message, AgentMessage::User { .. }))
+            {
+                compactor.open_run(opening);
+            }
+            taken
+        }));
+    }
     wire_environment(&mut config, &shared);
     let gate = Arc::clone(&capture);
     config.side_work = Some(Box::new(move || Box::pin(settled(Arc::clone(&gate)))));
