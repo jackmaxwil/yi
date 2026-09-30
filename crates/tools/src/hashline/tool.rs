@@ -969,7 +969,7 @@ impl Tool for HashlineEditTool {
                 section.push('\n');
                 section.push_str(&line);
             }
-            syntax = crate::syntax::worst(syntax, line);
+            syntax = Some(crate::syntax::worst(syntax, line));
         }
         let grid = layer.map_or("skipped", |layer| {
             rendered.push(layer.render());

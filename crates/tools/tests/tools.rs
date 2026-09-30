@@ -2095,6 +2095,8 @@ fn a_grep_apply_carries_the_syntax_verdict_and_its_patch() -> TestResult {
     }
     let dir = temp_dir("grep-apply-land")?;
     fs::write(dir.join("a.py"), "x = 1\n")?;
+    // A later file that still parses must not wash out the earlier failure.
+    fs::write(dir.join("b.py"), "s = '= 1'\n")?;
     let applied = GrepTool::default().execute(
         args(&[
             ("pattern", json!("= 1")),
