@@ -12,7 +12,7 @@ use yi_runtime::{AgentSession, SubagentHost};
 use yi_types::acp::AcpSessionUpdate;
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, Content, UserContent};
+use yi_types::message::{AgentMessage, UserContent};
 use yi_types::subagent::ChildId;
 
 use crate::LineSink;
@@ -240,13 +240,6 @@ pub(crate) fn session_name(store: &SharedSession) -> Option<String> {
 fn prompt_of(content: &UserContent) -> String {
     match content {
         UserContent::Text(text) => text.clone(),
-        UserContent::Blocks(blocks) => blocks
-            .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
+        UserContent::Blocks(blocks) => yi_types::message::join_text(blocks, " "),
     }
 }

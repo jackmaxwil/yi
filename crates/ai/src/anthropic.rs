@@ -69,14 +69,7 @@ fn content_blocks(content: &[Content]) -> Value {
         .iter()
         .any(|block| matches!(block, Content::Image { .. }));
     if !has_images {
-        let joined = content
-            .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let joined = yi_types::message::join_text(content, "\n");
         return Value::String(joined);
     }
     let mut blocks: Vec<Value> = content
