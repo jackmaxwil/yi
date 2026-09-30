@@ -691,9 +691,14 @@ impl std::fmt::Display for Resolution {
 /// The checker manifest format this tree reads; bumped, never reinterpreted.
 pub const MANIFEST_FORMAT: u32 = 1;
 
-/// Environment names a manifest may never declare: a criterion is stored, and a secret frozen
-/// into a criterion can be read back out of the store.
-const SECRET_NAME_MARKS: [&str; 5] = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"];
+/// A name that reads as a secret's: never a manifest's (a stored criterion can be read back), and
+/// never inherited by a sandboxed process (#906).
+pub fn names_a_secret(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"]
+        .iter()
+        .any(|mark| upper.contains(mark))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -754,13 +759,12 @@ impl CheckerManifest {
             (Cwd::SnapshotRoot, None) => {}
         }
         for name in &manifest.env {
-            let upper = name.to_ascii_uppercase();
             if name.is_empty() || name.contains('=') || name.chars().any(char::is_whitespace) {
                 return Err(format!(
                     "checker manifest: {name:?} is not an environment name"
                 ));
             }
-            if SECRET_NAME_MARKS.iter().any(|mark| upper.contains(mark)) {
+            if names_a_secret(name) {
                 return Err(format!(
                     "checker manifest: {name} looks like a secret; a criterion may not read one"
                 ));

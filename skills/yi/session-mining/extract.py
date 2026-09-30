@@ -53,6 +53,16 @@ CREDENTIAL_SUBPATHS = [
     ".docker",
     ".yi/mcp/tokens",
     ".yi/providers/tokens",
+    ".yi/oauth",
+    ".config/gh",
+    ".config/fgj",
+    ".config/gcloud",
+    ".netrc",
+    ".git-credentials",
+    ".npmrc",
+    ".pypirc",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
 ]
 
 # These three are hand-copied out of Rust, so --selfcheck reads the Rust back

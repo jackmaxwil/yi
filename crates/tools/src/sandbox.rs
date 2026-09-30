@@ -68,19 +68,23 @@ impl Sandbox {
             .and_then(|path| path.strip_prefix("/dev/ttys"))
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|byte| byte.is_ascii_digit()));
         let granted = tty || path == Path::new("/dev/null") || path == Path::new("/dev/ptmx");
-        !granted && (!under(&self.writable) || under(&self.deny_write))
+        !granted && (!under(&self.writable) || under(&self.deny_write) || under(&self.deny_read))
     }
 
-    /// `-D` bindings keep paths out of the policy text. A denied path binds twice, logical
-    /// and resolved: macOS `/tmp` and `/var` are symlinks and the kernel checks the target.
+    /// `-D` bindings keep paths out of the policy text. A denied path binds twice: as spelled,
+    /// which a link itself is judged by, and resolved, since the kernel checks an open's target.
     pub fn params(&self) -> Vec<(String, PathBuf)> {
         let mut params = Vec::new();
         for (index, path) in self.deny_write.iter().enumerate() {
             params.push((format!("DENY_WRITE_{index}"), resolve_aliases(path)));
+            params.push((format!("DENY_WRITE_{index}_RESOLVED"), resolve_denied(path)));
         }
         for (index, root) in self.deny_read.iter().enumerate() {
             params.push((format!("DENY_READ_{index}"), root.clone()));
-            params.push((format!("DENY_READ_{index}_RESOLVED"), resolve_aliases(root)));
+            params.push((format!("DENY_READ_{index}_RESOLVED"), resolve_denied(root)));
+        }
+        for (index, dir) in self.denied_parents().into_iter().enumerate() {
+            params.push((format!("DENIED_PARENT_{index}"), dir));
         }
         for (index, root) in self.writable.iter().enumerate() {
             params.push((format!("WRITABLE_ROOT_{index}"), resolve_aliases(root)));
@@ -117,7 +121,32 @@ impl Sandbox {
             wrapped.push(format!("-D{key}={}", value.to_string_lossy()));
         }
         wrapped.push("--".to_owned());
+        wrapped.extend(scrubbed_env());
         (SEATBELT.to_owned(), wrapped)
+    }
+
+    /// The directories between a writable root and a denied path: renaming one would carry the
+    /// denied path out from under its own rule, which names it by where it was.
+    fn denied_parents(&self) -> Vec<PathBuf> {
+        let roots: Vec<PathBuf> = self
+            .writable
+            .iter()
+            .map(|root| resolve_aliases(root))
+            .collect();
+        let mut parents: Vec<PathBuf> = (self.deny_write.iter())
+            .chain(&self.deny_read)
+            .flat_map(|path| [resolve_aliases(path), resolve_denied(path)])
+            .flat_map(|path| {
+                path.ancestors()
+                    .skip(1)
+                    .map(Path::to_path_buf)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|dir| roots.iter().any(|root| dir.starts_with(root)))
+            .collect();
+        parents.sort();
+        parents.dedup();
+        parents
     }
 
     fn read_policy(&self) -> String {
@@ -159,9 +188,18 @@ impl Sandbox {
                 "(deny file-write-unlink (require-all (literal (param \"{key}\")) (vnode-type DIRECTORY)))"
             ));
         }
-        for index in 0..self.deny_write.len() {
+        // A path hidden from reads is not writable either: renamed, it would leave its rule behind.
+        let denied = (0..self.deny_write.len())
+            .map(|index| format!("DENY_WRITE_{index}"))
+            .chain((0..self.deny_read.len()).map(|index| format!("DENY_READ_{index}")));
+        for key in denied {
             anchors.push(format!(
-                "(deny file-write* (subpath (param \"DENY_WRITE_{index}\")))"
+                "(deny file-write* (subpath (param \"{key}\")) (subpath (param \"{key}_RESOLVED\")))"
+            ));
+        }
+        for index in 0..self.denied_parents().len() {
+            anchors.push(format!(
+                "(deny file-write-unlink (literal (param \"DENIED_PARENT_{index}\")))"
             ));
         }
         format!(
@@ -179,6 +217,7 @@ impl Sandbox {
             wrapped.push(format!("-D{key}={}", value.to_string_lossy()));
         }
         wrapped.push("--".to_owned());
+        wrapped.extend(scrubbed_env());
         wrapped.push(program.to_owned());
         wrapped.extend(args.iter().map(|arg| (*arg).to_owned()));
         (SEATBELT.to_owned(), wrapped)
@@ -204,6 +243,36 @@ fn resolve_aliases(path: &Path) -> PathBuf {
         (Ok(canonical), Ok(suffix)) => canonical.join(suffix),
         _ => path.to_path_buf(),
     }
+}
+
+/// A denied path as the kernel resolves an open: every link and `..` taken, a missing tail as
+/// spelled. Unlike a writable root's, following deeper links here only denies more.
+fn resolve_denied(path: &Path) -> PathBuf {
+    let Some((head, real)) =
+        (path.ancestors()).find_map(|head| Some((head, head.canonicalize().ok()?)))
+    else {
+        return path.to_path_buf();
+    };
+    match path.strip_prefix(head) {
+        Ok(tail) if !tail.as_os_str().is_empty() => {
+            yi_permission::lexical_normalize(&real.join(tail))
+        }
+        _ => real,
+    }
+}
+
+/// `env -u` for every inherited variable named like a secret (#906). A contained process has
+/// no network to spend a key on, only output and files to leak one through.
+fn scrubbed_env() -> Vec<String> {
+    let mut names: Vec<String> = std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .filter(|name| yi_types::plan::contract::names_a_secret(name))
+        .collect();
+    names.sort();
+    let unset = names.into_iter().flat_map(|name| ["-u".to_owned(), name]);
+    std::iter::once("/usr/bin/env".to_owned())
+        .chain(unset)
+        .collect()
 }
 
 fn temp_roots() -> Vec<PathBuf> {

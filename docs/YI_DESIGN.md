@@ -371,8 +371,13 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   in memory, ≤ 1024 rules.
 - Sandbox: Seatbelt `/usr/bin/sandbox-exec`, macOS only; writable cwd, git dirs minus
   `hooks config commondir gitdir`, session dir, tmp; reads deny the credential stores the read gate
-  refuses (`~/.ssh ~/.gnupg ~/.aws ~/.kube ~/.docker ~/.yi/mcp/tokens ~/.yi/providers/tokens`,
-  `credential_stores`, D323); no network. Without it, `Contain` becomes a reviewable `Ask`.
+  refuses (`~/.ssh ~/.gnupg ~/.aws ~/.kube ~/.docker ~/.yi/mcp/tokens ~/.yi/providers/tokens
+  ~/.yi/oauth ~/.config/{gh,fgj,gcloud} ~/.netrc ~/.git-credentials ~/.npmrc ~/.pypirc
+  ~/.cargo/credentials[.toml]`, `credential_stores`, D323, D324) and the wall's `deny_read`, each
+  bound by its resolved path, unwritable, and with its parents inside a writable root
+  unrenamable; the kernel and its `bash()` take the wall too; a contained process starts through
+  `env -u` for every inherited variable named like a secret; no network. Without it, `Contain`
+  becomes a reviewable `Ask`.
 - With `classifier.approve` and `LAYA_API_KEY`, a reviewable auto-mode ask first gets one `noul`
   from the classifier sidecar: P(safe) ≥ 0.9 (0.98 if destructive) allows, ≤ 0.05 asks the user,
   else on to the reviewer; an ask it may judge left unanswered 120 s is settled by that judgement.
