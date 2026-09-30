@@ -526,7 +526,7 @@ pub fn unsourced(text: &str, seen: &str) -> Vec<String> {
 
 pub fn unsourced_text(numbers: &[String]) -> String {
     format!(
-        "These numbers appear in no tool result: {}. If one is wrong or unmeasured, reply with one line that corrects only it. If each is a name, a path or an id, end the turn with no text. Do not restate the answer or quote sources.",
+        "These numbers appear in no tool result or user message: {}. If one is wrong or unmeasured, reply with one line that corrects only it. If each is a name, a path or an id, end the turn with no text. Do not restate the answer or quote sources.",
         numbers.join(", ")
     )
 }
