@@ -192,8 +192,24 @@ pub fn layout_chat(
         crate::hud::render(&crate::hud::input(app, goal, memory), &theme)
     };
 
+    let selected = &app.selection.model;
+    // OpenRouter is the one router yi reaches; its `vendor/` prefix names the maker, not the route.
+    let routed = selected.provider == "openrouter";
+    let model = match selected.id.split_once('/') {
+        Some((_, name)) if routed => name.to_owned(),
+        _ => selected.id.clone(),
+    };
+    let provider = routed.then(|| selected.provider.clone());
+    // As the footer: a read is expected from the second request, on a route that prices one.
+    let expected = app.requests > 1
+        && selected
+            .cost
+            .cache_read
+            .as_f64()
+            .is_some_and(|price| price > 0.0);
     let status_input = StatusInput {
-        model: app.selection.model.id.clone(),
+        model,
+        provider,
         thinking: (app.selection.effort != yi_types::model::Effort::Off)
             .then(|| app.selection.effort.to_string()),
         mode: (app.mode != TranscriptMode::default()).then(|| app.mode.label().to_owned()),
@@ -204,6 +220,7 @@ pub fn layout_chat(
             crate::status::landing_segment(landing, app.landing_at.map(|at| at.elapsed()))
         }),
         cost: app.spent.label(),
+        cache: app.session_tokens.cache_label(expected),
         session_name: if app.status_name_hidden {
             String::new()
         } else {

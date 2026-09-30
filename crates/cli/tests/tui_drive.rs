@@ -403,6 +403,75 @@ fn an_absurd_deadline_is_clamped_rather_than_panicking() -> TestResult {
     Ok(())
 }
 
+/// Dies with every headless frame 80 columns wide: the size was fixed, so no proof could show
+/// how the status row lays out on a wide screen.
+#[test]
+fn a_headless_drive_renders_at_the_size_it_is_given() -> TestResult {
+    let dir = Scratch::new("yi-tui-size")?;
+    let home = dir.home()?;
+    let keys = dir.join("keys");
+    std::fs::write(&keys, "wait-frame 5000 faux-1\nquit\n")?;
+    let frames = dir.join("frames");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "--size",
+            "254x30",
+        ])
+        .env("HOME", &home)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let last = std::fs::read_to_string(entries.last().ok_or("no frames dumped")?.path())?;
+    let widest = last
+        .lines()
+        .map(|line| line.trim_matches('"').chars().count())
+        .max();
+    assert_eq!(widest, Some(254), "{last}");
+    assert_eq!(last.lines().count(), 30, "{last}");
+    for refused in ["1x1", "1001x30", "254x501"] {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the flag is parsed by the spawned binary; tests must run the real process"
+        )]
+        let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args([
+                "tui",
+                "--headless",
+                "--model",
+                "faux/faux-1",
+                "--size",
+                refused,
+            ])
+            .env("HOME", &home)
+            .output()?;
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{refused} is refused, not clamped"
+        );
+    }
+    Ok(())
+}
+
 /// One path for `--record` and `--snap` left the still truncating the
 /// recording still open on it, and the run exited 0 having lost it.
 #[test]

@@ -407,6 +407,7 @@ impl App {
             Reply::Fresh { name } => {
                 self.options.session_name = name;
                 self.spent = crate::status::Money::default();
+                self.session_tokens = crate::status::TokenTally::default();
                 self.requests = 0;
                 self.context_used = 0;
                 self.pending_clear = true;

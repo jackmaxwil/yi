@@ -48,6 +48,8 @@ struct Args {
     faux: Option<String>,
     record: Option<String>,
     snap: Option<String>,
+    /// `--size COLSxROWS`: the headless screen, 80x24 when absent.
+    size: Option<(u16, u16)>,
     /// An eval harness launched this run: `YI_LEVERS` is read, and nothing else (D220).
     eval: bool,
     deadline: Option<u64>,
@@ -95,6 +97,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut faux = None;
     let mut record = None;
     let mut snap = None;
+    let mut size = None;
     let mut eval = false;
     let mut deadline = None;
     let mut continue_leaf = false;
@@ -133,6 +136,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("faux") => faux = Some(parser.value()?.string()?),
             Long("record") => record = Some(parser.value()?.string()?),
             Long("snap") => snap = Some(parser.value()?.string()?),
+            Long("size") => size = Some(parse_size(&parser.value()?.string()?)?),
             Long("eval") => eval = true,
             Long("deadline") => deadline = Some(parser.value()?.parse()?),
             Long("continue") => continue_leaf = true,
@@ -160,6 +164,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             ("--frames", frames.is_some()),
             ("--record", record.is_some()),
             ("--snap", snap.is_some()),
+            ("--size", size.is_some()),
         ]
         .into_iter()
         .find_map(|(name, present)| present.then_some(name))
@@ -194,6 +199,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         faux,
         record,
         snap,
+        size,
         eval,
         deadline,
         resume: match (session, continue_leaf) {
@@ -204,6 +210,18 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         schema,
         prompt: prompt_parts.join(" "),
     })
+}
+
+/// `COLSxROWS` within 20..=1000 by 8..=500: the drive's own floor, and a screen that fits in memory.
+fn parse_size(raw: &str) -> Result<(u16, u16), lexopt::Error> {
+    raw.split_once('x')
+        .and_then(|(cols, rows)| Some((cols.parse().ok()?, rows.parse().ok()?)))
+        .filter(|(cols, rows)| (20..=1000).contains(cols) && (8..=500).contains(rows))
+        .ok_or_else(|| {
+            lexopt::Error::Custom(
+                format!("--size wants COLSxROWS within 20..=1000 by 8..=500, not {raw}").into(),
+            )
+        })
 }
 
 fn faux_model() -> Model {

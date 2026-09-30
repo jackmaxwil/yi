@@ -1192,6 +1192,146 @@ fn one_amount_one_spelling() -> TestResult {
     Ok(())
 }
 
+/// The status row of a routed session at `width` columns after `replies` priced replies that
+/// read nothing from the cache.
+fn routed_status_row(width: u16, replies: usize) -> Result<String, Box<dyn Error>> {
+    let backend = VT100Backend::with_scrollback(width, 30, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
+    let mut app = App::new(
+        options(),
+        Theme::new(ColorTier::TrueColor, true),
+        default_keymap(),
+        usize::from(width),
+    );
+    let opus = yi_runtime::resolve_model("openrouter", "anthropic/claude-opus-5")
+        .ok_or("bundled catalog missing openrouter anthropic/claude-opus-5")?;
+    app.selection.select(opus, yi_types::model::Effort::High);
+    for _ in 0..replies {
+        let message = with_tokens(priced("routed", 0.03), 5000, 0);
+        app.reduce_agent(yi_types::event::AgentEvent::MessageEnd { message });
+    }
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    (0..30)
+        .rev()
+        .map(|row| terminal.backend().row_text(row))
+        .find(|row| row.contains("claude-opus-5"))
+        .ok_or_else(|| format!("no status row: {}", terminal.backend().contents()).into())
+}
+
+/// Dies with the cost near column 33 of a 254-column row and the right half empty: every
+/// meter sat in the left group, and the one number that explains the cost was not shown.
+#[test]
+fn the_wide_status_row_anchors_the_meters_right() -> TestResult {
+    let row = routed_status_row(254, 2)?;
+    let at = row.find("$0.").ok_or_else(|| format!("no cost: {row}"))?;
+    let column = ratatui::text::Line::from(row.get(..at).unwrap_or_default()).width();
+    assert!(
+        column >= 127,
+        "the cost sits in the right half, not at {column}: {row}"
+    );
+    assert!(row.contains("0% cached"), "{row}");
+    let row = routed_status_row(120, 2)?;
+    assert!(row.contains("claude-opus-5 via openrouter"), "{row}");
+    let row = routed_status_row(80, 2)?;
+    assert!(row.contains("claude-opus-5"), "{row}");
+    assert!(row.contains("$0.06"), "{row}");
+    // `openrouter/auto` has no vendor prefix and is still routed.
+    let mut app = app();
+    let auto = yi_runtime::resolve_model("openrouter", "auto").ok_or("no openrouter auto")?;
+    app.selection.select(auto, yi_types::model::Effort::Off);
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    assert!(
+        terminal
+            .backend()
+            .contents()
+            .contains("auto via openrouter"),
+        "{}",
+        terminal.backend().contents()
+    );
+    // As the footer: the first request has nothing to read yet, so it shows no rate.
+    let row = routed_status_row(254, 1)?;
+    assert!(!row.contains("cached"), "{row}");
+    Ok(())
+}
+
+fn with_tokens(
+    mut message: yi_types::message::AgentMessage,
+    input: i64,
+    cache_read: i64,
+) -> yi_types::message::AgentMessage {
+    if let yi_types::message::AgentMessage::Assistant { usage, .. } = &mut message {
+        (usage.input, usage.cache_read) = (input, cache_read);
+    }
+    message
+}
+
+/// Dies with `80% cached` on a fresh session's row: the session's reads outlived `/new`
+/// while its cost reset beside them.
+#[test]
+fn the_session_cache_rate_counts_children_and_resets_with_the_session() -> TestResult {
+    let backend = VT100Backend::with_scrollback(254, 30, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
+    let mut app = App::new(
+        options(),
+        Theme::new(ColorTier::TrueColor, true),
+        default_keymap(),
+        254,
+    );
+    let status = |terminal: &yi_tui::terminal::Terminal<VT100Backend>| {
+        (0..30)
+            .rev()
+            .map(|row| terminal.backend().row_text(row))
+            .find(|row| row.contains("faux-1"))
+            .unwrap_or_default()
+    };
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let message = with_tokens(priced("one", 0.01), 1000, 0);
+    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd { message });
+    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let message = with_tokens(priced("two", 0.01), 1000, 3000);
+    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd { message });
+    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    let message = with_tokens(priced("child", 0.01), 1000, 4000);
+    app.reduce_child(
+        "child-1",
+        yi_types::event::AgentEvent::MessageEnd { message },
+    );
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let contents = terminal.backend().contents();
+    let footers: Vec<&str> = contents
+        .lines()
+        .filter(|row| row.contains(" in / "))
+        .collect();
+    assert!(
+        footers
+            .last()
+            .is_some_and(|row| row.contains("4K in") && row.contains("75% cached")),
+        "the second footer counts its own turn, 3000 of 4000: {footers:?}"
+    );
+    let row = status(&terminal);
+    assert!(
+        row.contains("70% cached"),
+        "the session counts both turns and the child, 7000 of 10000: {row}"
+    );
+    app.apply(yi_tui::port::Reply::Fresh {
+        name: "fresh".to_owned(),
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let row = status(&terminal);
+    assert!(
+        !row.contains("cached"),
+        "a fresh session read nothing: {row}"
+    );
+    Ok(())
+}
+
 /// Strip `TestBackend`'s per-row quoting and the trailing blanks a terminal
 /// screen and a text dump disagree about, so the two can be compared at all.
 fn screen_lines(text: &str) -> Vec<String> {
