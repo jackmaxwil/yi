@@ -18,7 +18,7 @@ pub struct Sandbox {
     pub deny_write: Vec<PathBuf>,
 }
 
-/// Loopback for every profile (D328). Seatbelt's `localhost` is every address of this host and
+/// Loopback for every profile (D329). Seatbelt's `localhost` is every address of this host and
 /// the wildcard, so a listener can face the LAN; no rule narrows it (probed).
 const NETWORK_POLICY: &str = "; loopback only, and no unix socket\n\
     (allow network-bind network-inbound (local ip \"localhost:*\"))\n\
