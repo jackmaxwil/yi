@@ -406,7 +406,7 @@ impl App {
             }
             Reply::Fresh { name } => {
                 self.options.session_name = name;
-                self.spent = crate::status::Spend::default();
+                self.spent = crate::status::Money::default();
                 self.requests = 0;
                 self.context_used = 0;
                 self.pending_clear = true;

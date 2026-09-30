@@ -314,16 +314,16 @@ impl Compactor {
     /// Input-side tokens only: the reply is body, not prefix.
     pub fn on_usage(&self, usage: &Usage) {
         // Invariant: a `ServerObserved` prefill latches for the whole window, so an unreported
-        // usage recorded as zero would pin it there and drop every later observation.
-        if usage.unknown {
+        // usage, or a refusal's zero (no prompt is zero tokens), would pin it at zero.
+        let input_side = usage
+            .input
+            .saturating_add(usage.cache_read)
+            .saturating_add(usage.cache_write);
+        if usage.unknown || input_side == 0 {
             return;
         }
         let mut window = lock_window(&self.window);
         if window.prefill_tokens().is_none() {
-            let input_side = usage
-                .input
-                .saturating_add(usage.cache_read)
-                .saturating_add(usage.cache_write);
             window.observe_prefill(Prefill::ServerObserved(Tokens(
                 u64::try_from(input_side).unwrap_or(0),
             )));
