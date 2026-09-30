@@ -298,7 +298,7 @@ fn asking_host(dir: &Scratch, parent: &Arc<AgentSession>) -> Arc<SubagentHost> {
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: dir.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }))
 }
 

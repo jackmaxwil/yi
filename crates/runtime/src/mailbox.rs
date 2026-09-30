@@ -1077,7 +1077,7 @@ mod tests {
             attribute: Arc::new(|_usage| {}),
             store: Arc::new(move || Some(store.clone())),
             plans_dir,
-            family_live: Arc::new(|| 0),
+            family_live: crate::fetch::KernelServiceMap::new(),
         }));
         Ok((host, reports))
     }

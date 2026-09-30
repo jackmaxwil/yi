@@ -64,6 +64,8 @@ struct Harness {
     events: tokio::sync::broadcast::Sender<AgentEvent>,
     parent: Arc<Mutex<Vec<AgentMessage>>>,
     child_cwd: Arc<Mutex<Option<PathBuf>>>,
+    /// Each build's wall, oldest first.
+    walls: Arc<Mutex<Vec<yi_runtime::Wall>>>,
     inbox: Arc<Mutex<Vec<String>>>,
     entries: Arc<Mutex<Vec<AgentMessage>>>,
     store: yi_session::SharedSession,
@@ -166,6 +168,8 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
     let cwd = cwd.unwrap_or_else(std::env::temp_dir);
     let child_cwd: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
     let cwd_sink = Arc::clone(&child_cwd);
+    let walls: Arc<Mutex<Vec<yi_runtime::Wall>>> = Arc::default();
+    let wall_sink = Arc::clone(&walls);
     let notices = Arc::new(Mutex::new(Vec::new()));
     let attributed = Arc::new(AtomicU32::new(0));
     let notice_sink = Arc::clone(&notices);
@@ -205,6 +209,9 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             if let Ok(mut slot) = cwd_sink.lock() {
                 *slot = build.cwd.map(std::path::Path::to_path_buf);
+            }
+            if let Ok(mut sink) = wall_sink.lock() {
+                sink.push(build.wall.clone());
             }
             let hook = hook_source.lock().ok().and_then(|mut slot| slot.take());
             if let Some(hook) = hook {
@@ -287,7 +294,7 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
         }),
         store: Arc::new(move || Some(store_handle.clone())),
         plans_dir: cwd.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     Ok(Harness {
         host,
@@ -296,6 +303,7 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
         events,
         parent,
         child_cwd,
+        walls,
         inbox,
         entries,
         store,
@@ -1244,7 +1252,7 @@ fn asking_family(parent: &Arc<AgentSession>) -> std::io::Result<AskingFamily> {
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(move || Some(kept.clone())),
         plans_dir: root.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     Ok((root, host, store))
 }
@@ -2111,7 +2119,7 @@ async fn a_service_whose_kernel_dies_respawns_with_its_pending_mail() -> TestRes
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(move || Some(store.clone())),
         plans_dir: root.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     host.service("index", "serve the index".to_owned(), Map::new(), 3)?;
     let first = host.children_view().pop().ok_or("no service")?;
@@ -2169,6 +2177,34 @@ async fn a_service_revoked_while_its_next_run_is_built_never_comes_back() -> Tes
         told.contains("not respawned: it was stopped while its next run was being built"),
         "{told}"
     );
+    Ok(())
+}
+
+/// Dies with the control: keep the kwargs from before admission walls a reader and the second
+/// incarnation of a reader service is built with no write wall, so `grep apply` writes the tree.
+#[tokio::test]
+async fn a_respawned_reader_service_keeps_its_write_wall() -> TestResult {
+    let harness = harness(0, 1, "serving")?;
+    harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
+    let mut asked = Map::new();
+    asked.insert("role".to_owned(), Value::from("reader"));
+    harness
+        .host
+        .service("index", "serve".to_owned(), asked, 3)?;
+    assert!(
+        serves(&harness, "index", 2, "finished").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let walls = harness.walls.lock().map_err(|_| "poisoned")?.clone();
+    let [first, second] = walls.as_slice() else {
+        return Err(format!("two builds expected, got {walls:?}").into());
+    };
+    assert!(
+        !first.deny_write.is_empty(),
+        "the reader is walled: {first:?}"
+    );
+    assert_eq!(first, second, "the respawn is walled as its first run was");
     Ok(())
 }
 

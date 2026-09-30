@@ -11,7 +11,6 @@ const READER_TOOLS: [&str; 2] = ["read", "grep"];
 const DEFAULT_TURNS: u32 = 3;
 const MAX_TURNS: u32 = 10;
 pub(crate) const PARTITION_CAP: usize = 65_536;
-pub const HELD_CAP: usize = 64;
 
 pub(crate) fn full_child(refusal: &str) -> String {
     format!("{refusal}; role=\"root\" spawns a full child")

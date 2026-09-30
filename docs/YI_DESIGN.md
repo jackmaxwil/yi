@@ -498,8 +498,8 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   `grep` (both by default), `turns` its request cap (3, at most 10; the last is the last word, whose tool calls are refused,
   after a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
   gate rules bind it, and it has no extension, kernel, plan, schedule,
-  checkpoint or environment block; a fork or an isolation refuses; 64 held readers refuse the next
-  until one is reaped. `rlm.ask(question, partition,
+  checkpoint or environment block; a fork or an isolation refuses; it counts toward the family cap
+  like any child (D331). `rlm.ask(question, partition,
   schema=…)` runs one, reads its result and reaps it. A reader's `schema` is named in its
   question and sent as structured output only by a reader with `tools=[]` or `turns=1` (the turn cap's last word still carries the tools, so a reader that keeps its tools gets the schema in its question and `result`'s check only), strictly only where it closes every object (D309); its
   partition is its own first message, marked `shared_through` when a sibling sent it within 300 s.
