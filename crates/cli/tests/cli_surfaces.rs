@@ -1089,6 +1089,77 @@ fn a_relative_home_is_refused_at_boot() -> TestResult {
     Ok(())
 }
 
+/// With no HOME every `~/.yi` path resolved against the working directory, so a session wrote
+/// `.yi/` into whatever directory yi ran in; an unset HOME is refused like a relative one.
+#[test]
+fn an_unset_home_is_refused_and_writes_nothing_here() -> TestResult {
+    let workspace = Workspace::new("unset-home")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the contract is the spawned binary's exit code and what it wrote"
+    )]
+    let homeless = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args(args)
+            .env_remove("HOME")
+            .envs(NO_KERNEL.iter().copied())
+            .current_dir(workspace.project())
+            .output()
+    };
+    let refused = homeless(&["ask", "--model", "faux/faux-1", "hi"])?;
+    let complaint = String::from_utf8_lossy(&refused.stderr);
+    assert!(!workspace.project().join(".yi").exists(), "{complaint}");
+    assert_eq!(refused.status.code(), Some(2), "{complaint}");
+    assert!(complaint.contains("HOME is not set"), "{complaint}");
+    // `doctor` runs before the check, so it is the one surface that reports it.
+    let lines = doctor_lines(&homeless(&["doctor"])?);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("FAIL  home") && l.ends_with("HOME is not set")),
+        "{lines:?}"
+    );
+    Ok(())
+}
+
+/// `catalog.enabled: false` turns the refresh off, so a week-old cache nothing will renew is
+/// the configured state, not a fault the doctor fails on.
+#[test]
+fn doctor_passes_an_old_catalog_when_refresh_is_off() -> TestResult {
+    let workspace = Workspace::new("doctor-catalog-off")?;
+    write_config(&workspace, r#"{"catalog":{"enabled":false}}"#)?;
+    let catalog = workspace.0.join("home/.yi/catalog");
+    std::fs::create_dir_all(&catalog)?;
+    let cache = catalog.join("openrouter.json");
+    let entry = json!({"schema": 2, "openai-completions": {"probe/flash": {
+        "id": "probe/flash", "name": "probe", "api": "openai-completions", "provider": "openrouter",
+        "baseUrl": "http://openrouter.ai.invalid/api/v1", "reasoning": false, "input": ["text"],
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+        "contextWindow": 100000, "maxTokens": 256}}});
+    std::fs::write(&cache, entry.to_string())?;
+    let week = std::time::Duration::from_secs(8 * 24 * 3600);
+    let written = std::fs::metadata(&cache)?
+        .modified()?
+        .checked_sub(week)
+        .ok_or("clock before the epoch")?;
+    std::fs::File::options()
+        .write(true)
+        .open(&cache)?
+        .set_modified(written)?;
+    let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
+    let rows: Value = serde_json::from_str(&stdout(&json))?;
+    let row = rows
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == "catalog"))
+        .ok_or_else(|| format!("no catalog row: {rows}"))?;
+    assert_eq!(row["status"], "ok", "{row}");
+    assert_eq!(
+        row["detail"],
+        "refresh off (`catalog.enabled: false`); caches stay as last written"
+    );
+    Ok(())
+}
+
 /// Rows 0023, 0025 and 0026 ran three builds that all said `yi 0.2.0`; the version a build
 /// reports is the `version:` line of docs/ARCHITECTURE.md it was built from.
 #[test]
