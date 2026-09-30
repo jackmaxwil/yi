@@ -8,8 +8,9 @@ mod rules;
 mod safety;
 
 pub use catastrophic::{
-    CatastrophicContext, command_reads_credentials, git_dirs, is_catastrophic, lexical_normalize,
-    read_guarded_dirs, read_is_catastrophic, resolve_target, wraps,
+    CatastrophicContext, ReadGate, beneath, command_reads_credentials, credential_stores,
+    denied_file, git_dirs, identities, is_catastrophic, lexical_normalize, lexically_beneath,
+    read_is_catastrophic, resolve_target, wraps,
 };
 pub use decide::{
     Decision, Hold, HoldPattern, HoldSource, ParseOutcome, PermissionMode, ToolCall, decide,

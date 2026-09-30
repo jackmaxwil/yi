@@ -181,6 +181,11 @@ fn a_glob_never_walks_into_a_key_store() -> TestResult {
     let home = scratch.join("home");
     fs::create_dir_all(home.join(".ssh"))?;
     fs::write(home.join(".ssh/id_rsa"), "FAKE PRIVATE KEY MARKER\n")?;
+    fs::create_dir_all(home.join(".yi/providers/tokens"))?;
+    fs::write(
+        home.join(".yi/providers/tokens/openai.json"),
+        "FAKE TOKEN KEY MARKER\n",
+    )?;
     let elsewhere = scratch.join("elsewhere");
     fs::create_dir_all(&elsewhere)?;
     std::os::unix::fs::symlink(home.join(".ssh"), elsewhere.join("link"))?;
@@ -202,6 +207,8 @@ fn a_glob_never_walks_into_a_key_store() -> TestResult {
         "link/**".to_owned(),
         "h/.ss?/*".to_owned(),
         "h/**/id_*".to_owned(),
+        "h/.yi/**".to_owned(),
+        "h/.yi/providers/*/*".to_owned(),
     ];
     if Path::new(&format!("{home}/.SSH")).exists() {
         patterns.extend([
@@ -223,10 +230,13 @@ fn a_glob_never_walks_into_a_key_store() -> TestResult {
             "read {pattern} leaks: {listed}"
         );
     }
-    for path in ["../home", "link", "h"] {
+    for path in ["../home", "link", "h", "h/.yi", "h/.yi/providers"] {
         let context = ToolContext::new(elsewhere.clone());
         let found = grep(&context, &[("pattern", "KEY MARKER"), ("path", path)]);
-        assert!(!found.contains("id_rsa"), "grep path={path} leaks: {found}");
+        assert!(
+            !found.contains("id_rsa") && !found.contains("openai.json"),
+            "grep path={path} leaks: {found}"
+        );
     }
     Ok(())
 }
