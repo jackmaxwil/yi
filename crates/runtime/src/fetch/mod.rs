@@ -646,21 +646,33 @@ pub fn fence_untrusted(source: &str, text: &str) -> String {
     )
 }
 
-/// The read gate before any `local://` open (D323): the model's `read local://…`, the kernel's
-/// `rlm.fetch` and every other reader of the scheme open the file on the host, where `decide`
-/// never looked.
-fn read_gate(url: &Url, path: &Path, workspace: &Path) -> Result<(), FetchError> {
-    let context = yi_permission::CatastrophicContext::detect(workspace);
-    if !yi_permission::read_is_catastrophic(path, &context) {
-        return Ok(());
+/// Every scheme that serves a host file opens it here, after the read gate judged it against
+/// the checkout it belongs to (D323): the model's `read <scheme>://…` and the kernel's
+/// `rlm.fetch` open it on the host, where `decide` never looked.
+fn read_text(url: &Url, path: &Path, checkout: &Path) -> Result<String, FetchError> {
+    let context = yi_permission::CatastrophicContext::detect(checkout);
+    if yi_permission::read_is_catastrophic(path, &context) {
+        return Err(FetchError::Denied {
+            url: url.to_string(),
+            refusal: format!(
+                "{} is a protected path (a key store, the workspace .git or a device); no read reaches it",
+                path.display()
+            ),
+        });
     }
-    Err(FetchError::Denied {
-        url: url.to_string(),
-        refusal: format!(
-            "{} is a protected path (a key store, the workspace .git or a device); no read reaches it",
-            path.display()
-        ),
-    })
+    match std::fs::read_to_string(path) {
+        Ok(raw) => Ok(yi_tools::hashline::normalize::normalize_to_lf(
+            yi_tools::hashline::normalize::strip_bom(&raw).text,
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(FetchError::NotFound {
+            url: url.to_string(),
+            what: path.display().to_string(),
+        }),
+        Err(error) => Err(FetchError::Backend {
+            url: url.to_string(),
+            message: error.to_string(),
+        }),
+    }
 }
 
 #[cfg(test)]
