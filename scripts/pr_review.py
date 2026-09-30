@@ -288,6 +288,9 @@ def duplicate_findings(pr, diff, others, diff_of, repo, stacked=lambda a, b: Fal
     for other in others:
         if other["number"] == pr["number"] or other["head"]["ref"] in (pr["base"]["ref"],) or other["base"]["ref"] == pr["head"]["ref"]:
             continue
+        # Incident: #909 moved code #902 had merged and was blocked as its twin; merged text is main's.
+        if other.get("merged"):
+            continue
         theirs = {int(n) for kind, named, n in CITE.findall(other.get("body") or "") if kind.lower() == "closes" and named in ("", repo)}
         shared = mine & windows(diff_of(other["number"])) if mine else set()
         if (closes & theirs or len(shared) >= DUP_SHARED) and stacked(pr, other):
@@ -836,6 +839,8 @@ def selfcheck():
     diffs = {6: other, 7: "", 8: other, 9: ""}
     found = duplicate_findings(pr, diff, [twin, same_issue, stacked, stranger, dict(twin, number=5)], diffs.get, "apex/yi")
     assert [f["claim"].split(" ")[0] for f in found] == ["#6", "#7"], found
+    landed = dict(twin, number=11, state="closed", merged=True)
+    assert duplicate_findings(pr, diff, [landed], {11: other}.get, "apex/yi") == [], "a merged PR's text is main's, not a twin"
     successor = dict(twin, number=10)
     assert duplicate_findings(pr, diff, [successor], {10: other}.get, "apex/yi", lambda a, b: b["number"] == 10) == [], \
         "a successor opened against main that carries this head is a stack, not a twin"
