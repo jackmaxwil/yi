@@ -97,16 +97,7 @@ pub fn find_session(sessions_dir: &Path, cwd: &Path, id: &str) -> Option<PathBuf
 }
 
 fn text_of(message: &AgentMessage) -> Option<(&'static str, String)> {
-    let texts = |blocks: &[Content]| {
-        blocks
-            .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let texts = |blocks: &[Content]| yi_types::message::join_text(blocks, "\n");
     match message {
         AgentMessage::User { content, .. } => Some((
             "user",
