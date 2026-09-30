@@ -184,6 +184,19 @@ fn root_session(
     broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
     mcp_read: Option<Arc<dyn yi_runtime::fetch::McpResourceRead>>,
 ) -> yi_runtime::AgentSession {
+    let wall = yi_runtime::Wall::default();
+    walled_session(project, home, rlm_dir, sessions_dir, broker, mcp_read, wall)
+}
+
+fn walled_session(
+    project: &std::path::Path,
+    home: &std::path::Path,
+    rlm_dir: &std::path::Path,
+    sessions_dir: Option<PathBuf>,
+    broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
+    mcp_read: Option<Arc<dyn yi_runtime::fetch::McpResourceRead>>,
+    wall: yi_runtime::Wall,
+) -> yi_runtime::AgentSession {
     let provider = Arc::new(yi_runtime::ProviderStream::new(None));
     let mut session = yi_runtime::AgentSession::new(
         yi_runtime::SessionConfig {
@@ -215,7 +228,7 @@ fn root_session(
             plan_stale_turns: None,
             plans_dir: Some(rlm_dir.join("plans")),
             parent_link: None,
-            wall: yi_runtime::Wall::default(),
+            wall,
             auto_background: None,
             deadline: None,
             kernel_prewarm: false,
@@ -225,6 +238,57 @@ fn root_session(
         },
     );
     session
+}
+
+/// #598, #889: a walled juror's kernel wrote the tree and read walled files, since the wall was
+/// a check at the tool seam and in no profile; and a cell read keys kept outside the token
+/// stores and inherited `*_API_KEY`.
+#[tokio::test]
+async fn a_walled_kernel_and_its_bash_keep_to_the_wall_and_see_no_key() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.
+    unsafe { std::env::set_var("YI_598_PROBE_API_KEY", "ENV-598") };
+    let (root, project, home, _session) = workspace("walled")?;
+    std::fs::write(project.join("walled.txt"), "WALLED-598")?;
+    std::os::unix::fs::symlink(&project, root.join("via"))?;
+    let oauth = home.join(".yi/oauth");
+    std::fs::create_dir_all(&oauth)?;
+    let profile = oauth.join(format!("yi-598-{}.json", std::process::id()));
+    std::fs::write(&profile, "KEY-598")?;
+    let wall = yi_runtime::Wall {
+        deny_write: vec![project.clone()],
+        deny_read: vec![project.join("walled.txt")],
+        ..yi_runtime::Wall::default()
+    };
+    let rlm = root.join("rlm");
+    let session = walled_session(&project, &home, &rlm, None, None, None, wall);
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let via = root.join("via");
+    let (tree, via) = (project.display(), via.display());
+    let code = format!(
+        "import os\nfor path in (r'{tree}/walled.txt', r'{tree}/WALLED.TXT', r'{via}/walled.txt', r'{key}'):\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)\ntry:\n    open(r'{tree}/by-cell.txt', 'w').write('x')\nexcept OSError as e:\n    print('denied', e.errno)\nprint(os.environ.get('YI_598_PROBE_API_KEY'))\nprint(await bash(\"cat '{tree}/walled.txt' '{key}'; touch '{tree}/by-job.txt'; env\"))",
+        key = profile.display(),
+    );
+    let ran = cell(&kernel, code).await;
+    kernel.dispose().await;
+    let _ = std::fs::remove_file(&profile);
+    let wrote = ["by-cell.txt", "by-job.txt"].map(|name| project.join(name).exists());
+    let stdout = ran?.result.stdout;
+    let read = ["WALLED-598", "KEY-598", "ENV-598"].map(|secret| stdout.contains(secret));
+    // Four reads and a write refused with EPERM, and the job ran: proof the cell got that far.
+    let ran = (
+        stdout.matches("denied 1\n").count(),
+        stdout.contains("PATH="),
+    );
+    assert!(
+        wrote == [false, false] && read == [false, false, false] && ran == (5, true),
+        "wrote (cell, job) {wrote:?}, read (walled, key, env) {read:?}, (denials, job ran) {ran:?}"
+    );
+    Ok(())
 }
 
 /// Incident (#580): the root kernel's writable root was the whole session corpus, where every

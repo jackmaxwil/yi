@@ -99,7 +99,12 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
     );
     let (program, prefix) = sandbox.kernel_prefix();
     assert_eq!(program, "/usr/bin/sandbox-exec");
-    assert_eq!(prefix.last().map(String::as_str), Some("--"));
+    let command = prefix.iter().skip_while(|arg| *arg != "--").nth(1);
+    assert_eq!(
+        command.map(String::as_str),
+        Some("/usr/bin/env"),
+        "the kernel starts through `env -u`, which drops secret-named variables"
+    );
     Ok(())
 }
 
@@ -463,6 +468,126 @@ fn a_contained_command_cannot_read_yi_tokens() -> TestResult {
             assert!(!leaked, "`{command}` leaks: {output}");
         }
     }
+    Ok(())
+}
+
+/// Runs each command contained from `cwd` and returns those whose output carries `secret`.
+fn leaks(
+    commands: &[String],
+    cwd: &Path,
+    sandbox: &Sandbox,
+    secret: &str,
+) -> Result<Vec<String>, String> {
+    let mut leaked = Vec::new();
+    for command in commands {
+        let (_, output) = run(command, cwd, Some(sandbox))?;
+        if output.contains(secret) {
+            leaked.push(command.clone());
+        }
+    }
+    Ok(leaked)
+}
+
+/// #598: keys kept outside yi's token stores were readable from every sandbox. The scratch HOME
+/// sits under a writable temp root, so renaming a store's parent is a live way around too.
+#[test]
+fn a_contained_command_reads_no_key_by_any_spelling() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home) = workspace("keys")?;
+    let keys = [
+        ".netrc",
+        ".git-credentials",
+        ".npmrc",
+        ".pypirc",
+        ".cargo/credentials",
+        ".cargo/credentials.toml",
+        ".config/gh/hosts.yml",
+        ".config/fgj/config.yaml",
+        ".config/gcloud/credentials.db",
+        ".yi/oauth/acme.json",
+    ];
+    for key in keys {
+        let path = home.join(key);
+        std::fs::create_dir_all(path.parent().ok_or("a key has a parent")?)?;
+        std::fs::write(&path, "KEY-598")?;
+    }
+    std::os::unix::fs::symlink(home.join(".config"), project.join("cfg"))?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let home_text = home.display();
+    let mut commands: Vec<String> = keys
+        .iter()
+        .flat_map(|key| {
+            let upper = key.to_uppercase();
+            [
+                format!("cat {home_text}/{key}"),
+                format!("cat {home_text}/{upper}"),
+            ]
+        })
+        .collect();
+    commands.extend([
+        "cat cfg/gh/hosts.yml".to_owned(),
+        format!("ln {home_text}/.netrc hard; cat hard"),
+        format!("mv {home_text}/.config {home_text}/moved; cat {home_text}/moved/gh/hosts.yml"),
+        format!("mv {home_text}/.yi {home_text}/yi2; cat {home_text}/yi2/oauth/acme.json"),
+    ]);
+    let leaked = leaks(&commands, &project, &sandbox, "KEY-598")?;
+    assert!(leaked.is_empty(), "a key was read: {leaked:#?}");
+    Ok(())
+}
+
+/// #889: a wall spelled through a link bound nothing, since Seatbelt matches the real path, and
+/// a walled file inside the writable tree left by a renamed parent or a hard link.
+#[test]
+fn a_walled_path_is_unreadable_however_either_side_spells_it() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home) = workspace("wall")?;
+    std::fs::create_dir_all(project.join("a/secrets"))?;
+    std::fs::write(project.join("a/secrets/key.txt"), "WALLED-598")?;
+    std::os::unix::fs::symlink(project.join("a"), project.join("via"))?;
+    let mut sandbox = Sandbox::for_workspace(&project, &home, None);
+    sandbox.deny_read.push(project.join("via/secrets"));
+    let commands = [
+        "cat a/secrets/key.txt",
+        "cat A/SECRETS/KEY.TXT",
+        "cat via/secrets/key.txt",
+        "ln a/secrets/key.txt hard; cat hard",
+        "mv a/secrets out; cat out/key.txt",
+        "mv a b; cat b/secrets/key.txt",
+    ]
+    .map(str::to_owned);
+    let leaked = leaks(&commands, &project, &sandbox, "WALLED-598")?;
+    assert!(leaked.is_empty(), "a walled file was read: {leaked:#?}");
+    let (code, output) = run("echo x > a/secrets/planted", &project, Some(&sandbox))?;
+    assert!(
+        code != 0 && !project.join("a/secrets/planted").exists(),
+        "a read-walled directory is not writable either: {output}"
+    );
+    Ok(())
+}
+
+/// #906: `*_API_KEY` and the like reached every contained command's environment.
+#[test]
+fn a_contained_command_inherits_no_secret_variable() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.
+    unsafe { std::env::set_var("YI_598_PROBE_API_KEY", "ENV-598") };
+    let (_root, project, home) = workspace("env")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let (_, bare) = run("env", &project, None)?;
+    assert!(bare.contains("ENV-598"), "the probe is set");
+    // The messages never print the environment: it holds whatever keys the runner has.
+    let (code, contained) = run("env", &project, Some(&sandbox))?;
+    let (ran, leaked) = (contained.contains("PATH="), contained.contains("ENV-598"));
+    assert!(
+        code == 0 && ran && !leaked,
+        "a contained `env` exited {code}, ran {ran}, saw the key {leaked}"
+    );
     Ok(())
 }
 
