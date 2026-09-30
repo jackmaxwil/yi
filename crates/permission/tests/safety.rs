@@ -438,7 +438,7 @@ fn write_targets_keep_what_the_splitter_skips() {
     }
 }
 
-/// A contained run has no network, so these approvals leave the sandbox; `git add` and a local
+/// A contained run has no network past loopback, so these approvals leave the sandbox; `git add` and a local
 /// `rm` stay inside it.
 #[test]
 fn only_network_and_install_approvals_need_the_host() {

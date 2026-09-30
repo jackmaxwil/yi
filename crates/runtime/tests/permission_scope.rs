@@ -73,7 +73,7 @@ fn always_allow_on_an_edit_does_not_ask_for_the_next_edit_in_that_dir() -> TestR
 }
 
 /// #600: an approved network command ran uncontained while the question never said so; the
-/// sandbox has no network, so the approval escalates and the question names that.
+/// sandbox has no network past loopback, so the approval escalates and the question names that.
 #[test]
 fn an_approved_network_ask_says_it_leaves_the_sandbox() -> TestResult {
     let asked = Arc::new(Mutex::new(String::new()));
@@ -96,7 +96,6 @@ fn an_approved_network_ask_says_it_leaves_the_sandbox() -> TestResult {
         writable: vec![project],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
-        loopback: false,
     }));
     let mut args = Map::new();
     args.insert(
@@ -140,7 +139,6 @@ fn a_retry_is_widened_by_its_dir_but_never_by_home_or_yi_state() -> TestResult {
         writable: vec![project],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
-        loopback: false,
     }));
     let lane = home.join("yi-a2-nonexistent-lane");
     for (refused, widened) in [
@@ -200,7 +198,6 @@ fn always_on_a_widened_retry_keeps_the_dir_and_the_sandbox() -> TestResult {
         writable: vec![project],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
-        loopback: false,
     }));
     let lane = home.join("yi-a2-nonexistent-kept");
     broker.note_containment_failure(yi_tools::SandboxRefusal::Path(lane.join("x")));

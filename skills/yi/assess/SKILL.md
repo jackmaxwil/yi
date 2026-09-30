@@ -17,7 +17,7 @@ An assessment is a reading task. Its evidence is the code, the docs, the
 history and the repository's own gate records. Running the suite or a lint
 gate to learn their state is the mistake this skill exists to prevent: the
 repository already ran them and wrote the result down, and a test that
-fails inside your own sandbox (PermissionDenied, no network, no socket)
+fails inside your own sandbox (PermissionDenied, no network past loopback, no unix socket)
 says nothing about the code.
 
 ## Phase 0: the list
