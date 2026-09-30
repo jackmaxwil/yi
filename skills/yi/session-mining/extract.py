@@ -45,7 +45,15 @@ READ_ONLY_GIT = frozenset(
 # One vocabulary, second use: PROTECTED_CREDENTIAL_SUBPATHS in
 # crates/permission/src/catastrophic.rs. A store added there and not here stops
 # being redacted out of every mined artifact.
-CREDENTIAL_SUBPATHS = [".ssh", ".gnupg", ".aws", ".kube", ".docker"]
+CREDENTIAL_SUBPATHS = [
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".kube",
+    ".docker",
+    ".yi/mcp/tokens",
+    ".yi/providers/tokens",
+]
 
 # These three are hand-copied out of Rust, so --selfcheck reads the Rust back
 # and compares. An asserted invariant nobody runs is how a mirror drifts.

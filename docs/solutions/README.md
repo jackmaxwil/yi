@@ -296,5 +296,6 @@ edited by hand.
 - [D321](adr/d321.md) - the session verbs answer from `yi_runtime
 - [D317](adr/d317.md) - a child's transcript lives inside its parent
 - [D322](adr/d322.md) - review rounds block (revises D319's `shadow`)
+- [D323](adr/d323.md) - one list of credential stores and one gate, judged by file identity (amends...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
