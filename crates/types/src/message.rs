@@ -143,6 +143,21 @@ impl Usage {
     }
 }
 
+/// yi's one spelling of money: 3 decimals under $1, 2 above. `lower_bound`: a reply in the sum
+/// came back without usage, so its cost is missing, not zero (`≥$0.450`, or `$?` alone).
+pub fn fmt_cost(total: f64, lower_bound: bool) -> String {
+    let mark = if lower_bound { "≥" } else { "" };
+    if lower_bound && total <= 0.0 {
+        "$?".to_owned()
+    } else if total > 0.0 && total < 0.0005 {
+        format!("{mark}<$0.001")
+    } else if total < 0.9995 {
+        format!("{mark}${total:.3}")
+    } else {
+        format!("{mark}${total:.2}")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiagnosticErrorInfo {
     #[serde(skip_serializing_if = "Option::is_none")]

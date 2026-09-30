@@ -140,6 +140,11 @@ async fn the_session_cost_sums_every_assistant_turn() -> TestResult {
         }
         provider.queue_faux(vec![message]);
     }
+    let mut lost = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+    if let AgentMessage::Assistant { usage, .. } = &mut lost {
+        usage.unknown = true;
+    }
+    provider.queue_faux(vec![lost]);
     let session = AgentSession::new(
         SessionConfig {
             system_prompt: "sys".to_owned(),
@@ -150,12 +155,19 @@ async fn the_session_cost_sums_every_assistant_turn() -> TestResult {
         provider,
     );
     let cost = session.cost_handle();
-    assert_eq!(cost(), Some(0.0), "no turn yet is a measured zero");
+    assert_eq!(cost(), Some((0.0, false)), "no turn yet is a measured zero");
     for text in ["one", "two"] {
         session.prompt(text)?;
         session.wait_idle().await;
     }
-    assert_eq!(cost(), Some(0.75), "both turns, not the last");
+    assert_eq!(cost(), Some((0.75, false)), "both turns, not the last");
+    session.prompt("three")?;
+    session.wait_idle().await;
+    assert_eq!(
+        cost(),
+        Some((0.75, true)),
+        "a reply without usage makes the sum a lower bound"
+    );
     Ok(())
 }
 

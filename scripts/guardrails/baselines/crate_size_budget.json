@@ -1,8 +1,8 @@
 {
   "acp": 3014,
-  "ai": 5477,
-  "cli": 5848,
-  "console": 9647,
+  "ai": 5487,
+  "cli": 5888,
+  "console": 9654,
   "context": 1603,
   "kernel": 4777,
   "loop": 1447,
@@ -10,9 +10,9 @@
   "oauth": 1207,
   "orb": 1348,
   "permission": 2119,
-  "runtime": 54826,
+  "runtime": 54825,
   "session": 2006,
   "tools": 14299,
-  "tui": 14772,
-  "types": 9538
+  "tui": 14787,
+  "types": 9553
 }

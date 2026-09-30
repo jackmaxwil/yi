@@ -488,13 +488,24 @@ async fn an_unknown_usage_never_pins_the_window_prefill() -> Result<(), Box<dyn 
             .is_ok_and(|replaced| replaced.is_some())
     }
 
+    let mut tiny = yi_types::message::Usage::zero();
+    tiny.input = 1;
     assert!(
-        compacts_after(yi_types::message::Usage::zero()).await,
-        "control: a reported zero prefix charges all 1600 tokens against the 1000 budget"
+        compacts_after(tiny).await,
+        "control: a reported 1-token prefix latches and charges 1599 against the 1000 budget"
     );
     assert!(
         !compacts_after(yi_types::message::Usage::unknown()).await,
         "an unknown usage must not forge a zero prefix: the reported 1500 leaves 100 charged"
+    );
+    let mut refused = yi_ai::request::empty_assistant(&faux_model(2_000));
+    let _ = yi_ai::request::fail_message(&mut refused, "HTTP 402: insufficient credits");
+    let AgentMessage::Assistant { usage, .. } = refused else {
+        return Err("not an assistant message".into());
+    };
+    assert!(
+        !compacts_after(usage).await,
+        "a refusal's known zero sent no prompt and must not pin the prefix either"
     );
     Ok(())
 }

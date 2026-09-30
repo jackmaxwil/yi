@@ -208,6 +208,24 @@ fn an_unreported_usage_lands_typed_and_a_reported_zero_stays_free()
     Ok(())
 }
 
+/// An unreported usage is a missing cost, not a free one, so a sum over it prints as a floor;
+/// the dollar boundary rounds before it switches, so `$0.9996` never reads `$1.000`.
+#[test]
+fn money_prints_one_way_and_marks_a_floor() {
+    use yi_types::message::fmt_cost;
+    assert_eq!(fmt_cost(0.45, false), "$0.450");
+    assert_eq!(fmt_cost(0.45, true), "≥$0.450");
+    assert_eq!(fmt_cost(0.0, true), "$?");
+    assert_eq!(fmt_cost(0.9996, false), "$1.00");
+    assert_eq!(
+        fmt_cost(0.0004, false),
+        "<$0.001",
+        "a spend that rounds to $0.000 is not free"
+    );
+    assert_eq!(fmt_cost(0.0, false), "$0.000");
+    assert_eq!(fmt_cost(17.034, true), "≥$17.03");
+}
+
 #[test]
 fn readmit_lands_in_extra() -> Result<(), Box<dyn std::error::Error>> {
     // D77's `readmit` grant has no reader since F0c; the field parks in the flatten map and
