@@ -6,6 +6,7 @@ pub mod diff;
 mod document;
 mod exec;
 mod grep;
+mod grid;
 pub mod hashline;
 mod ignore;
 mod ipython;

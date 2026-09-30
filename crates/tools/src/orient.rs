@@ -85,7 +85,8 @@ fn packet(symbol: Option<&str>, context: &ToolContext) -> String {
     let (roots, near, heat, skeleton) = std::thread::scope(|scope| {
         let roots = scope.spawn(|| {
             let _span = yi_types::trace::span("context.grid");
-            grid(context, &["roots"])
+            let chart = crate::grid::chart_root(root).unwrap_or(root);
+            crate::grid::layer(chart, &["roots"], &context.cancelled)
         });
         let near = scope.spawn(|| {
             let _span = yi_types::trace::span("context.grid");
@@ -146,29 +147,17 @@ fn clamp(name: &str, body: String) -> String {
     format!("{kept}\n[{name} truncated at {LAYER_CAP} bytes]")
 }
 
-fn grid(context: &ToolContext, args: &[&str]) -> LayerBody {
-    let mut spawn = command("grid");
-    spawn.args(args).current_dir(&context.cwd);
-    let capture = run_captured(spawn, None, &context.cancelled, LAYER_CAP)
-        .map_err(|error| format!("grid binary not runnable: {error}"))?;
-    if capture.exit_code != Some(0) {
-        return Err(format!(
-            "grid {} exited {:?}: {}",
-            args.join(" "),
-            capture.exit_code,
-            capture.stderr.lines().next().unwrap_or_default()
-        ));
-    }
-    let stdout = capture.stdout.trim_end().to_owned();
-    if stdout.is_empty() {
-        return Err(format!("grid {} answered nothing", args.join(" ")));
-    }
-    Ok(stdout)
-}
-
 fn neighborhood(symbol: Option<&str>, context: &ToolContext) -> LayerBody {
     let symbol = symbol.ok_or_else(|| "no symbol argument was given".to_owned())?;
-    grid(context, &["scope", symbol, "--depth", "1"])
+    let chart = crate::grid::chart_root(&context.cwd).ok_or_else(|| {
+        "no .grid chart in or above the working directory — bash: grid survey charts it".to_owned()
+    })?;
+    let pattern = crate::grid::scope_pattern(symbol);
+    crate::grid::layer(
+        chart,
+        &["scope", &pattern, "--depth", "1"],
+        &context.cancelled,
+    )
 }
 
 fn skeletons(
@@ -412,9 +401,13 @@ fn git_heat(heat: Result<Heat, String>) -> LayerBody {
 }
 
 fn gates(root: &Path) -> LayerBody {
-    let lines: Vec<String> = GATES
+    let mut found: Vec<&(&str, &str)> = GATES
         .iter()
         .filter(|(file, _)| root.join(file).exists())
+        .collect();
+    found.dedup_by_key(|(_, gate)| *gate);
+    let lines: Vec<String> = found
+        .iter()
         .map(|(file, gate)| format!("{gate}  ({file})"))
         .collect();
     if lines.is_empty() {
