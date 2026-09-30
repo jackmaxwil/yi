@@ -210,9 +210,14 @@ impl RuntimeWiring {
             .map(|sandbox| crate::kernel::kernel_profile(&sandbox, Some(&self.family_dir())))
     }
 
+    /// The kernel's and its `bash()` jobs' profile holds the wall, as a contained call's does
+    /// (#889): a cell opens files with no tool seam to check them.
     fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {
         let private = (self.depth > 0 || self.sessions_dir.is_none()).then(|| self.kernel_dir());
-        crate::workspace_sandbox(&self.cwd, &self.home, private.as_deref())
+        let mut sandbox = crate::workspace_sandbox(&self.cwd, &self.home, private.as_deref())?;
+        sandbox.deny_write.extend_from_slice(&self.wall.deny_write);
+        sandbox.deny_read.extend_from_slice(&self.wall.deny_read);
+        Some(sandbox)
     }
 
     fn kernel_options(
