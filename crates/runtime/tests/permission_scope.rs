@@ -139,6 +139,35 @@ fn an_exec_source_the_gate_allows_is_still_admitted() {
     );
 }
 
+/// A rule may allow a credential read the profile would refuse; it runs outside, and says so.
+#[test]
+fn an_allowed_credential_read_runs_outside_and_says_so() -> TestResult {
+    let project = PathBuf::from("/nonexistent/project");
+    let rule = yi_runtime::ConfigRule::new("bash", "cat *", yi_runtime::ConfigRuleAction::Allow)?;
+    let broker = PermissionBroker::new(
+        PermissionMode::Auto,
+        project.clone(),
+        vec![rule],
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    )
+    .with_sandbox(Some(yi_tools::Sandbox {
+        writable: vec![project],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+    }));
+    let mut args = Map::new();
+    args.insert("command".to_owned(), json!("cat ~/.netrc"));
+    let outcome = broker.decide_call("bash", ToolKind::Exec, true, "c1", &args, None);
+    assert_eq!(outcome.containment, Containment::Uncontained);
+    let notice = broker.outside_notice("bash", &outcome).unwrap_or_default();
+    assert!(
+        notice.contains("outside the sandbox (credential stores)"),
+        "{notice}"
+    );
+    Ok(())
+}
+
 /// A refusal at `~/x` would widen by the whole home directory, and one under `~/.yi` by the
 /// store the host runs commands from; both leave the sandbox for one call, and say so.
 #[test]
