@@ -1656,7 +1656,7 @@ fn subagent_rows_render_under_parent() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 └ GR grep-bot-sub-1a2b ◐\n\
+         wait-frame 5000 └GR  grep-bot-sub-1a2b3c4 ◐\n\
          quit\n",
     )
 }
@@ -2268,6 +2268,146 @@ fn the_first_prompt_names_the_session_row() -> TestResult {
          wait-frame 3000 !s-alpha\n\
          quit\n",
     )
+}
+
+/// One session, `s-alpha`, with its children as `_yi/subagent_update` sends them.
+fn family(
+    mode: SidebarMode,
+    name: &str,
+    children: &[Value],
+) -> Result<yi_console::app::App, Box<dyn Error>> {
+    use yi_console::model::{SessionId, SessionRow, SessionStatus};
+    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
+    let mut app = yi_console::app::App::new("/tmp/demo-root".to_owned(), theme);
+    app.state.sidebar = mode;
+    app.state.upsert_row(SessionRow {
+        id: SessionId("s-alpha".to_owned()),
+        root: "/tmp/demo-root".to_owned(),
+        status: SessionStatus::Working,
+        attached: false,
+        name: Some(name.to_owned()),
+        created_ms: 1000,
+        last_ms: 0,
+    });
+    let children = children
+        .iter()
+        .map(|child| serde_json::from_value(child.clone()))
+        .collect::<Result<_, _>>()?;
+    app.state
+        .children
+        .insert(SessionId("s-alpha".to_owned()), children);
+    Ok(app)
+}
+
+fn child_update(name: &str, status: &str, flag: Option<Value>) -> Value {
+    let mut update = json!({"id": format!("c-{name}"), "name": name, "status": status,
+        "activity": "executing", "toolUseCount": 2, "tokenCount": 100});
+    if let Some(flag) = flag {
+        update["flag"] = flag;
+    }
+    update
+}
+
+/// A row's last mark and the terminal cell it starts at, counted in display cells.
+fn last_mark(row: &str) -> Option<(usize, char)> {
+    let row = row.trim_end();
+    let mark = row.chars().last()?;
+    let before = row.get(..row.len().saturating_sub(mark.len_utf8()))?;
+    Some((ratatui::text::Line::from(before).width(), mark))
+}
+
+/// The rail's child rows read as the session's children: a connector under its
+/// avatar and the status glyph in the session's column, not one cell left of it.
+#[test]
+fn a_child_row_hangs_off_its_session_with_the_glyph_in_the_column() -> TestResult {
+    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
+    let children = [
+        child_update("grep-bot", "running", None),
+        child_update("edit-bot", "error", None),
+    ];
+    let app = family(SidebarMode::Rail, "fix login", &children)?;
+    let rows: Vec<String> = yi_console::sidebar::sidebar_lines(&app, &theme, 60)
+        .iter()
+        .map(|row| row.line.to_string())
+        .collect();
+    let [session, _, first, last] = rows.as_slice() else {
+        return Err(format!("session, spacer and two children: {rows:#?}").into());
+    };
+    for (row, connector) in [(first, '├'), (last, '└')] {
+        assert_eq!(row.chars().nth(2), Some(connector), "{rows:#?}");
+    }
+    for row in [session, first, last] {
+        assert_eq!(
+            last_mark(row).map(|(cell, _)| cell),
+            Some(7),
+            "glyph column: {rows:#?}"
+        );
+    }
+    Ok(())
+}
+
+/// The full sidebar lines a child's glyph up with its session's, whatever the names
+/// hold: a wide character takes two cells, so padding by characters would shift it.
+#[test]
+fn full_sidebar_child_glyphs_share_the_session_column() -> TestResult {
+    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
+    let children = [
+        child_update("grep-bot", "running", None),
+        child_update("构建-🔧-bot", "completed", None),
+    ];
+    let app = family(SidebarMode::Full, "修复登录 fix", &children)?;
+    let rows: Vec<String> = yi_console::sidebar::sidebar_lines(&app, &theme, 60)
+        .iter()
+        .map(|row| row.line.to_string())
+        .collect();
+    let session = rows
+        .iter()
+        .find(|row| row.contains("修复登录"))
+        .ok_or(format!("no session row: {rows:#?}"))?;
+    let column = last_mark(session).map(|(cell, _)| cell);
+    let kids: Vec<&String> = rows.iter().filter(|row| row.contains("bot")).collect();
+    assert_eq!(kids.len(), 2, "{rows:#?}");
+    for (row, connector) in kids.iter().zip(['├', '└']) {
+        assert_eq!(row.chars().nth(2), Some(connector), "{rows:#?}");
+        assert_eq!(last_mark(row).map(|(cell, _)| cell), column, "{rows:#?}");
+    }
+    Ok(())
+}
+
+/// Owner, 2026-09-28: "? = needs you, ✕ = failed". A failed child no longer wears
+/// the session's needs-you mark, and a child that needs you wears it; every mark is
+/// one cell, so none can push the column.
+#[test]
+fn one_glyph_one_meaning() -> TestResult {
+    use yi_console::model::SessionStatus;
+    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
+    let asks = json!({"state": "needs_you", "note": "asks r1: which file?"});
+    let stuck = json!({"state": "stuck", "note": "idle 300s"});
+    let children = [
+        child_update("asker", "running", Some(asks)),
+        child_update("broke", "error", None),
+        child_update("stalled", "running", Some(stuck)),
+    ];
+    let app = family(SidebarMode::Rail, "fix login", &children)?;
+    let marks: Vec<char> = yi_console::sidebar::sidebar_lines(&app, &theme, 60)
+        .iter()
+        .skip(2)
+        .filter_map(|row| last_mark(&row.line.to_string()).map(|(_, mark)| mark))
+        .collect();
+    let needs_you = SessionStatus::Blocked.glyph();
+    assert_eq!(marks, ['?', '✕', '!'], "child marks");
+    assert_eq!(needs_you, "?", "a session that needs you");
+    let every = [
+        SessionStatus::Blocked,
+        SessionStatus::Working,
+        SessionStatus::DoneUnseen,
+        SessionStatus::Idle,
+        SessionStatus::Unknown,
+    ];
+    for glyph in every.iter().map(|status| status.glyph()).chain(["✕", "!"]) {
+        assert_eq!(ratatui::text::Line::from(glyph).width(), 1, "{glyph}");
+    }
+    Ok(())
 }
 
 /// The CLI opens the sidebar as a rail of status glyphs; ⌘B walks rail, full, hidden.

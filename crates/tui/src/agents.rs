@@ -41,11 +41,12 @@ pub struct AgentsPopup {
     pub stop: Option<String>,
 }
 
+/// The sidebar's child marks, so a child reads the same in the roster and on the rail.
 fn glyph(state: AgentState) -> char {
     match state {
-        AgentState::Running => '◆',
-        AgentState::Done => '✓',
-        AgentState::Failed => '✗',
+        AgentState::Running => '◐',
+        AgentState::Done => '○',
+        AgentState::Failed => '✕',
     }
 }
 
