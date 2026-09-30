@@ -323,6 +323,57 @@ fn status_keeps_the_model_under_a_long_path_and_branch() -> TestResult {
     Ok(())
 }
 
+/// Dies with rows wider than their width: the fit counted neither the 2-cell name tile nor
+/// the effort spans, so the terminal cut the session name mid-word. Every width fits, and a
+/// field once dropped stays dropped at every narrower width, in one order.
+#[test]
+fn the_status_row_fits_its_width_and_drops_whole_fields_in_one_order() {
+    let input = StatusInput {
+        model: "claude-opus-5".to_owned(),
+        provider: Some("openrouter".to_owned()),
+        thinking: Some("high".to_owned()),
+        mode: Some("verbose".to_owned()),
+        cwd: "/Users/someone/Development/yi".to_owned(),
+        branch: Some("jack/h3-status-row".to_owned()),
+        landing: Some("PR #962 ●●".to_owned()),
+        cost: Some("≥$17.03".to_owned()),
+        cache: Some("0% cached".to_owned()),
+        session_name: "dogfood".to_owned(),
+        subagents: 2,
+        context_used: 154_491,
+        context_window: 1_000_000,
+        ..StatusInput::default()
+    };
+    let order = [
+        "0% cached",
+        "PR #962",
+        "👥 2",
+        "◉ verbose",
+        "via openrouter",
+        "dogfood",
+        "◉ high",
+        "154,491 / 1M",
+        "≥$17.03",
+    ];
+    for width in 40..=260 {
+        let row = yi_tui::status::render(&input, width, &theme());
+        assert!(
+            row.width() < width,
+            "{width}: {} cells: {}",
+            row.width(),
+            flat(&row)
+        );
+        let text = flat(&row);
+        let shown: Vec<bool> = order.iter().map(|field| text.contains(field)).collect();
+        let first = shown.iter().position(|&on| on).unwrap_or(order.len());
+        assert!(
+            shown.iter().skip(first).all(|&on| on),
+            "{width}: a field came back after a later one was cut: {text}"
+        );
+        assert!(text.contains("claude-opus-5"), "{width}: {text}");
+    }
+}
+
 /// A lane session's row names the checkout and the slot, not the pool's hash path.
 #[test]
 fn status_names_the_lane_instead_of_the_slot_path() -> TestResult {
