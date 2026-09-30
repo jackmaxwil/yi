@@ -192,8 +192,22 @@ pub fn layout_chat(
         crate::hud::render(&crate::hud::input(app, goal, memory), &theme)
     };
 
+    let selected = &app.selection.model;
+    // A namespaced id names its maker, not the route: `anthropic/` on OpenRouter hid the router.
+    let (model, provider) = match selected.id.split_once('/') {
+        Some((_, name)) if !selected.provider.is_empty() => {
+            (name.to_owned(), Some(selected.provider.clone()))
+        }
+        _ => (selected.id.clone(), None),
+    };
+    let caches = selected
+        .cost
+        .cache_read
+        .as_f64()
+        .is_some_and(|price| price > 0.0);
     let status_input = StatusInput {
-        model: app.selection.model.id.clone(),
+        model,
+        provider,
         thinking: (app.selection.effort != yi_types::model::Effort::Off)
             .then(|| app.selection.effort.to_string()),
         mode: (app.mode != TranscriptMode::default()).then(|| app.mode.label().to_owned()),
@@ -204,6 +218,7 @@ pub fn layout_chat(
             crate::status::landing_segment(landing, app.landing_at.map(|at| at.elapsed()))
         }),
         cost: app.spent.label(),
+        cache: app.session_tokens.cache_label(caches),
         session_name: if app.status_name_hidden {
             String::new()
         } else {

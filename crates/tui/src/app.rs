@@ -199,6 +199,8 @@ pub struct App {
     pub(crate) landing_at: Option<Instant>,
     pub(crate) context_used: u64,
     pub(crate) spent: crate::status::Money,
+    /// What the session read, for the status row's cache rate beside the cost it explains.
+    pub(crate) session_tokens: crate::status::TurnTokens,
     turn_started: Instant,
     turn_tools: u64,
     pub(crate) last_tool: Option<String>,
@@ -315,6 +317,7 @@ impl App {
             landing_at: None,
             context_used: 0,
             spent: crate::status::Money::default(),
+            session_tokens: crate::status::TurnTokens::default(),
             turn_started: Instant::now(),
             turn_tools: 0,
             last_tool: None,
@@ -861,6 +864,7 @@ impl App {
                 ..
             } => {
                 self.spent.record(usage);
+                self.session_tokens.record(usage);
                 self.turn_spent.record(usage);
                 self.turn_tokens.record(usage);
                 self.requests = self.requests.saturating_add(1);
@@ -929,6 +933,7 @@ impl App {
                 && let AgentMessage::Assistant { usage, .. } = message
             {
                 self.spent.record(usage);
+                self.session_tokens.record(usage);
             }
             return;
         }
@@ -993,11 +998,7 @@ impl App {
     /// One dim row closes a turn with what it cost, so the price of an answer is read
     /// where the answer is, not only in the status bar.
     fn commit_turn_footer(&mut self) {
-        let crate::status::TurnTokens {
-            input,
-            output,
-            cached,
-        } = self.turn_tokens;
+        let crate::status::TurnTokens { input, output, .. } = self.turn_tokens;
         if self.turn_tools == 0 && input == 0 && output == 0 {
             return;
         }
@@ -1025,8 +1026,8 @@ impl App {
             crate::status::fmt_tokens(input),
             crate::status::fmt_tokens(output),
         ));
-        if cached > 0 || self.requests > 1 {
-            text.push_str(&format!(" · {}% cached", cached * 100 / input.max(1)));
+        if let Some(cache) = self.turn_tokens.cache_label(self.requests > 1) {
+            text.push_str(&format!(" · {cache}"));
         }
         if let Some(cost) = self.turn_spent.label() {
             text.push_str(&format!(" · {cost}"));

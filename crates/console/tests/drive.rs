@@ -314,7 +314,7 @@ fn run_with(name: &str, fixture: Vec<Step>, script: &str, autostart: bool) -> Te
 /// Runs with a frame dump and hands back the last frame, for assertions a substring
 /// cannot make.
 fn run_frames(name: &str, fixture: Vec<Step>, script: &str) -> Result<String, Box<dyn Error>> {
-    run_frames_with(name, fixture, script, SidebarMode::Full)
+    run_frames_with(name, fixture, script, SidebarMode::Full, 100)
 }
 
 fn run_frames_with(
@@ -322,6 +322,7 @@ fn run_frames_with(
     fixture: Vec<Step>,
     script: &str,
     sidebar: SidebarMode,
+    width: u16,
 ) -> Result<String, Box<dyn Error>> {
     let dir = Scratch::new(&format!("yi-console-frames-{name}"))?;
     run_opts(
@@ -331,6 +332,7 @@ fn run_frames_with(
         false,
         sidebar,
         Some(dir.to_path_buf()),
+        width,
     )?;
     last_frame(&dir)
 }
@@ -354,7 +356,7 @@ fn run_sidebar(
     autostart: bool,
     sidebar: SidebarMode,
 ) -> TestResult {
-    run_opts(name, fixture, script, autostart, sidebar, None)
+    run_opts(name, fixture, script, autostart, sidebar, None, 100)
 }
 
 fn run_opts(
@@ -364,6 +366,7 @@ fn run_opts(
     autostart: bool,
     sidebar: SidebarMode,
     frames: Option<PathBuf>,
+    width: u16,
 ) -> TestResult {
     let (_dir, socket) = scratch_socket(name)?;
     let server = spawn_fixture(socket.clone(), fixture);
@@ -381,7 +384,7 @@ fn run_opts(
             frames_dir: frames
                 .or_else(|| std::env::var("CONSOLE_TEST_FRAMES").ok().map(PathBuf::from)),
             record: None,
-            width: 100,
+            width,
             height: 30,
         },
     );
@@ -1442,6 +1445,7 @@ fn tab_indented_cards_put_no_control_character_in_a_cell() -> TestResult {
         false,
         SidebarMode::Full,
         Some(dir.to_path_buf()),
+        100,
     );
     let frame = last_frame(&dir)?;
     let control = frame.chars().find(|c| c.is_control() && *c != '\n');
@@ -2411,6 +2415,58 @@ fn the_status_row_shows_model_effort_cost_and_context() -> TestResult {
     )
 }
 
+/// Dies with `2,000 / 200K` in the left third of a 254-column pane: every meter sat in the
+/// left group and the right one, the session name, is hidden in the console.
+#[test]
+fn the_wide_pane_puts_its_meters_on_the_right() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(status_push));
+    let frame = run_frames_with(
+        "wide-status",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 2,000 / 200K\n\
+         quit\n",
+        SidebarMode::Full,
+        254,
+    )?;
+    let row = frame
+        .lines()
+        .find(|line| line.contains("2,000 / 200K"))
+        .ok_or_else(|| format!("no status row:\n{frame}"))?;
+    let (_, after) = row
+        .trim_end_matches('"')
+        .split_once("2,000 / 200K")
+        .unwrap_or_default();
+    let tail = ratatui::text::Line::from(after).width();
+    assert!(
+        tail <= 3,
+        "the context meter ends {tail} cells short of the edge: {row}"
+    );
+    Ok(())
+}
+
+/// Dies with `anthropic/claude-opus-5.5`: on a router the `vendor/` prefix names the maker,
+/// so the session read as a direct one and hid which key pays.
+#[test]
+fn a_routed_model_names_the_router() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(|| {
+        vec![config_frame("openrouter/anthropic/claude-opus-5.5", "high")]
+    }));
+    run(
+        "routed-model",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 claude-opus-5.5 via openrouter\n\
+         quit\n",
+    )
+}
+
 fn running_push() -> Vec<Value> {
     vec![
         update(
@@ -2815,6 +2871,7 @@ fn the_rail_reads_from_the_top() -> TestResult {
          wait 200\n\
          quit\n",
         SidebarMode::Rail,
+        100,
     )?;
     let first = frame.lines().next().ok_or("an empty frame")?;
     assert!(

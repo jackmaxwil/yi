@@ -1192,6 +1192,53 @@ fn one_amount_one_spelling() -> TestResult {
     Ok(())
 }
 
+/// The status row of a routed session at `width` columns after one priced reply that read
+/// nothing from the cache.
+fn routed_status_row(width: u16) -> Result<String, Box<dyn Error>> {
+    let backend = VT100Backend::with_scrollback(width, 30, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
+    let mut app = App::new(
+        options(),
+        Theme::new(ColorTier::TrueColor, true),
+        default_keymap(),
+        usize::from(width),
+    );
+    let opus = yi_runtime::resolve_model("openrouter", "anthropic/claude-opus-5")
+        .ok_or("bundled catalog missing openrouter anthropic/claude-opus-5")?;
+    app.selection.select(opus, yi_types::model::Effort::High);
+    let mut reply = priced("routed", 0.03);
+    if let yi_types::message::AgentMessage::Assistant { usage, .. } = &mut reply {
+        (usage.input, usage.cache_read) = (5000, 0);
+    }
+    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd { message: reply });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    (0..30)
+        .rev()
+        .map(|row| terminal.backend().row_text(row))
+        .find(|row| row.contains("claude-opus-5"))
+        .ok_or_else(|| format!("no status row: {}", terminal.backend().contents()).into())
+}
+
+/// Dies with the cost near column 33 of a 254-column row and the right half empty: every
+/// meter sat in the left group, and the one number that explains the cost was not shown.
+#[test]
+fn the_wide_status_row_anchors_the_meters_right() -> TestResult {
+    let row = routed_status_row(254)?;
+    let at = row.find("$0.").ok_or_else(|| format!("no cost: {row}"))?;
+    let column = ratatui::text::Line::from(row.get(..at).unwrap_or_default()).width();
+    assert!(
+        column >= 127,
+        "the cost sits in the right half, not at {column}: {row}"
+    );
+    assert!(row.contains("0% cached"), "{row}");
+    let row = routed_status_row(120)?;
+    assert!(row.contains("claude-opus-5 via openrouter"), "{row}");
+    let row = routed_status_row(80)?;
+    assert!(row.contains("claude-opus-5"), "{row}");
+    assert!(row.contains("$0.03"), "{row}");
+    Ok(())
+}
+
 /// Strip `TestBackend`'s per-row quoting and the trailing blanks a terminal
 /// screen and a text dump disagree about, so the two can be compared at all.
 fn screen_lines(text: &str) -> Vec<String> {
