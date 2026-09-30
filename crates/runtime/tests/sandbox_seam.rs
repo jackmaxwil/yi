@@ -146,7 +146,6 @@ fn confined_to(project: &Path) -> Sandbox {
         writable: vec![project.to_path_buf()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
-        loopback: false,
     }
 }
 

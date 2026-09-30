@@ -9,17 +9,20 @@ const BASE_POLICY: &str = include_str!("../../../vendor/seatbelt/seatbelt_base_p
 pub const SEATBELT: &str = "/usr/bin/sandbox-exec";
 
 /// What a contained command may touch: reads open bar the credential stores, writes confined
-/// to roots a checkpoint can undo, and no network rule, so `(deny default)` covers egress.
+/// to roots a checkpoint can undo, and loopback the only network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sandbox {
     pub writable: Vec<PathBuf>,
     pub deny_read: Vec<PathBuf>,
     /// Paths inside a writable root that host code runs or reads back (D205).
     pub deny_write: Vec<PathBuf>,
-    /// Loopback bind and inbound: the kernel's Jupyter ZMQ needs them, and its `bash()` jobs
-    /// run under the kernel's profile (D241). Never outbound, not even to localhost.
-    pub loopback: bool,
 }
+
+/// Loopback for every profile (D329). Seatbelt's `localhost` is every address of this host and
+/// the wildcard, so a listener can face the LAN; no rule narrows it (probed).
+const NETWORK_POLICY: &str = "; loopback only, and no unix socket\n\
+    (allow network-bind network-inbound (local ip \"localhost:*\"))\n\
+    (allow network-outbound (remote ip \"localhost:*\"))\n";
 
 /// A git dir's escape hatches: `hooks` and `config` run under the host's next git, and the
 /// pointers are what the next sandbox policy is built from.
@@ -46,7 +49,6 @@ impl Sandbox {
             // The stores the read gate refuses, so a contained `cat` meets the same list (D323).
             deny_read: yi_permission::credential_stores(home),
             deny_write,
-            loopback: false,
         }
     }
 
@@ -74,11 +76,23 @@ impl Sandbox {
     /// `-D` bindings keep paths out of the policy text. A denied path binds twice: as spelled,
     /// which a link itself is judged by, and resolved, since the kernel checks an open's target.
     pub fn params(&self) -> Vec<(String, PathBuf)> {
-        self.params_for(&self.denied_parents())
+        self.params_for(&self.denied_parents(), None)
     }
 
-    fn params_for(&self, parents: &[PathBuf]) -> Vec<(String, PathBuf)> {
+    fn params_for(&self, parents: &[PathBuf], own: Option<&Path>) -> Vec<(String, PathBuf)> {
         let mut params = Vec::new();
+        if let Some(own) = own {
+            params.push(("OWN_CONNECTION".to_owned(), own.to_path_buf()));
+            // Never `own` itself resolved: the kernel writes there and could plant a link.
+            let parent = own.parent().map(yi_permission::resolve_links);
+            let resolved = parent
+                .zip(own.file_name())
+                .map(|(dir, name)| dir.join(name));
+            params.push((
+                "OWN_CONNECTION_RESOLVED".to_owned(),
+                resolved.unwrap_or_else(|| own.to_path_buf()),
+            ));
+        }
         for (index, path) in self.deny_write.iter().enumerate() {
             params.push((format!("DENY_WRITE_{index}"), resolve_aliases(path)));
             params.push((
@@ -103,46 +117,45 @@ impl Sandbox {
     }
 
     pub fn policy(&self) -> String {
-        self.policy_for(self.denied_parents().len())
+        self.policy_for(self.denied_parents().len(), false, true)
     }
 
-    fn policy_for(&self, parents: usize) -> String {
+    fn policy_for(&self, parents: usize, own: bool, network: bool) -> String {
         let mut sections = vec![BASE_POLICY.to_owned(), self.read_policy()];
         sections.push(self.write_policy(parents));
-        if self.loopback {
+        if own {
+            // Last, so it outranks the deny on the connection root: file rules are last-match.
             sections.push(
-                "; Jupyter ZMQ: the kernel binds loopback and the host connects to it.\n\
-                 ; No outbound rule, so a cell reaches no local service either.\n\
-                 (allow network-inbound (local ip \"localhost:*\"))\n\
-                 (allow network-bind (local ip \"localhost:*\"))\n"
+                "; this kernel's own connection file\n\
+                 (allow file-read* file-write* (subpath (param \"OWN_CONNECTION\")) \
+                 (subpath (param \"OWN_CONNECTION_RESOLVED\")))"
                     .to_owned(),
             );
+        }
+        if network {
+            sections.push(NETWORK_POLICY.to_owned());
         }
         sections.join("\n")
     }
 
-    pub fn kernel_policy(&self) -> String {
-        Self {
-            loopback: true,
-            ..self.clone()
-        }
-        .policy()
-    }
-
-    pub fn kernel_prefix(&self) -> (String, Vec<String>) {
-        let kernel = Self {
-            loopback: true,
-            ..self.clone()
-        };
-        (SEATBELT.to_owned(), kernel.seatbelt_args())
+    /// The kernel's prefix: its profile plus read and write of `connection_dir`, which every
+    /// other profile hides under the connection root (#599).
+    pub fn kernel_prefix(&self, connection_dir: &Path) -> (String, Vec<String>) {
+        (
+            SEATBELT.to_owned(),
+            self.seatbelt_args(Some(connection_dir), true),
+        )
     }
 
     /// `-p <policy> -DKEY=value ... -- env -u …`: the rules and their bindings come from one
     /// reading of the filesystem, so a link swapped between the two cannot unbind a rule.
-    fn seatbelt_args(&self) -> Vec<String> {
+    fn seatbelt_args(&self, own: Option<&Path>, network: bool) -> Vec<String> {
         let parents = self.denied_parents();
-        let mut wrapped = vec!["-p".to_owned(), self.policy_for(parents.len())];
-        for (key, value) in self.params_for(&parents) {
+        let mut wrapped = vec![
+            "-p".to_owned(),
+            self.policy_for(parents.len(), own.is_some(), network),
+        ];
+        for (key, value) in self.params_for(&parents, own) {
             wrapped.push(format!("-D{key}={}", value.to_string_lossy()));
         }
         wrapped.push("--".to_owned());
@@ -236,8 +249,18 @@ impl Sandbox {
 
     /// `sandbox-exec -p <policy> -DKEY=value ... -- <program> <args>`.
     pub fn wrap(&self, program: &str, args: &[&str]) -> (String, Vec<String>) {
+        self.wrap_with(true, program, args)
+    }
+
+    /// [`Self::wrap`] with no network at all, loopback included: the document converter parses
+    /// untrusted files and needs none.
+    pub fn wrap_offline(&self, program: &str, args: &[&str]) -> (String, Vec<String>) {
+        self.wrap_with(false, program, args)
+    }
+
+    fn wrap_with(&self, network: bool, program: &str, args: &[&str]) -> (String, Vec<String>) {
         let _span = yi_types::trace::span("sandbox.wrap");
-        let mut wrapped = self.seatbelt_args();
+        let mut wrapped = self.seatbelt_args(None, network);
         wrapped.push(program.to_owned());
         wrapped.extend(args.iter().map(|arg| (*arg).to_owned()));
         (SEATBELT.to_owned(), wrapped)
@@ -266,7 +289,7 @@ fn resolve_aliases(path: &Path) -> PathBuf {
 }
 
 /// `env -u` for every inherited variable named like a secret (#906). A contained process has
-/// no network to spend a key on, only output and files to leak one through.
+/// no network past loopback to spend a key on, only output, files and local services.
 fn scrubbed_env() -> Vec<String> {
     let mut names: Vec<String> = std::env::vars_os()
         // ponytail: a non-UTF-8 name is kept, `env -u` taking only what a String carries; one
@@ -278,7 +301,18 @@ fn scrubbed_env() -> Vec<String> {
     let unset = names.into_iter().flat_map(|name| ["-u".to_owned(), name]);
     std::iter::once("/usr/bin/env".to_owned())
         .chain(unset)
+        .chain(std::iter::once(java_ipv4()))
         .collect()
+}
+
+/// A JVM's dual-stack socket dials 127.0.0.1 as `::ffff:127.0.0.1`, which Seatbelt refuses; IPv4
+/// sockets keep Gradle, Maven and sbt on loopback. Appended to the value the run inherits.
+fn java_ipv4() -> String {
+    const IPV4: &str = "-Djava.net.preferIPv4Stack=true";
+    match std::env::var("JAVA_TOOL_OPTIONS") {
+        Ok(options) if !options.trim().is_empty() => format!("JAVA_TOOL_OPTIONS={options} {IPV4}"),
+        _ => format!("JAVA_TOOL_OPTIONS={IPV4}"),
+    }
 }
 
 /// Secrets named as nothing else is: a connection string, a password manager's unlocked session.
@@ -476,8 +510,8 @@ fn refused_path(
         .find(|path| sandbox.denies_write(path))
 }
 
-/// Seatbelt denies with a plain errno. A denied write target counts at any exit (`touch x |
-/// tail -1` is 0); without one, a non-zero exit that is no known shell failure, naming a denial.
+/// Seatbelt denies with a plain errno, or at the resolver. A denied write target counts at any
+/// exit (`touch x | tail -1` is 0); else a non-zero exit, no known shell failure, naming a denial.
 pub fn sandbox_refusal(
     sandbox: &Sandbox,
     cwd: &Path,
@@ -486,12 +520,16 @@ pub fn sandbox_refusal(
     command: &str,
 ) -> Option<SandboxRefusal> {
     const QUICK_REJECT: [i32; 3] = [2, 126, 127];
-    const DENIALS: [&str; 5] = [
+    const DENIALS: [&str; 7] = [
         "operation not permitted",
         "permission denied",
         "read-only file system",
         "sandbox",
         "deny file-write",
+        // curl, git and cargo: `Could not resolve host`, `Couldn't resolve host name`.
+        "resolve host",
+        // getaddrinfo's EAI_NONAME, as Python and ssh print it.
+        "nodename nor servname",
     ];
     if let Some(path) = refused_path(sandbox, cwd, exit_code, output, command) {
         return Some(SandboxRefusal::Path(path));
@@ -504,8 +542,7 @@ pub fn sandbox_refusal(
 }
 
 pub fn denial_hint(refusal: &SandboxRefusal) -> String {
-    const CONTAINED: &str =
-        "a contained run writes only the working tree, its git dirs and tmp, and has no network";
+    const CONTAINED: &str = "a contained run writes only the working tree, its git dirs and tmp, and has no network beyond 127.0.0.1 and ::1 (a dual-stack socket's `::ffff:127.0.0.1` is refused)";
     match refusal {
         SandboxRefusal::Path(path) => {
             let dir = path.parent().unwrap_or(path);
