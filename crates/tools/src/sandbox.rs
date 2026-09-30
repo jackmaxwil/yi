@@ -293,32 +293,20 @@ const SECRET_NAMES: [&str; 7] = [
 ];
 
 /// Settings whose names only read like a secret's, kept because a tool changes behaviour without them.
-const SECRET_LOOKALIKES: [&str; 3] = [
-    "GOOGLE_APPLICATION_CREDENTIALS",
-    "PASSWORD_STORE_DIR",
-    "SSH_AUTH_SOCK",
-];
+const SECRET_LOOKALIKES: [&str; 2] = ["PASSWORD_STORE_DIR", "SSH_AUTH_SOCK"];
 
 /// A heuristic over names, never values (D324): a `_`-separated word ending in a mark, singular or
 /// plural, or a listed name. It misses a secret under a plain name (`FOO_URL=postgres://u:p@h`).
 fn names_a_secret(name: &str) -> bool {
-    const MARKS: [&str; 8] = [
-        "KEY",
-        "TOKEN",
-        "SECRET",
-        "PASSWORD",
-        "PASSWD",
-        "CREDENTIAL",
-        "PAT",
-        "AUTH",
-    ];
     let upper = name.to_ascii_uppercase();
     if SECRET_LOOKALIKES.contains(&upper.as_str()) {
         return false;
     }
     let marked = |word: &str| {
         let word = word.strip_suffix('S').unwrap_or(word);
-        MARKS.iter().any(|mark| word.ends_with(mark))
+        (yi_types::SECRET_NAME_MARKS.iter())
+            .chain(&["PASSWD", "PAT", "AUTH"])
+            .any(|mark| word.ends_with(mark))
     };
     SECRET_NAMES.contains(&upper.as_str())
         || upper.starts_with("OP_SESSION_")

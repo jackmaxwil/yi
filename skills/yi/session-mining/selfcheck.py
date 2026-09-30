@@ -10,7 +10,6 @@ import error_class
 from extract import (
     DEDUPE_THRESHOLD,
     MASK,
-    MODULE_MISSING,
     RUST_MIRRORS,
     SIGNAL_NAMES,
     dedupe,
@@ -141,15 +140,31 @@ def check_rust_mirrors(root):
             f"{name} drifted from {relative}: rust only "
             f"{sorted(declared - mirrored)}, python only {sorted(mirrored - declared)}"
         )
-    ipython = (root / "crates/tools/src/ipython.rs").read_text()
-    assert MODULE_MISSING in ipython, "the missing-module hint drifted from ipython.rs"
     return len(RUST_MIRRORS)
+
+
+def check_module_missing(root, fixtures, tmp):
+    """The hint ipython.rs prints today, put in place of the signals fixture's copy, still counts
+    as `module_missing`: a reworded hint cannot zero the signal behind the matcher's back."""
+    ipython = (root / "crates/tools/src/ipython.rs").read_text()
+    found = re.search(r'"(`\{name\}` is not installed in the kernel[^"]*)"', ipython)
+    assert found, "ipython.rs no longer prints a missing-module hint"
+    hint = found.group(1).replace("{name}", "xlrd")
+    sessions = Path(tmp) / "hint"
+    sessions.mkdir()
+    old = "`xlrd` is not installed in the kernel. Run `%pip install xlrd` in a cell; `pip` in bash installs into a different Python."
+    text = (fixtures / "signals.jsonl").read_text()
+    assert old in text, "the signals fixture lost its missing-module line"
+    (sessions / "signals.jsonl").write_text(text.replace(old, json.dumps(hint)[1:-1]))
+    row = next(r for r in sweep(sessions, Path(tmp) / "hint-out")["mu"] if r["sessionId"] == "fixture-signals")
+    assert row["signals"]["module_missing"] == 1, "the current missing-module hint is not counted"
 
 
 def selfcheck():
     check_rust_mirrors(Path(__file__).resolve().parents[3])
     fixtures = Path(__file__).resolve().parent / "fixtures"
     with tempfile.TemporaryDirectory() as tmp:
+        check_module_missing(Path(__file__).resolve().parents[3], fixtures, tmp)
         first, second = Path(tmp) / "a", Path(tmp) / "b"
         result = sweep(fixtures, first)
         text = report(result, fixtures, first)

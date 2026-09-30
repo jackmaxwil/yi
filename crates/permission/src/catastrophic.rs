@@ -184,6 +184,10 @@ pub fn lexical_normalize(path: &Path) -> PathBuf {
 }
 
 fn expand(raw: &str, context: &CatastrophicContext) -> PathBuf {
+    resolve(Path::new(&with_home(raw, context)), context)
+}
+
+fn with_home(raw: &str, context: &CatastrophicContext) -> String {
     let mut text = raw.to_owned();
     if let Some(home) = &context.home_dir {
         let home_str = home.to_string_lossy().into_owned();
@@ -191,7 +195,7 @@ fn expand(raw: &str, context: &CatastrophicContext) -> PathBuf {
             text = text.replace(var, &home_str);
         }
     }
-    resolve(Path::new(&text), context)
+    text
 }
 
 pub(crate) fn resolve(path: &Path, context: &CatastrophicContext) -> PathBuf {
@@ -418,14 +422,16 @@ const DESTRUCTIVE_COMMANDS: [&str; 4] = ["rm", "rmdir", "shred", "unlink"];
 /// A key read into the transcript has already left the machine, so credential stores are
 /// read-gated too. Path-shaped arguments only: this reads a command, it does not run one. A path
 /// is judged as the read gate judges it, by identity, and a directory in home above a store counts,
-/// since a recursive read walks into it; a glob counts when it can name a store, a directory above
-/// one, or a path inside one (D324). A path hidden in a variable or a substitution is not seen.
+/// since a recursive read walks into it, as do the roots homes sit under; a glob counts when it
+/// can name a store, a directory above one, or a path inside one (D324). Quotes and backslashes
+/// are removed as the shell removes them; a path hidden in a variable or a substitution is not.
 pub fn command_reads_credentials(command: &str, context: &CatastrophicContext) -> Option<String> {
     let stores = stores(context);
     let home = context.home_dir.as_deref().map(lexical_normalize);
     let above: Vec<PathBuf> = (stores.iter())
         .flat_map(|store| store.ancestors().skip(1))
         .filter(|dir| home.as_ref().is_some_and(|home| dir.starts_with(home)))
+        .chain(HOME_ROOTS.iter().map(Path::new))
         .map(Path::to_path_buf)
         .collect();
     let (store_ids, above_ids) = (identities(&stores), identities(&above));
@@ -433,15 +439,22 @@ pub fn command_reads_credentials(command: &str, context: &CatastrophicContext) -
     command
         .split_whitespace()
         .skip(1)
-        .map(|token| token.trim_matches(['\'', '"']))
+        .map(|token| token.replace(['\'', '"', '\\'], ""))
         .filter(|token| !token.starts_with('-'))
-        .map(|token| (token, expand(token, context)))
+        .map(|token| {
+            let path = expand(&token, context);
+            (token, path)
+        })
         .find(|(token, path)| match token.contains(['*', '?', '[', '{']) {
             true => [path.clone(), resolve_links(path)].iter().any(|pattern| {
                 (stores.iter().chain(&real_stores)).any(|store| glob_reaches(pattern, store))
             }),
             false => {
+                // `link/../.netrc` is opened with `..` taken after the link, not popped before it.
+                let opened =
+                    resolve_links(&absolute(Path::new(&with_home(token, context)), context));
                 beneath_via(&stores, &store_ids, path, LINK_HOPS)
+                    || beneath_via(&stores, &store_ids, &opened, LINK_HOPS)
                     || above.contains(path)
                     || denied_file(&above_ids, fs::metadata(path).ok().as_ref())
             }
@@ -464,7 +477,7 @@ pub fn resolve_links(path: &Path) -> PathBuf {
 
 /// Whether a shell glob can match `store`, a directory above it, or a path inside it: compared
 /// component by component over the shorter of the two, ignoring letter case, a leading dot
-/// matched only by a dot as the shell matches it. A resolved pattern keeps its glob text.
+/// matched only by what can open with a dot, as the shell matches it. A resolved pattern keeps its glob text.
 fn glob_reaches(pattern: &Path, store: &Path) -> bool {
     let words = |path: &Path| -> Vec<Vec<char>> {
         (path.components())
@@ -478,7 +491,9 @@ fn glob_reaches(pattern: &Path, store: &Path) -> bool {
             .collect()
     };
     (words(pattern).iter().zip(&words(store))).all(|(glob, name)| {
-        let hidden = name.first() == Some(&'.') && glob.first() != Some(&'.');
+        // A `{…}` group or a `[…]` class may open with the dot a plain glob never matches.
+        let dotted = matches!(glob.first(), Some('.' | '{' | '['));
+        let hidden = name.first() == Some(&'.') && !dotted;
         !hidden && wildcard(glob, name)
     })
 }

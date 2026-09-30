@@ -78,7 +78,8 @@ RUST_MIRRORS = (
 )
 
 # The ipython tool's missing-module hint (crates/tools/src/ipython.rs), up to where its advice
-# starts; --selfcheck finds it in the Rust, so a reworded hint cannot zero `module_missing`.
+# starts; --selfcheck feeds the hint ipython.rs prints through the sweep, so a reworded hint
+# cannot zero `module_missing`.
 MODULE_MISSING = "is not installed in the kernel."
 
 CRED_PATH_RE = re.compile(
