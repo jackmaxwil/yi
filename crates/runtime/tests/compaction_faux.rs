@@ -962,3 +962,23 @@ async fn a_call_instead_of_a_summary_retries_without_tools() -> Result<(), Box<d
     );
     Ok(())
 }
+
+/// Host nudges are per-window prompts: a compacted window's `todo_nudge` or `repeat_break` must
+/// not ride into the next window's retained tail.
+#[test]
+fn compaction_drops_the_host_nudges_it_retained() -> Result<(), Box<dyn Error>> {
+    // A todo nudge as a real session wrote it on 2026-09-15; it holds host text only.
+    let recorded = r#"{"kind":"entry","lane":"main","type":"message","id":"01a0a2e3-e3f2-71a2-9936-bdb725d47ac3","message":{"role":"custom","customType":"todo_nudge","content":"3 changes have landed with no todo list. `init` the list naming what remains, batched with your next call.","display":false,"timestamp":1789439239154},"parentId":"01a0a2e3-e3f1-7e9b-b28b-2d62fc96509f","seq":25,"timestamp":1789439239154}"#;
+    let Entry::Message { message: nudge, .. } = serde_json::from_str::<Entry>(recorded)? else {
+        return Err("the recorded line is not a message entry".into());
+    };
+    let repeat = AgentMessage::host_note(
+        yi_loop::REPEAT_BREAK_CUSTOM_TYPE,
+        yi_loop::REPEAT_BREAK_TEXT.to_owned(),
+        0,
+    );
+    let user = AgentMessage::user_input(UserContent::Text("keep me".to_owned()), 0);
+    let kept = yi_context::drop_internal(&[nudge.clone(), repeat.clone(), user.clone()]);
+    assert_eq!(kept, [user], "only the user's message survives");
+    Ok(())
+}
