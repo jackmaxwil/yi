@@ -269,6 +269,18 @@ pub enum AgentMessage {
     },
 }
 
+/// The text blocks of `blocks` joined by `sep`; every other kind of block is skipped.
+pub fn join_text(blocks: &[Content], sep: &str) -> String {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            Content::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
 impl AgentMessage {
     /// A user-role message the host minted for itself; it never carries the
     /// user's authority.
@@ -304,19 +316,10 @@ impl AgentMessage {
     /// Every text this message carries, for search and for a brief line: assistant tool calls
     /// read `name {args}`, bash reads `command\noutput`, thinking is excluded.
     pub fn plain_text(&self) -> String {
-        fn texts(blocks: &[Content]) -> Vec<String> {
-            blocks
-                .iter()
-                .filter_map(|block| match block {
-                    Content::Text { text, .. } => Some(text.clone()),
-                    _ => None,
-                })
-                .collect()
-        }
         match self {
             Self::User { content, .. } | Self::Custom { content, .. } => match content {
                 UserContent::Text(text) => text.clone(),
-                UserContent::Blocks(blocks) => texts(blocks).join("\n"),
+                UserContent::Blocks(blocks) => join_text(blocks, "\n"),
             },
             Self::Assistant { content, .. } => content
                 .iter()
@@ -332,7 +335,7 @@ impl AgentMessage {
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
-            Self::ToolResult { content, .. } => texts(content).join("\n"),
+            Self::ToolResult { content, .. } => join_text(content, "\n"),
             Self::BashExecution {
                 command, output, ..
             } => format!("{command}\n{output}"),

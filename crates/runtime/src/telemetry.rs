@@ -27,14 +27,7 @@ fn ms(duration: Duration) -> u64 {
 
 fn text_of(message: &AgentMessage) -> String {
     match message {
-        AgentMessage::Assistant { content, .. } => content
-            .iter()
-            .filter_map(|part| match part {
-                yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
+        AgentMessage::Assistant { content, .. } => yi_types::message::join_text(content, " "),
         _ => String::new(),
     }
 }
