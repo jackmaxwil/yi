@@ -219,7 +219,7 @@ fn an_offset_inside_a_character_still_serves_text_and_always_advances() -> TestR
 fn a_read_that_names_no_page_replies_exactly_as_it_did_before_paging() -> TestResult {
     let (_workspace, resolver, _store) = paged_workspace()?;
     let file: Url = "local://notes.md".parse()?;
-    assert_eq!(Page::from_payload(&serde_json::Map::new())?, None);
+    assert_eq!(Page::from_payload(&serde_json::Map::new(), "fetch")?, None);
     let whole = resolver.fetch(&file)?;
     assert_eq!((whole.text.as_str(), whole.next_offset), (PAGED, None));
     let hash = whole.hash.clone();
@@ -229,10 +229,10 @@ fn a_read_that_names_no_page_replies_exactly_as_it_did_before_paging() -> TestRe
     );
     let last = resolver.fetch_page(
         &file,
-        Page::from_payload(&serde_json::Map::from_iter([(
-            "offset".to_owned(),
-            0.into(),
-        )]))?,
+        Page::from_payload(
+            &serde_json::Map::from_iter([("offset".to_owned(), 0.into())]),
+            "fetch",
+        )?,
     )?;
     assert_eq!(
         last.into_reply(true).get("next_offset"),
@@ -243,8 +243,9 @@ fn a_read_that_names_no_page_replies_exactly_as_it_did_before_paging() -> TestRe
 
 #[test]
 fn a_page_the_host_cannot_honour_is_refused_not_clamped() -> TestResult {
-    let page =
-        |payload: serde_json::Value| Page::from_payload(payload.as_object().ok_or("an object")?);
+    let page = |payload: serde_json::Value| {
+        Page::from_payload(payload.as_object().ok_or("an object")?, "fetch")
+    };
     for bad in [
         "limit\": 0",
         "limit\": -1",
@@ -281,8 +282,8 @@ fn a_page_the_host_cannot_honour_is_refused_not_clamped() -> TestResult {
     Ok(())
 }
 
-/// Dies with `offset` and `limit` dropped for a url (the whole `history://` listing comes back),
-/// with the page's unit unnamed, or with `limit: 0` read as the rest of the listing.
+/// Dies with a url's `offset` and `limit` dropped, its unit unnamed, `limit: 0` read as the
+/// rest of the listing, or a negative offset read as none.
 #[test]
 fn a_url_read_through_the_read_tool_keeps_its_window() -> Result<(), Box<dyn Error>> {
     let (workspace, resolver, _store) = paged_workspace()?;
@@ -320,9 +321,16 @@ fn a_url_read_through_the_read_tool_keeps_its_window() -> Result<(), Box<dyn Err
         )
     );
     input.insert("limit".to_owned(), 0.into());
+    let (refused, is_error) = text_of(input.clone());
+    assert!(
+        is_error && refused.contains("read \"limit\" must be at least 1"),
+        "{refused}"
+    );
+    input.insert("limit".to_owned(), 1.into());
+    input.insert("offset".to_owned(), (-5).into());
     let (refused, is_error) = text_of(input);
     assert!(
-        is_error && refused.contains("\"limit\" must be at least 1"),
+        is_error && refused.contains("read \"offset\" must be a non-negative integer, got -5"),
         "{refused}"
     );
     Ok(())

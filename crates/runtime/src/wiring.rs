@@ -4,6 +4,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 use yi_types::model::Model;
 
+use crate::args::Args;
 use crate::mailbox::{ParentLink, register_child_messaging};
 use crate::session::AgentSession;
 use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOptions};
@@ -209,9 +210,14 @@ impl RuntimeWiring {
             .map(|sandbox| crate::kernel::kernel_profile(&sandbox, Some(&self.family_dir())))
     }
 
+    /// The kernel's and its `bash()` jobs' profile holds the wall, as a contained call's does
+    /// (#889): a cell opens files with no tool seam to check them.
     fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {
         let private = (self.depth > 0 || self.sessions_dir.is_none()).then(|| self.kernel_dir());
-        crate::workspace_sandbox(&self.cwd, &self.home, private.as_deref())
+        let mut sandbox = crate::workspace_sandbox(&self.cwd, &self.home, private.as_deref())?;
+        sandbox.deny_write.extend_from_slice(&self.wall.deny_write);
+        sandbox.deny_read.extend_from_slice(&self.wall.deny_read);
+        Some(sandbox)
     }
 
     fn kernel_options(
@@ -340,16 +346,15 @@ fn wire_fetch(
         let resolver = Arc::clone(&handler);
         Box::pin(async move {
             let raw = payload
-                .get("url")
-                .and_then(Value::as_str)
+                .str_of("url")
                 .ok_or_else(|| "fetch requires a \"url\" argument".to_owned())?
                 .to_owned();
             let url: yi_types::url::Url = raw
                 .parse()
                 .map_err(|error: yi_types::url::UrlError| format!("{raw}: {error}"))?;
-            let page = crate::fetch::Page::from_payload(&payload)?;
+            let page = crate::fetch::Page::from_payload(&payload, "fetch")?;
             // a family member asks for the object; the owner dills it to the family dir (D164).
-            if payload.get("object").and_then(Value::as_bool) == Some(true) {
+            if payload.bool_of("object") == Some(true) {
                 if page.is_some() {
                     return Err(
                         "fetch pages text; drop \"object\" to page a kernel:// read".to_owned()
@@ -398,8 +403,7 @@ pub fn register_history_grep(
         let handle = Arc::clone(&handle);
         Box::pin(async move {
             let pattern = payload
-                .get("pattern")
-                .and_then(Value::as_str)
+                .str_of("pattern")
                 .map(str::trim)
                 .filter(|pattern| !pattern.is_empty())
                 .ok_or_else(|| "history.grep requires a \"pattern\" argument".to_owned())?
@@ -787,10 +791,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         // compact.run only schedules and returns — running inline would abort
         // the turn whose cell awaits the reply (design §9.2).
         registry.register("compact.run", move |payload| {
-            let instructions = payload
-                .get("instructions")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let instructions = payload.str_of("instructions").map(str::to_owned);
             compactor.schedule_with_instructions(instructions);
             Box::pin(async {
                 let mut reply = Map::new();

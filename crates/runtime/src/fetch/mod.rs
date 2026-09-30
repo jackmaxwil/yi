@@ -275,7 +275,10 @@ pub struct Page {
 impl Page {
     /// Invariant: the host boundary refuses a negative, fractional or zero number; it never
     /// clamps one into a read nobody asked for. A huge limit is the rest of the read.
-    pub fn from_payload(payload: &serde_json::Map<String, Value>) -> Result<Option<Self>, String> {
+    pub fn from_payload(
+        payload: &serde_json::Map<String, Value>,
+        tool: &str,
+    ) -> Result<Option<Self>, String> {
         let read = |key: &str| -> Result<Option<usize>, String> {
             match payload.get(key) {
                 None | Some(Value::Null) => Ok(None),
@@ -284,13 +287,13 @@ impl Page {
                     .and_then(|number| usize::try_from(number).ok())
                     .map(Some)
                     .ok_or_else(|| {
-                        format!("fetch \"{key}\" must be a non-negative integer, got {value}")
+                        format!("{tool} \"{key}\" must be a non-negative integer, got {value}")
                     }),
             }
         };
         let (offset, limit) = (read("offset")?, read("limit")?);
         if limit == Some(0) {
-            return Err("fetch \"limit\" must be at least 1".to_owned());
+            return Err(format!("{tool} \"limit\" must be at least 1"));
         }
         Ok((offset.is_some() || limit.is_some()).then(|| Self {
             offset: offset.unwrap_or(0),
@@ -646,6 +649,35 @@ pub fn fence_untrusted(source: &str, text: &str) -> String {
     )
 }
 
+/// Every scheme that serves a host file opens it here, after the read gate judged it against
+/// the checkout it belongs to (D323): the model's `read <scheme>://…` and the kernel's
+/// `rlm.fetch` open it on the host, where `decide` never looked.
+fn read_text(url: &Url, path: &Path, checkout: &Path) -> Result<String, FetchError> {
+    let context = yi_permission::CatastrophicContext::detect(checkout);
+    if yi_permission::read_is_catastrophic(path, &context) {
+        return Err(FetchError::Denied {
+            url: url.to_string(),
+            refusal: format!(
+                "{} is a protected path (a key store, the workspace .git or a device); no read reaches it",
+                path.display()
+            ),
+        });
+    }
+    match std::fs::read_to_string(path) {
+        Ok(raw) => Ok(yi_tools::hashline::normalize::normalize_to_lf(
+            yi_tools::hashline::normalize::strip_bom(&raw).text,
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(FetchError::NotFound {
+            url: url.to_string(),
+            what: path.display().to_string(),
+        }),
+        Err(error) => Err(FetchError::Backend {
+            url: url.to_string(),
+            message: error.to_string(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,6 +714,41 @@ mod tests {
         assert!(
             !matches!(error, FetchError::Denied { .. }),
             "a deny prefix must end at an address boundary: {error}"
+        );
+        Ok(())
+    }
+
+    /// The model's `read local://…` and the kernel's `rlm.fetch` open the file on the host,
+    /// where `decide` never looked: the workspace `.git` came back in every project (#905).
+    #[cfg(unix)]
+    #[test]
+    fn a_local_read_meets_the_read_gate() -> TestResult {
+        let workspace = Scratch::new("yi-fetch-gate")?;
+        std::fs::create_dir_all(workspace.join(".git"))?;
+        std::fs::write(workspace.join(".git/config"), "GIT CONFIG MARKER\n")?;
+        std::fs::write(workspace.join("notes.md"), "ordinary\n")?;
+        std::os::unix::fs::symlink(workspace.join(".git"), workspace.join("gitlink"))?;
+        let resolver = Arc::new(Resolver::new(workspace.to_path_buf(), Wall::default()));
+        let mut tools: Vec<Arc<dyn yi_tools::Tool>> =
+            vec![Arc::new(yi_tools::hashline::tool::HashlineReadTool::new(
+                yi_tools::hashline::tool::shared_hashline_state(),
+            ))];
+        route_urls(&mut tools, &resolver);
+        let read = tools.first().ok_or("the read tool")?;
+        let context = yi_tools::ToolContext::new(workspace.to_path_buf());
+        for path in ["local://.git/config", "local://gitlink/config"] {
+            let url: Url = path.parse()?;
+            let served = resolver.fetch(&url);
+            assert!(matches!(served, Err(FetchError::Denied { .. })), "{path}");
+            let mut input = serde_json::Map::new();
+            input.insert("path".to_owned(), serde_json::json!(path));
+            let output = serde_json::to_string(&read.execute(input, &context).result)?;
+            assert!(!output.contains("MARKER"), "read {path} leaks: {output}");
+        }
+        let ordinary: Url = "local://notes.md".parse()?;
+        assert!(
+            resolver.fetch(&ordinary).is_ok(),
+            "an ordinary file still reads"
         );
         Ok(())
     }

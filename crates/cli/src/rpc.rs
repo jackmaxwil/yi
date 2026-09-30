@@ -9,7 +9,7 @@ use yi_runtime::session_store::{
 };
 use yi_runtime::{AgentSession, Status, available_models, resolve_model};
 use yi_types::entry::Entry;
-use yi_types::message::{AgentMessage, Content, UserContent};
+use yi_types::message::{AgentMessage, UserContent};
 use yi_types::model::Model;
 
 fn levels_of(model: &Model) -> Vec<String> {
@@ -77,14 +77,7 @@ fn message_text(message: &AgentMessage) -> String {
         AgentMessage::Assistant { content, .. } => content,
         _ => return String::new(),
     };
-    blocks
-        .iter()
-        .filter_map(|content| match content {
-            Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("")
+    yi_types::message::join_text(blocks, "")
 }
 
 struct RpcState {
@@ -501,22 +494,28 @@ pub fn run_rpc(
                         _ => write_line(&error_frame(None, "", "invalid command: not a JSON object")),
                     }
                 }
-                event = events.recv() => {
-                    match event {
-                        Ok(event) => {
-                            if let Ok(value) = serde_json::to_value(&event) {
-                                write_line(&value);
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                event = yi_runtime::next_event(&mut events) => {
+                    let value = match event {
+                        Some(Ok(event)) => serde_json::to_value(&event),
+                        Some(Err(gap)) => serde_json::to_value(gap),
+                        None => break,
+                    };
+                    if let Ok(value) = value {
+                        write_line(&value);
                     }
                 }
             }
         }
         state.session.wait_idle().await;
-        while let Ok(event) = events.try_recv() {
-            if let Ok(value) = serde_json::to_value(&event) {
+        loop {
+            let value = match events.try_recv() {
+                Ok(event) => serde_json::to_value(&event),
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(dropped)) => {
+                    serde_json::to_value(yi_types::event::EventGap { dropped })
+                }
+                Err(_) => break,
+            };
+            if let Ok(value) = value {
                 write_line(&value);
             }
         }

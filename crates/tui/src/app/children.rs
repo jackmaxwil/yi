@@ -126,7 +126,7 @@ impl App {
             return;
         };
         let status = match update.status {
-            ChildStatus::Running => TaskStatus::Running,
+            ChildStatus::Running | ChildStatus::Other(_) => TaskStatus::Running,
             ChildStatus::Completed => TaskStatus::Done,
             ChildStatus::Error => TaskStatus::Failed,
         };

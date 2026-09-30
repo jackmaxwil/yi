@@ -224,14 +224,7 @@ fn push_tool_results(
             ..
         }) = transformed.get(index)
         {
-            let text: String = content
-                .iter()
-                .filter_map(|block| match block {
-                    Content::Text { text, .. } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+            let text: String = yi_types::message::join_text(content, "\n");
             let has_images = content
                 .iter()
                 .any(|block| matches!(block, Content::Image { .. }));

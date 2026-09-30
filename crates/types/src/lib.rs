@@ -1,6 +1,10 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
+/// The words an environment variable's name carries when it holds a secret: a checker manifest
+/// refuses a name containing one, and a sandboxed process inherits none ending in one (D324).
+pub const SECRET_NAME_MARKS: [&str; 5] = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"];
+
 pub mod acp;
 pub mod advisor;
 pub mod backoff;

@@ -12,8 +12,9 @@ use yi_types::plan::doc::{DocError, GoalText, JournalMark, Plan, PlanId};
 use yi_types::plan::ledger::{AttemptId, JournalRecord, PlanOpRecord, RequestId, Seq};
 
 use super::artifact::{ArtifactError, Artifacts};
-use super::journal::{Clock, Damage, Fs, Journal, JournalError, RealFs, SystemClock, has_record};
+use super::journal::{Damage, Fs, Journal, JournalError, RealFs, has_record};
 use super::state::{KIND_IMPORT, ReduceError, RootState, apply, reduce, root_of};
+use crate::lease::Clock;
 
 /// Invariant: the checkpoint byte cap is checked before the atomic replace and never trimmed
 /// after: refused or reported, never silently applied, so a file on disk is always whole.
@@ -115,7 +116,7 @@ pub struct Lease {
 pub struct PlanStore {
     dir: PathBuf,
     fs: Arc<dyn Fs>,
-    clock: Arc<dyn Clock>,
+    clock: Clock,
 }
 
 impl std::fmt::Debug for PlanStore {
@@ -190,7 +191,7 @@ impl PlanStore {
         let store = Self {
             dir,
             fs: Arc::new(RealFs),
-            clock: Arc::new(SystemClock),
+            clock: Arc::new(yi_session::now_ms),
         };
         if store.dir.is_dir() {
             store.publish()?;
@@ -202,7 +203,7 @@ impl PlanStore {
         Self { fs, ..self }
     }
 
-    pub fn with_clock(self, clock: Arc<dyn Clock>) -> Self {
+    pub fn with_clock(self, clock: Clock) -> Self {
         Self { clock, ..self }
     }
 
@@ -211,7 +212,7 @@ impl PlanStore {
     }
 
     pub fn now_ms(&self) -> u64 {
-        self.clock.now_ms()
+        (self.clock)()
     }
 
     pub fn nonce(&self) -> String {

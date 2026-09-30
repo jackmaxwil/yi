@@ -997,14 +997,7 @@ fn prompt_text(prompt: &AgentMessage) -> String {
         AgentMessage::User {
             content: UserContent::Blocks(blocks),
             ..
-        } => blocks
-            .iter()
-            .filter_map(|block| match block {
-                yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        } => yi_types::message::join_text(blocks, "\n"),
         _ => String::new(),
     }
 }
@@ -1129,6 +1122,18 @@ pub(crate) async fn until<T>(
             }
             std::ops::ControlFlow::Continue(None) => woken.await,
         }
+    }
+}
+
+pub async fn next_event(
+    events: &mut broadcast::Receiver<AgentEvent>,
+) -> Option<Result<AgentEvent, yi_types::event::EventGap>> {
+    match events.recv().await {
+        Ok(event) => Some(Ok(event)),
+        Err(broadcast::error::RecvError::Lagged(dropped)) => {
+            Some(Err(yi_types::event::EventGap { dropped }))
+        }
+        Err(broadcast::error::RecvError::Closed) => None,
     }
 }
 
