@@ -2085,8 +2085,10 @@ mod refusals {
             text.contains("init todos[1]: label is 81 chars, the cap is 80"),
             "{text}"
         );
-        let schema = tool.schema()["properties"]["todos"]["description"].to_string();
-        assert!(schema.contains("label (at most 80 chars)"), "{schema}");
+        let schema =
+            tool.schema()["properties"]["todos"]["items"]["properties"]["label"]["description"]
+                .to_string();
+        assert!(schema.contains("at most 80 chars"), "{schema}");
         let at_cap =
             serde_json::json!({"op": "init", "goal": "ship it", "todos": todos("é".repeat(80))});
         admitted(&tool, at_cap)?;
