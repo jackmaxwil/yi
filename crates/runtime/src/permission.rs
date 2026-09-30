@@ -139,8 +139,20 @@ pub enum Containment {
     /// Inside the sandbox, with these directories writable besides the holder's tree.
     Contained {
         widen: Vec<PathBuf>,
+        /// The gate allowed the call outright, so it may run where no sandbox can hold it: an
+        /// `exec://` source, which only ever runs on the host.
+        gate_allowed: bool,
     },
     Uncontained,
+}
+
+/// Why a command must run outside the sandbox, whoever allowed it: it needs the network (past
+/// loopback) or reads a credential store the profile hides.
+pub(crate) fn leaves_sandbox(command: &str, context: &CatastrophicContext) -> Option<&'static str> {
+    if yi_permission::needs_host(command) {
+        return Some("network");
+    }
+    yi_permission::command_reads_credentials(command, context).map(|_| "credential stores")
 }
 
 /// Never widened, even through a link: `$HOME`, `~/.yi` (harness, MCP store, config, sessions,
@@ -310,14 +322,57 @@ impl PermissionBroker {
             .cloned()
     }
 
-    fn containment_with(&self, refused: Option<PathBuf>) -> Containment {
+    fn containment_with(&self, refused: Option<PathBuf>, gate_allowed: bool) -> Containment {
         let mut widen = self
             .kept_writes
             .lock()
             .map(|kept| kept.clone())
             .unwrap_or_default();
         widen.extend(refused);
-        Containment::Contained { widen }
+        Containment::Contained {
+            widen,
+            gate_allowed,
+        }
+    }
+
+    /// An allowed bash call runs contained unless it must leave (#600 stage 2b); `Err` asks, as a
+    /// refused contained call does, save the session pass a kept rule gives a pathless refusal.
+    fn allowed_outcome(
+        &self,
+        command: Option<&str>,
+        refusal: Option<&yi_tools::SandboxRefusal>,
+        ruled: bool,
+        reason: String,
+    ) -> Result<CallOutcome, String> {
+        let outside = |reason: String| CallOutcome {
+            allowed: true,
+            reason,
+            containment: Containment::Uncontained,
+        };
+        let Some(command) = command.filter(|_| self.sandbox.is_some()) else {
+            return Ok(outside(reason));
+        };
+        if self.mode() == PermissionMode::Yolo {
+            return Ok(outside(reason));
+        }
+        if let Some(why) = leaves_sandbox(command, &self.context) {
+            return Ok(outside(format!(
+                "{reason}; it runs outside the sandbox ({why})"
+            )));
+        }
+        match refusal {
+            None => Ok(CallOutcome {
+                allowed: true,
+                reason,
+                containment: self.containment_with(None, true),
+            }),
+            Some(yi_tools::SandboxRefusal::Scopes(_)) if ruled => Ok(outside(format!(
+                "{reason}; it runs outside the sandbox (a kept rule, and the sandbox refused it naming no path)"
+            ))),
+            Some(_) => Err(format!(
+                "the sandbox refused its last contained run ({reason})"
+            )),
+        }
     }
 
     /// What approving a bash call runs as, and the clause its question adds: a call needing the
@@ -334,14 +389,11 @@ impl PermissionBroker {
             let note = format!("; approving runs this one call outside the sandbox ({why})");
             (Containment::Uncontained, note)
         };
-        if yi_permission::needs_host(command) {
-            return outside("network");
-        }
-        if yi_permission::command_reads_credentials(command, &self.context).is_some() {
-            return outside("credential stores");
+        if let Some(why) = leaves_sandbox(command, &self.context) {
+            return outside(why);
         }
         match refusal {
-            None => (self.containment_with(None), String::new()),
+            None => (self.containment_with(None, false), String::new()),
             Some(yi_tools::SandboxRefusal::Scopes(_)) => outside("the refusal named no path"),
             Some(yi_tools::SandboxRefusal::Path(path)) => {
                 let dir = path.parent().unwrap_or(path);
@@ -350,7 +402,7 @@ impl PermissionBroker {
                     return outside(&format!("`{}` is protected", dir.display()));
                 }
                 let note = format!("; approving widens this run by `{}`", dir.display());
-                (self.containment_with(Some(dir)), note)
+                (self.containment_with(Some(dir), false), note)
             }
         }
     }
@@ -530,22 +582,28 @@ impl PermissionBroker {
             &active_holds,
             &self.context,
         );
+        let ruled = session_rules.decision_for(rule_kind, &canonical) == Some(RuleDecision::Allow)
+            || session_rules.scoped_allow(&call, &self.context);
         drop(session_rules);
         let refusal = self.retried_refusal(command);
         let (title, description, reviewable, reason) = match decision {
             Decision::Allow { reason } => {
-                return CallOutcome {
-                    allowed: true,
-                    reason,
-                    containment: Containment::Uncontained,
-                };
+                match self.allowed_outcome(command, refusal.as_ref(), ruled, reason) {
+                    Ok(outcome) => return outcome,
+                    Err(reason) => (
+                        format!("{tool_name} requires permission"),
+                        format!("{reason}: {display}"),
+                        true,
+                        reason,
+                    ),
+                }
             }
             Decision::Deny { reason } => return self.denied(reason),
             Decision::Contain { reason } if self.sandbox.is_some() && refusal.is_none() => {
                 return CallOutcome {
                     allowed: true,
                     reason,
-                    containment: self.containment_with(None),
+                    containment: self.containment_with(None, false),
                 };
             }
             // A containment Yi cannot enforce, or one the sandbox already refused, is the same
@@ -566,7 +624,7 @@ impl PermissionBroker {
         // An "always" on a widened retry keeps the directory, never a rule that would run the
         // command itself outside the sandbox.
         let kept = match (&containment, &refusal) {
-            (Containment::Contained { widen }, Some(yi_tools::SandboxRefusal::Path(_))) => {
+            (Containment::Contained { widen, .. }, Some(yi_tools::SandboxRefusal::Path(_))) => {
                 widen.last().map(|dir| yi_permission::write_grant(dir))
             }
             _ => None,
@@ -598,7 +656,7 @@ impl PermissionBroker {
         if !outcome.allowed {
             return outcome;
         }
-        if let (Some(grant), Some(refusal), Containment::Contained { widen }) =
+        if let (Some(grant), Some(refusal), Containment::Contained { widen, .. }) =
             (&kept, &refusal, &containment)
             && self.keeps(grant)
             && let (Ok(mut kept), Ok(mut failures), Some(dir)) = (
@@ -611,9 +669,19 @@ impl PermissionBroker {
             failures.remove(refusal);
         }
         CallOutcome {
+            allowed: true,
+            reason: format!("{}{note}", outcome.reason),
             containment,
-            ..outcome
         }
+    }
+
+    /// The line an allowed bash call's result carries when it ran outside a sandbox that exists:
+    /// the tool text promises containment, so leaving it is said where the model reads.
+    pub fn outside_notice(&self, tool_name: &str, outcome: &CallOutcome) -> Option<String> {
+        let outside = outcome.allowed && outcome.containment == Containment::Uncontained;
+        let promised =
+            tool_name == "bash" && self.sandbox.is_some() && self.mode() != PermissionMode::Yolo;
+        (outside && promised).then(|| format!("sandbox: {}", outcome.reason))
     }
 
     fn keeps(&self, grant: &yi_permission::Grant) -> bool {

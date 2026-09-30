@@ -135,12 +135,15 @@ pub fn refuse_armed(
         &bash(command),
         Some(command),
     );
-    match (outcome.allowed, outcome.containment) {
-        (true, Containment::Uncontained) => None,
-        (true, Containment::Contained { .. }) => Some(format!(
+    match outcome.containment {
+        _ if !outcome.allowed => Some(format!("Permission denied: {}", outcome.reason)),
+        Containment::Contained {
+            gate_allowed: false,
+            ..
+        } => Some(format!(
             "an exec:// source runs `{command}` outside the sandbox, which allows it only contained: run it with bash in a turn, or allow it by a permission rule"
         )),
-        (false, _) => Some(format!("Permission denied: {}", outcome.reason)),
+        Containment::Contained { .. } | Containment::Uncontained => None,
     }
 }
 
@@ -321,7 +324,7 @@ impl AgentTool for ToolAdapter {
                     };
                 }
             }
-            let mut contained: Option<Arc<PermissionBroker>> = None;
+            let (mut contained, mut outside): (Option<Arc<PermissionBroker>>, _) = (None, None);
             if let Some(broker) = permission {
                 let reporter = Arc::clone(&broker);
                 let gate_tool = Arc::clone(&tool);
@@ -344,9 +347,11 @@ impl AgentTool for ToolAdapter {
                 .await;
                 match outcome {
                     Ok(outcome) if outcome.allowed => {
-                        if let Containment::Contained { widen } = &outcome.containment {
+                        if let Containment::Contained { widen, .. } = &outcome.containment {
                             context.sandbox = reporter.sandbox_for(&context.cwd, &wall, widen);
                             contained = context.sandbox.as_ref().map(|_| reporter);
+                        } else if wall.container.is_none() {
+                            outside = reporter.outside_notice(tool.name(), &outcome);
                         }
                     }
                     Ok(outcome) => {
@@ -400,6 +405,8 @@ impl AgentTool for ToolAdapter {
                     };
                     for line in
                         crate::affordance::render(crate::affordance::shipped(), &name, &facts)
+                            .into_iter()
+                            .chain(outside)
                     {
                         crate::affordance::append(&mut output.result, &line);
                     }

@@ -112,6 +112,33 @@ fn an_approved_network_ask_says_it_leaves_the_sandbox() -> TestResult {
     Ok(())
 }
 
+/// An `exec://` source only ever runs on the host, and one the gate allows outright was admitted
+/// before allowed calls ran contained; containing them must not start refusing it.
+#[test]
+fn an_exec_source_the_gate_allows_is_still_admitted() {
+    let project = PathBuf::from("/nonexistent/project");
+    let broker = PermissionBroker::new(
+        PermissionMode::Auto,
+        project.clone(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    )
+    .with_sandbox(Some(yi_tools::Sandbox {
+        writable: vec![project],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+    }));
+    assert_eq!(
+        yi_runtime::tools::refuse_armed("git status", false, Some(&broker), ""),
+        None
+    );
+    assert!(
+        yi_runtime::tools::refuse_armed("touch x", false, Some(&broker), "").is_some(),
+        "a source the gate only contains is still refused"
+    );
+}
+
 /// A refusal at `~/x` would widen by the whole home directory, and one under `~/.yi` by the
 /// store the host runs commands from; both leave the sandbox for one call, and say so.
 #[test]
@@ -158,7 +185,10 @@ fn a_retry_is_widened_by_its_dir_but_never_by_home_or_yi_state() -> TestResult {
             Some(dir) => {
                 assert_eq!(
                     outcome.containment,
-                    Containment::Contained { widen: vec![dir] }
+                    Containment::Contained {
+                        widen: vec![dir],
+                        gate_allowed: false
+                    }
                 );
                 assert!(text.contains("approving widens this run by"), "{text}");
             }
@@ -209,6 +239,7 @@ fn always_on_a_widened_retry_keeps_the_dir_and_the_sandbox() -> TestResult {
     };
     let widened = Containment::Contained {
         widen: vec![lane.clone()],
+        gate_allowed: false,
     };
     assert_eq!(touch("c1", "x").containment, widened);
     assert_eq!(
