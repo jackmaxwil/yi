@@ -29,21 +29,24 @@ pub struct OpenAiOptions {
     pub stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
-/// A `sort` disables OpenRouter's price weighting and Auto Exacto and doubled row 0023's cost;
-/// the deprioritisers push a slow upstream to the back of the list at catalog price.
-pub const DEFAULT_ROUTING: &str =
-    r#"{"preferred_min_throughput":{"p50":20},"preferred_max_latency":{"p50":10}}"#;
-
-pub fn routing_params(model: &Model, options: &OpenAiOptions) -> Option<Value> {
+/// OpenRouter routes by default: Auto Exacto ranks hosts on tool calls and `session_id` keeps a
+/// conversation on one, so yi names a provider object only from config or for a schema's hosts.
+pub fn routing_params(model: &Model, options: &OpenAiOptions, schema: bool) -> Option<Value> {
     if !model.base_url.contains("openrouter.ai") {
         return None;
     }
-    Some(
-        options
-            .routing
-            .clone()
-            .unwrap_or_else(|| serde_json::from_str(DEFAULT_ROUTING).unwrap_or(Value::Null)),
-    )
+    let mut routing = options.routing.clone();
+    if schema {
+        // Invariant: a schema only reaches a host that takes `response_format`; the rest ignore it.
+        let object = routing.get_or_insert_with(|| json!({}));
+        if !object.is_object() {
+            *object = json!({});
+        }
+        if let Some(object) = object.as_object_mut() {
+            object.insert("require_parameters".to_owned(), json!(true));
+        }
+    }
+    routing
 }
 
 fn fnv1a(input: &str) -> u64 {
@@ -346,7 +349,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if let Some(ttl) = prompt_cache_retention(model) {
         params["prompt_cache_retention"] = json!(ttl);
     }
-    if let Some(routing) = routing_params(model, options) {
+    if let Some(routing) = routing_params(model, options, context.schema.is_some()) {
         params["provider"] = routing;
     }
     if let Some(schema) = &context.schema {
