@@ -1125,6 +1125,18 @@ pub(crate) async fn until<T>(
     }
 }
 
+pub async fn next_event(
+    events: &mut broadcast::Receiver<AgentEvent>,
+) -> Option<Result<AgentEvent, yi_types::event::EventGap>> {
+    match events.recv().await {
+        Ok(event) => Some(Ok(event)),
+        Err(broadcast::error::RecvError::Lagged(dropped)) => {
+            Some(Err(yi_types::event::EventGap { dropped }))
+        }
+        Err(broadcast::error::RecvError::Closed) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ops::ControlFlow;
