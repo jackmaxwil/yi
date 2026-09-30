@@ -63,6 +63,7 @@ CREDENTIAL_SUBPATHS = [
     ".pypirc",
     ".cargo/credentials",
     ".cargo/credentials.toml",
+    ".password-store",
 ]
 
 # These three are hand-copied out of Rust, so --selfcheck reads the Rust back

@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 /// Credential stores, protected recursively: destroying one private key inside
 /// ~/.ssh is as damaging as destroying the directory. yi's own provider logins, OAuth profiles
 /// and MCP OAuth tokens are keys too (#887), and so are the CLI logins egress would carry (#598).
-const PROTECTED_CREDENTIAL_SUBPATHS: [&str; 17] = [
+const PROTECTED_CREDENTIAL_SUBPATHS: [&str; 18] = [
     ".ssh",
     ".gnupg",
     ".aws",
@@ -22,6 +22,7 @@ const PROTECTED_CREDENTIAL_SUBPATHS: [&str; 17] = [
     ".pypirc",
     ".cargo/credentials",
     ".cargo/credentials.toml",
+    ".password-store",
 ];
 
 /// Home directories whose wholesale destruction is unacceptable but whose
