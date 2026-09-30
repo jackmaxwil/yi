@@ -275,7 +275,10 @@ pub struct Page {
 impl Page {
     /// Invariant: the host boundary refuses a negative, fractional or zero number; it never
     /// clamps one into a read nobody asked for. A huge limit is the rest of the read.
-    pub fn from_payload(payload: &serde_json::Map<String, Value>) -> Result<Option<Self>, String> {
+    pub fn from_payload(
+        payload: &serde_json::Map<String, Value>,
+        tool: &str,
+    ) -> Result<Option<Self>, String> {
         let read = |key: &str| -> Result<Option<usize>, String> {
             match payload.get(key) {
                 None | Some(Value::Null) => Ok(None),
@@ -284,13 +287,13 @@ impl Page {
                     .and_then(|number| usize::try_from(number).ok())
                     .map(Some)
                     .ok_or_else(|| {
-                        format!("fetch \"{key}\" must be a non-negative integer, got {value}")
+                        format!("{tool} \"{key}\" must be a non-negative integer, got {value}")
                     }),
             }
         };
         let (offset, limit) = (read("offset")?, read("limit")?);
         if limit == Some(0) {
-            return Err("fetch \"limit\" must be at least 1".to_owned());
+            return Err(format!("{tool} \"limit\" must be at least 1"));
         }
         Ok((offset.is_some() || limit.is_some()).then(|| Self {
             offset: offset.unwrap_or(0),
