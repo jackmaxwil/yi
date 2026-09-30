@@ -282,9 +282,8 @@ fn a_page_the_host_cannot_honour_is_refused_not_clamped() -> TestResult {
     Ok(())
 }
 
-/// Dies with `offset` and `limit` dropped for a url (the whole `history://` listing comes back),
-/// with the page's unit unnamed, with `limit: 0` read as the rest of the listing, or with a
-/// negative offset read as none.
+/// Dies with a url's `offset` and `limit` dropped, its unit unnamed, `limit: 0` read as the
+/// rest of the listing, or a negative offset read as none.
 #[test]
 fn a_url_read_through_the_read_tool_keeps_its_window() -> Result<(), Box<dyn Error>> {
     let (workspace, resolver, _store) = paged_workspace()?;
