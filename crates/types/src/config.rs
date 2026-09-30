@@ -43,8 +43,8 @@ pub struct UserConfig {
     pub lanes: Option<crate::lane::LanesConfig>,
     pub catalog: Option<CatalogConfig>,
     pub telemetry: Option<TelemetryConfig>,
-    /// `routing`: OpenRouter's `provider` object, sent verbatim; absent deprioritises
-    /// upstreams under 20 tok/s or over 10 s p50 latency, and `{}` sends nothing.
+    /// `routing`: OpenRouter's `provider` object, sent verbatim; absent, no object is sent and
+    /// OpenRouter routes by its own ranking. A schema request adds `require_parameters`.
     pub routing: Option<serde_json::Value>,
     /// `rlm.maxDepth`, how deep a family may nest (default 1, ceiling 3) (D165).
     pub rlm: Option<RlmConfig>,
