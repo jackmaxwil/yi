@@ -71,6 +71,16 @@ fn same_file(_left: &Path, _right: &Path) -> bool {
     false
 }
 
+pub const OK: &str = "syntax: ok";
+
+/// The verdict a result reports over many files: the first failure, else `ok`.
+pub fn worst(kept: Option<String>, line: String) -> Option<String> {
+    match kept {
+        Some(kept) if kept != OK => Some(kept),
+        _ => Some(line),
+    }
+}
+
 /// `syntax: ok`, `syntax: error line N: <message>`, or `syntax: check timed out`; None when
 /// no checker applies or its program is absent.
 pub fn verdict(path: &Path) -> Option<String> {

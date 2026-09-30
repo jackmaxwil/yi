@@ -658,12 +658,10 @@ impl GrepTool {
                     let absolute = crate::diff::patch(&file.normalized, &after, canonical);
                     patches.push_str(absolute.as_str());
                     if let Some(line) = verdict {
-                        if line != "syntax: ok" {
+                        if line != crate::syntax::OK {
                             rows.push(format!("{}: {line}", file.display));
                         }
-                        if syntax.as_deref().is_none_or(|kept| kept == "syntax: ok") {
-                            syntax = Some(line);
-                        }
+                        syntax = crate::syntax::worst(syntax, line);
                     }
                     if let Some(state) = &self.hashline {
                         crate::hashline::tool::record_view_snapshot(
