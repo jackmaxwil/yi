@@ -654,10 +654,16 @@ impl GrepTool {
             match crate::builtins::land(home.as_deref(), Path::new(&file.canonical), &persisted) {
                 Ok(verdict) => {
                     written = written.saturating_add(1);
-                    patches.push_str(patch.as_str());
-                    if let Some(line) = verdict.filter(|line| line != "syntax: ok") {
-                        rows.push(format!("{}: {line}", file.display));
-                        syntax.get_or_insert(line);
+                    let canonical = Path::new(&file.canonical);
+                    let absolute = crate::diff::patch(&file.normalized, &after, canonical);
+                    patches.push_str(absolute.as_str());
+                    if let Some(line) = verdict {
+                        if line != "syntax: ok" {
+                            rows.push(format!("{}: {line}", file.display));
+                        }
+                        if syntax.as_deref().is_none_or(|kept| kept == "syntax: ok") {
+                            syntax = Some(line);
+                        }
                     }
                     if let Some(state) = &self.hashline {
                         crate::hashline::tool::record_view_snapshot(
@@ -671,7 +677,6 @@ impl GrepTool {
                 Err(error) => failures.push(format!("{}: {error}", file.display)),
             }
         }
-        let syntax = syntax.or_else(|| (written > 0).then(|| "syntax: ok".to_owned()));
         if changed == 0 {
             rows.push(if collected.total == 0 {
                 "No matches found".to_owned()
