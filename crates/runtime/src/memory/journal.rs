@@ -102,7 +102,10 @@ impl<'a> Journal<'a> {
             }
             replay.records.push(record);
         }
-        if let Some((offset, _)) = lines.torn {
+        // An unterminated run past the cap is torn too: the next append would glue onto it.
+        let unterminated = lines.lines.last().filter(|line| line.next.is_none());
+        let torn = lines.torn.map(|(offset, _)| offset);
+        if let Some(offset) = torn.or(unterminated.map(|line| line.offset)) {
             log.set_aside(offset, &yi_session::nonce())
                 .map_err(journal)?;
         }
