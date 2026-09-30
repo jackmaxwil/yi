@@ -84,3 +84,4 @@ mod todo_e2e;
 mod todo_mirror;
 mod undo_to;
 mod wall_e2e;
+mod worker_prompt;
