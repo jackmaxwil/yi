@@ -44,7 +44,8 @@ pub(crate) struct Service {
     /// A revoke or the parent's close is a deliberate stop: nothing respawns after it.
     stopped: bool,
     prompt: String,
-    kwargs: Map<String, Value>,
+    /// Invariant: what admission ran with, a reader's wall included: a respawn builds from these.
+    pub(super) kwargs: Map<String, Value>,
 }
 
 impl Standing {
@@ -145,7 +146,7 @@ impl SubagentHost {
             restarts: Vec::new(),
             stopped: false,
             prompt: prompt.clone(),
-            kwargs: kwargs.clone(),
+            kwargs: Map::new(),
         };
         self.admit(prompt, kwargs, Standing::Service(service))
     }
@@ -210,6 +211,7 @@ impl SubagentHost {
             Ok(session) => Arc::new(session),
             Err(why) => return refused(why),
         };
+        self.options.family_live.hold(&session);
         watch_kernel(&session);
         let requested = session.abort_epoch();
         let dead = {
