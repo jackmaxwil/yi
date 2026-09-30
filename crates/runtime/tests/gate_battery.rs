@@ -12,7 +12,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 /// A working day of commands, with the verdict each one earns in auto. Rows are
 /// what a dry run of `yi gate` prints, so a change in policy shows up here as a
 /// diff a person can read rather than as a number.
-const BATTERY: [(&str, &str); 118] = [
+const BATTERY: [(&str, &str); 123] = [
     // Reads and searches.
     ("ls -la", "allow"),
     ("cat Cargo.toml", "allow"),
@@ -124,6 +124,13 @@ const BATTERY: [(&str, &str); 118] = [
     ("cp a.txt b.txt", "contain"),
     ("mv a.txt b.txt", "contain"),
     // Recognized destruction.
+    // #911 review: an allowed call runs uncontained, so a key read or an env listing asks or
+    // runs under `env -u`.
+    ("printenv OPENAI_API_KEY", "contain"),
+    ("env", "ask"),
+    ("cat ~/.n?trc", "ask"),
+    ("cat ~/.config/*/hosts.yml", "ask"),
+    ("grep -r oauth_token ~/.config", "ask"),
     ("rm -rf node_modules", "ask"),
     ("rm -rf target", "ask"),
     ("chmod -R 755 .", "ask"),

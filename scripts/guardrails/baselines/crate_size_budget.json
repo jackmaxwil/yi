@@ -3,16 +3,16 @@
   "ai": 5474,
   "cli": 5831,
   "console": 9648,
-  "context": 1589,
+  "context": 1603,
   "kernel": 4636,
   "loop": 1447,
   "mcp-cli": 2318,
   "oauth": 1207,
   "orb": 1348,
-  "permission": 1957,
-  "runtime": 54340,
+  "permission": 2063,
+  "runtime": 54318,
   "session": 2006,
-  "tools": 13961,
+  "tools": 14064,
   "tui": 14772,
-  "types": 9516
+  "types": 9518
 }

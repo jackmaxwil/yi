@@ -1,0 +1,5 @@
+{
+  "still_running": "child \"asker\" is still running",
+  "asking": "asker is asking you",
+  "settled": "the family is settled: nothing is running; stop waiting"
+}
