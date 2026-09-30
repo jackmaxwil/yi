@@ -398,22 +398,19 @@ fn permission_options_keep_their_bytes_for_zero_one_and_two_grants() -> TestResu
         grant("edits under src"),
         grant("edits anywhere in this tree"),
     ];
-    let option = |id: &str, name: &str| {
-        let kind = id.trim_end_matches("_1");
-        json!({"optionId": id, "name": name, "kind": kind})
-    };
-    let (once, reject) = (
-        option("allow_once", "Allow once"),
-        option("reject_once", "Reject"),
-    );
-    let first = option("allow_always", "Always allow edits under src");
+    let option =
+        |id: &str, name: &str, kind: &str| json!({"optionId": id, "name": name, "kind": kind});
+    let once = option("allow_once", "Allow once", "allow_once");
+    let reject = option("reject_once", "Reject", "reject_once");
+    let always = |id: &str, name: &str| option(id, name, "allow_always");
+    let first = always("allow_always", "Always allow edits under src");
     let expected = [
-        json!([once, option("allow_always", "Always allow"), reject]),
+        json!([once, always("allow_always", "Always allow"), reject]),
         json!([once, first, reject]),
         json!([
             once,
             first,
-            option("allow_always_1", "Always allow edits anywhere in this tree"),
+            always("allow_always_1", "Always allow edits anywhere in this tree"),
             reject
         ]),
     ];
