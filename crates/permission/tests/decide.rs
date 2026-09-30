@@ -240,6 +240,25 @@ fn identities_keep_their_bytes() -> TestResult {
         yi_permission::write_grant(std::path::Path::new("/w/ü")).canonical,
         "22:yi-permission-state-v2\n5:write\n5:/w/ü\n"
     );
+    let targets = [PathBuf::from("/home/user/project/src/a.rs")];
+    let dirs: Vec<String> = grants(&write_call(&targets, true), &context())
+        .into_iter()
+        .map(|grant| grant.canonical)
+        .collect();
+    assert_eq!(
+        dirs,
+        [
+            "22:yi-permission-state-v2\n3:dir\n22:/home/user/project/src\n",
+            "22:yi-permission-state-v2\n3:dir\n18:/home/user/project\n",
+        ]
+    );
+    let command = "git worktree add ../a b";
+    let canonical = canonical_command_identity(command, "/home/user/project");
+    let scope = grants(&bash_call(command, &canonical), &context());
+    assert_eq!(
+        scope.first().map(|grant| grant.canonical.as_str()),
+        Some("22:yi-permission-state-v2\n5:scope\n12:git worktree\n18:/home/user/project\n")
+    );
     Ok(())
 }
 

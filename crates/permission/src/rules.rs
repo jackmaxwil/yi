@@ -87,12 +87,10 @@ impl PathGlob {
     }
 }
 
-/// Session rule state over the yi-types wire shape: digests are recomputed
-/// from `canonical` on load and never trusted from disk.
+/// Session rule state over the yi-types wire shape, matched on each rule's `canonical`.
 #[derive(Default)]
 pub struct SessionRules {
     state: SessionPermissionState,
-    digests: Vec<crate::ActionId>,
 }
 
 impl SessionRules {
@@ -102,12 +100,7 @@ impl SessionRules {
 
     pub fn load(state: SessionPermissionState) -> Result<Self, RuleStateError> {
         validate(&state)?;
-        let digests = state
-            .rules
-            .iter()
-            .map(|rule| crate::ActionId::of(&rule.canonical))
-            .collect();
-        Ok(Self { state, digests })
+        Ok(Self { state })
     }
 
     pub fn state(&self) -> &SessionPermissionState {
@@ -115,15 +108,11 @@ impl SessionRules {
     }
 
     pub fn decision_for(&self, kind: RuleKind, canonical: &str) -> Option<RuleDecision> {
-        let wanted = crate::ActionId::of(canonical);
         self.state
             .rules
             .iter()
-            .zip(&self.digests)
-            .find(|(rule, rule_digest)| {
-                rule.kind == kind && **rule_digest == wanted && rule.canonical == canonical
-            })
-            .map(|(rule, _)| rule.decision)
+            .find(|rule| rule.kind == kind && rule.canonical == canonical)
+            .map(|rule| rule.decision)
     }
 
     pub fn insert(
@@ -164,7 +153,6 @@ impl SessionRules {
             decision,
             generation: id,
         });
-        self.digests.push(crate::ActionId::of(canonical));
         Ok(())
     }
 }
