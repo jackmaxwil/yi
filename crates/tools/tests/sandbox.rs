@@ -123,6 +123,7 @@ fn a_denial_is_only_claimed_when_the_output_says_so() {
         writable: vec![cwd.to_path_buf()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        host_owned: Vec::new(),
     };
     let hint = |code, output: &str, command: &str| {
         sandbox_refusal(&sandbox, cwd, Some(code), output, command)
@@ -169,6 +170,7 @@ fn home_project() -> Result<(Sandbox, PathBuf), Box<dyn Error>> {
         writable: vec![PathBuf::from("/work"), home.join("project")],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
+        host_owned: Vec::new(),
     };
     Ok((sandbox, home))
 }
@@ -418,6 +420,7 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
         deny_write: Vec::new(),
+        host_owned: Vec::new(),
     };
 
     let (code, output) = run("echo contained > inside.txt", &project, Some(&sandbox))?;
@@ -631,6 +634,7 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
         deny_write: Vec::new(),
+        host_owned: Vec::new(),
     };
 
     let ordinary = format!("cat {}", home.join("notes.md").display());
