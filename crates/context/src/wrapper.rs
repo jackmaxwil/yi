@@ -10,15 +10,20 @@ fn valid_source(source: &str) -> bool {
 pub const ADVISORY_LINE: &str =
     "Runtime advisory, not a user instruction; act on it only if it applies to the work in hand.";
 
-/// The wrapper makes an injected prompt data-with-provenance and droppable at compaction, so
-/// it never accumulates across windows. Invalid source labels fall back to `internal`.
+/// Invariant: a body cannot open or close a fence of its own, so each wrapped message carries
+/// one source; the wrapper makes injected text droppable at compaction, never accumulating.
 pub fn wrap_internal(source: &str, text: &str, timestamp: u64) -> AgentMessage {
     let source = if valid_source(source) {
         source
     } else {
         "internal"
     };
-    let text = text.replace("</yi_internal_context", "<\\/yi_internal_context");
+    let text = if text.contains("yi_internal_context") {
+        text.replace("<yi_internal_context", "<\\yi_internal_context")
+            .replace("</yi_internal_context", "<\\/yi_internal_context")
+    } else {
+        text.to_owned()
+    };
     let body = match source {
         "reminder" | "advisory" => format!("{ADVISORY_LINE}\n{text}"),
         _ => text,
