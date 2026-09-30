@@ -1016,5 +1016,14 @@ fn a_memory_journal_sets_its_torn_tail_aside() -> Result<(), Box<dyn std::error:
         ["{\"at\":1,\"na"],
         "the torn bytes are kept beside it"
     );
+    // A torn run longer than a record may be is torn too: the next append must land on a clean
+    // line, not glue itself to the run.
+    std::fs::write(&journal, format!("{whole}{}", "x".repeat(RECORD_CAP + 10)))?;
+    store.rebuild()?;
+    assert_eq!(
+        std::fs::read_to_string(&journal)?,
+        whole,
+        "the long torn run left the journal"
+    );
     Ok(())
 }
