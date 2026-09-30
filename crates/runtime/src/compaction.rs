@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use yi_context::{
     Preparation, Settings, Tokens, Window, compose_summary, convert_to_llm, drop_internal,
-    estimate_context, estimate_message, is_cut_point, prepare_compaction, prompts,
+    estimate_context, estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
     serialize_conversation, should_compact,
 };
 use yi_loop::interrupt::InterruptSignal;
@@ -243,6 +243,10 @@ pub struct Compactor {
     standing: Mutex<Option<Standing>>,
     /// The message that opened the latest run, which a rescue keeps (D337).
     opening: Mutex<Option<AgentMessage>>,
+    /// The newest reply with a usage that the latest compaction kept: its count is the history
+    /// before that compaction, so `due` does not read it (D338).
+    /// ponytail: in memory, so a resumed session compacts once more; persist with the window.
+    stale: Mutex<Option<AgentMessage>>,
 }
 
 struct Raised<'a>(&'a AtomicBool);
@@ -363,6 +367,7 @@ impl Compactor {
             instructions: Mutex::new(None),
             standing: Mutex::new(None),
             opening: Mutex::new(None),
+            stale: Mutex::new(None),
         }
     }
 
@@ -447,9 +452,22 @@ impl Compactor {
         // The whole request, prefix included, leaves the reserve for the summary request (#947):
         // the provider's count, then bytes/3 as the rescue charges it.
         let estimate = estimate_context(messages);
-        let sent = estimate
-            .usage_tokens
-            .saturating_add(wide(estimate.trailing_tokens));
+        let stale = self.stale.lock().ok().and_then(|slot| slot.clone());
+        let counted = estimate
+            .last_usage_index
+            .is_some_and(|index| Some(&messages[index]) != stale.as_ref());
+        let sent = if counted {
+            estimate
+                .usage_tokens
+                .saturating_add(wide(estimate.trailing_tokens))
+        } else {
+            wide(
+                messages
+                    .iter()
+                    .map(estimate_message)
+                    .fold(Tokens(0), Tokens::saturating_add),
+            )
+        };
         should_compact(sent, Tokens(model.context_window), &self.settings)
     }
 
@@ -691,6 +709,12 @@ impl Compactor {
             saved?;
         }
         *lock_window(&self.window) = next;
+        if let Ok(mut slot) = self.stale.lock() {
+            *slot = retained_tail
+                .iter()
+                .rfind(|message| reply_tokens(message).is_some())
+                .cloned();
+        }
         let mut replacement = Vec::with_capacity(retained_tail.len().saturating_add(1));
         replacement.push(AgentMessage::CompactionSummary {
             summary: composed,

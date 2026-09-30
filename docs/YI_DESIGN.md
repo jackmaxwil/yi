@@ -180,13 +180,16 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
 - `convert_to_llm` wraps `custom` kinds `heartbeat_prompt, advisory, goal_prompt, ledger_prompt,
   plan_dispatch, reminder` as `<yi_internal_context source="…">`; compaction drops them.
 - Due when scheduled (`/compact`, `compact.run`) or when the whole request would leave less than
-  16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338).
+  16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338). A
+  usage the latest compaction kept in its tail is stale, and with none the messages count alone
+  at bytes/3.
   The cut keeps 20,000 recent tokens, never at a tool result; up to 64,000 tokens of summarized
   user text join the tail.
 - The summarizer replays the loop's request (system prompt, tools, effort of its last request) and
   converted messages plus a trailing directive; `models.summarizer` on another model sends no tools
   or thinking. A blank or failed reply retries once without the first quarter, cold; a cold
-  attempt has no tools, so it sends the history as one labeled text (`serialize_conversation`).
+  attempt has no tools, so it sends the history as one labeled text (`serialize_conversation`,
+  tool output indented under its label); with another summarizer model every attempt is cold.
   If that fails too the history stays, one `[compaction failed: …]` notice is queued, and the
   run asks no more (the next prompt retries, `/compact` instructions kept). A history at or past
   the window gets two cold attempts instead, never opening on a tool result; if both fail, the

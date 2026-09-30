@@ -447,6 +447,50 @@ fn fetch_entry(seeded: &Recalled) -> Result<String, Box<dyn Error>> {
     Ok(resolver.fetch(&url)?.text)
 }
 
+/// #950 F1: the tail an idle `/compact` keeps holds the reply whose usage counted the whole
+/// history before it. Read as the count, it made the next prompt compact again: a second summary
+/// request, summarizing a summary.
+#[tokio::test]
+async fn the_prompt_after_an_idle_compaction_does_not_compact_again() -> Result<(), Box<dyn Error>>
+{
+    let provider = Arc::new(ProviderStream::new(None));
+    let summary = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+    provider.queue_faux(vec![
+        reply_with_usage(&"answer ".repeat(20), 1_400, 1_500),
+        summary("## Goal\nFIRST"),
+        summary("ok"),
+        summary("## Goal\nSECOND"),
+    ]);
+    let session = session_for_compaction(Arc::clone(&provider));
+    session.prompt("ask")?;
+    session.wait_idle().await;
+    assert!(
+        session
+            .compact_now()
+            .await
+            .is_ok_and(|outcome| outcome.applied()),
+        "the idle compaction applies"
+    );
+    session.prompt("next ask")?;
+    session.wait_idle().await;
+    let left = provider
+        .faux
+        .lock()
+        .map_err(|_| "faux lock")?
+        .pending_response_count();
+    assert_eq!(
+        left, 1,
+        "one compaction: the next prompt's request took the reply, no second summary"
+    );
+    let messages = session.messages();
+    assert!(
+        matches!(messages.first(), Some(AgentMessage::CompactionSummary { summary, .. })
+            if summary.ends_with("FIRST")),
+        "the idle compaction's summary still leads: {messages:#?}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn compaction_below_threshold_is_a_no_op() -> Result<(), Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None));
@@ -1154,9 +1198,10 @@ async fn a_cold_attempt_on_anthropic_sends_no_tool_block_without_tools()
         );
     }
     let cold: serde_json::Value = serde_json::from_str(cold)?;
+    let sent = cold["messages"].to_string();
     assert!(
-        cold.get("tools").is_none() && cold["messages"].to_string().contains("probe"),
-        "the cold attempt is text, and still carries the tool step: {cold}"
+        cold.get("tools").is_none() && sent.contains("probe()") && sent.contains("result toolu_1"),
+        "the cold attempt is text, and still carries the call and its result: {cold}"
     );
     Ok(())
 }
