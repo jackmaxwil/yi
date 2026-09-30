@@ -679,7 +679,7 @@ fn unshare_works() -> bool {
     })
 }
 
-/// Seatbelt on macOS (no network, the cache dir as the one writable root), a user and network
+/// Seatbelt on macOS (loopback the only network, the cache dir the one writable root), a user and network
 /// namespace on Linux where `unshare` allows one; a parser escape needs neither.
 fn command_for(
     documents: &Documents,
