@@ -329,3 +329,13 @@ fn permission_records_round_trip_with_an_unknown_answerer_and_field()
     assert_eq!(serde_json::to_value(&record)?, later);
     Ok(())
 }
+
+/// A stream reader reads a lost-event gap by its type: the line's bytes are the contract.
+#[test]
+fn an_event_gap_line_round_trips_byte_for_byte() -> Result<(), Box<dyn std::error::Error>> {
+    let line = include_str!("fixtures/event-gap-v1.json").trim_end();
+    let gap: yi_types::event::EventGap = serde_json::from_str(line)?;
+    assert_eq!(gap.dropped, 3);
+    assert_eq!(serde_json::to_string(&gap)?, line);
+    Ok(())
+}

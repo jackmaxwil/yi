@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::args::Args;
 use serde_json::{Map, Value};
 use yi_types::model::Model;
 use yi_types::subagent::{ChildExit, FailClass};
@@ -263,10 +264,10 @@ impl SubagentHost {
     pub(super) fn register_service(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
         let host = Arc::clone(self);
         registry.register("rlm.service", move |payload| {
-            let text = |key: &str| payload.get(key).and_then(Value::as_str).map(str::to_owned);
+            let text = |key: &str| payload.str_of(key).map(str::to_owned);
             let (name, prompt) = (text("name"), text("prompt"));
             let kwargs = payload.get("kwargs").and_then(Value::as_object).cloned();
-            let restart = payload.get("restart").and_then(Value::as_u64);
+            let restart = payload.u64_of("restart");
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let (name, prompt) = name
