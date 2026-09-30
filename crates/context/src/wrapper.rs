@@ -60,14 +60,23 @@ pub fn internal_source_of_custom(custom_type: &str) -> Option<&'static str> {
     }
 }
 
-/// Removes wrapped internal-context messages — applied to the region being
-/// summarized so per-window injections die with their window.
+/// Per-window host nudges the model reads unwrapped, as a redrive's pinned bytes require.
+const HOST_NUDGES: [&str; 5] = [
+    "todo_nudge",
+    "length_redrive",
+    "repeat_break",
+    "spend_alert",
+    "discovery",
+];
+
+/// Removes wrapped internal context and the host nudges, so per-window injections die with it.
 pub fn drop_internal(messages: &[AgentMessage]) -> Vec<AgentMessage> {
     messages
         .iter()
         .filter(|message| {
             if let AgentMessage::Custom { custom_type, .. } = message {
-                return internal_source_of_custom(custom_type).is_none();
+                return internal_source_of_custom(custom_type).is_none()
+                    && !HOST_NUDGES.contains(&custom_type.as_str());
             }
             internal_source(message).is_none()
         })

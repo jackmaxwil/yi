@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.494.0         # bump on any structural change; row goes in CHANGELOG.md
+version: 0.498.0         # bump on any structural change; row goes in CHANGELOG.md
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
