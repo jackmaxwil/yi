@@ -509,23 +509,118 @@ fn one_path_for_both_capture_sinks_is_refused() -> TestResult {
 }
 
 /// Dies with the cassette dropped on the console road: `yi console --faux` reused a listening
-/// daemon that never saw the cassette, so the scripted family met a real model.
+/// daemon that never saw the cassette, so the scripted family met a real model. A headless
+/// console is a client of the same daemon, and `yi serve` never hands the cassette to its
+/// workers (#943).
 #[test]
 fn a_cassette_is_refused_where_it_cannot_reach_the_model() -> TestResult {
     let dir = Scratch::new("yi-faux-console")?;
     let cassette = dir.join("cassette.jsonl");
     std::fs::write(&cassette, "")?;
+    let cassette = cassette.display().to_string();
+    let socket = dir.join("daemon.sock").display().to_string();
+    for road in [
+        vec!["console", "--faux", &cassette],
+        vec!["console", "--headless", "--faux", &cassette],
+        vec!["serve", "--socket", &socket, "--faux", &cassette],
+    ] {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the flag contract is the spawned binary's argument parser"
+        )]
+        let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args(&road)
+            .env("HOME", dir.home()?)
+            .output()?;
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert_eq!(output.status.code(), Some(2), "{road:?}: {stderr}");
+        assert!(
+            stderr.contains("--faux runs in-process only"),
+            "{road:?}: {stderr}"
+        );
+    }
+    Ok(())
+}
+
+/// Incident (#943): `--faux` with `--model openrouter/…` swapped nothing in, and the drive sent
+/// a real request to OpenRouter; only the placeholder key's 401 kept it unbilled. Every egress
+/// rides the proxy here, so any connection the listener sees left the process.
+#[test]
+fn a_cassette_run_with_a_routed_model_stays_offline() -> TestResult {
+    use std::io::Read;
+    let dir = Scratch::new("yi-faux-offline")?;
+    // No `dir.home()`: its prewarm-off config would hide the kernel's venv install.
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home)?;
+    let proxy = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let address = format!("http://{}", proxy.local_addr()?);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let log = std::sync::Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for mut stream in proxy.incoming().flatten() {
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(1)));
+            let mut head = [0u8; 256];
+            let read = stream.read(&mut head).unwrap_or(0);
+            let line = String::from_utf8_lossy(head.get(..read).unwrap_or_default());
+            if let Ok(mut log) = log.lock() {
+                log.push(line.lines().next().unwrap_or_default().to_owned());
+            }
+        }
+    });
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(&cassette, cassette_lines(&[], "scripted and offline"))?;
+    let keys = dir.join("script.keys");
+    std::fs::write(&keys, "wait-idle 20000\nquit\n")?;
+    let frames = dir.join("frames");
     #[expect(
         clippy::disallowed_methods,
-        reason = "the flag contract is the spawned binary's argument parser"
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
     )]
     let output = Command::new(env!("CARGO_BIN_EXE_yi"))
-        .args(["console", "--faux", &cassette.display().to_string()])
-        .env("HOME", dir.home()?)
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "openrouter/anthropic/claude-opus-5",
+            "--faux",
+            &cassette.display().to_string(),
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "--deadline",
+            "30",
+            "ping",
+        ])
+        .env("HOME", &home)
+        .env("OPENROUTER_API_KEY", "sk-or-placeholder")
+        .env("HTTPS_PROXY", &address)
+        .env("HTTP_PROXY", &address)
+        .env("ALL_PROXY", &address)
+        .env_remove("https_proxy")
+        .env_remove("http_proxy")
+        .env_remove("all_proxy")
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert_eq!(output.status.code(), Some(2), "{stderr}");
-    assert!(stderr.contains("--faux runs in-process only"), "{stderr}");
+    assert!(output.status.success(), "drive run must exit 0: {stderr}");
+    // A refresh thread may still be dialing after the drive quits.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let seen = seen.lock().map_err(|_| "proxy log")?.clone();
+    assert!(seen.is_empty(), "--faux left the process: {seen:?}");
+    let mut all_frames = String::new();
+    for entry in std::fs::read_dir(&frames)?.filter_map(Result::ok) {
+        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
+    }
+    for needle in ["scripted and offline", "claude-opus-5"] {
+        assert!(
+            all_frames.contains(needle),
+            "{needle} missing from the frames"
+        );
+    }
     Ok(())
 }
 
