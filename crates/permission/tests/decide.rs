@@ -348,6 +348,63 @@ fn a_credential_read_is_named_before_it_happens() -> TestResult {
     Ok(())
 }
 
+/// #911 review: allowed bash read the new stores by a glob, a parent directory, a link or
+/// letter case, since the belt compared spellings and only paths beneath a store.
+#[test]
+fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
+    let lexical = context();
+    for command in [
+        "cat ~/.n?trc",
+        "cat ~/.config/*/hosts.yml",
+        "cat ~/.{netrc,npmrc}",
+        "grep -r oauth_token ~/.config",
+        "rg token ~",
+        "cat '~/.yi/oauth/acme.json'",
+        "cat /home/*/.netrc",
+    ] {
+        assert!(
+            command_reads_credentials(command, &lexical).is_some(),
+            "{command}"
+        );
+    }
+    // A plain glob never matches a dotfile, and a sibling of a store is not one.
+    for command in [
+        "ls ~/*.md",
+        "cat ~/notes/*.txt",
+        "ls ~/.config/nvim",
+        "cat ~/.cargo/config.toml",
+    ] {
+        assert!(
+            command_reads_credentials(command, &lexical).is_none(),
+            "{command}"
+        );
+    }
+
+    let root = Scratch::new("yi-belt-identity")?;
+    let home = root.join("home");
+    std::fs::create_dir_all(home.join(".config/gh"))?;
+    std::fs::write(home.join(".netrc"), "machine x password y")?;
+    std::os::unix::fs::symlink(home.join(".config"), root.join("cfg"))?;
+    let real = CatastrophicContext {
+        home_dir: Some(home.clone()),
+        working_dir: Some(root.to_path_buf()),
+        workspace_git: Vec::new(),
+    };
+    let home_text = home.display();
+    for command in [
+        format!("cat {home_text}/.NETRC"),
+        "cat cfg/gh/hosts.yml".to_owned(),
+        "grep -r token cfg".to_owned(),
+        "cat cfg/*/hosts.yml".to_owned(),
+    ] {
+        assert!(
+            command_reads_credentials(&command, &real).is_some(),
+            "{command}"
+        );
+    }
+    Ok(())
+}
+
 /// Incident: under `--yolo` a `read` of /etc/nginx/nginx.conf was refused as catastrophic
 /// while `bash cat` printed the same bytes (the 2026-09-10 harness audit, S3). A read is
 /// refused for what it leaks or never finishes: a key, the workspace .git, a directory a walk

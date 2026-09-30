@@ -376,7 +376,9 @@ A pure `decide` over the call, mode, rules, grants, holds and catastrophic conte
   ~/.cargo/credentials[.toml]`, `credential_stores`, D323, D324) and the wall's `deny_read`, each
   bound by its resolved path, unwritable, and with its parents inside a writable root
   unrenamable; the kernel and its `bash()` take the wall too; a contained process starts through
-  `env -u` for every inherited variable named like a secret; no network. Without it, `Contain`
+  `env -u` for every inherited variable a name heuristic marks as a secret (D324); in auto mode the
+  bash read belt judges a store argument by identity, a directory above one and a glob that reaches
+  one; no network. Without it, `Contain`
   becomes a reviewable `Ask`.
 - With `classifier.approve` and `LAYA_API_KEY`, a reviewable auto-mode ask first gets one `noul`
   from the classifier sidecar: P(safe) ≥ 0.9 (0.98 if destructive) allows, ≤ 0.05 asks the user,

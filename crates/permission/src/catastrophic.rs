@@ -416,16 +416,97 @@ fn file_id(_meta: &fs::Metadata) -> Option<FileId> {
 const DESTRUCTIVE_COMMANDS: [&str; 4] = ["rm", "rmdir", "shred", "unlink"];
 
 /// A key read into the transcript has already left the machine, so credential stores are
-/// read-gated too. Path-shaped arguments only: this reads a command, it does not run one.
+/// read-gated too. Path-shaped arguments only: this reads a command, it does not run one. A path
+/// is judged as the read gate judges it, by identity, and a directory in home above a store counts,
+/// since a recursive read walks into it; a glob counts when it can name a store, a directory above
+/// one, or a path inside one (D324). A path hidden in a variable or a substitution is not seen.
 pub fn command_reads_credentials(command: &str, context: &CatastrophicContext) -> Option<String> {
     let stores = stores(context);
+    let home = context.home_dir.as_deref().map(lexical_normalize);
+    let above: Vec<PathBuf> = (stores.iter())
+        .flat_map(|store| store.ancestors().skip(1))
+        .filter(|dir| home.as_ref().is_some_and(|home| dir.starts_with(home)))
+        .map(Path::to_path_buf)
+        .collect();
+    let (store_ids, above_ids) = (identities(&stores), identities(&above));
+    let real_stores: Vec<PathBuf> = stores.iter().map(|store| resolve_links(store)).collect();
     command
         .split_whitespace()
         .skip(1)
+        .map(|token| token.trim_matches(['\'', '"']))
         .filter(|token| !token.starts_with('-'))
-        .map(|token| expand(token, context))
-        .find(|path| stores.iter().any(|store| path.starts_with(store)))
-        .map(|path| path.to_string_lossy().into_owned())
+        .map(|token| (token, expand(token, context)))
+        .find(|(token, path)| match token.contains(['*', '?', '[', '{']) {
+            true => [path.clone(), resolve_links(path)].iter().any(|pattern| {
+                (stores.iter().chain(&real_stores)).any(|store| glob_reaches(pattern, store))
+            }),
+            false => {
+                beneath_via(&stores, &store_ids, path, LINK_HOPS)
+                    || above.contains(path)
+                    || denied_file(&above_ids, fs::metadata(path).ok().as_ref())
+            }
+        })
+        .map(|(_, path)| path.to_string_lossy().into_owned())
+}
+
+/// A path as the kernel resolves an open: every link and `..` taken, a missing tail as spelled.
+pub fn resolve_links(path: &Path) -> PathBuf {
+    let Some((head, real)) =
+        (path.ancestors()).find_map(|head| Some((head, fs::canonicalize(head).ok()?)))
+    else {
+        return path.to_path_buf();
+    };
+    match path.strip_prefix(head) {
+        Ok(tail) if !tail.as_os_str().is_empty() => lexical_normalize(&real.join(tail)),
+        _ => real,
+    }
+}
+
+/// Whether a shell glob can match `store`, a directory above it, or a path inside it: compared
+/// component by component over the shorter of the two, ignoring letter case, a leading dot
+/// matched only by a dot as the shell matches it. A resolved pattern keeps its glob text.
+fn glob_reaches(pattern: &Path, store: &Path) -> bool {
+    let words = |path: &Path| -> Vec<Vec<char>> {
+        (path.components())
+            .map(|part| {
+                part.as_os_str()
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .chars()
+                    .collect()
+            })
+            .collect()
+    };
+    (words(pattern).iter().zip(&words(store))).all(|(glob, name)| {
+        let hidden = name.first() == Some(&'.') && glob.first() != Some(&'.');
+        !hidden && wildcard(glob, name)
+    })
+}
+
+/// `*` any run, `?` and a `[…]` class one character, a `{…}` group any run: a glob that can
+/// match more than the shell would only asks more.
+fn wildcard(glob: &[char], name: &[char]) -> bool {
+    let rest = |after: usize| glob.get(after..).unwrap_or_default();
+    let any_run = |after: usize| {
+        (0..=name.len()).any(|at| wildcard(rest(after), name.get(at..).unwrap_or_default()))
+    };
+    match glob.first() {
+        None => name.is_empty(),
+        Some('*') => any_run(1),
+        Some('{') => glob
+            .iter()
+            .position(|c| *c == '}')
+            .is_some_and(|end| any_run(end + 1)),
+        Some(first) => {
+            let width = match first {
+                '?' => 1,
+                '[' => glob.iter().position(|c| *c == ']').map_or(1, |end| end + 1),
+                _ => 1,
+            };
+            let same = matches!(first, '?' | '[') || name.first() == Some(first);
+            same && !name.is_empty() && wildcard(rest(width), name.get(1..).unwrap_or_default())
+        }
+    }
 }
 
 /// Wrappers that run another command: argv0 alone lets `nice rm -rf .git` past the belt (D205).
