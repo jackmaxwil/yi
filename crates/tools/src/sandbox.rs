@@ -272,7 +272,7 @@ fn scrubbed_env() -> Vec<String> {
         // ponytail: a non-UTF-8 name is kept, `env -u` taking only what a String carries; one
         // holding `=` too, since `env -u` refuses it and would stop every contained spawn.
         .filter_map(|(name, _)| name.into_string().ok())
-        .filter(|name| !name.contains('=') && names_a_secret(name))
+        .filter(|name| !name.contains('=') && is_secret_variable(name))
         .collect();
     names.sort();
     let unset = names.into_iter().flat_map(|name| ["-u".to_owned(), name]);
@@ -292,16 +292,12 @@ const SECRET_NAMES: [&str; 7] = [
     "SLACK_WEBHOOK_URL",
 ];
 
-/// Settings whose names only read like a secret's, kept because a tool changes behaviour without them.
-const SECRET_LOOKALIKES: [&str; 2] = ["PASSWORD_STORE_DIR", "SSH_AUTH_SOCK"];
-
-/// A heuristic over names, never values (D324): a `_`-separated word ending in a mark, singular or
-/// plural, or a listed name. It misses a secret under a plain name (`FOO_URL=postgres://u:p@h`).
-fn names_a_secret(name: &str) -> bool {
+/// A heuristic over names, never values (D324): a `_`-separated word ending in a manifest mark or
+/// `PASSWD`, `PAT`, `AUTH`, singular or plural, or a listed name. `SSH_AUTH_SOCK` and
+/// `PASSWORD_STORE_DIR` go too: a contained run needs neither. It misses a secret under a plain
+/// name (`FOO_URL=postgres://u:p@h`).
+fn is_secret_variable(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
-    if SECRET_LOOKALIKES.contains(&upper.as_str()) {
-        return false;
-    }
     let marked = |word: &str| {
         let word = word.strip_suffix('S').unwrap_or(word);
         (yi_types::SECRET_NAME_MARKS.iter())

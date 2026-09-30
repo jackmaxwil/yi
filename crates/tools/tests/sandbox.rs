@@ -507,6 +507,7 @@ fn a_contained_command_reads_no_key_by_any_spelling() -> TestResult {
         ".config/fgj/config.yaml",
         ".config/gcloud/credentials.db",
         ".yi/oauth/acme.json",
+        ".password-store/github.gpg",
     ];
     for key in keys {
         let path = home.join(key);
@@ -593,12 +594,10 @@ fn a_contained_command_inherits_no_secret_variable() -> TestResult {
         "GITHUB_PAT",
         "BW_SESSION",
         "GOOGLE_APPLICATION_CREDENTIALS",
-    ];
-    let settings = [
-        "TOKENIZERS_PARALLELISM",
-        "PYTHON_KEYRING_BACKEND",
         "PASSWORD_STORE_DIR",
+        "SSH_AUTH_SOCK",
     ];
+    let settings = ["TOKENIZERS_PARALLELISM", "PYTHON_KEYRING_BACKEND"];
     for name in secrets.iter().chain(&settings) {
         // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.
         unsafe { std::env::set_var(name, format!("ENV-598-{name}")) };
