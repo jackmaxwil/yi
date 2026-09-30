@@ -320,7 +320,7 @@ fn a_failed_card_opens_with_a_cross_and_keeps_its_reason() -> TestResult {
         json!({}),
     );
     let rows = flat(&app.take_commits());
-    assert!(rows.iter().any(|row| row.contains("✗ ⚙ Todo")), "{rows:?}");
+    assert!(rows.iter().any(|row| row.contains("✕ ⚙ Todo")), "{rows:?}");
     assert!(
         rows.iter().any(|row| row.contains("done needs evidence")),
         "{rows:?}"

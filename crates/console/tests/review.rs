@@ -119,7 +119,7 @@ fn a_tape_draws_model_and_tool_time_and_points_at_the_chosen_mark() {
     assert_eq!(title, "Tape · 10s · model 70% · tools 20%");
     let rows = text(&lines);
     assert!(rows[2].contains('┃'), "{rows:#?}");
-    assert!(rows[3].contains('✗') && rows[3].contains('◆'), "{rows:#?}");
+    assert!(rows[3].contains('✕') && rows[3].contains('◆'), "{rows:#?}");
     assert!(
         rows.iter().any(|row| row == "+8s · bash failed"),
         "{rows:#?}"
