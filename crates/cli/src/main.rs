@@ -511,7 +511,8 @@ fn build_session(
             asker,
             session.events_sender(),
         )
-        .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, None)),
+        .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, None))
+        .with_session_store(&default_session_dir(args)),
     );
     let tools_home = home.clone();
     let extensions = yi_types::trace::span("build_session.install_extensions");

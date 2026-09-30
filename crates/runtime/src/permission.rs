@@ -191,6 +191,7 @@ pub(crate) fn protected(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
         .is_some_and(|home| dir == home || home.canonicalize().is_ok_and(|real| dir == real))
         || (sandbox.deny_read.iter())
             .chain(&sandbox.deny_write)
+            .chain(&sandbox.host_owned)
             .cloned()
             .chain(yi)
             .any(|guarded| overlaps(&guarded))
@@ -300,8 +301,8 @@ impl PermissionBroker {
         });
     }
 
-    /// A second call is a child session re-wiring the same broker; the first
-    /// reviewer stands.
+    /// A child's broker starts with its parent's reviewer (`for_child`), so its own wiring's
+    /// second call keeps it.
     pub fn set_reviewer(&self, reviewer: Arc<crate::auto_review::Reviewer>) {
         let _first_wiring_wins = self.reviewer.set(reviewer);
     }
@@ -432,7 +433,7 @@ impl PermissionBroker {
         }
     }
 
-    /// A contained call's profile: the holder's tree (a lane child shares its parent's broker),
+    /// A contained call's profile: the holder's tree (a child's broker keeps its parent's cwd),
     /// the approved directories, and the wall, enforced rather than read off the command text.
     pub fn sandbox_for(
         &self,
@@ -444,6 +445,7 @@ impl PermissionBroker {
         let mut profile = match std::env::var_os("HOME").filter(|_| cwd != self.cwd) {
             Some(home) => yi_tools::Sandbox {
                 deny_read: base.deny_read.clone(),
+                host_owned: base.host_owned.clone(),
                 ..yi_tools::Sandbox::for_workspace(cwd, Path::new(&home), None)
             },
             None => base.clone(),

@@ -827,6 +827,9 @@ impl AgentSession {
 
     /// Detaches any store; [`AgentSession::attach_store`] afterwards points at a new file.
     pub fn reset(&self) {
+        if let Some(broker) = self.permission_broker() {
+            broker.forget_rules();
+        }
         if let Ok(mut messages) = self.shared.messages.lock() {
             messages.clear();
         }

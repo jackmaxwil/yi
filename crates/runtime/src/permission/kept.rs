@@ -1,7 +1,7 @@
 //! Kept rules (#600 stage 2c): what an "always" keeps, journaled to the holder's own session,
 //! replayed on `--continue` and copied down to a child, never up.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
@@ -12,11 +12,15 @@ use super::{Journal, PermissionBroker, protected};
 
 impl PermissionBroker {
     /// A child's broker: the family's mode, holds, asker and reviewers, and a copy of the kept
-    /// rules its wall admits. What it keeps stays its own, so nothing flows back up.
+    /// rules its wall and `cwd` admit. What it keeps stays its own, so nothing flows back up.
     #[must_use]
-    pub fn for_child(&self, wall: &crate::wall::Wall) -> Self {
+    pub fn for_child(&self, wall: &crate::wall::Wall, cwd: &Path) -> Self {
         let mut rules = self.lock_rules().state().clone();
-        rules.rules.retain(|rule| self.admits(rule, wall));
+        // A pass names the directory it was kept in; a child elsewhere never ran it there.
+        let elsewhere = cwd != self.cwd;
+        rules.rules.retain(|rule| {
+            self.admits(rule, wall) && !(elsewhere && yi_permission::is_exact_command(rule))
+        });
         Self {
             sandbox: self.sandbox.clone(),
             mode: Arc::clone(&self.mode),
@@ -39,11 +43,10 @@ impl PermissionBroker {
         }
     }
 
-    /// Whether a kept rule may hold here: a write grant only while its directory is neither
-    /// protected nor walled, and a command pass, which runs outside every wall, never in a
-    /// walled holder. A path rule's other gates (D323) are judged afresh at each call.
+    /// A write grant holds while its directory is neither protected nor walled; a pass, which
+    /// runs outside every wall, never in a walled holder. Path rules meet D323 at each call.
     fn admits(&self, rule: &SessionPermissionRule, wall: &crate::wall::Wall) -> bool {
-        if let Some(dir) = yi_permission::write_grant_dir(&rule.canonical) {
+        if let Some(dir) = yi_permission::write_grant_dir(rule) {
             return self.sandbox.as_ref().is_some_and(|sandbox| {
                 let mut walled = sandbox.clone();
                 walled.deny_write.extend_from_slice(&wall.deny_write);
@@ -53,7 +56,7 @@ impl PermissionBroker {
                 !protected(&walled, &dir) && !protected(&walled, &real)
             });
         }
-        wall.is_empty() || !yi_permission::is_exact_command(&rule.canonical)
+        wall.is_empty() || !yi_permission::is_exact_command(rule)
     }
 
     /// `--continue`: the rules the session's ledger kept, re-checked against today's wall and
@@ -85,7 +88,7 @@ impl PermissionBroker {
     pub fn kept_writes(&self) -> Vec<PathBuf> {
         (self.lock_rules().state().rules.iter())
             .filter(|rule| rule.decision == RuleDecision::Allow)
-            .filter_map(|rule| yi_permission::write_grant_dir(&rule.canonical))
+            .filter_map(yi_permission::write_grant_dir)
             .collect()
     }
 
@@ -93,6 +96,25 @@ impl PermissionBroker {
         self.session_rules
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The session store in use, when `--session-dir` moved it from `~/.yi/sessions`: no
+    /// contained write and no write tool reaches the ledger kept rules replay from.
+    #[must_use]
+    pub fn with_session_store(mut self, dir: &Path) -> Self {
+        self.context.host_owned.push(dir.to_path_buf());
+        if let Some(sandbox) = &mut self.sandbox {
+            sandbox.host_owned.push(dir.to_path_buf());
+        }
+        self
+    }
+
+    /// A session switch (`/new`, rpc `switch_session` or `fork`): the next session replays its own.
+    pub fn forget_rules(&self) {
+        *self.lock_rules() = SessionRules::new();
+        if let Ok(mut failures) = self.contained_failures.lock() {
+            failures.clear();
+        }
     }
 
     pub fn set_rule_journal(&self, journal: Journal<SessionPermissionRule>) {
