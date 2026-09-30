@@ -490,6 +490,14 @@ fn an_unfetchable_source_and_an_oversized_document_are_refused() -> TestResult {
         Err(ImportError::NotLocal { .. }) => {}
         other => return Err(format!("expected NotLocal, got {other:?}").into()),
     }
+    // A key read before the parse would come back in its error's quoted head (D323).
+    std::fs::create_dir_all(rig.cwd.join(".git"))?;
+    std::fs::write(rig.cwd.join(".git/config"), "GIT CONFIG MARKER\n")?;
+    let guarded = "local://.git/config".parse::<Url>()?;
+    match import::read(&rig.cwd, &guarded) {
+        Err(ImportError::Protected { .. }) => {}
+        other => return Err(format!("expected Protected, got {other:?}").into()),
+    }
 
     let id = PlanId::new("oversized")?;
     let mut text = String::from(
