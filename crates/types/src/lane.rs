@@ -79,8 +79,8 @@ impl JobState {
             Self::Queued => "○",
             Self::Running => "⟳",
             Self::Green => "●",
-            Self::Red => "✗",
-            Self::Other(_) => "?",
+            Self::Red => crate::status_mark::StatusMark::Failed.glyph(),
+            Self::Other(_) => crate::status_mark::StatusMark::Unknown.glyph(),
         }
     }
 }

@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
 
 use crate::app::App;
@@ -13,6 +13,7 @@ use crate::model::{Mode, SessionId, SessionRow, SessionStatus, SidebarMode, Zone
 use crate::render::{NAME_WIDTH, status_style};
 use yi_tui::orb::OrbState;
 use yi_tui::port::SessionPort;
+use yi_types::status_mark::StatusMark;
 use yi_types::subagent::{ChildFlag, ChildStatus, ChildUpdate};
 
 pub struct SidebarRow {
@@ -126,7 +127,7 @@ const NAME_FLOOR: usize = 10;
 fn name_cols(app: &App) -> usize {
     let roots = app.state.roots().into_iter().map(|root| {
         let label = root.rsplit('/').next().unwrap_or(&root);
-        label.width().saturating_sub(3)
+        drawn_width(label).saturating_sub(3)
     });
     app.state
         .visible_rows()
@@ -134,10 +135,11 @@ fn name_cols(app: &App) -> usize {
         .filter_map(|index| app.state.order.get(index))
         .filter_map(|id| {
             let row = app.state.sessions.get(id)?;
-            let children = app.state.children.get(id).into_iter().flatten().take(3);
+            let (children, _) = shown_children(app, id);
             children
-                .map(|child| child.name.width())
-                .chain(std::iter::once(row.label().width()))
+                .into_iter()
+                .map(|child| drawn_width(&child.name))
+                .chain(std::iter::once(drawn_width(&row.label())))
                 .max()
         })
         .chain(roots)
@@ -291,38 +293,74 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
     window_rows(rows, height, app.state.selected, theme)
 }
 
-/// `text` cut and padded to exactly `cols` terminal cells, so a wide character never
-/// pushes the glyph after it out of its column.
+/// The cells `text` takes once its control characters are dropped, as `pad_cells` draws it.
+fn drawn_width(text: &str) -> usize {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .width()
+}
+
+/// `text` without control characters, cut and padded to exactly `cols` drawn cells: `⚠️`
+/// is 1 + 0 cells a character at a time but 2 as a string, so it measures the string.
 fn pad_cells(text: &str, cols: usize) -> String {
-    let mut used = 0_usize;
-    let mut out: String = text
-        .chars()
-        .take_while(|c| {
-            used = used.saturating_add(c.width().unwrap_or(0));
-            used <= cols
-        })
-        .collect();
+    let mut out = String::new();
+    for c in text.chars().filter(|c| !c.is_control()) {
+        out.push(c);
+        if out.width() > cols {
+            out.pop();
+            break;
+        }
+    }
     out.push_str(&" ".repeat(cols.saturating_sub(out.width())));
     out
 }
 
-/// A child's mark in the session vocabulary: the states a session has too take its glyph
-/// and colour, so `?` means needs you on both and `✕` is left to mean failed.
-fn child_glyph(child: &ChildUpdate, theme: &Theme) -> (&'static str, Style) {
-    let status = match (&child.status, &child.flag) {
-        (ChildStatus::Error, _) => return ("✕", Style::default().fg(theme.error)),
-        (ChildStatus::Running, Some(ChildFlag::Stuck { .. })) => {
-            return ("!", Style::default().fg(theme.warning));
-        }
-        (ChildStatus::Running, Some(ChildFlag::NeedsYou { .. })) => SessionStatus::Blocked,
-        (ChildStatus::Completed, _) => SessionStatus::Idle,
-        (ChildStatus::Running | ChildStatus::Other(_), _) => SessionStatus::Working,
-    };
-    (status.glyph(), status_style(theme, status))
+/// What a child's row says, in the session vocabulary.
+fn child_mark(child: &ChildUpdate) -> StatusMark {
+    match (&child.status, &child.flag) {
+        (ChildStatus::Error, _) => StatusMark::Failed,
+        (ChildStatus::Running, Some(ChildFlag::NeedsYou { .. })) => StatusMark::NeedsYou,
+        (ChildStatus::Running, Some(ChildFlag::Stuck { .. })) => StatusMark::Stuck,
+        (ChildStatus::Completed, _) => StatusMark::Idle,
+        (ChildStatus::Running | ChildStatus::Other(_), _) => StatusMark::Working,
+    }
 }
 
-/// Children hang off their session on `├`/`└` at column 2, with the glyph in the
-/// session glyph column: 7 on the rail, `cols + 8` in the full sidebar.
+/// A child's glyph takes the colour a session with the same mark wears.
+fn mark_style(mark: StatusMark, theme: &Theme) -> Style {
+    match mark {
+        StatusMark::NeedsYou => status_style(theme, SessionStatus::Blocked),
+        StatusMark::Working => status_style(theme, SessionStatus::Working),
+        StatusMark::DoneUnseen => status_style(theme, SessionStatus::DoneUnseen),
+        StatusMark::Idle => status_style(theme, SessionStatus::Idle),
+        StatusMark::Unknown => status_style(theme, SessionStatus::Unknown),
+        StatusMark::Failed => Style::default().fg(theme.error),
+        StatusMark::Stuck => Style::default().fg(theme.warning),
+    }
+}
+
+/// The children worth a row, most in need first, and how many more there are: a child that
+/// needs you is never hidden behind three finished ones.
+fn shown_children<'a>(app: &'a App, id: &SessionId) -> (Vec<&'a ChildUpdate>, usize) {
+    let mut children: Vec<&ChildUpdate> =
+        app.state.children.get(id).into_iter().flatten().collect();
+    children.sort_by_key(|child| match child_mark(child) {
+        StatusMark::NeedsYou => 0,
+        StatusMark::Failed => 1,
+        StatusMark::Stuck => 2,
+        StatusMark::Working | StatusMark::DoneUnseen | StatusMark::Unknown => 3,
+        StatusMark::Idle => 4,
+    });
+    let more = children.len().saturating_sub(CHILD_ROWS);
+    children.truncate(CHILD_ROWS);
+    (children, more)
+}
+
+const CHILD_ROWS: usize = 3;
+
+/// Children hang off their session on `├`/`└` at column 2, the glyph in the session glyph
+/// column (7 on the rail, `cols + 8` in full); past three, the last row counts the rest.
 fn child_rows(
     app: &App,
     id: &SessionId,
@@ -330,19 +368,16 @@ fn child_rows(
     rail: bool,
     cols: usize,
 ) -> Vec<SidebarRow> {
-    let children: Vec<&ChildUpdate> = app
-        .state
-        .children
-        .get(id)
-        .into_iter()
-        .flatten()
-        .take(3)
-        .collect();
-    let last = children.len().saturating_sub(1);
+    let (children, more) = shown_children(app, id);
+    let last = (more == 0).then(|| children.len().saturating_sub(1));
     let mut rows = Vec::new();
     for (index, child) in children.into_iter().enumerate() {
-        let (glyph, style) = child_glyph(child, theme);
-        let connector = if index == last { "  └" } else { "  ├" };
+        let mark = child_mark(child);
+        let connector = if Some(index) == last {
+            "  └"
+        } else {
+            "  ├"
+        };
         let hue = app.accent_of(child.id.as_str(), &child.name);
         let mut spans = vec![
             Span::styled(connector.to_owned(), theme.dim_style()),
@@ -350,16 +385,32 @@ fn child_rows(
             Span::raw("  "),
         ];
         if !rail {
-            let name: String = child.name.chars().filter(|c| !c.is_control()).collect();
-            spans.push(Span::styled(pad_cells(&name, cols), theme.dim_style()));
+            spans.push(Span::styled(
+                pad_cells(&child.name, cols),
+                theme.dim_style(),
+            ));
             spans.push(Span::raw(" "));
         }
-        spans.push(Span::styled(glyph.to_owned(), style));
+        spans.push(Span::styled(
+            mark.glyph().to_owned(),
+            mark_style(mark, theme),
+        ));
         rows.push(SidebarRow {
             index: None,
             line: Line::from(spans),
             avatar: avatar_at(3, (2, 1), child.id.as_str(), hue, None),
         });
+    }
+    if more > 0 {
+        let label = if rail {
+            format!("  └ +{more}")
+        } else {
+            format!("  └ +{more} more")
+        };
+        rows.push(SidebarRow::plain(
+            None,
+            Line::styled(label, theme.dim_style()),
+        ));
     }
     rows
 }

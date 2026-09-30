@@ -7,6 +7,7 @@ use crate::colors::{ColorTier, Theme, name_accent};
 use crate::diffview::{self, DiffBudget};
 use crate::markdown;
 use crate::wrap::wrap_line;
+use yi_types::status_mark::StatusMark;
 use yi_types::subagent::{ChildActivity, ChildFlag};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,7 +390,10 @@ impl ToolCell {
                 theme.accent_style(),
             )],
             ToolStatus::Awaiting => vec![Span::styled("△ ", style)],
-            ToolStatus::Failed => vec![Span::styled("✗ ", style)],
+            ToolStatus::Failed => vec![Span::styled(
+                format!("{} ", StatusMark::Failed.glyph()),
+                style,
+            )],
             ToolStatus::Denied => vec![Span::styled("⊘ ", style)],
             ToolStatus::Done => Vec::new(),
         };
@@ -700,16 +704,18 @@ impl TaskCell {
         let pulse = crate::motion::pulse_frame(crate::motion::elapsed_of(spinner_phase));
         let flagged = match (self.status, &self.flag) {
             (TaskStatus::Running, Some(ChildFlag::NeedsYou { note })) => {
-                Some(('?', "needs you", note))
+                Some((StatusMark::NeedsYou.symbol(), "needs you", note))
             }
-            (TaskStatus::Running, Some(ChildFlag::Stuck { note })) => Some(('!', "stuck", note)),
+            (TaskStatus::Running, Some(ChildFlag::Stuck { note })) => {
+                Some((StatusMark::Stuck.symbol(), "stuck", note))
+            }
             _ => None,
         };
         let (glyph, state, tone) = match (self.status, flagged) {
             (_, Some((glyph, state, _))) => (glyph, state, theme.warning),
             (TaskStatus::Running, None) => (pulse, activity, theme.purple),
             (TaskStatus::Done, None) => ('↳', "done", theme.purple),
-            (TaskStatus::Failed, None) => ('✕', "failed", theme.error),
+            (TaskStatus::Failed, None) => (StatusMark::Failed.symbol(), "failed", theme.error),
         };
         let (name, hash) = humanize(&self.description);
         let hash = if hash.is_empty() {
