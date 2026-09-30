@@ -10,18 +10,6 @@ use yi_types::plan::ledger::{JournalRecord, Seq};
 /// Bytes per record, newline included; a transaction that would exceed it is refused first.
 pub const RECORD_CAP: usize = 64 * 1024;
 
-pub trait Clock: Send + Sync {
-    fn now_ms(&self) -> u64;
-}
-
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now_ms(&self) -> u64 {
-        yi_session::now_ms()
-    }
-}
-
 pub trait Fs: Send + Sync {
     fn write_all(&self, file: &mut std::fs::File, bytes: &[u8]) -> std::io::Result<()>;
     fn sync_data(&self, file: &std::fs::File) -> std::io::Result<()>;

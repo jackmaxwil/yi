@@ -8,7 +8,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 use yi_types::entry::Entry;
-use yi_types::message::{AgentMessage, Content, UserContent};
+use yi_types::message::{AgentMessage, UserContent};
 use yi_types::wire::{Fact, HeaderKind, JsonlV4Header, Mutation};
 
 use crate::error::SessionError;
@@ -47,14 +47,7 @@ impl NameScan {
         {
             let text = match content {
                 UserContent::Text(text) => text,
-                UserContent::Blocks(blocks) => blocks
-                    .iter()
-                    .filter_map(|block| match block {
-                        Content::Text { text, .. } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" "),
+                UserContent::Blocks(blocks) => yi_types::message::join_text(&blocks, " "),
             };
             self.prompt = session_title(&text);
         }

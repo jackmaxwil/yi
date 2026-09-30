@@ -534,14 +534,7 @@ fn text_of(message: &AgentMessage) -> String {
     let AgentMessage::Assistant { content, .. } = message else {
         return String::new();
     };
-    content
-        .iter()
-        .filter_map(|block| match block {
-            Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    yi_types::message::join_text(content, "\n")
 }
 
 fn is_terminal(message: &AgentMessage) -> bool {

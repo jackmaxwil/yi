@@ -89,23 +89,6 @@ pub enum Decision {
     },
 }
 
-/// Bash commands are decided whole in v1 (D35): an unparseable command is a
-/// distinct decision input, never re-keyed onto plain `bash` (D26).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParseOutcome {
-    Parsed(Vec<String>),
-    Unparsed,
-}
-
-const SHELL_METACHARS: [char; 8] = ['|', '&', ';', '>', '<', '`', '$', '\n'];
-
-pub fn parse_command(command: &str) -> ParseOutcome {
-    if command.contains(SHELL_METACHARS) || command.contains("(") {
-        return ParseOutcome::Unparsed;
-    }
-    ParseOutcome::Parsed(vec![command.trim().to_owned()])
-}
-
 pub struct ToolCall<'a> {
     pub tool_name: &'a str,
     pub reads_only: bool,

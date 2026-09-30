@@ -20,13 +20,7 @@ fn truncate_for_summary(text: &str, max_chars: usize) -> String {
 }
 
 pub(crate) fn text_of(blocks: &[Content]) -> String {
-    blocks
-        .iter()
-        .filter_map(|block| match block {
-            Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect()
+    yi_types::message::join_text(blocks, "")
 }
 
 fn user_text(content: &UserContent) -> String {

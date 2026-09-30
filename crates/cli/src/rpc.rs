@@ -9,7 +9,7 @@ use yi_runtime::session_store::{
 };
 use yi_runtime::{AgentSession, Status, available_models, resolve_model};
 use yi_types::entry::Entry;
-use yi_types::message::{AgentMessage, Content, UserContent};
+use yi_types::message::{AgentMessage, UserContent};
 use yi_types::model::Model;
 
 fn levels_of(model: &Model) -> Vec<String> {
@@ -77,14 +77,7 @@ fn message_text(message: &AgentMessage) -> String {
         AgentMessage::Assistant { content, .. } => content,
         _ => return String::new(),
     };
-    blocks
-        .iter()
-        .filter_map(|content| match content {
-            Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("")
+    yi_types::message::join_text(blocks, "")
 }
 
 struct RpcState {
