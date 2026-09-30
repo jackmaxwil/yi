@@ -483,6 +483,21 @@ fn wrong_directory_path_recovers_via_filename_and_tag() -> TestResult {
     Ok(())
 }
 
+/// Recovery rebinds to a path the broker never judged, so the gates judge it here: a snapshot
+/// of the workspace `.git` taken before a link swap must not become an edit target (D323).
+#[test]
+fn path_recovery_never_rebinds_to_a_guarded_path() -> TestResult {
+    let fixture = Fixture::new("path-recovery-gate")?;
+    fs::create_dir_all(fixture.context.cwd.join(".git"))?;
+    fixture.write(".git/config", "[core]\n")?;
+    let tag = fixture.tag_of(".git/config")?;
+
+    let edit = fixture.edit(&format!("[config#{tag}]\nPUT 1.=1:\n+hooked\n"));
+    assert!(edit.is_error, "{}", output_text(&edit));
+    assert_eq!(fixture.content(".git/config")?, "[core]\n");
+    Ok(())
+}
+
 #[test]
 fn symlink_targets_are_refused_at_commit() -> TestResult {
     let fixture = Fixture::new("symlink")?;

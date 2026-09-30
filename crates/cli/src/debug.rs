@@ -1,11 +1,11 @@
 //! `yi debug`: bug-report verbs (opencode's `debug` family) and the `YI_TRACE` profiler.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::{Args, config, default_session_dir, effective_cwd, shells};
+use crate::{Args, config, default_session_dir, effective_cwd, home, shells};
 
 const USAGE: &str = "usage: yi debug <verb>
   info              version, platform, terminal, daemon
@@ -50,12 +50,6 @@ pub(crate) fn process_label(command: &str) -> &str {
 fn usage() -> i32 {
     eprintln!("{USAGE}");
     2
-}
-
-fn home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
 }
 
 fn info(args: &Args) -> i32 {
@@ -162,9 +156,9 @@ fn skills(args: &Args) -> i32 {
         .as_ref()
         .and_then(|skills| skills.global.clone())
         .unwrap_or_default();
-    let (global, project) = yi_runtime::skills::discover_split(&cwd, &home);
+    let (global, project) = yi_runtime::skills::discover_split(&cwd, home);
     let shown =
-        |skill: &yi_runtime::skills::Skill| match yi_runtime::ext::listed(skill, &home, &named) {
+        |skill: &yi_runtime::skills::Skill| match yi_runtime::ext::listed(skill, home, &named) {
             true => "listed",
             false => "hidden: not in skills.global",
         };
