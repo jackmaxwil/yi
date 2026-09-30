@@ -635,6 +635,13 @@ async fn a_refused_allowed_call_asks_the_next_time() -> TestResult {
         "the retry of a refused allowed call asks: {}",
         results[1]
     );
+    assert!(
+        results[1].contains("Rerun with --yolo")
+            && results[1].contains("CARGO_TARGET_DIR")
+            && !results[1].contains("allow rule"),
+        "the headless denial names what works, and a rule the call already had is not it: {}",
+        results[1]
+    );
     Ok(())
 }
 
@@ -734,15 +741,8 @@ async fn an_allowed_network_command_says_it_ran_outside() -> TestResult {
     Ok(())
 }
 
-/// Owner, round 2: "Always = session pass (Recommended)". yi's own tests nest `sandbox-exec`,
-/// which a contained run refuses naming no path; after "always", the kept rule runs it outside
-/// with no second question.
-#[tokio::test]
-async fn always_on_a_pathless_refusal_is_a_session_pass() -> TestResult {
-    if !Sandbox::available() {
-        return Ok(());
-    }
-    let (_root, project, sandbox, _probe) = workspace("yi-seam-pass")?;
+/// An asker that answers "always" first and refuses after, counting the questions.
+fn always_once() -> (Asker, Arc<std::sync::atomic::AtomicUsize>) {
     let asks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = Arc::clone(&asks);
     let asker: Asker =
@@ -752,12 +752,37 @@ async fn always_on_a_pathless_refusal_is_a_session_pass() -> TestResult {
                 _ => AskOutcome::Reject,
             },
         );
-    let nested = "sandbox-exec -p '(version 1)(allow default)' true && echo nested-ok";
+    (asker, asks)
+}
+
+/// Owner, round 2: "Always = session pass (Recommended)". yi's own tests nest `sandbox-exec`,
+/// which a contained run refuses naming no path. The pass is the exact command the question
+/// promised, "this one call": the review of #933 found it kept all of `python3`, so a
+/// `python3 -c` nobody was asked about ran outside too.
+#[tokio::test]
+async fn always_on_a_pathless_refusal_passes_that_exact_command() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, _probe) = workspace("yi-seam-pass")?;
+    std::fs::write(
+        project.join("nest.py"),
+        "import subprocess\nsubprocess.run(['sandbox-exec', '-p', '(version 1)(allow default)', 'true'], check=True)\nprint('nested-ok')\n",
+    )?;
+    let (asker, asks) = always_once();
     let gate = BrokerSetup {
         asker: Some(asker),
         ..BrokerSetup::default()
     };
-    let results = run_held(&project, &project, sandbox, &[nested, nested, nested], gate).await?;
+    let (nested, other) = ("python3 nest.py", "python3 -c \"print('rmtree' + '-ran')\"");
+    let results = run_held(
+        &project,
+        &project,
+        sandbox,
+        &[nested, nested, nested, other],
+        gate,
+    )
+    .await?;
     assert!(
         !results[0].contains("nested-ok"),
         "the contained run refuses the nested sandbox: {}",
@@ -765,10 +790,45 @@ async fn always_on_a_pathless_refusal_is_a_session_pass() -> TestResult {
     );
     assert!(
         results[2].contains("nested-ok") && results[2].contains("outside the sandbox"),
-        "the kept rule runs it outside and says so: {}",
+        "the kept exact command runs outside and says so: {}",
         results[2]
     );
-    assert_eq!(asks.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(
+        results[3].contains("Permission denied") && !results[3].contains("rmtree-ran"),
+        "another python3 command asks: {}",
+        results[3]
+    );
+    assert_eq!(asks.load(std::sync::atomic::Ordering::SeqCst), 2);
+    Ok(())
+}
+
+/// Only an "always" passes a pathless refusal: a proven or configured allow asks on the retry
+/// (review of #933, mutant M10).
+#[tokio::test]
+async fn a_pathless_refusal_of_a_configured_allow_asks_the_next_time() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, _probe) = workspace("yi-seam-pathless")?;
+    let nested = "sandbox-exec -p '(version 1)(allow default)' true && echo nested-ok";
+    let results = run_held(
+        &project,
+        &project,
+        sandbox,
+        &[nested, nested],
+        allow_rule("sandbox-exec *")?,
+    )
+    .await?;
+    assert!(
+        results[1].contains("Permission denied") && !results[1].contains("nested-ok"),
+        "the retry asks rather than leaving the sandbox: {}",
+        results[1]
+    );
+    assert!(
+        results[1].contains("Rerun with --yolo") && !results[1].contains("allow rule"),
+        "the headless denial names what works: {}",
+        results[1]
+    );
     Ok(())
 }
 

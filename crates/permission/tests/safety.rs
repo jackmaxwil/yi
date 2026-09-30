@@ -1,7 +1,8 @@
 use std::error::Error;
 
 use yi_permission::{
-    Class, Parsed, Verdict, classify, needs_host, parse, refused_scopes, verdict, write_targets,
+    Class, Parsed, Verdict, classify, command_segments, host_need, needs_host, parse,
+    refused_scopes, verdict, write_targets,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -461,4 +462,25 @@ fn only_network_and_install_approvals_need_the_host() {
     ] {
         assert!(!needs_host(command), "{command}");
     }
+}
+
+/// Review of #933: `make install` left the sandbox labelled "network", and `git remote update`,
+/// a proven read, fetches every remote.
+#[test]
+fn each_segment_says_why_it_leaves() {
+    let need = |command: &str| {
+        command_segments(command)
+            .iter()
+            .map(|argv| host_need(argv))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(need("make install"), [Some("installs")]);
+    assert_eq!(need("just install"), [Some("installs")]);
+    assert_eq!(need("git remote update"), [Some("network")]);
+    assert_eq!(need("git remote prune origin"), [Some("network")]);
+    assert_eq!(need("git remote -v"), [None]);
+    assert_eq!(
+        need("cargo test && cargo add serde"),
+        [None, Some("installs")]
+    );
 }

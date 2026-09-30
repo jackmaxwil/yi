@@ -146,18 +146,28 @@ pub enum Containment {
     Uncontained,
 }
 
-/// Why a command must run outside the sandbox, whoever allowed it: it needs the network (past
-/// loopback) or reads a credential store the profile hides.
-pub(crate) fn leaves_sandbox(command: &str, context: &CatastrophicContext) -> Option<&'static str> {
-    if yi_permission::needs_host(command) {
-        return Some("network");
+/// Why a command must leave the sandbox (network, an install, a credential store), and whether
+/// every segment must: `false` is a compound whose leaving part would carry the rest out.
+pub(crate) fn leaves_sandbox(
+    command: &str,
+    context: &CatastrophicContext,
+) -> Option<(&'static str, bool)> {
+    let reads = |text: &str| {
+        yi_permission::command_reads_credentials(text, context).map(|_| "credential stores")
+    };
+    let needs: Vec<Option<&'static str>> = yi_permission::command_segments(command)
+        .iter()
+        .map(|argv| yi_permission::host_need(argv).or_else(|| reads(&argv.join(" "))))
+        .collect();
+    match needs.iter().flatten().next() {
+        Some(why) => Some((why, needs.iter().all(Option::is_some))),
+        None => reads(command).map(|why| (why, false)),
     }
-    yi_permission::command_reads_credentials(command, context).map(|_| "credential stores")
 }
 
 /// Never widened, even through a link: `$HOME`, `~/.yi` (harness, MCP store, config, sessions,
 /// daemon socket), a credential store, or a git path the host runs.
-fn protected(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
+pub(crate) fn protected(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let yi = home.iter().map(|home| home.join(".yi"));
     let overlaps = |guarded: &PathBuf| {
@@ -341,7 +351,7 @@ impl PermissionBroker {
         &self,
         command: Option<&str>,
         refusal: Option<&yi_tools::SandboxRefusal>,
-        ruled: bool,
+        passed: bool,
         reason: String,
     ) -> Result<CallOutcome, String> {
         let outside = |reason: String| CallOutcome {
@@ -355,10 +365,18 @@ impl PermissionBroker {
         if self.mode() == PermissionMode::Yolo {
             return Ok(outside(reason));
         }
-        if let Some(why) = leaves_sandbox(command, &self.context) {
-            return Ok(outside(format!(
-                "{reason}; it runs outside the sandbox ({why})"
-            )));
+        match leaves_sandbox(command, &self.context) {
+            Some((why, true)) => {
+                return Ok(outside(format!(
+                    "{reason}; it runs outside the sandbox ({why})"
+                )));
+            }
+            Some((why, false)) => {
+                return Err(format!(
+                    "part of the command must run outside the sandbox ({why}) and would take the rest with it ({reason})"
+                ));
+            }
+            None => {}
         }
         match refusal {
             None => Ok(CallOutcome {
@@ -366,8 +384,8 @@ impl PermissionBroker {
                 reason,
                 containment: self.containment_with(None, true),
             }),
-            Some(yi_tools::SandboxRefusal::Scopes(_)) if ruled => Ok(outside(format!(
-                "{reason}; it runs outside the sandbox (a kept rule, and the sandbox refused it naming no path)"
+            Some(yi_tools::SandboxRefusal::Scopes(_)) if passed => Ok(outside(format!(
+                "{reason}; it runs outside the sandbox (an \"always\" kept this exact command after a refusal naming no path)"
             ))),
             Some(_) => Err(format!(
                 "the sandbox refused its last contained run ({reason})"
@@ -389,7 +407,7 @@ impl PermissionBroker {
             let note = format!("; approving runs this one call outside the sandbox ({why})");
             (Containment::Uncontained, note)
         };
-        if let Some(why) = leaves_sandbox(command, &self.context) {
+        if let Some((why, _)) = leaves_sandbox(command, &self.context) {
             return outside(why);
         }
         match refusal {
@@ -582,13 +600,13 @@ impl PermissionBroker {
             &active_holds,
             &self.context,
         );
-        let ruled = session_rules.decision_for(rule_kind, &canonical) == Some(RuleDecision::Allow)
-            || session_rules.scoped_allow(&call, &self.context);
+        // The session pass is the exact command an "always" kept, never a scope (review of #933).
+        let passed = session_rules.decision_for(rule_kind, &canonical) == Some(RuleDecision::Allow);
         drop(session_rules);
         let refusal = self.retried_refusal(command);
         let (title, description, reviewable, reason) = match decision {
             Decision::Allow { reason } => {
-                match self.allowed_outcome(command, refusal.as_ref(), ruled, reason) {
+                match self.allowed_outcome(command, refusal.as_ref(), passed, reason) {
                     Ok(outcome) => return outcome,
                     Err(reason) => (
                         format!("{tool_name} requires permission"),
@@ -623,9 +641,19 @@ impl PermissionBroker {
         let (containment, note) = self.approved_containment(command, refusal.as_ref());
         // An "always" on a widened retry keeps the directory, never a rule that would run the
         // command itself outside the sandbox.
+        let pathless =
+            command.is_some_and(|command| leaves_sandbox(command, &self.context).is_none());
         let kept = match (&containment, &refusal) {
             (Containment::Contained { widen, .. }, Some(yi_tools::SandboxRefusal::Path(_))) => {
                 widen.last().map(|dir| yi_permission::write_grant(dir))
+            }
+            (Containment::Uncontained, Some(yi_tools::SandboxRefusal::Scopes(_))) if pathless => {
+                Some(yi_permission::Grant {
+                    kind: rule_kind,
+                    canonical: canonical.clone(),
+                    label: "this exact command, outside the sandbox, for the rest of this session"
+                        .to_owned(),
+                })
             }
             _ => None,
         };
@@ -646,15 +674,24 @@ impl PermissionBroker {
                 reviewable,
                 tool_name,
                 command,
-                reason: &reason,
+                reason: &format!("{reason}{note}"),
             },
             tool_call_id,
             rule_kind,
             &canonical,
             &display,
         );
-        if !outcome.allowed {
-            return outcome;
+        match (&refusal, outcome.allowed) {
+            // Nobody could answer; say what works rather than "add an allow rule", which a
+            // refused allowed call already had.
+            (Some(refusal), false) if self.asker.is_none() => {
+                return self.denied(crate::gate::headless_refusal(
+                    self.sandbox.as_ref(),
+                    refusal,
+                ));
+            }
+            (_, false) => return outcome,
+            (_, true) => {}
         }
         if let (Some(grant), Some(refusal), Containment::Contained { widen, .. }) =
             (&kept, &refusal, &containment)
@@ -677,10 +714,16 @@ impl PermissionBroker {
 
     /// The line an allowed bash call's result carries when it ran outside a sandbox that exists:
     /// the tool text promises containment, so leaving it is said where the model reads.
-    pub fn outside_notice(&self, tool_name: &str, outcome: &CallOutcome) -> Option<String> {
+    pub fn outside_notice(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        outcome: &CallOutcome,
+    ) -> Option<String> {
         let outside = outcome.allowed && outcome.containment == Containment::Uncontained;
-        let promised =
-            tool_name == "bash" && self.sandbox.is_some() && self.mode() != PermissionMode::Yolo;
+        // A `job=N` wait or kill runs no command, so it ran nowhere.
+        let ran = tool_name == "bash" && args.get("command").and_then(Value::as_str).is_some();
+        let promised = ran && self.sandbox.is_some() && self.mode() != PermissionMode::Yolo;
         (outside && promised).then(|| format!("sandbox: {}", outcome.reason))
     }
 
