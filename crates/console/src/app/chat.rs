@@ -340,7 +340,7 @@ impl App {
         let Ok(result) = serde_json::from_value::<AcpSessionResult>(result.clone()) else {
             return;
         };
-        if let Some(name) = &result.name {
+        if let Some(name) = result.meta.as_ref().and_then(|meta| meta.yi.name.as_ref()) {
             if let Some(row) = self.state.sessions.get_mut(id) {
                 row.name = Some(name.clone());
             }
@@ -523,7 +523,7 @@ impl App {
                 "sessionId": session.0,
                 "cwd": root,
                 "replayFrom": offset.unwrap_or(0),
-                "replayUpdates": false,
+                "_meta": {"yi": {"replayUpdates": false}},
             }),
         );
     }
@@ -698,13 +698,13 @@ impl App {
                     outbound,
                     RequestKind::SetConfig(session.clone()),
                     "session/set_config_option",
-                    json!({"sessionId": id, "configId": "model", "value": value}),
+                    json!({"sessionId": id, "configId": "model", "type": "id", "value": value}),
                 );
                 self.send_request(
                     outbound,
                     RequestKind::SetConfig(session.clone()),
                     "session/set_config_option",
-                    json!({"sessionId": id, "configId": "thought_level", "value": effort.to_string()}),
+                    json!({"sessionId": id, "configId": "thought_level", "type": "id", "value": effort.to_string()}),
                 );
             }
             PortRequest::Plan => self.send_request(
