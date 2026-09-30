@@ -2582,10 +2582,11 @@ fn script(path: &std::path::Path, body: &str) -> TestResult {
 fn an_edit_runs_the_syntax_check_beside_the_grid_check() -> TestResult {
     let Some(dir) = fake_path("edit-overlap") else {
         let dir = temp_dir("edit-overlap")?;
-        script(&dir.join("grid"), "/bin/sleep 1\n")?;
+        script(&dir.join("grid"), "/bin/sleep 1\necho '{}'\n")?;
         script(&dir.join("rustfmt"), "/bin/sleep 1\n")?;
         return rerun_on_path("an_edit_runs_the_syntax_check_beside_the_grid_check", &dir);
     };
+    fs::create_dir_all(dir.join(".grid"))?;
     fs::write(dir.join("a.rs"), "fn a() {}\n")?;
     let context = ToolContext::new(dir.clone());
     let state = yi_tools::hashline::tool::shared_hashline_state();
@@ -2605,6 +2606,101 @@ fn an_edit_runs_the_syntax_check_beside_the_grid_check() -> TestResult {
     assert!(text.contains("syntax: ok"), "{text}");
     assert!(text.contains("[grid check: clean]"), "{text}");
     assert!(took < std::time::Duration::from_millis(1800), "{took:?}");
+    Ok(())
+}
+
+/// A fake `grid` that answers `check` with a real `grid check --quick --json` from a repo where
+/// `src/alpha.rs` and `src/beta.rs` both drifted, `resolve src/alpha.rs` with grid's own
+/// answer, and leaves a `ran` marker beside itself.
+#[cfg(unix)]
+fn fake_grid(dir: &std::path::Path) -> TestResult {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/grid");
+    let (check, resolve) = (
+        fixtures.join("check-quick.json"),
+        fixtures.join("resolve-alpha.json"),
+    );
+    script(
+        &dir.join("grid"),
+        &format!(
+            ": > \"$(/usr/bin/dirname \"$0\")/ran\"\n\
+             [ \"$1\" = check ] && {{ /bin/cat '{}'; exit 3; }}\n\
+             [ \"$1 $2\" = 'resolve src/alpha.rs' ] && {{ /bin/cat '{}'; exit 0; }}\n\
+             echo '[]'\n",
+            check.display(),
+            resolve.display()
+        ),
+    )
+}
+
+#[cfg(unix)]
+fn edit_at(dir: &std::path::Path, path: &str) -> yi_tools::ToolOutput {
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    yi_tools::hashline::tool::HashlineReadTool::new(Arc::clone(&state))
+        .execute(args(&[("path", json!(path))]), &context);
+    yi_tools::hashline::tool::HashlineEditTool {
+        state,
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[(
+            "patch",
+            json!(format!("[{path}]\nPUT 1.=1:\n+pub fn b() {{}}\n")),
+        )]),
+        &context,
+    )
+}
+
+/// Dogfood 2026-09-27: every edit, even to a scratch file, printed the same unrelated drift,
+/// and in an uncharted tree `grid check` surveyed and wrote `.grid/` there.
+#[cfg(unix)]
+#[test]
+fn an_edit_in_an_uncharted_tree_never_asks_grid() -> TestResult {
+    let Some(dir) = fake_path("grid-uncharted") else {
+        let dir = temp_dir("grid-uncharted")?;
+        fake_grid(&dir)?;
+        return rerun_on_path("an_edit_in_an_uncharted_tree_never_asks_grid", &dir);
+    };
+    fs::write(dir.join("a.rs"), "fn a() {}\n")?;
+    let edit = edit_at(&dir, "a.rs");
+    let text = output_text(&edit);
+    assert!(!dir.join("ran").exists(), "grid was spawned: {text}");
+    assert!(!text.contains("[grid check"), "{text}");
+    assert_eq!(edit.result.details["grid"], json!("skipped"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_charted_edit_shows_only_the_drift_of_what_it_edited() -> TestResult {
+    let Some(dir) = fake_path("grid-scoped") else {
+        let dir = temp_dir("grid-scoped")?;
+        fake_grid(&dir)?;
+        return rerun_on_path(
+            "a_charted_edit_shows_only_the_drift_of_what_it_edited",
+            &dir,
+        );
+    };
+    fs::create_dir_all(dir.join(".grid"))?;
+    fs::create_dir_all(dir.join("src"))?;
+    fs::write(
+        dir.join("src/alpha.rs"),
+        "pub fn scale(x: u8) -> u8 {\n    x\n}\n",
+    )?;
+    let edit = edit_at(&dir, "src/alpha.rs");
+    let text = output_text(&edit);
+    assert!(
+        text.contains("drift drift.user.total <-calls- drift.alpha.scale at src/user.rs:1"),
+        "{text}"
+    );
+    assert!(!text.contains("drift.beta.base"), "{text}");
+    assert!(
+        text.contains(
+            "[grid check: 1 suspect outside the edited files — bash: grid check --quick]"
+        ),
+        "{text}"
+    );
+    assert_eq!(edit.result.details["grid"], json!("findings"));
     Ok(())
 }
 
