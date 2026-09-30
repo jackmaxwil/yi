@@ -280,16 +280,6 @@ fn skeleton_rows(text: &str) -> Vec<String> {
     rows
 }
 
-fn skeleton_heads(text: &str, cap: usize) -> (Vec<String>, usize) {
-    let all = crate::orient::skeleton_of(text, usize::MAX);
-    let total = all.len();
-    let mut heads: Vec<String> = all.into_iter().take(cap).collect();
-    if total > cap {
-        heads.push(format!("… +{} more", total.saturating_sub(cap)));
-    }
-    (heads, total)
-}
-
 fn read_dir(display_path: &str, path: &Path, deny: &[std::path::PathBuf]) -> ToolOutput {
     let entries = match std::fs::read_dir(path) {
         Ok(entries) => entries,
@@ -343,7 +333,7 @@ fn read_dir(display_path: &str, path: &Path, deny: &[std::path::PathBuf]) -> Too
         let Ok(text) = std::fs::read_to_string(path.join(name)) else {
             continue;
         };
-        let (heads, _) = skeleton_heads(&text, DIR_HEADS_PER_FILE);
+        let (heads, _) = crate::orient::skeleton(&text, DIR_HEADS_PER_FILE);
         if !heads.is_empty() {
             skeleton.push(format!("{name}: {}", heads.join("; ")));
         }
@@ -434,7 +424,7 @@ impl HashlineReadTool {
                 continue;
             }
             let text = String::from_utf8(bytes).unwrap_or_default();
-            let (heads, total) = skeleton_heads(&text, GLOB_HEADS_PER_FILE);
+            let (heads, total) = crate::orient::skeleton(&text, GLOB_HEADS_PER_FILE);
             let mut rows = vec![format!(
                 "{display}  ({} lines, {total} declarations, skeleton)",
                 text.lines().count()
@@ -541,9 +531,8 @@ impl HashlineReadTool {
                     byte_capped_at = Some(number);
                     break 'windows;
                 }
-                let (text, was_clipped) = if on_disk && line.chars().count() > READ_LINE_CLIP {
-                    let cut: String = line.chars().take(READ_LINE_CLIP).collect();
-                    (format!("{cut}\u{2026}"), true)
+                let (text, was_clipped) = if on_disk {
+                    crate::tool::clip(line, READ_LINE_CLIP)
                 } else {
                     ((*line).to_owned(), false)
                 };

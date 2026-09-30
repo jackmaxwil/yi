@@ -12,19 +12,10 @@ struct UrlRead {
 }
 
 fn page(input: &Map<String, Value>) -> Result<Option<Page>, String> {
-    let number = |key: &str| {
-        input
-            .get(key)
-            .and_then(Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok())
-    };
-    let (offset, limit) = (number("offset"), number("limit"));
-    if limit == Some(0) {
-        return Err("read \"limit\" must be at least 1".to_owned());
-    }
-    Ok((offset.is_some() || limit.is_some()).then(|| Page {
-        offset: offset.unwrap_or(1).saturating_sub(1),
-        limit: limit.unwrap_or(usize::MAX),
+    let page = Page::from_payload(input, "read")?;
+    Ok(page.map(|page| Page {
+        offset: page.offset.saturating_sub(1),
+        ..page
     }))
 }
 
