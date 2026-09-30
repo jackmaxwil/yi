@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.490.0         # bump on any structural change; row goes in CHANGELOG.md
+version: 0.492.0         # bump on any structural change; row goes in CHANGELOG.md
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -188,6 +188,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D323 | an OpenRouter request names no `provider` object unless config `routing` does (revises D159): OpenRouter's Auto Exacto ranks hosts on every tool-calling request by tool-call errors, benchmarks and throughput, and `session_id` keeps a conversation on one host; a request carrying a schema (`response_format`) adds `require_parameters: true`, merged into any configured object, so it reaches only a host that takes the parameter; the eval workflows keep their `EVAL_ROUTING` pins as a measurement control (D231) | the owner chose "Drop it", "Keep eval pins only" and schema routing on top of #826 (#880); D159's throughput preference rode every request and may have narrowed Auto Exacto's hosts; the review bot's runs lost rounds to hosts that broke a JSON answer | restore `DEFAULT_ROUTING` as the fallback in `openai::routing_params` |
 | D322 | review rounds block (revises D319's `shadow`): `pr_review.MODE` is `blocking`, so a round with a high finding fails the `review` job and `just pr ready` refuses a draft without two rounds whose last is on its head and not blocked, until a clean round or `/override <reason>` from an allowed author; medium and low stay advice; `just land` opens the draft and stops | owner: "The review bot should start blocking PRs on negative findings."; the severity-tier decision makes high the blocking tier | set `MODE = "shadow"` |
 | D317 | a child's transcript lives inside its parent: `<root file without .jsonl>/children/sub-<8 hex>/` at the root, `<its dir>/children/` below it, and `rlm-<pid>/` for a root with no `.jsonl` transcript; its header names its parent (`parentSessionId`); the parent's log keeps a `custom{child}` trail, `spawned` (name, id, session, path relative to the parent's directory, brief digest) and `ended` (final exit, error, tokens), the end written only through the live handle while it holds the spawn's file; `history://<child>` falls back to the newest line with that exact name or id; deleting a session deletes the directory beside its file | a child sat under `rlm-<pid>/`, keyed by the process, so a restart lost it; the owner: "children should stay in their parents" (#879) | drop `subagent/trail.rs`, the `children_dir` call and the trail lookup |
 | D321 | the session verbs answer from `yi_runtime::slash` on every surface, amending D112: `/undo`, `/sessions`, the line split and the mode names live there with the verbs D112 moved, and Pi RPC and ACP share `GoalService::act` and `authority::submit_request`, each keeping its own confirmer (D193); D112's `_yi/status` stream is gone, the console reading config options and D113's `_yi/event` | `/undo` answered two ways and solo `/sessions` lost the name column, because each surface kept its own copy | restore the copies in `tui/src/port.rs`, `acp/src/review.rs`, `cli/src/sessions.rs` |
