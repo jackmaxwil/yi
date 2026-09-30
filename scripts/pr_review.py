@@ -480,13 +480,18 @@ def merges_since(sha, head, base, repo=ROOT):
     branch up to date adds the base's work, and the patch against the base stays the same."""
     if head.startswith(sha):
         return True
-    run = lambda *a, stdin=None: subprocess.run(("git", "-C", str(repo)) + a, input=stdin, capture_output=True, text=True)
+    run = lambda *a: subprocess.run(("git", "-C", str(repo)) + a, capture_output=True)
     def patch(tip):
         fork = run("merge-base", base, tip).stdout.strip()
-        diff = run("diff", fork, tip).stdout if fork else ""
-        return run("patch-id", "--stable", stdin=diff).stdout.split()[:1] if diff else []
+        diff = run("diff", "--binary", fork, tip).stdout if fork else b""
+        # Bytes, whitespace kept: an indent is code here, and one PR carried a Latin-1 byte.
+        kept = [line for line in diff.splitlines() if not line.startswith((b"@@", b"index "))]
+        return hashlib.sha256(b"\n".join(kept)).hexdigest() if diff else None
     # Incident: counting only non-merge commits let a merge carry new code past the round.
-    return run("merge-base", "--is-ancestor", sha, head).returncode == 0 and bool(patch(sha)) and patch(sha) == patch(head)
+    if run("merge-base", "--is-ancestor", sha, head).returncode:
+        return False
+    reviewed = patch(sha)
+    return reviewed is not None and reviewed == patch(head)
 
 
 def holds_for(number, base="main"):
@@ -915,6 +920,12 @@ def selfcheck():
         git("add", "evil.rs")
         git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "merge base")
         assert not merges_since(reviewed, rev("HEAD"), "base", repo_dir), "a merge that carries new code needs a round"
+        git("reset", "-q", "--hard", clean_merge)
+        git("-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "--no-commit", "base")
+        (repo_dir / "scripts/guardrails/a.rs").write_bytes(b"  x\n\xe9\n")
+        git("add", "scripts/guardrails/a.rs")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "merge base")
+        assert not merges_since(reviewed, rev("HEAD"), "base", repo_dir), "an indent or a Latin-1 byte in a merge needs a round"
         git("reset", "-q", "--hard", clean_merge)
         (repo_dir / "c.rs").write_text("z\n")
         git("add", "c.rs")
