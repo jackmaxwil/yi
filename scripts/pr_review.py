@@ -476,13 +476,17 @@ def authors():
 
 
 def merges_since(sha, head, base, repo=ROOT):
-    """A round still reads this head when nothing on it is new beyond the reviewed commit and
-    the base: bringing a branch up to date adds the base's work, not the PR's."""
+    """A round still reads this head when the PR's own change is the one it read: bringing a
+    branch up to date adds the base's work, and the patch against the base stays the same."""
     if head.startswith(sha):
         return True
-    run = lambda *a: subprocess.run(("git", "-C", str(repo)) + a, capture_output=True, text=True)
-    return run("merge-base", "--is-ancestor", sha, head).returncode == 0 and \
-        not run("rev-list", "--no-merges", head, "--not", sha, base).stdout.strip()
+    run = lambda *a, stdin=None: subprocess.run(("git", "-C", str(repo)) + a, input=stdin, capture_output=True, text=True)
+    def patch(tip):
+        fork = run("merge-base", base, tip).stdout.strip()
+        diff = run("diff", fork, tip).stdout if fork else ""
+        return run("patch-id", "--stable", stdin=diff).stdout.split()[:1] if diff else []
+    # Incident: counting only non-merge commits let a merge carry new code past the round.
+    return run("merge-base", "--is-ancestor", sha, head).returncode == 0 and bool(patch(sha)) and patch(sha) == patch(head)
 
 
 def holds_for(number, base="main"):
@@ -887,16 +891,31 @@ def selfcheck():
         (repo_dir / "scripts/guardrails").mkdir(parents=True)
         git("mv", "a.rs", "scripts/guardrails/a.rs")
         assert walled(changed_paths(repo_dir)) == ["scripts/guardrails/a.rs"], "a rename into the wall is seen"
-        git("commit", "-q", "-m", "wall", "--", "scripts/guardrails/a.rs", "a.rs")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "wall", "--", "scripts/guardrails/a.rs", "a.rs")
         rev = lambda name: subprocess.run(("git", "-C", str(repo_dir), "rev-parse", name), capture_output=True, text=True).stdout.strip()
         reviewed = rev("HEAD")
-        git("checkout", "-q", "-b", "base")
+        git("branch", "base", "HEAD~1")
+        git("checkout", "-q", "base")
         (repo_dir / "b.rs").write_text("y\n")
         git("add", "b.rs")
         git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "base work")
         git("checkout", "-q", "-")
         git("-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "merge base", "base")
         assert merges_since(reviewed, rev("HEAD"), "base", repo_dir), "a merge from the base keeps the round"
+        clean_merge = rev("HEAD")
+        (repo_dir / "b.rs").write_text("y2\n")
+        git("add", "b.rs")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "more base work")
+        git("checkout", "-q", "base")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base moves")
+        git("checkout", "-q", "-")
+        git("reset", "-q", "--hard", clean_merge)
+        git("-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "--no-commit", "base")
+        (repo_dir / "evil.rs").write_text("slipped in\n")
+        git("add", "evil.rs")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "merge base")
+        assert not merges_since(reviewed, rev("HEAD"), "base", repo_dir), "a merge that carries new code needs a round"
+        git("reset", "-q", "--hard", clean_merge)
         (repo_dir / "c.rs").write_text("z\n")
         git("add", "c.rs")
         git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "new work")
