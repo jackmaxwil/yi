@@ -239,6 +239,22 @@ pub fn civil_from_days(days: u64) -> (u64, u64, u64) {
     (adjusted_year, month, day)
 }
 
+/// Incident: ipykernel imports debugpy after IOPub is up, debugpy's `platform.processor()` forks a
+/// child that never exits under Rosetta, and `kernel_info` times out; a failed import is debugging off.
+fn shadow_debugpy(
+    connection_path: &std::path::Path,
+    existing: Option<std::ffi::OsString>,
+) -> Option<std::ffi::OsString> {
+    let dir = connection_path.parent()?;
+    let stub = "raise ImportError('yi kernel does not load debugpy')\n";
+    std::fs::write(dir.join("debugpy.py"), stub).ok()?;
+    let rest = existing
+        .iter()
+        .flat_map(std::env::split_paths)
+        .collect::<Vec<_>>();
+    std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(rest)).ok()
+}
+
 fn spawn_kernel_process(
     inner: &Arc<Inner>,
     python: &std::path::Path,
@@ -269,6 +285,15 @@ fn spawn_kernel_process(
     }
     for (key, value) in &inner.env {
         command.env(key, value);
+    }
+    let existing = inner
+        .env
+        .iter()
+        .find(|(key, _)| key == "PYTHONPATH")
+        .map(|(_, value)| std::ffi::OsString::from(value))
+        .or_else(|| std::env::var_os("PYTHONPATH"));
+    if let Some(path) = shadow_debugpy(connection_path, existing) {
+        command.env("PYTHONPATH", path);
     }
     let child = command
         .spawn()
@@ -1118,8 +1143,24 @@ fn aborted_result() -> ExecuteResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{KernelManager, KernelOptions};
+    use super::{KernelManager, KernelOptions, shadow_debugpy};
     use crate::scratch::Scratch;
+
+    #[test]
+    fn the_debugpy_shadow_imports_as_an_error_ahead_of_any_existing_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = Scratch::new("yi-kernel-debugpy")?;
+        let connection = root.join("connection.json");
+        std::fs::write(&connection, "{}")?;
+        let ahead = shadow_debugpy(&connection, Some("/already".into())).ok_or("no path")?;
+        assert_eq!(
+            ahead,
+            std::ffi::OsString::from(format!("{}:/already", root.display()))
+        );
+        let alone = shadow_debugpy(&connection, None).ok_or("no path")?;
+        assert_eq!(alone, root.as_os_str());
+        Ok(())
+    }
 
     #[test]
     fn a_manager_dropped_without_shutdown_removes_its_connection_dir()

@@ -503,7 +503,7 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   schema=…)` runs one, reads its result and reaps it. A reader's `schema` is named in its
   question and sent as structured output only by a reader with `tools=[]` or `turns=1` (the turn cap's last word still carries the tools, so a reader that keeps its tools gets the schema in its question and `result`'s check only), strictly only where it closes every object (D309); its
   partition is its own first message, marked `shared_through` when a sibling sent it within 300 s.
-- A worker (`role="worker"`, D330) is the same brief with writes: `prompts/worker.md`, the
+- A worker (`role="worker"`, D334) is the same brief with writes: `prompts/worker.md`, the
   permission mode, the project's instruction files and the language packs are its whole system
   prompt, `tools` a subset of `read`, `grep`, `edit`, `write`, `bash` and `get_context` (the first
   four by default), `turns` 12 (at most 40). Its writes pass its wall, the broker and the user's
