@@ -137,15 +137,9 @@ impl RpcState {
         let text_arg = |key: &str| payload.get(key).and_then(Value::as_str).unwrap_or("");
         match command_type {
             "compact" => {
-                let applied = self.session.compact_now().await;
-                data_frame(
-                    id,
-                    "compact",
-                    json!({
-                        "applied": applied,
-                        "scheduled": !applied && self.session.status() == Status::Running,
-                    }),
-                )
+                let outcome = self.session.compact_now().await;
+                let running = self.session.status() == Status::Running;
+                data_frame(id, "compact", compact_frame(&outcome, running))
             }
             "compact_status" => match self.session.compactor() {
                 Some(compactor) => {
@@ -521,4 +515,47 @@ pub fn run_rpc(
         }
         0
     })
+}
+
+/// An elision applied too, but it is not a summary: it says so, apart from a compaction's
+/// `applied`, and a failure carries its reason.
+fn compact_frame(
+    outcome: &Result<yi_runtime::compaction::CompactOutcome, yi_runtime::compaction::CompactError>,
+    running: bool,
+) -> Value {
+    let applied = outcome.as_ref().is_ok_and(|outcome| outcome.applied());
+    let mut frame = json!({"applied": applied, "scheduled": !applied && running});
+    match outcome {
+        Ok(yi_runtime::compaction::CompactOutcome::Elided(elision)) => {
+            frame["elided"] = json!(elision.messages);
+        }
+        Err(error) => frame["error"] = json!(error.to_string()),
+        Ok(_) => {}
+    }
+    frame
+}
+
+#[cfg(test)]
+mod tests {
+    use yi_runtime::compaction::{CompactError, CompactOutcome, Elision};
+
+    #[test]
+    fn a_compact_frame_tells_an_elision_and_a_failure_apart_from_a_summary() {
+        let frame = |outcome| super::compact_frame(&outcome, false);
+        assert_eq!(
+            frame(Ok(CompactOutcome::Summarized))["elided"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            frame(Ok(CompactOutcome::Elided(Elision { messages: 5 })))["elided"],
+            5
+        );
+        let failed = frame(Err(CompactError::NoSummary("upstream 529".to_owned())));
+        assert_eq!(failed["applied"], false);
+        assert!(
+            failed["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("upstream 529"))
+        );
+    }
 }

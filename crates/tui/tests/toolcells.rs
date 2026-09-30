@@ -427,6 +427,25 @@ fn a_hidden_custom_message_stays_out_of_the_transcript() -> TestResult {
     Ok(())
 }
 
+/// #946 Q4: a compaction note is a custom message on the model's side, but it reads as the
+/// plain host line it always was, with no `compaction_notice` source label.
+#[test]
+fn a_compaction_notice_reads_as_a_plain_host_line() -> TestResult {
+    let mut app = app();
+    let notice =
+        "[compaction failed: upstream 529; history left uncompacted, the next prompt retries]";
+    custom(
+        &mut app,
+        yi_runtime::compaction::COMPACTION_NOTICE,
+        notice,
+        true,
+    );
+    let rows = flat(&app.take_commits()).join("\n");
+    assert!(rows.contains("[compaction failed: upstream 529;"), "{rows}");
+    assert!(!rows.contains("compaction_notice"), "{rows}");
+    Ok(())
+}
+
 /// Incident: a failed call's digest returned before the sanitizer, so the tab `diff -u` puts
 /// before a header's timestamp reached the card. Producer: Apple diff (FreeBSD), exit 1.
 #[test]
