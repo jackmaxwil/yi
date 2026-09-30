@@ -435,6 +435,15 @@ fn openrouter_names_a_provider_only_for_config_or_a_schema() -> TestResult {
         built(&configured, &asked)["provider"],
         json!({"sort": "price", "ignore": ["wafer"], "require_parameters": true})
     );
+    let odd = OpenAiOptions {
+        routing: Some(json!("price")),
+        ..OpenAiOptions::default()
+    };
+    assert_eq!(
+        built(&odd, &asked)["provider"],
+        json!({"require_parameters": true}),
+        "a non-object routing cannot drop the schema's hosts"
+    );
     let mut elsewhere = model.clone();
     elsewhere.base_url = "https://api.openai.com/v1".to_owned();
     assert!(

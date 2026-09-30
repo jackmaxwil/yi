@@ -39,6 +39,9 @@ pub fn routing_params(model: &Model, options: &OpenAiOptions, schema: bool) -> O
     if schema {
         // Invariant: a schema only reaches a host that takes `response_format`; the rest ignore it.
         let object = routing.get_or_insert_with(|| json!({}));
+        if !object.is_object() {
+            *object = json!({});
+        }
         if let Some(object) = object.as_object_mut() {
             object.insert("require_parameters".to_owned(), json!(true));
         }
