@@ -371,7 +371,7 @@ async fn a_child_going_stuck_wakes_a_wait() -> TestResult {
 /// too with a repeat of either spinning: the second wait at the same state refuses, naming it.
 #[tokio::test]
 async fn a_wait_returns_at_once_on_a_question_and_on_a_settled_family() -> TestResult {
-    // The kernel's `rlm` matches these sentences; its unittest lane reads the same file.
+    // The kernel's `rlm` matches fragments of these sentences; its unittest lane reads this file.
     let texts: Value = serde_json::from_str(include_str!(
         "../../../python/yi_runtime/tests/vectors/host_texts.json"
     ))?;
