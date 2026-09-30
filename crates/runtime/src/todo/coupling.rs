@@ -43,6 +43,7 @@ pub struct Cycle {
     pub empties: u32,
     pub first_listed: bool,
     pub unsourced: bool,
+    pub awaiting_unsourced: bool,
     pub quiet_turns: u32,
     pub closed_nudged: Option<String>,
     pub prompt_claims_impossible: bool,
@@ -448,11 +449,14 @@ pub fn intercept_text(rung: u8, list: &TodoList) -> String {
     }
 }
 
-/// Digit runs of three or more with no word character or dot on either side: the same
-/// numerals the session miner's `count_claim` reads, so the two never disagree.
+/// Digit runs of three or more outside code spans with no word character, dot or slash on
+/// either side: the same numerals the session miner's `count_claim` reads, so the two agree.
 pub fn numbers_of(text: &str) -> Vec<String> {
-    let bound = |c: Option<char>| c.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.'));
-    let chars: Vec<char> = text.chars().collect();
+    let bound = |c: Option<char>| {
+        c.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '/'))
+    };
+    let prose: Vec<&str> = text.split('`').step_by(2).collect();
+    let chars: Vec<char> = prose.join(" ").chars().collect();
     let mut out: Vec<String> = Vec::new();
     let mut at = 0;
     while at < chars.len() {
@@ -522,7 +526,7 @@ pub fn unsourced(text: &str, seen: &str) -> Vec<String> {
 
 pub fn unsourced_text(numbers: &[String]) -> String {
     format!(
-        "Each number in the answer needs its source: quote the tool result it came from, or remove it. Numbers without a source: {}.",
+        "These numbers appear in no tool result: {}. If one is wrong or unmeasured, reply with one line that corrects only it. If each is a name, a path or an id, end the turn with no text. Do not restate the answer or quote sources.",
         numbers.join(", ")
     )
 }
@@ -694,6 +698,7 @@ fn claim_redrive(
         let numbers = unsourced(text, &seen_text(store));
         if !numbers.is_empty() {
             cycle.unsourced = true;
+            cycle.awaiting_unsourced = true;
             record_intercept(store, 0, "unsourced", &fingerprint, cycle.intercepts);
             return Some(custom(
                 INTERCEPT_CUSTOM_TYPE,
@@ -831,7 +836,11 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
                 return None;
             };
             let text = text_of(snapshot.message);
+            let acked = std::mem::take(&mut cycle.awaiting_unsourced);
             if text.trim().is_empty() {
+                if acked {
+                    return None;
+                }
                 if cycle.empty_stop() {
                     return Some(custom(
                         INTERCEPT_CUSTOM_TYPE,
