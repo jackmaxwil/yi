@@ -390,13 +390,16 @@ fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
         working_dir: Some(root.to_path_buf()),
         workspace_git: Vec::new(),
     };
-    let home_text = home.display();
-    for command in [
-        format!("cat {home_text}/.NETRC"),
+    let mut commands = vec![
         "cat cfg/gh/hosts.yml".to_owned(),
         "grep -r token cfg".to_owned(),
         "cat cfg/*/hosts.yml".to_owned(),
-    ] {
+    ];
+    // Another letter case names the same file only where the filesystem folds case (macOS).
+    if home.join(".NETRC").exists() {
+        commands.push(format!("cat {}/.NETRC", home.display()));
+    }
+    for command in commands {
         assert!(
             command_reads_credentials(&command, &real).is_some(),
             "{command}"
