@@ -84,6 +84,19 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
     assert!(args.iter().any(|arg| arg == "--"));
     assert!(args.iter().any(|arg| arg.starts_with("-DWRITABLE_ROOT_0=")));
 
+    let (_, offline) = sandbox.wrap_offline("sh", &[]);
+    assert!(
+        offline
+            .get(1)
+            .is_some_and(|policy| !policy.contains("network")),
+        "the offline profile has no network rule at all"
+    );
+    assert!(
+        args.iter().any(|arg| arg.starts_with("JAVA_TOOL_OPTIONS=")
+            && arg.ends_with("-Djava.net.preferIPv4Stack=true")),
+        "a JVM gets IPv4 sockets, which reach loopback"
+    );
+
     let own = Path::new("/home/user/.yi/kernel-connections/1-0");
     let (program, prefix) = sandbox.kernel_prefix(own);
     assert_eq!(program, "/usr/bin/sandbox-exec");
@@ -738,10 +751,38 @@ fn a_contained_resolver_failure_reads_as_the_sandbox() -> TestResult {
             .map(|refusal| denial_hint(&refusal))
             .unwrap_or_default();
         assert!(
-            code != 0 && hint.contains("no network beyond loopback"),
+            code != 0 && hint.contains("no network beyond 127.0.0.1 and ::1"),
             "`{command}` exited {code} with no sandbox hint: {output}"
         );
     }
+    Ok(())
+}
+
+/// Review of #925 (F3): a JVM opens dual-stack sockets and dials 127.0.0.1 as `::ffff:127.0.0.1`,
+/// which Seatbelt refuses, so Gradle, Maven and sbt lost loopback. Skipped with no JDK here.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_contained_jvm_reaches_loopback() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home) = workspace("jvm")?;
+    let (code, java_home) = run("/usr/libexec/java_home", &project, None)?;
+    if code != 0 {
+        eprintln!("skipped: no JDK");
+        return Ok(());
+    }
+    std::fs::write(
+        project.join("Probe.java"),
+        "import java.net.*;\npublic class Probe {\n  public static void main(String[] args) throws Exception {\n    for (String host : new String[] {\"127.0.0.1\", \"localhost\"}) {\n      try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getByName(host));\n           Socket client = new Socket(host, server.getLocalPort())) {\n        server.accept().close();\n        System.out.println(\"jvm-\" + host + \"-ok\");\n      }\n    }\n  }\n}\n",
+    )?;
+    let java = format!("{}/bin/java", java_home.trim());
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let (code, output) = run(&format!("'{java}' Probe.java"), &project, Some(&sandbox))?;
+    assert!(
+        code == 0 && output.contains("jvm-127.0.0.1-ok") && output.contains("jvm-localhost-ok"),
+        "{output}"
+    );
     Ok(())
 }
 

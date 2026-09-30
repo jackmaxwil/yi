@@ -83,9 +83,14 @@ impl Sandbox {
         let mut params = Vec::new();
         if let Some(own) = own {
             params.push(("OWN_CONNECTION".to_owned(), own.to_path_buf()));
+            // Never `own` itself resolved: the kernel writes there and could plant a link.
+            let parent = own.parent().map(yi_permission::resolve_links);
+            let resolved = parent
+                .zip(own.file_name())
+                .map(|(dir, name)| dir.join(name));
             params.push((
                 "OWN_CONNECTION_RESOLVED".to_owned(),
-                yi_permission::resolve_links(own),
+                resolved.unwrap_or_else(|| own.to_path_buf()),
             ));
         }
         for (index, path) in self.deny_write.iter().enumerate() {
@@ -112,10 +117,10 @@ impl Sandbox {
     }
 
     pub fn policy(&self) -> String {
-        self.policy_for(self.denied_parents().len(), false)
+        self.policy_for(self.denied_parents().len(), false, true)
     }
 
-    fn policy_for(&self, parents: usize, own: bool) -> String {
+    fn policy_for(&self, parents: usize, own: bool, network: bool) -> String {
         let mut sections = vec![BASE_POLICY.to_owned(), self.read_policy()];
         sections.push(self.write_policy(parents));
         if own {
@@ -127,7 +132,9 @@ impl Sandbox {
                     .to_owned(),
             );
         }
-        sections.push(NETWORK_POLICY.to_owned());
+        if network {
+            sections.push(NETWORK_POLICY.to_owned());
+        }
         sections.join("\n")
     }
 
@@ -136,17 +143,17 @@ impl Sandbox {
     pub fn kernel_prefix(&self, connection_dir: &Path) -> (String, Vec<String>) {
         (
             SEATBELT.to_owned(),
-            self.seatbelt_args(Some(connection_dir)),
+            self.seatbelt_args(Some(connection_dir), true),
         )
     }
 
     /// `-p <policy> -DKEY=value ... -- env -u …`: the rules and their bindings come from one
     /// reading of the filesystem, so a link swapped between the two cannot unbind a rule.
-    fn seatbelt_args(&self, own: Option<&Path>) -> Vec<String> {
+    fn seatbelt_args(&self, own: Option<&Path>, network: bool) -> Vec<String> {
         let parents = self.denied_parents();
         let mut wrapped = vec![
             "-p".to_owned(),
-            self.policy_for(parents.len(), own.is_some()),
+            self.policy_for(parents.len(), own.is_some(), network),
         ];
         for (key, value) in self.params_for(&parents, own) {
             wrapped.push(format!("-D{key}={}", value.to_string_lossy()));
@@ -242,8 +249,18 @@ impl Sandbox {
 
     /// `sandbox-exec -p <policy> -DKEY=value ... -- <program> <args>`.
     pub fn wrap(&self, program: &str, args: &[&str]) -> (String, Vec<String>) {
+        self.wrap_with(true, program, args)
+    }
+
+    /// [`Self::wrap`] with no network at all, loopback included: the document converter parses
+    /// untrusted files and needs none.
+    pub fn wrap_offline(&self, program: &str, args: &[&str]) -> (String, Vec<String>) {
+        self.wrap_with(false, program, args)
+    }
+
+    fn wrap_with(&self, network: bool, program: &str, args: &[&str]) -> (String, Vec<String>) {
         let _span = yi_types::trace::span("sandbox.wrap");
-        let mut wrapped = self.seatbelt_args(None);
+        let mut wrapped = self.seatbelt_args(None, network);
         wrapped.push(program.to_owned());
         wrapped.extend(args.iter().map(|arg| (*arg).to_owned()));
         (SEATBELT.to_owned(), wrapped)
@@ -284,7 +301,18 @@ fn scrubbed_env() -> Vec<String> {
     let unset = names.into_iter().flat_map(|name| ["-u".to_owned(), name]);
     std::iter::once("/usr/bin/env".to_owned())
         .chain(unset)
+        .chain(std::iter::once(java_ipv4()))
         .collect()
+}
+
+/// A JVM's dual-stack socket dials 127.0.0.1 as `::ffff:127.0.0.1`, which Seatbelt refuses; IPv4
+/// sockets keep Gradle, Maven and sbt on loopback. Appended to the value the run inherits.
+fn java_ipv4() -> String {
+    const IPV4: &str = "-Djava.net.preferIPv4Stack=true";
+    match std::env::var("JAVA_TOOL_OPTIONS") {
+        Ok(options) if !options.trim().is_empty() => format!("JAVA_TOOL_OPTIONS={options} {IPV4}"),
+        _ => format!("JAVA_TOOL_OPTIONS={IPV4}"),
+    }
 }
 
 /// Secrets named as nothing else is: a connection string, a password manager's unlocked session.
@@ -514,7 +542,7 @@ pub fn sandbox_refusal(
 }
 
 pub fn denial_hint(refusal: &SandboxRefusal) -> String {
-    const CONTAINED: &str = "a contained run writes only the working tree, its git dirs and tmp, and has no network beyond loopback";
+    const CONTAINED: &str = "a contained run writes only the working tree, its git dirs and tmp, and has no network beyond 127.0.0.1 and ::1 (a dual-stack socket's `::ffff:127.0.0.1` is refused)";
     match refusal {
         SandboxRefusal::Path(path) => {
             let dir = path.parent().unwrap_or(path);
