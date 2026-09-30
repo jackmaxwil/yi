@@ -193,18 +193,20 @@ pub fn layout_chat(
     };
 
     let selected = &app.selection.model;
-    // A namespaced id names its maker, not the route: `anthropic/` on OpenRouter hid the router.
-    let (model, provider) = match selected.id.split_once('/') {
-        Some((_, name)) if !selected.provider.is_empty() => {
-            (name.to_owned(), Some(selected.provider.clone()))
-        }
-        _ => (selected.id.clone(), None),
+    // OpenRouter is the one router yi reaches; its `vendor/` prefix names the maker, not the route.
+    let routed = selected.provider == "openrouter";
+    let model = match selected.id.split_once('/') {
+        Some((_, name)) if routed => name.to_owned(),
+        _ => selected.id.clone(),
     };
-    let caches = selected
-        .cost
-        .cache_read
-        .as_f64()
-        .is_some_and(|price| price > 0.0);
+    let provider = routed.then(|| selected.provider.clone());
+    // As the footer: a read is expected from the second request, on a route that prices one.
+    let expected = app.requests > 1
+        && selected
+            .cost
+            .cache_read
+            .as_f64()
+            .is_some_and(|price| price > 0.0);
     let status_input = StatusInput {
         model,
         provider,
@@ -218,7 +220,7 @@ pub fn layout_chat(
             crate::status::landing_segment(landing, app.landing_at.map(|at| at.elapsed()))
         }),
         cost: app.spent.label(),
-        cache: app.session_tokens.cache_label(caches),
+        cache: app.session_tokens.cache_label(expected),
         session_name: if app.status_name_hidden {
             String::new()
         } else {

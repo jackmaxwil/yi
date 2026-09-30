@@ -212,12 +212,16 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     })
 }
 
-/// `COLSxROWS`, both above zero.
+/// `COLSxROWS` within 20..=1000 by 8..=500: the drive's own floor, and a screen that fits in memory.
 fn parse_size(raw: &str) -> Result<(u16, u16), lexopt::Error> {
     raw.split_once('x')
         .and_then(|(cols, rows)| Some((cols.parse().ok()?, rows.parse().ok()?)))
-        .filter(|&(cols, rows)| cols > 0 && rows > 0)
-        .ok_or_else(|| lexopt::Error::Custom(format!("--size wants COLSxROWS, not {raw}").into()))
+        .filter(|(cols, rows)| (20..=1000).contains(cols) && (8..=500).contains(rows))
+        .ok_or_else(|| {
+            lexopt::Error::Custom(
+                format!("--size wants COLSxROWS within 20..=1000 by 8..=500, not {raw}").into(),
+            )
+        })
 }
 
 fn faux_model() -> Model {
