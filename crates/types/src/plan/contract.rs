@@ -9,6 +9,7 @@ use serde_json::Value;
 use super::canonical::{ArtifactRef, CanonicalError, Digest, canonical_digest};
 use super::doc::{PlanId, TodoLabel};
 use super::ledger::{AttemptId, IdError};
+use crate::SECRET_NAME_MARKS;
 use crate::plan::PlanVersion;
 
 /// Items per contract; sixteen is the bound the aggregation is reasoned over.
@@ -691,10 +692,6 @@ impl std::fmt::Display for Resolution {
 /// The checker manifest format this tree reads; bumped, never reinterpreted.
 pub const MANIFEST_FORMAT: u32 = 1;
 
-/// Environment names a manifest may never declare: a criterion is stored, and a secret frozen
-/// into a criterion can be read back out of the store.
-const SECRET_NAME_MARKS: [&str; 5] = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Cwd {
@@ -760,6 +757,7 @@ impl CheckerManifest {
                     "checker manifest: {name:?} is not an environment name"
                 ));
             }
+            // A stored criterion can be read back, so a name merely holding a mark is refused.
             if SECRET_NAME_MARKS.iter().any(|mark| upper.contains(mark)) {
                 return Err(format!(
                     "checker manifest: {name} looks like a secret; a criterion may not read one"

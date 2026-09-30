@@ -222,6 +222,14 @@ pub struct ToolResult {
     pub terminate: Option<bool>,
 }
 
+/// `{"type":"event_gap","dropped":N}`: a reader fell behind the event broadcast and lost `dropped`
+/// events. It rides the event streams as a line of its own; a Pi client skips a type it does not know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename = "event_gap")]
+pub struct EventGap {
+    pub dropped: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
