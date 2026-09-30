@@ -83,6 +83,7 @@ fn manager_with_snapshot(snapshot: Option<KernelSnapshotConfig>) -> Result<Kerne
         on_progress: None,
         snapshot,
         wrap: None,
+        connection_dir: None,
     })
 }
 
@@ -580,6 +581,7 @@ async fn the_kernel_boots_on_system_python_when_uv_is_absent() -> TestResult {
         on_progress: None,
         snapshot: None,
         wrap: None,
+        connection_dir: None,
     })?;
     let result = kernel
         .execute(

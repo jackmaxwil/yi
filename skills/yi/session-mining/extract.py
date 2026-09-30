@@ -54,6 +54,7 @@ CREDENTIAL_SUBPATHS = [
     ".yi/mcp/tokens",
     ".yi/providers/tokens",
     ".yi/oauth",
+    ".yi/kernel-connections",
     ".config/gh",
     ".config/fgj",
     ".config/gcloud",
