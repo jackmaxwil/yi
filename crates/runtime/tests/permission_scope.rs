@@ -358,5 +358,67 @@ fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
         assert!(!moved(dest).allowed, "edit MV {dest} writes into a store");
     }
     assert!(moved("h/renamed.md").allowed, "a move to an ordinary file");
+    // Spellings a line scan would miss and the edit tool's parser reads as the same move.
+    for patch in [
+        "[h/notes.md]\nMV \"link/newkey\"",
+        "[h/notes.md]\nMV 'link/newkey'",
+        "[h/notes.md]\r\nMV link/newkey\r\n",
+        "[h/notes.md]\n  MV   link/newkey  ",
+        "[*** Move to: link/newkey]\nPUT 1.=1:\nx",
+        "[*** Update File: link/id_rsa]\nPUT 1.=1:\nx",
+    ] {
+        let mut args = Map::new();
+        args.insert("patch".to_owned(), json!(patch));
+        let outcome = broker.decide_call("edit", ToolKind::Write, true, "c1", &args, None);
+        assert!(!outcome.allowed, "{patch:?} writes into a store");
+    }
+    Ok(())
+}
+
+struct MainTree(PathBuf);
+
+impl yi_runtime::fetch::MemberTrees for MainTree {
+    fn cwd_of(&self, agent: &str) -> Option<PathBuf> {
+        (agent == "main").then(|| self.0.clone())
+    }
+}
+
+/// A scheme that serves a host file opens it on the host, where `decide` never looked: the
+/// model's `read tree://main/…` or `local://…` and the kernel's `rlm.fetch` reached the
+/// workspace `.git` and, through a link, a key store (#905).
+#[cfg(unix)]
+#[test]
+fn a_url_that_serves_a_host_file_meets_the_read_gate() -> TestResult {
+    use yi_runtime::fetch::{FetchError, Resolver};
+    let scratch = Scratch::new("yi-scope-url-gate")?;
+    let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    std::fs::create_dir_all(workspace.join(".git"))?;
+    std::fs::write(home.join(".ssh/id_rsa"), "FAKE KEY MARKER\n")?;
+    std::fs::write(workspace.join(".git/config"), "GIT CONFIG MARKER\n")?;
+    std::fs::write(workspace.join("notes.md"), "ordinary\n")?;
+    std::os::unix::fs::symlink(home.join(".ssh"), workspace.join("keys"))?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let resolver = Resolver::new(workspace.clone(), yi_runtime::wall::Wall::default())
+        .with_member_trees(Arc::new(MainTree(workspace.clone())));
+    for url in [
+        "tree://main/.git/config",
+        "tree://main/keys/id_rsa",
+        "local://.git/config",
+        "local://keys/id_rsa",
+    ] {
+        let refused = matches!(
+            resolver.fetch(&url.parse()?),
+            Err(FetchError::Denied { .. } | FetchError::OutsideWorkspace { .. })
+        );
+        assert!(refused, "{url}");
+    }
+    for url in ["tree://main/notes.md", "local://notes.md"] {
+        assert!(
+            resolver.fetch(&url.parse()?).is_ok(),
+            "{url} is an ordinary file"
+        );
+    }
     Ok(())
 }
