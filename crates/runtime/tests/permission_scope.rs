@@ -112,6 +112,325 @@ fn an_approved_network_ask_says_it_leaves_the_sandbox() -> TestResult {
     Ok(())
 }
 
+/// An `exec://` source only ever runs on the host, and one the gate allows outright was admitted
+/// before allowed calls ran contained; containing them must not start refusing it.
+#[test]
+fn an_exec_source_the_gate_allows_is_still_admitted() {
+    let project = PathBuf::from("/nonexistent/project");
+    let broker = PermissionBroker::new(
+        PermissionMode::Auto,
+        project.clone(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    )
+    .with_sandbox(Some(yi_tools::Sandbox {
+        writable: vec![project],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+    }));
+    assert_eq!(
+        yi_runtime::tools::refuse_armed("git status", false, Some(&broker), ""),
+        None
+    );
+    assert!(
+        yi_runtime::tools::refuse_armed("touch x", false, Some(&broker), "").is_some(),
+        "a source the gate only contains is still refused"
+    );
+}
+
+/// A rule may allow a credential read the profile would refuse; it runs outside, and says so.
+#[test]
+fn an_allowed_credential_read_runs_outside_and_says_so() -> TestResult {
+    let project = PathBuf::from("/nonexistent/project");
+    let rule = yi_runtime::ConfigRule::new("bash", "cat *", yi_runtime::ConfigRuleAction::Allow)?;
+    let broker = PermissionBroker::new(
+        PermissionMode::Auto,
+        project.clone(),
+        vec![rule],
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    )
+    .with_sandbox(Some(yi_tools::Sandbox {
+        writable: vec![project],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+    }));
+    let mut args = Map::new();
+    args.insert("command".to_owned(), json!("cat ~/.netrc"));
+    let outcome = broker.decide_call("bash", ToolKind::Exec, true, "c1", &args, None);
+    assert_eq!(outcome.containment, Containment::Uncontained);
+    let notice = broker
+        .outside_notice("bash", &args, &outcome)
+        .unwrap_or_default();
+    assert!(
+        notice.contains("outside the sandbox (credential stores)"),
+        "{notice}"
+    );
+    Ok(())
+}
+
+/// A broker over a nonexistent tree with a profile, answering by `asker`, counting the questions.
+fn counted(
+    rules: Vec<yi_runtime::ConfigRule>,
+    answer: fn(usize) -> AskOutcome,
+) -> (PermissionBroker, Arc<Mutex<usize>>) {
+    let asks = Arc::new(Mutex::new(0_usize));
+    let seen = Arc::clone(&asks);
+    let asker: Asker = Arc::new(move |_| {
+        let mut count = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *count += 1;
+        answer(*count)
+    });
+    let project = PathBuf::from("/nonexistent/project");
+    let broker = PermissionBroker::new(
+        PermissionMode::Auto,
+        project.clone(),
+        rules,
+        Some(asker),
+        tokio::sync::broadcast::channel(8).0,
+    )
+    .with_sandbox(Some(yi_tools::Sandbox {
+        writable: vec![project],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+    }));
+    (broker, asks)
+}
+
+fn bash_args(command: &str) -> Map<String, Value> {
+    let mut args = Map::new();
+    args.insert("command".to_owned(), json!(command));
+    args
+}
+
+/// Review of #933, F1: one segment that must leave took the whole compound outside. After an
+/// "always" that kept `python3`, a zero-byte credential read carried any python out unasked.
+#[test]
+fn a_leaving_segment_does_not_carry_a_compound_out() -> TestResult {
+    let (broker, asks) = counted(Vec::new(), |n| match n {
+        1 => AskOutcome::AllowAlways(0),
+        _ => AskOutcome::Reject,
+    });
+    let decide = |id: &str, command: &str| {
+        broker.decide_call("bash", ToolKind::Exec, true, id, &bash_args(command), None)
+    };
+    assert!(decide("c1", "python3 evil.py && cat ~/.netrc").allowed);
+    let carried = decide("c2", "python3 evil.py && head -c0 ~/.aws/credentials");
+    assert!(!carried.allowed, "{}", carried.reason);
+    assert_eq!(
+        *asks.lock().map_err(|_| "poisoned")?,
+        2,
+        "the compound asks"
+    );
+    Ok(())
+}
+
+/// A scope an earlier "always" kept (`python3` in this tree) is not the session pass: after a
+/// refusal naming no path, another `python3` call asks (review of #933, F2).
+#[test]
+fn a_kept_scope_is_not_a_session_pass() -> TestResult {
+    let (broker, asks) = counted(Vec::new(), |n| match n {
+        1 => AskOutcome::AllowAlways(0),
+        _ => AskOutcome::Reject,
+    });
+    let decide = |id: &str, command: &str| {
+        broker.decide_call("bash", ToolKind::Exec, true, id, &bash_args(command), None)
+    };
+    assert!(decide("c1", "python3 evil.py && cat ~/.netrc").allowed);
+    broker.note_containment_failure(yi_tools::SandboxRefusal::Scopes(
+        yi_permission::refused_scopes("python3 other.py"),
+    ));
+    let other = decide("c2", "python3 other.py");
+    assert!(!other.allowed, "{}", other.reason);
+    assert_eq!(*asks.lock().map_err(|_| "poisoned")?, 2, "the retry asks");
+    Ok(())
+}
+
+/// The same under a configured allow: an install verb took a `sort -o` past the tree.
+#[test]
+fn a_configured_allow_does_not_carry_a_compound_out() -> TestResult {
+    let rule = yi_runtime::ConfigRule::new("bash", "cargo *", yi_runtime::ConfigRuleAction::Allow)?;
+    let (broker, asks) = counted(vec![rule], |_| AskOutcome::Reject);
+    let command = "cargo test && sort -o /Users/Shared/x input && cargo add serde";
+    let outcome = broker.decide_call(
+        "bash",
+        ToolKind::Exec,
+        true,
+        "c1",
+        &bash_args(command),
+        None,
+    );
+    assert!(!outcome.allowed, "{}", outcome.reason);
+    assert_eq!(
+        *asks.lock().map_err(|_| "poisoned")?,
+        1,
+        "the compound asks"
+    );
+    let whole = broker.decide_call(
+        "bash",
+        ToolKind::Exec,
+        true,
+        "c2",
+        &bash_args("cargo add serde"),
+        None,
+    );
+    assert_eq!(
+        whole.containment,
+        Containment::Uncontained,
+        "a single leaving segment still runs"
+    );
+    Ok(())
+}
+
+/// Re-review of #933, R2: text the strict parser gives up on fell to the lenient split, which
+/// folded a hidden command into the leaving segment's argv, so it left with it unasked.
+#[test]
+fn an_unparsed_command_never_leaves_unasked() -> TestResult {
+    let cargo =
+        yi_runtime::ConfigRule::new("bash", "cargo *", yi_runtime::ConfigRuleAction::Allow)?;
+    let cat = yi_runtime::ConfigRule::new("bash", "cat *", yi_runtime::ConfigRuleAction::Allow)?;
+    let (broker, asks) = counted(vec![cargo, cat], |_| AskOutcome::Reject);
+    let hidden = [
+        "cargo add serde\nsort -o /Users/Shared/x in",
+        "cargo add serde $(sort -o /Users/Shared/x in)",
+        "cargo add serde `sort -o /Users/Shared/x in`",
+        "cargo add \"$(sort -o /Users/Shared/x in)\"",
+        "cargo add serde <(sort -o /Users/Shared/x in)",
+        "cargo add serde &sort -o /Users/Shared/x in",
+        "cat ~/.netrc\nsort -o /Users/Shared/x in",
+        "cat ~/.netrc $(sort -o /Users/Shared/x in)",
+    ];
+    for (index, command) in hidden.iter().enumerate() {
+        let id = format!("c{index}");
+        let outcome =
+            broker.decide_call("bash", ToolKind::Exec, true, &id, &bash_args(command), None);
+        assert!(
+            !outcome.allowed,
+            "{command:?} left unasked: {}",
+            outcome.reason
+        );
+    }
+    assert_eq!(*asks.lock().map_err(|_| "poisoned")?, hidden.len());
+    Ok(())
+}
+
+/// Re-review of #933, R3: with no one to ask, a split compound's denial said "add an allow
+/// rule", which it had; splitting it or `--yolo` is what runs it.
+#[test]
+fn a_headless_compound_says_to_split_it() -> TestResult {
+    let rule = yi_runtime::ConfigRule::new("bash", "cargo *", yi_runtime::ConfigRuleAction::Allow)?;
+    let project = PathBuf::from("/nonexistent/project");
+    let broker = PermissionBroker::new(
+        PermissionMode::Auto,
+        project.clone(),
+        vec![rule],
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    )
+    .with_sandbox(Some(yi_tools::Sandbox {
+        writable: vec![project],
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
+    }));
+    let args = bash_args("cargo test && cargo add serde");
+    let outcome = broker.decide_call("bash", ToolKind::Exec, true, "c1", &args, None);
+    assert!(
+        !outcome.allowed
+            && outcome
+                .reason
+                .contains("Split it into separate calls, or rerun with --yolo")
+            && !outcome.reason.contains("allow rule"),
+        "{}",
+        outcome.reason
+    );
+    Ok(())
+}
+
+/// Re-review of #933, R1: `git remote update` is a proven read that runs `uploadpack` from `-c`
+/// on the host, and sending it out unasked gave a shell. It asks, as `git fetch` does; no `-c`
+/// makes a read verb leave.
+#[test]
+fn a_git_remote_update_asks_and_no_config_override_leaves() -> TestResult {
+    let (broker, asks) = counted(Vec::new(), |_| AskOutcome::Reject);
+    for command in [
+        "git -c remote.x.url=. -c \"remote.x.uploadpack=touch /Users/Shared/pwn; git-upload-pack\" remote update x",
+        "git -c core.hooksPath=h remote prune origin",
+        "git remote -v update",
+    ] {
+        let outcome =
+            broker.decide_call("bash", ToolKind::Exec, true, "c", &bash_args(command), None);
+        assert!(
+            !outcome.allowed,
+            "{command} ran unasked: {}",
+            outcome.reason
+        );
+        assert!(yi_runtime::tools::refuse_armed(command, false, Some(&broker), "").is_some());
+    }
+    assert_eq!(*asks.lock().map_err(|_| "poisoned")?, 6);
+    for command in [
+        "git -c core.pager=x log -1",
+        "git -c remote.x.uploadpack=y status",
+        "git --config-env=core.pager=P diff",
+        "git -c x=y remote -v",
+    ] {
+        let outcome =
+            broker.decide_call("bash", ToolKind::Exec, true, "c", &bash_args(command), None);
+        assert!(
+            outcome.allowed && outcome.containment != Containment::Uncontained,
+            "{command} left the sandbox: {}",
+            outcome.reason
+        );
+    }
+    Ok(())
+}
+
+/// The session pass covers only a refusal naming no path: an exact rule whose run was refused
+/// writing a path asks to widen by it (review of #933, mutant M9).
+#[test]
+fn a_passed_command_refused_on_a_path_asks_to_widen() -> TestResult {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let lane = home.join("yi-f-nonexistent-pass");
+    let command = format!("touch {}; true", lane.join("x").display());
+    let (broker, asks) = counted(Vec::new(), |_| AskOutcome::AllowAlways(0));
+    broker.note_containment_failure(yi_tools::SandboxRefusal::Scopes(
+        yi_permission::refused_scopes(&command),
+    ));
+    let decide =
+        |id: &str| broker.decide_call("bash", ToolKind::Exec, true, id, &bash_args(&command), None);
+    assert_eq!(decide("c1").containment, Containment::Uncontained);
+    broker.note_containment_failure(yi_tools::SandboxRefusal::Path(lane.join("x")));
+    let retry = decide("c2");
+    assert_eq!(
+        retry.containment,
+        Containment::Contained {
+            widen: vec![lane],
+            gate_allowed: false
+        }
+    );
+    assert_eq!(
+        *asks.lock().map_err(|_| "poisoned")?,
+        2,
+        "the path refusal asks"
+    );
+    Ok(())
+}
+
+/// Review of #933, F4: a `job=N` wait runs no command, yet its result said it ran outside.
+#[test]
+fn a_job_wait_carries_no_sandbox_line() {
+    let (broker, _asks) = counted(Vec::new(), |_| AskOutcome::Reject);
+    let mut args = Map::new();
+    args.insert("job".to_owned(), json!(1));
+    let outcome = broker.decide_call("bash", ToolKind::Exec, false, "c1", &args, None);
+    assert!(outcome.allowed, "{}", outcome.reason);
+    assert_eq!(broker.outside_notice("bash", &args, &outcome), None);
+}
+
 /// A refusal at `~/x` would widen by the whole home directory, and one under `~/.yi` by the
 /// store the host runs commands from; both leave the sandbox for one call, and say so.
 #[test]
@@ -158,7 +477,10 @@ fn a_retry_is_widened_by_its_dir_but_never_by_home_or_yi_state() -> TestResult {
             Some(dir) => {
                 assert_eq!(
                     outcome.containment,
-                    Containment::Contained { widen: vec![dir] }
+                    Containment::Contained {
+                        widen: vec![dir],
+                        gate_allowed: false
+                    }
                 );
                 assert!(text.contains("approving widens this run by"), "{text}");
             }
@@ -209,6 +531,7 @@ fn always_on_a_widened_retry_keeps_the_dir_and_the_sandbox() -> TestResult {
     };
     let widened = Containment::Contained {
         widen: vec![lane.clone()],
+        gate_allowed: false,
     };
     assert_eq!(touch("c1", "x").containment, widened);
     assert_eq!(
