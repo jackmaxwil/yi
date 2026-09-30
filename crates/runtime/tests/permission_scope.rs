@@ -338,5 +338,25 @@ fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
             );
         }
     }
+    // An edit's `MV` writes its destination: a key planted through a link, a git hook that
+    // runs, a token replaced.
+    let moved = |dest: &str| {
+        let mut args = Map::new();
+        args.insert(
+            "patch".to_owned(),
+            json!(format!("[h/notes.md]\nMV {dest}")),
+        );
+        broker.decide_call("edit", ToolKind::Write, true, "c1", &args, None)
+    };
+    for dest in [
+        "link/newkey",
+        ".git/hooks/pre-commit",
+        "gitlink/hooks/pre-commit",
+        "~/.yi/providers/tokens/openai.json",
+        "h/.yi/providers/tokens/openai.json",
+    ] {
+        assert!(!moved(dest).allowed, "edit MV {dest} writes into a store");
+    }
+    assert!(moved("h/renamed.md").allowed, "a move to an ordinary file");
     Ok(())
 }

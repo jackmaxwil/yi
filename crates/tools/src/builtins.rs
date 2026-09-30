@@ -237,7 +237,8 @@ fn walk_capped(
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            // Every guarded identity is a directory's, so a file's is read only under a wall.
+            // Every guarded identity is a directory's but a linked worktree's `.git` file, which
+            // the ignore rules drop by name, so a file's is read only under a wall.
             let meta = (file_type.is_dir() || !ids.is_empty())
                 .then(|| entry.metadata().ok())
                 .flatten();

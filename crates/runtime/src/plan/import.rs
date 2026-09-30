@@ -130,6 +130,10 @@ pub enum ImportError {
     },
     #[error("import source {url} is not a plain local:// file")]
     NotLocal { url: Url },
+    #[error(
+        "import source {url} is a protected path (a key store, the workspace .git or a device)"
+    )]
+    Protected { url: Url },
     #[error("{path} is over the {cap} byte import cap; nothing was imported")]
     OverCap { path: PathBuf, cap: usize },
     #[error("{path} is not UTF-8")]
@@ -199,11 +203,19 @@ fn source_path(cwd: &Path, source: &Url) -> Result<PathBuf, ImportError> {
         });
     }
     let raw = Path::new(source.path());
-    Ok(if raw.is_absolute() {
+    let path = if raw.is_absolute() {
         raw.to_path_buf()
     } else {
         cwd.join(raw)
-    })
+    };
+    // Judged before the open, so no error can quote a key's first line (D323).
+    let context = yi_permission::CatastrophicContext::detect(cwd);
+    if yi_permission::read_is_catastrophic(&path, &context) {
+        return Err(ImportError::Protected {
+            url: source.clone(),
+        });
+    }
+    Ok(path)
 }
 
 fn map_sections(

@@ -10,6 +10,7 @@ use yi_permission::{
     canonical_command_identity, canonical_tool_identity, decide,
 };
 use yi_tools::ToolKind;
+use yi_tools::hashline::types::FileOp;
 use yi_types::event::AgentEvent;
 use yi_types::permission::{Answerer, PermissionRecord, RuleDecision, RuleKind};
 
@@ -189,6 +190,14 @@ pub(crate) fn extract_targets(
                 if !path_part.is_empty() {
                     push(path_part);
                 }
+            }
+        }
+        // The tool's own parse names every path it writes: a section's `MV` destination too.
+        let parsed = yi_tools::hashline::input::Patch::parse(patch, Some(cwd));
+        for section in parsed.map(|patch| patch.sections).unwrap_or_default() {
+            push(&section.path);
+            if let Ok(Some(FileOp::Move { dest })) = section.parse().map(|parsed| parsed.file_op) {
+                push(&dest);
             }
         }
     }
