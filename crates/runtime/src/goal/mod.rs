@@ -11,6 +11,8 @@ use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::schedule::DeliveryMode;
 use yi_types::subagent::Discovery;
 
+use crate::args::Args;
+
 pub const CONTINUATION_TEMPLATE: &str = include_str!("prompts/continuation.md");
 pub const BUDGET_LIMIT_TEMPLATE: &str = include_str!("prompts/budget_limit.md");
 pub const OBJECTIVE_UPDATED_TEMPLATE: &str = include_str!("prompts/objective_updated.md");
@@ -282,23 +284,17 @@ impl GoalService {
     }
 
     pub fn act(&self, params: &Map<String, Value>) -> Result<Value, String> {
-        let text = |key| params.get(key).and_then(Value::as_str).unwrap_or_default();
+        let text = |key| params.str_of(key).unwrap_or_default();
         match text("action") {
             "get" => self.get(),
             "create" => self.create(
                 text("objective"),
-                params.get("tokenBudget").and_then(Value::as_u64),
-                params
-                    .get("check")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                params.get("checkTimeoutMs").and_then(Value::as_u64),
+                params.u64_of("tokenBudget"),
+                params.str_of("check").map(str::to_owned),
+                params.u64_of("checkTimeoutMs"),
             ),
             "update" => self.update(text("status")),
-            "objective" => self.set_objective(
-                text("objective"),
-                params.get("citation").and_then(Value::as_str),
-            ),
+            "objective" => self.set_objective(text("objective"), params.str_of("citation")),
             other => Err(format!(
                 "unknown goal action {other}; use get|create|update|objective"
             )),
@@ -617,27 +613,16 @@ impl GoalService {
         });
         let service = Arc::clone(self);
         registry.register("goal.create", move |payload| {
-            let objective = payload
-                .get("objective")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
-            let budget = payload.get("token_budget").and_then(Value::as_u64);
-            let check = payload
-                .get("check")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            let check_timeout = payload.get("check_timeout_ms").and_then(Value::as_u64);
+            let objective = payload.str_of("objective").unwrap_or("").to_owned();
+            let budget = payload.u64_of("token_budget");
+            let check = payload.str_of("check").map(str::to_owned);
+            let check_timeout = payload.u64_of("check_timeout_ms");
             let outcome = service.create(&objective, budget, check, check_timeout);
             Box::pin(async move { outcome.and_then(as_object) })
         });
         let service = Arc::clone(self);
         registry.register("goal.update", move |payload| {
-            let status = payload
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
+            let status = payload.str_of("status").unwrap_or("").to_owned();
             let service = Arc::clone(&service);
             Box::pin(async move {
                 // The check run blocks up to its timeout; keep it off the

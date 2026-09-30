@@ -58,7 +58,6 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use yi_runtime::plan::import::{self, ImportError, NOTE_REF_KEY};
-use yi_runtime::plan::journal::Clock;
 use yi_runtime::plan::ops::{Actor, Delegate, Op, OpRequest, PlanEngine};
 use yi_runtime::plan::store::{PlanStore, StoreError};
 use yi_types::plan::canonical::Digest;
@@ -73,14 +72,6 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 /// The genesis record's `at`: the fixture's wall clock, so the journal bytes are the fixture's.
 const FIXED_MS: u64 = 1_757_650_000_000;
-
-struct Frozen;
-
-impl Clock for Frozen {
-    fn now_ms(&self) -> u64 {
-        FIXED_MS
-    }
-}
 
 struct NoChildren;
 
@@ -112,7 +103,7 @@ fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
     let cwd = dir.to_path_buf();
     let plans = cwd.join(".yi/plans");
     std::fs::create_dir_all(&plans)?;
-    let store = PlanStore::open(plans)?.with_clock(Arc::new(Frozen));
+    let store = PlanStore::open(plans)?.with_clock(Arc::new(|| FIXED_MS));
     let engine = PlanEngine::new(store.clone(), Arc::new(NoChildren)).with_cwd(cwd.clone());
     Ok(Rig {
         _dir: dir,
@@ -489,6 +480,14 @@ fn an_unfetchable_source_and_an_oversized_document_are_refused() -> TestResult {
     match import::read(&rig.cwd, &remote) {
         Err(ImportError::NotLocal { .. }) => {}
         other => return Err(format!("expected NotLocal, got {other:?}").into()),
+    }
+    // A key read before the parse would come back in its error's quoted head (D323).
+    std::fs::create_dir_all(rig.cwd.join(".git"))?;
+    std::fs::write(rig.cwd.join(".git/config"), "GIT CONFIG MARKER\n")?;
+    let guarded = "local://.git/config".parse::<Url>()?;
+    match import::read(&rig.cwd, &guarded) {
+        Err(ImportError::Protected { .. }) => {}
+        other => return Err(format!("expected Protected, got {other:?}").into()),
     }
 
     let id = PlanId::new("oversized")?;

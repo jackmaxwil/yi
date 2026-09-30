@@ -196,9 +196,9 @@ pointer names where. A number that was in the cut part is not a number
 you have. Read the pointer before citing anything past the cut.
 
 Inside auto mode an unprovable or approved command runs contained: no
-network, no socket bind, writes only under the working tree, its git
-directories, and tmp. A test that
-binds a socket or reaches the network fails there for that reason. The
+network beyond loopback, no unix socket, writes only under the working
+tree, its git directories, and tmp. A test that binds a unix socket or
+reaches past loopback fails there for that reason. The
 failure is about where you ran it; the repository's CI is where the
 answer lives.
 

@@ -63,8 +63,8 @@ wrote) before the diff.
 
 ## Tests that cannot pass inside the sandbox
 
-In auto mode an unprovable command runs contained: no network, no socket
-bind, writes only under the working tree and tmp. These tests fail there
+In auto mode an unprovable command runs contained: no network beyond
+loopback, no unix socket, writes only under the working tree and tmp. These tests fail there
 for that reason and for no other; the list is
 `evals/fixtures/sandbox_bound_tests.txt`:
 

@@ -58,7 +58,14 @@ impl OutputResolve for LaneResolver<'_> {
         {
             return Err(format!("{url} leaves the candidate checkout"));
         }
-        std::fs::read_to_string(self.root.join(relative))
+        let path = self.root.join(relative);
+        let context = yi_permission::CatastrophicContext::detect(self.root);
+        if yi_permission::read_is_catastrophic(&path, &context) {
+            return Err(format!(
+                "{url} in the candidate checkout is a protected path"
+            ));
+        }
+        std::fs::read_to_string(path)
             .map(Some)
             .map_err(|error| format!("{url} in the candidate checkout: {error}"))
     }
@@ -431,5 +438,33 @@ impl PlanEngine {
             }
         }
         said
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scratch::Scratch;
+
+    /// A submit output is read on the host from the candidate's checkout (D323).
+    #[cfg(unix)]
+    #[test]
+    fn a_checkout_output_meets_the_read_gate() -> Result<(), Box<dyn std::error::Error>> {
+        let root = Scratch::new("yi-submit-gate")?;
+        std::fs::create_dir_all(root.join(".git"))?;
+        std::fs::write(root.join(".git/config"), "GIT CONFIG MARKER\n")?;
+        std::os::unix::fs::symlink(root.join(".git"), root.join("gitlink"))?;
+        let resolver = LaneResolver {
+            root: &root,
+            fallback: None,
+        };
+        for path in ["local://.git/config", "local://gitlink/config"] {
+            let served = resolver.resolve(&path.parse()?);
+            let refused = served
+                .as_ref()
+                .is_err_and(|error| !error.contains("MARKER"));
+            assert!(refused, "{path}: {served:?}");
+        }
+        Ok(())
     }
 }

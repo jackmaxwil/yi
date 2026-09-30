@@ -178,14 +178,7 @@ fn tool_kind(tool_name: &str) -> AcpToolKind {
 }
 
 fn text_of(content: &[Content]) -> String {
-    content
-        .iter()
-        .filter_map(|block| match block {
-            Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("")
+    yi_types::message::join_text(content, "")
 }
 
 fn image_block(block: &Content) -> Option<AcpContentBlock> {

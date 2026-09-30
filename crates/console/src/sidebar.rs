@@ -310,10 +310,10 @@ fn child_rows(
             .take(cols.saturating_sub(3))
             .collect();
         use yi_types::subagent::{ChildFlag, ChildStatus};
-        let glyph = match (child.status, &child.flag) {
+        let glyph = match (&child.status, &child.flag) {
             (ChildStatus::Running, Some(ChildFlag::NeedsYou { .. })) => "?",
             (ChildStatus::Running, Some(ChildFlag::Stuck { .. })) => "!",
-            (ChildStatus::Running, _) => "◐",
+            (ChildStatus::Running | ChildStatus::Other(_), _) => "◐",
             (ChildStatus::Completed, _) => "○",
             (ChildStatus::Error, _) => "✕",
         };

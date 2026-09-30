@@ -2,13 +2,14 @@ use super::{
     DeliveryMode, HeartbeatService, JobSpec, JobStatus, new_job, next_run_at_for_schedule,
     normalize_heartbeat_schedule, parse_schedule,
 };
+use crate::args::Args;
 use yi_types::schedule::{CatchUp, Job, Overlap};
 
 fn policy(
     job: &mut Job,
     payload: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
-    let word = |key: &str| payload.get(key).and_then(serde_json::Value::as_str);
+    let word = |key: &str| payload.str_of(key);
     let overlap = match word("overlap") {
         None => None,
         Some("skip") => Some(Overlap::Skip),
@@ -42,7 +43,7 @@ fn subscription(
     label: Option<String>,
     prompt: &str,
 ) -> Result<super::channel::Subscribe, String> {
-    let ms = |key: &str| payload.get(key).and_then(serde_json::Value::as_u64);
+    let ms = |key: &str| payload.u64_of(key);
     let retention = payload
         .get("retention")
         .map(|value| serde_json::from_value(value.clone()))
@@ -50,10 +51,7 @@ fn subscription(
         .map_err(|error| format!("retention must be {{count, ageMs}}: {error}"))?;
     Ok(super::channel::Subscribe {
         address: address.to_owned(),
-        filter: payload
-            .get("filter")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned),
+        filter: payload.str_of("filter").map(str::to_owned),
         batch: ms("batch").and_then(|size| u32::try_from(size).ok()),
         cadence_ms: ms("minIntervalMs").max(ms("windowMs")),
         retention,
@@ -69,22 +67,15 @@ impl HeartbeatService {
         &self,
         payload: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Job, String> {
-        let address = payload.get("address").and_then(serde_json::Value::as_str);
+        let address = payload.str_of("address");
         let schedule_text = address
             .and_then(|address| address.strip_prefix(super::clock::CLOCK_SCHEME))
-            .or_else(|| payload.get("schedule").and_then(serde_json::Value::as_str));
+            .or_else(|| payload.str_of("schedule"));
         let prompt = payload
-            .get("prompt")
-            .and_then(serde_json::Value::as_str)
+            .str_of("prompt")
             .ok_or("rlm_heartbeat.create requires a prompt")?;
-        let label = payload
-            .get("label")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        let delivery = match payload
-            .get("deliveryMode")
-            .and_then(serde_json::Value::as_str)
-        {
+        let label = payload.str_of("label").map(str::to_owned);
+        let delivery = match payload.str_of("deliveryMode") {
             None => None,
             Some("steer") => Some(DeliveryMode::Steer),
             Some("follow_up") => Some(DeliveryMode::FollowUp),
@@ -172,11 +163,10 @@ impl HeartbeatService {
         registry.register("rlm_heartbeat.update", move |payload| {
             let result = (|| {
                 let id = payload
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
+                    .str_of("id")
                     .ok_or("rlm_heartbeat.update requires an id")?
                     .to_owned();
-                let target = match payload.get("status").and_then(serde_json::Value::as_str) {
+                let target = match payload.str_of("status") {
                     Some("pause") => JobStatus::Paused,
                     Some("resume") => JobStatus::Active,
                     _ => {
@@ -194,8 +184,8 @@ impl HeartbeatService {
                         .iter_mut()
                         .find(|job| job.id == id && job.session_id == owner);
                     found.map(|job| {
-                        job.status = target;
-                        if let (JobStatus::Active, Some(sub)) = (target, &job.channel) {
+                        job.status = target.clone();
+                        if let (JobStatus::Active, Some(sub)) = (&target, &job.channel) {
                             super::adapter::revive(std::path::Path::new(&sub.path));
                         }
                         if target == JobStatus::Active && job.next_run_at.is_none() {
@@ -218,8 +208,7 @@ impl HeartbeatService {
         registry.register("rlm_heartbeat.delete", move |payload| {
             let result = (|| {
                 let id = payload
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
+                    .str_of("id")
                     .ok_or("rlm_heartbeat.delete requires an id")?
                     .to_owned();
                 let now = yi_session::now_ms();

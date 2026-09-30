@@ -237,7 +237,7 @@ fn a_pdf_with_no_text_layer_names_the_render_and_the_attach() -> TestResult {
     assert_eq!(
         text(&output),
         format!(
-            "failed to read {0}: no text layer on any of the 1 PDF page(s) read of 1 (image-only or vector art), so there is no text to show; to see page 1, render it to PNG in ipython: `%pip install pymupdf`, then `import pymupdf; p = \"/tmp/page-1.png\"; pymupdf.open(\"{0}\")[0].get_pixmap(dpi=200).save(p); print(await attach_image(p))`",
+            "failed to read {0}: no text layer on any of the 1 PDF page(s) read of 1 (image-only or vector art), so there is no text to show; to see page 1, render it to PNG in ipython, if its kernel has pymupdf: `import pymupdf; p = \"/tmp/page-1.png\"; pymupdf.open(\"{0}\")[0].get_pixmap(dpi=200).save(p); print(await attach_image(p))`",
             path.display()
         )
     );

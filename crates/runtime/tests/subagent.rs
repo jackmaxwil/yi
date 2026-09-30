@@ -61,7 +61,7 @@ fn status_state_and_notice_derive_from_one_exit() -> TestResult {
     // The wire keeps its three status words; the exit rides beside them and may be absent.
     let old = r#"{"id":"sub-1","name":"a","status":"error","activity":"waiting","toolUseCount":0,"tokenCount":0}"#;
     let parsed: ChildUpdate = serde_json::from_str(old)?;
-    assert_eq!((parsed.status, parsed.exit), (ChildStatus::Error, None));
+    assert_eq!((&parsed.status, parsed.exit), (&ChildStatus::Error, None));
     assert_eq!(serde_json::to_string(&parsed)?, old);
     let typed = ChildUpdate {
         exit: Some(provider),

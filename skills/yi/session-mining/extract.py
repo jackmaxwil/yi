@@ -45,7 +45,27 @@ READ_ONLY_GIT = frozenset(
 # One vocabulary, second use: PROTECTED_CREDENTIAL_SUBPATHS in
 # crates/permission/src/catastrophic.rs. A store added there and not here stops
 # being redacted out of every mined artifact.
-CREDENTIAL_SUBPATHS = [".ssh", ".gnupg", ".aws", ".kube", ".docker"]
+CREDENTIAL_SUBPATHS = [
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".kube",
+    ".docker",
+    ".yi/mcp/tokens",
+    ".yi/providers/tokens",
+    ".yi/oauth",
+    ".yi/kernel-connections",
+    ".config/gh",
+    ".config/fgj",
+    ".config/gcloud",
+    ".netrc",
+    ".git-credentials",
+    ".npmrc",
+    ".pypirc",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".password-store",
+]
 
 # These three are hand-copied out of Rust, so --selfcheck reads the Rust back
 # and compares. An asserted invariant nobody runs is how a mirror drifts.
@@ -58,6 +78,11 @@ RUST_MIRRORS = (
         frozenset(CREDENTIAL_SUBPATHS),
     ),
 )
+
+# The ipython tool's missing-module hint (crates/tools/src/ipython.rs), up to where its advice
+# starts; --selfcheck feeds the hint ipython.rs prints through the sweep, so a reworded hint
+# cannot zero `module_missing`.
+MODULE_MISSING = "is not installed in the kernel."
 
 CRED_PATH_RE = re.compile(
     r"[/~]\.(?:" + "|".join(s[1:] for s in CREDENTIAL_SUBPATHS) + r")(?:[/\s\"':]|$)"
@@ -415,7 +440,7 @@ def signals(entries):
                     out["readers_spawned"] += 1
         if tool == "ipython" and (result["text"].startswith("uv is required") or result["text"].startswith("no uv and no python3")):
             out["kernel_dead"] += 1
-        if tool == "ipython" and "is not installed in the kernel. Run `%pip install" in result["text"]:
+        if tool == "ipython" and MODULE_MISSING in result["text"]:
             out["module_missing"] += 1
         # "done needs evidence shaped" until the refusal was reworded to "done needs evidence:".
         if tool == "todo" and ("done needs evidence" in result["text"] or "`set` cannot close" in result["text"]):
