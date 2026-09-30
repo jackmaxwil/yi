@@ -421,7 +421,7 @@ def cmd_ready(args):
         print(f"#{number} is not a draft")
         return 0
     rounds = pr_review.rounds_of(pr_review.comments(repo(), number), pr_review.authors(), number)
-    errs = pr_review.ready_problems(rounds, pr["head"]["sha"])
+    errs = pr_review.ready_problems(rounds, pr["head"]["sha"], pr_review.holds_for(number, pr["base"]["ref"]))
     for err in errs:
         print(f"  {err}")
     if errs and pr_review.MODE == "blocking":
@@ -509,6 +509,16 @@ def cmd_rerun(args):
     return 0
 
 
+def unreviewed(number, pr):
+    """What the rounds still owe before a merge; nothing while rounds only report (shadow)."""
+    import pr_review
+
+    if pr_review.MODE != "blocking":
+        return []
+    rounds = pr_review.rounds_of(pr_review.comments(repo(), number), pr_review.authors(), number)
+    return pr_review.ready_problems(rounds, pr["head"]["sha"], pr_review.holds_for(number, pr["base"]["ref"]))
+
+
 def cmd_merge(args):
     number = pull_number(args.number)
     need = required()
@@ -524,6 +534,11 @@ def cmd_merge(args):
             print(f"#{number} is behind main; updating")
             cmd_update(argparse.Namespace(number=number))
         elif verdict == "green":
+            if errs := unreviewed(number, pr):
+                for err in errs:
+                    print(f"  {err}")
+                print(f"merge: refused — #{number} needs two review rounds clean on its head")
+                return 1
             answer = fgj_api("POST", f"repos/{repo()}/pulls/{number}/merge", {"Do": "merge"})
             if answer and answer.get("message"):
                 print(f"merge refused: {answer['message']}")
@@ -714,7 +729,7 @@ def selfcheck():
 
     real_fgj, real_pull = globals()["fgj_api"], globals()["pull"]
     real_rounds = pr_review.comments, pr_review.authors
-    globals()["pull"] = lambda n: {"number": n, "title": DRAFT + "Keep the gate", "head": {"sha": "abc1234"}}
+    globals()["pull"] = lambda n: {"number": n, "title": DRAFT + "Keep the gate", "head": {"sha": "abc1234"}, "base": {"ref": "main"}}
     globals()["fgj_api"] = lambda method, path, payload=None: {"message": "edits are forbidden"}
     clean = [{"id": n, "user": {"login": "jack"}, "body": f"<!-- yi-round {n} -->\n<!-- yi-round-meta pr=7 sha=abc1234 verdict=clean -->\n"} for n in (1, 2)]
     pr_review.authors = lambda: {"jack"}
@@ -730,6 +745,18 @@ def selfcheck():
         pr_review.comments, pr_review.authors = real_rounds
     assert unread == 1 and "refused" in said.getvalue(), "a draft with no rounds is not readied"
     assert stopped == 1 and "not readied" in patched.getvalue(), "a refused title PATCH stops the ready verb"
+    fakes = {name: globals()[name] for name in ("pull", "jobs_of", "required", "is_behind", "decide", "unreviewed", "fgj_api")}
+    posted = []
+    globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
+                     jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: False, decide=lambda *a: "green",
+                     unreviewed=lambda n, pr: ["0 review round(s); a PR needs two"],
+                     fgj_api=lambda method, path, payload=None: posted.append(path))
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as merging:
+            held = cmd_merge(argparse.Namespace(number=7, timeout=1, wait=False))
+    finally:
+        globals().update(fakes)
+    assert held == 1 and not posted and "needs two review rounds" in merging.getvalue(), "a green PR without rounds is not merged"
     assert "0 review round(s)" in said.getvalue(), "ready says what the rounds still owe"
     real_measure = gate.measure
     gate.measure = lambda: (([], [], 0, ([], [])), None)

@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.491.0         # bump on any structural change; row goes in CHANGELOG.md
+version: 0.493.0         # bump on any structural change; row goes in CHANGELOG.md
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -188,6 +188,7 @@ Rows D1–D199 are archived verbatim in [archive/decisions-D1-to-D199.md](archiv
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D324 | every same-repo PR is reviewed and none merges without its rounds (extends D322 from drafts to all PRs): the `review` job runs on each new head of any same-repo PR, `just pr merge` refuses a PR without two rounds whose last holds for its head and is not blocked, and `review` is a required check on main; a round holds for a head that adds no commit beyond the reviewed one and the base (`pr_review.merges_since`), so an update from main neither asks for nor triggers a new round | the owner's sanity check: of the last 20 PRs, every one opened without the `WIP:` prefix (#884, #885, #891, #892, #895, #903) skipped review, and a non-draft PR merged with no rounds | restore the `WIP: ` condition in `review.yml` and drop `unreviewed` from `cmd_merge` |
 | D322 | review rounds block (revises D319's `shadow`): `pr_review.MODE` is `blocking`, so a round with a high finding fails the `review` job and `just pr ready` refuses a draft without two rounds whose last is on its head and not blocked, until a clean round or `/override <reason>` from an allowed author; medium and low stay advice; `just land` opens the draft and stops | owner: "The review bot should start blocking PRs on negative findings."; the severity-tier decision makes high the blocking tier | set `MODE = "shadow"` |
 | D317 | a child's transcript lives inside its parent: `<root file without .jsonl>/children/sub-<8 hex>/` at the root, `<its dir>/children/` below it, and `rlm-<pid>/` for a root with no `.jsonl` transcript; its header names its parent (`parentSessionId`); the parent's log keeps a `custom{child}` trail, `spawned` (name, id, session, path relative to the parent's directory, brief digest) and `ended` (final exit, error, tokens), the end written only through the live handle while it holds the spawn's file; `history://<child>` falls back to the newest line with that exact name or id; deleting a session deletes the directory beside its file | a child sat under `rlm-<pid>/`, keyed by the process, so a restart lost it; the owner: "children should stay in their parents" (#879) | drop `subagent/trail.rs`, the `children_dir` call and the trail lookup |
 | D321 | the session verbs answer from `yi_runtime::slash` on every surface, amending D112: `/undo`, `/sessions`, the line split and the mode names live there with the verbs D112 moved, and Pi RPC and ACP share `GoalService::act` and `authority::submit_request`, each keeping its own confirmer (D193); D112's `_yi/status` stream is gone, the console reading config options and D113's `_yi/event` | `/undo` answered two ways and solo `/sessions` lost the name column, because each surface kept its own copy | restore the copies in `tui/src/port.rs`, `acp/src/review.rs`, `cli/src/sessions.rs` |
