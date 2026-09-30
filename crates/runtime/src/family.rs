@@ -101,7 +101,7 @@ pub enum Phase {
 }
 
 /// One exit read three ways: the wire status, the member state and the notice's verb.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reading {
     pub status: ChildStatus,
     pub state: MemberState,

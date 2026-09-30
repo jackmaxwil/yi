@@ -5,13 +5,16 @@ use crate::plan::doc::TodoLabel;
 use crate::url::Url;
 
 /// Job lifecycle (design §15.2); each status serializes as its lowercase wire string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
     Active,
     Paused,
     Completed,
     Cancelled,
+    /// A state a newer Yi wrote; it re-emits verbatim.
+    #[serde(untagged)]
+    Other(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
