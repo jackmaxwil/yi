@@ -9,6 +9,7 @@ use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, UserContent};
 use yi_types::wire::{JsonlV4Header, Mutation};
 
+use crate::args::Args;
 use crate::memory::rank::{Bm25, tokens};
 
 const PAGE: usize = 8;
@@ -277,8 +278,7 @@ pub fn register(registry: &mut crate::kernel::HostRegistry, sessions_dir: PathBu
         let (corpus, sessions_dir, cwd) = (Arc::clone(&corpus), sessions_dir.clone(), cwd.clone());
         Box::pin(async move {
             let query = payload
-                .get("query")
-                .and_then(Value::as_str)
+                .str_of("query")
                 .map(str::trim)
                 .filter(|query| !query.is_empty())
                 .ok_or_else(|| "history.search requires a \"query\" argument".to_owned())?
