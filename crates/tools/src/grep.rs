@@ -661,7 +661,7 @@ impl GrepTool {
                         if line != crate::syntax::OK {
                             rows.push(format!("{}: {line}", file.display));
                         }
-                        syntax = crate::syntax::worst(syntax, line);
+                        syntax = Some(crate::syntax::worst(syntax, line));
                     }
                     if let Some(state) = &self.hashline {
                         crate::hashline::tool::record_view_snapshot(
