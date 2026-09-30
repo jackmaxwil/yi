@@ -447,6 +447,28 @@ fn a_headless_drive_renders_at_the_size_it_is_given() -> TestResult {
         .max();
     assert_eq!(widest, Some(254), "{last}");
     assert_eq!(last.lines().count(), 30, "{last}");
+    for refused in ["1x1", "1001x30", "254x501"] {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the flag is parsed by the spawned binary; tests must run the real process"
+        )]
+        let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args([
+                "tui",
+                "--headless",
+                "--model",
+                "faux/faux-1",
+                "--size",
+                refused,
+            ])
+            .env("HOME", &home)
+            .output()?;
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{refused} is refused, not clamped"
+        );
+    }
     Ok(())
 }
 

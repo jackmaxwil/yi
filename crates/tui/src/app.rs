@@ -200,7 +200,7 @@ pub struct App {
     pub(crate) context_used: u64,
     pub(crate) spent: crate::status::Money,
     /// What the session read, for the status row's cache rate beside the cost it explains.
-    pub(crate) session_tokens: crate::status::TurnTokens,
+    pub(crate) session_tokens: crate::status::TokenTally,
     turn_started: Instant,
     turn_tools: u64,
     pub(crate) last_tool: Option<String>,
@@ -211,7 +211,7 @@ pub struct App {
     model_ms: u64,
     model_since: Option<Instant>,
     pub(crate) pen: Option<crate::pen::Pen>,
-    turn_tokens: crate::status::TurnTokens,
+    turn_tokens: crate::status::TokenTally,
     /// Requests seen; past the first one a read is expected, so the footer shows `0% cached`.
     pub(crate) requests: u64,
     turn_spent: crate::status::Money,
@@ -317,7 +317,7 @@ impl App {
             landing_at: None,
             context_used: 0,
             spent: crate::status::Money::default(),
-            session_tokens: crate::status::TurnTokens::default(),
+            session_tokens: crate::status::TokenTally::default(),
             turn_started: Instant::now(),
             turn_tools: 0,
             last_tool: None,
@@ -328,7 +328,7 @@ impl App {
             model_ms: 0,
             model_since: None,
             pen: None,
-            turn_tokens: crate::status::TurnTokens::default(),
+            turn_tokens: crate::status::TokenTally::default(),
             requests: 0,
             turn_spent: crate::status::Money::default(),
             width,
@@ -991,14 +991,14 @@ impl App {
         self.model_ms = 0;
         self.model_since = None;
         self.last_tool = None;
-        self.turn_tokens = crate::status::TurnTokens::default();
+        self.turn_tokens = crate::status::TokenTally::default();
         self.turn_spent = crate::status::Money::default();
     }
 
     /// One dim row closes a turn with what it cost, so the price of an answer is read
     /// where the answer is, not only in the status bar.
     fn commit_turn_footer(&mut self) {
-        let crate::status::TurnTokens { input, output, .. } = self.turn_tokens;
+        let crate::status::TokenTally { input, output, .. } = self.turn_tokens;
         if self.turn_tools == 0 && input == 0 && output == 0 {
             return;
         }

@@ -1,5 +1,6 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::cell::spinner_frame;
 use crate::colors::{Theme, name_accent};
@@ -63,15 +64,15 @@ fn bump(base: u64, delta: i64) -> u64 {
     base.saturating_add(u64::try_from(delta).unwrap_or(0))
 }
 
-/// Tokens and cache hits accumulated so far this turn or this session.
+/// Tokens and cache hits read so far, kept once per turn (the footer) and once per session.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct TurnTokens {
+pub(crate) struct TokenTally {
     pub(crate) input: u64,
     pub(crate) output: u64,
     pub(crate) cached: u64,
 }
 
-impl TurnTokens {
+impl TokenTally {
     pub(crate) fn record(&mut self, usage: &yi_types::message::Usage) {
         let read = usage
             .input
@@ -319,6 +320,21 @@ fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
     spans
 }
 
+/// `text` less at least `over` cells, whole characters only, ending in `…`.
+fn clip_cells(text: &str, over: usize) -> String {
+    let keep = text.width().saturating_sub(over + 1);
+    let mut used = 0;
+    let mut out: String = text
+        .chars()
+        .take_while(|ch| {
+            used += ch.width().unwrap_or(0);
+            used <= keep
+        })
+        .collect();
+    out.push('…');
+    out
+}
+
 fn spans_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(Span::width).sum()
 }
@@ -341,6 +357,12 @@ pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static>
             _ => break (left, right),
         }
     };
+    // Every cut spent and still too wide: the model loses its tail at a cell boundary.
+    let over = (spans_width(&spans) + spans_width(&right) + 1).saturating_sub(width);
+    if over > 0 {
+        fit.input.model = clip_cells(&fit.input.model, over);
+        spans = left_spans(&fit, theme);
+    }
     let gap = width.saturating_sub(spans_width(&spans) + spans_width(&right) + 1);
     spans.push(Span::raw(" ".repeat(gap)));
     spans.extend(right);
