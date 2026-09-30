@@ -18,13 +18,11 @@ pub(crate) fn early() {
     if std::env::args().nth(1).as_deref() == Some("setup") {
         std::process::exit(run());
     }
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return;
-    };
+    let home = crate::home();
     let terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     if !offers(
         std::env::args().nth(1).as_deref(),
-        config_path(&home).symlink_metadata().is_ok(),
+        config_path(home).symlink_metadata().is_ok(),
         terminal,
     ) {
         return;
@@ -38,23 +36,23 @@ pub(crate) fn early() {
         return;
     };
     if !yes_default(&answer) {
-        if let Err(error) = write_config(&home, &[]) {
+        if let Err(error) = write_config(home, &[]) {
             eprintln!("warning: {error}");
         }
         eprintln!("Run `yi setup` any time.");
         return;
     }
-    if let Err(error) = flow(&home, &mut input, &mut out) {
+    if let Err(error) = flow(home, &mut input, &mut out) {
         eprintln!("warning: setup: {error}");
     }
 }
 
 fn run() -> i32 {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        eprintln!("error: HOME is not set");
-        return 2;
-    };
-    match flow(&home, &mut std::io::stdin().lock(), &mut std::io::stderr()) {
+    match flow(
+        crate::home(),
+        &mut std::io::stdin().lock(),
+        &mut std::io::stderr(),
+    ) {
         Ok(()) => 0,
         Err(error) => {
             eprintln!("error: {error}");

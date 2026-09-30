@@ -105,34 +105,36 @@ pub struct SpendConfig {
     pub alert_tokens: Option<u64>,
 }
 
-/// A key an older Yi read that this one does not: [`migrate`] drops it before the strict
-/// parse, so a config that loaded yesterday still loads, and the caller names each drop.
+/// Keys an older Yi read that this one does not, each with why it went: D182 deleted the
+/// artifact and closure stop gates that `gates` switched.
+const REMOVED: &[(&str, &str)] = &[("gates", "the artifact and closure stop gates are gone")];
+
+/// A key [`migrate`] dropped before the strict parse, and why, so a config that loaded
+/// yesterday still loads and the caller names each drop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigMigration {
-    /// `gates` switched the artifact and closure stop gates, which D182 deleted.
-    RemovedGates,
+pub struct ConfigMigration {
+    key: &'static str,
+    why: &'static str,
 }
 
 impl std::fmt::Display for ConfigMigration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::RemovedGates => f.write_str(
-                "the config's `gates` key is ignored: the artifact and closure stop gates are gone; delete it",
-            ),
-        }
+        let Self { key, why } = self;
+        write!(f, "the config's `{key}` key is ignored: {why}; delete it")
     }
 }
 
 /// Rewrites a raw config into the shape [`UserConfig`] parses; a current config comes back
 /// unchanged with no migrations, so running it twice is running it once.
 pub fn migrate(config: &mut serde_json::Value) -> Vec<ConfigMigration> {
-    let mut applied = Vec::new();
-    if let Some(keys) = config.as_object_mut()
-        && keys.remove("gates").is_some()
-    {
-        applied.push(ConfigMigration::RemovedGates);
-    }
-    applied
+    let Some(keys) = config.as_object_mut() else {
+        return Vec::new();
+    };
+    REMOVED
+        .iter()
+        .filter(|(key, _)| keys.remove(*key).is_some())
+        .map(|&(key, why)| ConfigMigration { key, why })
+        .collect()
 }
 
 /// The one config load, with the migrations it took. A current config skips `Value`, which
