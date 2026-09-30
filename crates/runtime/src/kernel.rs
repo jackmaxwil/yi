@@ -9,6 +9,7 @@ use yi_kernel::client::{
 use yi_tools::ToolOutput;
 use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome};
 
+use crate::args::Args;
 pub use crate::kernel_bootstrap::{
     BootFn, RLM_BOOTSTRAP_CODE, restore_notice_text, rlm_bootstrap_code,
 };
@@ -45,8 +46,7 @@ impl HostRegistry {
             let spawned = Arc::clone(&spawned);
             Box::pin(async move {
                 let command = payload
-                    .get("command")
-                    .and_then(Value::as_str)
+                    .str_of("command")
                     .filter(|command| !command.trim().is_empty())
                     .ok_or_else(|| {
                         "exec.spawn requires a non-empty \"command\" argument".to_owned()
@@ -62,7 +62,7 @@ impl HostRegistry {
         self.register("exec.tail", |payload| {
             Box::pin(async move {
                 let id = job_id_of(&payload, "exec.tail")?;
-                let cursor = payload.get("cursor").and_then(Value::as_u64).unwrap_or(0);
+                let cursor = payload.u64_of("cursor").unwrap_or(0);
                 let chunk = yi_tools::jobs::registry()
                     .output_since(id, cursor)
                     .map_err(|error| error.to_string())?;
@@ -128,8 +128,7 @@ impl HostRegistry {
 
 fn job_id_of(payload: &Map<String, Value>, request: &str) -> Result<yi_tools::JobId, String> {
     payload
-        .get("job_id")
-        .and_then(Value::as_u64)
+        .u64_of("job_id")
         .map(yi_tools::JobId)
         .ok_or_else(|| format!("{request} requires an integer \"job_id\" argument"))
 }

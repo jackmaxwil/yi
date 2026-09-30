@@ -1243,3 +1243,20 @@ async fn every_wait_idle_wakes_when_its_run_settles() -> Result<(), Box<dyn Erro
     }
     Ok(())
 }
+
+/// A reader that falls behind the broadcast is told how many events it lost, as a gap every
+/// stream writes, instead of reading on as if nothing were missing.
+#[tokio::test]
+async fn a_lagging_reader_gets_the_gap_then_the_next_event() -> Result<(), Box<dyn Error>> {
+    let (events, mut reader) = tokio::sync::broadcast::channel(1);
+    for _ in 0..3 {
+        events.send(yi_types::event::AgentEvent::TurnStart)?;
+    }
+    let gap = yi_runtime::next_event(&mut reader).await;
+    assert_eq!(gap, Some(Err(yi_types::event::EventGap { dropped: 2 })));
+    let next = yi_runtime::next_event(&mut reader).await;
+    assert_eq!(next, Some(Ok(yi_types::event::AgentEvent::TurnStart)));
+    drop(events);
+    assert_eq!(yi_runtime::next_event(&mut reader).await, None);
+    Ok(())
+}
