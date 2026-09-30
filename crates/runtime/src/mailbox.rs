@@ -428,11 +428,11 @@ impl SubagentHost {
     pub fn roster(&self) -> Map<String, Value> {
         let mut agents = vec![json!({"name": PARENT_NAME, "role": "parent"})];
         if let Ok(children) = self.children.lock() {
-            let mut names: Vec<(&str, &'static str)> = children
+            let mut names: Vec<(&str, String)> = children
                 .values()
                 .map(|record| {
                     let status = crate::family::read_exit(record.exit).status;
-                    (record.session_name.as_str(), status.as_str())
+                    (record.session_name.as_str(), status.as_str().to_owned())
                 })
                 .collect();
             names.sort_unstable();

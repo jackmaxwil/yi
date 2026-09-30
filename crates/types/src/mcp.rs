@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// Session states (design §7.6): sessions are never auto-removed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum McpSessionState {
     Live,
@@ -10,6 +10,9 @@ pub enum McpSessionState {
     Disconnected,
     Unauthorized,
     Expired,
+    /// A state a newer Yi wrote; it re-emits verbatim.
+    #[serde(untagged)]
+    Other(String),
 }
 
 /// How to reach an MCP server: a local stdio command or a remote HTTP URL.
