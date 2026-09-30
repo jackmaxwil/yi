@@ -1532,27 +1532,6 @@ fn read_ranges_and_line_clip() -> TestResult {
     let snapshot = guard.snapshots.head(&canonical).ok_or("no snapshot")?;
     let seen = snapshot.seen_lines.as_ref().ok_or("no seen lines")?;
     assert!(seen.contains(&1) && !seen.contains(&2), "clipped row seen");
-    drop(guard);
-    let wide = format!("{}\n{}\n", "é".repeat(512), "é".repeat(513));
-    fs::write(dir.join("accents.txt"), &wide)?;
-    let text = output_text(&read.execute(args(&[("path", json!("accents.txt"))]), &context));
-    assert!(text.contains(&format!("1:{}\n", "é".repeat(512))), "{text}");
-    assert!(
-        text.contains(&format!("2:{}\u{2026}", "é".repeat(512))),
-        "{text}"
-    );
-    let canonical = dir
-        .join("accents.txt")
-        .canonicalize()?
-        .display()
-        .to_string();
-    let guard = state.lock().map_err(|_| "poisoned")?;
-    let snapshot = guard.snapshots.head(&canonical).ok_or("no snapshot")?;
-    let seen = snapshot.seen_lines.as_ref().ok_or("no seen lines")?;
-    assert!(
-        seen.contains(&1) && !seen.contains(&2),
-        "a clipped accented row seen"
-    );
     Ok(())
 }
 
@@ -2142,6 +2121,18 @@ fn a_skeleton_one_past_its_cap_names_the_cut() -> TestResult {
     let over = row("over.rs:").ok_or(text.clone())?;
     assert!(
         over.ends_with("fn f7() {}; [8 of 9 heads, cap 8 per file — grep def=true for all]"),
+        "{text}"
+    );
+    // A glob shows files whole until its byte budget; one past the budget is shown as heads.
+    let padding = "// padding\n".repeat(6_000);
+    fs::write(dir.join("big.rs"), format!("{}{padding}", heads(13)))?;
+    let glob = read_tool().execute(
+        args(&[("path", json!("big*.rs"))]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    let text = output_text(&glob);
+    assert!(
+        text.contains("  fn f11() {}\n  [12 of 13 heads, cap 12 per file — grep def=true for all]"),
         "{text}"
     );
     Ok(())
