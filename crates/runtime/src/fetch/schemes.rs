@@ -149,8 +149,10 @@ impl Resolver {
     }
 
     /// Incident: containment was lexical, so a link at `notes -> /etc/passwd` was served.
-    /// What the read lands on takes the same wall a path naming it directly takes.
+    /// What the read lands on takes the same wall a path naming it directly takes, and the read
+    /// gate first (D323).
     fn resolved(&self, url: &Url, path: PathBuf, root: &Path) -> Result<PathBuf, FetchError> {
+        super::read_gate(url, &path, self.workspace())?;
         let Ok(real) = std::fs::canonicalize(&path) else {
             return Ok(path);
         };
