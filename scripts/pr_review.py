@@ -483,7 +483,10 @@ def merges_since(sha, head, base, repo=ROOT):
     run = lambda *a: subprocess.run(("git", "-C", str(repo)) + a, capture_output=True)
     def patch(tip):
         fork = run("merge-base", base, tip).stdout.strip()
-        diff = run("diff", "--binary", fork, tip).stdout if fork else b""
+        # The rows and baselines a renumber moves are bookkeeping, as for the duplicate check.
+        skip = [":(exclude)docs/CHANGELOG.md", ":(exclude)docs/ARCHITECTURE.md", ":(exclude)docs/solutions",
+                ":(exclude)scripts/guardrails/baselines"]
+        diff = run("diff", "--binary", fork, tip, "--", ".", *skip).stdout if fork else b""
         # Bytes, whitespace kept: an indent is code here, and one PR carried a Latin-1 byte.
         kept = [line for line in diff.splitlines() if not line.startswith((b"@@", b"index "))]
         return hashlib.sha256(b"\n".join(kept)).hexdigest() if diff else None
@@ -926,6 +929,13 @@ def selfcheck():
         git("add", "scripts/guardrails/a.rs")
         git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "merge base")
         assert not merges_since(reviewed, rev("HEAD"), "base", repo_dir), "an indent or a Latin-1 byte in a merge needs a round"
+        git("reset", "-q", "--hard", clean_merge)
+        git("-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "--no-commit", "base")
+        (repo_dir / "docs").mkdir(exist_ok=True)
+        (repo_dir / "docs/CHANGELOG.md").write_text("| 0.2.0 | renumbered |\n")
+        git("add", "docs/CHANGELOG.md")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "merge base")
+        assert merges_since(reviewed, rev("HEAD"), "base", repo_dir), "a renumbered changelog row keeps the round"
         git("reset", "-q", "--hard", clean_merge)
         (repo_dir / "c.rs").write_text("z\n")
         git("add", "c.rs")
