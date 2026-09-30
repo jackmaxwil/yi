@@ -62,12 +62,3 @@ jobs:
           # The second call reads a clean head again for round two and says why when it does not.
           just pr review ${{ github.event.pull_request.number }}
           just pr review ${{ github.event.pull_request.number }}
-      # A void round's reason is one line; the answers that caused it are in these sessions.
-      - name: keep the round's sessions
-        if: failure()
-        run: cp -r ~/.yi/sessions/pr-rounds pr-round-sessions || true
-      - uses: actions/upload-artifact@v3
-        if: failure()
-        with:
-          name: pr-round-sessions
-          path: pr-round-sessions

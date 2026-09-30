@@ -426,6 +426,20 @@ fn schema_validates_the_answer() -> TestResult {
 
     let prose = ask(&workspace, "not json at all", &["--schema", schema])?;
     assert_eq!(prose.status.code(), Some(3));
+    // A void review round's only evidence is this line: what the model said, cut loudly at 160.
+    let said = String::from_utf8_lossy(&prose.stderr).into_owned();
+    assert!(
+        said.contains(r#"began: "faux: not json at all" (21 of 21 characters"#),
+        "{said}"
+    );
+    for (fill, notice) in [
+        (154, "(160 of 160 characters"),
+        (155, "(160 of 161 characters"),
+    ] {
+        let long = ask(&workspace, &"x".repeat(fill), &["--schema", schema])?;
+        let said = String::from_utf8_lossy(&long.stderr).into_owned();
+        assert!(said.contains(notice), "{fill}: {said}");
+    }
 
     let bad = workspace.project().join("bad.json");
     std::fs::write(&bad, "[1]")?;
