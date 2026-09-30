@@ -494,15 +494,14 @@ pub fn run_rpc(
                         _ => write_line(&error_frame(None, "", "invalid command: not a JSON object")),
                     }
                 }
-                event = events.recv() => {
-                    match event {
-                        Ok(event) => {
-                            if let Ok(value) = serde_json::to_value(&event) {
-                                write_line(&value);
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                event = yi_runtime::next_event(&mut events) => {
+                    let value = match event {
+                        Some(Ok(event)) => serde_json::to_value(&event),
+                        Some(Err(gap)) => serde_json::to_value(gap),
+                        None => break,
+                    };
+                    if let Ok(value) = value {
+                        write_line(&value);
                     }
                 }
             }

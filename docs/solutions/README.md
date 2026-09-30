@@ -297,5 +297,6 @@ edited by hand.
 - [D317](adr/d317.md) - a child's transcript lives inside its parent
 - [D322](adr/d322.md) - review rounds block (revises D319's `shadow`)
 - [D323](adr/d323.md) - one list of credential stores and one gate, judged by file identity (amends...
+- [D327](adr/d327.md) - a lost-event gap is a line on every event stream, touching D33 and D113
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
