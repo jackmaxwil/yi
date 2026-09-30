@@ -997,14 +997,7 @@ fn prompt_text(prompt: &AgentMessage) -> String {
         AgentMessage::User {
             content: UserContent::Blocks(blocks),
             ..
-        } => blocks
-            .iter()
-            .filter_map(|block| match block {
-                yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        } => yi_types::message::join_text(blocks, "\n"),
         _ => String::new(),
     }
 }

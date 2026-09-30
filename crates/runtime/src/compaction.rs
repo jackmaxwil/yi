@@ -9,7 +9,7 @@ use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
 use yi_types::entry::Entry;
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
+use yi_types::message::{AgentMessage, StopReason, Usage, UserContent};
 use yi_types::model::{Effort, LlmContext, Model, Reuse, ToolDef};
 
 use crate::provider::ProviderStream;
@@ -206,14 +206,7 @@ pub(crate) async fn complete_text(
                     if stop_reason == StopReason::Error {
                         return Err(error_message.unwrap_or_else(|| "unknown error".to_owned()));
                     }
-                    let text: String = content
-                        .iter()
-                        .filter_map(|block| match block {
-                            Content::Text { text, .. } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                    let text: String = yi_types::message::join_text(&content, "\n");
                     return Ok(text);
                 }
                 return Err("summarizer returned a non-assistant message".to_owned());
