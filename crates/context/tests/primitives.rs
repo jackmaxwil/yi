@@ -4,8 +4,9 @@ use serde_json::json;
 use yi_context::{
     Attributed, BriefLine, Bytes, CompiledView, FileOps, KEY_ROWS, Prefill, Scope, Settings,
     Tokens, Window, attribute_child_usage, compile_view, compose_summary, context_tokens,
-    drop_internal, estimate_context, fit, internal_source, prepare_compaction, project,
-    retain_floor, select_cut, serialize_conversation, should_compact, user_key, wrap_internal,
+    convert_to_llm, drop_internal, estimate_context, fit, internal_source, prepare_compaction,
+    project, retain_floor, select_cut, serialize_conversation, should_compact, user_key,
+    wrap_internal,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage, UserContent};
@@ -472,6 +473,32 @@ fn prepare_splits_history_and_unions_the_floor_into_the_retained_tail() -> TestR
         "floored user message must survive into the retained tail"
     );
     assert!(prepared.tokens_before.0 > 0);
+    Ok(())
+}
+
+/// Dies with a bare user-role "Each number in the answer needs its source": the model
+/// answered the host's send-back as "User asks", and a reminder the same way.
+#[test]
+fn host_send_backs_reach_the_model_as_runtime_context() -> TestResult {
+    for (custom_type, source) in [("todo_intercept", "todo"), ("reminder", "reminder")] {
+        let note = AgentMessage::host_note(
+            custom_type,
+            "Each number in the answer needs its source: 040.".to_owned(),
+            1,
+        );
+        let sent = convert_to_llm(&[note]);
+        let [
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            },
+        ] = sent.as_slice()
+        else {
+            return Err(format!("{custom_type}: one user-role message, got {sent:?}").into());
+        };
+        let open = format!("<yi_internal_context source=\"{source}\">");
+        assert!(text.starts_with(&open), "{custom_type}: {text}");
+    }
     Ok(())
 }
 
