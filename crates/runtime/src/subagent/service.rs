@@ -211,7 +211,6 @@ impl SubagentHost {
             Ok(session) => Arc::new(session),
             Err(why) => return refused(why),
         };
-        self.options.family_live.hold(&session);
         watch_kernel(&session);
         let requested = session.abort_epoch();
         let dead = {
@@ -242,6 +241,7 @@ impl SubagentHost {
             children.touch(key, crate::family::Cause::Respawned);
             dead
         };
+        self.options.family_live.enroll(&session);
         // A queued or woken receipt is owed a turn: what the dead run never drained moves on.
         session.adopt_pending(&dead);
         Self::dispose_child_kernel(&dead);
