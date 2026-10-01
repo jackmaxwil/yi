@@ -249,6 +249,7 @@ pub struct KernelService {
     surface_shown: std::sync::atomic::AtomicBool,
     snapshot_lock: Mutex<Option<(PathBuf, Option<std::fs::File>)>>,
     waited: Mutex<Option<String>>,
+    own_paths: Option<crate::wiring::OwnPathsFn>,
 }
 
 impl KernelService {
@@ -269,7 +270,13 @@ impl KernelService {
             surface_shown: std::sync::atomic::AtomicBool::new(false),
             snapshot_lock: Mutex::new(None),
             waited: Mutex::new(None),
+            own_paths: None,
         }
+    }
+
+    /// A walled session's own paths, read again under its profile, which it never boots without.
+    pub(crate) fn with_own_paths(self, own_paths: Option<crate::wiring::OwnPathsFn>) -> Self {
+        Self { own_paths, ..self }
     }
 
     pub fn on_death(&self, hook: Arc<dyn Fn() + Send + Sync>) {
@@ -326,6 +333,9 @@ impl KernelService {
         sandbox
             .writable
             .extend(state.map(std::path::Path::to_path_buf));
+        sandbox
+            .spared
+            .extend(self.own_paths.iter().flat_map(|own| own(state)));
         let family = self.options.family_dir.as_deref().map(make_board);
         Some(kernel_profile(&sandbox, family.as_deref()).kernel_prefix(&self.connection_dir))
     }
@@ -387,6 +397,9 @@ impl KernelService {
             crate::kernel_state::state_dir(dir, self.options.per_session_state, key.as_deref())
         });
         let wrap = self.kernel_wrap(self.options.sandbox.as_ref(), state.as_deref());
+        if wrap.is_none() && self.own_paths.is_some() {
+            return Err(crate::gate::WALLED_KERNEL_UNCONFINED.to_owned());
+        }
         let snapshot = state.as_deref().map(|dir| {
             let (path, manifest_path) = snapshot_paths(dir, key.as_deref());
             yi_kernel::client::KernelSnapshotConfig {
