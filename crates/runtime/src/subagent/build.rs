@@ -48,30 +48,20 @@ impl SubagentHost {
             .map_err(|_| "subagent state poisoned")?;
         // Jurors sit in the verification reserve (plan section 7.6) and a service is never
         // reaped while it serves: neither fills the worker cap nor is refused by it.
-        let held = |kind: fn(&Standing) -> bool| {
-            children
-                .values()
-                .filter(|record| kind(&record.standing))
-                .count()
-        };
         let building_readers = children
             .building
             .iter()
             .filter(|(.., reader)| *reader)
             .count();
-        let workers = held(|standing| matches!(standing, Standing::Worker))
+        let workers = children
+            .values()
+            .filter(|record| matches!(record.standing, Standing::Worker))
+            .count()
             .saturating_add(children.building.len().saturating_sub(building_readers));
-        let readers =
-            held(|standing| matches!(standing, Standing::Reader)).saturating_add(building_readers);
         let reserved = [OWNER_AGENT, ENGINE_AGENT, "host"];
         let refusal = if reserved.contains(&session_name) {
             Some(format!(
                 "\"{session_name}\" is reserved: it names the plan's owner, engine or host; pick another name"
-            ))
-        } else if matches!(standing, Standing::Reader) && readers >= super::reader::HELD_CAP {
-            Some(format!(
-                "{} readers are held; rlm.ask reaps its own, rlm.delete_subagent the rest",
-                super::reader::HELD_CAP
             ))
         } else if matches!(standing, Standing::Worker) && workers >= self.options.max_children {
             Some(format!(
