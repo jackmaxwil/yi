@@ -89,6 +89,43 @@ def trailer_errors(trailers):
     return errs
 
 
+BASELINES = "scripts/guardrails/baselines/"
+
+
+def code_path(path):
+    if path.startswith("crates/") and "/src/" in path:
+        return True
+    return path == "justfile" or (path.startswith("scripts/") and not path.startswith(BASELINES))
+
+
+def mix_errors(parents, edits):
+    """A baseline modification never rides beside code; a merge is exempt. A deletion rides with the
+    gate that stopped reading it: a gate still reading the file crashes, and check_orphans refuses
+    one nobody reads, so only a modification can hide growth. A new baseline seeds with its gate."""
+    if parents > 1:
+        return []
+    baselines = sum(1 for status, f in edits if f.startswith(BASELINES) and status == "M")
+    code = sum(1 for _, f in edits if code_path(f))
+    if baselines and code:
+        return [f"{baselines} baseline edit(s) ride beside {code} code file(s); a baseline edit lands in its own commit (a new baseline may seed with its gate)"]
+    return []
+
+
+def selfcheck():
+    b, code = BASELINES + "panic_budget.json", "scripts/guardrails/check_panic.py"
+    cases = {
+        "a modified baseline beside code": (mix_errors(1, [("M", b), ("M", code)]), True),
+        "a modified baseline beside a src file": (mix_errors(1, [("M", b), ("M", "crates/a/src/lib.rs")]), True),
+        "a modified baseline alone": (mix_errors(1, [("M", b)]), False),
+        "a deleted baseline beside its gate": (mix_errors(1, [("D", b), ("M", code)]), False),
+        "a new baseline seeding with its gate": (mix_errors(1, [("A", b), ("A", code)]), False),
+        "a merge carrying both": (mix_errors(2, [("M", b), ("M", code)]), False),
+        "a doc beside a baseline": (mix_errors(1, [("M", b), ("M", "docs/FORGE.md")]), False),
+    }
+    fail([f"{name}: {'not refused' if refuse else 'refused'}" for name, (errs, refuse) in cases.items() if bool(errs) != refuse],
+         "commit_style selfcheck")
+
+
 def git(*args):
     return subprocess.run(
         ("git", "-C", str(ROOT)) + args, capture_output=True, text=True, check=False
@@ -105,7 +142,11 @@ def upstream():
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--range", help="git revision range (default: HEAD --not origin/main)")
+    ap.add_argument("--selfcheck", action="store_true")
     args = ap.parse_args()
+    if args.selfcheck:
+        selfcheck()
+        sys.exit(0)
 
     if args.range:
         span, hint = (args.range,), args.range
@@ -127,34 +168,13 @@ if __name__ == "__main__":
         print(f"  git log failed: {log.stderr.strip()}")
         sys.exit(1)
 
-    BASELINES = "scripts/guardrails/baselines/"
-
-
-    def code_path(path):
-        if path.startswith("crates/") and "/src/" in path:
-            return True
-        return path == "justfile" or (path.startswith("scripts/") and not path.startswith(BASELINES))
-
-
     def composition_errors(sha):
         show = git("show", "--name-status", "--format=%P", sha)
         if show.returncode != 0:
             return [f"git show failed: {show.stderr.strip()}"]
         lines = show.stdout.splitlines()
-        if lines and len(lines[0].split()) > 1:
-            return []
-        edits = []
-        for line in lines[1:]:
-            parts = line.split("\t")
-            if len(parts) >= 2:
-                edits.append((parts[0][:1], parts[-1]))
-        # A deletion rides with the gate that stopped reading it: a gate still reading the file
-        # crashes, and check_orphans refuses one nobody reads, so only a modification hides growth.
-        baselines = sum(1 for status, f in edits if f.startswith(BASELINES) and status == "M")
-        code = sum(1 for _, f in edits if code_path(f))
-        if baselines and code:
-            return [f"{baselines} baseline edit(s) ride beside {code} code file(s); a baseline edit lands in its own commit (a new baseline may seed with its gate)"]
-        return []
+        edits = [(parts[0][:1], parts[-1]) for parts in (line.split("\t") for line in lines[1:]) if len(parts) >= 2]
+        return mix_errors(len(lines[0].split()) if lines else 1, edits)
 
 
     errs, seen = [], 0

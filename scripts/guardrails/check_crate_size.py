@@ -6,7 +6,7 @@ before anyone measured it."""
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import SRC, fail, fork, no_fork, texts
-from check_changes import raised
+from check_changes import raise_errors, raised
 
 
 def sizes(files):
@@ -21,7 +21,6 @@ base = fork()
 if base is None:
     no_fork("crate_size")
 now, was = sizes(texts(SRC)), sizes(texts(SRC, base))
-limit = {n: was.get(n, 0) + raised(base, f"crate {n}") for n in now}
-errs = [f"crates/{n}/src {s} lines > {limit[n]} (fork {was.get(n, 0)}); a change file here says `raise: crate {n} +{s - was.get(n, 0)}`"
-        for n, s in sorted(now.items()) if s > limit[n]]
-fail(errs, "crate_size (" + ", ".join(f"{n} {s}/{limit[n]}" for n, s in sorted(now.items())) + ")")
+declared = {n: raised(base, f"crate {n}") for n in now}
+errs = [e for n, s in sorted(now.items()) for e in raise_errors(f"crate {n}", s, was.get(n, 0), declared[n])]
+fail(errs, "crate_size (" + ", ".join(f"{n} {s}/{was.get(n, 0) + declared[n]}" for n, s in sorted(now.items())) + ")")

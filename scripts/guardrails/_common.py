@@ -30,15 +30,18 @@ def code_lines(text):
 def git(*args):
     return subprocess.run(("git", "-C", str(ROOT)) + args, capture_output=True, text=True, check=False)
 
-def fork():
-    """Where this branch left main: the size gates price growth from here, so a shrink on main
-    tightens the next branch with no commit, and two branches never write one shared ceiling."""
+def base_commit():
+    """(ref, sha) where this branch left main: the size gates price growth from here, so a shrink
+    on main tightens the next branch with no commit, and two branches never write one ceiling."""
     for ref in ("origin/main", "main"):
         if git("rev-parse", "--verify", "--quiet", ref).returncode == 0:
             found = git("merge-base", ref, "HEAD")
             if found.returncode == 0:
-                return found.stdout.strip()
-    return None
+                return ref, found.stdout.strip()
+    return None, None
+
+def fork():
+    return base_commit()[1]
 
 def texts(pattern, rev=None):
     """{repo path: text} for files under crates/ matching `pattern`, in the working tree or at `rev`."""
