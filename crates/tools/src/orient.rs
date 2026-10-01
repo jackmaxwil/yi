@@ -209,12 +209,15 @@ fn skeletons(
             .then_with(|| left.2.cmp(&right.2))
     });
     let total = ranked.len();
+    let gate = context.read_gate();
     let mut out = order_line(&ranked, symbol);
     let mut shown = 0_usize;
     let mut cap = format!("the {SKELETON_FILES}-file cap");
     for (_, _, name) in ranked.iter().take(SKELETON_FILES) {
         let mut block = format!("{name}\n");
-        let text = std::fs::read_to_string(root.join(name)).unwrap_or_default();
+        let text = (gate.open(&root.join(name), &context.deny_read))
+            .and_then(std::io::read_to_string)
+            .unwrap_or_default();
         for line in skeleton(&text, SKELETON_LINES).0 {
             block.push_str(&format!("  {line}\n"));
         }
@@ -421,7 +424,8 @@ fn issues(root: &Path, context: &ToolContext) -> LayerBody {
     if crate::builtins::walled(&context.deny_read, &path) {
         return Err(format!("{ISSUES_PATH} is denied to this agent"));
     }
-    let text = std::fs::read_to_string(path)
+    let text = (context.read(&path))
+        .and_then(|bytes| String::from_utf8(bytes).map_err(std::io::Error::other))
         .map_err(|error| format!("{ISSUES_PATH} unreadable: {error}"))?;
     let lines: Vec<&str> = text
         .lines()

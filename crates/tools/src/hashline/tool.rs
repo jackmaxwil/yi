@@ -137,7 +137,7 @@ impl Tool for HashlineReadTool {
         }
         let path = resolve_path(context, &display_path);
         if path.is_dir() {
-            return read_dir(&display_path, &path, &context.deny_read);
+            return read_dir(&display_path, &path, context);
         }
         self.read_file(&display_path, &path, &input, context)
     }
@@ -281,7 +281,7 @@ fn skeleton_rows(text: &str) -> Vec<String> {
     rows
 }
 
-fn read_dir(display_path: &str, path: &Path, deny: &[std::path::PathBuf]) -> ToolOutput {
+fn read_dir(display_path: &str, path: &Path, context: &ToolContext) -> ToolOutput {
     let entries = match std::fs::read_dir(path) {
         Ok(entries) => entries,
         Err(error) => return error_output(format!("failed to read {}: {error}", path.display())),
@@ -290,7 +290,7 @@ fn read_dir(display_path: &str, path: &Path, deny: &[std::path::PathBuf]) -> Too
     let mut files: Vec<(String, u64)> = Vec::new();
     let mut walled = 0_usize;
     for entry in entries.flatten() {
-        if crate::builtins::walled(deny, &entry.path()) {
+        if crate::builtins::walled(&context.deny_read, &entry.path()) {
             walled = walled.saturating_add(1);
             continue;
         }
@@ -319,6 +319,7 @@ fn read_dir(display_path: &str, path: &Path, deny: &[std::path::PathBuf]) -> Too
     }
     let mut skeleton: Vec<String> = Vec::new();
     let mut source_files = 0_usize;
+    let gate = context.read_gate();
     for (name, _) in &files {
         let source = Path::new(name)
             .extension()
@@ -331,7 +332,8 @@ fn read_dir(display_path: &str, path: &Path, deny: &[std::path::PathBuf]) -> Too
         if skeleton.len() >= SKELETON_ROWS {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(path.join(name)) else {
+        let opened = gate.open(&path.join(name), &context.deny_read);
+        let Ok(text) = opened.and_then(std::io::read_to_string) else {
             continue;
         };
         let (heads, _) = crate::orient::skeleton(&text, DIR_HEADS_PER_FILE);
@@ -399,7 +401,7 @@ impl HashlineReadTool {
                 .unwrap_or(path)
                 .to_string_lossy()
                 .into_owned();
-            let bytes = std::fs::read(path).unwrap_or_default();
+            let bytes = context.read(path).unwrap_or_default();
             let document = self.listed_document(path, &bytes, spent < READ_BYTE_FLOOR, context);
             let size = match &document {
                 Some(super::documents::Listed::Copy(copy)) => std::fs::metadata(&copy.path)
@@ -896,6 +898,7 @@ impl Tool for HashlineEditTool {
         drop(parsing);
         let applying = yi_types::trace::span("edit.apply");
         let mut patcher = Patcher::new(snapshots, context.cwd.clone());
+        patcher.walls = context.write_walls();
         let results = patcher.apply(&patch, &mut host_clipboard);
         drop(applying);
         *clipboard = host_clipboard;

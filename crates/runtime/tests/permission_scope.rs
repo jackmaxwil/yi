@@ -749,3 +749,100 @@ fn a_url_that_serves_a_host_file_meets_the_read_gate() -> TestResult {
     }
     Ok(())
 }
+
+/// A link swapped between the check and the open (#890): `x` flips between an ordinary file and
+/// a link to a key while the broker judges the name and the tool opens it. The reviews of #885
+/// and #903 read the key 40 times in 20,000 tries. `reached` says whether a call got the key.
+#[cfg(unix)]
+fn race(
+    tool: &str,
+    args: &Map<String, Value>,
+    reached: &dyn Fn(&yi_tools::ToolOutput, &std::path::Path) -> bool,
+) -> Result<(usize, usize), Box<dyn Error>> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let scratch = Scratch::new("yi-scope-swap")?;
+    let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    std::fs::create_dir_all(&workspace)?;
+    let key = home.join(".ssh/id_rsa");
+    std::fs::write(&key, "FAKE KEY MARKER\n")?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let broker = PermissionBroker::new(
+        PermissionMode::Yolo,
+        workspace.clone(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    );
+    let tool_impl = (yi_tools::builtin_tools().into_iter())
+        .find(|candidate| candidate.name() == tool)
+        .ok_or("no such tool")?;
+    let context = yi_tools::ToolContext::new(workspace.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let swapper = {
+        let (stop, workspace, key) = (Arc::clone(&stop), workspace.clone(), key.clone());
+        std::thread::spawn(move || {
+            let (plain, link, x) = (
+                workspace.join("plain.tmp"),
+                workspace.join("link.tmp"),
+                workspace.join("x"),
+            );
+            while !stop.load(Ordering::Relaxed) {
+                let _ = std::fs::write(&plain, "ordinary\n");
+                let _ = std::fs::rename(&plain, &x);
+                let _ = std::os::unix::fs::symlink(&key, &link);
+                let _ = std::fs::rename(&link, &x);
+            }
+        })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let (mut allowed, mut leaks) = (0_usize, 0_usize);
+    for _ in 0..20_000 {
+        if std::time::Instant::now() > deadline {
+            break;
+        }
+        let kind = if tool == "read" {
+            ToolKind::Read
+        } else {
+            ToolKind::Write
+        };
+        if !(broker.decide_call(tool, kind, tool != "read", "c1", args, None)).allowed {
+            continue;
+        }
+        allowed += 1;
+        let output = tool_impl.execute(args.clone(), &context);
+        if reached(&output, &key) {
+            leaks += 1;
+            std::fs::write(&key, "FAKE KEY MARKER\n")?;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    swapper.join().map_err(|_| "the swapper panicked")?;
+    Ok((allowed, leaks))
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_swapped_after_the_check_reads_no_key() -> TestResult {
+    let mut args = Map::new();
+    args.insert("path".to_owned(), json!("x"));
+    let (allowed, leaks) = race("read", &args, &|output, _| {
+        format!("{:?}", output.result).contains("MARKER")
+    })?;
+    assert!(allowed > 20, "the check passed only {allowed} times");
+    assert_eq!(leaks, 0, "{leaks} of {allowed} reads returned the key");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_swapped_after_the_check_overwrites_no_key() -> TestResult {
+    let args = write("x", "overwritten\n");
+    let (allowed, leaks) = race("write", &args, &|_, key| {
+        std::fs::read_to_string(key).is_ok_and(|text| !text.contains("MARKER"))
+    })?;
+    assert!(allowed > 20, "the check passed only {allowed} times");
+    assert_eq!(leaks, 0, "{leaks} of {allowed} writes replaced the key");
+    Ok(())
+}
