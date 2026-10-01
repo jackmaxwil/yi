@@ -1,0 +1,56 @@
+# The conflict autofixer (scripts/pr_autofix.py): every 15 minutes, oldest PR first, it merges the
+# base into a same-repo PR that conflicts with it and has been quiet two hours (or carries the
+# `autofix` label), resolves what git cannot with a fresh `yi ask`, commits through the hooks and
+# pushes as yi-bot. Labels steer it: autofix, autofix:hold, autofix:working, autofix:failed.
+name: autofix
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+# One pass at a time: the lock the `autofix:working` label only shows.
+concurrency:
+  group: autofix
+  cancel-in-progress: false
+
+env:
+  CARGO_BUILD_JOBS: "5"
+
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    # Three fixes a pass, each a model run of up to 30 minutes and the commit hook's clippy.
+    timeout-minutes: 120
+    steps:
+      # Main's tree: the merged PR's code runs only inside a token-free clone.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          cache-on-failure: true
+          save-if: false
+      - run: cargo build -p yi-cli
+      - name: install fgj
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/fgj https://codeberg.org/romaintb/fgj/releases/download/v0.5.0/fgj_linux_amd64
+          echo "7a161b57355ba6216eb12d2d185dc8b47a94efec06116ef4f6efa5e5eea06b39  /usr/local/bin/fgj" | sha256sum -c -
+          chmod +x /usr/local/bin/fgj
+      - name: fix conflicted PRs as yi-bot
+        env:
+          FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FGJ_TOKEN:-}" ] || [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            echo "autofix: skipped, the REVIEW_BOT_TOKEN or OPENROUTER_API_KEY secret is not set"
+            exit 0
+          fi
+          login=$(fgj api --hostname git.example.invalid user | python3 -c 'import json,sys; print(json.load(sys.stdin).get("login", ""))')
+          [ "$login" = yi-bot ] || { echo "autofix: fgj is signed in as '$login', not yi-bot"; exit 1; }
+          just pr autofix
