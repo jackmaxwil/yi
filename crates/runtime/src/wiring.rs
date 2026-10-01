@@ -360,14 +360,13 @@ fn wire_schedule(
                     wiring.cwd.clone(),
                     wiring.own_paths(session),
                 );
+                let spills = crate::tools::default_spill_root();
+                let roots =
+                    crate::tools::spill_roots_and_stores(spills.as_deref(), broker.as_deref());
+                let roots: Vec<PathBuf> = roots.into_iter().filter(|_| !wall.is_empty()).collect();
                 // An `exec://` source runs on the host, where the wall is its text alone (#1001).
+                // The spares are read per call: a child's store attaches after its wiring.
                 Arc::new(move |command: &str| {
-                    let spills = crate::tools::default_spill_root();
-                    let roots = if wall.is_empty() {
-                        Vec::new()
-                    } else {
-                        crate::tools::spill_roots_and_stores(spills.as_deref(), broker.as_deref())
-                    };
                     let spared: Vec<PathBuf> = own.iter().flat_map(|own| own(None)).collect();
                     crate::tools::host_wall(command, &wall, (&roots, &spared), &cwd).or_else(|| {
                         crate::tools::refuse_armed(command, contained, broker.as_deref(), "")
