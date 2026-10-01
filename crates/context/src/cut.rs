@@ -2,7 +2,8 @@ use yi_types::message::AgentMessage;
 
 use crate::account::{Tokens, estimate_message};
 
-fn is_cut_point(message: &AgentMessage) -> bool {
+/// Any message but a tool result, which must follow its call.
+pub fn is_cut_point(message: &AgentMessage) -> bool {
     !matches!(message, AgentMessage::ToolResult { .. })
 }
 

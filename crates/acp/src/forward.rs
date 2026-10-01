@@ -139,7 +139,8 @@ impl Parent {
     }
 
     fn title(&mut self) {
-        let scripted = self.session.summarizer().provider == yi_runtime::faux::FAUX_PROVIDER;
+        let scripted = self.session.provider_arc().forces_faux()
+            || self.session.summarizer().provider == yi_runtime::faux::FAUX_PROVIDER;
         if std::mem::replace(&mut self.titled, true) || scripted {
             return;
         }

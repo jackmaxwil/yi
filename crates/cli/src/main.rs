@@ -48,6 +48,8 @@ struct Args {
     faux: Option<String>,
     record: Option<String>,
     snap: Option<String>,
+    /// `--size COLSxROWS`: the headless screen, 80x24 when absent.
+    size: Option<(u16, u16)>,
     /// An eval harness launched this run: `YI_LEVERS` is read, and nothing else (D220).
     eval: bool,
     deadline: Option<u64>,
@@ -95,6 +97,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut faux = None;
     let mut record = None;
     let mut snap = None;
+    let mut size = None;
     let mut eval = false;
     let mut deadline = None;
     let mut continue_leaf = false;
@@ -133,6 +136,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("faux") => faux = Some(parser.value()?.string()?),
             Long("record") => record = Some(parser.value()?.string()?),
             Long("snap") => snap = Some(parser.value()?.string()?),
+            Long("size") => size = Some(parse_size(&parser.value()?.string()?)?),
             Long("eval") => eval = true,
             Long("deadline") => deadline = Some(parser.value()?.parse()?),
             Long("continue") => continue_leaf = true,
@@ -151,7 +155,8 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     }
     yi_types::trace::init(debug::process_label(&command));
     // A drive is a harness: it claims no lane unless the scenario is about lanes.
-    let here = here || (headless && !lanes);
+    // A cassette run is a harness too: a claim would fetch origin (#943).
+    let here = here || ((headless || faux.is_some()) && !lanes);
     // Drive-only flags are silently inert outside the headless loop, which
     // reads downstream as a capture that produced nothing.
     if !headless
@@ -160,6 +165,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             ("--frames", frames.is_some()),
             ("--record", record.is_some()),
             ("--snap", snap.is_some()),
+            ("--size", size.is_some()),
         ]
         .into_iter()
         .find_map(|(name, present)| present.then_some(name))
@@ -168,10 +174,12 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             format!("{flag} needs --headless").into(),
         ));
     }
-    if faux.is_some() && !headless && !solo && matches!(command.as_str(), "" | "console") {
+    // The console, headless too, is a client of a daemon that never sees the cassette, and
+    // `yi serve` does not hand it to its workers (#943).
+    let daemon = matches!(command.as_str(), "console" | "serve") || (command.is_empty() && !solo);
+    if faux.is_some() && daemon {
         return Err(lexopt::Error::Custom(
-            "--faux runs in-process only: add --solo, or use `yi tui`, `yi ask` or --headless"
-                .into(),
+            "--faux runs in-process only: use `yi tui`, `yi ask`, `yi rpc` or `yi --solo`".into(),
         ));
     }
     Ok(Args {
@@ -194,6 +202,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         faux,
         record,
         snap,
+        size,
         eval,
         deadline,
         resume: match (session, continue_leaf) {
@@ -204,6 +213,18 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         schema,
         prompt: prompt_parts.join(" "),
     })
+}
+
+/// `COLSxROWS` within 20..=1000 by 8..=500: the drive's own floor, and a screen that fits in memory.
+fn parse_size(raw: &str) -> Result<(u16, u16), lexopt::Error> {
+    raw.split_once('x')
+        .and_then(|(cols, rows)| Some((cols.parse().ok()?, rows.parse().ok()?)))
+        .filter(|(cols, rows)| (20..=1000).contains(cols) && (8..=500).contains(rows))
+        .ok_or_else(|| {
+            lexopt::Error::Custom(
+                format!("--size wants COLSxROWS within 20..=1000 by 8..=500, not {raw}").into(),
+            )
+        })
 }
 
 fn faux_model() -> Model {
@@ -421,25 +442,26 @@ fn build_session(
             class: yi_types::telemetry::ErrorClass::RefusalUnknownModel,
         });
     };
-    let faux = model.provider == "faux";
+    // `--faux` scripts whatever model is named, which keeps its id and catalog facts on
+    // screen; the host starts no request of its own below, while a scripted tool call still
+    // runs (#943).
+    let faux = args.faux.is_some() || model.provider == "faux";
     let interactive = {
         use std::io::IsTerminal;
         std::io::stdin().is_terminal()
     };
     // Incident: an inherited proxy value ureq cannot dial refused every faux run too, so an
-    // operator's shell broke `just check`. E2 guards egress; faux never leaves the process.
-    let proxy = if faux {
-        None
-    } else {
-        match proxy_from_env() {
-            Ok(proxy) => proxy,
-            Err(reason) => {
-                return Err(Refused {
-                    code: 2,
-                    reason,
-                    class: yi_types::telemetry::ErrorClass::RefusalConfig,
-                });
-            }
+    // operator's shell broke `just check`. A faux run keeps a proxy it can dial, so a request
+    // that leaks rides it where a test's listener sees it (#943).
+    let proxy = match proxy_from_env() {
+        Ok(proxy) => proxy,
+        Err(_) if faux => None,
+        Err(reason) => {
+            return Err(Refused {
+                code: 2,
+                reason,
+                class: yi_types::telemetry::ErrorClass::RefusalConfig,
+            });
         }
     };
     let telemetry = config()
@@ -453,7 +475,8 @@ fn build_session(
             .with_long_cache(interactive)
             .with_proxy(proxy.clone())
             .with_routing(config().routing.clone())
-            .with_telemetry(telemetry.clone()),
+            .with_telemetry(telemetry.clone())
+            .with_forced_faux(faux),
     );
     if !faux {
         // Resolved through the session's proxy so an OAuth refresh can reach the token
@@ -487,6 +510,9 @@ fn build_session(
     }
     let cwd = effective_cwd(args);
     let home = home().to_path_buf();
+    if faux {
+        yi_runtime::lane::forbid_fetch();
+    }
     let claiming = yi_types::trace::span("build_session.claim_lane");
     let claimed = claim_lane(args, &home, session_id);
     drop(claiming);
@@ -511,7 +537,8 @@ fn build_session(
             asker,
             session.events_sender(),
         )
-        .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, None)),
+        .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, None))
+        .with_session_store(&default_session_dir(args)),
     );
     let tools_home = home.clone();
     let extensions = yi_types::trace::span("build_session.install_extensions");
@@ -566,17 +593,21 @@ fn build_session(
             plans_dir: configured_plans_dir(&work),
             auto_background: configured_auto_background(),
             deadline: args.deadline.map(std::time::Duration::from_secs),
-            kernel_prewarm: config()
-                .kernel
-                .as_ref()
-                .and_then(|kernel| kernel.prewarm)
-                .unwrap_or(true),
+            // A cold venv installs from PyPI; a scripted run boots it at its first cell.
+            kernel_prewarm: !faux
+                && config()
+                    .kernel
+                    .as_ref()
+                    .and_then(|kernel| kernel.prewarm)
+                    .unwrap_or(true),
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
     drop(wiring);
-    for why in yi_runtime::classifier::attach(&session, &work, &home, config()) {
-        eprintln!("warning: {why}");
+    if !faux {
+        for why in yi_runtime::classifier::attach(&session, &work, &home, config()) {
+            eprintln!("warning: {why}");
+        }
     }
     if let Some(every) = config()
         .spend
@@ -960,34 +991,6 @@ fn report_undo(changes: &[yi_runtime::Change], scoped: bool, json: bool) {
     for note in notes {
         println!("{note}");
     }
-}
-
-/// D10: `--schema` answers are JSON or a non-zero exit, never prose. The answer is the newest
-/// assistant message that holds a matching value: a reader narrates before tool calls and wraps up after.
-fn emit_structured(schema: &yi_runtime::schema::Schema, said: &[String], json: bool) -> i32 {
-    let mut newest_error = None;
-    for text in said.iter().rev() {
-        let checked = yi_runtime::schema::extract(text).and_then(|value| {
-            let valid = schema.validate(&value);
-            valid
-                .map(|()| value)
-                .map_err(|error| format!("answer does not match --schema: {error}"))
-        });
-        match checked {
-            Ok(value) => {
-                if !json && let Ok(line) = serde_json::to_string(&value) {
-                    println!("{line}");
-                }
-                return 0;
-            }
-            Err(error) => {
-                newest_error.get_or_insert(error);
-            }
-        }
-    }
-    let error = newest_error.unwrap_or_else(|| "answer contains no JSON value".to_owned());
-    eprintln!("error: {error}");
-    3
 }
 
 fn yi_ai_key(provider: &str) -> Option<yi_runtime::auth::Secret> {

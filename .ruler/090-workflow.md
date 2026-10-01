@@ -1,10 +1,12 @@
 # Workflow
 
-- A structural change bumps docs/ARCHITECTURE.md version and adds a docs/CHANGELOG.md row in the same
-  commit. Read the version header and the last D-row immediately before writing them: another
-  session sharing this tree may have claimed both since the last read, and a collision costs a
-  reset + renumber (0.35.0/D55 and 0.38.0/D57 were both taken mid-change this way).
-- Revising a settled decision requires a new D-row (decision, why, reversible-via) before code.
+- A structural change adds one change file, `docs/changes/<yyyy-mm-dd>-<slug>.md`: a `---` header
+  (`issue:`, `growth:`, `raise:`, `decision: <decision> | <why> | <reversible via>`, each optional)
+  and the changelog prose. It never writes the `version:` line, a CHANGELOG.md row, a decision row
+  or an ADR: those are views the recorder writes on main after the merge, numbering versions and
+  D-rows in merge order, and check_changes.py refuses a branch that edits them. Every PR claimed
+  the next number by hand and every landing renumbered, until 9 of 9 conflicted PRs collided on it.
+- Revising a settled decision requires a new decision (a `decision:` line in the change file) before code.
 - Feature cuts are discussed before being written into the docs.
 - One-in-one-out: adding a top-level feature deletes or demotes one and edits YI_DESIGN.md §1.2
   in the same commit.
@@ -34,14 +36,14 @@
 - Commit messages containing backticks or `$(` go through `git commit -F -` with a quoted
   heredoc, never `-m` — zsh command-substitutes inside double quotes and mangles the message.
 - A change that adds a feature-ledger row, or whose net src growth exceeds the free band, carries
-  `Closes #N` or `Refs #N` in its PR body and cites the same `#N` in its changelog row — the
-  register is on the forge (095), so the row and the issue have to name each other or neither
+  `Closes #N` or `Refs #N` in its PR body and cites the same `#N` in its change file — the
+  register is on the forge (095), so the change and the issue have to name each other or neither
   can be found from the other. Ratchets, doc fixes and in-band repairs are exempt by
   construction: they add no ledger row and move no bytes past the band.
 - A user-visible behavior change updates the ARCHITECTURE feature ledger and,
-  when structural, docs/CHANGELOG.md — in the same change as the code.
+  when structural, adds its change file — in the same change as the code.
 - A landed decision gets its ADR under docs/solutions/adr/ (one file per decision-log row,
-  regenerated from the row rather than hand-drifted) and a line in the docs/solutions index.
+  rendered from the row by the recorder rather than hand-drifted) and a line in the docs/solutions index.
 - Never `git add -A` in a shared tree: it swallows the other session's uncommitted files. Stage
   the paths the change touched, by name — and check `git commit`'s own file list afterwards: a
   deletion another session staged rides along silently otherwise (a moved skill did exactly this).

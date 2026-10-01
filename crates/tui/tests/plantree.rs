@@ -153,8 +153,15 @@ fn plan() -> Result<Plan, Box<dyn Error>> {
 fn panel_renders_every_state_glyph_and_the_dag_edges() -> TestResult {
     let view = PlanTreeView::new(&plan()?, &[]);
     let text = flat(&view.lines(100, &theme(), 40)).join("\n");
-    for glyph in ['☐', '◆', '☑', '✗', '?'] {
+    for glyph in ['☐', '◆', '☑', '✕', '·'] {
         assert!(text.contains(glyph), "glyph {glyph} is missing:\n{text}");
+    }
+    for (glyph, label) in [('✕', "port the mapper"), ('·', "from the future")] {
+        assert!(
+            text.lines()
+                .any(|line| line.contains(&format!("{glyph} {label}"))),
+            "{label} is marked {glyph}:\n{text}"
+        );
     }
     assert!(
         text.contains("after: write the parser, wire the cli"),

@@ -109,9 +109,11 @@ fn spawn_daemon_in(dir: &Path, home: Option<&Path>) -> Result<(Child, PathBuf), 
         .envs(home.map(|home| ("HOME", home.to_path_buf())))
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() {
+    // Incident: the socket file exists between bind() and listen(), and a
+    // connect in that gap is refused; under load the gap outlasted the poll.
+    while UnixStream::connect(&socket).is_err() {
         if Instant::now() > deadline {
-            return Err("daemon socket never appeared".into());
+            return Err("daemon socket never accepted a connection".into());
         }
         std::thread::sleep(Duration::from_millis(50));
     }

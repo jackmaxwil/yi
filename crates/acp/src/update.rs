@@ -291,6 +291,20 @@ fn user_update(content: &UserContent, typed: bool, ids: &mut IdMap) -> AcpSessio
     }
 }
 
+/// A compaction note is host text the user must read: it rides as a host notice, which every
+/// client shows, not as an extension a third-party client drops.
+fn custom_update(
+    custom_type: &str,
+    content: &UserContent,
+    details: Option<&Value>,
+    ids: &mut IdMap,
+) -> AcpSessionUpdate {
+    if custom_type == yi_runtime::compaction::COMPACTION_NOTICE {
+        return user_update(content, false, ids);
+    }
+    extension_of(custom_type, content, details)
+}
+
 /// Wraps a Custom message as a `_yi/<custom_type>` extension update (§17.2).
 fn extension_of(
     custom_type: &str,
@@ -379,7 +393,7 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
                 content,
                 details,
                 ..
-            } => vec![extension_of(custom_type, content, details.as_ref())],
+            } => vec![custom_update(custom_type, content, details.as_ref(), ids)],
             _ => Vec::new(),
         },
         AgentEvent::MessageUpdate {
@@ -549,7 +563,7 @@ pub fn replay_updates(entries: &[Entry], ids: &mut IdMap) -> Vec<AcpSessionUpdat
                     content,
                     details,
                     ..
-                } => updates.push(extension_of(custom_type, content, details.as_ref())),
+                } => updates.push(custom_update(custom_type, content, details.as_ref(), ids)),
                 _ => {}
             },
             Entry::Compaction { summary, .. } => {

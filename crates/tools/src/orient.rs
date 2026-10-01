@@ -85,7 +85,8 @@ fn packet(symbol: Option<&str>, context: &ToolContext) -> String {
     let (roots, near, heat, skeleton) = std::thread::scope(|scope| {
         let roots = scope.spawn(|| {
             let _span = yi_types::trace::span("context.grid");
-            grid(context, &["roots"])
+            let chart = crate::grid::chart_root(root).unwrap_or(root);
+            crate::grid::layer(chart, &["roots"], &context.cancelled)
         });
         let near = scope.spawn(|| {
             let _span = yi_types::trace::span("context.grid");
@@ -146,29 +147,17 @@ fn clamp(name: &str, body: String) -> String {
     format!("{kept}\n[{name} truncated at {LAYER_CAP} bytes]")
 }
 
-fn grid(context: &ToolContext, args: &[&str]) -> LayerBody {
-    let mut spawn = command("grid");
-    spawn.args(args).current_dir(&context.cwd);
-    let capture = run_captured(spawn, None, &context.cancelled, LAYER_CAP)
-        .map_err(|error| format!("grid binary not runnable: {error}"))?;
-    if capture.exit_code != Some(0) {
-        return Err(format!(
-            "grid {} exited {:?}: {}",
-            args.join(" "),
-            capture.exit_code,
-            capture.stderr.lines().next().unwrap_or_default()
-        ));
-    }
-    let stdout = capture.stdout.trim_end().to_owned();
-    if stdout.is_empty() {
-        return Err(format!("grid {} answered nothing", args.join(" ")));
-    }
-    Ok(stdout)
-}
-
 fn neighborhood(symbol: Option<&str>, context: &ToolContext) -> LayerBody {
     let symbol = symbol.ok_or_else(|| "no symbol argument was given".to_owned())?;
-    grid(context, &["scope", symbol, "--depth", "1"])
+    let chart = crate::grid::chart_root(&context.cwd).ok_or_else(|| {
+        "no .grid chart in or above the working directory — bash: grid survey charts it".to_owned()
+    })?;
+    let pattern = crate::grid::scope_pattern(symbol);
+    crate::grid::layer(
+        chart,
+        &["scope", &pattern, "--depth", "1"],
+        &context.cancelled,
+    )
 }
 
 fn skeletons(
@@ -196,6 +185,7 @@ fn skeletons(
             .collect::<Vec<_>>()
             .join("\n"));
     }
+    let gate = context.read_gate();
     // Incident: name order spent the whole layer on the alphabetically first
     // crate, so a symbol's own file was never shown.
     let mut ranked: Vec<(u8, usize, String)> = files
@@ -209,7 +199,11 @@ fn skeletons(
             // ponytail: heat keys are repo-root relative, so from a subdirectory
             // cwd nothing matches; the order line then reports 0 with heat.
             let hot = heat.and_then(|heat| heat.counts.get(&name)).copied();
-            (symbol_rank(path, symbol), hot.unwrap_or(0), name)
+            (
+                symbol_rank(path, symbol, &gate, context),
+                hot.unwrap_or(0),
+                name,
+            )
         })
         .collect();
     ranked.sort_by(|left, right| {
@@ -225,7 +219,9 @@ fn skeletons(
     let mut cap = format!("the {SKELETON_FILES}-file cap");
     for (_, _, name) in ranked.iter().take(SKELETON_FILES) {
         let mut block = format!("{name}\n");
-        let text = std::fs::read_to_string(root.join(name)).unwrap_or_default();
+        let text = (gate.open(&root.join(name), &context.deny_read))
+            .and_then(std::io::read_to_string)
+            .unwrap_or_default();
         for line in skeleton(&text, SKELETON_LINES).0 {
             block.push_str(&format!("  {line}\n"));
         }
@@ -250,9 +246,15 @@ fn skeletons(
 }
 
 /// 2 defines the symbol, 1 only mentions it, 0 neither or no symbol given.
-fn symbol_rank(path: &Path, symbol: Option<&str>) -> u8 {
+fn symbol_rank(
+    path: &Path,
+    symbol: Option<&str>,
+    gate: &yi_permission::ReadGate,
+    context: &ToolContext,
+) -> u8 {
     let Some(symbol) = symbol else { return 0 };
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let opened = gate.open(path, &context.deny_read);
+    let Ok(text) = opened.and_then(std::io::read_to_string) else {
         return 0;
     };
     if text
@@ -412,9 +414,13 @@ fn git_heat(heat: Result<Heat, String>) -> LayerBody {
 }
 
 fn gates(root: &Path) -> LayerBody {
-    let lines: Vec<String> = GATES
+    let mut found: Vec<&(&str, &str)> = GATES
         .iter()
         .filter(|(file, _)| root.join(file).exists())
+        .collect();
+    found.dedup_by_key(|(_, gate)| *gate);
+    let lines: Vec<String> = found
+        .iter()
         .map(|(file, gate)| format!("{gate}  ({file})"))
         .collect();
     if lines.is_empty() {
@@ -428,7 +434,8 @@ fn issues(root: &Path, context: &ToolContext) -> LayerBody {
     if crate::builtins::walled(&context.deny_read, &path) {
         return Err(format!("{ISSUES_PATH} is denied to this agent"));
     }
-    let text = std::fs::read_to_string(path)
+    let text = (context.read(&path))
+        .and_then(|bytes| String::from_utf8(bytes).map_err(std::io::Error::other))
         .map_err(|error| format!("{ISSUES_PATH} unreadable: {error}"))?;
     let lines: Vec<&str> = text
         .lines()

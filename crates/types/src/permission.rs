@@ -45,6 +45,13 @@ impl Default for SessionPermissionState {
     }
 }
 
+/// The custom entry type a session journals each kept rule under; `--continue` replays them.
+pub const PERMISSION_RULE_ENTRY: &str = "permission_rule";
+
+impl crate::entry::CustomRecord for SessionPermissionRule {
+    const TYPE: &'static str = PERMISSION_RULE_ENTRY;
+}
+
 /// ACP-shaped permission request/response.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

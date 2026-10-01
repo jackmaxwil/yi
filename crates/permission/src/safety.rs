@@ -145,6 +145,9 @@ pub fn parse(command: &str) -> Parsed {
         if let Some(open) = quote {
             if character == open {
                 quote = None;
+            } else if open == '"' && matches!(character, '$' | '`') {
+                // Bash expands these inside double quotes: `"$(rm x)"` runs `rm`.
+                return Parsed::Unparsed;
             } else if character == '\\' && open == '"' {
                 match chars.next() {
                     Some(escaped) => token.push(escaped),
@@ -278,10 +281,7 @@ fn git_class(argv: &[String]) -> Class {
     if destructive {
         return Class::Destructive;
     }
-    if matches!(
-        subcommand,
-        "clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule"
-    ) {
+    if git_network(argv) {
         return Class::Egress;
     }
     if GIT_READ.binary_search(&subcommand).is_ok() {
@@ -294,6 +294,20 @@ fn git_class(argv: &[String]) -> Class {
         return Class::Safe;
     }
     Class::Unknown
+}
+
+/// A git verb that reaches a remote, so it asks and an approval leaves the sandbox; `remote update`
+/// runs `uploadpack` from `-c` on the host, which a proof must never send out unasked.
+fn git_network(argv: &[String]) -> bool {
+    match git_subcommand(argv) {
+        Some("clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule") => true,
+        Some("remote") => (argv.iter())
+            .skip_while(|token| *token != "remote")
+            .skip(1)
+            .find(|token| !token.starts_with('-'))
+            .is_some_and(|verb| matches!(verb.as_str(), "update" | "prune")),
+        _ => false,
+    }
 }
 
 fn subcommand_after<'a>(argv: &'a [String], after: &str) -> Option<&'a str> {
@@ -453,7 +467,8 @@ const VERB_PROGRAMS: [&str; 16] = [
     "pnpm", "rustup", "uv", "yarn",
 ];
 
-fn scope(argv: &[String]) -> Option<String> {
+/// `argv` past the wrappers that run another program (`timeout`, `nice`, `env`, assignments).
+fn unwrapped(argv: &[String]) -> Option<&[String]> {
     let mut argv: &[String] = argv;
     // A wrapper runs another program, so the scope is that program, not `timeout` or `nice`.
     while let Some(first) = argv.first() {
@@ -470,6 +485,11 @@ fn scope(argv: &[String]) -> Option<String> {
             false => break,
         }
     }
+    Some(argv)
+}
+
+fn scope(argv: &[String]) -> Option<String> {
+    let argv = unwrapped(argv)?;
     let name = program(argv.first()?.trim_start_matches('\u{0}'));
     let verb = match name {
         "git" => git_subcommand(argv),
@@ -614,25 +634,35 @@ fn lenient_segments(command: &str) -> Vec<Vec<String>> {
     segments
 }
 
-/// Programs a contained run cannot serve, having no network.
+/// Programs a contained run cannot serve, having no network beyond loopback.
 const HOST_PROGRAMS: [&str; 7] = ["curl", "http", "rsync", "scp", "sftp", "ssh", "wget"];
 
 /// Whether an approval of `command` must run it outside the sandbox: a network program, a git
 /// network verb, or a package install, none of which works without the network.
 pub fn needs_host(command: &str) -> bool {
-    let segments = match parse(command) {
+    command_segments(command)
+        .iter()
+        .any(|argv| host_need(argv).is_some())
+}
+
+/// The command's segments, split leniently where the strict parse gives up.
+pub fn command_segments(command: &str) -> Vec<Vec<String>> {
+    match parse(command) {
         Parsed::Segments(segments) => segments,
         Parsed::Unparsed => lenient_segments(command),
-    };
-    segments.iter().filter_map(|argv| scope(argv)).any(|scope| {
-        let (name, verb) = scope.split_once(' ').unwrap_or((scope.as_str(), ""));
-        let git_network = matches!(
-            verb,
-            "clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule"
-        );
-        let install = matches!(verb, "add" | "install" | "login" | "publish");
-        HOST_PROGRAMS.contains(&name) || if name == "git" { git_network } else { install }
-    })
+    }
+}
+
+/// Why one segment cannot run contained: `network` for a network program or git verb, `installs`
+/// for an install verb (a recipe named `install` writes outside the tree as a package manager does).
+pub fn host_need(argv: &[String]) -> Option<&'static str> {
+    let scope = scope(argv)?;
+    let (name, verb) = scope.split_once(' ').unwrap_or((scope.as_str(), ""));
+    let git_network = name == "git" && unwrapped(argv).is_some_and(git_network);
+    if HOST_PROGRAMS.contains(&name) || git_network {
+        return Some("network");
+    }
+    (name != "git" && matches!(verb, "add" | "install" | "login" | "publish")).then_some("installs")
 }
 
 /// Options that move a command's tree or repository, and so its blast radius, elsewhere.

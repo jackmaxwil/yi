@@ -19,6 +19,7 @@ fn context() -> CatastrophicContext {
         home_dir: Some(PathBuf::from("/home/user")),
         working_dir: Some(PathBuf::from("/home/user/project")),
         workspace_git: vec![PathBuf::from("/home/user/project/.git")],
+        host_owned: vec![PathBuf::from("/home/user/.yi/sessions")],
     }
 }
 
@@ -420,6 +421,7 @@ fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
         home_dir: Some(home.clone()),
         working_dir: Some(root.to_path_buf()),
         workspace_git: Vec::new(),
+        host_owned: vec![home.join(".yi/sessions")],
     };
     let mut commands = vec![
         // `cfg` is `~/.config`, so the kernel opens `~/.netrc`; popped first, it is `<root>/.netrc`.

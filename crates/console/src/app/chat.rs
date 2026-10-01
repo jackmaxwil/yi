@@ -31,14 +31,13 @@ fn keep_child_row(rows: &mut Vec<ChildUpdate>, child: &ChildUpdate) {
         *slot = child.clone();
         return;
     }
-    if child.status != ChildStatus::Running {
+    let running =
+        |row: &ChildUpdate| matches!(row.status, ChildStatus::Running | ChildStatus::Other(_));
+    if !running(child) {
         return;
     }
     if rows.len() >= CHILD_ROW_CAP {
-        let oldest_finished = rows
-            .iter()
-            .position(|row| row.status != ChildStatus::Running)
-            .unwrap_or(0);
+        let oldest_finished = rows.iter().position(|row| !running(row)).unwrap_or(0);
         rows.remove(oldest_finished);
     }
     rows.push(child.clone());

@@ -12,8 +12,8 @@ use serde_json::{Map, json};
 use yi_ai::faux::{faux_assistant_message, faux_tool_call};
 use yi_loop::ExecutionMode;
 use yi_runtime::{
-    AgentSession, AskOutcome, Asker, PermissionBroker, PermissionMode, ProviderStream,
-    SessionConfig, Wall, builtin_tools,
+    AgentSession, AskOutcome, Asker, ConfigRule, ConfigRuleAction, PermissionBroker,
+    PermissionMode, ProviderStream, SessionConfig, Wall, builtin_tools,
 };
 use yi_tools::Sandbox;
 use yi_types::message::{AgentMessage, Content, StopReason};
@@ -21,7 +21,7 @@ use yi_types::model::{Model, ModelCost};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn faux_model() -> Model {
+pub(crate) fn faux_model() -> Model {
     let zero = || serde_json::Number::from(0u64);
     Model {
         id: "faux-1".to_owned(),
@@ -46,7 +46,7 @@ fn faux_model() -> Model {
     }
 }
 
-fn bash_call(id: &str, command: &str) -> AgentMessage {
+pub(crate) fn bash_call(id: &str, command: &str) -> AgentMessage {
     let mut arguments = Map::new();
     arguments.insert("command".to_owned(), json!(command));
     faux_assistant_message(
@@ -55,7 +55,7 @@ fn bash_call(id: &str, command: &str) -> AgentMessage {
     )
 }
 
-fn results(session: &AgentSession) -> Vec<String> {
+pub(crate) fn results(session: &AgentSession) -> Vec<String> {
     session
         .messages()
         .iter()
@@ -81,7 +81,7 @@ async fn run_contained(
     sandbox: Sandbox,
     commands: &[&str],
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    run_held(project, project, sandbox, commands, None, Wall::default()).await
+    run_held(project, project, sandbox, commands, BrokerSetup::default()).await
 }
 
 /// `commands` run from `holder` under a broker built for `project`, every question approved once.
@@ -93,7 +93,34 @@ async fn run_approved(
     wall: Wall,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let asker: Asker = Arc::new(|_| AskOutcome::AllowOnce);
-    run_held(project, holder, sandbox, commands, Some(asker), wall).await
+    let gate = BrokerSetup {
+        asker: Some(asker),
+        wall,
+        ..BrokerSetup::default()
+    };
+    run_held(project, holder, sandbox, commands, gate).await
+}
+
+/// What the broker is built with besides the sandbox: auto mode, no rules, nobody to ask.
+struct BrokerSetup {
+    mode: PermissionMode,
+    rules: Vec<ConfigRule>,
+    asker: Option<Asker>,
+    wall: Wall,
+    /// The attached store's id, which names the session's spill dir.
+    session: Option<&'static str>,
+}
+
+impl Default for BrokerSetup {
+    fn default() -> Self {
+        Self {
+            mode: PermissionMode::Auto,
+            rules: Vec::new(),
+            asker: None,
+            wall: Wall::default(),
+            session: None,
+        }
+    }
 }
 
 async fn run_held(
@@ -101,8 +128,7 @@ async fn run_held(
     holder: &Path,
     sandbox: Sandbox,
     commands: &[&str],
-    asker: Option<Asker>,
-    wall: Wall,
+    gate: BrokerSetup,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None));
     provider.queue_faux(
@@ -123,15 +149,25 @@ async fn run_held(
     );
     let broker = Arc::new(
         PermissionBroker::new(
-            PermissionMode::Auto,
+            gate.mode,
             project.to_path_buf(),
-            Vec::new(),
-            asker,
+            gate.rules,
+            gate.asker,
             session.events_sender(),
         )
         .with_sandbox(Some(sandbox)),
     );
-    session.set_wall(wall);
+    if let Some(id) = gate.session {
+        let metadata = yi_session::SessionMetadata {
+            id: id.to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+            name: None,
+        };
+        let store = yi_session::SessionStore::in_memory(metadata);
+        session.attach_store(Arc::new(std::sync::Mutex::new(store)))?;
+    }
+    session.set_wall(gate.wall);
     session.use_tools(builtin_tools(), holder.to_path_buf(), Some(broker));
     // One turn runs every call: the loop answers each tool result with the next queued message.
     session.prompt("do the thing")?;
@@ -146,13 +182,14 @@ fn confined_to(project: &Path) -> Sandbox {
         writable: vec![project.to_path_buf()],
         deny_read: Vec::new(),
         deny_write: Vec::new(),
-        loopback: false,
+        host_owned: Vec::new(),
+        spared: None,
     }
 }
 
 /// The production profile over a scratch tree, and a directory it does not cover: tmp is
 /// writable there, so a probe under it would pass vacuously.
-fn workspace(tag: &str) -> Result<(Scratch, PathBuf, Sandbox, PathBuf), Box<dyn Error>> {
+pub(crate) fn workspace(tag: &str) -> Result<(Scratch, PathBuf, Sandbox, PathBuf), Box<dyn Error>> {
     let root = Scratch::new(tag)?;
     let project = root.join("project");
     std::fs::create_dir_all(&project)?;
@@ -391,10 +428,10 @@ async fn a_refusal_deep_in_long_output_is_remembered() -> TestResult {
 
 /// A directory under the uncovered probe, removed on drop: a probe left behind would be
 /// writable-by-accident evidence for the next run.
-struct Probe(PathBuf);
+pub(crate) struct Probe(pub(crate) PathBuf);
 
 impl Probe {
-    fn new(under: &Path, tag: &str) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn new(under: &Path, tag: &str) -> Result<Self, Box<dyn Error>> {
         let dir = under.join(format!("yi-a2-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
@@ -509,8 +546,7 @@ async fn a_worktree_childs_contained_bash_writes_its_own_lane() -> TestResult {
         &lane.0,
         sandbox,
         &[&command],
-        None,
-        Wall::default(),
+        BrokerSetup::default(),
     )
     .await?;
     assert!(
@@ -521,13 +557,396 @@ async fn a_worktree_childs_contained_bash_writes_its_own_lane() -> TestResult {
     Ok(())
 }
 
-/// Containment is for what the classifier could not read; ordinary work still
-/// runs free.
+/// A `cargo` crate whose one test binds and dials 127.0.0.1, then tries to write `escape`.
+fn loopback_crate(project: &Path, escape: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(project.join("src"))?;
+    std::fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"loopback_probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    )?;
+    std::fs::write(
+        project.join("src/lib.rs"),
+        format!(
+            "#[test]\nfn binds_loopback() {{\n    let listener = std::net::TcpListener::bind(\"127.0.0.1:0\").expect(\"bind\");\n    let _client = std::net::TcpStream::connect(listener.local_addr().expect(\"addr\")).expect(\"connect\");\n    let _refused = std::fs::write({:?}, \"out\");\n}}\n",
+            escape.display().to_string()
+        ),
+    )
+}
+
+fn allow_rule(pattern: &str) -> Result<BrokerSetup, Box<dyn Error>> {
+    Ok(BrokerSetup {
+        rules: vec![ConfigRule::new("bash", pattern, ConfigRuleAction::Allow)?],
+        ..BrokerSetup::default()
+    })
+}
+
+/// #600 stage 2b, the demo: the gate proves `cargo test` safe, so it ran with no sandbox at all.
+/// Contained, its loopback listener still works and its write outside the tree does not.
+#[tokio::test]
+async fn an_allowed_cargo_test_binds_loopback_and_stays_contained() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, probe) = workspace("yi-seam-cargo")?;
+    let outside = Probe::new(&probe, "cargo")?;
+    let escape = outside.0.join("escape");
+    loopback_crate(&project, &escape)?;
+    let command = "cargo test --offline --target-dir target";
+    let results = run_contained(&project, sandbox, &[command]).await?;
+    assert!(
+        results[0].contains("test result: ok. 1 passed"),
+        "the contained test binds 127.0.0.1: {}",
+        results[0]
+    );
+    assert!(
+        !escape.exists(),
+        "an allowed call runs contained: {}",
+        results[0]
+    );
+    Ok(())
+}
+
+/// `sort` is proven read-only, yet `-o` writes: an allowed call reached past the tree because
+/// only the spelling was judged.
+#[tokio::test]
+async fn an_allowed_command_cannot_write_outside_the_tree() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, probe) = workspace("yi-seam-sort")?;
+    let outside = Probe::new(&probe, "sort")?;
+    let escape = outside.0.join("escape");
+    std::fs::write(project.join("input"), "b\na\n")?;
+    let command = format!("sort -o {} input", escape.display());
+    let results = run_contained(&project, sandbox, &[&command]).await?;
+    assert!(
+        !escape.exists(),
+        "the allowed sort must not write outside the tree: {}",
+        results[0]
+    );
+    Ok(())
+}
+
+/// A rule allows `touch` with no question; its contained run refused, the retry asks as a
+/// refused contained call does, rather than failing the same way again.
+#[tokio::test]
+async fn a_refused_allowed_call_asks_the_next_time() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, probe) = workspace("yi-seam-ruled")?;
+    let outside = Probe::new(&probe, "ruled")?;
+    let escape = outside.0.join("escape");
+    let command = format!("touch {}", escape.display());
+    let gate = allow_rule("touch *")?;
+    let results = run_held(&project, &project, sandbox, &[&command, &command], gate).await?;
+    assert!(
+        !escape.exists() && results[0].contains("refused writing"),
+        "the allowed touch runs contained: {}",
+        results[0]
+    );
+    assert!(
+        results[1].contains("Permission denied"),
+        "the retry of a refused allowed call asks: {}",
+        results[1]
+    );
+    assert!(
+        results[1].contains("Rerun with --yolo")
+            && results[1].contains("CARGO_TARGET_DIR")
+            && !results[1].contains("allow rule"),
+        "the headless denial names what works, and a rule the call already had is not it: {}",
+        results[1]
+    );
+    Ok(())
+}
+
+/// `--yolo` granted everything: evals and harbor run there, and nothing contains them.
+#[tokio::test]
+async fn yolo_still_runs_uncontained() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, probe) = workspace("yi-seam-yolo")?;
+    let outside = Probe::new(&probe, "yolo")?;
+    let escape = outside.0.join("escape");
+    let command = format!("touch {}", escape.display());
+    let gate = BrokerSetup {
+        mode: PermissionMode::Yolo,
+        ..BrokerSetup::default()
+    };
+    let results = run_held(&project, &project, sandbox, &[&command], gate).await?;
+    assert!(escape.exists(), "yolo runs outside: {}", results[0]);
+    Ok(())
+}
+
+/// The wall matched a walled read only by its absolute spelling, so a relative path or a link
+/// in the tree read it through an allowed `cat`.
+#[tokio::test]
+async fn an_allowed_read_cannot_open_a_walled_file_by_another_spelling() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, _probe) = workspace("yi-seam-walled")?;
+    let secret = project.join("secret.txt");
+    std::fs::write(&secret, "walled-canary")?;
+    std::os::unix::fs::symlink(&secret, project.join("alias"))?;
+    let gate = BrokerSetup {
+        wall: Wall {
+            deny_read: vec![secret.clone()],
+            ..Wall::default()
+        },
+        ..BrokerSetup::default()
+    };
+    let spellings = ["cat secret.txt", "cat ./alias"];
+    let results = run_held(&project, &project, sandbox, &spellings, gate).await?;
+    for (spelling, result) in spellings.iter().zip(&results) {
+        assert!(
+            !result.contains("walled-canary"),
+            "{spelling} read the walled file: {result}"
+        );
+    }
+    Ok(())
+}
+
+/// A credential store read through a link in the tree: the read gate judged the spelling
+/// `cat key`, found no store in it, and allowed it.
+#[tokio::test]
+async fn an_allowed_read_cannot_open_a_credential_store_through_a_link() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let root = Scratch::new("yi-seam-cred")?;
+    let (project, home) = (root.join("project"), root.join("home"));
+    std::fs::create_dir_all(&project)?;
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    let key = home.join(".ssh/id_probe");
+    std::fs::write(&key, "credential-canary")?;
+    std::os::unix::fs::symlink(&key, project.join("key"))?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let results = run_contained(&project, sandbox, &["cat key"]).await?;
+    assert!(
+        !results[0].contains("credential-canary"),
+        "the allowed cat read a credential store: {}",
+        results[0]
+    );
+    Ok(())
+}
+
+/// The dogfood re-run: `curl` reached the network while the tool text said "no network". A call
+/// that must leave the sandbox still runs, and its result says it ran outside.
+#[tokio::test]
+async fn an_allowed_network_command_says_it_ran_outside() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, _probe) = workspace("yi-seam-host")?;
+    let results = run_held(
+        &project,
+        &project,
+        sandbox,
+        &["ssh -V"],
+        allow_rule("ssh *")?,
+    )
+    .await?;
+    assert!(
+        results[0].contains("OpenSSH") && results[0].contains("outside the sandbox (network)"),
+        "the network call runs and says where: {}",
+        results[0]
+    );
+    Ok(())
+}
+
+/// An asker that answers "always" first and refuses after, counting the questions.
+pub(crate) fn always_once() -> (Asker, Arc<std::sync::atomic::AtomicUsize>) {
+    let asks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&asks);
+    let asker: Asker =
+        Arc::new(
+            move |_| match counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 => AskOutcome::AllowAlways(0),
+                _ => AskOutcome::Reject,
+            },
+        );
+    (asker, asks)
+}
+
+/// Owner, round 2: "Always = session pass (Recommended)". yi's own tests nest `sandbox-exec`,
+/// which a contained run refuses naming no path. The pass is the exact command the question
+/// promised, "this one call": the review of #933 found it kept all of `python3`, so a
+/// `python3 -c` nobody was asked about ran outside too.
+#[tokio::test]
+async fn always_on_a_pathless_refusal_passes_that_exact_command() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, _probe) = workspace("yi-seam-pass")?;
+    std::fs::write(
+        project.join("nest.py"),
+        "import subprocess\nsubprocess.run(['sandbox-exec', '-p', '(version 1)(allow default)', 'true'], check=True)\nprint('nested-ok')\n",
+    )?;
+    let (asker, asks) = always_once();
+    let gate = BrokerSetup {
+        asker: Some(asker),
+        ..BrokerSetup::default()
+    };
+    let (nested, other) = ("python3 nest.py", "python3 -c \"print('rmtree' + '-ran')\"");
+    let results = run_held(
+        &project,
+        &project,
+        sandbox,
+        &[nested, nested, nested, other],
+        gate,
+    )
+    .await?;
+    assert!(
+        !results[0].contains("nested-ok"),
+        "the contained run refuses the nested sandbox: {}",
+        results[0]
+    );
+    assert!(
+        results[2].contains("nested-ok") && results[2].contains("outside the sandbox"),
+        "the kept exact command runs outside and says so: {}",
+        results[2]
+    );
+    assert!(
+        results[3].contains("Permission denied") && !results[3].contains("rmtree-ran"),
+        "another python3 command asks: {}",
+        results[3]
+    );
+    assert_eq!(asks.load(std::sync::atomic::Ordering::SeqCst), 2);
+    Ok(())
+}
+
+/// Only an "always" passes a pathless refusal: a proven or configured allow asks on the retry
+/// (review of #933, mutant M10).
+#[tokio::test]
+async fn a_pathless_refusal_of_a_configured_allow_asks_the_next_time() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, sandbox, _probe) = workspace("yi-seam-pathless")?;
+    let nested = "sandbox-exec -p '(version 1)(allow default)' true && echo nested-ok";
+    let results = run_held(
+        &project,
+        &project,
+        sandbox,
+        &[nested, nested],
+        allow_rule("sandbox-exec *")?,
+    )
+    .await?;
+    assert!(
+        results[1].contains("Permission denied") && !results[1].contains("nested-ok"),
+        "the retry asks rather than leaving the sandbox: {}",
+        results[1]
+    );
+    assert!(
+        results[1].contains("Rerun with --yolo") && !results[1].contains("allow rule"),
+        "the headless denial names what works: {}",
+        results[1]
+    );
+    Ok(())
+}
+
+/// #600 stage 2b: a command Yi proves read-only is allowed and still contained where a sandbox
+/// exists; the dry run says so.
 #[test]
-fn a_safe_command_is_never_contained() -> TestResult {
+fn a_proven_command_is_allowed_and_contained() -> TestResult {
     let dir = Scratch::new("yi-seam-safe")?;
     let report = yi_runtime::gate::explain("git status && ls", PermissionMode::Auto, &dir);
     assert_eq!(report.outcome(), "allow");
-    assert_eq!(report.to_json()["sandboxed"], false);
+    assert_eq!(report.to_json()["sandboxed"], Sandbox::available());
+    let yolo = yi_runtime::gate::explain("git status && ls", PermissionMode::Yolo, &dir);
+    assert_eq!(yolo.to_json()["sandboxed"], false);
+    Ok(())
+}
+
+/// A walled session `juror` under a fake HOME, its commands contained by the production profile.
+async fn run_walled_juror(
+    root: &Path,
+    commands: &[&str],
+) -> Result<(Vec<String>, PathBuf), Box<dyn Error>> {
+    let home = root.join("home");
+    std::fs::create_dir_all(home.join(".yi/spills/juror"))?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let project = root.join("project");
+    std::fs::create_dir_all(&project)?;
+    let gate = BrokerSetup {
+        wall: Wall {
+            deny_write: Vec::new(),
+            deny_read: vec![project.join("secret")],
+            deny_url: Vec::new(),
+            container: None,
+        },
+        session: Some("juror"),
+        ..BrokerSetup::default()
+    };
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    Ok((
+        run_held(&project, &project, sandbox, commands, gate).await?,
+        home,
+    ))
+}
+
+/// #888: the profile walls the whole spill root and spares the session's own dir, so a dir
+/// another session makes while a command runs is walled from it too.
+#[tokio::test]
+async fn a_walled_command_reads_its_own_spill_and_no_dir_made_while_it_runs() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let root = Scratch::new("yi-seam-spill-race")?;
+    let spills = root.join("home/.yi/spills");
+    std::fs::create_dir_all(spills.join("juror"))?;
+    std::fs::write(spills.join("juror/own.txt"), "OWN SPILL\n")?;
+    let late = spills.join("late/9999.txt");
+    let plant = late.clone();
+    let planter = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        let made = plant.parent().map(std::fs::create_dir_all);
+        (
+            made.is_some(),
+            std::fs::write(&plant, "WALLED LATE\n").is_ok(),
+        )
+    });
+    let own = format!("cat {}", spills.join("juror/own.txt").display());
+    let racing = format!("sleep 2; cat {}", late.display());
+    let (results, _) = run_walled_juror(&root, &[&own, &racing]).await?;
+    assert_eq!(
+        planter.join().map_err(|_| "planter panicked")?,
+        (true, true)
+    );
+    assert!(
+        results[0].contains("OWN SPILL"),
+        "own spill: {}",
+        results[0]
+    );
+    assert!(
+        !results[1].contains("WALLED LATE"),
+        "a dir made mid-command was read: {}",
+        results[1]
+    );
+    Ok(())
+}
+
+/// #888 review: a profile listing every other session's dir took 7.2 s per command at 600 dirs
+/// and failed to compile near 1000; walling the root costs the same at any count.
+#[tokio::test]
+async fn a_thousand_spill_dirs_leave_a_contained_command_fast() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let root = Scratch::new("yi-seam-spill-scale")?;
+    for index in 0..1000 {
+        std::fs::create_dir_all(root.join(format!("home/.yi/spills/s{index}")))?;
+    }
+    let started = std::time::Instant::now();
+    let (results, _) = run_walled_juror(&root, &["echo contained-ok"]).await?;
+    let took = started.elapsed();
+    assert!(results[0].contains("contained-ok"), "{}", results[0]);
+    assert!(
+        took < std::time::Duration::from_millis(200),
+        "one echo took {took:?}"
+    );
     Ok(())
 }

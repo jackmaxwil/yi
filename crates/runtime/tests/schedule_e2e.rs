@@ -241,7 +241,10 @@ async fn a_heartbeat_due_mid_compaction_is_deferred() -> TestResult {
         *seen.lock().ok()? = Some(deliver(&job, &Firing::at(job.next_run_at.unwrap_or(0))));
         None
     }));
-    let applied = session.compact_now().await;
+    let applied = session
+        .compact_now()
+        .await
+        .is_ok_and(|outcome| outcome.applied());
     let outcome = outcome.lock().map_err(|error| error.to_string())?.clone();
     assert_eq!(
         outcome,
@@ -713,7 +716,7 @@ async fn the_kernel_vocabulary_cannot_reach_a_sibling_session() -> TestResult {
             .jobs
             .iter()
             .find(|job| job.id == b_id)
-            .map(|job| job.status),
+            .map(|job| job.status.clone()),
         Some(JobStatus::Active),
         "a sibling session's heartbeat was cancelled from another session"
     );

@@ -18,7 +18,8 @@ pub type CancelFlag = Arc<dyn Fn() -> bool + Send + Sync>;
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancelled: CancelFlag,
-    /// None means a reducer must hand back the raw text instead.
+    /// The session's own spill dir, `<root>/<session>`, whose root the spill sweeps; None
+    /// means a reducer must hand back the raw text instead.
     pub recovery_dir: Option<PathBuf>,
     /// How long a command may hold the turn before it keeps running as a job, when the call
     /// passes no `wait`. None, the default, backgrounds only a call that does.
@@ -37,6 +38,23 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
+    /// The gate every file a call names opens through, so the file judged is the file opened
+    /// (#890). Built once per call: each guarded directory costs a stat.
+    pub(crate) fn read_gate(&self) -> yi_permission::ReadGate {
+        let context = yi_permission::CatastrophicContext::detect(&self.cwd);
+        yi_permission::ReadGate::new(&context).except(self.recovery_dir.clone())
+    }
+
+    /// A named file's bytes, read through [`Self::read_gate`] under the wall's `deny_read`.
+    pub(crate) fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        read_all(self.read_gate().open(path, &self.deny_read)?)
+    }
+
+    /// What a write may not land on: both lists of the wall.
+    pub(crate) fn write_walls(&self) -> Vec<PathBuf> {
+        [self.deny_write.as_slice(), self.deny_read.as_slice()].concat()
+    }
+
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,
@@ -181,6 +199,20 @@ pub fn require_str<'a>(input: &'a Map<String, Value>, key: &str) -> Result<&'a s
         )),
         None => Err(format!("missing required string argument: {key}")),
     }
+}
+
+pub(crate) fn read_all(mut file: std::fs::File) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// Replaces a file's content through the handle the gate judged, never the name again.
+pub(crate) fn overwrite(file: &mut std::fs::File, content: &[u8]) -> std::io::Result<()> {
+    use std::io::{Seek, Write};
+    file.set_len(0)?;
+    file.rewind()?;
+    file.write_all(content)
 }
 
 pub fn resolve_path(context: &ToolContext, path: &str) -> PathBuf {
