@@ -561,7 +561,12 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     full child with this session's prompt and tools): a short reader prompt instead of this session's,
     ``tools`` from ``["read", "grep"]`` (both by default, ``[]`` for one request), at most
     ``turns`` requests (3; the last is told to answer, and a tool call in it is refused), writes walled off, and no kernel. It stands
-    outside the child cap; its finish reaches you like any child's unless ``result`` took it. ``partition`` is
+    outside the child cap; its finish reaches you like any child's unless ``result`` took it.
+    ``role="worker"`` is the same brief for a child that changes files: a short worker prompt, the
+    permission mode and the project's AGENTS.md and CLAUDE.md, ``tools`` from ``["read", "grep",
+    "edit", "write", "bash", "get_context"]`` (the first four by default), ``turns`` 12 (at most
+    40), its writes behind the same wall, permissions and rules as a root child's; it holds a child
+    slot, may take ``isolation``, and refuses ``fork`` and ``check``. ``partition`` is
     a list of URLs (``local://path#L1-40@TAG``, ``history://…``, ``plan://…``) resolved now and
     inlined into its brief as numbered, fenced lines, for any role; a kernel value rides
     ``context_keys``. ``schema`` (a reader's) names the answer's shape in its question and, on a

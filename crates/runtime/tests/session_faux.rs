@@ -1045,7 +1045,10 @@ async fn a_mode_flip_and_the_protocol_survive_a_compaction() -> Result<(), Box<d
     session.prompt("plan this: split the crate in two")?;
     session.wait_idle().await;
     assert!(
-        session.compact_now().await,
+        session
+            .compact_now()
+            .await
+            .is_ok_and(|outcome| outcome.applied()),
         "a scheduled compaction applies at once when idle"
     );
     let compacted = shape(&session);

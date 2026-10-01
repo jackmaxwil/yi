@@ -208,6 +208,24 @@ fn an_unreported_usage_lands_typed_and_a_reported_zero_stays_free()
     Ok(())
 }
 
+/// An unreported usage is a missing cost, not a free one, so a sum over it prints as a floor;
+/// the dollar boundary rounds before it switches, so `$0.9996` never reads `$1.000`.
+#[test]
+fn money_prints_one_way_and_marks_a_floor() {
+    use yi_types::message::fmt_cost;
+    assert_eq!(fmt_cost(0.45, false), "$0.450");
+    assert_eq!(fmt_cost(0.45, true), "≥$0.450");
+    assert_eq!(fmt_cost(0.0, true), "$?");
+    assert_eq!(fmt_cost(0.9996, false), "$1.00");
+    assert_eq!(
+        fmt_cost(0.0004, false),
+        "<$0.001",
+        "a spend that rounds to $0.000 is not free"
+    );
+    assert_eq!(fmt_cost(0.0, false), "$0.000");
+    assert_eq!(fmt_cost(17.034, true), "≥$17.03");
+}
+
 #[test]
 fn readmit_lands_in_extra() -> Result<(), Box<dyn std::error::Error>> {
     // D77's `readmit` grant has no reader since F0c; the field parks in the flatten map and
@@ -337,5 +355,31 @@ fn an_event_gap_line_round_trips_byte_for_byte() -> Result<(), Box<dyn std::erro
     let gap: yi_types::event::EventGap = serde_json::from_str(line)?;
     assert_eq!(gap.dropped, 3);
     assert_eq!(serde_json::to_string(&gap)?, line);
+    Ok(())
+}
+
+/// A status a newer Yi writes survives an older reader: it decodes to `Other` and re-emits
+/// verbatim. The job store is the recorded 0.382.0 file with its one status edited.
+#[test]
+fn an_unknown_status_on_four_wire_enums_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::{kernel::ExecuteStatus, mcp::McpSessionState, schedule::JobStatus};
+    use yi_types::{schedule::ScheduleState, subagent::ChildStatus};
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/scheduled-jobs-v1-unknown-status.json");
+    let stored = fs::read_to_string(path)?;
+    let state: ScheduleState = serde_json::from_str(&stored)?;
+    let job = state.jobs.first().ok_or("the recorded job")?;
+    assert_eq!(job.status, JobStatus::Other("archived".to_owned()));
+    assert_eq!(serde_json::to_string_pretty(&state)?, stored);
+    let child: ChildStatus = serde_json::from_str("\"paused\"")?;
+    assert_eq!(child, ChildStatus::Other("paused".to_owned()));
+    let execute: ExecuteStatus = serde_json::from_str("\"skipped\"")?;
+    let session: McpSessionState = serde_json::from_str("\"draining\"")?;
+    let written = [
+        serde_json::to_string(&child)?,
+        serde_json::to_string(&execute)?,
+        serde_json::to_string(&session)?,
+    ];
+    assert_eq!(written, ["\"paused\"", "\"skipped\"", "\"draining\""]);
     Ok(())
 }

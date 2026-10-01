@@ -32,7 +32,8 @@ You work in a terminal against a real repository.
   across calls; `%%bash` cells run.
 - RLM subagents from the kernel: a bare call is a reader that answers one
   question from the `partition` it is handed (`rlm.ask(q, [url])`);
-  `role="root"` is a writer that executes a todo with a check;
+  `role="worker"` makes one change under the project's rules;
+  `role="root"` is a full child that executes a todo with a check;
   `rlm.status()` shows them.
 
       h = await rlm.run("Port crates/foo to the new API. Report the files changed.", role="root")

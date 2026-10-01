@@ -2036,7 +2036,7 @@ async fn a_service_respawns_under_its_name_and_keeps_its_inbox() -> TestResult {
     // A card the crash committed out of the chrome would never come back as incarnation 2.
     while let Ok(AgentEvent::ChildUpdate { update }) = updates.try_recv() {
         assert_ne!(
-            (update.status, update.error.is_some()),
+            (update.status.clone(), update.error.is_some()),
             (ChildStatus::Error, true),
             "a respawned run published an ending: {update:?}"
         );
@@ -3757,8 +3757,8 @@ async fn every_exit_publishes_one_terminal_update() -> TestResult {
         assert!(!terminal.is_empty(), "{road}: no terminal update at all");
         for update in &terminal {
             assert_eq!(
-                (update.status, update.error.as_deref()),
-                (status, cause),
+                (update.status.clone(), update.error.as_deref()),
+                (status.clone(), cause),
                 "{road}: one machine-readable cause, never two stories: {terminal:?}"
             );
         }
@@ -3967,7 +3967,7 @@ async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
     }
     let last = last.ok_or("the bus carried no update for the child")?;
     assert_eq!(
-        (last.status, last.error.as_deref()),
+        (last.status.clone(), last.error.as_deref()),
         (ChildStatus::Error, Some("interrupted")),
         "the last word on the bus is the exit, with its cause: {last:?}"
     );

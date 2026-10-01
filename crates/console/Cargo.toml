@@ -12,5 +12,6 @@ workspace = true
 yi-types = { workspace = true }
 yi-tui = { workspace = true }
 ratatui = { workspace = true }
+unicode-width = { workspace = true }
 tui-textarea = { workspace = true }
 serde_json = { workspace = true }

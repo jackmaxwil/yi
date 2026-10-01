@@ -1,6 +1,6 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::cell::spinner_frame;
 use crate::colors::{Theme, name_accent};
@@ -8,6 +8,8 @@ use crate::colors::{Theme, name_accent};
 #[derive(Debug, Clone, Default)]
 pub struct StatusInput {
     pub model: String,
+    /// The router a namespaced id went through, shown as `model via provider`.
+    pub provider: Option<String>,
     pub thinking: Option<String>,
     pub mode: Option<String>,
     pub cwd: String,
@@ -16,6 +18,8 @@ pub struct StatusInput {
     pub branch: Option<String>,
     pub landing: Option<String>,
     pub cost: Option<String>,
+    /// The session's `N% cached`, on a route that reads a cache.
+    pub cache: Option<String>,
     pub session_name: String,
     pub subagents: usize,
     pub context_used: u64,
@@ -60,15 +64,15 @@ fn bump(base: u64, delta: i64) -> u64 {
     base.saturating_add(u64::try_from(delta).unwrap_or(0))
 }
 
-/// Tokens and cache hits accumulated so far this turn.
+/// Tokens and cache hits read so far, kept once per turn (the footer) and once per session.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct TurnTokens {
+pub(crate) struct TokenTally {
     pub(crate) input: u64,
     pub(crate) output: u64,
     pub(crate) cached: u64,
 }
 
-impl TurnTokens {
+impl TokenTally {
     pub(crate) fn record(&mut self, usage: &yi_types::message::Usage) {
         let read = usage
             .input
@@ -77,6 +81,32 @@ impl TurnTokens {
         self.input = bump(self.input, read);
         self.output = bump(self.output, usage.output);
         self.cached = bump(self.cached, usage.cache_read);
+    }
+
+    /// `N% cached` once input was read, where a read was expected or one happened.
+    pub(crate) fn cache_label(self, expected: bool) -> Option<String> {
+        (self.input > 0 && (expected || self.cached > 0))
+            .then(|| format!("{}% cached", self.cached * 100 / self.input))
+    }
+}
+
+/// Dollars spent by a turn or a session; `lower_bound` once a reply came back without usage.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Money {
+    cost: f64,
+    lower_bound: bool,
+}
+
+impl Money {
+    pub(crate) fn record(&mut self, usage: &yi_types::message::Usage) {
+        self.cost += usage.cost.total.as_f64().unwrap_or(0.0);
+        self.lower_bound |= usage.unknown;
+    }
+
+    /// `None` until something was spent or went unreported.
+    pub(crate) fn label(self) -> Option<String> {
+        (self.cost > 0.0 || self.lower_bound)
+            .then(|| yi_types::message::fmt_cost(self.cost, self.lower_bound))
     }
 }
 
@@ -93,37 +123,6 @@ pub(crate) fn fmt_tokens(tokens: u64) -> String {
     } else {
         tokens.to_string()
     }
-}
-
-fn left_segments(input: &StatusInput, path_max: usize) -> Vec<String> {
-    let mut segments = Vec::new();
-    let mut model = input.model.clone();
-    if let Some(thinking) = &input.thinking {
-        model.push_str(&format!(" · ◉ {thinking}"));
-    }
-    segments.push(model);
-    segments.extend(input.mode.as_ref().map(|mode| format!("◉ {mode}")));
-    let place = match &input.lane {
-        Some(lane) => lane.clone(),
-        None => {
-            let mut path = shrink_left(&input.cwd, path_max);
-            if let Some(branch) = &input.branch {
-                path.push_str(&format!("@{}", shrink_left(branch, path_max)));
-            }
-            path
-        }
-    };
-    segments.push(place);
-    segments.extend(input.landing.clone());
-    segments.extend(input.cost.clone());
-    if input.context_window > 0 {
-        segments.push(format!(
-            "{} / {}",
-            fmt_exact(input.context_used),
-            fmt_tokens(input.context_window)
-        ));
-    }
-    segments
 }
 
 fn fmt_exact(tokens: u64) -> String {
@@ -187,124 +186,186 @@ pub fn landing_segment(
     }
 }
 
-fn right_segments(input: &StatusInput, name_max: usize) -> Vec<String> {
-    let mut segments = Vec::new();
-    if input.subagents > 0 {
-        segments.push(format!("👥 {}", input.subagents));
-    }
-    if !input.session_name.is_empty() {
-        let display = if input.session_name.chars().count() > 16 {
-            input.session_name.chars().take(8).collect()
-        } else {
-            input.session_name.clone()
-        };
-        segments.push(shrink_middle(&display, name_max));
-    }
-    segments
+/// What the row still shows: the input with the cuts so far applied.
+struct Fit {
+    input: StatusInput,
+    path_max: usize,
+    name_max: usize,
+    place: bool,
 }
 
-/// Overflow cascade: shrink the session name, pop right segments, shrink the path and the
-/// branch under one budget, then drop left segments right to left with the model last.
-pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static> {
-    let accent = name_accent(&input.session_name);
-    let accent_style = Style::default().fg(accent);
-    let mut path_max = 24_usize;
-    let mut name_max = 24_usize;
-    let mut left = left_segments(input, path_max);
-    let mut right = right_segments(input, name_max);
-    let measure = |left: &[String], right: &[String]| -> usize {
-        let left_w: usize = left.iter().map(|s| s.width() + 3).sum();
-        let right_w: usize = right.iter().map(|s| s.width() + 3).sum();
-        left_w + right_w + 2
-    };
-    while measure(&left, &right) > width && name_max > NAME_FLOOR {
-        name_max = name_max.saturating_sub(4).max(NAME_FLOOR);
-        right = right_segments(input, name_max);
-    }
-    while measure(&left, &right) > width && right.len() > 1 {
-        right.pop();
-    }
-    while measure(&left, &right) > width && path_max > PATH_FLOOR {
-        path_max = path_max.saturating_sub(8).max(PATH_FLOOR);
-        left = left_segments(input, path_max);
-    }
-    let path_index = if input.mode.is_some() { 2 } else { 1 };
-    while measure(&left, &right) > width && left.len() > 1 {
-        let drop = (1..left.len())
-            .rev()
-            .find(|&i| i != path_index)
-            .unwrap_or(path_index);
-        left.remove(drop);
-    }
+/// The drop order, applied first to last until the row fits. The order never changes, only
+/// how many apply, and each cut takes a whole field; the model is never cut.
+const CUTS: [fn(&mut Fit); 12] = [
+    |fit| fit.input.cache = None,
+    |fit| fit.input.landing = None,
+    |fit| fit.input.subagents = 0,
+    |fit| fit.name_max = NAME_FLOOR,
+    |fit| fit.path_max = PATH_FLOOR,
+    |fit| fit.input.mode = None,
+    |fit| fit.input.provider = None,
+    |fit| fit.input.session_name.clear(),
+    |fit| fit.input.thinking = None,
+    |fit| fit.input.context_window = 0,
+    |fit| fit.input.cost = None,
+    |fit| fit.place = false,
+];
 
-    let dimmed = input.focused_child.is_some();
-    let seg_style = if dimmed {
+/// Cells kept empty between the groups, so they never read as one run.
+const GAP_MIN: usize = 4;
+
+fn seg_style(input: &StatusInput, theme: &Theme) -> Style {
+    if input.focused_child.is_some() {
         theme.dim_style()
     } else {
         theme.muted_style()
-    };
-    let mut spans: Vec<Span<'static>> = vec![Span::styled(" ", seg_style)];
+    }
+}
+
+/// What and where: the model and how it runs, then the place and its landing.
+fn left_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
+    let input = &fit.input;
+    let seg_style = seg_style(input, theme);
+    let mut spans = vec![Span::styled(" ", seg_style)];
     if let Some(child) = &input.focused_child {
         spans.push(Span::styled(
             format!("👻 {child} "),
             Style::default().fg(theme.warning),
         ));
     }
-    for (i, seg) in left.iter().enumerate() {
-        if i > 0 {
+    let model_style = if input.focused_child.is_some() {
+        seg_style
+    } else {
+        Style::default().fg(theme.text)
+    };
+    spans.push(Span::styled(format!(" {}", input.model), model_style));
+    if let Some(provider) = &input.provider {
+        spans.push(Span::styled(format!(" via {provider}"), seg_style));
+    }
+    spans.push(Span::styled(" ", model_style));
+    if let Some(level) = &input.thinking {
+        spans.push(Span::styled("· ", theme.dim_style()));
+        spans.push(Span::styled(
+            format!("◉ {level} "),
+            effort_style(level, theme),
+        ));
+    }
+    let place = fit.place.then(|| match &input.lane {
+        Some(lane) => lane.clone(),
+        None => {
+            let mut path = shrink_left(&input.cwd, fit.path_max);
+            if let Some(branch) = &input.branch {
+                path.push_str(&format!("@{}", shrink_left(branch, fit.path_max)));
+            }
+            path
+        }
+    });
+    let mode = input.mode.as_ref().map(|mode| format!("◉ {mode}"));
+    for seg in mode.into_iter().chain(place).chain(input.landing.clone()) {
+        spans.push(Span::styled(" · ", theme.dim_style()));
+        spans.push(Span::styled(format!(" {seg} "), seg_style));
+    }
+    spans
+}
+
+/// The meters, then the session's tile and name.
+fn right_spans(fit: &Fit, theme: &Theme) -> Vec<Span<'static>> {
+    let input = &fit.input;
+    let seg_style = seg_style(input, theme);
+    let mut segs: Vec<String> = Vec::new();
+    if input.subagents > 0 {
+        segs.push(format!("👥 {}", input.subagents));
+    }
+    segs.extend(input.cost.clone());
+    segs.extend(input.cache.clone());
+    if input.context_window > 0 {
+        segs.push(format!(
+            "{} / {}",
+            fmt_exact(input.context_used),
+            fmt_tokens(input.context_window)
+        ));
+    }
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for seg in segs {
+        if !spans.is_empty() {
             spans.push(Span::styled(" · ", theme.dim_style()));
         }
-        let style = if i == 0 && !dimmed {
-            Style::default().fg(theme.text)
-        } else {
-            seg_style
-        };
-        if i == 0
-            && let Some((model, level)) = seg.split_once(" · ◉ ")
-        {
-            spans.push(Span::styled(format!(" {model} "), style));
-            spans.push(Span::styled("· ", theme.dim_style()));
-            spans.push(Span::styled(
-                format!("◉ {level} "),
-                effort_style(level, theme),
-            ));
-            continue;
-        }
-        spans.push(Span::styled(format!(" {seg} "), style));
+        spans.push(Span::styled(format!(" {seg} "), seg_style));
     }
-    let right_spans: Vec<Span<'static>> = {
-        let mut out: Vec<Span<'static>> = Vec::new();
-        for (i, seg) in right.iter().enumerate() {
-            if i > 0 {
-                out.push(Span::styled(" · ", theme.dim_style()));
-            }
-            let last = i == right.len() - 1;
-            if last && !input.session_name.is_empty() {
-                out.push(Span::styled(
-                    crate::colors::name_tile(&input.session_name),
-                    crate::colors::tile_style(&input.session_name),
-                ));
-            }
-            let style = if last && !dimmed {
-                accent_style.add_modifier(Modifier::BOLD)
-            } else {
-                seg_style
-            };
-            out.push(Span::styled(format!(" {seg} "), style));
+    if !input.session_name.is_empty() {
+        if !spans.is_empty() {
+            spans.push(Span::styled(" · ", theme.dim_style()));
         }
-        out
+        let display: String = if input.session_name.chars().count() > 16 {
+            input.session_name.chars().take(8).collect()
+        } else {
+            input.session_name.clone()
+        };
+        let style = if input.focused_child.is_some() {
+            seg_style
+        } else {
+            Style::default()
+                .fg(name_accent(&input.session_name))
+                .add_modifier(Modifier::BOLD)
+        };
+        spans.push(Span::styled(
+            crate::colors::name_tile(&input.session_name),
+            crate::colors::tile_style(&input.session_name),
+        ));
+        spans.push(Span::styled(
+            format!(" {} ", shrink_middle(&display, fit.name_max)),
+            style,
+        ));
+    }
+    spans
+}
+
+/// `text` less at least `over` cells, whole characters only, ending in `…`.
+fn clip_cells(text: &str, over: usize) -> String {
+    let keep = text.width().saturating_sub(over + 1);
+    let mut used = 0;
+    let mut out: String = text
+        .chars()
+        .take_while(|ch| {
+            used += ch.width().unwrap_or(0);
+            used <= keep
+        })
+        .collect();
+    out.push('…');
+    out
+}
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(Span::width).sum()
+}
+
+/// Identity anchored left and meters right, so a number gaining a digit never shifts the
+/// model; [`CUTS`] apply until the rendered spans fit with one column free.
+pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static> {
+    let mut fit = Fit {
+        input: input.clone(),
+        path_max: 24,
+        name_max: 24,
+        place: true,
     };
-    let used: usize = spans
-        .iter()
-        .map(|s| s.content.as_ref().width())
-        .sum::<usize>()
-        + right_spans
-            .iter()
-            .map(|s| s.content.as_ref().width())
-            .sum::<usize>();
-    let gap = width.saturating_sub(used + 1);
+    let mut cuts = CUTS.iter();
+    let (mut spans, right) = loop {
+        let (left, right) = (left_spans(&fit, theme), right_spans(&fit, theme));
+        let gap = if right.is_empty() { 0 } else { GAP_MIN };
+        match cuts.next() {
+            Some(cut) if spans_width(&left) + gap + spans_width(&right) >= width => cut(&mut fit),
+            _ => break (left, right),
+        }
+    };
+    // Every cut spent and still too wide: the model loses its tail at a cell boundary.
+    let over = (spans_width(&spans) + spans_width(&right) + 1).saturating_sub(width);
+    if over > 0 {
+        fit.input.model = clip_cells(&fit.input.model, over);
+        spans = left_spans(&fit, theme);
+    }
+    let gap = width.saturating_sub(spans_width(&spans) + spans_width(&right) + 1);
     spans.push(Span::raw(" ".repeat(gap)));
-    spans.extend(right_spans);
+    spans.extend(right);
     Line::from(spans)
 }
 

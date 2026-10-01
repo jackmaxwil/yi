@@ -12,7 +12,11 @@ use yi_permission::{
 use yi_tools::ToolKind;
 use yi_tools::hashline::types::FileOp;
 use yi_types::event::AgentEvent;
-use yi_types::permission::{Answerer, PermissionRecord, RuleDecision, RuleKind};
+use yi_types::permission::{
+    Answerer, PermissionRecord, RuleDecision, RuleKind, SessionPermissionRule,
+};
+
+mod kept;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskOutcome {
@@ -92,7 +96,7 @@ impl PermissionAsk<'_> {
 }
 
 pub type Asker = Arc<dyn Fn(&PermissionAsk<'_>) -> AskOutcome + Send + Sync>;
-pub type Journal = Arc<dyn Fn(PermissionRecord) + Send + Sync>;
+pub type Journal<T = PermissionRecord> = Arc<dyn Fn(T) + Send + Sync>;
 
 /// What the reviewer is told about a call, and whether it may see it at all.
 #[derive(Clone, Copy)]
@@ -106,12 +110,12 @@ struct Reviewed<'a> {
 pub struct PermissionBroker {
     sandbox: Option<yi_tools::Sandbox>,
     contained_failures: Mutex<std::collections::BTreeSet<yi_tools::SandboxRefusal>>,
-    /// Directories an "always" on a widened retry made writable to every later contained run.
-    kept_writes: Mutex<Vec<PathBuf>>,
-    mode: Mutex<PermissionMode>,
+    /// Shared with every child: a mode switch or a hold reaches the whole family.
+    mode: Arc<Mutex<PermissionMode>>,
     config_rules: Vec<ConfigRule>,
+    /// The holder's own: a child starts from a copy ([`PermissionBroker::for_child`]).
     session_rules: Mutex<SessionRules>,
-    holds: Mutex<Vec<Hold>>,
+    holds: Arc<Mutex<Vec<Hold>>>,
     context: CatastrophicContext,
     cwd: PathBuf,
     asker: Option<Asker>,
@@ -123,6 +127,8 @@ pub struct PermissionBroker {
     asking: Mutex<std::collections::BTreeSet<RequestId>>,
     confirms: AtomicU64,
     journal: std::sync::OnceLock<Journal>,
+    /// Appends each kept rule to the holder's own session JSONL, the one ledger of them.
+    rule_journal: std::sync::OnceLock<Journal<SessionPermissionRule>>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
     prompts_close_on_settle: std::sync::atomic::AtomicBool,
 }
@@ -139,13 +145,40 @@ pub enum Containment {
     /// Inside the sandbox, with these directories writable besides the holder's tree.
     Contained {
         widen: Vec<PathBuf>,
+        /// The gate allowed the call outright, so it may run where no sandbox can hold it: an
+        /// `exec://` source, which only ever runs on the host.
+        gate_allowed: bool,
     },
     Uncontained,
 }
 
+/// Why a command must leave the sandbox (network, an install, a credential store), and whether
+/// every segment must: `false` is a compound whose leaving part would carry the rest out.
+pub(crate) fn leaves_sandbox(
+    command: &str,
+    context: &CatastrophicContext,
+) -> Option<(&'static str, bool)> {
+    let reads = |text: &str| {
+        yi_permission::command_reads_credentials(text, context).map(|_| "credential stores")
+    };
+    let needs: Vec<Option<&'static str>> = yi_permission::command_segments(command)
+        .iter()
+        .map(|argv| yi_permission::host_need(argv).or_else(|| reads(&argv.join(" "))))
+        .collect();
+    // Only a strict parse splits truly: the lenient split folds `$(…)` or a newline into argv.
+    let parsed = matches!(
+        yi_permission::parse(command),
+        yi_permission::Parsed::Segments(_)
+    );
+    match needs.iter().flatten().next() {
+        Some(why) => Some((why, parsed && needs.iter().all(Option::is_some))),
+        None => reads(command).map(|why| (why, false)),
+    }
+}
+
 /// Never widened, even through a link: `$HOME`, `~/.yi` (harness, MCP store, config, sessions,
 /// daemon socket), a credential store, or a git path the host runs.
-fn protected(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
+pub(crate) fn protected(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let yi = home.iter().map(|home| home.join(".yi"));
     let overlaps = |guarded: &PathBuf| {
@@ -158,6 +191,7 @@ fn protected(sandbox: &yi_tools::Sandbox, dir: &Path) -> bool {
         .is_some_and(|home| dir == home || home.canonicalize().is_ok_and(|real| dir == real))
         || (sandbox.deny_read.iter())
             .chain(&sandbox.deny_write)
+            .chain(&sandbox.host_owned)
             .cloned()
             .chain(yi)
             .any(|guarded| overlaps(&guarded))
@@ -215,11 +249,10 @@ impl PermissionBroker {
         Self {
             sandbox: None,
             contained_failures: Mutex::new(std::collections::BTreeSet::new()),
-            kept_writes: Mutex::new(Vec::new()),
-            mode: Mutex::new(mode),
+            mode: Arc::new(Mutex::new(mode)),
             config_rules,
             session_rules: Mutex::new(SessionRules::new()),
-            holds: Mutex::new(Vec::new()),
+            holds: Arc::new(Mutex::new(Vec::new())),
             context: CatastrophicContext::detect(&cwd),
             cwd,
             asker,
@@ -229,6 +262,7 @@ impl PermissionBroker {
             asking: Mutex::new(std::collections::BTreeSet::new()),
             confirms: AtomicU64::new(0),
             journal: std::sync::OnceLock::new(),
+            rule_journal: std::sync::OnceLock::new(),
             approver: std::sync::OnceLock::new(),
             prompts_close_on_settle: std::sync::atomic::AtomicBool::new(false),
         }
@@ -267,8 +301,8 @@ impl PermissionBroker {
         });
     }
 
-    /// A second call is a child session re-wiring the same broker; the first
-    /// reviewer stands.
+    /// A child's broker starts with its parent's reviewer (`for_child`), so its own wiring's
+    /// second call keeps it.
     pub fn set_reviewer(&self, reviewer: Arc<crate::auto_review::Reviewer>) {
         let _first_wiring_wins = self.reviewer.set(reviewer);
     }
@@ -310,14 +344,61 @@ impl PermissionBroker {
             .cloned()
     }
 
-    fn containment_with(&self, refused: Option<PathBuf>) -> Containment {
-        let mut widen = self
-            .kept_writes
-            .lock()
-            .map(|kept| kept.clone())
-            .unwrap_or_default();
+    fn containment_with(&self, refused: Option<PathBuf>, gate_allowed: bool) -> Containment {
+        let mut widen = self.kept_writes();
         widen.extend(refused);
-        Containment::Contained { widen }
+        Containment::Contained {
+            widen,
+            gate_allowed,
+        }
+    }
+
+    /// An allowed bash call runs contained unless it must leave (#600 stage 2b); `Err` asks, as a
+    /// refused contained call does, save the session pass a kept rule gives a pathless refusal.
+    fn allowed_outcome(
+        &self,
+        command: Option<&str>,
+        refusal: Option<&yi_tools::SandboxRefusal>,
+        passed: bool,
+        reason: String,
+    ) -> Result<CallOutcome, String> {
+        let outside = |reason: String| CallOutcome {
+            allowed: true,
+            reason,
+            containment: Containment::Uncontained,
+        };
+        let Some(command) = command.filter(|_| self.sandbox.is_some()) else {
+            return Ok(outside(reason));
+        };
+        if self.mode() == PermissionMode::Yolo {
+            return Ok(outside(reason));
+        }
+        match leaves_sandbox(command, &self.context) {
+            Some((why, true)) => {
+                return Ok(outside(format!(
+                    "{reason}; it runs outside the sandbox ({why})"
+                )));
+            }
+            Some((why, false)) => {
+                return Err(format!(
+                    "part of the command must run outside the sandbox ({why}) and would take the rest with it ({reason})"
+                ));
+            }
+            None => {}
+        }
+        match refusal {
+            None => Ok(CallOutcome {
+                allowed: true,
+                reason,
+                containment: self.containment_with(None, true),
+            }),
+            Some(yi_tools::SandboxRefusal::Scopes(_)) if passed => Ok(outside(format!(
+                "{reason}; it runs outside the sandbox (an \"always\" kept this exact command after a refusal naming no path)"
+            ))),
+            Some(_) => Err(format!(
+                "the sandbox refused its last contained run ({reason})"
+            )),
+        }
     }
 
     /// What approving a bash call runs as, and the clause its question adds: a call needing the
@@ -334,14 +415,11 @@ impl PermissionBroker {
             let note = format!("; approving runs this one call outside the sandbox ({why})");
             (Containment::Uncontained, note)
         };
-        if yi_permission::needs_host(command) {
-            return outside("network");
-        }
-        if yi_permission::command_reads_credentials(command, &self.context).is_some() {
-            return outside("credential stores");
+        if let Some((why, _)) = leaves_sandbox(command, &self.context) {
+            return outside(why);
         }
         match refusal {
-            None => (self.containment_with(None), String::new()),
+            None => (self.containment_with(None, false), String::new()),
             Some(yi_tools::SandboxRefusal::Scopes(_)) => outside("the refusal named no path"),
             Some(yi_tools::SandboxRefusal::Path(path)) => {
                 let dir = path.parent().unwrap_or(path);
@@ -350,12 +428,12 @@ impl PermissionBroker {
                     return outside(&format!("`{}` is protected", dir.display()));
                 }
                 let note = format!("; approving widens this run by `{}`", dir.display());
-                (self.containment_with(Some(dir)), note)
+                (self.containment_with(Some(dir), false), note)
             }
         }
     }
 
-    /// A contained call's profile: the holder's tree (a lane child shares its parent's broker),
+    /// A contained call's profile: the holder's tree (a child's broker keeps its parent's cwd),
     /// the approved directories, and the wall, enforced rather than read off the command text.
     pub fn sandbox_for(
         &self,
@@ -367,6 +445,7 @@ impl PermissionBroker {
         let mut profile = match std::env::var_os("HOME").filter(|_| cwd != self.cwd) {
             Some(home) => yi_tools::Sandbox {
                 deny_read: base.deny_read.clone(),
+                host_owned: base.host_owned.clone(),
                 ..yi_tools::Sandbox::for_workspace(cwd, Path::new(&home), None)
             },
             None => base.clone(),
@@ -530,22 +609,32 @@ impl PermissionBroker {
             &active_holds,
             &self.context,
         );
+        // The session pass is the exact command an "always" kept, never a scope (review of #933).
+        let passed = session_rules.decision_for(rule_kind, &canonical) == Some(RuleDecision::Allow);
         drop(session_rules);
         let refusal = self.retried_refusal(command);
+        let mut split = None;
         let (title, description, reviewable, reason) = match decision {
             Decision::Allow { reason } => {
-                return CallOutcome {
-                    allowed: true,
-                    reason,
-                    containment: Containment::Uncontained,
-                };
+                split = (command.and_then(|command| leaves_sandbox(command, &self.context)))
+                    .filter(|(_, every)| !every)
+                    .map(|(why, _)| why);
+                match self.allowed_outcome(command, refusal.as_ref(), passed, reason) {
+                    Ok(outcome) => return outcome,
+                    Err(reason) => (
+                        format!("{tool_name} requires permission"),
+                        format!("{reason}: {display}"),
+                        true,
+                        reason,
+                    ),
+                }
             }
             Decision::Deny { reason } => return self.denied(reason),
             Decision::Contain { reason } if self.sandbox.is_some() && refusal.is_none() => {
                 return CallOutcome {
                     allowed: true,
                     reason,
-                    containment: self.containment_with(None),
+                    containment: self.containment_with(None, false),
                 };
             }
             // A containment Yi cannot enforce, or one the sandbox already refused, is the same
@@ -565,9 +654,19 @@ impl PermissionBroker {
         let (containment, note) = self.approved_containment(command, refusal.as_ref());
         // An "always" on a widened retry keeps the directory, never a rule that would run the
         // command itself outside the sandbox.
+        let pathless =
+            command.is_some_and(|command| leaves_sandbox(command, &self.context).is_none());
         let kept = match (&containment, &refusal) {
-            (Containment::Contained { widen }, Some(yi_tools::SandboxRefusal::Path(_))) => {
+            (Containment::Contained { widen, .. }, Some(yi_tools::SandboxRefusal::Path(_))) => {
                 widen.last().map(|dir| yi_permission::write_grant(dir))
+            }
+            (Containment::Uncontained, Some(yi_tools::SandboxRefusal::Scopes(_))) if pathless => {
+                Some(yi_permission::Grant {
+                    kind: rule_kind,
+                    canonical: canonical.clone(),
+                    label: "this exact command, outside the sandbox, for the rest of this session"
+                        .to_owned(),
+                })
             }
             _ => None,
         };
@@ -588,7 +687,7 @@ impl PermissionBroker {
                 reviewable,
                 tool_name,
                 command,
-                reason: &reason,
+                reason: &format!("{reason}{note}"),
             },
             tool_call_id,
             rule_kind,
@@ -596,24 +695,44 @@ impl PermissionBroker {
             &display,
         );
         if !outcome.allowed {
-            return outcome;
+            // Nobody could answer; say what works, never "add an allow rule", which it had.
+            return match (split, &refusal) {
+                (Some(why), _) if self.asker.is_none() => {
+                    self.denied(crate::gate::headless_split(why))
+                }
+                (None, Some(refusal)) if self.asker.is_none() => self.denied(
+                    crate::gate::headless_refusal(self.sandbox.as_ref(), refusal),
+                ),
+                _ => outcome,
+            };
         }
-        if let (Some(grant), Some(refusal), Containment::Contained { widen }) =
+        if let (Some(grant), Some(refusal), Containment::Contained { .. }) =
             (&kept, &refusal, &containment)
             && self.keeps(grant)
-            && let (Ok(mut kept), Ok(mut failures), Some(dir)) = (
-                self.kept_writes.lock(),
-                self.contained_failures.lock(),
-                widen.last(),
-            )
+            && let Ok(mut failures) = self.contained_failures.lock()
         {
-            kept.push(dir.clone());
             failures.remove(refusal);
         }
         CallOutcome {
+            allowed: true,
+            reason: format!("{}{note}", outcome.reason),
             containment,
-            ..outcome
         }
+    }
+
+    /// The line an allowed bash call's result carries when it ran outside a sandbox that exists:
+    /// the tool text promises containment, so leaving it is said where the model reads.
+    pub fn outside_notice(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        outcome: &CallOutcome,
+    ) -> Option<String> {
+        let outside = outcome.allowed && outcome.containment == Containment::Uncontained;
+        // A `job=N` wait or kill runs no command, so it ran nowhere.
+        let ran = tool_name == "bash" && args.get("command").and_then(Value::as_str).is_some();
+        let promised = ran && self.sandbox.is_some() && self.mode() != PermissionMode::Yolo;
+        (outside && promised).then(|| format!("sandbox: {}", outcome.reason))
     }
 
     fn keeps(&self, grant: &yi_permission::Grant) -> bool {
@@ -944,24 +1063,6 @@ impl PermissionBroker {
             ),
             containment: Containment::Uncontained,
         }
-    }
-
-    fn keep_grant(
-        &self,
-        grant: Option<&yi_permission::Grant>,
-        kind: RuleKind,
-        canonical: &str,
-        display: &str,
-    ) {
-        let (kind, canonical, label) = match grant {
-            Some(grant) => (grant.kind, grant.canonical.as_str(), grant.label.as_str()),
-            None => (kind, canonical, display),
-        };
-        let _cap_is_soft = self
-            .session_rules
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(kind, canonical, label, RuleDecision::Allow);
     }
 
     /// A long patch is cut: the prompt is a decision aid, not the file.
