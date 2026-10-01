@@ -109,6 +109,10 @@ struct BrokerSetup {
     wall: Wall,
     /// The attached store's id, which names the session's spill dir.
     session: Option<&'static str>,
+    /// A store attached instead, whose file is the session's own transcript.
+    store: Option<yi_session::SharedSession>,
+    /// The `--session-dir` the root's broker holds; the session's broker is its child's.
+    session_dir: Option<PathBuf>,
 }
 
 impl Default for BrokerSetup {
@@ -119,6 +123,8 @@ impl Default for BrokerSetup {
             asker: None,
             wall: Wall::default(),
             session: None,
+            store: None,
+            session_dir: None,
         }
     }
 }
@@ -147,16 +153,23 @@ async fn run_held(
         },
         provider,
     );
-    let broker = Arc::new(
-        PermissionBroker::new(
-            gate.mode,
-            project.to_path_buf(),
-            gate.rules,
-            gate.asker,
-            session.events_sender(),
-        )
-        .with_sandbox(Some(sandbox)),
-    );
+    let mut broker = PermissionBroker::new(
+        gate.mode,
+        project.to_path_buf(),
+        gate.rules,
+        gate.asker,
+        session.events_sender(),
+    )
+    .with_sandbox(Some(sandbox));
+    if let Some(dir) = &gate.session_dir {
+        broker = broker
+            .with_session_store(dir)
+            .for_child(&gate.wall, project);
+    }
+    let broker = Arc::new(broker);
+    if let Some(store) = gate.store {
+        session.attach_store(store)?;
+    }
     if let Some(id) = gate.session {
         let metadata = yi_session::SessionMetadata {
             id: id.to_owned(),
@@ -183,7 +196,7 @@ fn confined_to(project: &Path) -> Sandbox {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
-        spared: None,
+        spared: Vec::new(),
     }
 }
 
@@ -947,6 +960,104 @@ async fn a_thousand_spill_dirs_leave_a_contained_command_fast() -> TestResult {
     assert!(
         took < std::time::Duration::from_millis(200),
         "one echo took {took:?}"
+    );
+    Ok(())
+}
+
+/// #971: a walled juror's contained command reads its own transcript and no other session's,
+/// under `~/.yi/sessions` or the `--session-dir` in use; an unwalled one reads them as before.
+#[tokio::test]
+async fn a_walled_command_reads_its_own_transcript_and_no_other() -> TestResult {
+    let root = Scratch::new("yi-seam-transcript")?;
+    let home = root.join("home");
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let project = root.join("project");
+    let sessions = home.join(".yi/sessions");
+    let family = sessions.join(yi_session::session_directory_name(
+        &project.to_string_lossy(),
+    ));
+    let author = family.join("100_author.jsonl");
+    let elsewhere = root.join("store/--elsewhere--/1_other.jsonl");
+    for planted in [&author, &elsewhere] {
+        std::fs::create_dir_all(planted.parent().ok_or("no parent")?)?;
+        std::fs::write(planted, "WALLED TRANSCRIPT\n")?;
+    }
+    std::fs::create_dir_all(&project)?;
+    let own_dir = family.join("100_author/children/sub-own");
+    std::fs::create_dir_all(&own_dir)?;
+    let store = yi_session::create_flat_session(
+        own_dir,
+        project.to_string_lossy(),
+        Some("author".to_owned()),
+    )?;
+    let (own_id, own_file) = {
+        let store = yi_session::lock_session(&store);
+        let file = store.file_path().cloned().ok_or("no transcript file")?;
+        (format!("\"id\":\"{}\"", store.metadata().id), file)
+    };
+    let author_text = author.display().to_string();
+    let commands = [
+        format!("cat {author_text}"),
+        format!(
+            "cat {}",
+            author_text.replace("/.yi/sessions/", "/.YI/SESSIONS/")
+        ),
+        format!("grep -r WALLED {}", sessions.display()),
+        format!("cat {}", elsewhere.display()),
+        format!("cat {}", own_file.display()),
+    ];
+    let juror = |store| BrokerSetup {
+        wall: Wall {
+            deny_write: vec![project.clone()],
+            deny_read: Vec::new(),
+            deny_url: vec!["history://".to_owned()],
+            container: None,
+        },
+        store,
+        session_dir: Some(root.join("store")),
+        ..BrokerSetup::default()
+    };
+    // One session each: a refused run makes the broker ask before the next one near it.
+    let sandbox = || Sandbox::for_workspace(&project, &home, None);
+    let (own, others) = commands.split_last().ok_or("no commands")?;
+    let ran = run_held(
+        &project,
+        &project,
+        sandbox(),
+        &[own.as_str()],
+        juror(Some(store)),
+    )
+    .await?;
+    assert!(ran[0].contains(&own_id), "own transcript: {}", ran[0]);
+    for command in others {
+        let ran = run_held(
+            &project,
+            &project,
+            sandbox(),
+            &[command.as_str()],
+            juror(None),
+        )
+        .await?;
+        let text = &ran[0];
+        assert!(
+            !text.contains("WALLED TRANSCRIPT"),
+            "{command} reached a walled juror: {text}"
+        );
+    }
+    let first = [others[0].as_str()];
+    let open = run_held(
+        &project,
+        &project,
+        sandbox(),
+        &first,
+        BrokerSetup::default(),
+    );
+    let open = open.await?;
+    assert!(
+        open[0].contains("WALLED TRANSCRIPT"),
+        "an unwalled cat: {}",
+        open[0]
     );
     Ok(())
 }

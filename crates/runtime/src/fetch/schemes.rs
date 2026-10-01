@@ -391,7 +391,7 @@ impl Resolver {
                 refusal,
             });
         }
-        match super::read_text(url, &path, &root, &self.wall().deny_read) {
+        match super::read_text(url, &path, &root, &self.file_walls()) {
             Ok(text) => Ok((text, format!("member-tree {agent}"))),
             Err(FetchError::NotFound { .. }) => Err(FetchError::NotFound {
                 url: url.to_string(),
