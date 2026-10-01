@@ -49,11 +49,16 @@ pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<Str
         }
         said.push("the delegation given beside todos went to each todo without one".to_owned());
     }
-    if op == "block"
-        && !args.contains_key("note")
-        && let Some(question) = args.remove("question")
-    {
-        args.insert("note".to_owned(), question);
+    if op == "block" && !args.contains_key("note") {
+        let asked = args.remove("question").or_else(|| {
+            said.push(
+                "block needs a note for whoever unblocks it; the todo's label stands in".to_owned(),
+            );
+            args.get("label").or_else(|| args.get("todo")).cloned()
+        });
+        if let Some(note) = asked {
+            args.insert("note".to_owned(), note);
+        }
     }
     if let Some(Value::String(said_how)) = args.get("disposition")
         && !["retained", "discarded"].contains(&said_how.as_str())
@@ -212,6 +217,7 @@ fn infer_op(args: &mut Map<String, Value>) {
         }
         None if args.contains_key("list") => "set".to_owned(),
         None if args.contains_key("todos") && args.contains_key("goal") => "init".to_owned(),
+        None if args.contains_key("todos") => "append".to_owned(),
         None => return,
     };
     args.insert("op".to_owned(), json!(op));
@@ -341,6 +347,12 @@ fn weights(args: &mut Map<String, Value>, said: &mut Vec<String>) {
         return;
     };
     for todo in todos.iter_mut().filter_map(Value::as_object_mut) {
+        if let Some(Value::Object(contract)) = todo.get_mut("contract")
+            && !contract.contains_key("class")
+        {
+            contract.insert("class".to_owned(), json!("inline"));
+            said.push("a contract without a class is inline, the class with no floor".to_owned());
+        }
         let Some(Value::Array(items)) = todo.get_mut("contract").and_then(|c| c.get_mut("items"))
         else {
             continue;
