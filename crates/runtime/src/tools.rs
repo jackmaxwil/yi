@@ -17,6 +17,7 @@ pub struct ToolAdapter {
     permission: Option<Arc<PermissionBroker>>,
     spill_root: Option<PathBuf>,
     spill_key: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    transcript: Option<crate::goal::StoreHandle>,
     auto_background: Option<std::time::Duration>,
     rules: Option<Arc<crate::rules::RuleEngine>>,
     wall: crate::wall::Wall,
@@ -155,8 +156,49 @@ type Gates<'a> = (
 );
 
 /// The §7.3 tee target: the home root, never the user's working tree; one dir per session.
-fn default_spill_root() -> Option<PathBuf> {
+pub(crate) fn default_spill_root() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi").join(yi_tools::SPILLS))
+}
+
+/// A session's own spill dir under `root`, when its key is a valid session id.
+pub(crate) fn own_spill_dir(
+    root: Option<&std::path::Path>,
+    key: Option<String>,
+) -> Option<PathBuf> {
+    let key = key.filter(|key| yi_session::validate_session_id(key).is_ok())?;
+    Some(root?.join(key))
+}
+
+/// Every session store: `~/.yi/sessions` and the `--session-dir` in use, which the broker holds
+/// as host-owned (D335).
+pub(crate) fn session_stores(broker: Option<&PermissionBroker>) -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi/sessions"));
+    let held = broker
+        .map(PermissionBroker::session_stores)
+        .unwrap_or_default();
+    let mut stores: Vec<PathBuf> = home.into_iter().chain(held.iter().cloned()).collect();
+    stores.sort();
+    stores.dedup();
+    stores
+}
+
+/// The spill roots and every session store: what a walled session's tools and kernel read only
+/// where a later rule spares it.
+pub(crate) fn spill_roots_and_stores(
+    spill_root: Option<&std::path::Path>,
+    broker: Option<&PermissionBroker>,
+) -> Vec<PathBuf> {
+    let flat =
+        (spill_root.and_then(std::path::Path::parent)).map(|yi| yi.join(yi_tools::FLAT_SPILLS));
+    (spill_root.map(std::path::Path::to_path_buf).into_iter())
+        .chain(flat)
+        .chain(session_stores(broker))
+        .collect()
+}
+
+/// Invariant: a kernel's spare never reopens a path the wall's own `deny_read` covers (#1000).
+pub(crate) fn unwalled(wall: &crate::wall::Wall, dir: &std::path::Path) -> bool {
+    !yi_tools::walled(&wall.deny_read, dir)
 }
 
 impl ToolAdapter {
@@ -173,6 +215,7 @@ impl ToolAdapter {
             permission,
             spill_root: default_spill_root(),
             spill_key: None,
+            transcript: None,
             auto_background: None,
             rules: None,
             wall: crate::wall::Wall::default(),
@@ -190,19 +233,25 @@ impl ToolAdapter {
 
     /// The session's own spill dir, when its key is a valid session id.
     fn session_spills(&self) -> Option<PathBuf> {
-        let key = (self.spill_key.as_ref()).and_then(|key| key())?;
-        yi_session::validate_session_id(&key).ok()?;
-        Some(self.spill_root.as_ref()?.join(key))
+        own_spill_dir(
+            self.spill_root.as_deref(),
+            self.spill_key.as_ref().and_then(|key| key()),
+        )
     }
 
-    /// Invariant: a walled session reads back only its own spills: the spill root and the flat
-    /// dir from before spills were per session are walled, and its own dir is spared.
-    fn spill_walls(&self) -> Vec<PathBuf> {
-        let root = self.spill_root.as_ref().filter(|_| !self.wall.is_empty());
-        let flat = root
-            .and_then(|root| root.parent())
-            .map(|yi| yi.join(yi_tools::FLAT_SPILLS));
-        root.cloned().into_iter().chain(flat).collect()
+    /// The store whose file is the session's own transcript, read per call like its spill key.
+    pub fn with_transcript(mut self, store: crate::goal::StoreHandle) -> Self {
+        self.transcript = Some(store);
+        self
+    }
+
+    /// Invariant: a walled session reads only its own spills and transcript: the spill roots and
+    /// session stores are walled, its own spill dir and transcript spared (D340, D345).
+    fn walled_roots(&self) -> Vec<PathBuf> {
+        if self.wall.is_empty() {
+            return Vec::new();
+        }
+        spill_roots_and_stores(self.spill_root.as_deref(), self.permission.as_deref())
     }
 
     pub fn with_extensions(mut self, ext: Option<crate::session::ExtHook>) -> Self {
@@ -281,14 +330,22 @@ impl AgentTool for ToolAdapter {
         _signal: &'a InterruptSignal,
     ) -> ToolFuture<'a> {
         let tool = Arc::clone(&self.tool);
-        let (spared, spill_walls) = (self.session_spills(), self.spill_walls());
+        let (spills, walled_roots) = (self.session_spills(), self.walled_roots());
+        let store = (self.transcript.as_ref()).and_then(|store| store());
+        let transcript =
+            store.and_then(|store| yi_session::lock_session(&store).file_path().cloned());
+        let spared: Vec<PathBuf> = (spills.iter().chain(&transcript))
+            .filter(|_| !walled_roots.is_empty())
+            .cloned()
+            .collect();
         let mut context = ToolContext {
             cwd: self.cwd.clone(),
             cancelled: Arc::clone(&self.cancelled),
-            recovery_dir: spared.clone(),
+            recovery_dir: spills,
+            transcript,
             auto_background: self.auto_background,
             sandbox: None,
-            deny_read: [self.wall.deny_read.as_slice(), &spill_walls].concat(),
+            deny_read: [self.wall.deny_read.as_slice(), &walled_roots].concat(),
             deny_write: self.wall.deny_write.clone(),
             container: self.wall.container.clone(),
             call_id: tool_call_id.to_owned(),
@@ -376,8 +433,8 @@ impl AgentTool for ToolAdapter {
                         if let Containment::Contained { widen, .. } = &outcome.containment {
                             context.sandbox = (reporter.sandbox_for(&context.cwd, &wall, widen))
                                 .map(|mut sandbox| {
-                                    sandbox.deny_read.extend_from_slice(&spill_walls);
-                                    sandbox.spared = spared.filter(|_| !spill_walls.is_empty());
+                                    sandbox.deny_read.extend_from_slice(&walled_roots);
+                                    sandbox.spared = spared;
                                     sandbox
                                 });
                             contained = context.sandbox.as_ref().map(|_| reporter);
@@ -422,9 +479,16 @@ impl AgentTool for ToolAdapter {
                 Ok(mut output) => {
                     let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());
                     // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
+                    // One at or naming a path under the own walls is never kept: Seatbelt judges
+                    // each run, so a retry neither asks to leave nor claims the own transcript.
+                    let own = |path: &std::path::Path| yi_tools::walled(&walled_roots, path);
+                    let named = (command.split_whitespace())
+                        .any(|word| own(&yi_permission::resolve_target(word, &cwd)));
                     if let Some(broker) = &contained
                         && let Some(refusal) = (output.result.details.get("sandboxRefusal"))
                             .and_then(yi_tools::SandboxRefusal::from_json)
+                        && !named
+                        && !matches!(&refusal, yi_tools::SandboxRefusal::Path(path) if own(path))
                     {
                         broker.note_containment_failure(refusal);
                     }
