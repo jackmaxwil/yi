@@ -86,15 +86,24 @@ impl Tool for WriteTool {
         {
             return error_output(format!("failed to create {}: {error}", parent.display()));
         }
+        let mut file = match context
+            .read_gate()
+            .open_write(&path, &context.write_walls())
+        {
+            Ok(file) => file,
+            Err(error) => {
+                return error_output(format!("failed to write {}: {error}", path.display()));
+            }
+        };
         // Read before the write: nothing else reconstructs the ground it replaced. Past the
         // cap no base is read and no patch claimed, since a missing base reads as an add.
         let cap = u64::try_from(DETAIL_CAP).unwrap_or(u64::MAX);
-        let before = match fs::metadata(&path) {
+        let before = match file.metadata() {
             Ok(meta) if meta.len() > cap => None,
-            Ok(_) => Some(fs::read_to_string(&path).unwrap_or_default()),
+            Ok(_) => Some(std::io::read_to_string(&mut file).unwrap_or_default()),
             Err(_) => Some(String::new()),
         };
-        match fs::write(&path, content) {
+        match crate::tool::overwrite(&mut file, content.as_bytes()) {
             Ok(()) => {
                 // Incident: the tag minted here was never shown, so 30 F0e edits after a write
                 // cited an invented one; the header is the anchor an edit must copy (#473).

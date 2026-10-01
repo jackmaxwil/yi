@@ -1,4 +1,5 @@
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
 /// Credential stores, protected recursively: destroying one private key inside
@@ -68,6 +69,7 @@ const SYSTEM_PATHS_PROTECTED_RECURSIVELY: [&str; 12] = [
     "/var/lib", "/System",
 ];
 
+#[derive(Clone)]
 pub struct CatastrophicContext {
     pub home_dir: Option<PathBuf>,
     pub working_dir: Option<PathBuf>,
@@ -289,10 +291,10 @@ const PROC_LINKS: [&str; 4] = ["root", "cwd", "fd", "map_files"];
 /// What a read may not touch (D180, D323): a key, the workspace `.git` or a device, which never
 /// ends (`/dev/zero`) or waits (`/dev/tty`), and a directory a walk would carry into a key
 /// store; judged by file identity too, so letter case, a link, `/private` or a firmlink names no
-/// way in at the time of the check (a link swapped between check and open is #890). Built
+/// way in; [`ReadGate::open`] judges the file it opened, so no swapped link either (#890). Built
 /// once per call or walk: each guarded directory costs a stat.
-pub struct ReadGate<'a> {
-    context: &'a CatastrophicContext,
+pub struct ReadGate {
+    context: CatastrophicContext,
     stores: Vec<PathBuf>,
     /// Guarded with all under them: the key stores, `/dev` and the workspace `.git`.
     trees: Vec<PathBuf>,
@@ -302,8 +304,8 @@ pub struct ReadGate<'a> {
     ids: Vec<FileId>,
 }
 
-impl<'a> ReadGate<'a> {
-    pub fn new(context: &'a CatastrophicContext) -> Self {
+impl ReadGate {
+    pub fn new(context: &CatastrophicContext) -> Self {
         let stores = stores(context);
         let mut trees = stores.clone();
         trees.push(PathBuf::from("/dev"));
@@ -316,7 +318,7 @@ impl<'a> ReadGate<'a> {
         let tree_ids = identities(&trees);
         let ids = [tree_ids.clone(), identities(&exact)].concat();
         Self {
-            context,
+            context: context.clone(),
             stores,
             trees,
             tree_ids,
@@ -336,6 +338,69 @@ impl<'a> ReadGate<'a> {
     /// without following it. Its spelling adds nothing, since every guarded directory has one.
     pub fn denies_entry(&self, meta: Option<&fs::Metadata>) -> bool {
         denied_file(&self.ids, meta)
+    }
+
+    /// Opens the resolved `path`, judged with `walls`, with no link left to follow: the file judged
+    /// is the file opened, so a link swapped in after an earlier check reaches nothing (#890).
+    pub fn open(&self, path: &Path, walls: &[PathBuf]) -> io::Result<File> {
+        let real = fs::canonicalize(path)?;
+        self.opened(&real, walls, false, OpenOptions::new().read(true))
+    }
+
+    /// [`Self::open`] to write, under the destroy gate too: untruncated, or created only where
+    /// nothing stands, not even a dangling link; the caller truncates through the handle.
+    pub fn open_write(&self, path: &Path, walls: &[PathBuf]) -> io::Result<File> {
+        let real = match fs::canonicalize(path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+                    return Err(error);
+                };
+                fs::canonicalize(parent)?.join(name)
+            }
+            resolved => resolved?,
+        };
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        match self.opened(&real, walls, true, &options) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.opened(&real, walls, true, options.create_new(true))
+            }
+            opened => opened,
+        }
+    }
+
+    /// Unlinks `path` once judged as a write and while its name still names the file opened; std
+    /// has no `unlinkat`, so an ancestor swapped between that check and the unlink is the gap left.
+    pub fn remove(&self, path: &Path, walls: &[PathBuf]) -> io::Result<()> {
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+            return Err(io::ErrorKind::InvalidInput.into());
+        };
+        let real = fs::canonicalize(parent)?.join(name);
+        let file = self.opened(&real, walls, true, OpenOptions::new().read(true))?;
+        let id = |meta: io::Result<fs::Metadata>| meta.ok().as_ref().and_then(file_id);
+        if id(file.metadata()) != id(fs::symlink_metadata(&real)) {
+            return Err(refused(&real));
+        }
+        fs::remove_file(real)
+    }
+
+    fn opened(
+        &self,
+        real: &Path,
+        walls: &[PathBuf],
+        writes: bool,
+        options: &OpenOptions,
+    ) -> io::Result<File> {
+        if self.denies(real)
+            || (writes && is_catastrophic(real, &self.context))
+            || beneath(walls, real)
+        {
+            return Err(refused(real));
+        }
+        let file = no_link(options).open(real)?;
+        opened_at(&file, real)
+            .then_some(file)
+            .ok_or_else(|| refused(real))
     }
 
     fn denies_spelling(&self, path: &Path) -> bool {
@@ -360,6 +425,44 @@ impl<'a> ReadGate<'a> {
 /// [`ReadGate::denies`] for one path.
 pub fn read_is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
     ReadGate::new(context).denies(path)
+}
+
+fn refused(real: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "{} is a protected path (a key store, the workspace .git, a device or a walled path); no call opens it",
+            real.display()
+        ),
+    )
+}
+
+/// `O_NOFOLLOW_ANY` from `<sys/fcntl.h>` (macOS 11): the open fails if any component of the
+/// path is a link, so a resolved path opens as judged or not at all.
+#[cfg(target_os = "macos")]
+fn no_link(options: &OpenOptions) -> OpenOptions {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options = options.clone();
+    options.custom_flags(0x2000_0000);
+    options
+}
+
+#[cfg(not(target_os = "macos"))]
+fn no_link(options: &OpenOptions) -> OpenOptions {
+    options.clone()
+}
+
+/// Linux has no such flag on `open`, so the kernel's own name for the descriptor must be the
+/// path judged: a link anywhere on the way lands elsewhere and reads back a different name.
+#[cfg(target_os = "linux")]
+fn opened_at(file: &File, real: &Path) -> bool {
+    use std::os::fd::AsRawFd;
+    fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).is_ok_and(|at| at == real)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn opened_at(_file: &File, _real: &Path) -> bool {
+    true
 }
 
 /// Invariant: beneath when it or an ancestor is one of `roots` by spelling or file identity, so
