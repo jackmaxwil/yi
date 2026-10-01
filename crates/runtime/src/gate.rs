@@ -108,6 +108,14 @@ pub(crate) fn headless_refusal(
     }
 }
 
+/// A walled session's retry near a store or `~/.yi`: run outside, it would read what its wall hides.
+pub(crate) fn walled_refusal(path: &std::path::Path) -> String {
+    format!(
+        "Denied by the reviewer wall: the sandbox refused this command's last contained run at `{}`, and a walled session never runs it outside the sandbox. Read only what the wall leaves open, and report what you could not check.",
+        path.display()
+    )
+}
+
 /// An allowed compound, part of which must leave the sandbox, with no one to ask.
 pub(crate) fn headless_split(why: &str) -> String {
     format!(
