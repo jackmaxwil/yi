@@ -26,7 +26,6 @@ pub(crate) const SEEN_LINE_REVEAL_MAX_COLUMNS: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SectionOp {
-    Create,
     Update,
     Delete,
     Noop,
@@ -49,7 +48,6 @@ pub struct PatchSectionResult {
 pub struct PreparedSection {
     section: PatchSection,
     canonical_path: String,
-    exists: bool,
     endings: Endings,
     normalized: String,
     apply_result: ApplyResult,
@@ -300,7 +298,6 @@ impl<'a> Patcher<'a> {
         Ok(PreparedSection {
             section: target,
             canonical_path,
-            exists: true,
             endings,
             normalized,
             apply_result,
@@ -309,18 +306,8 @@ impl<'a> Patcher<'a> {
         })
     }
 
-    /// Approval of a diff is not approval of a path: re-validate symlink status at write
-    /// time, since writing through one lands the content outside the reviewed target.
     fn refuse_symlink(&self, path: &str) -> Result<(), String> {
-        let resolved = self.resolve_path(path);
-        if let Ok(metadata) = std::fs::symlink_metadata(&resolved)
-            && metadata.file_type().is_symlink()
-        {
-            return Err(format!(
-                "{path} is a symlink; refusing to write through it. Edit the target file directly."
-            ));
-        }
-        Ok(())
+        crate::builtins::symlink_refusal(&self.resolve_path(path), path).map_or(Ok(()), Err)
     }
 
     pub fn commit(&mut self, prepared: &PreparedSection) -> Result<PatchSectionResult, String> {
@@ -416,11 +403,7 @@ impl<'a> Patcher<'a> {
         Ok(PatchSectionResult {
             path: section.path.clone(),
             canonical_path: prepared.canonical_path.clone(),
-            op: if prepared.exists {
-                SectionOp::Update
-            } else {
-                SectionOp::Create
-            },
+            op: SectionOp::Update,
             before: prepared.normalized.clone(),
             after,
             file_hash,

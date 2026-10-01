@@ -212,8 +212,8 @@ fn tool_execution_maps_to_tool_call_updates_and_bash_to_terminals() -> TestResul
     let chunk = serde_json::to_value(&end[0])?;
     assert_eq!(chunk["data"], base64(b"ok"));
     match &end[2] {
-        AcpSessionUpdate::ToolCallUpdate { status, .. } => {
-            assert_eq!(*status, Some(AcpToolCallStatus::Completed));
+        AcpSessionUpdate::ToolCallUpdate(update) => {
+            assert_eq!(update.status, Some(AcpToolCallStatus::Completed));
         }
         other => return Err(format!("expected tool_call_update, got {other:?}").into()),
     }
@@ -539,12 +539,14 @@ fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestR
     assert_eq!(request["method"], "session/request_permission");
     assert_eq!(request["params"]["sessionId"], "s1");
     assert_eq!(request["params"]["title"], "write requires permission");
+    let diff = &request["params"]["subject"]["toolCall"]["content"][0];
     assert_eq!(
-        request["params"]["content"][0]["changes"][0], "/repo/src/lib.rs",
+        diff["changes"][0],
+        json!({"operation": "add", "path": "/repo/src/lib.rs"}),
         "C7: the paths the call would touch travel with the request"
     );
     assert!(
-        request["params"]["content"][0]["patch"]
+        diff["patch"]["text"]
             .as_str()
             .is_some_and(|patch| patch.contains("+new")),
         "C7: the T13 patch is structured content, not prose in the description: {request}"

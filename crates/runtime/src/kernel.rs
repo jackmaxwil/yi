@@ -274,7 +274,7 @@ impl KernelService {
         }
     }
 
-    /// A walled session's own spills, transcript and state, which its profile reads again (#889).
+    /// A walled session's own paths, read again under its profile, which it never boots without.
     pub(crate) fn with_own_paths(self, own_paths: Option<crate::wiring::OwnPathsFn>) -> Self {
         Self { own_paths, ..self }
     }
@@ -397,6 +397,9 @@ impl KernelService {
             crate::kernel_state::state_dir(dir, self.options.per_session_state, key.as_deref())
         });
         let wrap = self.kernel_wrap(self.options.sandbox.as_ref(), state.as_deref());
+        if wrap.is_none() && self.own_paths.is_some() {
+            return Err(crate::gate::WALLED_KERNEL_UNCONFINED.to_owned());
+        }
         let snapshot = state.as_deref().map(|dir| {
             let (path, manifest_path) = snapshot_paths(dir, key.as_deref());
             yi_kernel::client::KernelSnapshotConfig {

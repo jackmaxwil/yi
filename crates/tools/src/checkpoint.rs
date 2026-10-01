@@ -44,6 +44,7 @@ pub struct Checkpoints {
     git_dir: PathBuf,
     work_tree: PathBuf,
     serial: Arc<Mutex<()>>,
+    staged: Vec<String>,
 }
 
 // Per gitdir, not per handle: git fails hard on index.lock, and one shadow has several openers.
@@ -59,14 +60,21 @@ fn serial_for(git_dir: &Path) -> Arc<Mutex<()>> {
 impl Checkpoints {
     pub fn open(checkpoint_root: &Path, project: &Path) -> Result<Self, CheckpointError> {
         let git_dir = checkpoint_root.join(project_key(project));
+        std::fs::create_dir_all(&git_dir)
+            .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
+        let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let mut staged = ["add", "--all", "--", "."].map(str::to_owned).to_vec();
+        // Incident: `yi` started in `~` staged the shadow into itself, each capture slower.
+        if let Ok(inside) = real(checkpoint_root).strip_prefix(real(project)) {
+            staged.push(format!(":(exclude,literal){}", inside.to_string_lossy()));
+        }
         let checkpoints = Self {
             serial: serial_for(&git_dir),
             git_dir,
             work_tree: project.to_path_buf(),
+            staged,
         };
         if !checkpoints.git_dir.join("HEAD").exists() {
-            std::fs::create_dir_all(&checkpoints.git_dir)
-                .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
             checkpoints.git(&["init", "--quiet"])?;
         }
         Ok(checkpoints)
@@ -74,7 +82,7 @@ impl Checkpoints {
 
     /// Honours the project's own ignore rules, read from the work tree.
     pub fn capture(&self) -> Result<TreeId, CheckpointError> {
-        self.git(&["add", "--all"])?;
+        self.stage()?;
         let tree = self.git(&["write-tree"])?;
         Ok(TreeId::new(tree.trim()))
     }
@@ -82,7 +90,7 @@ impl Checkpoints {
     /// A capture with `excluded` (paths relative to the project) left out of the tree; the
     /// next `add --all` puts them back in the shadow index.
     pub fn capture_excluding(&self, excluded: &[&Path]) -> Result<TreeId, CheckpointError> {
-        self.git(&["add", "--all"])?;
+        self.stage()?;
         for path in excluded {
             let path = path.to_string_lossy();
             self.git(&[
@@ -100,7 +108,7 @@ impl Checkpoints {
     }
 
     pub fn changed(&self, tree: &TreeId) -> Result<Vec<Change>, CheckpointError> {
-        self.git(&["add", "--all"])?;
+        self.stage()?;
         let diff = self.git(&[
             "diff",
             "--no-renames",
@@ -155,7 +163,7 @@ impl Checkpoints {
                 ChangeKind::Kept => {}
             }
         }
-        self.git(&["add", "--all"])?;
+        self.stage()?;
         Ok(changes)
     }
 
@@ -205,6 +213,10 @@ impl Checkpoints {
         }
         let _index_is_scratch = std::fs::remove_file(&index);
         Ok(())
+    }
+
+    fn stage(&self) -> Result<String, CheckpointError> {
+        self.git(&self.staged.iter().map(String::as_str).collect::<Vec<_>>())
     }
 
     fn git(&self, args: &[&str]) -> Result<String, CheckpointError> {
