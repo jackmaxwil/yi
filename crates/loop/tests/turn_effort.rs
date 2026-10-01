@@ -118,7 +118,7 @@ async fn run_spied(config: LoopConfig, responses: Vec<AgentMessage>) -> Spied {
     let mut emit = |_: AgentEvent| {};
     run_loop(
         &mut context,
-        vec![AgentMessage::host_user(
+        vec![AgentMessage::user_input(
             yi_types::message::UserContent::Text("hi".to_owned()),
             0,
         )],
@@ -246,7 +246,7 @@ async fn a_last_word_forces_no_choice_and_runs_no_tool_it_calls() {
     let mut config = LoopConfig::new(faux_model());
     config.should_stop_after_turn = Some(Box::new(|_| true));
     config.last_word = Some(Box::new(|_| {
-        Some(AgentMessage::host_user(
+        Some(AgentMessage::user_input(
             yi_types::message::UserContent::Text("[deadline] Time is up".to_owned()),
             0,
         ))
@@ -277,7 +277,7 @@ async fn a_last_word_forces_no_choice_and_runs_no_tool_it_calls() {
     let prompt = yi_types::message::UserContent::Text("hi".to_owned());
     let messages = run_loop(
         &mut context,
-        vec![AgentMessage::host_user(prompt, 0)],
+        vec![AgentMessage::user_input(prompt, 0)],
         &config,
         &InterruptSignal::default(),
         &mut emit,
@@ -337,7 +337,7 @@ impl yi_loop::run::StreamFn for Recorder {
 #[tokio::test]
 async fn the_request_tail_trails_each_request_and_stays_out_of_the_history() {
     let text = |value: &str| {
-        AgentMessage::host_user(yi_types::message::UserContent::Text(value.to_owned()), 0)
+        AgentMessage::user_input(yi_types::message::UserContent::Text(value.to_owned()), 0)
     };
     let mut config = LoopConfig::new(faux_model());
     config.request_tail = Some(Box::new(move || vec![text("tail")]));
@@ -413,7 +413,7 @@ async fn the_request_carries_the_configured_reuse() {
         let mut emit = |_: AgentEvent| {};
         let stream = ReuseRecorder(Arc::clone(&seen));
         let signal = InterruptSignal::default();
-        let prompt = vec![AgentMessage::host_user(
+        let prompt = vec![AgentMessage::user_input(
             yi_types::message::UserContent::Text("hi".to_owned()),
             0,
         )];
@@ -476,7 +476,7 @@ async fn the_answer_schema_rides_only_a_request_without_tools() {
             tools,
         };
         let mut emit = |_: AgentEvent| {};
-        let prompt = vec![AgentMessage::host_user(
+        let prompt = vec![AgentMessage::user_input(
             yi_types::message::UserContent::Text("hi".to_owned()),
             0,
         )];
@@ -532,7 +532,7 @@ async fn a_last_word_carries_no_steer_read_after_the_compaction_hook() {
     let mut config = LoopConfig::new(faux_model());
     config.should_stop_after_turn = Some(Box::new(|_| true));
     config.last_word = Some(Box::new(|_| {
-        Some(AgentMessage::host_user(
+        Some(AgentMessage::user_input(
             yi_types::message::UserContent::Text("[deadline] Time is up".to_owned()),
             0,
         ))
@@ -549,7 +549,7 @@ async fn a_last_word_carries_no_steer_read_after_the_compaction_hook() {
             *reads
         });
         match read {
-            Ok(read) if read > 2 => vec![AgentMessage::host_user(
+            Ok(read) if read > 2 => vec![AgentMessage::user_input(
                 yi_types::message::UserContent::Text("steer: also check the docs".to_owned()),
                 0,
             )],
@@ -572,7 +572,7 @@ async fn a_last_word_carries_no_steer_read_after_the_compaction_hook() {
     let prompt = yi_types::message::UserContent::Text("hi".to_owned());
     run_loop(
         &mut context,
-        vec![AgentMessage::host_user(prompt, 0)],
+        vec![AgentMessage::user_input(prompt, 0)],
         &config,
         &InterruptSignal::default(),
         &mut |_| {},

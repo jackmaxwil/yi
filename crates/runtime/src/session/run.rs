@@ -488,9 +488,13 @@ fn wire_last_word(config: &mut LoopConfig, shared: &Arc<Shared>) {
         let out_of_time = clock.deadline.get().is_some_and(|at| at.winding_down());
         let out_of_time = out_of_time || clock.last_word_due();
         if capped.load(std::sync::atomic::Ordering::SeqCst) && !out_of_time && !cancelled {
-            return Some(super::user_message(TURN_CAP_WORD));
+            return Some(super::host_text(
+                yi_types::message::HostSource::Deadline,
+                TURN_CAP_WORD,
+            ));
         }
-        (out_of_time && !cancelled).then(|| super::user_message(LAST_WORD))
+        (out_of_time && !cancelled)
+            .then(|| super::host_text(yi_types::message::HostSource::Deadline, LAST_WORD))
     }));
     let due = Arc::clone(shared);
     config.last_word_due = Some(Box::new(move || due.last_word_due()));

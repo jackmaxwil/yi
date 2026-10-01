@@ -1671,7 +1671,7 @@ fn a_host_notice_titles_nothing_and_draws_no_prompt_rail() -> TestResult {
 
     let notice = "[subagent x (sub-1) finished]\nLast answer: RLM OK\nnext: rlm.wait('sub-1')";
     app.reduce_agent(yi_types::event::AgentEvent::MessageStart {
-        message: AgentMessage::host_user(UserContent::Text(notice.to_owned()), 0),
+        message: AgentMessage::host_text(yi_types::message::HostSource::Notice, notice, 0),
     });
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let second = terminal.backend_mut().take_written();

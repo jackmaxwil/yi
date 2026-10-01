@@ -526,7 +526,9 @@ fn wire_plan_request(
     let store = match crate::plan::store::PlanStore::open(plans_dir.to_path_buf()) {
         Ok(store) => store,
         Err(error) => {
-            (session.notice_hook())(&format!("plan store unavailable: {error}"));
+            (session.notice_hook(yi_types::message::HostSource::Notice))(&format!(
+                "plan store unavailable: {error}"
+            ));
             return None;
         }
     };
@@ -882,7 +884,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         Arc::clone(&fetch_log),
         Arc::clone(&resolver),
     );
-    let restore_notice = session.notice_hook();
+    let restore_notice = session.notice_hook(yi_types::message::HostSource::Restore);
     let waits = session.wait_hook();
     let service = Arc::new(crate::kernel::KernelService::new(wiring.kernel_options(
         Arc::new(registry),
@@ -923,7 +925,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     }
     let rule_set = crate::rules::discover_armed(&wiring.cwd, &wiring.home);
     if !rule_set.warnings.is_empty() {
-        let notice = session.notice_hook();
+        let notice = session.notice_hook(yi_types::message::HostSource::Notice);
         for warning in &rule_set.warnings {
             notice(warning);
         }
@@ -950,7 +952,12 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
 /// would present it.
 pub fn lifecycle_notice(session: &AgentSession) -> Arc<crate::subagent::NoticeFn> {
     let wake = session.wake_idle_hook();
-    Arc::new(move |text: &str, news| wake(crate::session::user_message(text), news))
+    Arc::new(move |text: &str, news| {
+        wake(
+            crate::session::host_text(yi_types::message::HostSource::Lifecycle, text),
+            news,
+        )
+    })
 }
 
 fn subagent_host(
@@ -1019,7 +1026,7 @@ fn wire_compacted(
 ) {
     {
         let service = Arc::clone(service);
-        let notice = session.notice_hook();
+        let notice = session.notice_hook(yi_types::message::HostSource::Notice);
         let store = session.store_handle();
         let advisor = session.advisor();
         let deliver = session.advisory_hook();

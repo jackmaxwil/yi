@@ -428,7 +428,7 @@ pub(crate) fn seed(child: &AgentSession, partition: Option<String>) {
     let Some(text) = partition else {
         return;
     };
-    let message = crate::session::user_message(&text);
+    let message = crate::session::task(&text);
     if let Some(store) = child.store() {
         let _kept_in_memory_either_way =
             yi_session::lock_session(&store).append_message("main", message.clone());
