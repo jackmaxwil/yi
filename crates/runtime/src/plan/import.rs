@@ -165,10 +165,10 @@ fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> ImportError + '_ {
 
 /// The bounded reader in front of every decode: one cap over the whole file.
 fn read_capped(path: &Path) -> Result<Vec<u8>, ImportError> {
-    capped(path, std::fs::File::open(path).map_err(io_at(path))?)
+    take_capped(path, std::fs::File::open(path).map_err(io_at(path))?)
 }
 
-fn capped(path: &Path, file: std::fs::File) -> Result<Vec<u8>, ImportError> {
+fn take_capped(path: &Path, file: std::fs::File) -> Result<Vec<u8>, ImportError> {
     let cap = u64::try_from(IMPORT_CAP_BYTES).unwrap_or(u64::MAX);
     let mut bytes = Vec::new();
     file.take(cap.saturating_add(1))
@@ -280,7 +280,7 @@ pub struct Source {
 /// document parses as before.
 pub fn read(cwd: &Path, source: &Url) -> Result<Source, ImportError> {
     let (path, file) = source_path(cwd, source)?;
-    let bytes = capped(&path, file)?;
+    let bytes = take_capped(&path, file)?;
     if bytes.trim_ascii_start().starts_with(b"{") {
         let id = path
             .parent()

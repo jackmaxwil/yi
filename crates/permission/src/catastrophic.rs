@@ -376,7 +376,7 @@ impl ReadGate {
             return Err(io::ErrorKind::InvalidInput.into());
         };
         let real = fs::canonicalize(parent)?.join(name);
-        self.judge(&real, walls, true)?;
+        self.guard_resolved(&real, walls, true)?;
         let (_dir, at) = beside(&real)?;
         let file = no_link(OpenOptions::new().read(true))?.open(&at)?;
         let id = |meta: io::Result<fs::Metadata>| meta.ok().as_ref().and_then(file_id);
@@ -386,7 +386,7 @@ impl ReadGate {
         fs::remove_file(at)
     }
 
-    fn judge(&self, real: &Path, walls: &[PathBuf], writes: bool) -> io::Result<()> {
+    fn guard_resolved(&self, real: &Path, walls: &[PathBuf], writes: bool) -> io::Result<()> {
         let denied = self.denies(real)
             || (writes && is_catastrophic(real, &self.context))
             || beneath(walls, real);
@@ -400,7 +400,7 @@ impl ReadGate {
         writes: bool,
         options: &OpenOptions,
     ) -> io::Result<File> {
-        self.judge(real, walls, writes)?;
+        self.guard_resolved(real, walls, writes)?;
         let (_dir, at) = beside(real)?;
         let file = no_link(options)?.open(&at)?;
         opened_at(&file, real)
