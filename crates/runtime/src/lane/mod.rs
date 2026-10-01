@@ -178,7 +178,7 @@ pub enum LaneError {
     Branch { text: String, reason: &'static str },
     #[error("lockfile {hash} was never synced by a session, so the warmer refuses it")]
     LockfileUnseen { hash: String },
-    #[error("git {} exited {exit_code:?}: {output}", args.join(" "))]
+    #[error("git {} {}: {output}", args.join(" "), exit_code.map_or_else(|| "failed".to_owned(), |code| format!("exited {code}")))]
     Git {
         args: Vec<String>,
         exit_code: Option<i32>,
