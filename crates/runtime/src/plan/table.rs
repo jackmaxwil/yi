@@ -106,6 +106,17 @@ pub const STEPS: &[Step] = &[
     },
 ];
 
+/// The legal move a refusal named the rule for and not the road to: F0e sessions repeated
+/// `done` on three sibling pending todos in a row because nothing said what to do (#472).
+pub(super) fn illegal_hint(op: OpKind, from: &TodoStateName) -> &'static str {
+    match (op, from) {
+        (OpKind::Done, TodoStateName::Pending) => {
+            "; start it first, or resend set with the row marked \"- [x]\" for a todo carrying no contract"
+        }
+        _ => "",
+    }
+}
+
 pub fn step(from: &TodoState, op: OpKind) -> Option<TodoStateName> {
     let name = TodoStateName::of(from);
     STEPS
@@ -145,6 +156,7 @@ pub(super) fn check_actor(actor: &Actor, op: &Op) -> Result<(), PlanOpError> {
             _ => true,
         },
         Actor::User(_) => true,
+        Actor::Classifier => matches!(op, Op::Accept { .. }),
         Actor::Host => matches!(kind, OpKind::Unblock | OpKind::Reconcile),
         Actor::Child(_) => matches!(kind, OpKind::View | OpKind::Submit),
         Actor::Engine => matches!(

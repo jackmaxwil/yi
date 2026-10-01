@@ -459,6 +459,16 @@ impl PermissionBroker {
     /// A question with no tool call behind it, asked once and answered once: an allow-always
     /// is an allow-once here, so a confirmation never becomes a standing rule.
     pub fn confirm(&self, ask: &PermissionAsk<'_>) -> AskOutcome {
+        self.confirm_judged(ask, None).0
+    }
+
+    /// The same question with the classifier first in auto mode: its allow answers it, anything
+    /// else goes to the user. The bool says the classifier answered.
+    pub fn confirm_judged(
+        &self,
+        ask: &PermissionAsk<'_>,
+        call: Option<&crate::classifier::Call<'_>>,
+    ) -> (AskOutcome, bool) {
         let ordinal = self
             .confirms
             .fetch_add(1, Ordering::Relaxed)
@@ -469,6 +479,13 @@ impl PermissionBroker {
             title: ask.title.to_owned(),
             description: ask.text(),
         });
+        let judged = call
+            .filter(|_| self.mode() == PermissionMode::Auto)
+            .and_then(|call| Some(self.approver.get()?.judge(call)));
+        if let Some(crate::classifier::Judgement::Allow(_)) = judged {
+            self.settle(&tool_call_id, ask, true, Answerer::Classifier);
+            return (AskOutcome::AllowOnce, true);
+        }
         let outcome = self
             .asker
             .as_ref()
@@ -480,7 +497,13 @@ impl PermissionBroker {
         };
         let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
         self.settle(&tool_call_id, ask, allowed, by);
-        outcome
+        (outcome, false)
+    }
+
+    /// Whether [`PermissionBroker::confirm_judged`] can get an answer: a person, or the
+    /// classifier in auto mode.
+    pub fn can_confirm(&self) -> bool {
+        self.can_ask() || (self.mode() == PermissionMode::Auto && self.approver.get().is_some())
     }
 
     /// Whether an interactive asker exists — without one, an advisor Hold
