@@ -13,7 +13,7 @@ still holds a template comment. Incident: 30 of the 80 PR bodies merged from
 Body: a change that adds a feature-ledger row or grows src past the free band is
 work, and work has an issue (D106). Such a body names it — `Closes #N` finishing
 it, `Refs #N` as part of it — the issue is open, sized once, has an area and a
-milestone, and a changelog row added by the same diff cites the same number.
+milestone, and a change file added by the same diff cites the same number.
 Everything else passes silently: a ratchet, a doc fix and an in-band repair are
 exempt by construction, not by an author's say-so.
 
@@ -31,13 +31,12 @@ import urllib.request
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from _common import ROOT, FREE_BAND, fail  # noqa: E402
+from check_changes import DIR, pending  # noqa: E402
 from check_commit_style import NAMED, subject_errors  # noqa: E402
 from pr_body import base_commit, diff_stats, git, surface_delta, tally  # noqa: E402
 
 ARCH = "docs/ARCHITECTURE.md"
-LOG = "docs/CHANGELOG.md"
 LEDGER = "Feature ledger"
-CHANGELOG = "Changelog"
 # `Closes apex/yi#4` is the same citation as `Closes #4`; `Closes other/repo#4`
 # is a citation of someone else's register and does not count as one here.
 # Incident: every PR body for a week ended in an assistant's generated-with footer, the
@@ -247,7 +246,7 @@ def surface_problems(body, added, changed):
     ]
 
 
-def body_problems(transport, api, repo, body, ledger_added, changelog_added, src_net):
+def body_problems(transport, api, repo, body, ledger_added, changes_added, src_net):
     """The whole body rule, pure but for `transport`."""
     reasons = []
     if ledger_added:
@@ -269,12 +268,12 @@ def body_problems(transport, api, repo, body, ledger_added, changelog_added, src
     errs = []
     for number in numbers:
         errs += issue_problems(transport, api, repo, number)
-    for row in changelog_added:
-        if not any(f"#{number}" in row for number in numbers):
+    for name, text in changes_added:
+        if not any(f"#{number}" in text for number in numbers):
             errs += [
-                f"the {row_key(row)} changelog row cites no issue; the body names "
+                f"the change file {name} cites no issue; the body names "
                 + ", ".join(f"#{n}" for n in numbers),
-                f"  put the same `#N` in that row of {ARCH} — the row and the issue",
+                "  put the same `#N` in its `issue:` line — the change and the issue",
                 "  have to name each other or neither is findable from the other",
             ]
     return errs
@@ -313,11 +312,11 @@ def selfcheck():
         "| 0.2.0 | d | two |\n| 0.1.0 | d | one |\n\n"
         "## Feature ledger\n\n| feature | § | status |\n|---|---|---|\n| loop | 8.2 | core |\n"
     )
-    assert [row_key(r) for r in table_rows(doc, CHANGELOG)] == ["0.2.0", "0.1.0"], doc
+    assert [row_key(r) for r in table_rows(doc, "Changelog")] == ["0.2.0", "0.1.0"], doc
     assert [row_key(r) for r in table_rows(doc, LEDGER)] == ["loop"]
     # The changelog is now its own file, so its heading is an h1, not an h2.
     own = "# Changelog\n\nprose\n\n| ver | date | change |\n|---|---|---|\n| 0.3.0 | d | three |\n"
-    assert [row_key(r) for r in table_rows(own, CHANGELOG)] == ["0.3.0"], own
+    assert [row_key(r) for r in table_rows(own, "Changelog")] == ["0.3.0"], own
     grown = doc.replace("| loop | 8.2 | core |", "| loop | 8.2 | core |\n| plan | 6 | core |")
     assert [row_key(r) for r in added_rows(doc, grown, LEDGER)] == ["plan"]
     # A row reworded in place is not a new row, and a diff would say it was.
@@ -334,7 +333,7 @@ def selfcheck():
     # --- exempt: nothing added, nothing grown. Silent, and the forge is not asked.
     transport, seen = forge({})
     assert body_problems(transport, api, repo, "", [], [], 12) == []
-    assert body_problems(transport, api, repo, "", [], ["| 0.2.0 | d | x |"], -400) == []
+    assert body_problems(transport, api, repo, "", [], [("2026-09-02-x.md", "x")], -400) == []
     assert seen == [], seen
 
     # --- required and uncited, by either trigger
@@ -377,13 +376,13 @@ def selfcheck():
     errs = body_problems(transport, api, repo, "Refs #4, closes #5", ["row"], [], 0)
     assert len(errs) == 2 and errs[0].startswith("#5 has no milestone"), errs
 
-    # --- the changelog row has to carry the same number
+    # --- the change file has to carry the same number
     transport, _ = forge({4: good})
-    row = "| 0.117.0 | 2026-09-02 | a thing landed |"
-    errs = body_problems(transport, api, repo, "Closes #4", ["row"], [row], 0)
-    assert errs[0].startswith("the 0.117.0 changelog row cites no issue"), errs
+    change = ("2026-09-02-thing.md", "---\nissue: Refs #5\n---\nA thing landed.\n")
+    errs = body_problems(transport, api, repo, "Closes #4", ["row"], [change], 0)
+    assert errs[0].startswith("the change file 2026-09-02-thing.md cites no issue"), errs
     transport, _ = forge({4: good})
-    cite = "| 0.117.0 | 2026-09-02 | a thing landed (#4) |"
+    cite = ("2026-09-02-thing.md", "---\nissue: Closes #4\n---\nA thing landed.\n")
     assert body_problems(transport, api, repo, "Closes #4", ["row"], [cite], 0) == []
 
     # --- the title rule is check_commit_style's, imported, not restated
@@ -454,12 +453,10 @@ def measure():
     ref, base = base_commit()
     if base is None:
         return None, ("no origin/main or main to diff against; this gate cannot pass blind")
-    def added(path, heading):
-        return added_rows(git("show", f"{base}:{path}").stdout, (ROOT / path).read_text(), heading)
-
+    ledger = added_rows(git("show", f"{base}:{ARCH}").stdout, (ROOT / ARCH).read_text(), LEDGER)
+    changes = [(name, (ROOT / DIR / name).read_text()) for name, _ in pending(base)]
     rows = diff_stats(base)
-    return (added(ARCH, LEDGER), added(LOG, CHANGELOG), tally(rows)[2],
-            surface_delta(base)), None
+    return (ledger, changes, tally(rows)[2], surface_delta(base)), None
 
 
 def main(argv):
@@ -470,7 +467,7 @@ def main(argv):
     measured, why = measure()
     if why:
         fail([why], "pr_metadata")
-    ledger_added, changelog_added, src_net, (surface_added, surface_changed) = measured
+    ledger_added, changes_added, src_net, (surface_added, surface_changed) = measured
     errs += footer_problems(os.environ.get("PR_BODY", ""))
     errs += template_problems(os.environ.get("PR_BODY", ""))
     errs += surface_problems(os.environ.get("PR_BODY", ""), surface_added, surface_changed)
@@ -480,7 +477,7 @@ def main(argv):
         os.environ["FORGEJO_REPOSITORY"],
         os.environ.get("PR_BODY", ""),
         [row_key(row) for row in ledger_added],
-        changelog_added,
+        changes_added,
         src_net,
     )
     fail(errs, "pr_metadata")
