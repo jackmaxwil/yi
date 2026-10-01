@@ -539,3 +539,29 @@ fn a_checker_given_as_an_object_keeps_its_deadline() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with one of the calls glm-5.3-flash sent in the dogfood refused again: each natural shape
+/// lands, and each refusal that stays names where the field goes (`dogfood-shapes.json`, #982).
+#[test]
+fn every_dogfood_call_lands_or_says_where_it_goes() -> TestResult {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/plans/dogfood-shapes.json");
+    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    let mut wrong = Vec::new();
+    for case in fixture["cases"].as_array().ok_or("cases")? {
+        let name = case["name"].as_str().unwrap_or("?");
+        let rig = rig(&name.replace(' ', "-"))?;
+        for step in case["setup"].as_array().ok_or("setup")? {
+            let (refused, text) = call(&rig, step.clone());
+            assert!(!refused, "{name} setup: {text}");
+        }
+        let (refused, text) = call(&rig, case["call"].clone());
+        let lands = case["lands"].as_bool().unwrap_or(false);
+        let says = case["says"].as_str().unwrap_or("");
+        if refused == lands || !text.contains(says) {
+            wrong.push(format!("{name}: refused={refused} {text}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    Ok(())
+}

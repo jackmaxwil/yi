@@ -19,9 +19,27 @@ use yi_types::plan::op::{MODEL_OPS, SpecError, TodoSpecRepr};
 fn legal_ops() -> String {
     ALL_OPS
         .iter()
+        .take(MODEL_OPS)
         .map(|op| op_name(*op))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// A key that belongs to another op or level, named where it goes; dogfood sessions sent a
+/// block's `on` inside init, and a todo's `label` beside append's `todos`.
+fn misplaced(op: OpKind, in_todo: bool, key: &str) -> Option<&'static str> {
+    match (op, in_todo, key) {
+        (_, _, "on" | "note" | "options") if matches!(op, OpKind::Init | OpKind::Append) => Some(
+            "; blocking is its own op after the todo exists: op=block, label, on: {user: null}, note, options",
+        ),
+        (OpKind::Init | OpKind::Append | OpKind::Decompose, false, "label") => {
+            Some("; each todo's label goes inside todos: [{label, ...}]")
+        }
+        (_, true, "todos") => {
+            Some("; a todo's own children come from decompose on it once it runs")
+        }
+        _ => None,
+    }
 }
 
 /// What the caller evidently meant, per argument: F0e sessions sent prose or a bare path as
@@ -79,9 +97,10 @@ pub enum ArgError {
     ActorArg,
     #[error("{0}")]
     Declared(String),
-    #[error("{} does not take {key:?}; its arguments are {legal}{}", op_name(*op), field_hint(key))]
+    #[error("{}{} does not take {key:?}; its arguments are {legal}{}", op_name(*op), todo.map(|at| format!(" todos[{at}]")).unwrap_or_default(), misplaced(*op, todo.is_some(), key).unwrap_or(field_hint(key)))]
     UnknownKey {
         op: OpKind,
+        todo: Option<usize>,
         key: String,
         legal: String,
     },
@@ -139,11 +158,13 @@ const TODO_SPEC_KEYS: [&str; 6] = [
 fn refuse_unknown(
     args: &Map<String, Value>,
     op: OpKind,
+    todo: Option<usize>,
     legal: &[&'static str],
 ) -> Result<(), ArgError> {
     match args.keys().find(|key| !legal.contains(&key.as_str())) {
         Some(key) => Err(ArgError::UnknownKey {
             op,
+            todo,
             key: key.clone(),
             legal: legal.join(", "),
         }),
@@ -370,7 +391,7 @@ fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, Ar
         let Value::Object(spec) = value else {
             return Err(ArgError::TodoShape { op, index });
         };
-        refuse_unknown(spec, op, &TODO_SPEC_KEYS)?;
+        refuse_unknown(spec, op, Some(index), &TODO_SPEC_KEYS)?;
         specs.push(TodoSpec::try_from(TodoSpecRepr {
             label: need(spec, op, "label").map_err(|error| {
                 let label = spec.get("label").and_then(Value::as_str);
@@ -408,7 +429,7 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         .ok_or_else(|| ArgError::UnknownOp {
             got: name.to_owned(),
         })?;
-    refuse_unknown(args, kind, known_keys(kind))?;
+    refuse_unknown(args, kind, None, known_keys(kind))?;
     Ok(match kind {
         OpKind::Init => Op::Init {
             goal: need(args, kind, "goal")?,
@@ -550,17 +571,144 @@ impl PlanTool {
     }
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
-        let (request, blobs) = declared(&self.actor, args)?;
+        let (args, mut said) = natural(args);
+        let (request, blobs) = declared(&self.actor, &args)?;
         if let Op::Accept { .. } = &request.op {
             let confirming = self.confirming.as_ref();
             return Ok(
-                super::authority::accept(&self.engine, &self.actor, confirming, args)?.text(),
+                super::authority::accept(&self.engine, &self.actor, confirming, &args)?.text(),
             );
         }
         let op = request.op.clone();
-        let outcome = self.engine.apply_with(request, &blobs)?;
-        Ok(render_outcome(&op, &outcome))
+        let outcome = match self.engine.apply_with(request.clone(), &blobs) {
+            Err(PlanOpError::IllegalStep {
+                label,
+                from: TodoStateName::Pending,
+                op: OpKind::Done,
+            }) if self.runs_itself(&request, &label) => {
+                let start = Op::Start { label };
+                self.engine.apply(OpRequest {
+                    op: start,
+                    ..request.clone()
+                })?;
+                said.push("it was pending, so it was started first");
+                self.engine.apply_with(request, &blobs)?
+            }
+            Err(PlanOpError::NoPlan) => {
+                let Op::Set { goal: None, rows } = &request.op else {
+                    return Err(PlanOpError::NoPlan.into());
+                };
+                let first = rows.first().ok_or(PlanOpError::NoPlan)?;
+                let goal = GoalText::new(first.spec.label.as_str()).map_err(PlanOpError::Doc)?;
+                let rows = rows.clone();
+                said.push("no plan was open, so the first row names it");
+                let set = Op::Set {
+                    goal: Some(goal),
+                    rows,
+                };
+                self.engine
+                    .apply_with(OpRequest { op: set, ..request }, &blobs)?
+            }
+            other => other?,
+        };
+        let mut text = render_outcome(&op, &outcome);
+        for line in said {
+            text.push_str(&format!("\nnote: {line}"));
+        }
+        Ok(text)
     }
+
+    /// The owner's own todo, not one a child would be spawned for, so starting it costs nothing.
+    fn runs_itself(&self, request: &OpRequest, label: &TodoLabel) -> bool {
+        let view = OpRequest {
+            op: Op::View { full: true },
+            ..request.clone()
+        };
+        self.actor == Actor::Owner
+            && (self.engine.apply(view).ok()).is_some_and(|seen| {
+                seen.plan
+                    .todo(label)
+                    .is_some_and(|t| t.delegation.is_none())
+            })
+    }
+}
+
+/// The shapes models send for a call the tool understands, made canonical before the strict
+/// parse; each note says what was done with a key the plan does not record.
+fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<&'static str>) {
+    let mut args = args.clone();
+    let mut said = Vec::new();
+    if !args.contains_key("op") {
+        let inferred = match () {
+            () if args.contains_key("list") => Some("set"),
+            () if args.contains_key("todos") && args.contains_key("goal") => Some("init"),
+            () => None,
+        };
+        if let Some(op) = inferred {
+            args.insert("op".to_owned(), json!(op));
+        }
+    }
+    let op = args
+        .get("op")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    match op.as_str() {
+        "set" if !args.contains_key("list") => {
+            if let Some(Value::Array(rows)) = args.remove("todos") {
+                let lines: Vec<String> = rows.iter().filter_map(checklist_row).collect();
+                args.insert("list".to_owned(), json!(lines.join("\n")));
+            }
+        }
+        "init" if !args.contains_key("goal") => {
+            let labels: Vec<&str> = (args
+                .get("todos")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten())
+            .filter_map(|todo| todo.get("label").and_then(Value::as_str))
+            .collect();
+            if let Some(first) = labels.first() {
+                let goal = match labels.len() {
+                    1 => (*first).to_owned(),
+                    more => format!("{first}, and {} more", more.saturating_sub(1)),
+                };
+                args.insert("goal".to_owned(), json!(goal));
+                said.push("no goal was given, so the first todo names the plan");
+            }
+        }
+        "fail" if !args.contains_key("cause") => {
+            if let Some(reason) = args.remove("reason") {
+                args.insert("cause".to_owned(), reason);
+            }
+        }
+        "drop" if args.remove("reason").is_some() => {
+            said.push(
+                "drop records no reason; it stays in this call's arguments in the transcript",
+            );
+        }
+        "done"
+            if ["note", "evidence"]
+                .iter()
+                .any(|key| args.remove(*key).is_some()) =>
+        {
+            said.push("done records no note; it stays in this call's arguments, and a contract's check is the evidence the plan keeps");
+        }
+        _ => {}
+    }
+    (args, said)
+}
+
+/// A checklist row from a string row or a `{label}` object, unchecked unless it carries a box.
+fn checklist_row(row: &Value) -> Option<String> {
+    let text = row
+        .as_str()
+        .or_else(|| row.get("label").and_then(Value::as_str))?;
+    Some(if text.trim_start().starts_with("- [") {
+        text.to_owned()
+    } else {
+        format!("- [ ] {text}")
+    })
 }
 
 impl Tool for PlanTool {
@@ -598,7 +746,7 @@ impl Tool for PlanTool {
     }
 
     fn validate(&self, input: &Map<String, Value>) -> Result<(), String> {
-        declared(&self.actor, input)
+        declared(&self.actor, &natural(input).0)
             .map(|_| ())
             .map_err(|error| error.to_string())
     }

@@ -26,7 +26,18 @@ fn stored(bytes: Vec<u8>, media_type: &'static str, blobs: &mut Vec<Blob>) -> Op
 }
 
 fn cmd_item(item: &mut Value, blobs: &mut Vec<Blob>) -> Option<()> {
-    let cmd = item.get_mut("decider")?.get_mut("cmd")?;
+    let decider = item.get_mut("decider")?.as_object_mut()?;
+    // Incident: a model wrote the deadline beside `cmd` and was refused with serde's
+    // "expected map with a single key"; it is the command's deadline, so it moves inside.
+    if let Some(Value::String(command)) = decider.get("cmd").cloned()
+        && let Some(timeout) = decider.remove("timeout_ms")
+    {
+        decider.insert(
+            "cmd".to_owned(),
+            json!({ "checker": command, "timeout_ms": timeout }),
+        );
+    }
+    let cmd = decider.get_mut("cmd")?;
     if let Value::String(command) = cmd {
         *cmd = json!({ "checker": command.clone() });
     }
