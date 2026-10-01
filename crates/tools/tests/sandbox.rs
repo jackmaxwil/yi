@@ -654,6 +654,40 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
     Ok(())
 }
 
+/// #889: under a denied read root, a spared writable root (a walled kernel's own dir, the family
+/// board) reads and takes writes; a spared path no root grants (its own spill dir) only reads.
+#[test]
+fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, _home) = workspace("spared")?;
+    let store = project.join("store");
+    let (state, spill) = (store.join("state"), store.join("spill"));
+    for (dir, text) in [(&state, "SPARED"), (&spill, "SPARED"), (&store, "WALLED")] {
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(dir.join("f"), text)?;
+    }
+    let sandbox = Sandbox {
+        writable: vec![project.clone(), state.clone()],
+        deny_read: vec![store.clone()],
+        deny_write: Vec::new(),
+        host_owned: Vec::new(),
+        spared: vec![state, spill],
+    };
+    let script = "cat store/state/f store/spill/f store/f; \
+        echo x > store/state/new && echo wrote-state; echo x > store/spill/new && echo wrote-spill";
+    let (_, output) = run(script, &project, Some(&sandbox))?;
+    let seen = (
+        output.matches("SPARED").count(),
+        output.contains("WALLED"),
+        output.contains("wrote-state"),
+        output.contains("wrote-spill"),
+    );
+    assert_eq!(seen, (2, false, true, false), "{output}");
+    Ok(())
+}
+
 /// What a contained script reports, one word per probe: loopback works both ways, and nothing
 /// past it answers, however the address is spelled. Every refusal must be EPERM, the sandbox's
 /// errno, so a machine with no network cannot pass it by timing out.

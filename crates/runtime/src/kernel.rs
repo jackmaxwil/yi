@@ -249,6 +249,7 @@ pub struct KernelService {
     surface_shown: std::sync::atomic::AtomicBool,
     snapshot_lock: Mutex<Option<(PathBuf, Option<std::fs::File>)>>,
     waited: Mutex<Option<String>>,
+    spared: Option<crate::wiring::SpillDirFn>,
 }
 
 impl KernelService {
@@ -269,7 +270,13 @@ impl KernelService {
             surface_shown: std::sync::atomic::AtomicBool::new(false),
             snapshot_lock: Mutex::new(None),
             waited: Mutex::new(None),
+            spared: None,
         }
+    }
+
+    /// A walled session's own spill dir, which its profile reads again (#889).
+    pub(crate) fn with_spared(self, spared: Option<crate::wiring::SpillDirFn>) -> Self {
+        Self { spared, ..self }
     }
 
     pub fn on_death(&self, hook: Arc<dyn Fn() + Send + Sync>) {
@@ -326,6 +333,9 @@ impl KernelService {
         sandbox
             .writable
             .extend(state.map(std::path::Path::to_path_buf));
+        sandbox
+            .spared
+            .extend(self.spared.iter().flat_map(|own| own()));
         let family = self.options.family_dir.as_deref().map(make_board);
         Some(kernel_profile(&sandbox, family.as_deref()).kernel_prefix(&self.connection_dir))
     }

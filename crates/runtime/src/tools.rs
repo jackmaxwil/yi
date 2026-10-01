@@ -156,7 +156,7 @@ type Gates<'a> = (
 );
 
 /// The §7.3 tee target: the home root, never the user's working tree; one dir per session.
-fn default_spill_root() -> Option<PathBuf> {
+pub(crate) fn default_spill_root() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi").join(yi_tools::SPILLS))
 }
 
@@ -171,6 +171,20 @@ pub(crate) fn session_stores(broker: Option<&PermissionBroker>) -> Vec<PathBuf> 
     stores.sort();
     stores.dedup();
     stores
+}
+
+/// The spill roots and every session store: what a walled session's tools and kernel read only
+/// where a later rule spares it.
+pub(crate) fn walled_roots(
+    spill_root: Option<&std::path::Path>,
+    broker: Option<&PermissionBroker>,
+) -> Vec<PathBuf> {
+    let flat =
+        (spill_root.and_then(std::path::Path::parent)).map(|yi| yi.join(yi_tools::FLAT_SPILLS));
+    (spill_root.map(std::path::Path::to_path_buf).into_iter())
+        .chain(flat)
+        .chain(session_stores(broker))
+        .collect()
 }
 
 impl ToolAdapter {
@@ -222,16 +236,7 @@ impl ToolAdapter {
         if self.wall.is_empty() {
             return Vec::new();
         }
-        let root = self.spill_root.as_ref();
-        let flat = root
-            .and_then(|root| root.parent())
-            .map(|yi| yi.join(yi_tools::FLAT_SPILLS));
-        let stores = session_stores(self.permission.as_deref());
-        root.cloned()
-            .into_iter()
-            .chain(flat)
-            .chain(stores)
-            .collect()
+        walled_roots(self.spill_root.as_deref(), self.permission.as_deref())
     }
 
     pub fn with_extensions(mut self, ext: Option<crate::session::ExtHook>) -> Self {
