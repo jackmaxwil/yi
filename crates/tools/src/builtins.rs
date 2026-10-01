@@ -58,7 +58,10 @@ impl Tool for WriteTool {
         let path = input.get("path").and_then(Value::as_str)?;
         let content = input.get("content").and_then(Value::as_str)?;
         let resolved = yi_permission::resolve_target(path, cwd);
-        let before = fs::read_to_string(&resolved).unwrap_or_default();
+        // The diff reaches the approval and the auto-reviewer's model before any check runs.
+        let gate = yi_permission::ReadGate::new(&yi_permission::CatastrophicContext::detect(cwd));
+        let opened = gate.open(&resolved, &[]);
+        let before = opened.and_then(std::io::read_to_string).unwrap_or_default();
         let patch = crate::diff::patch(&before, content, &resolved);
         (!patch.is_empty()).then(|| patch.as_str().to_owned())
     }
@@ -548,8 +551,9 @@ fn tagged_header(
     typed: &str,
     path: &Path,
     view: &Shown<'_>,
+    context: &ToolContext,
 ) -> Option<String> {
-    let content = fs::read_to_string(path).ok()?;
+    let content = String::from_utf8(context.read(path).ok()?).ok()?;
     let seen = viewed_lines(&content, view);
     let tag = crate::hashline::tool::record_view_snapshot(state, path, &content, &seen);
     Some(crate::hashline::format::format_hashline_header(typed, tag))
@@ -813,7 +817,7 @@ impl Tool for BashTool {
                 match bridge_target(command, &context.cwd) {
                     Bridge::Tag { typed, path } => {
                         let view = shown(command, &reduced, capture.truncated);
-                        match tagged_header(state, &typed, &path, &view) {
+                        match tagged_header(state, &typed, &path, &view, context) {
                             Some(header) => {
                                 text = format!("{header}\n{text}");
                                 "tag"
