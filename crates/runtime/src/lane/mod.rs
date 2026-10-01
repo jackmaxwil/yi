@@ -16,6 +16,14 @@ const GIT_TIMEOUT_MS: u64 = 120_000;
 /// pool grows at the first missing slot and keeps it, so it settles at peak concurrency.
 pub const DEFAULT_SLOTS: u8 = u8::MAX;
 const FETCH_FRESH_MS: u64 = 60_000;
+
+static FETCH_FORBIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `--faux`: a claim starts from the `origin/main` already fetched and never dials the
+/// remote, which over ssh no proxy would see (#943).
+pub fn forbid_fetch() {
+    FETCH_FORBIDDEN.store(true, std::sync::atomic::Ordering::Relaxed);
+}
 const WARMER_EXIT_WAIT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -636,7 +644,10 @@ impl Pool {
 
     fn fetch_if_stale(&self) -> bool {
         let _span = yi_types::trace::span("lane.fetch_if_stale");
-        if self.fetch_fresh() || git(&self.repo, &["remote", "get-url", "origin"]).is_err() {
+        if FETCH_FORBIDDEN.load(std::sync::atomic::Ordering::Relaxed)
+            || self.fetch_fresh()
+            || git(&self.repo, &["remote", "get-url", "origin"]).is_err()
+        {
             return false;
         }
         let _ = git(&self.repo, &["fetch", "-q", "origin", "main"]);

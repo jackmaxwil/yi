@@ -70,6 +70,9 @@ pub struct ProviderStream {
     proxy: Option<yi_ai::request::ProxyConfig>,
     routing: Option<serde_json::Value>,
     telemetry: Option<Arc<crate::telemetry::Telemetry>>,
+    /// Set by `--faux` or a `faux/…` model: every model, whatever its provider, streams from
+    /// the script (#943).
+    force_faux: bool,
 }
 
 const HALF_MINUTE: std::time::Duration = std::time::Duration::from_secs(30);
@@ -94,6 +97,7 @@ impl ProviderStream {
             proxy: None,
             routing: None,
             telemetry: None,
+            force_faux: false,
         }
     }
 
@@ -110,6 +114,7 @@ impl ProviderStream {
             proxy: self.proxy.clone(),
             routing: self.routing.clone(),
             telemetry: self.telemetry.clone(),
+            force_faux: self.force_faux,
         }
     }
 
@@ -149,7 +154,20 @@ impl ProviderStream {
     }
 
     pub fn has_credential(&self, provider: &str) -> bool {
-        provider == yi_ai::faux::FAUX_PROVIDER || self.credential(provider).is_ok()
+        self.force_faux
+            || provider == yi_ai::faux::FAUX_PROVIDER
+            || self.credential(provider).is_ok()
+    }
+
+    /// Every request, the family's and a switched model's included, reads the faux script.
+    #[must_use]
+    pub fn with_forced_faux(mut self, force: bool) -> Self {
+        self.force_faux = force;
+        self
+    }
+
+    pub fn forces_faux(&self) -> bool {
+        self.force_faux
     }
 
     /// An interactive session keeps its stable prefix for an hour; a headless
@@ -243,7 +261,7 @@ impl ProviderStream {
         effort: Effort,
         signal: &InterruptSignal,
     ) -> Receiver<AssistantMessageEvent> {
-        let Some(api) = provider_api(&model.api) else {
+        let Some(api) = provider_api(&model.api).filter(|_| !self.force_faux) else {
             return self.faux_stream();
         };
         let credential = match self.credential(&model.provider) {
@@ -349,5 +367,16 @@ mod tests {
             .ok_or("bundled catalog missing gpt-5.6-luna")?;
         assert_eq!(provider_api(&model.api), Some(ProviderApi::OpenAiResponses));
         Ok(())
+    }
+
+    /// A child of a `--faux` run spawns on the script, never on a login whose refresh dials out,
+    /// and streams from it too.
+    #[test]
+    fn a_scripted_stream_admits_any_provider_without_a_credential() {
+        let provider = "no-such-provider";
+        assert!(!ProviderStream::new(None).has_credential(provider));
+        let forced = ProviderStream::new(None).with_forced_faux(true);
+        assert!(forced.has_credential(provider));
+        assert!(forced.for_child().forces_faux());
     }
 }

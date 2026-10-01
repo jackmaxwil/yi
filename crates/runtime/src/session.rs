@@ -588,6 +588,13 @@ impl AgentSession {
         if let Some(broker) = &permission {
             broker.set_rule_journal(crate::wiring::journal_into(self.store_handle()));
         }
+        // A session with no store yet still spills under a dir of its own (D340).
+        let (store_id, unsaved) = (
+            self.store_id_hook(),
+            yi_session::IdGenerator::new().next_id(),
+        );
+        let spill_key: Arc<dyn Fn() -> Option<String> + Send + Sync> =
+            Arc::new(move || store_id().or_else(|| Some(unsaved.clone())));
         let adapters = tools
             .into_iter()
             .map(|tool| {
@@ -606,6 +613,7 @@ impl AgentSession {
                     .with_rules(self.rules_engine())
                     .with_check(crate::plan::covers::write_check(self.plan_service()))
                     .with_wall(self.wall())
+                    .with_spill_key(Arc::clone(&spill_key))
                     .with_extensions(Some(self.ext_hook())),
                 ) as Arc<dyn yi_loop::AgentTool>
             })
