@@ -528,10 +528,23 @@ fn a_cassette_is_refused_where_it_cannot_reach_the_model() -> TestResult {
             clippy::disallowed_methods,
             reason = "the flag contract is the spawned binary's argument parser"
         )]
-        let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
             .args(&road)
             .env("HOME", dir.home()?)
-            .output()?;
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        // An accepted road starts a daemon that never exits; the refusal is immediate.
+        let started = std::time::Instant::now();
+        while child.try_wait()?.is_none() {
+            if started.elapsed() > std::time::Duration::from_secs(5) {
+                child.kill()?;
+                child.wait()?;
+                return Err(format!("{road:?} was accepted: still running after 5 s").into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let output = child.wait_with_output()?;
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         assert_eq!(output.status.code(), Some(2), "{road:?}: {stderr}");
         assert!(
@@ -547,26 +560,11 @@ fn a_cassette_is_refused_where_it_cannot_reach_the_model() -> TestResult {
 /// rides the proxy here, so any connection the listener sees left the process.
 #[test]
 fn a_cassette_run_with_a_routed_model_stays_offline() -> TestResult {
-    use std::io::Read;
     let dir = Scratch::new("yi-faux-offline")?;
     // No `dir.home()`: its prewarm-off config would hide the kernel's venv install.
     let home = dir.join("home");
     std::fs::create_dir_all(&home)?;
-    let proxy = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let address = format!("http://{}", proxy.local_addr()?);
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let log = std::sync::Arc::clone(&seen);
-    std::thread::spawn(move || {
-        for mut stream in proxy.incoming().flatten() {
-            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(1)));
-            let mut head = [0u8; 256];
-            let read = stream.read(&mut head).unwrap_or(0);
-            let line = String::from_utf8_lossy(head.get(..read).unwrap_or_default());
-            if let Ok(mut log) = log.lock() {
-                log.push(line.lines().next().unwrap_or_default().to_owned());
-            }
-        }
-    });
+    let (address, seen) = recorder()?;
     let cassette = dir.join("cassette.jsonl");
     std::fs::write(&cassette, cassette_lines(&[], "scripted and offline"))?;
     let keys = dir.join("script.keys");
@@ -576,7 +574,8 @@ fn a_cassette_run_with_a_routed_model_stays_offline() -> TestResult {
         clippy::disallowed_methods,
         reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
     )]
-    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+    command
         .args([
             "tui",
             "--headless",
@@ -594,17 +593,8 @@ fn a_cassette_run_with_a_routed_model_stays_offline() -> TestResult {
             "30",
             "ping",
         ])
-        .env("HOME", &home)
-        .env("OPENROUTER_API_KEY", "sk-or-placeholder")
-        .env("HTTPS_PROXY", &address)
-        .env("HTTP_PROXY", &address)
-        .env("ALL_PROXY", &address)
-        .env_remove("https_proxy")
-        .env_remove("http_proxy")
-        .env_remove("all_proxy")
-        .env_remove("NO_PROXY")
-        .env_remove("no_proxy")
-        .output()?;
+        .env("HOME", &home);
+    let output = offline(&mut command, &address).output()?;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(output.status.success(), "drive run must exit 0: {stderr}");
     // A refresh thread may still be dialing after the drive quits.
@@ -619,6 +609,141 @@ fn a_cassette_run_with_a_routed_model_stays_offline() -> TestResult {
         assert!(
             all_frames.contains(needle),
             "{needle} missing from the frames"
+        );
+    }
+    Ok(())
+}
+
+/// A loopback listener every connection lands on; it logs each one's first line.
+fn recorder() -> std::io::Result<(String, std::sync::Arc<std::sync::Mutex<Vec<String>>>)> {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let address = format!("http://{}", listener.local_addr()?);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = std::sync::Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(1)));
+            let mut head = [0u8; 256];
+            let read = stream.read(&mut head).unwrap_or(0);
+            let line = String::from_utf8_lossy(head.get(..read).unwrap_or_default());
+            if let Ok(mut log) = log.lock() {
+                log.push(line.lines().next().unwrap_or_default().to_owned());
+            }
+        }
+    });
+    Ok((address, seen))
+}
+
+/// Every proxy variable at the recorder, and a placeholder key so a leak gets as far as a request.
+fn offline<'a>(command: &'a mut Command, address: &str) -> &'a mut Command {
+    command
+        .env("OPENROUTER_API_KEY", "sk-or-placeholder")
+        .env("HTTPS_PROXY", address)
+        .env("HTTP_PROXY", address)
+        .env("ALL_PROXY", address)
+        .env_remove("https_proxy")
+        .env_remove("http_proxy")
+        .env_remove("all_proxy")
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
+}
+
+/// The review of #960: a `--faux` run outside a drive claimed a lane, and the claim fetched
+/// `origin` (over ssh, past any proxy); and a classifier sidecar was a second road out. The
+/// origin and the sidecar are the recorder itself, so both would land on it.
+#[test]
+fn a_cassette_run_in_a_repo_with_an_origin_and_a_classifier_stays_offline() -> TestResult {
+    let dir = Scratch::new("yi-faux-origin")?;
+    let (address, seen) = recorder()?;
+    let home = dir.join("home");
+    std::fs::create_dir_all(home.join(".yi/skills/land"))?;
+    std::fs::write(
+        home.join(".yi/config.json"),
+        serde_json::json!({
+            "kernel": {"prewarm": false},
+            "models": {"classifier": "english"},
+            "classifier": {"url": address},
+        })
+        .to_string(),
+    )?;
+    std::fs::write(
+        home.join(".yi/skills/land/SKILL.md"),
+        "---\nname: land\ndescription: land a branch\ntrigger: land\n---\nLand it.\n",
+    )?;
+    let project = dir.join("project");
+    std::fs::create_dir_all(&project)?;
+    std::fs::write(project.join("README.md"), "trunk\n")?;
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["add", "README.md"],
+        &[
+            "-c",
+            "user.email=yi@example.com",
+            "-c",
+            "user.name=yi",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ],
+        &["remote", "add", "origin", &format!("{address}/r.git")],
+    ] {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the fixture repository is built with the real git the lane claim runs"
+        )]
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(&project)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()?;
+        assert!(status.success(), "git {args:?}");
+    }
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(&cassette, cassette_lines(&[], "scripted and offline"))?;
+    let cassette = cassette.display().to_string();
+    let sessions = dir.join("sessions").display().to_string();
+    for lanes in [&[][..], &["--lanes"]] {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the claim and the classifier run in the spawned binary; tests must run the real process"
+        )]
+        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        command
+            .arg("ask")
+            .args(lanes)
+            .args([
+                "--model",
+                "openrouter/anthropic/claude-opus-5",
+                "--faux",
+                &cassette,
+                "--session-dir",
+                &sessions,
+                "land the branch",
+            ])
+            .current_dir(&project)
+            .env("HOME", &home)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null");
+        let output = offline(&mut command, &address).output()?;
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{lanes:?}: {stderr}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("scripted and offline"),
+            "{lanes:?}: {stderr}"
+        );
+        // The lane's background fetch and the classifier's consult run beside the answer.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let seen = seen.lock().map_err(|_| "recorder log")?.clone();
+        assert!(
+            seen.is_empty(),
+            "{lanes:?}: --faux left the process: {seen:?}"
+        );
+        // Without `--lanes` the run works in place, as a drive does, and claims no lane.
+        assert_eq!(
+            home.join(".yi/lanes").exists(),
+            !lanes.is_empty(),
+            "{lanes:?}: lane claimed"
         );
     }
     Ok(())
