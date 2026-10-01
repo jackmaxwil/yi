@@ -33,7 +33,7 @@ fn field_hint(field: &str) -> &'static str {
             "; output is a url of the product (tree://<child>/<path> or file:///abs/path), omitted when there is none, and a check's output line belongs to the todo tool's evidence"
         }
         "todos" | "delegation" | "title" | "deps" | "accept" => {
-            "; a todo is {label, after?, contract?, delegation?: {spec: {role?, isolation?}, accept: {command: \"...\"}}}, and isolation worktree needs a contract"
+            "; a todo is {label, after?, intent?, waived?, contract?, delegation?: {spec: {role?, isolation?}, accept: {command: \"...\"}}}, and isolation worktree needs a contract"
         }
         "contract" | "check" | "acceptance" => {
             "; a contract is {class, items: [{id, critical, weight, decider: {cmd: \"shell command\"}}]}, or omit it and a worktree delegation's accept {command} is its contract"
