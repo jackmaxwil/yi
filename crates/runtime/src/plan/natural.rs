@@ -188,6 +188,33 @@ fn one_edit(a: &str, b: &str) -> bool {
     }
 }
 
+/// A todo written with `on` is blocked by its own call once the todo exists.
+pub(super) fn blocks(args: &mut Map<String, Value>) -> Vec<Map<String, Value>> {
+    let Some(Value::Array(todos)) = args.get_mut("todos") else {
+        return Vec::new();
+    };
+    let block = |todo: &mut Map<String, Value>| {
+        let on = todo.remove("on")?;
+        let label = todo.get("label").cloned()?;
+        let mut block = Map::from_iter([
+            ("op".to_owned(), json!("block")),
+            ("label".to_owned(), label),
+        ]);
+        block.insert("on".to_owned(), on);
+        for key in ["note", "options"] {
+            if let Some(value) = todo.remove(key) {
+                block.insert(key.to_owned(), value);
+            }
+        }
+        Some(block)
+    };
+    todos
+        .iter_mut()
+        .filter_map(Value::as_object_mut)
+        .filter_map(block)
+        .collect()
+}
+
 /// `goal` and `todos` open a plan and `list` sets one; a key named after an op, as a flag, holding
 /// the arguments or naming the todo, is that op.
 fn infer_op(args: &mut Map<String, Value>) {

@@ -575,6 +575,24 @@ impl PlanTool {
     }
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
+        let mut args = args.clone();
+        let blocks = super::natural::blocks(&mut args);
+        let mut text = self.apply(&args)?;
+        for block in &blocks {
+            match self.apply(block) {
+                Ok(reply) => text = reply,
+                Err(err) => {
+                    return Err(ArgError::Declared(format!("{text}\nblock refused: {err}")).into());
+                }
+            }
+        }
+        if !blocks.is_empty() {
+            text.push_str("\nnote: a todo's on became its own block once the todo existed");
+        }
+        Ok(text)
+    }
+
+    fn apply(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
         let (args, mut said) = super::natural::natural(args);
         if let Some(Value::Array(labels)) = args.get("labels")
             && (args.get("op").and_then(Value::as_str))

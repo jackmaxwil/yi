@@ -1,5 +1,5 @@
 {
- "source": "plan calls glm-5.3-flash sent in six rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982), refused then; checker commands replaced by `true`; the two misspellings are the cases a lenient reader must still refuse",
+ "source": "plan calls glm-5.3-flash sent in seven rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982), refused then; checker commands replaced by `true`; the two misspellings are the cases a lenient reader must still refuse",
  "cases": [
   {
    "name": "no op beside goal and todos",
@@ -212,8 +212,8 @@
      }
     ]
    },
-   "lands": false,
-   "says": "blocking is its own op"
+   "lands": true,
+   "says": "became its own block"
   },
   {
    "name": "a todo carrying todos",
@@ -1112,7 +1112,7 @@
    "says": "ran on the open plan"
   },
   {
-   "name": "a description on a todo is left out, its on still refuses",
+   "name": "a description on a todo is left out, its on blocks it",
    "setup": [],
    "call": {
     "goal": "Add input validation to calc.divide with the divide-by-zero behavior chosen by the user",
@@ -1134,8 +1134,8 @@
      }
     ]
    },
-   "lands": false,
-   "says": "does not take \"on\""
+   "lands": true,
+   "says": "became its own block"
   },
   {
    "name": "block with a question beside its note",
@@ -1639,6 +1639,32 @@
    },
    "lands": false,
    "says": "is not active"
+  },
+  {
+   "name": "a todo blocked on the user as it is declared",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "Add input validation to calc.divide, with the divide-by-zero behavior chosen by the user",
+    "todos": [
+     {
+      "label": "Decide divide-by-zero behavior with user",
+      "after": [],
+      "on": {
+       "user": null
+      },
+      "note": "User picks: ValueError, return None, or another behavior"
+     },
+     {
+      "label": "Plan validation for calc.divide",
+      "after": [
+       "Decide divide-by-zero behavior with user"
+      ]
+     }
+    ]
+   },
+   "lands": true,
+   "says": "became its own block"
   }
  ]
 }
