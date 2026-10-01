@@ -366,7 +366,12 @@ async fn a_walled_child_does_not_inherit_the_parents_pass() -> TestResult {
         "the juror's retry ran outside its wall on the parent's pass"
     );
     assert!(finished(), "the juror ran: {:?}", host.status());
-    assert_eq!(asks.load(Ordering::SeqCst), 2, "the juror's retry asks");
+    // #1001: a walled retry of a pathless refusal never leaves, so nobody is asked.
+    assert_eq!(
+        asks.load(Ordering::SeqCst),
+        1,
+        "the juror's retry is refused unasked"
+    );
     Ok(())
 }
 
