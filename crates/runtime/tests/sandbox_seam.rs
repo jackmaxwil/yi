@@ -1123,8 +1123,8 @@ async fn a_walled_retry_the_auto_reviewer_approves_never_runs_outside_the_sandbo
     Ok(())
 }
 
-/// #1001: a walled session's contained profile spared its own spill even when the wall itself
-/// named a folder above it, so a glob, which the wall's text check never matches, read it.
+/// #1001: a walled session's contained profile spared its own spill and transcript even when the
+/// wall itself named a folder above them, so a spelling the wall's text check misses read them.
 #[tokio::test]
 async fn a_glob_under_a_walled_ancestor_reaches_no_spared_spill() -> TestResult {
     if !Sandbox::available() {
@@ -1132,34 +1132,65 @@ async fn a_glob_under_a_walled_ancestor_reaches_no_spared_spill() -> TestResult 
     }
     let (_root, project, _, probe) = workspace("yi-seam-walled-ancestor")?;
     let home = probe.join(format!("yi-walled-ancestor-{}", std::process::id()));
-    std::fs::create_dir_all(home.join(".yi/spills/juror"))?;
-    std::fs::write(home.join(".yi/spills/juror/own.txt"), "OWN SPILL\n")?;
     // SAFETY: nextest runs each test in its own process; no other test reads HOME.
     unsafe { std::env::set_var("HOME", &home) };
-    // `/./` misses the text check; a glob through the walled root itself stats it and fails.
-    let glob = format!("cat {}/./.yi/spills/juror/own.t?t", home.display());
     let mut ran = Vec::new();
     for denied in [project.join("secret"), home.join(".yi")] {
-        let gate = BrokerSetup {
-            wall: Wall {
-                deny_read: vec![denied],
-                ..Wall::default()
-            },
-            session: Some("juror"),
-            ..BrokerSetup::default()
-        };
-        let sandbox = Sandbox::for_workspace(&project, &home, None);
-        ran.push(run_held(&project, &project, sandbox, &[&glob], gate).await);
+        ran.push(own_reads_under(&project, &home, denied).await);
     }
     let _ = std::fs::remove_dir_all(&home);
     let [open, walled] = <[_; 2]>::try_from(ran).map_err(|_| "two runs")?;
-    let (open, walled) = (open?.concat(), walled?.concat());
-    assert!(open.contains("OWN SPILL"), "the glob reads a spare: {open}");
-    assert!(
-        !walled.contains("OWN SPILL"),
-        "a spare reopened what the wall names: {walled}"
+    assert_eq!(open?, (true, true), "the spellings read the spares");
+    assert_eq!(
+        walled?,
+        (false, false),
+        "a spare reopened what the wall names"
     );
     Ok(())
+}
+
+/// Whether a session walled off `denied` reads its own spill (by a glob) and its own transcript,
+/// each spelled through `/./`, which the wall's text check misses.
+async fn own_reads_under(
+    project: &Path,
+    home: &Path,
+    denied: PathBuf,
+) -> Result<(bool, bool), Box<dyn Error>> {
+    let store = yi_session::create_flat_session(
+        home.join(".yi/sessions/fam"),
+        project.to_string_lossy(),
+        None,
+    )?;
+    let (id, transcript) = {
+        let store = yi_session::lock_session(&store);
+        (store.metadata().id.clone(), store.file_path().cloned())
+    };
+    let transcript = transcript
+        .ok_or("no transcript file")?
+        .display()
+        .to_string();
+    let spill = home.join(".yi/spills").join(&id);
+    std::fs::create_dir_all(&spill)?;
+    std::fs::write(spill.join("own.txt"), "OWN SPILL\n")?;
+    // Only the transcript file is spared, never its dir, so no glob can list it.
+    let reads = [
+        format!("cat {}/own.t?t", spill.display()),
+        format!("cat {transcript}"),
+    ]
+    .map(|read| read.replacen("/.yi/", "/./.yi/", 1));
+    let reads: Vec<&str> = reads.iter().map(String::as_str).collect();
+    let gate = BrokerSetup {
+        wall: Wall {
+            deny_read: vec![denied],
+            ..Wall::default()
+        },
+        store: Some(store),
+        ..BrokerSetup::default()
+    };
+    let sandbox = Sandbox::for_workspace(project, home, None);
+    let ran = run_held(project, project, sandbox, &reads, gate).await?;
+    let header = format!("\"id\":\"{id}\"");
+    Ok((ran[0].contains("OWN SPILL"), ran[1].contains(&header)))
 }
 
 /// #1001 review: a walled call a rule or an approval let out of the sandbox met only a text

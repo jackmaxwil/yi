@@ -86,7 +86,7 @@ fn facts_of(tool: &str, command: &str, output: &yi_tools::ToolOutput) -> Vec<Str
 async fn gate_armed(
     command: &str,
     (rules, wall, broker): Gates<'_>,
-    own: (&[PathBuf], &[PathBuf]),
+    walled: (&[PathBuf], &[PathBuf]),
     context: &ToolContext,
 ) -> Option<String> {
     let json = serde_json::to_string(&bash(command)).unwrap_or_default();
@@ -96,9 +96,9 @@ async fn gate_armed(
     {
         return Some(denial);
     }
-    let walled = host_wall(command, wall, own, &context.cwd);
-    if walled.is_some() {
-        return walled;
+    let refused = host_wall(command, wall, walled, &context.cwd);
+    if refused.is_some() {
+        return refused;
     }
     let (broker, id, owned) = (broker.cloned(), context.call_id.clone(), command.to_owned());
     let container = context.container.is_some();
@@ -108,7 +108,7 @@ async fn gate_armed(
 }
 
 /// Invariant: a command run on the host meets the wall by its text alone: the wall's own lists,
-/// and its walled roots save a spare (#1001). `own` is the walled roots and the spares.
+/// and its walled roots save a spare (#1001).
 pub(crate) fn host_wall(
     command: &str,
     wall: &crate::wall::Wall,
@@ -119,8 +119,8 @@ pub(crate) fn host_wall(
     walled.or_else(|| walled_root_refusal(command, roots, spared, cwd))
 }
 
-/// Refuses a command naming a root, or a directory above one, save through a spare: quoted,
-/// escaped, by `~`, `$HOME`, `..`, a link or a glob's head. Text only: `$(…)` or `cd ..` pass.
+/// Refuses a command naming a root or a dir above one, but a spare, in most spellings (`~`, a glob,
+/// `..` after a `cd`, glued to a flag). Text only: `$(…)`, a variable or a built path pass it.
 fn walled_root_refusal(
     command: &str,
     roots: &[PathBuf],
@@ -128,20 +128,36 @@ fn walled_root_refusal(
     cwd: &std::path::Path,
 ) -> Option<String> {
     let text = command.replace(['"', '\'', '\\'], "");
-    let words = text.replace("${HOME}", "~").replace("$HOME", "~");
-    let words = words.split(|c: char| c.is_whitespace() || "=;|&()<>`:@".contains(c));
-    let hit = words.filter(|word| !word.is_empty()).find_map(|word| {
-        let head: String = (word.split_inclusive('/'))
-            .take_while(|part| !part.contains(['*', '?', '[']))
-            .collect();
-        let path = yi_permission::resolve_target(&head, cwd);
-        roots.iter().find(|root| {
-            yi_tools::walled(std::slice::from_ref(&path), root)
-                || yi_tools::walled(std::slice::from_ref(*root), &path)
-                    && !yi_tools::walled(spared, &path)
-        })
-    });
-    hit.map(|root| crate::gate::outside_sandbox_refusal(root))
+    let text = text.replace("${HOME}", "~").replace("$HOME", "~");
+    let words = text.split(|c: char| c.is_whitespace() || "=;|&()<>`:@".contains(c));
+    // Every `cd` target joins the dirs a word is resolved from, scoped or not: fail closed.
+    let (mut dirs, mut after_cd) = (vec![cwd.to_path_buf()], false);
+    for word in words.filter(|word| !word.is_empty() && !roots.is_empty()) {
+        let glued = word.find('/').filter(|at| *at > 0).map(|at| &word[at..]);
+        for spelled in std::iter::once(word).chain(glued) {
+            let head: String = (spelled.split_inclusive('/'))
+                .take_while(|part| !part.contains(['*', '?', '[']))
+                .collect();
+            let paths: Vec<PathBuf> = (dirs.iter())
+                .map(|dir| yi_permission::resolve_target(&head, dir))
+                .collect();
+            let hit = roots.iter().find(|root| {
+                paths.iter().any(|path| {
+                    yi_tools::walled(std::slice::from_ref(path), root)
+                        || yi_tools::walled(std::slice::from_ref(*root), path)
+                            && !yi_tools::walled(spared, path)
+                })
+            });
+            if let Some(root) = hit {
+                return Some(crate::gate::outside_sandbox_refusal(root));
+            }
+            if after_cd {
+                dirs.extend(paths);
+            }
+        }
+        after_cd = matches!(word, "cd" | "pushd");
+    }
+    None
 }
 
 fn bash(command: &str) -> Map<String, Value> {
@@ -434,9 +450,9 @@ impl AgentTool for ToolAdapter {
             }
             drop(gate_span);
             for command in tool.arms(&args) {
-                let own = (walled_roots.as_slice(), spared.as_slice());
+                let walled = (walled_roots.as_slice(), spared.as_slice());
                 let gates = (&rules, &wall, permission.as_ref());
-                let refused = gate_armed(&command, gates, own, &context).await;
+                let refused = gate_armed(&command, gates, walled, &context).await;
                 if let Some(denial) = refused {
                     return ToolOutcome {
                         result: yi_loop::tool::error_tool_result_kind(

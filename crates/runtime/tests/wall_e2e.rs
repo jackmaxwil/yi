@@ -1000,6 +1000,8 @@ async fn a_walled_call_outside_the_sandbox_reads_no_other_sessions_store() -> Te
     let project = root.join("project");
     let (planted, store, [own_spill, transcript]) = plant_own(&home, &project)?;
     let other = home.join(".yi/spills/author/0123.txt");
+    let deep = project.join("a/b");
+    std::fs::create_dir_all(&deep)?;
     let yolo = yi_permission::PermissionMode::Yolo;
     let (session, provider) = wired_child(&root, &project, juror_wall(&project), yolo, None);
     session.attach_store(store)?;
@@ -1013,6 +1015,15 @@ async fn a_walled_call_outside_the_sandbox_reads_no_other_sessions_store() -> Te
         ),
         format!("curl -s file://{}", other.display()),
         format!("curl -s -d @{} file:///dev/null", other.display()),
+        // A `cd` the check follows, and a path glued to a flag.
+        format!(
+            "cd {} && cat ../../../home/.yi/spills/author/0123.txt",
+            deep.display()
+        ),
+        format!(
+            "tar -C{} -cf - author | tar -xOf -",
+            home.join(".yi/spills").display()
+        ),
         format!("cat {}", own_spill.display()),
         format!("cat {}", transcript.display()),
     ];
@@ -1021,9 +1032,9 @@ async fn a_walled_call_outside_the_sandbox_reads_no_other_sessions_store() -> Te
         .collect();
     let seen = run_turns(&session, &provider, calls).await?;
     let [.., spill, own] = seen.as_slice() else {
-        return Err(format!("eight calls, got {seen:?}").into());
+        return Err(format!("ten calls, got {seen:?}").into());
     };
-    for (command, (text, _)) in commands.iter().zip(&seen[..6]) {
+    for (command, (text, _)) in commands.iter().zip(&seen[..8]) {
         assert!(
             !text.contains("WALLED") && text.contains("runs outside the sandbox"),
             "{command} reached a walled session: {text}"
@@ -1055,7 +1066,7 @@ async fn a_walled_heartbeat_source_names_no_walled_path() -> TestResult {
     // SAFETY: nextest runs each test in its own process; no other test reads HOME.
     unsafe { std::env::set_var("HOME", &home) };
     let project = root.join("project");
-    let (planted, store, [own_spill, _]) = plant_own(&home, &project)?;
+    let (planted, store, [own_spill, transcript]) = plant_own(&home, &project)?;
     std::fs::create_dir_all(project.join("secret"))?;
     std::fs::write(project.join("secret/key.txt"), "WALLED KEY\n")?;
     let mut wall = juror_wall(&project);
@@ -1073,6 +1084,7 @@ async fn a_walled_heartbeat_source_names_no_walled_path() -> TestResult {
         (planted.author, true),
         (home.join(".yi/spills/author/0123.txt"), true),
         (own_spill, false),
+        (transcript, false),
     ] {
         let address = format!("exec://cat {}?every=30s", path.display());
         let payload = serde_json::json!({"address": address, "prompt": "watch"});
