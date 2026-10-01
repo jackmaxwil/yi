@@ -11,6 +11,7 @@ environment, since the merged tree's hooks run the PR's own code; the push is ma
 trusted checkout. Verbs: `just pr autofix` (one pass, oldest PR first), `just pr autofix N`.
 """
 import datetime
+import itertools
 import json
 import os
 import pathlib
@@ -38,9 +39,13 @@ LABELS = {
 QUIET = 2 * 3600
 PER_RUN = 3
 CAP_DAY, CAP_PR = 25.0, 8.0
-GLM = ("openrouter/z-ai/glm-5.3-flash", None)
-OPUS = ("openrouter/anthropic/claude-opus-5.5", "high")
-OPUS_AT = 3
+# The owner's tiers (2026-10-01), meant for roughly 60/30/10 of fixes: (model, thinking), cheapest first.
+TIERS = (("openrouter/z-ai/glm-5.3-flash", "high"), ("openrouter/openai/gpt-6.1-sol", "medium"),
+         ("openrouter/anthropic/claude-opus-5.5", "high"))
+TIER_NAMES = ("low", "medium", "high")
+# Points that move a fix up a tier: cut where 61/30/9 of the 44 fixable blocked rounds of
+# 2026-09-20..10-01 fell. `just pr spend` shows the split each tier really took.
+TIER_AT = (10, 15)
 MARKER = re.compile(r"^(<<<<<<<|>>>>>>>)( |$)", re.M)
 RAISE = re.compile(r"says `raise: ([^`]+)`")
 RESOLVE_SCHEMA = {"type": "object", "required": ["summary"], "properties": {"summary": {"type": "string"}}}
@@ -74,9 +79,21 @@ def decide(labels, conflicted, quiet_for, asked=False, blocked=False):
     return "fix" if conflicted else "findings"
 
 
-def model_for(items):
-    """Opus 5.5 at high effort from three conflicted files or three high findings, GLM below."""
-    return OPUS if len(items) >= OPUS_AT else GLM
+def points(heavy, light):
+    """A fix's size: three for each high finding or conflicted file, one for each medium finding or
+    each conflict hunk past a file's first."""
+    return 3 * heavy + light
+
+
+def tier_for(score, tried=0):
+    """The tier for a fix of `score` points, one up for each earlier try that did not clear it."""
+    return TIERS[min(sum(score >= at for at in TIER_AT) + tried, len(TIERS) - 1)]
+
+
+def misses(notes):
+    """Autofix attempts on this PR that failed since its last pushed fix."""
+    verdicts = [row.get("verdict") for row in bot_meter.rows(notes) if row["kind"] == "yi-autofix"]
+    return sum(v == "failed" for v in itertools.takewhile(lambda v: v != "pushed", reversed(verdicts)))
 
 
 def fix_spend(comments):
@@ -150,7 +167,7 @@ def hook_prompt(pr, refused):
     )
 
 
-def resolve_in(clone, pr, base_ref, answer):
+def resolve_in(clone, pr, base_ref, answer, tried=0):
     """Merge the base into the clone's checkout and resolve it. Returns (summary, model, touched);
     raises RuntimeError with the reason a person reads when the fix cannot stand."""
     merged = sh(clone, "git", "-c", "user.name=yi-bot", "-c", "user.email=yi-bot@noreply.example.invalid",
@@ -163,7 +180,9 @@ def resolve_in(clone, pr, base_ref, answer):
         raise RuntimeError(f"a conflict in a file the fixer may not touch: {', '.join(walled)}")
     summary, model, touched = "git merged it without a conflict", None, []
     if conflicted:
-        model = model_for(conflicted)
+        hunks = sum(len(re.findall(r"^<<<<<<< ", (clone / p).read_text(errors="replace"), re.M))
+                    for p in conflicted if (clone / p).is_file())
+        model = tier_for(points(len(conflicted), max(hunks - len(conflicted), 0)), tried)
         said = answer(resolve_prompt(pr, base_ref, conflicted), model)
         summary = (said.get("summary") or "").strip() or "the model gave no summary"
         touched, note = accept(clone, conflicted)
@@ -252,9 +271,9 @@ def findings_prompt(pr, n, todo):
                        + (f" — suggested: {f['fix']}" if f.get("fix") else "") for i, f in enumerate(todo, 1))
     return (
         f"Your working directory is pull request #{pr['number']} ({pr['title']!r}). Review round {n} blocked it "
-        "with the findings below. Fix every high finding with the smallest change that does it. A finding you can "
-        "show is wrong after reading the code: change nothing for it and decline it in `declined`, naming the "
-        "file:line that shows why; a person decides those. A medium finding you may decline with a reason.\n"
+        "with the findings below. Fix every one, high and medium, with the smallest change that does it. A finding "
+        "you can show is wrong after reading the code: change nothing for it and decline it in `declined`, naming "
+        "the file:line that shows why; a person decides those. Scope is no reason to decline: these are the work.\n"
         "A finding about a test is fixed by a test that fails against the unfixed code: revert your fix here, run "
         "the test and see it fail, restore it and see it pass, and quote both results in `summary`. Never delete "
         "or weaken a test or an assertion to make a finding go away.\n"
@@ -293,7 +312,7 @@ def prior_fixes(repo, sha):
     return count
 
 
-def findings_in(clone, pr, rnd, answer):
+def findings_in(clone, pr, rnd, answer, tried=0):
     """Answer a blocked round's findings in the clone. Returns (summary, model, touched, declined highs)."""
     todo = [f for f in rnd["findings"] if f["severity"] in ("high", "medium") and f["lens"] not in INTAKE]
     highs = [f for f in todo if f["severity"] == "high"]
@@ -301,7 +320,7 @@ def findings_in(clone, pr, rnd, answer):
         lenses = sorted({f["lens"] for f in rnd["findings"] if f["severity"] == "high"})
         raise RuntimeError(f"round {rnd['n']} is blocked by {', '.join(lenses) or 'nothing'} findings the fixer does not "
                            "answer (the PR body's template, a duplicate); a person does")
-    model = model_for(highs)
+    model = tier_for(points(len(highs), len(todo) - len(highs)), tried)
     said = answer(findings_prompt(pr, rnd["n"], todo), model, FINDINGS_SCHEMA)
     touched, note = accept(clone, [], keep_new=NEW_FILE.match)
     refused = weakened(clone)
@@ -316,7 +335,7 @@ def findings_in(clone, pr, rnd, answer):
     return summary, model, touched, declined_highs
 
 
-def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None):
+def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0):
     """One attempt on one PR: a conflict with its base, or the findings of a round that blocked its
     head. Returns the ledger fields; raises RuntimeError with the reason a person reads."""
     sha, ref, base_ref = pr["head"]["sha"], pr["head"]["ref"], pr["base"]["ref"]
@@ -329,12 +348,13 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None):
                                                                   thinking=model[1], env=scrubbed(), sessions=sessions)
         declined_highs = []
         if kind == "conflict":
-            summary, model, touched = resolve_in(clone, pr, base_ref, answer)
+            summary, model, touched = resolve_in(clone, pr, base_ref, answer, tried)
             subject, signed = f"Merge {base_ref} into this branch and resolve its conflicts", ""
         else:
-            if prior_fixes(root, sha) >= 2:
+            before = prior_fixes(root, sha)
+            if before >= 2:
                 raise RuntimeError("two fixes in a row did not clear the review; a person is next")
-            summary, model, touched, declined_highs = findings_in(clone, pr, rnd, answer)
+            summary, model, touched, declined_highs = findings_in(clone, pr, rnd, answer, tried + before)
             subject, signed = f"Answer the findings review round {rnd['n']} confirmed", f"{SIGNED} {rnd['n']} on #{pr['number']}.\n"
         reprice(clone)
         message = lambda: (f"{subject}\n\n{summary}\n\n{signed}"
@@ -350,7 +370,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None):
             # Incident: #970's merge resolved cleanly and left session.rs one line past the 1,200
             # cap; a hook's FAIL lines are a task the model can do, so it gets one turn at them.
             refused = failures(committed.stdout + committed.stderr)
-            said = answer(hook_prompt(pr, refused), model or GLM)
+            said = answer(hook_prompt(pr, refused), model or TIERS[0])
             more, note = accept(clone, [], keep_new=NEW_FILE.match if kind == "findings" else lambda path: False)
             touched = sorted(set(touched) | set(more))
             if kind == "findings" and weakened(clone):
@@ -371,6 +391,7 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None):
         if pushed.returncode:
             raise RuntimeError(f"git push refused: {said}")
         return {"kind": kind, "from": sha[:12], "to": new[:12], "base": base_ref, "model": model[0] if model else "none",
+                "tier": TIER_NAMES[TIERS.index(model)] if model else "none",
                 "round": rnd["n"] if rnd else "", "files": len(touched), "summary": summary, "touched": touched,
                 "declined": declined_highs}
     finally:
@@ -380,16 +401,16 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None):
 
 def render(n, fields, verdict, reason="", status=""):
     meter = bot_meter.meta(pr_review.METER.fields())
-    head = " ".join(f"{k}={fields[k]}" for k in ("kind", "from", "to", "base", "model", "round") if fields.get(k) not in (None, ""))
+    head = " ".join(f"{k}={fields[k]}" for k in ("kind", "from", "to", "base", "model", "tier", "round") if fields.get(k) not in (None, ""))
     lines = ["<!-- yi-autofix -->", f"<!-- yi-autofix-meta pr={n} {head} {meter} verdict={verdict} -->"]
     if verdict == "pushed" and fields["kind"] == "conflict":
         lines += [f"**Autofix** merged `origin/{fields['base']}` into this branch: `{fields['from'][:8]}` → "
                   f"`{fields['to'][:8]}`, {fields['files']} file(s) resolved"
-                  + (f" by `{fields['model']}`" if fields["model"] != "none" else " by git alone")
+                  + (f" by `{fields['model']}` ({fields['tier']} tier)" if fields["model"] != "none" else " by git alone")
                   + ". The review bot reads it like any push.", "", fields["summary"]]
     elif verdict == "pushed":
         lines += [f"**Autofix** answered review round {fields['round']}: `{fields['from'][:8]}` → `{fields['to'][:8]}`, "
-                  f"{fields['files']} file(s) changed by `{fields['model']}`. The review bot reads it like any push.", "",
+                  f"{fields['files']} file(s) changed by `{fields['model']}` ({fields['tier']} tier). The review bot reads it like any push.", "",
                   fields["summary"]]
     else:
         lines += ["**Autofix failed**; `autofix:failed` stops it until the label is removed.", "", "```", reason.strip(), "```"]
@@ -464,7 +485,7 @@ def attempt(repo, pr, ids, asked=False):
     set_label(repo, number, ids, "autofix:working", True)
     fields, verdict, reason = {}, "failed", ""
     try:
-        fields = fix(pr, kind="conflict" if said == "fix" else "findings", rnd=rnd)
+        fields = fix(pr, kind="conflict" if said == "fix" else "findings", rnd=rnd, tried=misses(notes))
         verdict = "pushed"
     except LookupError as err:
         # The author pushed meanwhile; the next pass reads the new head.
@@ -534,12 +555,18 @@ def selfcheck():
     errs += [f"decide{args} said {decide(*args)}, not {want}" for args, want in table if decide(*args) != want]
     if decide(set(), ["a.rs"], 60, asked=True) != "fix":
         errs.append("a fix asked for by number waits out the quiet hours")
-    if model_for(["a", "b"]) != GLM or model_for(["a", "b", "c"]) != OPUS:
-        errs.append("the model tier is not GLM under three conflicted files and Opus at three")
+    tiers = [(points(3, 0), 0, 0), (points(2, 4), 0, 1), (points(4, 2), 0, 1), (points(4, 3), 0, 2), (points(1, 2), 1, 1),
+             (points(1, 2), 2, 2), (points(9, 9), 3, 2)]
+    errs += [f"{score} points after {tried} miss(es) took {tier_for(score, tried)}, not tier {want}"
+             for score, tried, want in tiers if tier_for(score, tried) != TIERS[want]]
     bot = {"user": {"login": pr_review.BOT}}
     notes = [dict(bot, body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1 cost=0.5000 verdict=pushed -->\n"),
              dict(bot, body="<!-- yi-round 1 -->\n<!-- yi-round-meta pr=1 sha=abcdef1 verdict=clean cost=0.3000 -->\n"),
              {"user": {"login": "someone"}, "body": "<!-- yi-autofix-meta pr=1 cost=99 verdict=pushed -->"}]
+    tries = notes + [dict(bot, body=f"<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=1 verdict={v} -->\n")
+                     for v in ("failed", "capped", "failed")]
+    if (misses(notes), misses(tries), misses(tries + notes[:1])) != (0, 2, 0):
+        errs.append(f"the misses since the last push read {misses(notes), misses(tries), misses(tries + notes[:1])}")
     if fix_spend(notes) != 0.5:
         errs.append(f"the fixer's cap read {fix_spend(notes)}, not 0.5: only its own meta lines count")
     if not NEW_FILE.match("crates/a/tests/new.rs") or NEW_FILE.match("target-check/x.d") or NEW_FILE.match("crates/a/target/x.rs"):
@@ -585,7 +612,7 @@ def selfcheck():
                 git("merge", "--abort")
 
         good = run({"a.txt": "main and topic\n"})
-        if not (isinstance(good, tuple) and good[2] == ["a.txt"] and good[1] == GLM):
+        if not (isinstance(good, tuple) and good[2] == ["a.txt"] and good[1] == TIERS[0]):
             errs.append(f"a clean resolution read {good}")
         if "markers left" not in str(run({"a.txt": "<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> main\n"})):
             errs.append("a resolution that left markers was accepted")
@@ -637,7 +664,8 @@ def selfcheck():
             {"lens": "duplicate", "severity": "high", "claim": "a twin", "path": "", "line": 0}]}
 
         def findings_run(write, declined=()):
-            def model(prompt, schema, cwd, **_):
+            def model(prompt, schema, cwd, **kw):
+                asked.append(kw["model"])
                 for path, text in write.items():
                     (pathlib.Path(cwd) / path).write_text(text)
                 return {"summary": "done", "declined": [{"n": n, "reason": "read a.txt:1"} for n in declined]}
@@ -648,6 +676,7 @@ def selfcheck():
             except RuntimeError as err:
                 return str(err)
 
+        asked = []
         if "deletes a test" not in str(findings_run({"t.rs": "fn t() {}\n"})):
             errs.append("a fix that deleted the test was accepted")
         if "more assertion" not in str(findings_run({"t.rs": "#[test]\nfn t() {\n}\n"})):
@@ -655,7 +684,7 @@ def selfcheck():
         good = findings_run({"t.rs": "#[test]\nfn t() {\n    assert!(f());\n    assert!(g());\n}\n"}, declined=[2])
         sh(tmp, "git", "fetch", "-q", "origin")
         body = sh(tmp, "git", "log", "-1", "--format=%B", "origin/topic").stdout
-        if not (isinstance(good, dict) and pr_review.answered(body, 4, 7) and [n for n, _, _ in good["declined"]] == [2]):
+        if not (isinstance(good, dict) and good["tier"] == "low" and pr_review.answered(body, 4, 7) and [n for n, _, _ in good["declined"]] == [2]):
             errs.append(f"an answered round read {good if not isinstance(good, dict) else good['declined']}, signed={pr_review.answered(body, 4, 7)}")
         if prior_fixes(tmp, sh(tmp, "git", "rev-parse", "origin/topic").stdout.strip()) != 1:
             errs.append("the fixer's own commit at the head is not counted as one prior fix")
@@ -666,6 +695,8 @@ def selfcheck():
         rnd = rnd_saved
         second = findings_run({"t.rs": "#[test]\nfn t() {\n    assert!(f());\n    assert!(g());\n    assert!(h());\n}\n"})
         third = findings_run({"t.rs": "#[test]\nfn t() {\n    assert!(f());\n    assert!(g());\n    assert!(h());\n    assert!(i());\n}\n"})
+        if asked[2] != TIERS[0][0] or asked[-1] != TIERS[1][0]:
+            errs.append(f"the first fix took {asked[2]} and the one after it {asked[-1]}: a fix the review did not clear moves up a tier")
         if not isinstance(second, dict) or "two fixes in a row" not in str(third):
             errs.append(f"a third fix in a row was not stopped: second={'pushed' if isinstance(second, dict) else second}, third={third}")
     finally:
