@@ -156,11 +156,8 @@ type Gates<'a> = (
 
 /// The §7.3 tee target: the home root, never the user's working tree; one dir per session.
 fn default_spill_root() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi/spills"))
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi").join(yi_tools::SPILLS))
 }
-
-/// Where every session kept its spills before they were per session (D316); none owns them.
-const FLAT_SPILLS: &str = "tool-output";
 
 impl ToolAdapter {
     pub fn new(
@@ -198,20 +195,14 @@ impl ToolAdapter {
         Some(self.spill_root.as_ref()?.join(key))
     }
 
-    /// Invariant: a walled session reads back only its own spills: every other session's dir,
-    /// listed per call, and the flat dir from before spills were per session join `deny_read`.
-    fn call_wall(&self, own: Option<&std::path::Path>) -> crate::wall::Wall {
-        let mut wall = self.wall.clone();
-        let Some(root) = self.spill_root.as_ref().filter(|_| !wall.is_empty()) else {
-            return wall;
-        };
-        let others = std::fs::read_dir(root).into_iter().flatten().flatten();
-        let others = others
-            .map(|entry| entry.path())
-            .filter(|dir| Some(dir.as_path()) != own);
-        wall.deny_read
-            .extend(others.chain(root.parent().map(|yi| yi.join(FLAT_SPILLS))));
-        wall
+    /// Invariant: a walled session reads back only its own spills: the spill root and the flat
+    /// dir from before spills were per session are walled, and its own dir is spared.
+    fn spill_walls(&self) -> Vec<PathBuf> {
+        let root = self.spill_root.as_ref().filter(|_| !self.wall.is_empty());
+        let flat = root
+            .and_then(|root| root.parent())
+            .map(|yi| yi.join(yi_tools::FLAT_SPILLS));
+        root.cloned().into_iter().chain(flat).collect()
     }
 
     pub fn with_extensions(mut self, ext: Option<crate::session::ExtHook>) -> Self {
@@ -290,21 +281,21 @@ impl AgentTool for ToolAdapter {
         _signal: &'a InterruptSignal,
     ) -> ToolFuture<'a> {
         let tool = Arc::clone(&self.tool);
-        let recovery_dir = self.session_spills();
-        let wall = self.call_wall(recovery_dir.as_deref());
+        let (spared, spill_walls) = (self.session_spills(), self.spill_walls());
         let mut context = ToolContext {
             cwd: self.cwd.clone(),
             cancelled: Arc::clone(&self.cancelled),
-            recovery_dir,
+            recovery_dir: spared.clone(),
             auto_background: self.auto_background,
             sandbox: None,
-            deny_read: wall.deny_read.clone(),
-            deny_write: wall.deny_write.clone(),
-            container: wall.container.clone(),
+            deny_read: [self.wall.deny_read.as_slice(), &spill_walls].concat(),
+            deny_write: self.wall.deny_write.clone(),
+            container: self.wall.container.clone(),
             call_id: tool_call_id.to_owned(),
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();
+        let wall = self.wall.clone();
         let ext = self.ext.clone();
         let check = self.check.clone();
         let call_id = tool_call_id.to_owned();
@@ -383,7 +374,12 @@ impl AgentTool for ToolAdapter {
                 match outcome {
                     Ok(outcome) if outcome.allowed => {
                         if let Containment::Contained { widen, .. } = &outcome.containment {
-                            context.sandbox = reporter.sandbox_for(&context.cwd, &wall, widen);
+                            context.sandbox = (reporter.sandbox_for(&context.cwd, &wall, widen))
+                                .map(|mut sandbox| {
+                                    sandbox.deny_read.extend_from_slice(&spill_walls);
+                                    sandbox.spared = spared.filter(|_| !spill_walls.is_empty());
+                                    sandbox
+                                });
                             contained = context.sandbox.as_ref().map(|_| reporter);
                         } else if wall.container.is_none() {
                             outside = reporter.outside_notice(tool.name(), &args, &outcome);

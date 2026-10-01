@@ -587,23 +587,44 @@ async fn a_walled_session_reads_back_its_own_spill_and_no_other() -> TestResult 
         pointer.starts_with(&home.join(".yi/spills/juror/").display().to_string()),
         "the spill is not under the session's own dir: {pointer}"
     );
-    let reads = [
-        pointer,
-        &other.display().to_string(),
-        &legacy.display().to_string(),
-    ]
-    .map(|path| ("read", args(&[("path", path)])));
-    let seen = run_turns(&session, &provider, reads.to_vec()).await?;
-    let [own, author, flat] = seen.as_slice() else {
-        return Err(format!("three reads, got {seen:?}").into());
+    let (other_path, flat_path) = (other.display().to_string(), legacy.display().to_string());
+    let mut calls = [pointer, &other_path, &flat_path]
+        .map(|path| ("read", args(&[("path", path)])))
+        .to_vec();
+    calls.push(("grep", args(&[("pattern", "^20000$"), ("path", pointer)])));
+    let seen = run_turns(&session, &provider, calls).await?;
+    let [own, author, flat, grep] = seen.as_slice() else {
+        return Err(format!("four calls, got {seen:?}").into());
     };
     let head: String = own.0.chars().take(300).collect();
     assert!(!own.1 && own.0.contains("\n20:20\n"), "own spill: {head}");
+    assert!(
+        grep.0.contains("20000"),
+        "grep of its own spill: {}",
+        grep.0
+    );
     for (name, (text, is_error)) in [("another session's", author), ("a flat", flat)] {
         assert!(
-            *is_error && text.contains("deny_read") && !text.contains("WALLED"),
+            *is_error && !text.contains("WALLED"),
             "{name} spill reached a walled session: {text}"
         );
     }
+    // An unwalled session's bash reads any file the user can, so its `read` is not walled either.
+    let mut open = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    open.use_tools(yi_tools::builtin_tools(), root.to_path_buf(), None);
+    let read = vec![("read", args(&[("path", other_path.as_str())]))];
+    let (text, _) = run_turns(&open, &provider, read)
+        .await?
+        .pop()
+        .ok_or("no read")?;
+    assert!(text.contains("WALLED OUTPUT"), "an unwalled read: {text}");
     Ok(())
 }

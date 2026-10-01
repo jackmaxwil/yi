@@ -41,7 +41,8 @@ impl ToolContext {
     /// The gate every file a call names opens through, so the file judged is the file opened
     /// (#890). Built once per call: each guarded directory costs a stat.
     pub(crate) fn read_gate(&self) -> yi_permission::ReadGate {
-        yi_permission::ReadGate::new(&yi_permission::CatastrophicContext::detect(&self.cwd))
+        let context = yi_permission::CatastrophicContext::detect(&self.cwd);
+        yi_permission::ReadGate::new(&context).except(self.recovery_dir.clone())
     }
 
     /// A named file's bytes, read through [`Self::read_gate`] under the wall's `deny_read`.

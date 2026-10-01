@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+/// The spill root's name under `~/.yi`, one dir per session inside it (D340).
+pub const SPILLS: &str = "spills";
+/// The dir beside it every session shared before spills were per session (D316).
+pub const FLAT_SPILLS: &str = "tool-output";
 const HELD: usize = 64 * 1024;
 const CEILING: u64 = 256 * 1024 * 1024;
 /// The sweep deletes a kept spill after a week, and a `.part` file, whose writer died, after a day.
@@ -63,7 +67,7 @@ impl Spill {
         let dir = self.dir.clone().ok_or(io::ErrorKind::NotFound)?;
         private_dir(dir.parent().ok_or(io::ErrorKind::NotFound)?)?;
         private_dir(&dir)?;
-        let path = dir.join(format!(".{}.part", unpredictable()?));
+        let path = dir.join(format!(".{}.part", random_name()?));
         let mut options = OpenOptions::new();
         options.read(true).write(true).create_new(true);
         #[cfg(unix)]
@@ -119,6 +123,11 @@ fn private_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
     builder.create(dir)?;
+    keep_private(dir)
+}
+
+/// Refused when a link or not a dir, and made 0700 again when open to group or others.
+fn keep_private(dir: &Path) -> io::Result<()> {
     let meta = fs::symlink_metadata(dir)?;
     if !meta.is_dir() {
         let refusal = format!("{} is a link or not a directory", dir.display());
@@ -135,7 +144,7 @@ fn private_dir(dir: &Path) -> io::Result<()> {
 }
 
 /// 128 bits from the OS, so no `.part` name can be planted ahead of its writer (#881).
-fn unpredictable() -> io::Result<String> {
+fn random_name() -> io::Result<String> {
     let mut bytes = [0_u8; 16];
     File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     Ok(format!("{:032x}", u128::from_ne_bytes(bytes)))
@@ -190,19 +199,28 @@ fn sweep(root: &Path) {
             continue;
         }
         let idle = older(entry.metadata(), KEPT_FOR);
-        for file in fs::read_dir(entry.path()).into_iter().flatten().flatten() {
-            let path = file.path();
-            let age = match path.extension().and_then(|ext| ext.to_str()) {
-                Some("txt") => KEPT_FOR,
-                Some("part") => PART_FOR,
-                _ => continue,
-            };
-            if older(file.metadata(), age) {
-                let _raced_by_another_sweep = fs::remove_file(path);
-            }
-        }
+        sweep_files(&entry.path());
         if idle {
             let _written_again_or_not_empty = fs::remove_dir(entry.path());
+        }
+    }
+    let flat = root.with_file_name(FLAT_SPILLS);
+    if root.file_name().is_some_and(|name| name == SPILLS) && keep_private(&flat).is_ok() {
+        sweep_files(&flat);
+        let _still_holds_a_young_spill = fs::remove_dir(flat);
+    }
+}
+
+fn sweep_files(dir: &Path) {
+    for file in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = file.path();
+        let age = match path.extension().and_then(|ext| ext.to_str()) {
+            Some("txt") => KEPT_FOR,
+            Some("part") => PART_FOR,
+            _ => continue,
+        };
+        if older(file.metadata(), age) {
+            let _raced_by_another_sweep = fs::remove_file(path);
         }
     }
 }
@@ -255,6 +273,13 @@ mod tests {
             live.join("old.txt").exists(),
             "the sweep went through a linked root"
         );
+        let elsewhere = Scratch::new("yi-spill-sweep-elsewhere")?;
+        fs::write(elsewhere.join("old.txt"), "old")?;
+        let file = OpenOptions::new()
+            .write(true)
+            .open(elsewhere.join("old.txt"))?;
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH)?;
+        std::os::unix::fs::symlink(&*elsewhere, root.join("s3"))?;
         sweep(&root);
         let mut left: Vec<String> = fs::read_dir(&live)?
             .flatten()
@@ -263,6 +288,10 @@ mod tests {
         left.sort();
         assert_eq!(left, ["fresh.txt", "keep.me"]);
         assert!(!idle.exists(), "an emptied dir idle for a week stays");
+        assert!(
+            elsewhere.join("old.txt").exists(),
+            "the sweep followed a linked session dir"
+        );
         Ok(())
     }
 }
