@@ -7,7 +7,6 @@ use yi_types::plan::doc::{Isolation, PlanId, PlanState, Todo, TodoLabel, TodoSta
 
 use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError};
 
-const CHECK_TIMEOUT_MS: u64 = 60_000;
 pub(super) const NOTE_REF: &str = "note_ref";
 
 pub struct Blob {
@@ -34,7 +33,7 @@ fn cmd_item(item: &mut Value, blobs: &mut Vec<Blob>) -> Option<()> {
     let cmd = cmd.as_object_mut()?;
     let timeout = cmd
         .entry("timeout_ms")
-        .or_insert(json!(CHECK_TIMEOUT_MS))
+        .or_insert(json!(crate::goal::DEFAULT_CHECK_TIMEOUT_MS))
         .as_u64()?;
     let command = cmd.get("checker")?.as_str()?.to_owned();
     let manifest = json!({

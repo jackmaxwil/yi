@@ -788,7 +788,7 @@ pub fn schema() -> Value {
     let contract = json!({"type": "object", "required": ["class", "items"], "properties": {
         "class": {"type": "string", "enum": ["writer", "reader", "inline"]}, "covers": {"type": "array", "items": {"type": "string"}, "description": "globs whose writes preview the cmd items"}, "threshold": {"type": "integer", "minimum": 1, "maximum": 1000}, "min_coverage": {"type": "integer", "minimum": 1, "maximum": 1000},
         "items": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["id", "critical", "weight", "decider"], "properties": {"id": {"type": "string"}, "critical": {"type": "boolean"}, "weight": {"type": "integer", "minimum": 1, "maximum": 100},
-            "decider": {"type": "object", "description": "{cmd: \"shell command that exits 0 only when the item holds\"}, or {cmd: {checker: command, timeout_ms}} (default 60000); {schema: {schema: artifact}}; {example: {cases: artifact, runner: artifact, timeout_ms}}; an artifact is {digest, media_type, length}"}}}}}});
+            "decider": {"type": "object", "description": "{cmd: \"shell command that exits 0 only when the item holds\"}, or {cmd: {checker: command, timeout_ms}} (default 600000); {schema: {schema: artifact}}; {example: {cases: artifact, runner: artifact, timeout_ms}}; an artifact is {digest, media_type, length}"}}}}}});
     json!({
             "type": "object",
             "properties": {
