@@ -226,15 +226,34 @@ impl RuntimeWiring {
             .map(|sandbox| crate::kernel::kernel_profile(&sandbox, Some(&self.family_dir())))
     }
 
-    /// The kernel's and its `bash()` jobs' profile holds the wall, as a contained call's does
-    /// (#889): a cell opens files with no tool seam to check them.
+    /// The kernel's and its `bash()` jobs' profile holds the wall and a contained call's walled
+    /// roots (#889), since a cell opens files past the tool seam; its own dir and board read again.
     fn session_sandbox(&self) -> Option<yi_tools::Sandbox> {
         let private = (self.depth > 0 || self.sessions_dir.is_none()).then(|| self.kernel_dir());
         let mut sandbox = crate::workspace_sandbox(&self.cwd, &self.home, private.as_deref())?;
         sandbox.host_owned.extend(self.sessions_dir.clone());
         sandbox.deny_write.extend_from_slice(&self.wall.deny_write);
         sandbox.deny_read.extend_from_slice(&self.wall.deny_read);
+        if !self.wall.is_empty() {
+            let spills = crate::tools::default_spill_root();
+            let roots = crate::tools::walled_roots(spills.as_deref(), self.broker.as_deref());
+            sandbox.deny_read.extend(roots);
+            sandbox
+                .spared
+                .extend(private.into_iter().chain([self.family_dir()]));
+        }
         Some(sandbox)
+    }
+
+    /// A walled session's own spill dir, named as a kernel boots or a job spawns: a child's
+    /// store attaches after its wiring. Its transcript sits in its own dir, spared already.
+    fn own_spills(&self, session: &AgentSession) -> Option<SpillDirFn> {
+        let key = session.store_id_hook();
+        let own = move || {
+            let id = key().filter(|id| yi_session::validate_session_id(id).is_ok())?;
+            Some(crate::tools::default_spill_root()?.join(id))
+        };
+        (!self.wall.is_empty()).then(|| Arc::new(own) as SpillDirFn)
     }
 
     fn kernel_options(
@@ -270,16 +289,22 @@ impl RuntimeWiring {
     }
 }
 
+/// A walled session's own spill dir as of the call, read again under its profile's denials.
+pub(crate) type SpillDirFn = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
+
 /// A kernel `bash()` job's profile, built as it spawns: the kernel's own plus every write
 /// grant kept since, so a grant reaches a kernel that was running before it (#600).
 fn job_profile(
     wiring: &RuntimeWiring,
+    session: &AgentSession,
 ) -> impl Fn() -> Option<yi_tools::Sandbox> + Send + Sync + 'static {
     let (profile, broker) = (wiring.exec_sandbox(), wiring.broker.clone());
+    let own = wiring.own_spills(session);
     move || {
         let mut profile = profile.clone()?;
         let kept = broker.iter().flat_map(|broker| broker.kept_writes());
         profile.writable.extend(kept);
+        profile.spared.extend(own.iter().flat_map(|own| own()));
         Some(profile)
     }
 }
@@ -799,6 +824,27 @@ fn job_settled() -> &'static tokio::sync::Notify {
     SETTLED.get_or_init(tokio::sync::Notify::new)
 }
 
+fn wire_kernel(
+    session: &AgentSession,
+    wiring: &RuntimeWiring,
+    registry: crate::kernel::HostRegistry,
+) -> Arc<crate::kernel::KernelService> {
+    let restore_notice = session.notice_hook();
+    let waits = session.wait_hook();
+    let options = wiring.kernel_options(
+        Arc::new(registry),
+        Arc::new(move |restore| restore_notice(&crate::kernel::restore_notice_text(restore))),
+        session.store_id_hook(),
+        Arc::new(move |step: Option<&str>| {
+            waits(step.map(|step| yi_types::event::Wait::KernelBoot {
+                step: step.to_owned(),
+            }));
+        }),
+    );
+    let service = crate::kernel::KernelService::new(options);
+    Arc::new(service.with_spared(wiring.own_spills(session)))
+}
+
 pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> Arc<SubagentHost> {
     if let Some(total) = wiring.deadline {
         session.set_deadline(total);
@@ -817,7 +863,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
-    registry.register_exec(wiring.cwd.clone(), job_profile(&wiring));
+    registry.register_exec(wiring.cwd.clone(), job_profile(&wiring, session));
     crate::kernel_state::register_host_stores(&mut registry, &wiring);
     if let Some(compactor) = session.compactor() {
         // compact.run only schedules and returns — running inline would abort
@@ -883,18 +929,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         Arc::clone(&fetch_log),
         Arc::clone(&resolver),
     );
-    let restore_notice = session.notice_hook();
-    let waits = session.wait_hook();
-    let service = Arc::new(crate::kernel::KernelService::new(wiring.kernel_options(
-        Arc::new(registry),
-        Arc::new(move |restore| restore_notice(&crate::kernel::restore_notice_text(restore))),
-        session.store_id_hook(),
-        Arc::new(move |step: Option<&str>| {
-            waits(step.map(|step| yi_types::event::Wait::KernelBoot {
-                step: step.to_owned(),
-            }));
-        }),
-    )));
+    let service = wire_kernel(session, &wiring, registry);
     wire_advisor(session, &wiring);
     if wiring.kernel_prewarm {
         let warm = Arc::clone(&service);

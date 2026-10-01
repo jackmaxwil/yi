@@ -283,13 +283,23 @@ impl Sandbox {
                 "(deny file-write-unlink (require-all (literal (param \"{key}\")) (vnode-type DIRECTORY)))"
             ));
         }
-        // A path hidden from reads is not writable either: renamed, it would leave its rule behind.
-        let denied = (0..self.deny_write.len())
-            .map(|index| format!("DENY_WRITE_{index}"))
-            .chain((0..self.deny_read.len()).map(|index| format!("DENY_READ_{index}")));
-        for key in denied {
+        // A path hidden from reads is not writable either: renamed, it would leave its rule behind;
+        // a spared writable root reads, so the other rules decide its writes (a walled kernel's).
+        let spared: String = (self.spared.iter().enumerate())
+            .filter(|(_, dir)| self.writable.contains(dir))
+            .flat_map(|(index, _)| {
+                [
+                    format!("SPARED_{index}"),
+                    format!("SPARED_{index}_RESOLVED"),
+                ]
+            })
+            .map(|key| format!(" (require-not (subpath (param \"{key}\")))"))
+            .collect();
+        let denied = ((0..self.deny_write.len()).map(|index| (format!("DENY_WRITE_{index}"), "")))
+            .chain((0..self.deny_read.len()).map(|index| (format!("DENY_READ_{index}"), &*spared)));
+        for (key, spared) in denied {
             anchors.push(format!(
-                "(deny file-write* (subpath (param \"{key}\")) (subpath (param \"{key}_RESOLVED\")))"
+                "(deny file-write* (require-all (require-any (subpath (param \"{key}\")) (subpath (param \"{key}_RESOLVED\"))){spared}))"
             ));
         }
         for (index, store) in self.host_owned.iter().enumerate() {
