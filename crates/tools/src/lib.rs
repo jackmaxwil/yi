@@ -18,7 +18,7 @@ pub mod sandbox;
 #[cfg(test)]
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
-pub mod spill;
+mod spill;
 mod syntax;
 mod tool;
 

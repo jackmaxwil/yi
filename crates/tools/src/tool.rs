@@ -18,7 +18,8 @@ pub type CancelFlag = Arc<dyn Fn() -> bool + Send + Sync>;
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancelled: CancelFlag,
-    /// None means a reducer must hand back the raw text instead.
+    /// The session's own spill dir, `<root>/<session>`, whose root the spill sweeps; None
+    /// means a reducer must hand back the raw text instead.
     pub recovery_dir: Option<PathBuf>,
     /// How long a command may hold the turn before it keeps running as a job, when the call
     /// passes no `wait`. None, the default, backgrounds only a call that does.
