@@ -10,6 +10,9 @@ import subprocess
 import sys
 from collections import defaultdict
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "guardrails"))
+from _common import base_commit  # noqa: E402
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GROWTH = ROOT / "scripts/guardrails/check_growth.py"
 
@@ -18,15 +21,6 @@ def git(*args):
     return subprocess.run(
         ("git", "-C", str(ROOT)) + args, capture_output=True, text=True, check=False
     )
-
-
-def base_commit():
-    for ref in ("origin/main", "main"):
-        if git("rev-parse", "--verify", "--quiet", ref).returncode == 0:
-            found = git("merge-base", ref, "HEAD")
-            if found.returncode == 0:
-                return ref, found.stdout.strip()
-    return None, None
 
 
 def diff_stats(base):
@@ -63,20 +57,14 @@ def is_src(path):
 
 
 def growth_verdict():
-    """The gate answers a different question from the headline: it measures the whole
-    tree against the last `--update`, so everything landed since that version counts,
-    not this branch alone. Two numbers under one heading needs both named."""
+    """The gate's own verdict on the same fork-point number, memo included."""
     if not GROWTH.exists():
         return f"growth gate: not present in this tree ({GROWTH.relative_to(ROOT)})"
     run = subprocess.run(
         [sys.executable, str(GROWTH)], cwd=ROOT, capture_output=True, text=True, check=False
     )
     text = (run.stdout + run.stderr).strip() or "(no output)"
-    return (
-        "growth gate — the whole tree against the growth baseline "
-        "(`baselines/src_loc.json`, the version its last `--update` measured), so it "
-        "counts every branch landed since, not this one alone:\n\n```\n" + text + "\n```"
-    )
+    return "growth gate:\n\n```\n" + text + "\n```"
 
 
 def tally(rows):
@@ -286,7 +274,7 @@ def main():
         section("Performance", "<!-- the hot path touched and a measured number, or \"No hot path touched\" and why -->"),
         section(
             "Architecture notes",
-            "<!-- version bump, changelog row, D-rows, feature-ledger rows (each names its journey test) -->",
+            "<!-- the change file under docs/changes/ (issue, growth, raises, decisions), feature-ledger rows (each names its journey test) -->",
         ),
     ]
     added, changed = surface_delta(base)
