@@ -541,11 +541,11 @@ fn a_checker_given_as_an_object_keeps_its_deadline() -> TestResult {
 }
 
 /// Dies with one of the calls glm-5.3-flash sent in the dogfood refused again: each natural shape
-/// lands, and each refusal that stays names where the field goes (`dogfood-shapes.json`, #982).
+/// lands, and each refusal that stays names where the field goes (`dogfood/plan-shapes.json`, #982).
 #[test]
 fn every_dogfood_call_lands_or_says_where_it_goes() -> TestResult {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/plans/dogfood-shapes.json");
+        .join("tests/fixtures/dogfood/plan-shapes.json");
     let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
     let mut wrong = Vec::new();
     for case in fixture["cases"].as_array().ok_or("cases")? {

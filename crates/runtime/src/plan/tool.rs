@@ -571,7 +571,7 @@ impl PlanTool {
     }
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
-        let (args, mut said) = natural(args);
+        let (args, mut said) = super::natural::natural(args);
         let (request, blobs) = declared(&self.actor, &args)?;
         if let Op::Accept { .. } = &request.op {
             let confirming = self.confirming.as_ref();
@@ -584,7 +584,7 @@ impl PlanTool {
             Err(PlanOpError::IllegalStep {
                 label,
                 from: TodoStateName::Pending,
-                op: OpKind::Done,
+                op: OpKind::Done | OpKind::Decompose,
             }) if self.runs_itself(&request, &label) => {
                 let start = Op::Start { label };
                 self.engine.apply(OpRequest {
@@ -595,19 +595,52 @@ impl PlanTool {
                 self.engine.apply_with(request, &blobs)?
             }
             Err(PlanOpError::NoPlan) => {
-                let Op::Set { goal: None, rows } = &request.op else {
-                    return Err(PlanOpError::NoPlan.into());
+                let first = match &request.op {
+                    Op::Set { goal: None, rows } => rows.first().map(|row| row.spec.label.clone()),
+                    Op::Append { todos } => todos.first().map(|todo| todo.label.clone()),
+                    _ => None,
                 };
-                let first = rows.first().ok_or(PlanOpError::NoPlan)?;
-                let goal = GoalText::new(first.spec.label.as_str()).map_err(PlanOpError::Doc)?;
-                let rows = rows.clone();
-                said.push("no plan was open, so the first row names it");
-                let set = Op::Set {
-                    goal: Some(goal),
-                    rows,
+                let first = first.ok_or(PlanOpError::NoPlan)?;
+                let goal = GoalText::new(first.as_str()).map_err(PlanOpError::Doc)?;
+                let op = match request.op.clone() {
+                    Op::Set { rows, .. } => Op::Set {
+                        goal: Some(goal),
+                        rows,
+                    },
+                    Op::Append { todos } => Op::Init { goal, todos },
+                    other => other,
                 };
+                said.push("no plan was open, so one was opened, named after the first todo");
                 self.engine
-                    .apply_with(OpRequest { op: set, ..request }, &blobs)?
+                    .apply_with(OpRequest { op, ..request }, &blobs)?
+            }
+            Err(PlanOpError::NotAPermutation { .. }) => {
+                let Op::Reorder { labels } = &request.op else {
+                    return Err(PlanOpError::NotAPermutation {
+                        got: 0,
+                        expected: 0,
+                    }
+                    .into());
+                };
+                let view = OpRequest {
+                    op: Op::View { full: true },
+                    ..request.clone()
+                };
+                let mut order = labels.clone();
+                let rest: Vec<TodoLabel> = (self.engine.apply(view)?.plan.todos.iter())
+                    .map(|todo| todo.label.clone())
+                    .filter(|label| !labels.contains(label))
+                    .collect();
+                order.extend(rest);
+                said.push("the todos not named keep their order after the named ones");
+                let reorder = Op::Reorder { labels: order };
+                self.engine.apply_with(
+                    OpRequest {
+                        op: reorder,
+                        ..request
+                    },
+                    &blobs,
+                )?
             }
             other => other?,
         };
@@ -631,84 +664,6 @@ impl PlanTool {
                     .is_some_and(|t| t.delegation.is_none())
             })
     }
-}
-
-/// The shapes models send for a call the tool understands, made canonical before the strict
-/// parse; each note says what was done with a key the plan does not record.
-fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<&'static str>) {
-    let mut args = args.clone();
-    let mut said = Vec::new();
-    if !args.contains_key("op") {
-        let inferred = match () {
-            () if args.contains_key("list") => Some("set"),
-            () if args.contains_key("todos") && args.contains_key("goal") => Some("init"),
-            () => None,
-        };
-        if let Some(op) = inferred {
-            args.insert("op".to_owned(), json!(op));
-        }
-    }
-    let op = args
-        .get("op")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    match op.as_str() {
-        "set" if !args.contains_key("list") => {
-            if let Some(Value::Array(rows)) = args.remove("todos") {
-                let lines: Vec<String> = rows.iter().filter_map(checklist_row).collect();
-                args.insert("list".to_owned(), json!(lines.join("\n")));
-            }
-        }
-        "init" if !args.contains_key("goal") => {
-            let labels: Vec<&str> = (args
-                .get("todos")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten())
-            .filter_map(|todo| todo.get("label").and_then(Value::as_str))
-            .collect();
-            if let Some(first) = labels.first() {
-                let goal = match labels.len() {
-                    1 => (*first).to_owned(),
-                    more => format!("{first}, and {} more", more.saturating_sub(1)),
-                };
-                args.insert("goal".to_owned(), json!(goal));
-                said.push("no goal was given, so the first todo names the plan");
-            }
-        }
-        "fail" if !args.contains_key("cause") => {
-            if let Some(reason) = args.remove("reason") {
-                args.insert("cause".to_owned(), reason);
-            }
-        }
-        "drop" if args.remove("reason").is_some() => {
-            said.push(
-                "drop records no reason; it stays in this call's arguments in the transcript",
-            );
-        }
-        "done"
-            if ["note", "evidence"]
-                .iter()
-                .any(|key| args.remove(*key).is_some()) =>
-        {
-            said.push("done records no note; it stays in this call's arguments, and a contract's check is the evidence the plan keeps");
-        }
-        _ => {}
-    }
-    (args, said)
-}
-
-/// A checklist row from a string row or a `{label}` object, unchecked unless it carries a box.
-fn checklist_row(row: &Value) -> Option<String> {
-    let text = row
-        .as_str()
-        .or_else(|| row.get("label").and_then(Value::as_str))?;
-    Some(if text.trim_start().starts_with("- [") {
-        text.to_owned()
-    } else {
-        format!("- [ ] {text}")
-    })
 }
 
 impl Tool for PlanTool {
@@ -746,7 +701,7 @@ impl Tool for PlanTool {
     }
 
     fn validate(&self, input: &Map<String, Value>) -> Result<(), String> {
-        declared(&self.actor, &natural(input).0)
+        declared(&self.actor, &super::natural::natural(input).0)
             .map(|_| ())
             .map_err(|error| error.to_string())
     }

@@ -1,0 +1,639 @@
+{
+ "source": "plan calls glm-5.3-flash sent in two rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982), refused then; checker commands replaced by `true`",
+ "cases": [
+  {
+   "name": "no op beside goal and todos",
+   "setup": [],
+   "call": {
+    "goal": "Add mod(a, b) to calc.py with a passing unit test",
+    "todos": [
+     {
+      "label": "Implement mod(a, b) in calc.py"
+     },
+     {
+      "label": "Add test_mod to test_calc.py"
+     }
+    ]
+   },
+   "lands": true
+  },
+  {
+   "name": "set with a todos array of rows",
+   "setup": [],
+   "call": {
+    "op": "set",
+    "todos": [
+     "- [ ] Read calc.py and test_calc.py to ground the change",
+     "- [ ] Add subtract(a, b) to calc.py"
+    ]
+   },
+   "lands": true,
+   "says": "named after the first todo"
+  },
+  {
+   "name": "init without goal",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "todos": [
+     {
+      "contract": {
+       "items": [
+        {
+         "critical": true,
+         "id": "suite-green",
+         "weight": 1,
+         "decider": {
+          "cmd": "true"
+         }
+        }
+       ],
+       "class": "inline"
+      },
+      "label": "Fix calc.divide to divide"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "first todo names the plan"
+  },
+  {
+   "name": "deadline beside cmd",
+   "setup": [],
+   "call": {
+    "goal": "Run the slow gate",
+    "op": "init",
+    "todos": [
+     {
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true",
+          "timeout_ms": 300000
+         },
+         "id": "slow-gate",
+         "weight": 100
+        }
+       ],
+       "min_coverage": 1000,
+       "threshold": 1000
+      },
+      "label": "run the slow gate"
+     }
+    ]
+   },
+   "lands": true
+  },
+  {
+   "name": "fail with reason",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Demonstrate retry, fail and block ops"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "Demonstrate retry, fail and block ops"
+    }
+   ],
+   "call": {
+    "label": "Demonstrate retry, fail and block ops",
+    "op": "fail",
+    "reason": "simulated failure for the demo"
+   },
+   "lands": true
+  },
+  {
+   "name": "drop with reason",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Run python -m doctest calc.py -v"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "label": "Run python -m doctest calc.py -v",
+    "op": "drop",
+    "reason": "redundant: the unittest suite already covers mod"
+   },
+   "lands": true,
+   "says": "records no note"
+  },
+  {
+   "name": "done with note",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "fix divide"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "fix divide"
+    }
+   ],
+   "call": {
+    "label": "fix divide",
+    "op": "done",
+    "note": "decider checks: suite OK, 3 tests"
+   },
+   "lands": true,
+   "says": "records no note"
+  },
+  {
+   "name": "done on a pending own todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Add power(a,b)"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "label": "Add power(a,b)",
+    "op": "done"
+   },
+   "lands": true,
+   "says": "started first"
+  },
+  {
+   "name": "append with a label",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "one"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "label": "Update README to document mod",
+    "op": "append"
+   },
+   "lands": false,
+   "says": "each todo's label goes inside todos"
+  },
+  {
+   "name": "block fields inside init",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "demo",
+    "todos": [
+     {
+      "label": "Choose divide-by-zero policy (user decision)",
+      "on": {
+       "user": null
+      },
+      "note": "Three options offered"
+     }
+    ]
+   },
+   "lands": false,
+   "says": "blocking is its own op"
+  },
+  {
+   "name": "a todo carrying todos",
+   "setup": [],
+   "call": {
+    "goal": "demo",
+    "op": "init",
+    "todos": [
+     {
+      "label": "Fix calc.divide to divide",
+      "todos": []
+     }
+    ]
+   },
+   "lands": false,
+   "says": "init todos[0] does not take \"todos\""
+  },
+  {
+   "name": "a duplicate label",
+   "setup": [],
+   "call": {
+    "goal": "Probe duplicate labels",
+    "op": "init",
+    "todos": [
+     {
+      "label": "same"
+     },
+     {
+      "label": "same"
+     }
+    ]
+   },
+   "lands": false,
+   "says": "label \"same\" is not unique"
+  },
+  {
+   "name": "weights past 100",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "demo",
+    "todos": [
+     {
+      "label": "weighted",
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "id": "i600",
+         "decider": {
+          "cmd": "true"
+         },
+         "weight": 600
+        },
+        {
+         "critical": true,
+         "id": "i400",
+         "decider": {
+          "cmd": "true"
+         },
+         "weight": 400
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "lands": true,
+   "says": "rescaled"
+  },
+  {
+   "name": "a missing weight",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "demo",
+    "todos": [
+     {
+      "label": "unweighted",
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "id": "iNone",
+         "decider": {
+          "cmd": "true"
+         }
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "lands": true
+  },
+  {
+   "name": "done with a path as output",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "fix"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "fix"
+    }
+   ],
+   "call": {
+    "op": "done",
+    "output": "calc.py",
+    "todo": "fix"
+   },
+   "lands": true,
+   "says": "output takes a url"
+  },
+  {
+   "name": "decompose as a flag",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "harden calc.py",
+     "todos": [
+      {
+       "label": "harden calc.py"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "harden calc.py"
+    }
+   ],
+   "call": {
+    "decompose": true,
+    "label": "harden calc.py",
+    "todos": [
+     {
+      "label": "fix divide"
+     }
+    ]
+   },
+   "lands": true
+  },
+  {
+   "name": "decompose holding its arguments",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "harden calc.py",
+     "todos": [
+      {
+       "label": "harden calc.py"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "harden calc.py"
+    }
+   ],
+   "call": {
+    "decompose": {
+     "label": "harden calc.py",
+     "todos": [
+      {
+       "label": "fix divide"
+      }
+     ]
+    }
+   },
+   "lands": true
+  },
+  {
+   "name": "todos as a JSON string",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "harden calc.py",
+     "todos": [
+      {
+       "label": "harden calc.py"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "harden calc.py"
+    }
+   ],
+   "call": {
+    "op": "decompose",
+    "label": "harden calc.py",
+    "todos": "[{\"label\": \"fix divide\"}]"
+   },
+   "lands": true
+  },
+  {
+   "name": "decompose on a pending own todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Verify suite and close plan"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "decompose",
+    "todo": "Verify suite and close plan",
+    "todos": [
+     {
+      "label": "Re-run unittest suite"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "started first"
+  },
+  {
+   "name": "set with a heading and a struck row",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Implement mod"
+      },
+      {
+       "label": "Spare todo"
+      },
+      {
+       "label": "Verify suite",
+       "after": [
+        "Spare todo"
+       ]
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "set",
+    "list": "## demo\n- [x] Implement mod\n- [ ] Verify suite\n- [-] Spare todo"
+   },
+   "lands": true,
+   "says": "struck rows"
+  },
+  {
+   "name": "supersede with a list",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "one"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "supersede",
+    "reason": "the cut was wrong",
+    "list": "- [ ] Verify suite and close plan"
+   },
+   "lands": true
+  },
+  {
+   "name": "append with no plan open",
+   "setup": [],
+   "call": {
+    "op": "append",
+    "todos": [
+     {
+      "label": "Probe docs availability"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "no plan was open"
+  },
+  {
+   "name": "a partial reorder",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "a"
+      },
+      {
+       "label": "b"
+      },
+      {
+       "label": "c"
+      },
+      {
+       "label": "d"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "reorder",
+    "labels": [
+     "c",
+     "a",
+     "b"
+    ]
+   },
+   "lands": true,
+   "says": "keep their order"
+  },
+  {
+   "name": "retry with a reason",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "t"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "t"
+    },
+    {
+     "op": "fail",
+     "label": "t",
+     "cause": "x"
+    }
+   ],
+   "call": {
+    "op": "retry",
+    "label": "t",
+    "reason": "the spawn failed"
+   },
+   "lands": true,
+   "says": "records no note"
+  },
+  {
+   "name": "drop on a running todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "t"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "t"
+    }
+   ],
+   "call": {
+    "op": "drop",
+    "label": "t",
+    "note": "redundant"
+   },
+   "lands": false,
+   "says": "ends with fail and a cause"
+  },
+  {
+   "name": "fail on a pending todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "one"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "fail",
+    "label": "one",
+    "cause": "spawn failed"
+   },
+   "lands": false,
+   "says": "is dropped"
+  },
+  {
+   "name": "retry on a pending todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "one"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "retry",
+    "label": "one"
+   },
+   "lands": false,
+   "says": "start it"
+  }
+ ]
+}
