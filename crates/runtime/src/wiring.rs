@@ -984,10 +984,7 @@ fn subagent_host(
         attribute: session.attribution_handle(),
         store: session.store_handle(),
         plans_dir: plans_dir.to_path_buf(),
-        family_live: {
-            let kernels = Arc::clone(&wiring.kernels);
-            Arc::new(move || kernels.live())
-        },
+        family_live: Arc::clone(&wiring.kernels),
     }));
     host.set_grant(wiring.wall.clone(), None);
     host.family.get_or_init(|| wiring.family_dir());

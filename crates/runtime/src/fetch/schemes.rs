@@ -144,7 +144,12 @@ impl Resolver {
             }
             (normalized, "workspace-file", root)
         };
-        let text = super::read_text(url, &self.resolved(url, path, &root)?, self.workspace())?;
+        let text = super::read_text(
+            url,
+            &self.resolved(url, path, &root)?,
+            self.workspace(),
+            &self.wall().deny_read,
+        )?;
         Ok((apply_fragment(url, text)?, served_by.to_owned()))
     }
 
@@ -181,7 +186,7 @@ impl Resolver {
         };
         let legacy = self.plans_dir().join(format!("{plan_id}.md"));
         let (plan, body) = if legacy.is_file() {
-            let text = super::read_text(url, &legacy, self.workspace())?;
+            let text = super::read_text(url, &legacy, self.workspace(), &self.wall().deny_read)?;
             if slug.is_none() {
                 return Ok((text, "plan-file".to_owned()));
             }
@@ -386,7 +391,7 @@ impl Resolver {
                 refusal,
             });
         }
-        match super::read_text(url, &path, &root) {
+        match super::read_text(url, &path, &root, &self.wall().deny_read) {
             Ok(text) => Ok((text, format!("member-tree {agent}"))),
             Err(FetchError::NotFound { .. }) => Err(FetchError::NotFound {
                 url: url.to_string(),
@@ -619,7 +624,7 @@ mod tests {
     use crate::fetch::{FetchLog, KernelVariables, McpResourceRead, open_checkpoint_show};
     use crate::scratch::Scratch;
     use crate::wall::Wall;
-    use yi_types::message::AgentMessage;
+    use yi_types::message::{AgentMessage, HostSource};
 
     struct StubKernel;
 
@@ -1024,11 +1029,7 @@ mod tests {
         let mut store = in_memory_session();
         store.append_message(
             "main",
-            AgentMessage::host_text(
-                yi_types::message::HostSource::Notice,
-                "host-minted preamble",
-                0,
-            ),
+            AgentMessage::host_text(HostSource::Notice, "host-minted preamble", 0),
         )?;
         store.append_message(
             "main",
@@ -1036,11 +1037,7 @@ mod tests {
         )?;
         store.append_message(
             "main",
-            AgentMessage::host_text(
-                yi_types::message::HostSource::Notice,
-                "compaction filler",
-                0,
-            ),
+            AgentMessage::host_text(HostSource::Notice, "compaction filler", 0),
         )?;
         store.append_message(
             "main",
@@ -1076,11 +1073,7 @@ mod tests {
         let mut store = in_memory_session();
         store.append_message(
             "main",
-            AgentMessage::host_text(
-                yi_types::message::HostSource::Notice,
-                "forged instruction",
-                0,
-            ),
+            AgentMessage::host_text(HostSource::Notice, "forged instruction", 0),
         )?;
         let shared: yi_session::SharedSession = std::sync::Arc::new(std::sync::Mutex::new(store));
         let resolver =

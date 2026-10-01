@@ -17,7 +17,7 @@ pub mod window;
 pub mod wrapper;
 
 pub use account::{
-    Estimate, Scope, Tokens, context_tokens, estimate_context, estimate_message, reply_tokens,
+    Estimate, Tokens, context_tokens, estimate_context, estimate_message, reply_tokens,
 };
 pub use attribution::{CHILD_USAGE_CAUSE, attribute_child_usage};
 pub use budget::{Bytes, SourceBudgets, Truncated, fit};
@@ -33,5 +33,5 @@ pub use view::{
     Attributed, BRIEF_LINE_CAP, BRIEF_LINE_CHARS, BriefLine, CompiledView, EARLIER_CAP,
     OUTSTANDING_CAP, compile_view, view_extra, view_from_extra,
 };
-pub use window::{Prefill, Window};
+pub use window::Window;
 pub use wrapper::{drop_internal, internal_source, wrap_content, wrap_internal};

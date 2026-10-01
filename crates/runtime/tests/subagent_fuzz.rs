@@ -107,7 +107,7 @@ fn host_with(root: &Scratch, gate: Arc<dyn Fn() + Send + Sync>) -> (Arc<Subagent
         attribute: Arc::new(|_| {}),
         store: Arc::new(|| None),
         plans_dir: root.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     (host, bus)
 }

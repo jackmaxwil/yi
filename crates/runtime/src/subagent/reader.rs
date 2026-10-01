@@ -9,7 +9,6 @@ use crate::session::{AgentSession, SessionConfig};
 pub const READER_PROMPT: &str = include_str!("../prompts/reader.md");
 pub const WORKER_PROMPT: &str = include_str!("../prompts/worker.md");
 pub(crate) const PARTITION_CAP: usize = 65_536;
-pub const HELD_CAP: usize = 64;
 
 pub(crate) fn full_child(refusal: &str) -> String {
     format!("{refusal}; role=\"root\" spawns a full child")
