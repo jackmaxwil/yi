@@ -289,9 +289,22 @@ fn a_slot_whose_repository_was_recreated_is_a_free_slot() -> TestResult {
     drop((idle, left));
     git(&rig.repo, &["branch", "-q", "yi/pid-left", "main"])?;
     orphan(&pool, slot, "pid-left")?;
+    let work = pool.dir().join(slot.to_string()).join("work.txt");
+    std::fs::write(&work, "UNCOMMITTED\n")?;
     std::fs::remove_dir_all(&rig.repo)?;
     init_repo(&rig.repo)?;
     let pool = rig.pool(2)?;
+    // Review: its own session resuming must not lose the tree, which holds the only copy.
+    match pool.claim("pid-left", ClaimBase::Main) {
+        Err(LaneError::RepoGone { .. }) => {}
+        other => {
+            return Err(format!("a resume deleted or reused its tree: {:?}", other.err()).into());
+        }
+    }
+    assert!(
+        work.is_file(),
+        "the refused resume kept its uncommitted file"
+    );
     let first = pool.claim("s-one", ClaimBase::Main)?;
     let second = pool.claim("s-two", ClaimBase::Main)?;
     for (lane, branch) in [(&first, "yi/s-one"), (&second, "yi/s-two")] {
