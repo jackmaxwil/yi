@@ -793,3 +793,210 @@ async fn a_kernel_connect_runs_on_the_host_from_the_home_config() -> TestResult 
     );
     Ok(())
 }
+
+/// #889: a walled session's kernel read every other session's spills and transcripts, since
+/// its profile carried the wall but not the walled roots the tool seam adds (D340, #971). Its
+/// own spill, transcript, state and the family board still read; an unwalled kernel reads all.
+#[tokio::test]
+async fn a_walled_kernel_reads_its_own_spill_and_transcript_and_no_other() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, real, _session) = workspace("walled-roots")?;
+    let bare = Sandbox::for_workspace(&project, &real, None);
+    // Outside every granted root, so a write to the board or its own dir proves the spare.
+    let probe = uncovered(&bare, &real).ok_or("no directory outside the sandbox")?;
+    let home = probe.join(format!("yi-walled-roots-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let venv = yi_kernel::bootstrap::kernel_venv_dir(&real);
+    std::fs::create_dir_all(home.join(".yi"))?;
+    if venv.is_dir() {
+        std::os::unix::fs::symlink(&venv, yi_kernel::bootstrap::kernel_venv_dir(&home))?;
+    }
+    // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.
+    unsafe { std::env::set_var("HOME", &home) };
+    let ran = walled_roots_probe(&root, &project, &home).await;
+    let _ = std::fs::remove_dir_all(&home);
+    let (outputs, [id, root_id]) = ran?;
+    let [walled, named, root_run, open] =
+        <[String; 4]>::try_from(outputs).map_err(|_| "four runs")?;
+    // A walled root reads its own transcript and its `kernels/<id>` state, never the corpus.
+    let root_own = (
+        root_run.contains(&format!("\"id\":\"{root_id}\"")),
+        root_run.contains("own state"),
+        root_run.contains("WALLED"),
+    );
+    assert_eq!(
+        root_own,
+        (true, true, false),
+        "(transcript, state, leak): {root_run}"
+    );
+    // #1000 review F1: a spare never reopens what the wall itself names, by read or write.
+    assert!(
+        named.matches("denied 1").count() == 5
+            && !named.contains("NOTE")
+            && !named.contains("SPILL")
+            && !named.contains("WROTE"),
+        "the wall's own deny_read lost to a spare: {named}"
+    );
+    for leak in ["WALLED TRANSCRIPT", "WALLED OUTPUT"] {
+        assert!(
+            !walled.contains(leak),
+            "{leak} reached a walled kernel: {walled}"
+        );
+    }
+    // Its own spill and state twice, by the cell and by its `bash()` job.
+    let own = (
+        walled.matches("OWN SPILL").count() + walled.matches("STATE NOTE").count(),
+        walled.contains(&format!("\"id\":\"{id}\"")),
+        walled.contains("board [1]"),
+    );
+    assert_eq!(
+        own,
+        (4, true, true),
+        "(spill, transcript, state and board): {walled}"
+    );
+    assert!(
+        open.contains("WALLED TRANSCRIPT") && open.contains("WALLED OUTPUT"),
+        "an unwalled kernel reads every store, as its bash does: {open}"
+    );
+    Ok(())
+}
+
+async fn walled_roots_probe(
+    root: &std::path::Path,
+    project: &std::path::Path,
+    home: &std::path::Path,
+) -> Result<(Vec<String>, [String; 2]), Box<dyn Error>> {
+    let planted = crate::wall_e2e::plant_transcripts(home, project)?;
+    let (spills, sessions) = (home.join(".yi/spills"), &planted.sessions);
+    let elsewhere = home.join("store/--elsewhere--/1_other.jsonl");
+    for (path, text) in [
+        (spills.join("author/0123.txt"), "WALLED OUTPUT"),
+        (home.join(".yi/tool-output/4567.txt"), "WALLED OUTPUT"),
+        (elsewhere.clone(), "WALLED TRANSCRIPT"),
+    ] {
+        std::fs::create_dir_all(path.parent().ok_or("no parent")?)?;
+        std::fs::write(path, text)?;
+    }
+    std::os::unix::fs::symlink(sessions, project.join("alias"))?;
+    let store = yi_session::create_flat_session(
+        planted.own_dir.clone(),
+        project.to_string_lossy(),
+        Some("author".to_owned()),
+    )?;
+    let (id, transcript) = {
+        let store = yi_session::lock_session(&store);
+        (store.metadata().id.clone(), store.file_path().cloned())
+    };
+    let transcript = transcript.ok_or("no transcript file")?;
+    let own_spill = spills.join(&id).join("0001.txt");
+    std::fs::create_dir_all(own_spill.parent().ok_or("no parent")?)?;
+    std::fs::write(&own_spill, "OWN SPILL")?;
+    let author = planted.author.display().to_string();
+    let name = planted.author.strip_prefix(sessions)?.display();
+    let reads = [
+        author.clone(),
+        author.replace("/.yi/sessions/", "/.YI/SESSIONS/"),
+        format!("{}/../../../100_author.jsonl", planted.own_dir.display()),
+        format!("{}/alias/{name}", project.display()),
+        planted.sibling.display().to_string(),
+        elsewhere.display().to_string(),
+        spills.join("author/0123.txt").display().to_string(),
+        format!("{}/.YI/SPILLS/author/0123.txt", home.display()),
+        home.join(".yi/tool-output/4567.txt").display().to_string(),
+        own_spill.display().to_string(),
+        transcript.display().to_string(),
+    ];
+    let code = format!(
+        "import glob, os\nfor path in {reads:?}:\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)\nfor root in ({sessions:?}, {spills:?}):\n    for path in glob.glob(root + '/**/*', recursive=True):\n        try:\n            print(open(path).read())\n        except OSError as e:\n            pass\nstate = os.environ['RLM_SESSION_DIR'] + '/note.txt'\nopen(state, 'w').write('STATE NOTE')\nprint(open(state).read())\nrlm.put('shard', [1])\nprint('board', rlm.get('shard'))\nprint('job', await bash(\"cat '{author}' '{own}' '{state}'\"))",
+        sessions = sessions.display().to_string(),
+        spills = spills.display().to_string(),
+        own = own_spill.display(),
+        state = planted.own_dir.join("note.txt").display(),
+    );
+    let broker = yi_runtime::permission::PermissionBroker::new(
+        yi_permission::PermissionMode::Auto,
+        project.to_path_buf(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    )
+    .with_session_store(&home.join("store"));
+    let wall = crate::wall_e2e::juror_wall(project);
+    let broker = Some(Arc::new(broker.for_child(&wall, project)));
+    // The parent's wall covers the board and the own dir, every spill, and a dir in the own dir.
+    let (board, secret) = (
+        planted.own_dir.with_file_name("family"),
+        planted.own_dir.join("secret"),
+    );
+    for dir in [&board, &secret] {
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(dir.join("note.txt"), "NAMED NOTE")?;
+    }
+    let mut named = wall.clone();
+    let children = planted.own_dir.parent().ok_or("no parent")?.to_path_buf();
+    named.deny_read = vec![children, spills.clone(), secret.clone()];
+    let probes = [
+        board.join("note.txt"),
+        secret.join("note.txt"),
+        own_spill.clone(),
+    ];
+    let writes = [board.join("by-cell.txt"), secret.join("by-cell.txt")];
+    let named_code = format!(
+        "for path in {probes:?}:\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)\nfor path in {writes:?}:\n    try:\n        open(path, 'w').write('x')\n    except OSError as e:\n        print('denied', e.errno)",
+    );
+    // A walled root (depth 0) whose sessions dir is the corpus: its state is `kernels/<id>`.
+    let root_store = yi_session::create_flat_session(
+        planted.author.parent().ok_or("no parent")?.to_path_buf(),
+        project.to_string_lossy(),
+        None,
+    )?;
+    let (root_id, root_file) = {
+        let store = yi_session::lock_session(&root_store);
+        (store.metadata().id.clone(), store.file_path().cloned())
+    };
+    let root_file = root_file.ok_or("no root transcript")?.display().to_string();
+    let root_code = format!(
+        "import os\nstate = os.environ['RLM_SESSION_DIR'] + '/note.txt'\nopen(state, 'w').write('state')\nprint('own', open(state).read())\nfor path in ({root_file:?}, {author:?}):\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)",
+    );
+    let mut outputs = Vec::new();
+    let own = (planted.own_dir.clone(), None, Some(store));
+    let runs = [
+        (wall.clone(), broker.clone(), code.clone(), own.clone()),
+        (named, broker.clone(), named_code, own),
+        (
+            wall,
+            broker,
+            root_code,
+            (
+                root.join("rlm-root"),
+                Some(sessions.clone()),
+                Some(root_store),
+            ),
+        ),
+        (
+            yi_runtime::Wall::default(),
+            None,
+            code,
+            (root.join("open"), None, None),
+        ),
+    ];
+    for (wall, broker, code, (rlm, corpus, store)) in runs {
+        let session = walled_session(project, home, &rlm, corpus, broker, None, wall);
+        if let Some(store) = store {
+            session.attach_store(store)?;
+        }
+        let kernel = session
+            .kernel_service()
+            .ok_or("the wiring installs a kernel")?;
+        let ran = cell(&kernel, code).await;
+        kernel.dispose().await;
+        let ran = ran?;
+        outputs.push(format!("{}{:?}", ran.result.stdout, ran.result.error));
+    }
+    if writes.iter().any(|path| path.exists()) {
+        outputs[1].push_str("WROTE");
+    }
+    Ok((outputs, [id, root_id]))
+}
