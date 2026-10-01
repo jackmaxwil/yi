@@ -113,11 +113,11 @@ impl KernelServiceMap {
 
     /// Every session still held, by its kernel or else by itself: the family cap counts these.
     pub fn live(&self) -> usize {
-        let kernels = self
-            .lock()
-            .values()
-            .filter(|service| service.strong_count() > 0)
-            .count();
+        let kernels = {
+            let mut kernels = self.lock();
+            kernels.retain(|_, service| service.strong_count() > 0);
+            kernels.len()
+        };
         kernels.saturating_add(self.kernelless().len())
     }
 
