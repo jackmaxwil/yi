@@ -312,11 +312,12 @@ fn collect(
     let mut binary_skipped = 0_usize;
     let mut documents_searched = 0_usize;
     let mut documents_unsearched: Vec<String> = Vec::new();
+    let gate = yi_permission::ReadGate::new(&yi_permission::CatastrophicContext::detect(cwd));
     let mut search_file = |path: &Path| -> bool {
         if include.is_some_and(|include| !include.matches(path)) {
             return true;
         }
-        let Ok(bytes) = fs::read(path) else {
+        let Ok(bytes) = gate.open(path, deny).and_then(crate::tool::read_all) else {
             return true;
         };
         let converted = match documents.as_mut() {
@@ -612,7 +613,9 @@ impl GrepTool {
         matcher: &regex::Regex,
         replacement: &str,
         options: &Options,
+        context: &ToolContext,
     ) -> ToolOutput {
+        let (gate, walls) = (context.read_gate(), context.write_walls());
         if collected.files.len() > REPLACE_FILES_CAP || collected.total > REPLACE_HITS_CAP {
             return *invalid(format!(
                 "replace would touch {} files / {} hits; the caps are {REPLACE_FILES_CAP} / {REPLACE_HITS_CAP} — narrow with path, include or type",
@@ -644,7 +647,10 @@ impl GrepTool {
                 continue;
             }
             let persisted = file.endings.restore(&after, &origins);
-            match fs::write(&file.canonical, persisted) {
+            let written_through = gate.open_write(Path::new(&file.canonical), &walls);
+            match written_through
+                .and_then(|mut opened| crate::tool::overwrite(&mut opened, persisted.as_bytes()))
+            {
                 Ok(()) => {
                     written = written.saturating_add(1);
                     if let Some(state) = &self.hashline {
@@ -945,7 +951,7 @@ impl Tool for GrepTool {
             if let Some(refused) = walled_write(&collected, &options, context) {
                 return refused;
             }
-            return self.replace(&collected, &matcher, replacement, &options);
+            return self.replace(&collected, &matcher, replacement, &options, context);
         }
         let page_cap = if options.block {
             BLOCK_PAGE_CAP
