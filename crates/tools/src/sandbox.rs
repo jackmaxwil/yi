@@ -19,6 +19,8 @@ pub struct Sandbox {
     /// Stores only the host writes, the session corpus above all (its JSONL is the ledger kept
     /// rules replay from): denied to writes, save a writable root nested inside one.
     pub host_owned: Vec<PathBuf>,
+    /// A dir reads reach again under a denied one: a walled session's own spills (D340).
+    pub spared: Option<PathBuf>,
 }
 
 /// Loopback for every profile (D329). Seatbelt's `localhost` is every address of this host and
@@ -53,6 +55,7 @@ impl Sandbox {
             deny_read: yi_permission::credential_stores(home),
             deny_write,
             host_owned: vec![home.join(".yi/sessions")],
+            spared: None,
         }
     }
 
@@ -136,6 +139,16 @@ impl Sandbox {
                 yi_permission::resolve_links(store),
             ));
         }
+        if let Some(dir) = &self.spared {
+            // Its parent resolved, never the dir: a link planted there would widen the grant.
+            let parent = dir.parent().map(yi_permission::resolve_links);
+            let resolved = parent.zip(dir.file_name()).map(|(up, name)| up.join(name));
+            params.push(("SPARED".to_owned(), dir.clone()));
+            params.push((
+                "SPARED_RESOLVED".to_owned(),
+                resolved.unwrap_or_else(|| dir.clone()),
+            ));
+        }
         for (index, dir) in parents.iter().enumerate() {
             params.push((format!("DENIED_PARENT_{index}"), dir.clone()));
         }
@@ -152,6 +165,14 @@ impl Sandbox {
     fn policy_for(&self, parents: usize, own: bool, network: bool) -> String {
         let mut sections = vec![BASE_POLICY.to_owned(), self.read_policy()];
         sections.push(self.write_policy(parents));
+        if self.spared.is_some() {
+            // After the read rule, which leaves out the denied root this dir sits under.
+            sections.push(
+                "; a walled session's own spills\n\
+                 (allow file-read* (subpath (param \"SPARED\")) (subpath (param \"SPARED_RESOLVED\")))"
+                    .to_owned(),
+            );
+        }
         if own {
             // Last, so it outranks the deny on the connection root: file rules are last-match.
             sections.push(

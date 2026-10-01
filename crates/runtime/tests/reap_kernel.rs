@@ -134,7 +134,7 @@ async fn a_reaped_childs_booted_kernel_process_is_gone() -> TestResult {
         attribute: Arc::new(|_| {}),
         store: Arc::new(|| None),
         plans_dir: std::env::temp_dir().join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
 
     let mut kwargs = Map::new();

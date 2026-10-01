@@ -6,7 +6,8 @@ here. The steps between the two are where sessions fail, so they are verbs, not 
 or `just land` to open the PR as a draft the review bot reads; it merges after `just pr ready`
 passes on two clean rounds. The yi-forge skill is the procedure; this is the law.
 
-- Baselines move in their own `Ratchet: …` commit, never beside the code commit: a raised
+- The size ceilings move with no commit: a raise is a line in the change file (040). Every
+  other baseline moves in its own `Ratchet: …` commit, never beside the code commit: a raised
   ceiling moves first (040) — `just commit` refuses a code commit while a ratchet is red — a
   shrunk one moves after. `just ratchet` makes that commit; `just commit` refuses to bury one.
 - A subject is at most 72 characters, imperative, no trailing period. `just commit` and
@@ -15,7 +16,7 @@ passes on two clean rounds. The yi-forge skill is the procedure; this is the law
   background with a long timeout and read its exit, never a foreground call that a timeout kills
   half way, which pushes nothing and says nothing.
 - A pull request cites an open issue with one `size:` label, an `area:` label and a milestone,
-  and the changelog row it adds cites the same `#N`. `just pr open` runs the `title` job's judge
+  and the change file it adds cites the same `#N`. `just pr open` runs the `title` job's judge
   locally and refuses before the forge does.
 - A green pull request still does not merge once `main` moved: the forge answers "head behind
   base" only to the API. `just pr merge` updates the branch on the forge and retries; a refusal

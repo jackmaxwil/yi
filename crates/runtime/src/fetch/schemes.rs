@@ -144,7 +144,12 @@ impl Resolver {
             }
             (normalized, "workspace-file", root)
         };
-        let text = super::read_text(url, &self.resolved(url, path, &root)?, self.workspace())?;
+        let text = super::read_text(
+            url,
+            &self.resolved(url, path, &root)?,
+            self.workspace(),
+            &self.wall().deny_read,
+        )?;
         Ok((apply_fragment(url, text)?, served_by.to_owned()))
     }
 
@@ -181,7 +186,7 @@ impl Resolver {
         };
         let legacy = self.plans_dir().join(format!("{plan_id}.md"));
         let (plan, body) = if legacy.is_file() {
-            let text = super::read_text(url, &legacy, self.workspace())?;
+            let text = super::read_text(url, &legacy, self.workspace(), &self.wall().deny_read)?;
             if slug.is_none() {
                 return Ok((text, "plan-file".to_owned()));
             }
@@ -386,7 +391,7 @@ impl Resolver {
                 refusal,
             });
         }
-        match super::read_text(url, &path, &root) {
+        match super::read_text(url, &path, &root, &self.wall().deny_read) {
             Ok(text) => Ok((text, format!("member-tree {agent}"))),
             Err(FetchError::NotFound { .. }) => Err(FetchError::NotFound {
                 url: url.to_string(),
