@@ -107,6 +107,8 @@ struct BrokerSetup {
     rules: Vec<ConfigRule>,
     asker: Option<Asker>,
     wall: Wall,
+    /// The attached store's id, which names the session's spill dir.
+    session: Option<&'static str>,
 }
 
 impl Default for BrokerSetup {
@@ -116,6 +118,7 @@ impl Default for BrokerSetup {
             rules: Vec::new(),
             asker: None,
             wall: Wall::default(),
+            session: None,
         }
     }
 }
@@ -154,6 +157,16 @@ async fn run_held(
         )
         .with_sandbox(Some(sandbox)),
     );
+    if let Some(id) = gate.session {
+        let metadata = yi_session::SessionMetadata {
+            id: id.to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+            name: None,
+        };
+        let store = yi_session::SessionStore::in_memory(metadata);
+        session.attach_store(Arc::new(std::sync::Mutex::new(store)))?;
+    }
     session.set_wall(gate.wall);
     session.use_tools(builtin_tools(), holder.to_path_buf(), Some(broker));
     // One turn runs every call: the loop answers each tool result with the next queued message.
@@ -170,6 +183,7 @@ fn confined_to(project: &Path) -> Sandbox {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
+        spared: None,
     }
 }
 
@@ -843,5 +857,96 @@ fn a_proven_command_is_allowed_and_contained() -> TestResult {
     assert_eq!(report.to_json()["sandboxed"], Sandbox::available());
     let yolo = yi_runtime::gate::explain("git status && ls", PermissionMode::Yolo, &dir);
     assert_eq!(yolo.to_json()["sandboxed"], false);
+    Ok(())
+}
+
+/// A walled session `juror` under a fake HOME, its commands contained by the production profile.
+async fn run_walled_juror(
+    root: &Path,
+    commands: &[&str],
+) -> Result<(Vec<String>, PathBuf), Box<dyn Error>> {
+    let home = root.join("home");
+    std::fs::create_dir_all(home.join(".yi/spills/juror"))?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let project = root.join("project");
+    std::fs::create_dir_all(&project)?;
+    let gate = BrokerSetup {
+        wall: Wall {
+            deny_write: Vec::new(),
+            deny_read: vec![project.join("secret")],
+            deny_url: Vec::new(),
+            container: None,
+        },
+        session: Some("juror"),
+        ..BrokerSetup::default()
+    };
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    Ok((
+        run_held(&project, &project, sandbox, commands, gate).await?,
+        home,
+    ))
+}
+
+/// #888: the profile walls the whole spill root and spares the session's own dir, so a dir
+/// another session makes while a command runs is walled from it too.
+#[tokio::test]
+async fn a_walled_command_reads_its_own_spill_and_no_dir_made_while_it_runs() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let root = Scratch::new("yi-seam-spill-race")?;
+    let spills = root.join("home/.yi/spills");
+    std::fs::create_dir_all(spills.join("juror"))?;
+    std::fs::write(spills.join("juror/own.txt"), "OWN SPILL\n")?;
+    let late = spills.join("late/9999.txt");
+    let plant = late.clone();
+    let planter = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        let made = plant.parent().map(std::fs::create_dir_all);
+        (
+            made.is_some(),
+            std::fs::write(&plant, "WALLED LATE\n").is_ok(),
+        )
+    });
+    let own = format!("cat {}", spills.join("juror/own.txt").display());
+    let racing = format!("sleep 2; cat {}", late.display());
+    let (results, _) = run_walled_juror(&root, &[&own, &racing]).await?;
+    assert_eq!(
+        planter.join().map_err(|_| "planter panicked")?,
+        (true, true)
+    );
+    assert!(
+        results[0].contains("OWN SPILL"),
+        "own spill: {}",
+        results[0]
+    );
+    assert!(
+        !results[1].contains("WALLED LATE"),
+        "a dir made mid-command was read: {}",
+        results[1]
+    );
+    Ok(())
+}
+
+/// #888 review: a profile listing every other session's dir took 7.2 s per command at 600 dirs
+/// and failed to compile near 1000; walling the root costs the same at any count.
+#[tokio::test]
+async fn a_thousand_spill_dirs_leave_a_contained_command_fast() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let root = Scratch::new("yi-seam-spill-scale")?;
+    for index in 0..1000 {
+        std::fs::create_dir_all(root.join(format!("home/.yi/spills/s{index}")))?;
+    }
+    let started = std::time::Instant::now();
+    let (results, _) = run_walled_juror(&root, &["echo contained-ok"]).await?;
+    let took = started.elapsed();
+    assert!(results[0].contains("contained-ok"), "{}", results[0]);
+    assert!(
+        took < std::time::Duration::from_millis(200),
+        "one echo took {took:?}"
+    );
     Ok(())
 }

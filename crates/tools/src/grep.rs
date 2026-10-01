@@ -297,9 +297,8 @@ fn type_glob(name: &str) -> Option<&'static str> {
 }
 
 fn collect(
-    cwd: &Path,
+    context: &ToolContext,
     root: &Path,
-    deny: &[PathBuf],
     matcher: &regex::Regex,
     include: Option<&RootedGlob>,
     options: &Options,
@@ -312,11 +311,12 @@ fn collect(
     let mut binary_skipped = 0_usize;
     let mut documents_searched = 0_usize;
     let mut documents_unsearched: Vec<String> = Vec::new();
+    let (cwd, deny, gate) = (&context.cwd, &context.deny_read, context.read_gate());
     let mut search_file = |path: &Path| -> bool {
         if include.is_some_and(|include| !include.matches(path)) {
             return true;
         }
-        let Ok(bytes) = fs::read(path) else {
+        let Ok(bytes) = gate.open(path, deny).and_then(crate::tool::read_all) else {
             return true;
         };
         let converted = match documents.as_mut() {
@@ -573,15 +573,9 @@ impl GrepTool {
         };
         let kind = skip.and_then(|(path, _)| Path::new(path).extension()?.to_str());
         let same_kind = kind.and_then(|kind| rooted_glob(&same_language(kind), root).ok());
-        let collected = collect(
-            root,
-            root,
-            deny,
-            &matcher,
-            same_kind.as_ref(),
-            &options,
-            None,
-        );
+        let mut scope = ToolContext::new(root.to_path_buf());
+        scope.deny_read = deny.to_vec();
+        let collected = collect(&scope, root, &matcher, same_kind.as_ref(), &options, None);
         let mut rows: Vec<String> = Vec::new();
         let mut taken = 0_usize;
         let mut total = 0_usize;
@@ -612,7 +606,9 @@ impl GrepTool {
         matcher: &regex::Regex,
         replacement: &str,
         options: &Options,
+        context: &ToolContext,
     ) -> ToolOutput {
+        let (gate, walls) = (context.read_gate(), context.write_walls());
         if collected.files.len() > REPLACE_FILES_CAP || collected.total > REPLACE_HITS_CAP {
             return *invalid(format!(
                 "replace would touch {} files / {} hits; the caps are {REPLACE_FILES_CAP} / {REPLACE_HITS_CAP} — narrow with path, include or type",
@@ -644,7 +640,10 @@ impl GrepTool {
                 continue;
             }
             let persisted = file.endings.restore(&after, &origins);
-            match fs::write(&file.canonical, persisted) {
+            let written_through = gate.open_write(Path::new(&file.canonical), &walls);
+            match written_through
+                .and_then(|mut opened| crate::tool::overwrite(&mut opened, persisted.as_bytes()))
+            {
                 Ok(()) => {
                     written = written.saturating_add(1);
                     if let Some(state) = &self.hashline {
@@ -933,9 +932,8 @@ impl Tool for GrepTool {
         let context_lines = context_asked.min(CONTEXT_CAP);
 
         let collected = collect(
-            &context.cwd,
+            context,
             &root,
-            &context.deny_read,
             &matcher,
             include.as_ref(),
             &options,
@@ -945,7 +943,7 @@ impl Tool for GrepTool {
             if let Some(refused) = walled_write(&collected, &options, context) {
                 return refused;
             }
-            return self.replace(&collected, &matcher, replacement, &options);
+            return self.replace(&collected, &matcher, replacement, &options, context);
         }
         let page_cap = if options.block {
             BLOCK_PAGE_CAP
