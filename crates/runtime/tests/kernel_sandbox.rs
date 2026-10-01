@@ -817,7 +817,15 @@ async fn a_walled_kernel_reads_its_own_spill_and_transcript_and_no_other() -> Te
     unsafe { std::env::set_var("HOME", &home) };
     let ran = walled_roots_probe(&root, &project, &home).await;
     let _ = std::fs::remove_dir_all(&home);
-    let (walled, open, id) = ran?;
+    let (walled, named, open, id) = ran?;
+    // #1000 review F1: a spare never reopens what the wall itself names, by read or write.
+    assert!(
+        named.matches("denied 1").count() == 5
+            && !named.contains("NOTE")
+            && !named.contains("SPILL")
+            && !named.contains("WROTE"),
+        "the wall's own deny_read lost to a spare: {named}"
+    );
     for leak in ["WALLED TRANSCRIPT", "WALLED OUTPUT"] {
         assert!(
             !walled.contains(leak),
@@ -846,7 +854,7 @@ async fn walled_roots_probe(
     root: &std::path::Path,
     project: &std::path::Path,
     home: &std::path::Path,
-) -> Result<(String, String, String), Box<dyn Error>> {
+) -> Result<(String, String, String, String), Box<dyn Error>> {
     let planted = crate::wall_e2e::plant_transcripts(home, project)?;
     let (spills, sessions) = (home.join(".yi/spills"), &planted.sessions);
     let elsewhere = home.join("store/--elsewhere--/1_other.jsonl");
@@ -902,9 +910,35 @@ async fn walled_roots_probe(
     )
     .with_session_store(&home.join("store"));
     let wall = crate::wall_e2e::juror_wall(project);
-    let broker = Arc::new(broker.for_child(&wall, project));
+    let broker = Some(Arc::new(broker.for_child(&wall, project)));
+    // The parent's wall covers the board and the own dir, every spill, and a dir in the own dir.
+    let (board, secret) = (
+        planted.own_dir.with_file_name("family"),
+        planted.own_dir.join("secret"),
+    );
+    for dir in [&board, &secret] {
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(dir.join("note.txt"), "NAMED NOTE")?;
+    }
+    let mut named = wall.clone();
+    let children = planted.own_dir.parent().ok_or("no parent")?.to_path_buf();
+    named.deny_read = vec![children, spills.clone(), secret.clone()];
+    let probes = [
+        board.join("note.txt"),
+        secret.join("note.txt"),
+        own_spill.clone(),
+    ];
+    let writes = [board.join("by-cell.txt"), secret.join("by-cell.txt")];
+    let named_code = format!(
+        "for path in {probes:?}:\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)\nfor path in {writes:?}:\n    try:\n        open(path, 'w').write('x')\n    except OSError as e:\n        print('denied', e.errno)",
+    );
     let mut outputs = Vec::new();
-    for (wall, broker) in [(wall, Some(broker)), (yi_runtime::Wall::default(), None)] {
+    let runs = [
+        (wall, broker.clone(), code.clone()),
+        (named, broker, named_code),
+        (yi_runtime::Wall::default(), None, code),
+    ];
+    for (wall, broker, code) in runs {
         let open = wall.is_empty();
         let rlm = if open {
             root.join("open")
@@ -918,11 +952,13 @@ async fn walled_roots_probe(
         let kernel = session
             .kernel_service()
             .ok_or("the wiring installs a kernel")?;
-        let ran = cell(&kernel, code.clone()).await;
+        let ran = cell(&kernel, code).await;
         kernel.dispose().await;
         let ran = ran?;
         outputs.push(format!("{}{:?}", ran.result.stdout, ran.result.error));
     }
+    let wrote = writes.iter().any(|path| path.exists());
+    let named = format!("{}{}", outputs.remove(1), if wrote { "WROTE" } else { "" });
     let open = outputs.pop().ok_or("no unwalled run")?;
-    Ok((outputs.pop().ok_or("no walled run")?, open, id))
+    Ok((outputs.pop().ok_or("no walled run")?, named, open, id))
 }

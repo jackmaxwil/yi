@@ -187,6 +187,11 @@ pub(crate) fn walled_roots(
         .collect()
 }
 
+/// Invariant: a kernel's spare never reopens a path the wall's own `deny_read` covers (#1000).
+pub(crate) fn unwalled(wall: &crate::wall::Wall, dir: &std::path::Path) -> bool {
+    !yi_tools::walled(&wall.deny_read, dir)
+}
+
 impl ToolAdapter {
     pub fn new(
         tool: Arc<dyn Tool>,
