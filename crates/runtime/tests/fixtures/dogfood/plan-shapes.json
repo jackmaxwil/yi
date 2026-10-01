@@ -1,5 +1,5 @@
 {
- "source": "plan calls glm-5.3-flash sent in four rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982), refused then; checker commands replaced by `true`",
+ "source": "plan calls glm-5.3-flash sent in five rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982), refused then; checker commands replaced by `true`; the two misspellings are the cases a lenient reader must still refuse",
  "cases": [
   {
    "name": "no op beside goal and todos",
@@ -130,7 +130,7 @@
     "reason": "redundant: the unittest suite already covers mod"
    },
    "lands": true,
-   "says": "records no note"
+   "says": "left out, they stay"
   },
   {
    "name": "done with note",
@@ -155,7 +155,7 @@
     "note": "decider checks: suite OK, 3 tests"
    },
    "lands": true,
-   "says": "records no note"
+   "says": "left out, they stay"
   },
   {
    "name": "done on a pending own todo",
@@ -194,8 +194,7 @@
     "label": "Update README to document mod",
     "op": "append"
    },
-   "lands": false,
-   "says": "each todo's label goes inside todos"
+   "lands": true
   },
   {
    "name": "block fields inside init",
@@ -567,7 +566,7 @@
     "reason": "the spawn failed"
    },
    "lands": true,
-   "says": "records no note"
+   "says": "left out, they stay"
   },
   {
    "name": "drop on a running todo",
@@ -1053,6 +1052,353 @@
    },
    "lands": true,
    "says": "no plan was open"
+  },
+  {
+   "name": "a todo inside a todo, and a plan named root",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "plan": "root",
+    "todos": [
+     {
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "tests_pass",
+         "weight": 100
+        }
+       ],
+       "covers": [
+        "calc.py"
+       ]
+      },
+      "label": "Fix calc.divide to return a / b",
+      "todo": {
+       "intent": [
+        "user://1"
+       ],
+       "label": "Fix calc.divide to return a / b"
+      }
+     }
+    ]
+   },
+   "lands": true,
+   "says": "left out"
+  },
+  {
+   "name": "done naming a plan that does not exist",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Fix calc.divide to return a / b"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "done",
+    "plan": "root",
+    "todo": "Fix calc.divide to return a / b"
+   },
+   "lands": true,
+   "says": "ran on the open plan"
+  },
+  {
+   "name": "a description on a todo is left out, its on still refuses",
+   "setup": [],
+   "call": {
+    "goal": "Add input validation to calc.divide with the divide-by-zero behavior chosen by the user",
+    "op": "init",
+    "todos": [
+     {
+      "description": "divide must validate its inputs; the divide-by-zero decision (raise ValueError vs return None vs let ZeroDivisionError propagate) belongs to the user and is blocked on them",
+      "label": "decide divide-by-zero behavior",
+      "on": {
+       "user": null
+      }
+     },
+     {
+      "description": "Write the plan for calc.divide input validation once the zero behavior is decided",
+      "label": "plan validation for calc.divide",
+      "after": [
+       "decide divide-by-zero behavior"
+      ]
+     }
+    ]
+   },
+   "lands": false,
+   "says": "does not take \"on\""
+  },
+  {
+   "name": "block with a question beside its note",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "decide divide-by-zero behavior"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "label": "decide divide-by-zero behavior",
+    "note": "Pick how calc.divide should treat b == 0 once input validation is added",
+    "on": {
+     "user": null
+    },
+    "op": "block",
+    "options": [
+     {
+      "id": "valueerror",
+      "label": "Raise ValueError(\"cannot divide by zero\")"
+     },
+     {
+      "id": "none",
+      "label": "Return None"
+     },
+     {
+      "id": "zero-div",
+      "label": "Let Python's ZeroDivisionError propagate"
+     }
+    ],
+    "question": "When calc.divide is called with a zero divisor, what should it do?"
+   },
+   "lands": true,
+   "says": "left out"
+  },
+  {
+   "name": "append with one label",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Fix calc.divide to return a / b"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "label": "scratch todo for op exercise",
+    "op": "append"
+   },
+   "lands": true
+  },
+  {
+   "name": "delegation written once beside todos",
+   "setup": [],
+   "call": {
+    "delegation": {
+     "accept": {
+      "command": "true"
+     },
+     "spec": {
+      "isolation": "worktree",
+      "role": "root"
+     }
+    },
+    "goal": "Add a mean(values) function to calc.py with unit tests",
+    "op": "init",
+    "todos": [
+     {
+      "contract": {
+       "class": "writer",
+       "items": [
+        {
+         "critical": true,
+         "weight": 100,
+         "id": "tests-pass",
+         "decider": {
+          "cmd": "true"
+         }
+        }
+       ],
+       "threshold": 1000
+      },
+      "delegation": {
+       "accept": {
+        "command": "true"
+       },
+       "spec": {
+        "isolation": "worktree",
+        "role": "root"
+       }
+      },
+      "label": "Add mean(values) to calc.py with unit tests"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "went to each todo"
+  },
+  {
+   "name": "drop with a cause",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Add mean(values) to calc.py with unit tests"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "cause": "Engine could not spawn the worktree child: git status --porcelain exited 128: fatal: not a git repository: (null), twice, while manual git worktree add succeeds. Proceeding inline per user default.",
+    "label": "Add mean(values) to calc.py with unit tests",
+    "op": "drop"
+   },
+   "lands": true,
+   "says": "left out"
+  },
+  {
+   "name": "drop with a disposition in prose",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Add mean(values) to calc.py with unit tests"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "disposition": "superseded inline; engine spawn failed twice with git status --porcelain exited 128: fatal: not a git repository: (null)",
+    "label": "Add mean(values) to calc.py with unit tests",
+    "op": "drop"
+   },
+   "lands": true,
+   "says": "retained or discarded"
+  },
+  {
+   "name": "a todo id beside the label",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "Fix the failing divide test and add a negate(a) function with tests, all checks passing",
+    "todos": [
+     {
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "divide_test_passes",
+         "weight": 100
+        }
+       ]
+      },
+      "label": "Fix divide() to divide instead of multiply",
+      "todo": "fix_divide"
+     },
+     {
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "negate_test_passes",
+         "weight": 100
+        }
+       ]
+      },
+      "label": "Add negate(a) function and test",
+      "todo": "add_negate"
+     },
+     {
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "full_suite_passes",
+         "weight": 100
+        }
+       ]
+      },
+      "label": "Full test suite passes",
+      "todo": "full_suite"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "left out"
+  },
+  {
+   "name": "a misspelled contract still refuses",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "demo",
+    "todos": [
+     {
+      "label": "x",
+      "contarct": {
+       "class": "inline",
+       "items": [
+        {
+         "id": "t",
+         "critical": true,
+         "weight": 1,
+         "decider": {
+          "cmd": "true"
+         }
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "lands": false,
+   "says": "does not take \"contarct\""
+  },
+  {
+   "name": "a misspelled output still refuses",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Fix calc.divide to return a / b"
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "label": "Fix calc.divide to return a / b"
+    }
+   ],
+   "call": {
+    "op": "done",
+    "label": "Fix calc.divide to return a / b",
+    "outpt": "file:///tmp/x"
+   },
+   "lands": false,
+   "says": "does not take \"outpt\""
   }
  ]
 }

@@ -112,11 +112,6 @@ fn delegation_of(delegation: &mut Map<String, Value>, blobs: &mut Vec<Blob>) -> 
 }
 
 fn todo_of(todo: &mut Map<String, Value>, blobs: &mut Vec<Blob>) -> Result<(), String> {
-    if !todo.contains_key("delegation")
-        && let Some(delegation) = todo.remove("delegate")
-    {
-        todo.insert("delegation".to_owned(), delegation);
-    }
     let loose = todo
         .get("delegation")
         .is_some_and(|delegation| delegation.get("accept").is_none());
