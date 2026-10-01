@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::layout::Direction;
 use serde_json::{Value, json};
-use yi_types::acp::AcpSessionUpdate;
+use yi_types::acp::{AcpSessionUpdate, AcpToolCallUpdate};
 
 use crate::client::Outbound;
 use crate::keys::Action;
@@ -45,10 +45,10 @@ impl App {
         session: &SessionId,
         update: &AcpSessionUpdate,
     ) {
-        let AcpSessionUpdate::ToolCallUpdate {
+        let AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
             raw_output: Some(details),
             ..
-        } = update
+        }) = update
         else {
             return;
         };
@@ -107,9 +107,9 @@ impl App {
     }
 
     pub(super) fn absorb_kernel(&mut self, session: &SessionId, update: &AcpSessionUpdate) {
-        if let AcpSessionUpdate::ToolCallUpdate {
+        if let AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
             title: Some(title), ..
-        } = update
+        }) = update
             && title == "ipython"
         {
             self.maybe_open_side(session, SideKind::Notebook);

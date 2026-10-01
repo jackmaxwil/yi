@@ -21,7 +21,7 @@ impl PermissionBroker {
         rules.rules.retain(|rule| {
             self.admits(rule, wall) && !(elsewhere && yi_permission::is_exact_command(rule))
         });
-        Self {
+        let mut child = Self {
             sandbox: self.sandbox.clone(),
             mode: Arc::clone(&self.mode),
             config_rules: self.config_rules.clone(),
@@ -33,6 +33,7 @@ impl PermissionBroker {
             prompts_close_on_settle: std::sync::atomic::AtomicBool::new(
                 self.prompts_close_on_settle.load(Ordering::Relaxed),
             ),
+            walled: self.walled || !wall.is_empty(),
             ..Self::new(
                 self.mode(),
                 self.cwd.clone(),
@@ -40,7 +41,13 @@ impl PermissionBroker {
                 self.asker.clone(),
                 self.events.clone(),
             )
-        }
+        };
+        // The `--session-dir` in use stays host-owned below the root too (D335, #971).
+        child
+            .context
+            .host_owned
+            .clone_from(&self.context.host_owned);
+        child
     }
 
     /// A write grant holds while its directory is neither protected nor walled; a pass, which
@@ -107,6 +114,44 @@ impl PermissionBroker {
             sandbox.host_owned.push(dir.to_path_buf());
         }
         self
+    }
+
+    /// Invariant: where Seatbelt exists, a walled holder's call never runs unconfined, unless the
+    /// user chose yolo: outside, its text would be its only wall, and text is bypassable (#1001).
+    pub(crate) fn confines_walled(&self) -> bool {
+        self.walled && self.sandbox.is_some() && self.mode() != crate::PermissionMode::Yolo
+    }
+
+    /// A walled holder's call that would leave the sandbox is refused before anyone is asked: one
+    /// that needs the host, a retry of a pathless refusal, or one in a protected dir (D345).
+    pub(super) fn walled_retry(
+        &self,
+        command: Option<&str>,
+        refusal: Option<&yi_tools::SandboxRefusal>,
+    ) -> Option<String> {
+        let confined = command.filter(|_| self.confines_walled());
+        if let Some((why, _)) = confined.and_then(|text| super::leaves_sandbox(text, &self.context))
+        {
+            return Some(crate::gate::walled_host_refusal(why));
+        }
+        if let (Some(_), Some(yi_tools::SandboxRefusal::Scopes(_))) = (confined, refusal) {
+            return Some(crate::gate::walled_host_refusal(
+                "its last contained run was refused",
+            ));
+        }
+        let (true, Some(sandbox), Some(yi_tools::SandboxRefusal::Path(path))) =
+            (self.walled, &self.sandbox, refusal)
+        else {
+            return None;
+        };
+        let dir = path.parent().unwrap_or(path);
+        let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        protected(sandbox, &dir).then(|| crate::gate::walled_refusal(path))
+    }
+
+    /// The session stores: `~/.yi/sessions` and the `--session-dir` in use.
+    pub fn session_stores(&self) -> &[PathBuf] {
+        &self.context.host_owned
     }
 
     /// A session switch (`/new`, rpc `switch_session` or `fork`): the next session replays its own.
