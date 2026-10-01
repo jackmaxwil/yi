@@ -1057,6 +1057,46 @@ async fn a_walled_call_outside_the_sandbox_reads_no_other_sessions_store() -> Te
     Ok(())
 }
 
+/// #1001 review: each relative `cd` doubled the dirs the host check resolves a word from, so a
+/// long chain cost 2^k resolves per word; six distinct cds are the 64-dir cap, a seventh refuses.
+#[tokio::test]
+async fn a_cd_chain_past_the_host_checks_cap_is_refused_by_name() -> TestResult {
+    let root = Scratch::new("yi-wall-cd-cap")?;
+    let home = root.home()?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let project = root.join("project");
+    let (_, store, _) = plant_own(&home, &project)?;
+    let yolo = yi_permission::PermissionMode::Yolo;
+    let (session, provider) = wired_child(&root, &project, juror_wall(&project), yolo, None);
+    session.attach_store(store)?;
+    let chain = |n: usize| {
+        let cds: Vec<String> = ('a'..='z').take(n).map(|d| format!("cd {d}")).collect();
+        format!("{}; echo CHAIN RAN", cds.join("; "))
+    };
+    let calls = [chain(6), chain(7)]
+        .iter()
+        .map(|command| ("bash", args(&[("command", command)])))
+        .collect();
+    let seen = run_turns(&session, &provider, calls).await?;
+    let [at, past] = seen.as_slice() else {
+        return Err(format!("two calls, got {seen:?}").into());
+    };
+    assert!(
+        at.0.contains("CHAIN RAN"),
+        "64 dirs are under the cap: {}",
+        at.0
+    );
+    assert!(
+        past.0.contains("128 directories")
+            && past.0.contains("cap of 64")
+            && !past.0.contains("CHAIN RAN"),
+        "a seventh cd is refused by name: {}",
+        past.0
+    );
+    Ok(())
+}
+
 /// #1001: a heartbeat's `exec://` source runs `sh -c` on the host on its cadence, and a walled
 /// session's met only the permission broker: neither the wall's command-text check nor its roots.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

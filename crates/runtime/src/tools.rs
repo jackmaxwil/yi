@@ -119,6 +119,10 @@ pub(crate) fn host_wall(
     walled.or_else(|| walled_root_refusal(command, roots, spared, cwd))
 }
 
+/// Incident: each relative `cd` resolved against every dir so far, doubling them, so a chain of
+/// k cds cost 2^k resolves per word; past this the check refuses rather than skip a target.
+const CD_DIRS_MAX: usize = 64;
+
 /// Refuses a command naming a root or a dir above one, but a spare, in most spellings (`~`, a glob,
 /// `..` after a `cd`, glued to a flag). Text only: `$(…)`, a variable or a built path pass it.
 fn walled_root_refusal(
@@ -151,8 +155,17 @@ fn walled_root_refusal(
             if let Some(root) = hit {
                 return Some(crate::gate::outside_sandbox_refusal(root));
             }
-            if after_cd {
-                dirs.extend(paths);
+            for path in paths.into_iter().filter(|_| after_cd) {
+                if !dirs.contains(&path) {
+                    dirs.push(path);
+                }
+            }
+            if dirs.len() > CD_DIRS_MAX {
+                let why = format!(
+                    "its cd targets give {} directories to read its paths from, past the check's cap of {CD_DIRS_MAX}; run the cds as separate calls",
+                    dirs.len()
+                );
+                return Some(crate::gate::walled_host_refusal(&why));
             }
         }
         after_cd = matches!(word, "cd" | "pushd");
