@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
-"""Shrink-only per-crate src ceilings (D43 and its successors).
+"""Per-crate src lines may not grow past the fork point's without `raise: crate <name> +N` in a
+change file this branch adds (D43 and its successors).
 Incident: yi-tui's 10,000-line ceiling was prose only, so the crate reached 10,913
 before anyone measured it."""
-import json, sys, pathlib
+import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, BASE, fail
+from _common import SRC, fail, fork, no_fork, texts
+from check_changes import raise_errors, raised
 
-budget = json.loads((BASE / "crate_size_budget.json").read_text())
-sizes = {
-    name: sum(len(f.read_text().splitlines()) for f in (ROOT / "crates" / name / "src").rglob("*.rs"))
-    for name in budget
-}
-if "--update" in sys.argv:
-    (BASE / "crate_size_budget.json").write_text(json.dumps(sizes, indent=2, sort_keys=True) + "\n")
-    print("crate sizes " + ", ".join(f"{n} {budget[n]} -> {s}" for n, s in sorted(sizes.items())))
-    sys.exit(0)
 
-errs = [f"crates/{n}/src {s} lines > {budget[n]}" for n, s in sorted(sizes.items()) if s > budget[n]]
-fail(errs, "crate_size (" + ", ".join(f"{n} {s}/{budget[n]}" for n, s in sorted(sizes.items())) + ")")
+def sizes(files):
+    out = {}
+    for path, text in files.items():
+        crate = path.split("/")[1]
+        out[crate] = out.get(crate, 0) + len(text.splitlines())
+    return out
+
+
+base = fork()
+if base is None:
+    no_fork("crate_size")
+now, was = sizes(texts(SRC)), sizes(texts(SRC, base))
+declared = {n: raised(base, f"crate {n}") for n in now}
+errs = [e for n, s in sorted(now.items()) for e in raise_errors(f"crate {n}", s, was.get(n, 0), declared[n])]
+fail(errs, "crate_size (" + ", ".join(f"{n} {s}/{was.get(n, 0) + declared[n]}" for n, s in sorted(now.items())) + ")")
