@@ -114,7 +114,7 @@ def required_jobs(contexts):
     jobs = []
     for context in contexts:
         name = re.sub(r"^\w+ / ", "", context)
-        name = re.sub(r" \(pull_request\)$", "", name)
+        name = re.sub(r" \(pull_request(_target)?\)$", "", name)
         jobs.append(name)
     return jobs
 
@@ -183,10 +183,8 @@ def read_json(path):
 
 def cmd_ratchet(args):
     before = {path: read_json(path) for path in baseline_paths()}
-    # Incident: nothing ran check_growth --update, so src_loc.json sat 64 versions back and every
-    # memo restated one cumulative number; its update refuses a delta the row has not priced.
-    for script in ("check_test_size.py", "check_crate_size.py", "check_comments.py",
-                   "check_schemas_lock.py", "check_growth.py", "check_request_budget.py"):
+    # The size ceilings are measured at the fork and raised in a change file; these still store one.
+    for script in ("check_schemas_lock.py", "check_request_budget.py"):
         subprocess.run((sys.executable, str(ROOT / "scripts/guardrails" / script), "--update"), check=False)
     changed = dirty(baseline_paths())
     if not changed:
@@ -196,14 +194,8 @@ def cmd_ratchet(args):
     for path in changed:
         was, now = before.get(path, {}), read_json(path)
         stem = pathlib.Path(path).stem
-        if stem == "test_size_budget":
-            parts.append(f"test LOC {was.get('budget_lines', '?')} -> {now.get('budget_lines', '?')}")
-        elif stem == "binary_size_budget":
+        if stem == "binary_size_budget":
             parts.append(f"dist binary {was.get('max_bytes', '?')} -> {now.get('max_bytes', '?')}")
-        elif stem == "crate_size_budget":
-            for crate, limit in now.items():
-                if was.get(crate) != limit:
-                    parts.append(f"{crate} crate {was.get(crate, '?')} -> {limit}")
         elif stem == "request_budget":
             for key in ("system", "tools", "total"):
                 if was.get(key) != now.get(key):
@@ -559,56 +551,6 @@ def cmd_merge(args):
         time.sleep(POLL)
 
 
-def growth_line():
-    out = subprocess.run((sys.executable, str(ROOT / "scripts/guardrails/check_growth.py")),
-                         capture_output=True, text=True, check=False)
-    return out.stdout + out.stderr
-
-
-def repriced_memo(row, measured):
-    """The memo's number follows the measurement; its prose stays the author's."""
-    return re.sub(r"growth \+\d+:", f"growth +{measured}:", row, count=1)
-
-
-def reprice_growth():
-    """After a merge the memo trails the tree; `check_growth` says by how much, and only the
-    number moves. Returns the commit subject, or None when nothing was owed."""
-    text = growth_line()
-    if text.strip().startswith("ok"):
-        return None
-    measured = re.search(r"measurement is ([+-]\d+)", text) or re.search(r"^\s*([+-]\d+) is past", text, re.M)
-    if not measured:
-        return None
-    number = measured.group(1).lstrip("+")
-    arch = (ROOT / "docs/ARCHITECTURE.md").read_text()
-    version = re.search(r"^version:\s*(\S+)", arch, re.M).group(1)
-    log = ROOT / "docs/CHANGELOG.md"
-    lines = log.read_text().splitlines()
-    for i, line in enumerate(lines):
-        if line.startswith(f"| {version} |") and "growth +" in line:
-            lines[i] = repriced_memo(line, number)
-            log.write_text("\n".join(lines) + "\n")
-            subject = f"Price the {version} row at the growth the merge measures"
-            git("commit", "-q", "-m", subject, "--", "docs/CHANGELOG.md", check=True)
-            return subject
-    return None
-
-
-def render_missing_adrs():
-    """A decision row without its ADR is a landing law; `just adr` writes it from the row."""
-    arch = (ROOT / "docs/ARCHITECTURE.md").read_text()
-    written = []
-    for number in re.findall(r"^\| D(\d+) \|", arch, re.M):
-        path = ROOT / "docs/solutions/adr" / f"d{number}.md"
-        if not path.exists():
-            subprocess.run((sys.executable, str(ROOT / "scripts/adr.py"), number), check=True)
-            written.append(number)
-    if written:
-        git("add", "docs/solutions", check=True)
-        git("commit", "-q", "-m", "Record " + ", ".join(f"D{n}" for n in written) + " from the decision log", check=True)
-    return written
-
-
 def refresh_from_main():
     """Merge origin/main in, let the baseline driver take the conflicts it owns, re-measure."""
     git("fetch", "--no-tags", "origin", "main", check=True)
@@ -631,17 +573,7 @@ def refresh_from_main():
 def cmd_land(args):
     if refresh_from_main():
         return 1
-    # Incident: the merge kept this branch's src_loc.json, a pair that had never seen main's
-    # growth, so the gate read main's lines as this version's and no reprice could say so.
-    # Main's pair is the last priced point: the row prices everything since, then the
-    # ratchet moves the pair past it.
-    growth = "scripts/guardrails/baselines/src_loc.json"
-    (ROOT / growth).write_text(git("show", f"origin/main:{growth}", check=True) + "\n")
-    if subject := reprice_growth():
-        print(f"land: {subject}")
     cmd_ratchet(argparse.Namespace(topic=args.title, no_binary=False))
-    if written := render_missing_adrs():
-        print("land: ADRs rendered for " + ", ".join(f"D{n}" for n in written))
     code = cmd_open(args)
     if code:
         return code
@@ -657,6 +589,7 @@ def selfcheck():
     assert repo_of("ssh://git@forge.example.invalid:2222/apex/yi.git") == "apex/yi"
     assert repo_of("https://git.example.invalid/apex/yi") == "apex/yi"
     assert repo_of("git@github.com:jackmaxwil/yi.git") == "jackmaxwil/yi"
+    assert required_jobs(["review / review (pull_request_target)"]) == ["review"], "the review job runs on the target event"
     assert required_jobs(["pr / gate (test) (pull_request)", "pr / title (pull_request)"]) == [
         "gate (test)", "title",
     ]
@@ -686,9 +619,6 @@ def selfcheck():
     long = ratchet_subject(["test LOC 36636 -> 36696", "tui crate 10922 -> 10984", "dist binary 5696512 -> 5696544"], "the console pane and its avatars")
     assert len(long) <= SUBJECT_LIMIT and long.startswith("Ratchet: test LOC"), long
     assert ratchet_subject([], "x") == "Ratchet: baselines"
-    row = "| 0.150.0 | d | x. growth +1026: measured under D119; prose. |"
-    assert repriced_memo(row, "4315") == "| 0.150.0 | d | x. growth +4315: measured under D119; prose. |"
-    assert repriced_memo("| 0.1.0 | d | no memo |", "9") == "| 0.1.0 | d | no memo |"
     counted = "<!-- prefilled -->\n\n## Summary\n\nprefill\n\n## Files edited\n\nprefill files\n"
     kept = dedupe_counted("## Summary\n\nmine\n", counted)
     assert "mine" not in kept and "prefill files" in kept and kept.count("## Summary") == 0, kept
@@ -832,6 +762,11 @@ def build_parser():
     pr.choices["review"].add_argument("--dry-run", action="store_true", help="print the round, post nothing")
     pr.choices["review"].add_argument("--again", action="store_true", help="read a head the rule says is read enough")
     pr.add_parser("sweep").set_defaults(run=pr_review.cmd_sweep)
+    import pr_autofix
+
+    autofix = pr.add_parser("autofix", help="fix conflicts with the base: one PR now, or one pass oldest first")
+    autofix.add_argument("number", nargs="?")
+    autofix.set_defaults(run=pr_autofix.cmd_autofix)
     replay = pr.add_parser("replay")
     replay.add_argument("numbers", nargs="+", type=int)
     replay.add_argument("--label", required=True, help="what the PR is known to be: bad, kept, closed")
