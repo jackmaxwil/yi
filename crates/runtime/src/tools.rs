@@ -116,12 +116,12 @@ pub(crate) fn host_wall(
     cwd: &std::path::Path,
 ) -> Option<String> {
     let walled = wall.check("bash", yi_tools::ToolKind::Exec, &bash(command), cwd);
-    walled.or_else(|| names_walled_root(command, roots, spared, cwd))
+    walled.or_else(|| walled_root_refusal(command, roots, spared, cwd))
 }
 
-/// A root a command names, or a directory above one, save through a spare: quoted, escaped, by
-/// `~`, `$HOME`, `..`, a link or a glob's literal head. A text check stops an honest agent only.
-fn names_walled_root(
+/// Refuses a command naming a root, or a directory above one, save through a spare: quoted,
+/// escaped, by `~`, `$HOME`, `..`, a link or a glob's head. Text only: `$(…)` or `cd ..` pass.
+fn walled_root_refusal(
     command: &str,
     roots: &[PathBuf],
     spared: &[PathBuf],
@@ -129,7 +129,7 @@ fn names_walled_root(
 ) -> Option<String> {
     let text = command.replace(['"', '\'', '\\'], "");
     let words = text.replace("${HOME}", "~").replace("$HOME", "~");
-    let words = words.split(|c: char| c.is_whitespace() || "=;|&()<>`".contains(c));
+    let words = words.split(|c: char| c.is_whitespace() || "=;|&()<>`:@".contains(c));
     let hit = words.filter(|word| !word.is_empty()).find_map(|word| {
         let head: String = (word.split_inclusive('/'))
             .take_while(|part| !part.contains(['*', '?', '[']))
@@ -141,7 +141,7 @@ fn names_walled_root(
                     && !yi_tools::walled(spared, &path)
         })
     });
-    hit.map(|root| crate::gate::outside_wall_refusal(root))
+    hit.map(|root| crate::gate::outside_sandbox_refusal(root))
 }
 
 fn bash(command: &str) -> Map<String, Value> {
@@ -160,6 +160,11 @@ pub fn refuse_armed(
     if in_container {
         return Some(format!(
             "an exec:// source runs `{command}` on the host, and this session's commands run in a container"
+        ));
+    }
+    if broker.is_some_and(PermissionBroker::confines_walled) {
+        return Some(crate::gate::walled_host_refusal(
+            "an exec:// source runs on the host",
         ));
     }
     let outcome = broker?.decide_call(
@@ -505,7 +510,7 @@ impl AgentTool for ToolAdapter {
             // Outside the sandbox the command text is the only wall left (#1001).
             let on_host = context.sandbox.is_none() && context.container.is_none();
             if let Some(denial) = on_host
-                .then(|| names_walled_root(&command, &walled_roots, &spared, &context.cwd))
+                .then(|| walled_root_refusal(&command, &walled_roots, &spared, &context.cwd))
                 .flatten()
             {
                 return ToolOutcome {
