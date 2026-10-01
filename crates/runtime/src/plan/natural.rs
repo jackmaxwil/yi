@@ -134,7 +134,10 @@ fn unknown(op: &str, args: &mut Map<String, Value>, left: &mut Vec<String>) {
             && !["actor", "labels"].contains(&key)
             && misplaced(kind, in_todo, key).is_none()
             && field_hint(key).is_empty()
-            && (every.contains(&key) || !every.iter().any(|known| one_edit(key, known)))
+            && (every.contains(&key)
+                || !every
+                    .iter()
+                    .any(|known| crate::memory::edit_distance(key, known) <= 1))
     };
     args.retain(|key, _| {
         let drop = loose(key, known_keys(kind), false);
@@ -158,33 +161,6 @@ fn unknown(op: &str, args: &mut Map<String, Value>, left: &mut Vec<String>) {
                 !drop
             });
         }
-    }
-}
-
-/// One insertion, deletion, substitution or swap of neighbours apart.
-fn one_edit(a: &str, b: &str) -> bool {
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    let (short, long) = if a.len() <= b.len() {
-        (&a, &b)
-    } else {
-        (&b, &a)
-    };
-    let same = short
-        .iter()
-        .zip(long.iter())
-        .take_while(|(x, y)| x == y)
-        .count();
-    let (s, l) = (
-        short.get(same..).unwrap_or_default(),
-        long.get(same..).unwrap_or_default(),
-    );
-    match long.len().saturating_sub(short.len()) {
-        0 => {
-            s.get(1..) == l.get(1..)
-                || (s.first() == l.get(1) && s.get(1) == l.first() && s.get(2..) == l.get(2..))
-        }
-        1 => l.get(1..) == Some(s),
-        _ => false,
     }
 }
 
