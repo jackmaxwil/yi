@@ -108,6 +108,40 @@ pub(crate) fn headless_refusal(
     }
 }
 
+/// The one framing every walled session's refusal of a bash call shares.
+fn wall_denial(body: &str) -> String {
+    format!(
+        "Denied by the reviewer wall: {body}. Read only what the wall leaves open, and report what you could not check."
+    )
+}
+
+/// A walled session's retry near a store or `~/.yi`: run outside, it would read what its wall hides.
+pub(crate) fn walled_refusal(path: &std::path::Path) -> String {
+    wall_denial(&format!(
+        "the sandbox refused this command's last contained run at `{}`, and a walled session never runs it outside the sandbox",
+        path.display()
+    ))
+}
+
+/// A walled session's call that would leave a sandbox that exists (#1001).
+pub(crate) fn walled_host_refusal(why: &str) -> String {
+    wall_denial(&format!(
+        "this command would run outside the sandbox ({why}), and a walled session's commands never leave it"
+    ))
+}
+
+/// A walled session's command that runs outside the sandbox, naming a walled root (#1001).
+pub(crate) fn outside_sandbox_refusal(root: &std::path::Path) -> String {
+    wall_denial(&format!(
+        "this command runs outside the sandbox and names `{}` or a directory above it, which hold other sessions' transcripts and output",
+        root.display()
+    ))
+}
+
+/// Invariant: a walled kernel boots only under a profile. With no Seatbelt (Linux), it and its
+/// `bash()` jobs would meet no wall, and only bash has a container path (#1001).
+pub(crate) const WALLED_KERNEL_UNCONFINED: &str = "ipython is unavailable to a walled session here: with no Seatbelt sandbox (macOS only), its kernel would run unconfined and no wall would hold in a cell. Use read, grep and bash, which the wall checks at each call.";
+
 /// An allowed compound, part of which must leave the sandbox, with no one to ask.
 pub(crate) fn headless_split(why: &str) -> String {
     format!(

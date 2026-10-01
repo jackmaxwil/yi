@@ -346,11 +346,11 @@ impl App {
                     self.refresh_tape(session);
                 }
             }
-            AcpSessionUpdate::ToolCallUpdate {
+            AcpSessionUpdate::ToolCallUpdate(yi_types::acp::AcpToolCallUpdate {
                 title: Some(title),
                 raw_input: Some(input),
                 ..
-            } if title == "read" => {
+            }) if title == "read" => {
                 if let Some(path) = input.get("path").and_then(Value::as_str) {
                     let reads = &mut self.state.diffs.entry(session.clone()).or_default().reads;
                     let count = reads.entry(path.to_owned()).or_default();

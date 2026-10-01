@@ -752,7 +752,6 @@ pub struct HashlineEditTool {
 fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotStore) -> String {
     let mut out = vec![result.header.clone()];
     let op = match result.op {
-        SectionOp::Create => "created",
         SectionOp::Update => "updated",
         SectionOp::Delete => "deleted",
         SectionOp::Noop => "unchanged",
@@ -976,9 +975,7 @@ impl Tool for HashlineEditTool {
                 section.push('\n');
                 section.push_str(&line);
             }
-            if syntax.as_deref().is_none_or(|kept| kept == "syntax: ok") {
-                syntax = Some(line);
-            }
+            syntax = Some(crate::syntax::worst(syntax, line));
         }
         let grid = layer.map_or("skipped", |layer| {
             rendered.push(layer.render());
@@ -1003,7 +1000,6 @@ impl Tool for HashlineEditTool {
                 "ops".to_owned(),
                 json!({
                     "updated": count(SectionOp::Update),
-                    "created": count(SectionOp::Create),
                     "deleted": count(SectionOp::Delete),
                     "noop": count(SectionOp::Noop),
                     "moved": results.iter().filter(|result| result.move_dest.is_some()).count(),

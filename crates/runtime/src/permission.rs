@@ -131,6 +131,8 @@ pub struct PermissionBroker {
     rule_journal: std::sync::OnceLock<Journal<SessionPermissionRule>>,
     approver: std::sync::OnceLock<Arc<crate::classifier::Approver>>,
     prompts_close_on_settle: std::sync::atomic::AtomicBool,
+    /// A walled holder's retry never leaves the sandbox for a protected dir (D345).
+    walled: bool,
 }
 
 pub struct CallOutcome {
@@ -265,6 +267,7 @@ impl PermissionBroker {
             rule_journal: std::sync::OnceLock::new(),
             approver: std::sync::OnceLock::new(),
             prompts_close_on_settle: std::sync::atomic::AtomicBool::new(false),
+            walled: false,
         }
     }
 
@@ -613,6 +616,9 @@ impl PermissionBroker {
         let passed = session_rules.decision_for(rule_kind, &canonical) == Some(RuleDecision::Allow);
         drop(session_rules);
         let refusal = self.retried_refusal(command);
+        if let Some(refused) = self.walled_retry(command, refusal.as_ref()) {
+            return self.denied(refused);
+        }
         let mut split = None;
         let (title, description, reviewable, reason) = match decision {
             Decision::Allow { reason } => {
