@@ -218,7 +218,7 @@ impl ToolAdapter {
 
     /// Invariant: a walled session reads only its own spills and transcript: the spill roots and
     /// session stores are walled, its own spill dir and transcript spared (D340, D345).
-    fn own_walls(&self) -> Vec<PathBuf> {
+    fn walled_roots(&self) -> Vec<PathBuf> {
         if self.wall.is_empty() {
             return Vec::new();
         }
@@ -310,12 +310,12 @@ impl AgentTool for ToolAdapter {
         _signal: &'a InterruptSignal,
     ) -> ToolFuture<'a> {
         let tool = Arc::clone(&self.tool);
-        let (spills, own_walls) = (self.session_spills(), self.own_walls());
+        let (spills, walled_roots) = (self.session_spills(), self.walled_roots());
         let store = (self.transcript.as_ref()).and_then(|store| store());
         let transcript =
             store.and_then(|store| yi_session::lock_session(&store).file_path().cloned());
         let spared: Vec<PathBuf> = (spills.iter().chain(&transcript))
-            .filter(|_| !own_walls.is_empty())
+            .filter(|_| !walled_roots.is_empty())
             .cloned()
             .collect();
         let mut context = ToolContext {
@@ -325,7 +325,7 @@ impl AgentTool for ToolAdapter {
             transcript,
             auto_background: self.auto_background,
             sandbox: None,
-            deny_read: [self.wall.deny_read.as_slice(), &own_walls].concat(),
+            deny_read: [self.wall.deny_read.as_slice(), &walled_roots].concat(),
             deny_write: self.wall.deny_write.clone(),
             container: self.wall.container.clone(),
             call_id: tool_call_id.to_owned(),
@@ -413,7 +413,7 @@ impl AgentTool for ToolAdapter {
                         if let Containment::Contained { widen, .. } = &outcome.containment {
                             context.sandbox = (reporter.sandbox_for(&context.cwd, &wall, widen))
                                 .map(|mut sandbox| {
-                                    sandbox.deny_read.extend_from_slice(&own_walls);
+                                    sandbox.deny_read.extend_from_slice(&walled_roots);
                                     sandbox.spared = spared;
                                     sandbox
                                 });
@@ -461,7 +461,7 @@ impl AgentTool for ToolAdapter {
                     // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
                     // One at or naming a path under the own walls is never kept: Seatbelt judges
                     // each run, so a retry neither asks to leave nor claims the own transcript.
-                    let own = |path: &std::path::Path| yi_tools::walled(&own_walls, path);
+                    let own = |path: &std::path::Path| yi_tools::walled(&walled_roots, path);
                     let named = (command.split_whitespace())
                         .any(|word| own(&yi_permission::resolve_target(word, &cwd)));
                     if let Some(broker) = &contained

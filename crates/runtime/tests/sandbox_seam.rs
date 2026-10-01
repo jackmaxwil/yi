@@ -978,28 +978,16 @@ fn plant_store(
     project: &Path,
 ) -> Result<(PathBuf, [PathBuf; 3], SharedStore), Box<dyn Error>> {
     let home = root.join("home");
-    let family = home
-        .join(".yi/sessions")
-        .join(yi_session::session_directory_name(
-            &project.to_string_lossy(),
-        ));
-    let own_dir = family.join("100_author/children/sub-own");
-    let planted = [
-        family.join("100_author.jsonl"),
-        own_dir.join("children/sub-g/1_g.jsonl"),
-        root.join("store/--elsewhere--/1_other.jsonl"),
-    ];
-    for file in &planted {
-        std::fs::create_dir_all(file.parent().ok_or("no parent")?)?;
-        std::fs::write(file, "WALLED TRANSCRIPT\n")?;
-    }
-    std::fs::create_dir_all(project)?;
+    let planted = crate::wall_e2e::plant_transcripts(&home, project)?;
+    let elsewhere = root.join("store/--elsewhere--/1_other.jsonl");
+    std::fs::create_dir_all(elsewhere.parent().ok_or("no parent")?)?;
+    std::fs::write(&elsewhere, "WALLED TRANSCRIPT\n")?;
     let store = yi_session::create_flat_session(
-        own_dir,
+        planted.own_dir.clone(),
         project.to_string_lossy(),
         Some("author".to_owned()),
     )?;
-    Ok((home, planted, store))
+    Ok((home, [planted.author, planted.grandchild, elsewhere], store))
 }
 
 type SharedStore = yi_session::SharedSession;
@@ -1033,12 +1021,7 @@ async fn a_walled_command_reads_its_own_transcript_and_no_other() -> TestResult 
     ];
     let commands: Vec<&str> = commands.iter().map(String::as_str).collect();
     let gate = BrokerSetup {
-        wall: Wall {
-            deny_write: vec![project.clone()],
-            deny_read: Vec::new(),
-            deny_url: vec!["history://".to_owned()],
-            container: None,
-        },
+        wall: crate::wall_e2e::juror_wall(&project),
         store: Some(store),
         session_dir: Some(root.join("store")),
         ..BrokerSetup::default()

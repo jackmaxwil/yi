@@ -631,21 +631,21 @@ async fn a_walled_session_reads_back_its_own_spill_and_no_other() -> TestResult 
 
 /// Where the transcripts of one project sit in a fake HOME's store: the author's, a sibling
 /// child's under it, and the walled juror's own dir among the author's children.
-struct Planted {
-    project: std::path::PathBuf,
-    sessions: std::path::PathBuf,
-    author: std::path::PathBuf,
-    sibling: std::path::PathBuf,
-    own_dir: std::path::PathBuf,
+pub(crate) struct Planted {
+    pub(crate) project: std::path::PathBuf,
+    pub(crate) sessions: std::path::PathBuf,
+    pub(crate) author: std::path::PathBuf,
+    pub(crate) sibling: std::path::PathBuf,
+    pub(crate) own_dir: std::path::PathBuf,
     /// A child of the juror's own, in its own dir: the file is spared, never the dir.
-    grandchild: std::path::PathBuf,
+    pub(crate) grandchild: std::path::PathBuf,
 }
 
-fn plant_transcripts(
+pub(crate) fn plant_transcripts(
     home: &std::path::Path,
-    root: &std::path::Path,
+    project: &std::path::Path,
 ) -> Result<Planted, Box<dyn Error>> {
-    let project = root.join("project");
+    let project = project.to_path_buf();
     std::fs::create_dir_all(&project)?;
     let sessions = home.join(".yi/sessions");
     let family = sessions.join(yi_session::session_directory_name(
@@ -670,7 +670,7 @@ fn plant_transcripts(
 }
 
 /// The juror's shape (`plan/judge.rs`): every write walled, `history://` walled.
-fn juror_wall(project: &std::path::Path) -> Wall {
+pub(crate) fn juror_wall(project: &std::path::Path) -> Wall {
     Wall {
         deny_write: vec![project.to_path_buf()],
         deny_read: Vec::new(),
@@ -687,7 +687,7 @@ async fn a_walled_juror_reads_its_own_transcript_and_no_other() -> TestResult {
     let home = root.home()?;
     // SAFETY: nextest runs each test in its own process; no other test reads HOME.
     unsafe { std::env::set_var("HOME", &home) };
-    let planted = plant_transcripts(&home, &root)?;
+    let planted = plant_transcripts(&home, &root.join("project"))?;
     let elsewhere = root.join("store/--elsewhere--/1_other.jsonl");
     std::fs::create_dir_all(elsewhere.parent().ok_or("no parent")?)?;
     std::fs::write(&elsewhere, "WALLED TRANSCRIPT\n")?;
@@ -810,7 +810,7 @@ fn a_walled_fetch_reaches_no_transcript_by_tree_local_or_checkpoint() -> TestRes
     let home = root.home()?;
     // SAFETY: nextest runs each test in its own process; no other test reads HOME.
     unsafe { std::env::set_var("HOME", &home) };
-    let planted = plant_transcripts(&home, &root)?;
+    let planted = plant_transcripts(&home, &root.join("project"))?;
     let project = planted.project.clone();
     std::os::unix::fs::symlink(&planted.sessions, project.join("alias"))?;
     let name = (planted.author.strip_prefix(&planted.sessions)?).display();
@@ -868,5 +868,77 @@ fn a_walled_fetch_reaches_no_transcript_by_tree_local_or_checkpoint() -> TestRes
             "an unwalled {url}: {text}"
         );
     }
+    Ok(())
+}
+
+/// #979 review: the `--session-dir` reaches a walled reader's fetch through the real wiring
+/// (`wire_fetch`), so `local://` into a store inside the workspace is refused there too.
+#[tokio::test]
+async fn a_wired_walled_fetch_reaches_no_transcript_in_the_session_dir() -> TestResult {
+    let root = Scratch::new("yi-wall-wired-fetch")?;
+    let home = root.home()?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let project = root.join("project");
+    let store = project.join(".sessions");
+    std::fs::create_dir_all(store.join("--fam--"))?;
+    std::fs::write(store.join("--fam--/1_author.jsonl"), "WALLED TRANSCRIPT\n")?;
+    let provider = Arc::new(ProviderStream::new(None));
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    let wall = juror_wall(&project);
+    let broker = yi_runtime::PermissionBroker::new(
+        yi_permission::PermissionMode::Auto,
+        project.clone(),
+        Vec::new(),
+        None,
+        session.events_sender(),
+    )
+    .with_session_store(&store);
+    let broker = Arc::new(broker.for_child(&wall, &project));
+    let _host = yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider: Arc::clone(&provider) as _,
+            system_prompt: String::new(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: project.clone(),
+            home: home.clone(),
+            lane_slots: 1,
+            broker: Some(broker),
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 1,
+            max_depth: 2,
+            rlm_dir: root.join("rlm"),
+            family_dir: None,
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall,
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    let url = "local://.sessions/--fam--/1_author.jsonl";
+    let seen = run_turns(&session, &provider, vec![("read", args(&[("path", url)]))]).await?;
+    let (text, _) = seen.first().ok_or("no read")?;
+    assert!(
+        !text.contains("WALLED TRANSCRIPT"),
+        "{url} reached a wired walled reader: {text}"
+    );
     Ok(())
 }
