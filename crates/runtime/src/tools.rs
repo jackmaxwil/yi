@@ -217,7 +217,7 @@ impl ToolAdapter {
     }
 
     /// Invariant: a walled session reads only its own spills and transcript: the spill roots and
-    /// session stores are walled, its own spill dir and transcript spared (D340, D341).
+    /// session stores are walled, its own spill dir and transcript spared (D340, D345).
     fn own_walls(&self) -> Vec<PathBuf> {
         if self.wall.is_empty() {
             return Vec::new();
@@ -459,9 +459,16 @@ impl AgentTool for ToolAdapter {
                 Ok(mut output) => {
                     let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());
                     // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
+                    // One at or naming a path under the own walls is never kept: Seatbelt judges
+                    // each run, so a retry neither asks to leave nor claims the own transcript.
+                    let own = |path: &std::path::Path| yi_tools::walled(&own_walls, path);
+                    let named = (command.split_whitespace())
+                        .any(|word| own(&yi_permission::resolve_target(word, &cwd)));
                     if let Some(broker) = &contained
                         && let Some(refusal) = (output.result.details.get("sandboxRefusal"))
                             .and_then(yi_tools::SandboxRefusal::from_json)
+                        && !named
+                        && !matches!(&refusal, yi_tools::SandboxRefusal::Path(path) if own(path))
                     {
                         broker.note_containment_failure(refusal);
                     }

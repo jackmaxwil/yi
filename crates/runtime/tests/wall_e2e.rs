@@ -637,6 +637,8 @@ struct Planted {
     author: std::path::PathBuf,
     sibling: std::path::PathBuf,
     own_dir: std::path::PathBuf,
+    /// A child of the juror's own, in its own dir: the file is spared, never the dir.
+    grandchild: std::path::PathBuf,
 }
 
 fn plant_transcripts(
@@ -651,18 +653,19 @@ fn plant_transcripts(
     ));
     let author = family.join("100_author.jsonl");
     let sibling = family.join("100_author/children/sub-sib/1_sib.jsonl");
-    for planted in [&author, &sibling] {
+    let own_dir = family.join("100_author/children/sub-own");
+    let grandchild = own_dir.join("children/sub-g/1_g.jsonl");
+    for planted in [&author, &sibling, &grandchild] {
         std::fs::create_dir_all(planted.parent().ok_or("no parent")?)?;
         std::fs::write(planted, "WALLED TRANSCRIPT\n")?;
     }
-    let own_dir = family.join("100_author/children/sub-own");
-    std::fs::create_dir_all(&own_dir)?;
     Ok(Planted {
         project,
         sessions,
         author,
         sibling,
         own_dir,
+        grandchild,
     })
 }
 
@@ -738,6 +741,7 @@ async fn a_walled_juror_reads_its_own_transcript_and_no_other() -> TestResult {
         format!("{}/*/*.jsonl", sessions.display()),
         format!("{}/**/*.jsonl", sessions.display()),
         planted.sibling.display().to_string(),
+        planted.grandchild.display().to_string(),
         elsewhere.display().to_string(),
     ];
     let mut calls: Vec<_> = (spellings.iter())
@@ -798,7 +802,8 @@ async fn a_walled_juror_reads_its_own_transcript_and_no_other() -> TestResult {
 }
 
 /// #971: a walled reader's fetch reaches no transcript through a link in a member tree or in
-/// its workspace, nor as of a checkpoint, which keeps a link as its target's name.
+/// its workspace, nor through a store inside the workspace (a `--session-dir` there, or cwd =
+/// HOME) by `local://` or as of a checkpoint.
 #[test]
 fn a_walled_fetch_reaches_no_transcript_by_tree_local_or_checkpoint() -> TestResult {
     let root = Scratch::new("yi-wall-transcript-fetch")?;
@@ -809,12 +814,21 @@ fn a_walled_fetch_reaches_no_transcript_by_tree_local_or_checkpoint() -> TestRes
     let project = planted.project.clone();
     std::os::unix::fs::symlink(&planted.sessions, project.join("alias"))?;
     let name = (planted.author.strip_prefix(&planted.sessions)?).display();
+    let inside = project.join(".sessions");
+    std::fs::create_dir_all(inside.join("--fam--"))?;
+    std::fs::write(
+        inside.join("--fam--/100_author.jsonl"),
+        "WALLED TRANSCRIPT\n",
+    )?;
     let tree = yi_tools::Checkpoints::open(&home.join(".yi/checkpoints"), &project)?.capture()?;
     let show = yi_runtime::fetch::open_checkpoint_show(&home, &project)?;
-    let resolver = |wall: Wall| {
-        yi_runtime::fetch::Resolver::new(project.clone(), wall)
+    // The stores as the wiring hands them over: the broker's, the `--session-dir` among them.
+    let stores = vec![planted.sessions.clone(), inside];
+    let resolver = |workspace: &std::path::Path, wall: Wall| {
+        yi_runtime::fetch::Resolver::new(workspace.to_path_buf(), wall)
             .with_member_trees(Arc::new(crate::permission_scope::MainTree(project.clone())))
             .with_checkpoint_show(Arc::clone(&show))
+            .with_session_stores(stores.clone())
     };
     let fetched =
         |resolver: &yi_runtime::fetch::Resolver, url: &str| -> Result<String, Box<dyn Error>> {
@@ -823,24 +837,36 @@ fn a_walled_fetch_reaches_no_transcript_by_tree_local_or_checkpoint() -> TestRes
                 Err(error) => error.to_string(),
             })
         };
+    let tree = tree.as_str();
     let urls = [
         format!("tree://main/alias/{name}"),
         format!("local://alias/{name}"),
-        format!("checkpoint://{}/alias/{name}", tree.as_str()),
+        format!("checkpoint://{tree}/alias/{name}"),
+        "local://.sessions/--fam--/100_author.jsonl".to_owned(),
+        format!("checkpoint://{tree}/.sessions/--fam--/100_author.jsonl"),
     ];
-    let walled = resolver(juror_wall(&project));
-    for url in &urls {
-        let text = fetched(&walled, url)?;
+    let (walled, open) = (
+        resolver(&project, juror_wall(&project)),
+        resolver(&project, Wall::default()),
+    );
+    let at_home = resolver(&home, juror_wall(&project));
+    let in_home = format!("local://.yi/sessions/{name}");
+    for (resolver, url) in (urls.iter())
+        .map(|url| (&walled, url))
+        .chain([(&at_home, &in_home)])
+    {
+        let text = fetched(resolver, url)?;
         assert!(
             !text.contains("WALLED TRANSCRIPT"),
             "{url} reached a walled reader: {text}"
         );
     }
-    let open = resolver(Wall::default());
-    let text = fetched(&open, &urls[0])?;
-    assert!(
-        text.contains("WALLED TRANSCRIPT"),
-        "an unwalled tree read: {text}"
-    );
+    for url in [&urls[0], &urls[3], &urls[4]] {
+        let text = fetched(&open, url)?;
+        assert!(
+            text.contains("WALLED TRANSCRIPT"),
+            "an unwalled {url}: {text}"
+        );
+    }
     Ok(())
 }
