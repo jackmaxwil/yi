@@ -347,6 +347,46 @@ fn replay_walks_entries_into_full_message_updates() -> TestResult {
 /// Dies with host notices sent as `user_message`: a stock client drew "[subagent writer
 /// finished]" as if the user had typed it, live and on replay. Dies too with the notice as a
 /// custom update no stock client decodes, and with a prompt typed before D25 replayed as a notice.
+/// #946 Q4: a compaction note reaches an ACP client as the host notice it always was, live and
+/// on replay, not as a `_yi/compaction_notice` extension a third-party client drops.
+#[test]
+fn a_compaction_notice_reaches_the_client_as_a_host_notice() -> TestResult {
+    let note = AgentMessage::host_note(
+        yi_runtime::compaction::COMPACTION_NOTICE,
+        "[compaction failed: upstream 529]".to_owned(),
+        0,
+    );
+    let live = to_updates(
+        &AgentEvent::MessageStart {
+            message: note.clone(),
+        },
+        &mut IdMap::new(1000),
+    );
+    let entry = Entry::Message {
+        id: "e1".to_owned(),
+        message: note,
+        terminate: None,
+        parent_id: None,
+        seq: 1,
+        timestamp: yi_types::message::ATTRIBUTED_SINCE_MS,
+    };
+    let replayed = replay_updates(&[entry], &mut IdMap::new(1000));
+    assert_eq!((live.len(), replayed.len()), (1, 1));
+    for update in live.iter().chain(&replayed) {
+        let json = serde_json::to_value(update)?;
+        assert_eq!(json["sessionUpdate"], "agent_message", "{json}");
+        assert_eq!(
+            json["content"][0]["text"], "[compaction failed: upstream 529]",
+            "{json}"
+        );
+        assert_eq!(
+            json["content"][0]["_meta"]["yi"]["hostNotice"], true,
+            "{json}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn a_host_notice_is_never_a_user_message() -> TestResult {
     let notice = AgentMessage::host_user(

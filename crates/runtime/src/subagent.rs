@@ -629,11 +629,12 @@ impl SubagentHost {
             kwargs.insert("role".to_owned(), Value::from("reader"));
         }
         let reader = reader::parse(&kwargs)?;
-        let mut standing = match (&reader, standing) {
-            (Some(_), Standing::Worker) => Standing::Reader,
+        let role = reader.as_ref().map(|reader| reader.role);
+        let mut standing = match (role, standing) {
+            (Some(reader::Role::Reader), Standing::Worker) => Standing::Reader,
             (_, standing) => standing,
         };
-        if reader.is_some() {
+        if role == Some(reader::Role::Reader) {
             reader::walls_writes(&mut kwargs);
         }
         if let Standing::Service(service) = &mut standing {
@@ -647,10 +648,16 @@ impl SubagentHost {
         let ask = crate::lease::Ask::from_kwargs(&kwargs)?;
         let overrides =
             optional_string(&kwargs, "model")?.or(optional_string(&kwargs, "thinking")?);
-        if reader.is_some() && (fork != Fork::None || isolation != Isolation::None) {
-            return Err(reader::full_child(
-                "a reader gets a partition, not a fork, and writes nothing to isolate",
-            ));
+        match role {
+            Some(reader::Role::Reader) if fork != Fork::None || isolation != Isolation::None => {
+                return Err(reader::full_child(
+                    "a reader gets a partition, not a fork, and writes nothing to isolate",
+                ));
+            }
+            Some(reader::Role::Worker) if fork != Fork::None => {
+                return Err(reader::full_child("a worker gets a partition, not a fork"));
+            }
+            _ => {}
         }
         if fork == Fork::All && overrides.is_some() {
             return Err(

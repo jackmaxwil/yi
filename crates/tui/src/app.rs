@@ -198,8 +198,9 @@ pub struct App {
     /// When the landing last arrived; the row's age is this clock, not a wire field.
     pub(crate) landing_at: Option<Instant>,
     pub(crate) context_used: u64,
-    pub(crate) cost_total: f64,
-    pub(crate) cost_unknown: bool,
+    pub(crate) spent: crate::status::Money,
+    /// What the session read, for the status row's cache rate beside the cost it explains.
+    pub(crate) session_tokens: crate::status::TokenTally,
     turn_started: Instant,
     turn_tools: u64,
     pub(crate) last_tool: Option<String>,
@@ -210,10 +211,10 @@ pub struct App {
     model_ms: u64,
     model_since: Option<Instant>,
     pub(crate) pen: Option<crate::pen::Pen>,
-    turn_tokens: crate::status::TurnTokens,
+    turn_tokens: crate::status::TokenTally,
     /// Requests seen; past the first one a read is expected, so the footer shows `0% cached`.
     pub(crate) requests: u64,
-    turn_cost: f64,
+    turn_spent: crate::status::Money,
     pub(crate) width: usize,
     pub(crate) rows: usize,
     pub(crate) pane_hold: Option<(usize, TranscriptMode, usize, usize)>,
@@ -315,8 +316,8 @@ impl App {
             landing: None,
             landing_at: None,
             context_used: 0,
-            cost_total: 0.0,
-            cost_unknown: false,
+            spent: crate::status::Money::default(),
+            session_tokens: crate::status::TokenTally::default(),
             turn_started: Instant::now(),
             turn_tools: 0,
             last_tool: None,
@@ -327,9 +328,9 @@ impl App {
             model_ms: 0,
             model_since: None,
             pen: None,
-            turn_tokens: crate::status::TurnTokens::default(),
+            turn_tokens: crate::status::TokenTally::default(),
             requests: 0,
-            turn_cost: 0.0,
+            turn_spent: crate::status::Money::default(),
             width,
             rows: 24,
             pane_hold: None,
@@ -862,11 +863,11 @@ impl App {
                 usage,
                 ..
             } => {
-                self.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
-                self.cost_unknown |= usage.unknown;
+                self.spent.record(usage);
+                self.session_tokens.record(usage);
+                self.turn_spent.record(usage);
                 self.turn_tokens.record(usage);
                 self.requests = self.requests.saturating_add(1);
-                self.turn_cost += usage.cost.total.as_f64().unwrap_or(0.0);
                 self.close_segments(content);
                 let open = content.get(self.segment..).unwrap_or_default();
                 // Incident: an error end carries no content and erased text the reader saw, so the end
@@ -899,13 +900,7 @@ impl App {
                 display: true,
                 details,
                 ..
-            } => {
-                let cell = Cell::Advisory {
-                    source: asks::mail_source(custom_type, details.as_ref()),
-                    text: user_text(content),
-                };
-                self.commit_cell(&cell);
-            }
+            } => self.commit_cell(&asks::custom_cell(custom_type, content, details.as_ref())),
             _ => {}
         }
     }
@@ -931,8 +926,8 @@ impl App {
             if let AgentEvent::MessageEnd { message } = &event
                 && let AgentMessage::Assistant { usage, .. } = message
             {
-                self.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
-                self.cost_unknown |= usage.unknown;
+                self.spent.record(usage);
+                self.session_tokens.record(usage);
             }
             return;
         }
@@ -990,18 +985,14 @@ impl App {
         self.model_ms = 0;
         self.model_since = None;
         self.last_tool = None;
-        self.turn_tokens = crate::status::TurnTokens::default();
-        self.turn_cost = 0.0;
+        self.turn_tokens = crate::status::TokenTally::default();
+        self.turn_spent = crate::status::Money::default();
     }
 
     /// One dim row closes a turn with what it cost, so the price of an answer is read
     /// where the answer is, not only in the status bar.
     fn commit_turn_footer(&mut self) {
-        let crate::status::TurnTokens {
-            input,
-            output,
-            cached,
-        } = self.turn_tokens;
+        let crate::status::TokenTally { input, output, .. } = self.turn_tokens;
         if self.turn_tools == 0 && input == 0 && output == 0 {
             return;
         }
@@ -1016,21 +1007,24 @@ impl App {
         } else {
             kinds.join(" · ")
         };
-        let elapsed = elapsed_ms(self.turn_started);
-        let mut text = format!("{head} · {}", crate::cell::elapsed_label(elapsed));
-        if self.model_ms > 0 && elapsed > 0 {
-            text.push_str(&format!(" · model {}%", self.model_ms * 100 / elapsed));
+        let elapsed = crate::cell::elapsed_label(elapsed_ms(self.turn_started));
+        let mut text = format!("{head} · {elapsed}");
+        // A time, not a share: `model 85%` read as a cache rate. A turn with no tools is all
+        // model time, so it says nothing more.
+        if self.turn_tools > 0 && self.model_ms > 0 {
+            let model = crate::cell::elapsed_label(self.model_ms);
+            text.push_str(&format!(" (model {model})"));
         }
         text.push_str(&format!(
             " · {} in / {} out",
             crate::status::fmt_tokens(input),
             crate::status::fmt_tokens(output),
         ));
-        if cached > 0 || self.requests > 1 {
-            text.push_str(&format!(" · {}% cached", cached * 100 / input.max(1)));
+        if let Some(cache) = self.turn_tokens.cache_label(self.requests > 1) {
+            text.push_str(&format!(" · {cache}"));
         }
-        if self.turn_cost > 0.0 {
-            text.push_str(&format!(" · ${:.3}", self.turn_cost));
+        if let Some(cost) = self.turn_spent.label() {
+            text.push_str(&format!(" · {cost}"));
         }
         let closed: Vec<_> = self
             .claims

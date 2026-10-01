@@ -46,7 +46,7 @@ fn spawn_daemon(dir: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
     Ok((child, socket))
 }
 
-fn run_console(dir: &Path, socket: &Path, root: &Path, script: &str) -> TestResult {
+fn run_console(dir: &Path, socket: &Path, root: &Path, script: &str, extra: &[&str]) -> TestResult {
     let keys = dir.join("script.keys");
     std::fs::write(&keys, script)?;
     #[expect(
@@ -64,6 +64,7 @@ fn run_console(dir: &Path, socket: &Path, root: &Path, script: &str) -> TestResu
             "--keys",
             &keys.display().to_string(),
         ])
+        .args(extra)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -95,6 +96,7 @@ fn console_creates_prompts_detaches_and_replays() -> TestResult {
              wait-frame 15000 faux:\n\
              wait-idle 15000\n\
              quit\n",
+            &[],
         )?;
         // Run 2: a fresh console reattaches and replays the stored branch.
         // The wait is for the rail's first slot, which exists only once the
@@ -111,6 +113,7 @@ fn console_creates_prompts_detaches_and_replays() -> TestResult {
              wait-frame 15000 faux:\n\
              wait-frame 8000 hello daemon\n\
              quit\n",
+            &[],
         )?;
         Ok(())
     })();
@@ -118,6 +121,39 @@ fn console_creates_prompts_detaches_and_replays() -> TestResult {
     let _ = daemon.kill();
     let _ = daemon.wait();
     outcome
+}
+
+/// Dies with 80-column frames: the console's headless screen ignored `--size`, so no console
+/// proof could show a wide pane.
+#[test]
+fn a_headless_console_renders_at_the_size_it_is_given() -> TestResult {
+    let dir = Scratch::new("yi-console-size")?;
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root)?;
+    let frames = dir.join("frames");
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let outcome = run_console(
+        &dir,
+        &socket,
+        &root,
+        "wait-frame 8000 !connecting…\nquit\n",
+        &[
+            "--size",
+            "254x40",
+            "--frames",
+            &frames.display().to_string(),
+        ],
+    );
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome?;
+    let all = frames_of(&frames)?;
+    let widest = all
+        .lines()
+        .map(|line| line.trim_matches('"').chars().count())
+        .max();
+    assert_eq!(widest, Some(254), "{all}");
+    Ok(())
 }
 
 fn frames_of(dir: &Path) -> Result<String, Box<dyn Error>> {

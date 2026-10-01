@@ -123,6 +123,7 @@ pub struct ProjectResources {
     budget: yi_context::Bytes,
     catalog: yi_context::Bytes,
     global_skills: Vec<String>,
+    lists_skills: bool,
 }
 
 impl ProjectResources {
@@ -135,7 +136,14 @@ impl ProjectResources {
             budget: yi_context::SourceBudgets::default().project_instructions,
             catalog: yi_context::SourceBudgets::default().skills_meta,
             global_skills: Vec::new(),
+            lists_skills: true,
         }
+    }
+
+    #[must_use]
+    pub fn without_catalogs(mut self) -> Self {
+        self.lists_skills = false;
+        self
     }
 
     #[must_use]
@@ -308,6 +316,8 @@ impl Extension for ProjectResources {
             return;
         }
         self.instructions(out);
-        self.catalogs(out);
+        if self.lists_skills {
+            self.catalogs(out);
+        }
     }
 }

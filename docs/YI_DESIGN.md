@@ -179,12 +179,25 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   `transform_context` (environment block) → `yi_context::convert_to_llm` → provider.
 - `convert_to_llm` wraps `custom` kinds `heartbeat_prompt, advisory, goal_prompt, ledger_prompt,
   plan_dispatch, reminder` as `<yi_internal_context source="…">`; compaction drops them.
-- Due when scheduled (`/compact`, `compact.run`) or when tokens past the server-observed prefix
-  exceed window − 16,384 (last usage + chars/4 after it). The cut keeps 20,000 recent tokens,
-  never at a tool result; up to 64,000 tokens of summarized user text join the tail.
-- The summarizer replays system prompt and converted messages plus a trailing directive, no
-  tools; model `models.summarizer`, else the session's; a failure retries once without the first
-  quarter, then yields an empty summary. The summary leads with `<yi_compact_view>`.
+- Due when scheduled (`/compact`, `compact.run`) or when the whole request would leave less than
+  16,384 tokens of the window for the summary request (last usage + bytes/3 after it; D338). A
+  usage the latest compaction kept in its tail is stale, and with none the messages count alone
+  at bytes/3.
+  The cut keeps 20,000 recent tokens, never at a tool result; up to 64,000 tokens of summarized
+  user text join the tail.
+- The summarizer replays the loop's request (system prompt, tools, effort of its last request) and
+  converted messages plus a trailing directive; `models.summarizer` on another model sends no tools
+  or thinking. A blank or failed reply retries once without the first quarter, cold; a cold
+  attempt has no tools, so it sends the history as one labeled text (`serialize_conversation`,
+  tool output indented under its label); with another summarizer model every attempt is cold.
+  If that fails too the history stays, one `[compaction failed: …]` notice is queued, and the
+  run asks no more (the next prompt retries, `/compact` instructions kept). A history at or past
+  the window gets two cold attempts instead, never opening on a tool result; if both fail, the
+  oldest messages leave the view until the rest fits at bytes/3 beside the system prompt, tools
+  and summary. The first user message after the summary, the work's opening message (the run's
+  prompt or a mid-run follow-up) and the earlier summary's words stay; the cut is never a tool
+  result. The summary keeps the view, and one `[compaction elided N earlier messages …]`
+  text ends it, marks the gap and tells the user (D337). The summary leads with `<yi_compact_view>`.
 - A compaction whose entry fails to write is not applied: history and window stay as they were, a
   `[compaction not saved: …]` notice reaches the model, and auto-compaction pauses until an
   explicit `/compact` succeeds.
@@ -192,7 +205,7 @@ The file is Pi's v4 session JSONL format, a byte-level contract: a header, then 
   [`crates/context/src/`](../crates/context/src/)
 - Shapes: `Entry::Compaction { summary, retained_tail, tokens_before, details?, usage? }`,
   [`CompactionDetails`](../crates/types/src/compaction.rs) `{ readFiles, modifiedFiles, window?,
-  extra }`. Settled by: D115
+  extra }`. Settled by: D115, D337, D338
 
 ### 4.5 Interrupt
 - `abort` fires `InterruptSignal` (sets `fired`, bumps `epoch`, wakes waiters); a run clears
@@ -304,11 +317,12 @@ The interpreter is `bash` if `command -v bash` succeeds, else `sh`, probed once.
 default, 600 s cap. Jobs: ≤ 32, LRU with the 8 newest protected. `is_error` = exit ≠ 0 or
 cancelled. Output ≤ 8,192 bytes, or with `-v --verbose --nocapture --porcelain -la -C`, is whole;
 past it: strip ANSI, compress, filter (cargo; grep/rg/ag 60 lines; else head 80/tail 40), kept
-only if shorter. Lossy output is tee'd to `~/.yi/tool-output/` and ends `[full output: <path>]`;
-with nowhere to tee, raw text returns. A contained call runs under Seatbelt (§8).
+only if shorter. Lossy output is tee'd to `~/.yi/spills/<session>/` and ends
+`[full output: <path>]`; with nowhere to tee, raw text returns. A contained call runs under
+Seatbelt (§8).
 
 - Owner: [`jobs.rs`](../crates/tools/src/jobs.rs), [`reduce.rs`](../crates/tools/src/reduce.rs).
-- Settled by: D161, D221.
+- Settled by: D161, D221, D340.
 
 ### 7.4 read
 `path` is a file, directory or glob; `find`, `offset`/`limit` (2000 lines), `ranges`, `pages`
@@ -499,10 +513,16 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   after a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
   gate rules bind it, and it has no extension, kernel, plan, schedule,
   checkpoint or environment block; a fork or an isolation refuses; it counts toward the family cap
-  like any child (D331). `rlm.ask(question, partition,
+  like any child (D341). `rlm.ask(question, partition,
   schema=…)` runs one, reads its result and reaps it. A reader's `schema` is named in its
   question and sent as structured output only by a reader with `tools=[]` or `turns=1` (the turn cap's last word still carries the tools, so a reader that keeps its tools gets the schema in its question and `result`'s check only), strictly only where it closes every object (D309); its
   partition is its own first message, marked `shared_through` when a sibling sent it within 300 s.
+- A worker (`role="worker"`, D334) is the same brief with writes: `prompts/worker.md`, the
+  permission mode, the project's instruction files and the language packs are its whole system
+  prompt, `tools` a subset of `read`, `grep`, `edit`, `write`, `bash` and `get_context` (the first
+  four by default), `turns` 12 (at most 40). Its writes pass its wall, the broker and the user's
+  gate rules as a root child's do, reminder rules reach it, and it compacts. It holds a worker
+  slot, may take `isolation`, and refuses `fork` and `check`.
 - `isolation` is `none`, `worktree` or `container:<image>` (D286), from `rlm.run` or a plan
   delegation's `spec.isolation`. A container child claims the same lane, branch and merge as a
   worktree child; `docker run -d --rm` starts one container of the image over it at spawn, the

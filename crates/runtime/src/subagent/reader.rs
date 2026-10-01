@@ -7,17 +7,59 @@ use yi_types::url::{Scheme, Url};
 use crate::session::{AgentSession, SessionConfig};
 
 pub const READER_PROMPT: &str = include_str!("../prompts/reader.md");
-const READER_TOOLS: [&str; 2] = ["read", "grep"];
-const DEFAULT_TURNS: u32 = 3;
-const MAX_TURNS: u32 = 10;
+pub const WORKER_PROMPT: &str = include_str!("../prompts/worker.md");
 pub(crate) const PARTITION_CAP: usize = 65_536;
 
 pub(crate) fn full_child(refusal: &str) -> String {
     format!("{refusal}; role=\"root\" spawns a full child")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Reader,
+    Worker,
+}
+
+impl Role {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Reader => "reader",
+            Self::Worker => "worker",
+        }
+    }
+
+    const fn allowed_tools(self) -> &'static [&'static str] {
+        match self {
+            Self::Reader => &["read", "grep"],
+            Self::Worker => &["read", "grep", "edit", "write", "bash", "get_context"],
+        }
+    }
+
+    const fn default_tools(self) -> &'static [&'static str] {
+        match self {
+            Self::Reader => self.allowed_tools(),
+            Self::Worker => &["read", "grep", "edit", "write"],
+        }
+    }
+
+    const fn default_turns(self) -> u32 {
+        match self {
+            Self::Reader => 3,
+            Self::Worker => 12,
+        }
+    }
+
+    const fn max_turns(self) -> u32 {
+        match self {
+            Self::Reader => 10,
+            Self::Worker => 40,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reader {
+    pub role: Role,
     pub tools: Vec<String>,
     pub turns: u32,
     pub schema: Option<Value>,
@@ -25,37 +67,49 @@ pub struct Reader {
 }
 
 pub(crate) fn parse(kwargs: &Map<String, Value>) -> Result<Option<Reader>, String> {
-    let role = super::optional_string(kwargs, "role")?;
-    match role.as_deref() {
+    let role = match super::optional_string(kwargs, "role")?.as_deref() {
         None | Some("root") => {
             if let Some(key) = ["tools", "turns", "schema"]
                 .iter()
                 .find(|key| kwargs.contains_key(**key))
             {
                 return Err(format!(
-                    "rlm.run {key} shapes a reader; add role=\"reader\""
+                    "rlm.run {key} shapes a reader or a worker; add role=\"reader\" or role=\"worker\""
                 ));
             }
-            Ok(None)
+            return Ok(None);
         }
-        Some("reader") if kwargs.get("check").is_some_and(|check| !check.is_null()) => {
-            Err(full_child("a reader answers once and runs no check"))
+        Some("reader") => Role::Reader,
+        Some("worker") => Role::Worker,
+        Some(other) => {
+            return Err(format!(
+                "rlm.run role must be \"reader\", \"worker\" or \"root\", got {other}"
+            ));
         }
-        Some("reader") => Ok(Some(Reader {
-            tools: tools_of(kwargs)?,
-            turns: turns_of(kwargs)?,
-            schema: schema_of(kwargs)?,
-            shared_through: None,
-        })),
-        Some(other) => Err(format!(
-            "rlm.run role must be \"reader\" or \"root\", got {other}"
-        )),
+    };
+    if kwargs.get("check").is_some_and(|check| !check.is_null()) {
+        return Err(full_child(&format!(
+            "a {} answers once and runs no check",
+            role.name()
+        )));
     }
+    Ok(Some(Reader {
+        role,
+        tools: tools_of(kwargs, role)?,
+        turns: turns_of(kwargs, role)?,
+        schema: schema_of(kwargs)?,
+        shared_through: None,
+    }))
 }
 
-fn tools_of(kwargs: &Map<String, Value>) -> Result<Vec<String>, String> {
+fn tools_of(kwargs: &Map<String, Value>, role: Role) -> Result<Vec<String>, String> {
+    let allowed = role.allowed_tools();
     let Some(value) = kwargs.get("tools").filter(|value| !value.is_null()) else {
-        return Ok(READER_TOOLS.map(str::to_owned).to_vec());
+        return Ok(role
+            .default_tools()
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect());
     };
     let names = value
         .as_array()
@@ -64,15 +118,20 @@ fn tools_of(kwargs: &Map<String, Value>) -> Result<Vec<String>, String> {
         .map(|name| name.as_str().map(str::to_owned))
         .collect::<Option<Vec<_>>>()
         .ok_or("rlm.run tools must be a list of tool names")?;
-    match names
-        .iter()
-        .find(|name| !READER_TOOLS.contains(&name.as_str()))
-    {
+    match names.iter().find(|name| !allowed.contains(&name.as_str())) {
         Some(name) => Err(full_child(&format!(
-            "a reader may call {}, not {name}",
-            READER_TOOLS.join(" and ")
+            "a {} may call {}, not {name}",
+            role.name(),
+            spoken(allowed)
         ))),
         None => Ok(names),
+    }
+}
+
+fn spoken(names: &[&str]) -> String {
+    match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => names.join(", "),
     }
 }
 
@@ -86,14 +145,15 @@ fn schema_of(kwargs: &Map<String, Value>) -> Result<Option<Value>, String> {
     }
 }
 
-fn turns_of(kwargs: &Map<String, Value>) -> Result<u32, String> {
+fn turns_of(kwargs: &Map<String, Value>, role: Role) -> Result<u32, String> {
+    let most = role.max_turns();
     match kwargs.get("turns") {
-        None | Some(Value::Null) => Ok(DEFAULT_TURNS),
+        None | Some(Value::Null) => Ok(role.default_turns()),
         Some(value) => value
             .as_u64()
             .and_then(|turns| u32::try_from(turns).ok())
-            .filter(|turns| (1..=MAX_TURNS).contains(turns))
-            .ok_or_else(|| format!("rlm.run turns must be 1 to {MAX_TURNS}, got {value}")),
+            .filter(|turns| (1..=most).contains(turns))
+            .ok_or_else(|| format!("rlm.run turns must be 1 to {most}, got {value}")),
     }
 }
 
@@ -102,19 +162,29 @@ pub fn session(
     build: crate::subagent::ChildBuild<'_>,
     reader: &Reader,
     tools: Vec<Arc<dyn yi_tools::Tool>>,
-    cwd: std::path::PathBuf,
+    (cwd, home): (std::path::PathBuf, &Path),
     broker: Option<Arc<crate::permission::PermissionBroker>>,
     rules: Option<Arc<crate::rules::RuleEngine>>,
 ) -> AgentSession {
     let mut child = AgentSession::new(
         SessionConfig {
-            system_prompt: READER_PROMPT.to_owned(),
+            system_prompt: match reader.role {
+                Role::Reader => READER_PROMPT.to_owned(),
+                Role::Worker => String::new(),
+            },
             model: build.model,
             thinking_level: build.thinking,
             tool_execution: yi_loop::ExecutionMode::default(),
         },
         provider,
     );
+    if reader.role == Role::Worker {
+        let mode = broker
+            .as_ref()
+            .map_or(yi_permission::PermissionMode::Auto, |broker| broker.mode());
+        child.install_extensions(crate::ext::narrow(&cwd, home, WORKER_PROMPT, mode));
+        child.enable_compaction();
+    }
     child.set_turn_cap(reader.turns);
     child.set_request_shape(crate::session::RequestShape {
         schema: reader.schema.clone(),
@@ -122,6 +192,11 @@ pub fn session(
     });
     child.set_wall(build.wall);
     if let Some(rules) = rules {
+        if reader.role == Role::Worker {
+            crate::rules::attach_rules(&child, Arc::clone(&rules));
+            let rearm = Arc::clone(&rules);
+            child.set_on_compacted(Arc::new(move || rearm.rearm()));
+        }
         child.set_rules_engine(rules);
     }
     let named: Vec<_> = tools
@@ -268,7 +343,10 @@ pub(crate) fn share(
     let gathered = kwargs.get("readers").and_then(Value::as_u64).unwrap_or(1) > 1;
     reader.shared_through = (seen || gathered).then_some(0);
     reader.shared_through?;
-    let shape = format!("{}{:?}{:?}{text}", cast.0.id, reader.tools, reader.schema);
+    let shape = format!(
+        "{}{:?}{:?}{:?}{text}",
+        cast.0.id, reader.role, reader.tools, reader.schema
+    );
     Some(stagger(host, crate::fetch::content_hash(&shape)))
 }
 

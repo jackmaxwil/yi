@@ -214,6 +214,23 @@ pub fn write_grant(dir: &std::path::Path) -> Grant {
     }
 }
 
+/// The directory a [`write_grant`] names. Only a command rule is one: an exact `write` call's
+/// identity starts the same way and carries the call's arguments.
+pub fn write_grant_dir(rule: &SessionPermissionRule) -> Option<std::path::PathBuf> {
+    let canonical = (rule.kind == RuleKind::Command).then_some(rule.canonical.as_str())?;
+    let (length, dir) = canonical
+        .strip_prefix(&identity(&["write"]))?
+        .split_once(':')?;
+    let dir = dir.strip_suffix('\n')?;
+    (length.parse() == Ok(dir.len())).then(|| dir.into())
+}
+
+/// Whether a rule keeps one exact command, the only kind a pathless refusal lets leave the
+/// sandbox (the session pass of D331).
+pub fn is_exact_command(rule: &SessionPermissionRule) -> bool {
+    rule.kind == RuleKind::Command && rule.canonical.starts_with(&identity(&["command"]))
+}
+
 fn tree_writes(
     call: &crate::ToolCall<'_>,
     context: &crate::CatastrophicContext,

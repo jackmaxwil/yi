@@ -670,21 +670,17 @@ pub fn fence_untrusted(source: &str, text: &str) -> String {
     )
 }
 
-/// Every scheme that serves a host file opens it here, after the read gate judged it against
-/// the checkout it belongs to (D323): the model's `read <scheme>://…` and the kernel's
-/// `rlm.fetch` open it on the host, where `decide` never looked.
-fn read_text(url: &Url, path: &Path, checkout: &Path) -> Result<String, FetchError> {
+/// Every scheme that serves a host file opens it here, where `decide` never looked: through the
+/// read gate against its checkout and the reader's `deny_read`, on the file opened (D323, #890).
+fn read_text(
+    url: &Url,
+    path: &Path,
+    checkout: &Path,
+    walls: &[std::path::PathBuf],
+) -> Result<String, FetchError> {
     let context = yi_permission::CatastrophicContext::detect(checkout);
-    if yi_permission::read_is_catastrophic(path, &context) {
-        return Err(FetchError::Denied {
-            url: url.to_string(),
-            refusal: format!(
-                "{} is a protected path (a key store, the workspace .git or a device); no read reaches it",
-                path.display()
-            ),
-        });
-    }
-    match std::fs::read_to_string(path) {
+    let opened = yi_permission::ReadGate::new(&context).open(path, walls);
+    match opened.and_then(std::io::read_to_string) {
         Ok(raw) => Ok(yi_tools::hashline::normalize::normalize_to_lf(
             yi_tools::hashline::normalize::strip_bom(&raw).text,
         )),
@@ -692,6 +688,12 @@ fn read_text(url: &Url, path: &Path, checkout: &Path) -> Result<String, FetchErr
             url: url.to_string(),
             what: path.display().to_string(),
         }),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(FetchError::Denied {
+                url: url.to_string(),
+                refusal: error.to_string(),
+            })
+        }
         Err(error) => Err(FetchError::Backend {
             url: url.to_string(),
             message: error.to_string(),

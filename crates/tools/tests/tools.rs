@@ -2582,10 +2582,15 @@ fn script(path: &std::path::Path, body: &str) -> TestResult {
 fn an_edit_runs_the_syntax_check_beside_the_grid_check() -> TestResult {
     let Some(dir) = fake_path("edit-overlap") else {
         let dir = temp_dir("edit-overlap")?;
-        script(&dir.join("grid"), "/bin/sleep 1\n")?;
+        let clean = grid_fixture("check-clean.json");
+        script(
+            &dir.join("grid"),
+            &format!("/bin/sleep 1\n/bin/cat '{}'\n", clean.display()),
+        )?;
         script(&dir.join("rustfmt"), "/bin/sleep 1\n")?;
         return rerun_on_path("an_edit_runs_the_syntax_check_beside_the_grid_check", &dir);
     };
+    fs::create_dir_all(dir.join(".grid"))?;
     fs::write(dir.join("a.rs"), "fn a() {}\n")?;
     let context = ToolContext::new(dir.clone());
     let state = yi_tools::hashline::tool::shared_hashline_state();
@@ -2605,6 +2610,208 @@ fn an_edit_runs_the_syntax_check_beside_the_grid_check() -> TestResult {
     assert!(text.contains("syntax: ok"), "{text}");
     assert!(text.contains("[grid check: clean]"), "{text}");
     assert!(took < std::time::Duration::from_millis(1800), "{took:?}");
+    Ok(())
+}
+
+#[cfg(unix)]
+fn grid_fixture(name: &str) -> PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/grid")
+        .join(name)
+}
+
+/// A fake `grid` that answers `check` with the `check.json` beside it (to start, a real
+/// `grid check --quick --json` from a repo where `src/alpha.rs` and `src/beta.rs` both drifted),
+/// `resolve src/alpha.rs` with grid's own answer and any other file with grid's own miss, and
+/// leaves a `ran` marker beside itself.
+#[cfg(unix)]
+fn fake_grid(dir: &std::path::Path) -> TestResult {
+    fs::copy(grid_fixture("check-quick.json"), dir.join("check.json"))?;
+    script(
+        &dir.join("grid"),
+        &format!(
+            "d=$(/usr/bin/dirname \"$0\")\n: > \"$d/ran\"\n\
+             [ \"$1\" = check ] && {{ /bin/cat \"$d/check.json\"; exit 3; }}\n\
+             [ \"$1 $2\" = 'resolve src/alpha.rs' ] && {{ /bin/cat '{}'; exit 0; }}\n\
+             /bin/cat '{}' >&2; exit 2\n",
+            grid_fixture("resolve-alpha.json").display(),
+            grid_fixture("resolve-miss.txt").display()
+        ),
+    )
+}
+
+#[cfg(unix)]
+fn edit_at(dir: &std::path::Path, path: &str, line: &str) -> yi_tools::ToolOutput {
+    let context = ToolContext::new(dir.to_path_buf());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    yi_tools::hashline::tool::HashlineReadTool::new(Arc::clone(&state))
+        .execute(args(&[("path", json!(path))]), &context);
+    yi_tools::hashline::tool::HashlineEditTool {
+        state,
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[("patch", json!(format!("[{path}]\nPUT 1.=1:\n+{line}\n")))]),
+        &context,
+    )
+}
+
+/// Dogfood 2026-09-27: every edit, even to a scratch file, printed the same unrelated drift,
+/// and in an uncharted tree `grid check` surveyed and wrote `.grid/` there.
+#[cfg(unix)]
+#[test]
+fn an_edit_in_an_uncharted_tree_never_asks_grid() -> TestResult {
+    let Some(dir) = fake_path("grid-uncharted") else {
+        let dir = temp_dir("grid-uncharted")?;
+        fake_grid(&dir)?;
+        return rerun_on_path("an_edit_in_an_uncharted_tree_never_asks_grid", &dir);
+    };
+    fs::write(dir.join("a.rs"), "fn a() {}\n")?;
+    let edit = edit_at(&dir, "a.rs", "pub fn b() {}");
+    let text = output_text(&edit);
+    assert!(!dir.join("ran").exists(), "grid was spawned: {text}");
+    assert!(!text.contains("[grid check"), "{text}");
+    assert_eq!(edit.result.details["grid"], json!("skipped"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_charted_edit_shows_only_the_drift_of_what_it_edited() -> TestResult {
+    let Some(dir) = fake_path("grid-scoped") else {
+        let dir = temp_dir("grid-scoped")?;
+        fake_grid(&dir)?;
+        return rerun_on_path(
+            "a_charted_edit_shows_only_the_drift_of_what_it_edited",
+            &dir,
+        );
+    };
+    fs::create_dir_all(dir.join(".grid"))?;
+    fs::create_dir_all(dir.join("src"))?;
+    fs::write(
+        dir.join("src/alpha.rs"),
+        "pub fn scale(x: u8) -> u8 {\n    x\n}\n",
+    )?;
+    let edit = edit_at(&dir, "src/alpha.rs", "pub fn b() {}");
+    let text = output_text(&edit);
+    assert!(
+        text.contains("drift drift.user.total <-calls- drift.alpha.scale at src/user.rs:1"),
+        "{text}"
+    );
+    assert!(!text.contains("drift.beta.base"), "{text}");
+    assert!(
+        text.contains(
+            "[grid check: 1 suspect outside the edited files — bash: grid check --quick]"
+        ),
+        "{text}"
+    );
+    assert_eq!(edit.result.details["grid"], json!("findings"));
+    Ok(())
+}
+
+/// A deleted definition that is still called is in no file's `grid resolve`, and an edited
+/// file left with no definitions makes `resolve` exit 2; the dependent still shows.
+#[cfg(unix)]
+#[test]
+fn an_edit_that_deletes_a_called_definition_shows_its_dependents() -> TestResult {
+    let Some(dir) = fake_path("grid-deleted") else {
+        let dir = temp_dir("grid-deleted")?;
+        fake_grid(&dir)?;
+        return rerun_on_path(
+            "an_edit_that_deletes_a_called_definition_shows_its_dependents",
+            &dir,
+        );
+    };
+    fs::create_dir_all(dir.join(".grid"))?;
+    fs::create_dir_all(dir.join("src"))?;
+    fs::copy(grid_fixture("check-deleted.json"), dir.join("check.json"))?;
+    fs::write(dir.join("src/beta.rs"), "pub fn gone() -> u8 { 1 }\n")?;
+    let edit = edit_at(&dir, "src/beta.rs", "// gone");
+    let text = output_text(&edit);
+    assert!(
+        text.contains(
+            "[grid check]\ndrift drift.user.total <-calls- drift.beta.gone at src/user.rs:1"
+        ),
+        "{text}"
+    );
+    assert_eq!(edit.result.details["grid"], json!("findings"));
+    Ok(())
+}
+
+/// From a crate directory the chart at the repository's top answers; a nested repository with
+/// no chart of its own never borrows it.
+#[cfg(unix)]
+#[test]
+fn a_subdirectory_uses_the_chart_above_it_within_its_repository() -> TestResult {
+    let Some(dir) = fake_path("grid-subdir") else {
+        let dir = temp_dir("grid-subdir")?;
+        fake_grid(&dir)?;
+        return rerun_on_path(
+            "a_subdirectory_uses_the_chart_above_it_within_its_repository",
+            &dir,
+        );
+    };
+    fs::create_dir_all(dir.join(".grid"))?;
+    fs::create_dir_all(dir.join("nested/src"))?;
+    fs::write(dir.join("nested/.git"), "gitdir: elsewhere\n")?;
+    fs::write(dir.join("nested/src/alpha.rs"), "fn a() {}\n")?;
+    let nested = edit_at(&dir.join("nested"), "src/alpha.rs", "pub fn b() {}");
+    assert_eq!(nested.result.details["grid"], json!("skipped"));
+    assert!(!dir.join("ran").exists(), "{}", output_text(&nested));
+    fs::create_dir_all(dir.join("src"))?;
+    fs::write(dir.join("src/alpha.rs"), "fn a() {}\n")?;
+    let text = output_text(&edit_at(&dir.join("src"), "alpha.rs", "pub fn b() {}"));
+    assert!(
+        text.contains("drift drift.user.total <-calls- drift.alpha.scale at src/user.rs:1"),
+        "{text}"
+    );
+    assert!(!dir.join("src/.grid").exists());
+    Ok(())
+}
+
+/// A real drift runs about 600 bytes a suspect, past the 30 KB display capture at about 50; an
+/// answer that is not grid's JSON, or has no `drift.suspects`, is never read as clean.
+#[cfg(unix)]
+#[test]
+fn a_grid_answer_is_read_whole_or_named_unavailable() -> TestResult {
+    let Some(dir) = fake_path("grid-answer") else {
+        let dir = temp_dir("grid-answer")?;
+        fake_grid(&dir)?;
+        return rerun_on_path("a_grid_answer_is_read_whole_or_named_unavailable", &dir);
+    };
+    fs::create_dir_all(dir.join(".grid"))?;
+    fs::create_dir_all(dir.join("src"))?;
+    fs::write(dir.join("src/alpha.rs"), "fn a() {}\n")?;
+    let mut report: Value = serde_json::from_slice(&fs::read(dir.join("check.json"))?)?;
+    let suspects = report
+        .pointer_mut("/drift/suspects")
+        .and_then(Value::as_array_mut)
+        .ok_or("no suspects")?;
+    let other = suspects.get(1).cloned().ok_or("no second suspect")?;
+    suspects.extend(std::iter::repeat_n(other, 79));
+    let big = serde_json::to_string(&report)?;
+    assert!(big.len() > 40_000, "{}", big.len());
+    fs::write(dir.join("check.json"), big)?;
+    let text = output_text(&edit_at(&dir, "src/alpha.rs", "pub fn b() {}"));
+    assert!(
+        text.contains("<-calls- drift.alpha.scale at src/user.rs:1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("[grid check: 80 suspects outside the edited files"),
+        "{text}"
+    );
+    for answer in ["grid: something this change did was not checked", "{}"] {
+        fs::write(dir.join("check.json"), answer)?;
+        fs::write(dir.join("src/alpha.rs"), "fn a() {}\n")?;
+        let edit = edit_at(&dir, "src/alpha.rs", "pub fn b() {}");
+        let text = output_text(&edit);
+        assert!(
+            text.contains("[grid check: unavailable — the answer was not grid's JSON]"),
+            "{text}"
+        );
+        assert_eq!(edit.result.details["grid"], json!("unparsed"));
+    }
     Ok(())
 }
 

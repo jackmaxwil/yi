@@ -397,38 +397,57 @@ fn a_null_non_off_level_clamps_instead_of_being_sent_verbatim() -> TestResult {
     Ok(())
 }
 
+/// D159's throughput preference rode every request and may have narrowed Auto Exacto's hosts; now
+/// only config names a provider object, and a schema asks for hosts that take `response_format`.
 #[test]
-fn openrouter_requests_deprioritise_slow_upstreams_unless_the_config_says_otherwise() -> TestResult
-{
+fn openrouter_names_a_provider_only_for_config_or_a_schema() -> TestResult {
     let model = target_model()?;
     let context = history_context();
-    let params = build_params(&model, &context, &OpenAiOptions::default());
-    assert_eq!(
-        params["provider"],
-        json!({"preferred_min_throughput": {"p50": 20}, "preferred_max_latency": {"p50": 10}})
+    let built =
+        |options: &OpenAiOptions, context: &LlmContext| build_params(&model, context, options);
+    assert!(
+        built(&OpenAiOptions::default(), &context)
+            .get("provider")
+            .is_none()
     );
-    assert!(params["provider"].get("sort").is_none());
-    let options = OpenAiOptions {
+    let configured = OpenAiOptions {
         routing: Some(json!({"sort": "price", "ignore": ["wafer"]})),
         ..OpenAiOptions::default()
     };
-    let params = build_params(&model, &context, &options);
     assert_eq!(
-        params["provider"],
+        built(&configured, &context)["provider"],
         json!({"sort": "price", "ignore": ["wafer"]})
     );
     let cleared = OpenAiOptions {
         routing: Some(json!({})),
         ..OpenAiOptions::default()
     };
+    assert_eq!(built(&cleared, &context)["provider"], json!({}));
+    let asked = LlmContext {
+        schema: Some(json!({"type": "object"})),
+        ..history_context()
+    };
     assert_eq!(
-        build_params(&model, &context, &cleared)["provider"],
-        json!({})
+        built(&OpenAiOptions::default(), &asked)["provider"],
+        json!({"require_parameters": true})
     );
-    let mut elsewhere = model;
+    assert_eq!(
+        built(&configured, &asked)["provider"],
+        json!({"sort": "price", "ignore": ["wafer"], "require_parameters": true})
+    );
+    let odd = OpenAiOptions {
+        routing: Some(json!("price")),
+        ..OpenAiOptions::default()
+    };
+    assert_eq!(
+        built(&odd, &asked)["provider"],
+        json!({"require_parameters": true}),
+        "a non-object routing cannot drop the schema's hosts"
+    );
+    let mut elsewhere = model.clone();
     elsewhere.base_url = "https://api.openai.com/v1".to_owned();
     assert!(
-        build_params(&elsewhere, &context, &OpenAiOptions::default())
+        build_params(&elsewhere, &asked, &OpenAiOptions::default())
             .get("provider")
             .is_none()
     );

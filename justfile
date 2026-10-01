@@ -135,8 +135,8 @@ journeys:
       --expect 'faux:' -- tui --model faux/faux-1 --session-dir "$home/sessions" ping
 
 # The console counterpart of tui-proof: a faux daemon on a scratch socket drives the
-# real workspace shell headless and agg renders the cast.
-console-proof script out="target/proof":
+# real workspace shell headless and agg renders the cast, at `size` COLSxROWS.
+console-proof script out="target/proof" size="80x24":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{out}}" in /*|*..*) echo "out must be a relative path in the repo"; exit 1 ;; esac
@@ -153,7 +153,7 @@ console-proof script out="target/proof":
     trap 'kill $pid 2>/dev/null || true; rm -rf "$(dirname "$sock")"' EXIT
     for _ in $(seq 1 60); do [ -S "$sock" ] && break; sleep 0.05; done
     HOME="$out/home" target/debug/yi console --headless --socket "$sock" \
-      --keys "{{script}}" --frames "$out/frames" --record "$out/run.cast"
+      --keys "{{script}}" --frames "$out/frames" --record "$out/run.cast" --size "{{size}}"
     rendered() { [ -s "$1" ] || { echo "empty render: $1"; exit 1; }; }
     if command -v agg >/dev/null; then
       agg --theme monokai --font-size 16 --idle-time-limit 1 "$out/run.cast" "$out/run.gif"

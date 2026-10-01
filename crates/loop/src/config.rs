@@ -28,7 +28,9 @@ type QueueFn = dyn Fn() -> Vec<AgentMessage> + Send + Sync;
 type InterceptFn = dyn Fn(&TurnSnapshot) -> Option<AgentMessage> + Send + Sync;
 type CompactFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<AgentMessage>>> + Send>>;
-type CompactFn = dyn Fn(&[AgentMessage]) -> CompactFuture + Send + Sync;
+/// Called with the model and effort of the run's last request, whose prefix a compaction reads;
+/// at a run's first boundary, before any request, the run's own configured ones.
+type CompactFn = dyn Fn(&[AgentMessage], &Model, Effort) -> CompactFuture + Send + Sync;
 pub type GateFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 type GateFn = dyn Fn() -> GateFuture + Send + Sync;
 
@@ -67,8 +69,8 @@ pub struct LoopConfig {
     pub prepare_next_turn: Option<Box<PrepareFn>>,
     pub get_steering_messages: Option<Box<QueueFn>>,
     pub get_follow_up_messages: Option<Box<QueueFn>>,
-    /// Design §4.4: runs at every message boundary inside the tool loop, since a tool-heavy
-    /// turn can blow the window mid-turn. Some(new) replaces the in-flight history.
+    /// Design §4.4: runs at every boundary of the tool loop, as a tool-heavy turn can blow the
+    /// window. Some(new) replaces the history; steering it queued rides the next request.
     pub maybe_compact: Option<Box<CompactFn>>,
     pub first_turn_tool_choice: Option<ToolChoice>,
     /// Invariant: consulted synchronously, only when a turn ended with no tool calls and an

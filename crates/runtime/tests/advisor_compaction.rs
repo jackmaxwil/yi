@@ -123,7 +123,11 @@ async fn compacted_store(id: &str) -> Result<(Scratch, yi_session::SharedSession
     session.attach_store(Arc::clone(&store))?;
     session.prompt(&format!("{CONSTRAINT} Start the port."))?;
     session.wait_idle().await;
-    if !session.compact_now().await {
+    if !session
+        .compact_now()
+        .await
+        .is_ok_and(|outcome| outcome.applied())
+    {
         return Err("the fixture must actually compact".into());
     }
     Ok((root, store))
