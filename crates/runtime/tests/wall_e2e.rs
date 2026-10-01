@@ -871,18 +871,15 @@ fn a_walled_fetch_reaches_no_transcript_by_tree_local_or_checkpoint() -> TestRes
     Ok(())
 }
 
-/// #979 review: the `--session-dir` reaches a walled reader's fetch through the real wiring
-/// (`wire_fetch`), so `local://` into a store inside the workspace is refused there too.
-#[tokio::test]
-async fn a_wired_walled_fetch_reaches_no_transcript_in_the_session_dir() -> TestResult {
-    let root = Scratch::new("yi-wall-wired-fetch")?;
-    let home = root.home()?;
-    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
-    unsafe { std::env::set_var("HOME", &home) };
-    let project = root.join("project");
-    let store = project.join(".sessions");
-    std::fs::create_dir_all(store.join("--fam--"))?;
-    std::fs::write(store.join("--fam--/1_author.jsonl"), "WALLED TRANSCRIPT\n")?;
+/// A child wired the way `yi` wires one, walled by `wall`, its broker its parent's `for_child`
+/// in `mode` with no sandbox, so every bash call it allows runs outside one.
+fn wired_child(
+    root: &std::path::Path,
+    project: &std::path::Path,
+    wall: Wall,
+    mode: yi_permission::PermissionMode,
+    store: Option<&std::path::Path>,
+) -> (AgentSession, Arc<ProviderStream>) {
     let provider = Arc::new(ProviderStream::new(None));
     let mut session = AgentSession::new(
         SessionConfig {
@@ -893,24 +890,25 @@ async fn a_wired_walled_fetch_reaches_no_transcript_in_the_session_dir() -> Test
         },
         Arc::clone(&provider),
     );
-    let wall = juror_wall(&project);
-    let broker = yi_runtime::PermissionBroker::new(
-        yi_permission::PermissionMode::Auto,
-        project.clone(),
+    let mut broker = yi_runtime::PermissionBroker::new(
+        mode,
+        project.to_path_buf(),
         Vec::new(),
         None,
         session.events_sender(),
-    )
-    .with_session_store(&store);
-    let broker = Arc::new(broker.for_child(&wall, &project));
+    );
+    if let Some(store) = store {
+        broker = broker.with_session_store(store);
+    }
+    let broker = Arc::new(broker.for_child(&wall, project));
     let _host = yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {
             provider: Arc::clone(&provider) as _,
             system_prompt: String::new(),
             tool_execution: ExecutionMode::Sequential,
-            cwd: project.clone(),
-            home: home.clone(),
+            cwd: project.to_path_buf(),
+            home: root.join("home"),
             lane_slots: 1,
             broker: Some(broker),
             tools: Arc::new(yi_tools::builtin_tools),
@@ -933,12 +931,238 @@ async fn a_wired_walled_fetch_reaches_no_transcript_in_the_session_dir() -> Test
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
+    (session, provider)
+}
+
+/// #979 review: the `--session-dir` reaches a walled reader's fetch through the real wiring
+/// (`wire_fetch`), so `local://` into a store inside the workspace is refused there too.
+#[tokio::test]
+async fn a_wired_walled_fetch_reaches_no_transcript_in_the_session_dir() -> TestResult {
+    let root = Scratch::new("yi-wall-wired-fetch")?;
+    let home = root.home()?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let project = root.join("project");
+    let store = project.join(".sessions");
+    std::fs::create_dir_all(store.join("--fam--"))?;
+    std::fs::write(store.join("--fam--/1_author.jsonl"), "WALLED TRANSCRIPT\n")?;
+    let auto = yi_permission::PermissionMode::Auto;
+    let (session, provider) =
+        wired_child(&root, &project, juror_wall(&project), auto, Some(&store));
     let url = "local://.sessions/--fam--/1_author.jsonl";
     let seen = run_turns(&session, &provider, vec![("read", args(&[("path", url)]))]).await?;
     let (text, _) = seen.first().ok_or("no read")?;
     assert!(
         !text.contains("WALLED TRANSCRIPT"),
         "{url} reached a wired walled reader: {text}"
+    );
+    Ok(())
+}
+
+/// Another session's spill under a fake HOME, and a store holding the author's transcript and
+/// the walled session's own, whose spill dir holds one file; returns the store and own paths.
+fn plant_own(
+    home: &std::path::Path,
+    project: &std::path::Path,
+) -> Result<(Planted, yi_session::SharedSession, [std::path::PathBuf; 2]), Box<dyn Error>> {
+    let planted = plant_transcripts(home, project)?;
+    let store = yi_session::create_flat_session(
+        planted.own_dir.clone(),
+        project.to_string_lossy(),
+        Some("author".to_owned()),
+    )?;
+    let (id, transcript) = {
+        let store = yi_session::lock_session(&store);
+        (store.metadata().id.clone(), store.file_path().cloned())
+    };
+    let spills = home.join(".yi/spills");
+    let own_spill = spills.join(id).join("0001.txt");
+    for (path, text) in [
+        (spills.join("author/0123.txt"), "WALLED OUTPUT\n"),
+        (own_spill.clone(), "OWN SPILL\n"),
+    ] {
+        std::fs::create_dir_all(path.parent().ok_or("no parent")?)?;
+        std::fs::write(path, text)?;
+    }
+    let transcript = transcript.ok_or("no transcript file")?;
+    Ok((planted, store, [own_spill, transcript]))
+}
+
+/// #1001: a walled session's bash call that leaves the sandbox (yolo here, as an approval, a
+/// rule or Linux sends one) met the wall only as command text, which named no spill root or
+/// store; it now reads its own spill and transcript and no other session's, by any spelling.
+#[tokio::test]
+async fn a_walled_call_outside_the_sandbox_reads_no_other_sessions_store() -> TestResult {
+    let root = Scratch::new("yi-wall-outside")?;
+    let home = root.home()?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let project = root.join("project");
+    let (planted, store, [own_spill, transcript]) = plant_own(&home, &project)?;
+    let other = home.join(".yi/spills/author/0123.txt");
+    let deep = project.join("a/b");
+    std::fs::create_dir_all(&deep)?;
+    let yolo = yi_permission::PermissionMode::Yolo;
+    let (session, provider) = wired_child(&root, &project, juror_wall(&project), yolo, None);
+    session.attach_store(store)?;
+    let commands = [
+        format!("cat {}", planted.author.display()),
+        "cat ~/.yi/spil\\ls/author/0123.txt".to_owned(),
+        "cat \"$HOME\"/.yi/*/author/0123.txt".to_owned(),
+        format!(
+            "cd {} && cat spills/author/0123.txt",
+            home.join(".yi").display()
+        ),
+        format!("curl -s file://{}", other.display()),
+        format!("curl -s -d @{} file:///dev/null", other.display()),
+        // A `cd` the check follows, and a path glued to a flag.
+        format!(
+            "cd {} && cat ../../../home/.yi/spills/author/0123.txt",
+            deep.display()
+        ),
+        format!(
+            "tar -C{} -cf - author | tar -xOf -",
+            home.join(".yi/spills").display()
+        ),
+        format!("cat {}", own_spill.display()),
+        format!("cat {}", transcript.display()),
+    ];
+    let calls = (commands.iter())
+        .map(|command| ("bash", args(&[("command", command)])))
+        .collect();
+    let seen = run_turns(&session, &provider, calls).await?;
+    let [.., spill, own] = seen.as_slice() else {
+        return Err(format!("ten calls, got {seen:?}").into());
+    };
+    for (command, (text, _)) in commands.iter().zip(&seen[..8]) {
+        assert!(
+            !text.contains("WALLED") && text.contains("runs outside the sandbox"),
+            "{command} reached a walled session: {text}"
+        );
+    }
+    assert!(spill.0.contains("OWN SPILL"), "own spill: {}", spill.0);
+    let id = (own_spill.parent().and_then(std::path::Path::file_name)).ok_or("no id")?;
+    let header = format!("\"id\":\"{}\"", id.to_string_lossy());
+    assert!(own.0.contains(&header), "own transcript: {}", own.0);
+    let open = wired_child(&root, &project, Wall::default(), yolo, None);
+    let calls = vec![("bash", args(&[("command", &commands[0])]))];
+    let (text, _) = run_turns(&open.0, &open.1, calls)
+        .await?
+        .pop()
+        .ok_or("no call")?;
+    assert!(
+        text.contains("WALLED TRANSCRIPT"),
+        "an unwalled call: {text}"
+    );
+    Ok(())
+}
+
+/// #1001 review: each relative `cd` doubled the dirs the host check resolves a word from, so a
+/// long chain cost 2^k resolves per word; six distinct cds are the 64-dir cap, a seventh refuses.
+#[tokio::test]
+async fn a_cd_chain_past_the_host_checks_cap_is_refused_by_name() -> TestResult {
+    let root = Scratch::new("yi-wall-cd-cap")?;
+    let home = root.home()?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let project = root.join("project");
+    let (_, store, _) = plant_own(&home, &project)?;
+    let yolo = yi_permission::PermissionMode::Yolo;
+    let (session, provider) = wired_child(&root, &project, juror_wall(&project), yolo, None);
+    session.attach_store(store)?;
+    let chain = |n: usize| {
+        let cds: Vec<String> = ('a'..='z').take(n).map(|d| format!("cd {d}")).collect();
+        format!("{}; echo CHAIN RAN", cds.join("; "))
+    };
+    let calls = [chain(6), chain(7)]
+        .iter()
+        .map(|command| ("bash", args(&[("command", command)])))
+        .collect();
+    let seen = run_turns(&session, &provider, calls).await?;
+    let [at, past] = seen.as_slice() else {
+        return Err(format!("two calls, got {seen:?}").into());
+    };
+    assert!(
+        at.0.contains("CHAIN RAN"),
+        "64 dirs are under the cap: {}",
+        at.0
+    );
+    assert!(
+        past.0.contains("128 directories")
+            && past.0.contains("cap of 64")
+            && !past.0.contains("CHAIN RAN"),
+        "a seventh cd is refused by name: {}",
+        past.0
+    );
+    Ok(())
+}
+
+/// #1001: a heartbeat's `exec://` source runs `sh -c` on the host on its cadence, and a walled
+/// session's met only the permission broker: neither the wall's command-text check nor its roots.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_walled_heartbeat_source_names_no_walled_path() -> TestResult {
+    let root = Scratch::new("yi-wall-heartbeat")?;
+    let home = root.home()?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let project = root.join("project");
+    let (planted, store, [own_spill, transcript]) = plant_own(&home, &project)?;
+    std::fs::create_dir_all(project.join("secret"))?;
+    std::fs::write(project.join("secret/key.txt"), "WALLED KEY\n")?;
+    let mut wall = juror_wall(&project);
+    wall.deny_read.push(project.join("secret"));
+    let yolo = yi_permission::PermissionMode::Yolo;
+    let (session, _) = wired_child(&root, &project, wall, yolo, None);
+    session.attach_store(store)?;
+    let heartbeats = session.heartbeat_service().ok_or("no heartbeats")?;
+    heartbeats.bind_session("juror".to_owned());
+    let mut host = yi_runtime::HostRegistry::default();
+    heartbeats.register(&mut host);
+    // Its own spill is spared, as its tools' is.
+    for (path, walled) in [
+        (project.join("secret/key.txt"), true),
+        (planted.author, true),
+        (home.join(".yi/spills/author/0123.txt"), true),
+        (own_spill, false),
+        (transcript, false),
+    ] {
+        let address = format!("exec://cat {}?every=30s", path.display());
+        let payload = serde_json::json!({"address": address, "prompt": "watch"});
+        let payload = payload.as_object().cloned().unwrap_or_default();
+        let create =
+            yi_kernel::client::HostHandlers::dispatch(&host, "rlm_heartbeat.create", payload);
+        let made = create
+            .ok_or("rlm_heartbeat.create is not registered")?
+            .await;
+        let refused = made
+            .as_ref()
+            .is_err_and(|text| text.contains("reviewer wall"));
+        assert_eq!(refused, walled, "{address}: {made:?}");
+    }
+    Ok(())
+}
+
+/// #1001: with no Seatbelt (Linux) a walled session's kernel and its `bash()` jobs would run with
+/// no profile, so a cell would meet no wall at all; it never boots, and the cell says why.
+#[tokio::test]
+async fn a_walled_kernel_with_no_sandbox_never_boots() -> TestResult {
+    if yi_tools::Sandbox::available() {
+        return Ok(());
+    }
+    let root = Scratch::new("yi-wall-kernel")?;
+    let home = root.home()?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let project = root.join("project");
+    std::fs::create_dir_all(&project)?;
+    let auto = yi_permission::PermissionMode::Auto;
+    let (session, provider) = wired_child(&root, &project, juror_wall(&project), auto, None);
+    let cell = vec![("ipython", args(&[("code", "print('cell ' + 'ran')")]))];
+    let seen = run_turns(&session, &provider, cell).await?;
+    let (text, is_error) = seen.first().ok_or("no cell")?;
+    assert!(
+        *is_error && text.contains("no Seatbelt") && !text.contains("cell ran"),
+        "{text}"
     );
     Ok(())
 }

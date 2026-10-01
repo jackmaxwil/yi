@@ -86,6 +86,7 @@ fn facts_of(tool: &str, command: &str, output: &yi_tools::ToolOutput) -> Vec<Str
 async fn gate_armed(
     command: &str,
     (rules, wall, broker): Gates<'_>,
+    walled: (&[PathBuf], &[PathBuf]),
     context: &ToolContext,
 ) -> Option<String> {
     let json = serde_json::to_string(&bash(command)).unwrap_or_default();
@@ -95,20 +96,81 @@ async fn gate_armed(
     {
         return Some(denial);
     }
-    let walled = wall.check(
-        "bash",
-        yi_tools::ToolKind::Exec,
-        &bash(command),
-        &context.cwd,
-    );
-    if walled.is_some() {
-        return walled;
+    let refused = host_wall(command, wall, walled, &context.cwd);
+    if refused.is_some() {
+        return refused;
     }
     let (broker, id, owned) = (broker.cloned(), context.call_id.clone(), command.to_owned());
     let container = context.container.is_some();
     tokio::task::spawn_blocking(move || refuse_armed(&owned, container, broker.as_deref(), &id))
         .await
         .unwrap_or_else(|join_error| Some(format!("permission check failed: {join_error}")))
+}
+
+/// Invariant: a command run on the host meets the wall by its text alone: the wall's own lists,
+/// and its walled roots save a spare (#1001).
+pub(crate) fn host_wall(
+    command: &str,
+    wall: &crate::wall::Wall,
+    (roots, spared): (&[PathBuf], &[PathBuf]),
+    cwd: &std::path::Path,
+) -> Option<String> {
+    let walled = wall.check("bash", yi_tools::ToolKind::Exec, &bash(command), cwd);
+    walled.or_else(|| walled_root_refusal(command, roots, spared, cwd))
+}
+
+/// Incident: each relative `cd` resolved against every dir so far, doubling them, so a chain of
+/// k cds cost 2^k resolves per word; past this the check refuses rather than skip a target.
+const CD_DIRS_MAX: usize = 64;
+
+/// Refuses a command naming a root or a dir above one, but a spare, in most spellings (`~`, a glob,
+/// `..` after a `cd`, glued to a flag). Text only: `$(…)`, a variable or a built path pass it.
+fn walled_root_refusal(
+    command: &str,
+    roots: &[PathBuf],
+    spared: &[PathBuf],
+    cwd: &std::path::Path,
+) -> Option<String> {
+    let text = command.replace(['"', '\'', '\\'], "");
+    let text = text.replace("${HOME}", "~").replace("$HOME", "~");
+    let words = text.split(|c: char| c.is_whitespace() || "=;|&()<>`:@".contains(c));
+    // Every `cd` target joins the dirs a word is resolved from, scoped or not: fail closed.
+    let (mut dirs, mut after_cd) = (vec![cwd.to_path_buf()], false);
+    for word in words.filter(|word| !word.is_empty() && !roots.is_empty()) {
+        let glued = word.find('/').filter(|at| *at > 0).map(|at| &word[at..]);
+        for spelled in std::iter::once(word).chain(glued) {
+            let head: String = (spelled.split_inclusive('/'))
+                .take_while(|part| !part.contains(['*', '?', '[']))
+                .collect();
+            let paths: Vec<PathBuf> = (dirs.iter())
+                .map(|dir| yi_permission::resolve_target(&head, dir))
+                .collect();
+            let hit = roots.iter().find(|root| {
+                paths.iter().any(|path| {
+                    yi_tools::walled(std::slice::from_ref(path), root)
+                        || yi_tools::walled(std::slice::from_ref(*root), path)
+                            && !yi_tools::walled(spared, path)
+                })
+            });
+            if let Some(root) = hit {
+                return Some(crate::gate::outside_sandbox_refusal(root));
+            }
+            for path in paths.into_iter().filter(|_| after_cd) {
+                if !dirs.contains(&path) {
+                    dirs.push(path);
+                }
+            }
+            if dirs.len() > CD_DIRS_MAX {
+                let why = format!(
+                    "its cd targets give {} directories to read its paths from, past the check's cap of {CD_DIRS_MAX}; run the cds as separate calls",
+                    dirs.len()
+                );
+                return Some(crate::gate::walled_host_refusal(&why));
+            }
+        }
+        after_cd = matches!(word, "cd" | "pushd");
+    }
+    None
 }
 
 fn bash(command: &str) -> Map<String, Value> {
@@ -127,6 +189,11 @@ pub fn refuse_armed(
     if in_container {
         return Some(format!(
             "an exec:// source runs `{command}` on the host, and this session's commands run in a container"
+        ));
+    }
+    if broker.is_some_and(PermissionBroker::confines_walled) {
+        return Some(crate::gate::walled_host_refusal(
+            "an exec:// source runs on the host",
         ));
     }
     let outcome = broker?.decide_call(
@@ -196,7 +263,8 @@ pub(crate) fn spill_roots_and_stores(
         .collect()
 }
 
-/// Invariant: a kernel's spare never reopens a path the wall's own `deny_read` covers (#1000).
+/// Invariant: a spare, a kernel's or a tool's, never reopens a path the wall's own `deny_read`
+/// covers (#1000, #1001).
 pub(crate) fn unwalled(wall: &crate::wall::Wall, dir: &std::path::Path) -> bool {
     !yi_tools::walled(&wall.deny_read, dir)
 }
@@ -335,7 +403,7 @@ impl AgentTool for ToolAdapter {
         let transcript =
             store.and_then(|store| yi_session::lock_session(&store).file_path().cloned());
         let spared: Vec<PathBuf> = (spills.iter().chain(&transcript))
-            .filter(|_| !walled_roots.is_empty())
+            .filter(|dir| !walled_roots.is_empty() && unwalled(&self.wall, dir))
             .cloned()
             .collect();
         let mut context = ToolContext {
@@ -395,8 +463,9 @@ impl AgentTool for ToolAdapter {
             }
             drop(gate_span);
             for command in tool.arms(&args) {
-                let refused =
-                    gate_armed(&command, (&rules, &wall, permission.as_ref()), &context).await;
+                let walled = (walled_roots.as_slice(), spared.as_slice());
+                let gates = (&rules, &wall, permission.as_ref());
+                let refused = gate_armed(&command, gates, walled, &context).await;
                 if let Some(denial) = refused {
                     return ToolOutcome {
                         result: yi_loop::tool::error_tool_result_kind(
@@ -434,7 +503,7 @@ impl AgentTool for ToolAdapter {
                             context.sandbox = (reporter.sandbox_for(&context.cwd, &wall, widen))
                                 .map(|mut sandbox| {
                                     sandbox.deny_read.extend_from_slice(&walled_roots);
-                                    sandbox.spared = spared;
+                                    sandbox.spared.clone_from(&spared);
                                     sandbox
                                 });
                             contained = context.sandbox.as_ref().map(|_| reporter);
@@ -467,6 +536,20 @@ impl AgentTool for ToolAdapter {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
+            // Outside the sandbox the command text is the only wall left (#1001).
+            let on_host = context.sandbox.is_none() && context.container.is_none();
+            if let Some(denial) = on_host
+                .then(|| walled_root_refusal(&command, &walled_roots, &spared, &context.cwd))
+                .flatten()
+            {
+                return ToolOutcome {
+                    result: yi_loop::tool::error_tool_result_kind(
+                        &denial,
+                        yi_types::event::ToolErrorKind::Denied,
+                    ),
+                    is_error: true,
+                };
+            }
             let written = (tool.kind_for(&args) == yi_tools::ToolKind::Write)
                 .then(|| crate::permission::extract_targets(&name, &args, &context.cwd));
             let (cwd, cancel) = (context.cwd.clone(), Arc::clone(&context.cancelled));
