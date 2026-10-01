@@ -70,7 +70,8 @@ pub struct ProviderStream {
     proxy: Option<yi_ai::request::ProxyConfig>,
     routing: Option<serde_json::Value>,
     telemetry: Option<Arc<crate::telemetry::Telemetry>>,
-    /// `--faux`: every model, whatever its provider, streams from the script (#943).
+    /// Set by `--faux` or a `faux/…` model: every model, whatever its provider, streams from
+    /// the script (#943).
     force_faux: bool,
 }
 
@@ -160,7 +161,7 @@ impl ProviderStream {
 
     /// Every request, the family's and a switched model's included, reads the faux script.
     #[must_use]
-    pub fn force_faux(mut self, force: bool) -> Self {
+    pub fn with_forced_faux(mut self, force: bool) -> Self {
         self.force_faux = force;
         self
     }
@@ -368,15 +369,14 @@ mod tests {
         Ok(())
     }
 
-    /// A child of a `--faux` run spawns on the script, never on a login whose refresh dials out.
+    /// A child of a `--faux` run spawns on the script, never on a login whose refresh dials out,
+    /// and streams from it too.
     #[test]
     fn a_scripted_stream_admits_any_provider_without_a_credential() {
         let provider = "no-such-provider";
         assert!(!ProviderStream::new(None).has_credential(provider));
-        assert!(
-            ProviderStream::new(None)
-                .force_faux(true)
-                .has_credential(provider)
-        );
+        let forced = ProviderStream::new(None).with_forced_faux(true);
+        assert!(forced.has_credential(provider));
+        assert!(forced.for_child().forces_faux());
     }
 }

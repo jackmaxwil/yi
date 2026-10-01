@@ -155,7 +155,8 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     }
     yi_types::trace::init(debug::process_label(&command));
     // A drive is a harness: it claims no lane unless the scenario is about lanes.
-    let here = here || (headless && !lanes);
+    // A cassette run is a harness too: a claim would fetch origin (#943).
+    let here = here || ((headless || faux.is_some()) && !lanes);
     // Drive-only flags are silently inert outside the headless loop, which
     // reads downstream as a capture that produced nothing.
     if !headless
@@ -442,7 +443,8 @@ fn build_session(
         });
     };
     // `--faux` scripts whatever model is named, which keeps its id and catalog facts on
-    // screen; nothing below may leave the process (#943).
+    // screen; the host starts no request of its own below, while a scripted tool call still
+    // runs (#943).
     let faux = args.faux.is_some() || model.provider == "faux";
     let interactive = {
         use std::io::IsTerminal;
@@ -474,7 +476,7 @@ fn build_session(
             .with_proxy(proxy.clone())
             .with_routing(config().routing.clone())
             .with_telemetry(telemetry.clone())
-            .force_faux(faux),
+            .with_forced_faux(faux),
     );
     if !faux {
         // Resolved through the session's proxy so an OAuth refresh can reach the token
@@ -508,6 +510,9 @@ fn build_session(
     }
     let cwd = effective_cwd(args);
     let home = home().to_path_buf();
+    if faux {
+        yi_runtime::lane::forbid_fetch();
+    }
     let claiming = yi_types::trace::span("build_session.claim_lane");
     let claimed = claim_lane(args, &home, session_id);
     drop(claiming);
