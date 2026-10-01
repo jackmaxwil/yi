@@ -1,5 +1,5 @@
 {
- "source": "plan calls glm-5.3-flash sent in two rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982), refused then; checker commands replaced by `true`",
+ "source": "plan calls glm-5.3-flash sent in three rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982), refused then; checker commands replaced by `true`",
  "cases": [
   {
    "name": "no op beside goal and todos",
@@ -595,45 +595,301 @@
    "says": "ends with fail and a cause"
   },
   {
-   "name": "fail on a pending todo",
+   "name": "done with several labels",
    "setup": [
     {
      "op": "init",
      "goal": "demo",
      "todos": [
       {
-       "label": "one"
+       "label": "Add power(a, b) function"
+      },
+      {
+       "label": "Add tests for power"
       }
      ]
     }
    ],
    "call": {
-    "op": "fail",
-    "label": "one",
-    "cause": "spawn failed"
+    "labels": [
+     "Add power(a, b) function",
+     "Add tests for power"
+    ],
+    "op": "done"
    },
-   "lands": false,
-   "says": "is dropped"
+   "lands": true,
+   "says": "each ran as its own call"
   },
   {
-   "name": "retry on a pending todo",
+   "name": "a decider with nothing in it",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "Add input validation to calc.divide in calc.py, semantics per user decision",
+    "todos": [
+     {
+      "after": [],
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {},
+         "id": "decision-recorded",
+         "weight": 1000
+        }
+       ]
+      },
+      "delegation": null,
+      "label": "Decide division-by-zero semantics"
+     },
+     {
+      "after": [
+       "Decide division-by-zero semantics"
+      ],
+      "contract": {
+       "class": "writer",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "divide-validated",
+         "weight": 500
+        },
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "zero-division-behavior",
+         "weight": 500
+        }
+       ]
+      },
+      "delegation": null,
+      "label": "Implement validation in calc.divide per chosen semantics"
+     },
+     {
+      "after": [
+       "Implement validation in calc.divide per chosen semantics"
+      ],
+      "contract": {
+       "class": "writer",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "tests-pass",
+         "weight": 1000
+        }
+       ]
+      },
+      "delegation": null,
+      "label": "Add regression tests to test_calc.py and run suite"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "empty decider"
+  },
+  {
+   "name": "the op's own key naming the todo",
    "setup": [
     {
      "op": "init",
      "goal": "demo",
      "todos": [
       {
-       "label": "one"
+       "label": "Write mod(a, b) in calc.py"
+      },
+      {
+       "label": "Run unittest gate green"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "add_edge": "Write mod(a, b) in calc.py",
+    "after": "Run unittest gate green",
+    "op": "add_edge"
+   },
+   "lands": true
+  },
+  {
+   "name": "labels on append",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Write mod(a, b) in calc.py"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "labels": [
+     "Park a scratch todo for the fail/retry demo"
+    ],
+    "op": "append"
+   },
+   "lands": true
+  },
+  {
+   "name": "unblock on a pending todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Deliberate placeholder to fail then retry"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "label": "Deliberate placeholder to fail then retry",
+    "op": "unblock"
+   },
+   "lands": true,
+   "says": "not blocked"
+  },
+  {
+   "name": "fail on a pending own todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Deliberate placeholder to fail then retry"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "cause": "Deliberate fail to exercise the fail op; will be retried",
+    "label": "Deliberate placeholder to fail then retry",
+    "op": "fail"
+   },
+   "lands": true,
+   "says": "started first"
+  },
+  {
+   "name": "retry on a pending own todo",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Deliberate placeholder to fail then retry"
       }
      ]
     }
    ],
    "call": {
     "op": "retry",
-    "label": "one"
+    "todo": "Deliberate placeholder to fail then retry"
+   },
+   "lands": true,
+   "says": "had not run yet"
+  },
+  {
+   "name": "decompose holding its arguments beside op",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Run unittest gate green"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "decompose": {
+     "todos": [
+      {
+       "label": "Run focused test_mod check"
+      }
+     ]
+    },
+    "label": "Run unittest gate green",
+    "op": "decompose"
+   },
+   "lands": true
+  },
+  {
+   "name": "supersede with no reason",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Write mod(a, b) in calc.py"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "supersede",
+    "todos": [
+     {
+      "label": "Record full-suite state and close the plan"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "none was given"
+  },
+  {
+   "name": "supersede after the plan finished",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "Write mod(a, b) in calc.py"
+      }
+     ]
+    },
+    {
+     "op": "done",
+     "label": "Write mod(a, b) in calc.py"
+    }
+   ],
+   "call": {
+    "op": "supersede",
+    "reason": "The implementation todos are done; the only remaining step is recording the suite state",
+    "todos": [
+     {
+      "label": "Record full-suite state and close the plan"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "no plan was open"
+  },
+  {
+   "name": "todos as a JSON string that does not parse",
+   "setup": [],
+   "call": {
+    "op": "init",
+    "goal": "Add a mean(values) function to calc.py",
+    "todos": "[{\"label\": \"Add mean(values) to calc.py with unittest tests\", \"delegation\": {\"spec\": {\"role\": \"root\", \"isolation\": \"worktree\"}, \"accept\": {\"stated\": \"Child implements mean(values) in calc.py and tests in test_calc.py; python3 -m unittest -q passes in the worktree\"}, \"context\": [\"calc.py\", \"test_calc.py\"]}, \"contract\": {\"class\": \"writer\", \"items\": [{\"id\": \"mean_implemented\", \"critical\": true, \"weight\": 40, \"decider\": {\"cmd\": \"python3 -c \\\"import calc; assert calc.mean([2,4,6]) == 4.0\\\"\"}}, {\"id\": \"tests_pass\", \"critical\": true, \"weight\": 60, \"decider\": {\"cmd\": \"python3 -m unittest -q\"}}, {\"id\": \"mean_test_present\", \"critical\": true, \"weight\": 20, \"decider\": {\"cmd\": \"grep -q 'def test_mean' test_calc.py\"}}}], \"after\": []}]"
    },
    "lands": false,
-   "says": "start it"
+   "says": "\"todos\" is malformed: expected"
   }
  ]
 }

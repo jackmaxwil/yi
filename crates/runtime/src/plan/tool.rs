@@ -382,10 +382,14 @@ pub(super) fn label(args: &Map<String, Value>, op: OpKind) -> Result<TodoLabel, 
 
 fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, ArgError> {
     let field = "todos";
-    let raw: &Vec<Value> = args
-        .get(field)
-        .and_then(Value::as_array)
-        .ok_or(ArgError::Missing { op, field })?;
+    let raw: &Vec<Value> = match args.get(field) {
+        Some(Value::String(text)) => match serde_json::from_str::<Vec<Value>>(text) {
+            Err(cause) => return Err(ArgError::Malformed { op, field, cause }),
+            Ok(_) => None,
+        },
+        other => other.and_then(Value::as_array),
+    }
+    .ok_or(ArgError::Missing { op, field })?;
     let mut specs = Vec::with_capacity(raw.len());
     for (index, value) in raw.iter().enumerate() {
         let Value::Object(spec) = value else {
@@ -572,6 +576,32 @@ impl PlanTool {
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
         let (args, mut said) = super::natural::natural(args);
+        if let Some(Value::Array(labels)) = args.get("labels")
+            && (args.get("op").and_then(Value::as_str))
+                .is_some_and(|op| super::natural::TARGETED.contains(&op))
+        {
+            let (mut text, mut refused) = (String::new(), false);
+            for label in labels {
+                let mut one = args.clone();
+                one.remove("labels");
+                one.insert("todo".to_owned(), label.clone());
+                let reply = self.run(&one).unwrap_or_else(|err| {
+                    refused = true;
+                    format!("{label}: refused: {err}")
+                });
+                text.push_str(&format!("{reply}\n"));
+            }
+            said.push("labels named several todos, so each ran as its own call, in order");
+            for line in said {
+                text.push_str(&format!("note: {line}\n"));
+            }
+            let text = text.trim_end().to_owned();
+            return if refused {
+                Err(ArgError::Declared(text).into())
+            } else {
+                Ok(text)
+            };
+        }
         let (request, blobs) = declared(&self.actor, &args)?;
         if let Op::Accept { .. } = &request.op {
             let confirming = self.confirming.as_ref();
@@ -584,20 +614,38 @@ impl PlanTool {
             Err(PlanOpError::IllegalStep {
                 label,
                 from: TodoStateName::Pending,
-                op: OpKind::Done | OpKind::Decompose,
+                op: kind @ (OpKind::Done | OpKind::Decompose | OpKind::Fail | OpKind::Retry),
             }) if self.runs_itself(&request, &label) => {
-                let start = Op::Start { label };
-                self.engine.apply(OpRequest {
-                    op: start,
+                let start = OpRequest {
+                    op: Op::Start { label },
                     ..request.clone()
-                })?;
-                said.push("it was pending, so it was started first");
-                self.engine.apply_with(request, &blobs)?
+                };
+                if kind == OpKind::Retry {
+                    said.push("it had not run yet, so it was started");
+                    self.engine.apply(start)?
+                } else {
+                    self.engine.apply(start)?;
+                    said.push("it was pending, so it was started first");
+                    self.engine.apply_with(request, &blobs)?
+                }
+            }
+            Err(PlanOpError::IllegalStep {
+                from: TodoStateName::Pending | TodoStateName::Running,
+                op: OpKind::Unblock,
+                ..
+            }) => {
+                said.push("it was not blocked, so nothing changed");
+                self.engine.apply(OpRequest {
+                    op: Op::View { full: false },
+                    ..request
+                })?
             }
             Err(PlanOpError::NoPlan) => {
                 let first = match &request.op {
                     Op::Set { goal: None, rows } => rows.first().map(|row| row.spec.label.clone()),
-                    Op::Append { todos } => todos.first().map(|todo| todo.label.clone()),
+                    Op::Append { todos } | Op::Supersede { todos, .. } => {
+                        todos.first().map(|todo| todo.label.clone())
+                    }
                     _ => None,
                 };
                 let first = first.ok_or(PlanOpError::NoPlan)?;
@@ -607,7 +655,7 @@ impl PlanTool {
                         goal: Some(goal),
                         rows,
                     },
-                    Op::Append { todos } => Op::Init { goal, todos },
+                    Op::Append { todos } | Op::Supersede { todos, .. } => Op::Init { goal, todos },
                     other => other,
                 };
                 said.push("no plan was open, so one was opened, named after the first todo");

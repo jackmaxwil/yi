@@ -9,12 +9,25 @@ use yi_types::plan::op::{ALL_OPS, MODEL_OPS, op_name};
 /// the transcript keep them, and the reply says so.
 const ANNOTATIONS: [&str; 5] = ["reason", "note", "evidence", "why", "explanation"];
 
+/// Ops that act on one todo, so a bare string under the op's own key, or one of several `labels`,
+/// is that todo.
+pub(super) const TARGETED: [&str; 10] = [
+    "start",
+    "done",
+    "fail",
+    "retry",
+    "drop",
+    "block",
+    "unblock",
+    "decompose",
+    "add_edge",
+    "accepted_by_user",
+];
+
 pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<&'static str>) {
     let mut args = args.clone();
     let mut said = Vec::new();
-    if !args.contains_key("op") {
-        infer_op(&mut args);
-    }
+    infer_op(&mut args);
     if let Some(Value::String(text)) = args.get("todos")
         && let Ok(parsed @ Value::Array(_)) = serde_json::from_str::<Value>(text)
     {
@@ -25,6 +38,11 @@ pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<&'s
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    labels(&op, &mut args);
+    if op == "supersede" && !args.contains_key("reason") {
+        args.insert("reason".to_owned(), json!("none given"));
+        said.push("supersede records a reason and none was given");
+    }
     match op.as_str() {
         "set" | "supersede" => checklist(&op, &mut args, &mut said),
         "init" if !args.contains_key("goal") => {
@@ -65,28 +83,61 @@ pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<&'s
     (args, said)
 }
 
-/// `goal` and `todos` open a plan and `list` sets one; a key named after an op, as a flag or
-/// holding the arguments, is that op.
+/// `goal` and `todos` open a plan and `list` sets one; a key named after an op, as a flag, holding
+/// the arguments or naming the todo, is that op.
 fn infer_op(args: &mut Map<String, Value>) {
-    let named = ALL_OPS
-        .iter()
-        .take(MODEL_OPS)
-        .map(|op| op_name(*op))
-        .find(|name| args.contains_key(*name));
+    let given = args.get("op").and_then(Value::as_str).map(str::to_owned);
+    let named = given.or_else(|| {
+        let mut ops = ALL_OPS.iter().take(MODEL_OPS).map(|op| op_name(*op));
+        ops.find(|name| args.contains_key(*name)).map(str::to_owned)
+    });
     let op = match named {
         Some(name) => {
-            if let Some(Value::Object(inner)) = args.remove(name) {
-                args.extend(inner);
-            } else {
-                args.remove(name);
+            match args.remove(&name) {
+                Some(Value::Object(inner)) => {
+                    for (key, value) in inner {
+                        args.entry(key).or_insert(value);
+                    }
+                }
+                Some(target @ Value::String(_))
+                    if TARGETED.contains(&name.as_str())
+                        && !args.contains_key("label")
+                        && !args.contains_key("todo") =>
+                {
+                    args.insert("todo".to_owned(), target);
+                }
+                _ => {}
             }
             name
         }
-        None if args.contains_key("list") => "set",
-        None if args.contains_key("todos") && args.contains_key("goal") => "init",
+        None if args.contains_key("list") => "set".to_owned(),
+        None if args.contains_key("todos") && args.contains_key("goal") => "init".to_owned(),
         None => return,
     };
     args.insert("op".to_owned(), json!(op));
+}
+
+/// `labels` lists rows for an op that takes rows, and the todo for one that takes a single todo;
+/// several on such an op are run one call each by the tool.
+fn labels(op: &str, args: &mut Map<String, Value>) {
+    let Some(Value::Array(labels)) = args.get("labels") else {
+        return;
+    };
+    let rows = ["init", "append", "set", "supersede"].contains(&op);
+    if rows && !args.contains_key("todos") && !args.contains_key("list") {
+        let todos: Vec<Value> = labels
+            .iter()
+            .map(|label| json!({ "label": label }))
+            .collect();
+        args.remove("labels");
+        args.insert("todos".to_owned(), Value::Array(todos));
+    } else if let [one] = labels.as_slice()
+        && TARGETED.contains(&op)
+    {
+        let one = one.clone();
+        args.remove("labels");
+        args.entry("todo").or_insert(one);
+    }
 }
 
 /// `set` takes rows as `todos` or `list`; `supersede` takes them as `list`. Headings and blank
@@ -167,15 +218,28 @@ fn first_label(args: &Map<String, Value>) -> Option<String> {
 }
 
 /// A contract item's weight is a share from 1 to 100: a missing one is 1, and items weighted past
-/// 100 are rescaled together so their ratios hold.
+/// 100 are rescaled together so their ratios hold. An item with an empty decider checks nothing.
 fn weights(args: &mut Map<String, Value>, said: &mut Vec<&'static str>) {
     let Some(Value::Array(todos)) = args.get_mut("todos") else {
         return;
     };
-    for todo in todos {
-        let Some(Value::Array(items)) = todo.pointer_mut("/contract/items") else {
+    for todo in todos.iter_mut().filter_map(Value::as_object_mut) {
+        let Some(Value::Array(items)) = todo.get_mut("contract").and_then(|c| c.get_mut("items"))
+        else {
             continue;
         };
+        let before = items.len();
+        items.retain(|item| {
+            item.get("decider")
+                .is_some_and(|decider| decider.as_object().is_none_or(|keys| !keys.is_empty()))
+        });
+        if items.len() < before {
+            said.push("a contract item with an empty decider checks nothing and was left out");
+        }
+        if before > 0 && items.is_empty() {
+            todo.remove("contract");
+            continue;
+        }
         let max = items
             .iter()
             .filter_map(|item| item.get("weight").and_then(Value::as_u64))
