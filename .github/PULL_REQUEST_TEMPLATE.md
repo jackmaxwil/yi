@@ -54,5 +54,5 @@
      "No hot path touched" and why. -->
 
 ## Architecture notes
-<!-- Version bump, changelog row, D-rows claimed or revised, feature-ledger
-     rows touched (each names its journey test). -->
+<!-- The change file under docs/changes/ (issue, growth memo, raises, decisions
+     claimed or revised), feature-ledger rows touched (each names its journey test). -->

@@ -208,8 +208,8 @@ pub struct SubagentHostOptions {
     /// The plan a discovery's named ancestor task is resolved against.
     pub store: crate::goal::StoreHandle,
     pub plans_dir: PathBuf,
-    /// how many sessions the family holds live right now (the shared kernel map) (D165).
-    pub family_live: Arc<dyn Fn() -> usize + Send + Sync>,
+    /// The sessions the family holds live right now, shared by every host in it (D165).
+    pub family_live: Arc<crate::fetch::KernelServiceMap>,
 }
 
 pub struct SubagentHost {
@@ -630,12 +630,15 @@ impl SubagentHost {
         }
         let reader = reader::parse(&kwargs)?;
         let role = reader.as_ref().map(|reader| reader.role);
-        let standing = match (role, standing) {
+        let mut standing = match (role, standing) {
             (Some(reader::Role::Reader), Standing::Worker) => Standing::Reader,
             (_, standing) => standing,
         };
         if role == Some(reader::Role::Reader) {
             reader::walls_writes(&mut kwargs);
+        }
+        if let Standing::Service(service) = &mut standing {
+            service.kwargs.clone_from(&kwargs);
         }
         let requested_name = optional_string(&kwargs, "name")?;
         let fork = parse_fork(&kwargs)?;
@@ -661,7 +664,7 @@ impl SubagentHost {
                 "fork=all inherits the parent's model and thinking; drop the override".to_owned(),
             );
         }
-        if (self.options.family_live)() >= family_cap {
+        if self.options.family_live.live() >= family_cap {
             return Err(format!(
                 "the family holds {family_cap} live sessions; reap one with rlm.delete_subagent before spawning"
             ));
@@ -711,6 +714,7 @@ impl SubagentHost {
             child.seed_messages(seed);
         }
         let session = Arc::new(child);
+        self.options.family_live.enroll(&session);
         let lead = stagger.and_then(|stagger| stagger.arm(&session));
         if matches!(standing, Standing::Service(_)) {
             service::watch_kernel(&session);
