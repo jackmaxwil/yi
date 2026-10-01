@@ -241,10 +241,10 @@ fn image_block(block: &Content) -> Option<AcpContentBlock> {
     }))
 }
 
-fn plain(content: &UserContent) -> String {
+pub(crate) fn plain(content: &UserContent, sep: &str) -> String {
     match content {
         UserContent::Text(text) => text.clone(),
-        UserContent::Blocks(blocks) => text_of(blocks),
+        UserContent::Blocks(blocks) => yi_types::message::join_text(blocks, sep),
     }
 }
 
@@ -262,7 +262,7 @@ fn user_blocks(content: &UserContent) -> Vec<AcpContentBlock> {
 }
 
 fn user_update(content: &UserContent, typed: bool, ids: &mut IdMap) -> AcpSessionUpdate {
-    let claimed = typed.then(|| ids.claim(&plain(content))).flatten();
+    let claimed = typed.then(|| ids.claim(&plain(content, ""))).flatten();
     let message_id = claimed.unwrap_or_else(|| ids.allocate());
     let content = user_blocks(content);
     if typed {
@@ -311,7 +311,7 @@ fn extension_of(
     content: &UserContent,
     details: Option<&Value>,
 ) -> AcpSessionUpdate {
-    let mut fields = vec![("text", Value::String(plain(content)))];
+    let mut fields = vec![("text", Value::String(plain(content, "")))];
     if let Some(details) = details {
         fields.push(("details", details.clone()));
     }
