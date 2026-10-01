@@ -183,10 +183,8 @@ def read_json(path):
 
 def cmd_ratchet(args):
     before = {path: read_json(path) for path in baseline_paths()}
-    # Incident: nothing ran check_growth --update, so src_loc.json sat 64 versions back and every
-    # memo restated one cumulative number; its update refuses a delta the row has not priced.
-    for script in ("check_test_size.py", "check_crate_size.py", "check_comments.py",
-                   "check_schemas_lock.py", "check_growth.py", "check_request_budget.py"):
+    # The size ceilings are measured at the fork and raised in a change file; these still store one.
+    for script in ("check_schemas_lock.py", "check_request_budget.py"):
         subprocess.run((sys.executable, str(ROOT / "scripts/guardrails" / script), "--update"), check=False)
     changed = dirty(baseline_paths())
     if not changed:
@@ -196,14 +194,8 @@ def cmd_ratchet(args):
     for path in changed:
         was, now = before.get(path, {}), read_json(path)
         stem = pathlib.Path(path).stem
-        if stem == "test_size_budget":
-            parts.append(f"test LOC {was.get('budget_lines', '?')} -> {now.get('budget_lines', '?')}")
-        elif stem == "binary_size_budget":
+        if stem == "binary_size_budget":
             parts.append(f"dist binary {was.get('max_bytes', '?')} -> {now.get('max_bytes', '?')}")
-        elif stem == "crate_size_budget":
-            for crate, limit in now.items():
-                if was.get(crate) != limit:
-                    parts.append(f"{crate} crate {was.get(crate, '?')} -> {limit}")
         elif stem == "request_budget":
             for key in ("system", "tools", "total"):
                 if was.get(key) != now.get(key):
@@ -420,12 +412,12 @@ def cmd_ready(args):
     if not title.startswith(DRAFT):
         print(f"#{number} is not a draft")
         return 0
-    rounds = pr_review.rounds_of(pr_review.comments(repo(), number), pr_review.authors())
-    errs = pr_review.ready_problems(rounds, pr["head"]["sha"])
+    rounds = pr_review.rounds_of(pr_review.comments(repo(), number), pr_review.authors(), number)
+    errs = pr_review.ready_problems(rounds, pr["head"]["sha"], pr_review.holds_for(number, pr["base"]["ref"]))
     for err in errs:
         print(f"  {err}")
     if errs and pr_review.MODE == "blocking":
-        print(f"ready: refused — #{number} stays a draft")
+        print(f"ready: refused — #{number} stays a draft until two review rounds are clean on its head")
         return 1
     answer = fgj_api("PATCH", f"repos/{repo()}/pulls/{number}", {"title": title.removeprefix(DRAFT)})
     if not answer or answer.get("message"):
@@ -509,6 +501,16 @@ def cmd_rerun(args):
     return 0
 
 
+def unreviewed(number, pr):
+    """What the rounds still owe before a merge; nothing while rounds only report (shadow)."""
+    import pr_review
+
+    if pr_review.MODE != "blocking":
+        return []
+    rounds = pr_review.rounds_of(pr_review.comments(repo(), number), pr_review.authors(), number)
+    return pr_review.ready_problems(rounds, pr["head"]["sha"], pr_review.holds_for(number, pr["base"]["ref"]))
+
+
 def cmd_merge(args):
     number = pull_number(args.number)
     need = required()
@@ -524,6 +526,11 @@ def cmd_merge(args):
             print(f"#{number} is behind main; updating")
             cmd_update(argparse.Namespace(number=number))
         elif verdict == "green":
+            if errs := unreviewed(number, pr):
+                for err in errs:
+                    print(f"  {err}")
+                print(f"merge: refused — #{number} needs two review rounds clean on its head")
+                return 1
             answer = fgj_api("POST", f"repos/{repo()}/pulls/{number}/merge", {"Do": "merge"})
             if answer and answer.get("message"):
                 print(f"merge refused: {answer['message']}")
@@ -542,56 +549,6 @@ def cmd_merge(args):
             print(f"#{number}: gave up after {args.timeout} minutes")
             return 2
         time.sleep(POLL)
-
-
-def growth_line():
-    out = subprocess.run((sys.executable, str(ROOT / "scripts/guardrails/check_growth.py")),
-                         capture_output=True, text=True, check=False)
-    return out.stdout + out.stderr
-
-
-def repriced_memo(row, measured):
-    """The memo's number follows the measurement; its prose stays the author's."""
-    return re.sub(r"growth \+\d+:", f"growth +{measured}:", row, count=1)
-
-
-def reprice_growth():
-    """After a merge the memo trails the tree; `check_growth` says by how much, and only the
-    number moves. Returns the commit subject, or None when nothing was owed."""
-    text = growth_line()
-    if text.strip().startswith("ok"):
-        return None
-    measured = re.search(r"measurement is ([+-]\d+)", text) or re.search(r"^\s*([+-]\d+) is past", text, re.M)
-    if not measured:
-        return None
-    number = measured.group(1).lstrip("+")
-    arch = (ROOT / "docs/ARCHITECTURE.md").read_text()
-    version = re.search(r"^version:\s*(\S+)", arch, re.M).group(1)
-    log = ROOT / "docs/CHANGELOG.md"
-    lines = log.read_text().splitlines()
-    for i, line in enumerate(lines):
-        if line.startswith(f"| {version} |") and "growth +" in line:
-            lines[i] = repriced_memo(line, number)
-            log.write_text("\n".join(lines) + "\n")
-            subject = f"Price the {version} row at the growth the merge measures"
-            git("commit", "-q", "-m", subject, "--", "docs/CHANGELOG.md", check=True)
-            return subject
-    return None
-
-
-def render_missing_adrs():
-    """A decision row without its ADR is a landing law; `just adr` writes it from the row."""
-    arch = (ROOT / "docs/ARCHITECTURE.md").read_text()
-    written = []
-    for number in re.findall(r"^\| D(\d+) \|", arch, re.M):
-        path = ROOT / "docs/solutions/adr" / f"d{number}.md"
-        if not path.exists():
-            subprocess.run((sys.executable, str(ROOT / "scripts/adr.py"), number), check=True)
-            written.append(number)
-    if written:
-        git("add", "docs/solutions", check=True)
-        git("commit", "-q", "-m", "Record " + ", ".join(f"D{n}" for n in written) + " from the decision log", check=True)
-    return written
 
 
 def refresh_from_main():
@@ -616,24 +573,13 @@ def refresh_from_main():
 def cmd_land(args):
     if refresh_from_main():
         return 1
-    # Incident: the merge kept this branch's src_loc.json, a pair that had never seen main's
-    # growth, so the gate read main's lines as this version's and no reprice could say so.
-    # Main's pair is the last priced point: the row prices everything since, then the
-    # ratchet moves the pair past it.
-    growth = "scripts/guardrails/baselines/src_loc.json"
-    (ROOT / growth).write_text(git("show", f"origin/main:{growth}", check=True) + "\n")
-    if subject := reprice_growth():
-        print(f"land: {subject}")
     cmd_ratchet(argparse.Namespace(topic=args.title, no_binary=False))
-    if written := render_missing_adrs():
-        print("land: ADRs rendered for " + ", ".join(f"D{n}" for n in written))
     code = cmd_open(args)
     if code:
         return code
     # A PR lands through its review rounds: until two are clean on its head it stays a draft.
     args.number = None
     if cmd_ready(args):
-        print("land: opened as a draft; the review bot reads it — `just pr merge` after `just pr ready` passes")
         return 1
     args.wait = True
     return cmd_merge(args)
@@ -672,9 +618,6 @@ def selfcheck():
     long = ratchet_subject(["test LOC 36636 -> 36696", "tui crate 10922 -> 10984", "dist binary 5696512 -> 5696544"], "the console pane and its avatars")
     assert len(long) <= SUBJECT_LIMIT and long.startswith("Ratchet: test LOC"), long
     assert ratchet_subject([], "x") == "Ratchet: baselines"
-    row = "| 0.150.0 | d | x. growth +1026: measured under D119; prose. |"
-    assert repriced_memo(row, "4315") == "| 0.150.0 | d | x. growth +4315: measured under D119; prose. |"
-    assert repriced_memo("| 0.1.0 | d | no memo |", "9") == "| 0.1.0 | d | no memo |"
     counted = "<!-- prefilled -->\n\n## Summary\n\nprefill\n\n## Files edited\n\nprefill files\n"
     kept = dedupe_counted("## Summary\n\nmine\n", counted)
     assert "mine" not in kept and "prefill files" in kept and kept.count("## Summary") == 0, kept
@@ -715,7 +658,7 @@ def selfcheck():
 
     real_fgj, real_pull = globals()["fgj_api"], globals()["pull"]
     real_rounds = pr_review.comments, pr_review.authors
-    globals()["pull"] = lambda n: {"number": n, "title": DRAFT + "Keep the gate", "head": {"sha": "abc1234"}}
+    globals()["pull"] = lambda n: {"number": n, "title": DRAFT + "Keep the gate", "head": {"sha": "abc1234"}, "base": {"ref": "main"}}
     globals()["fgj_api"] = lambda method, path, payload=None: {"message": "edits are forbidden"}
     clean = [{"id": n, "user": {"login": "jack"}, "body": f"<!-- yi-round {n} -->\n<!-- yi-round-meta pr=7 sha=abc1234 verdict=clean -->\n"} for n in (1, 2)]
     pr_review.authors = lambda: {"jack"}
@@ -731,6 +674,18 @@ def selfcheck():
         pr_review.comments, pr_review.authors = real_rounds
     assert unread == 1 and "refused" in said.getvalue(), "a draft with no rounds is not readied"
     assert stopped == 1 and "not readied" in patched.getvalue(), "a refused title PATCH stops the ready verb"
+    fakes = {name: globals()[name] for name in ("pull", "jobs_of", "required", "is_behind", "decide", "unreviewed", "fgj_api")}
+    posted = []
+    globals().update(pull=lambda n: {"number": n, "title": "Keep the gate", "head": {"sha": "abc1234"}, "base": {"ref": "main"}},
+                     jobs_of=lambda pr: {}, required=lambda: [], is_behind=lambda pr: False, decide=lambda *a: "green",
+                     unreviewed=lambda n, pr: ["0 review round(s); a PR needs two"],
+                     fgj_api=lambda method, path, payload=None: posted.append(path))
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as merging:
+            held = cmd_merge(argparse.Namespace(number=7, timeout=1, wait=False))
+    finally:
+        globals().update(fakes)
+    assert held == 1 and not posted and "needs two review rounds" in merging.getvalue(), "a green PR without rounds is not merged"
     assert "0 review round(s)" in said.getvalue(), "ready says what the rounds still owe"
     real_measure = gate.measure
     gate.measure = lambda: (([], [], 0, ([], [])), None)

@@ -2257,10 +2257,12 @@ async fn an_interrupt_answers_every_call_and_sends_no_request()
     let compactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = Arc::clone(&compactions);
     let mut config = LoopConfig::new(faux_model());
-    config.maybe_compact = Some(Box::new(move |_: &[AgentMessage]| {
-        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Box::pin(async { None })
-    }));
+    config.maybe_compact = Some(Box::new(
+        move |_: &[AgentMessage], _: &yi_types::model::Model, _| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { None })
+        },
+    ));
     let signal = InterruptSignal::default();
     let (events, mut emit) = collector();
     let collected = run_loop(

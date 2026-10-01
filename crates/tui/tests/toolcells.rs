@@ -320,7 +320,7 @@ fn a_failed_card_opens_with_a_cross_and_keeps_its_reason() -> TestResult {
         json!({}),
     );
     let rows = flat(&app.take_commits());
-    assert!(rows.iter().any(|row| row.contains("✗ ⚙ Todo")), "{rows:?}");
+    assert!(rows.iter().any(|row| row.contains("✕ ⚙ Todo")), "{rows:?}");
     assert!(
         rows.iter().any(|row| row.contains("done needs evidence")),
         "{rows:?}"
@@ -424,6 +424,25 @@ fn a_hidden_custom_message_stays_out_of_the_transcript() -> TestResult {
     assert!(!rows.contains("todo_prelude"), "{rows}");
     assert!(!rows.contains("t1 read"), "{rows}");
     assert!(rows.contains("⚑ reminder Relevant: skill://plan"), "{rows}");
+    Ok(())
+}
+
+/// #946 Q4: a compaction note is a custom message on the model's side, but it reads as the
+/// plain host line it always was, with no `compaction_notice` source label.
+#[test]
+fn a_compaction_notice_reads_as_a_plain_host_line() -> TestResult {
+    let mut app = app();
+    let notice =
+        "[compaction failed: upstream 529; history left uncompacted, the next prompt retries]";
+    custom(
+        &mut app,
+        yi_runtime::compaction::COMPACTION_NOTICE,
+        notice,
+        true,
+    );
+    let rows = flat(&app.take_commits()).join("\n");
+    assert!(rows.contains("[compaction failed: upstream 529;"), "{rows}");
+    assert!(!rows.contains("compaction_notice"), "{rows}");
     Ok(())
 }
 

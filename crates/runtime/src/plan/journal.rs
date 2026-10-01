@@ -1,6 +1,6 @@
 //! `ops.jsonl`, the plan journal (plan section 5.3): one canonical record per line, digest chained.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -82,6 +82,19 @@ impl Reading {
     }
 }
 
+/// `next` is none past an unterminated over-cap run: no line follows it.
+pub struct Line {
+    pub offset: u64,
+    pub next: Option<u64>,
+    pub bytes: Result<Vec<u8>, String>,
+}
+
+#[derive(Default)]
+pub struct Lines {
+    pub lines: Vec<Line>,
+    pub torn: Option<(u64, Vec<u8>)>,
+}
+
 #[derive(Clone)]
 pub struct Journal {
     path: PathBuf,
@@ -157,19 +170,18 @@ impl Journal {
         &self.path
     }
 
-    pub fn read(&self) -> Result<Reading, JournalError> {
+    /// Invariant: a line over [`RECORD_CAP`] is damage, never a record, and reading resumes
+    /// past its newline; an unterminated last line under the cap is a torn tail.
+    pub fn lines(&self) -> Result<Lines, JournalError> {
         let file = match std::fs::File::open(&self.path) {
             Ok(file) => file,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Reading {
-                    records: Vec::new(),
-                    damage: None,
-                });
+                return Ok(Lines::default());
             }
             Err(source) => return Err(io_at(&self.path)(source)),
         };
         let mut reader = BufReader::new(file);
-        let mut records: Vec<JournalRecord> = Vec::new();
+        let mut lines = Lines::default();
         let mut offset = 0u64;
         let cap = u64::try_from(RECORD_CAP).unwrap_or(u64::MAX);
         loop {
@@ -179,22 +191,47 @@ impl Journal {
                 .read_until(b'\n', &mut line)
                 .map_err(io_at(&self.path))?;
             if read == 0 {
-                return Ok(Reading {
-                    records,
-                    damage: None,
-                });
+                return Ok(lines);
             }
             let terminated = line.last() == Some(&b'\n');
             let over = read > RECORD_CAP;
             if !terminated && !over {
-                return Ok(Reading {
-                    records,
-                    damage: Some(Damage::TornTail {
-                        offset,
-                        bytes: line,
-                    }),
-                });
+                lines.torn = Some((offset, line));
+                return Ok(lines);
             }
+            let after = offset.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+            let next = if terminated {
+                Some(after)
+            } else {
+                let next = resync(&mut reader, after).map_err(io_at(&self.path))?;
+                if let Some(next) = next {
+                    reader
+                        .seek(SeekFrom::Start(next))
+                        .map_err(io_at(&self.path))?;
+                }
+                next
+            };
+            let bytes = if over {
+                Err(format!("record exceeds the {RECORD_CAP} byte cap"))
+            } else {
+                Ok(line.get(..read.saturating_sub(1)).unwrap_or(&[]).to_vec())
+            };
+            lines.lines.push(Line {
+                offset,
+                next,
+                bytes,
+            });
+            match next {
+                Some(next) => offset = next,
+                None => return Ok(lines),
+            }
+        }
+    }
+
+    pub fn read(&self) -> Result<Reading, JournalError> {
+        let lines = self.lines()?;
+        let mut records: Vec<JournalRecord> = Vec::new();
+        for line in lines.lines {
             let expected = records
                 .last()
                 .map_or(Ok(Seq::FIRST), |last| last.seq.next())
@@ -204,39 +241,31 @@ impl Journal {
                     })
                 })?;
             let prev = records.last().map(|last| &last.digest);
-            let decoded = if over {
-                Err((None, format!("record exceeds the {RECORD_CAP} byte cap")))
-            } else {
-                decode(
-                    line.get(..read.saturating_sub(1)).unwrap_or(&[]),
-                    expected,
-                    prev,
-                )
-            };
+            let decoded = line
+                .bytes
+                .map_err(|reason| (None, reason))
+                .and_then(|bytes| decode(&bytes, expected, prev));
             match decoded {
-                Ok(record) => {
-                    records.push(record);
-                    offset = offset.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
-                }
+                Ok(record) => records.push(record),
                 Err((seq, reason)) => {
-                    let after = offset.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
-                    let resync = if terminated {
-                        Some(after)
-                    } else {
-                        resync(&mut reader, after).map_err(io_at(&self.path))?
-                    };
                     return Ok(Reading {
                         records,
                         damage: Some(Damage::Corrupt {
-                            offset,
+                            offset: line.offset,
                             seq,
                             reason,
-                            resync,
+                            resync: line.next,
                         }),
                     });
                 }
             }
         }
+        Ok(Reading {
+            records,
+            damage: lines
+                .torn
+                .map(|(offset, bytes)| Damage::TornTail { offset, bytes }),
+        })
     }
 
     pub fn seal(
@@ -285,6 +314,16 @@ impl Journal {
     /// The commit point: append one line, then `sync_data`, under the lease, past a clean tail.
     /// Invariant: a first record that fails leaves no empty journal to list a root with no plan.
     pub fn append(&self, sealed: &Sealed) -> Result<(), JournalError> {
+        self.append_line(&sealed.line)
+    }
+
+    pub fn append_line(&self, line: &[u8]) -> Result<(), JournalError> {
+        if line.len() > RECORD_CAP {
+            return Err(JournalError::RecordOverCap {
+                bytes: line.len(),
+                cap: RECORD_CAP,
+            });
+        }
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(io_at(parent))?;
         }
@@ -296,7 +335,7 @@ impl Journal {
             .map_err(io_at(&self.path))?;
         let written = self
             .fs
-            .write_all(&mut file, &sealed.line)
+            .write_all(&mut file, line)
             .map_err(io_at(&self.path))
             .and_then(|()| {
                 self.fs

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use yi_permission::PermissionMode;
 
@@ -65,17 +65,35 @@ pub fn install(options: ExtOptions) -> Host {
             .with_context_window(context_window)
             .with_global_skills(global_skills),
     ));
-    host.register(Box::new(PackExtension::new(rust_pack(), cwd.clone())));
-    for pack in user_packs(&cwd, &home) {
-        host.register(Box::new(PackExtension::new(pack, cwd.clone())));
-    }
+    register_packs(&mut host, &cwd, &home);
     host.register(Box::new(Orchestrate::new(ORCHESTRATE)));
     host.register(Box::new(Grid::new(cwd, home)));
     host.register(Box::new(RouteTelemetry::new()));
     host
 }
 
-fn user_packs(cwd: &std::path::Path, home: &std::path::Path) -> Vec<Pack> {
+pub fn narrow(cwd: &Path, home: &Path, identity: &str, mode: PermissionMode) -> Host {
+    let mut host = Host::new(cwd.to_path_buf());
+    host.attach(Slot::new(Rank::Identity, "identity"), identity.to_owned());
+    host.attach(
+        Slot::new(Rank::Mode, "permission"),
+        yi_permission::mode_fragment(mode).to_owned(),
+    );
+    host.register(Box::new(
+        ProjectResources::new(cwd.to_path_buf(), home.to_path_buf()).without_catalogs(),
+    ));
+    register_packs(&mut host, cwd, home);
+    host
+}
+
+fn register_packs(host: &mut Host, cwd: &Path, home: &Path) {
+    host.register(Box::new(PackExtension::new(rust_pack(), cwd.to_path_buf())));
+    for pack in user_packs(cwd, home) {
+        host.register(Box::new(PackExtension::new(pack, cwd.to_path_buf())));
+    }
+}
+
+fn user_packs(cwd: &Path, home: &Path) -> Vec<Pack> {
     let mut packs = Pack::load_dir(&home.join(".yi/extensions"));
     let root = git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let gate = TrustGate::new(home);

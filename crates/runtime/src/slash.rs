@@ -195,8 +195,11 @@ fn permissions(session: &AgentSession, args: &str) -> String {
         return "/permissions: no permission broker is attached to this session".to_owned();
     };
     if args.is_empty() {
+        let kept: String = (broker.kept_rules().iter())
+            .map(|rule| format!("\nkept: {rule}"))
+            .collect();
         return format!(
-            "permission mode: {}",
+            "permission mode: {}{kept}",
             crate::gate::mode_label(broker.mode())
         );
     }

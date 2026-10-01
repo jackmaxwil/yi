@@ -31,8 +31,7 @@ try:
     import anydoc, pdf_inspector
 except ImportError as error:
     say(missing=str(error))
-with open(source, "rb") as handle:
-    data = handle.read()
+data = sys.stdin.buffer.read()
 kind = anydoc.format_from_bytes(data) or anydoc.format_from_path(source)
 if kind in (None, "csv"):
     say(unsupported=True)
@@ -627,13 +626,7 @@ pub(crate) fn convert(
         ATTEMPT.fetch_add(1, Ordering::Relaxed)
     ));
     let outcome = run(
-        documents,
-        &converter,
-        &dir,
-        source.path,
-        &staging,
-        &pages,
-        cancelled,
+        documents, &converter, &dir, source, &staging, &pages, cancelled,
     );
     let converted = match outcome {
         Ok(kind) => keep(&dir, &prefix, &staging, kind, started),
@@ -694,7 +687,7 @@ fn command_for(
         let mut sandbox = Sandbox::for_workspace(dir, &documents.home, None);
         sandbox.writable = vec![dir.to_path_buf()];
         sandbox.deny_write = Vec::new();
-        let (program, wrapped) = sandbox.wrap(&python, &[]);
+        let (program, wrapped) = sandbox.wrap_offline(&python, &[]);
         let mut command = crate::process::command(program);
         command.args(wrapped);
         command
@@ -727,17 +720,19 @@ fn run(
     documents: &Documents,
     converter: &Converter,
     dir: &Path,
-    source: &Path,
+    source: &Source<'_>,
     staging: &Path,
     pages: &[u64],
     cancelled: &CancelFlag,
 ) -> Result<String, Converted> {
-    let command = command_for(documents, converter, dir, source, staging, pages);
+    let command = command_for(documents, converter, dir, source.path, staging, pages);
     let deadline = Instant::now() + documents.timeout;
     let caller = Arc::clone(cancelled);
     let stop: CancelFlag = Arc::new(move || caller() || Instant::now() > deadline);
-    let capture =
-        crate::process::run_captured(command, None, &stop, 8 * 1024).map_err(Converted::Refused)?;
+    // The bytes the read gate judged, never the name again (#890); the name gives the extension.
+    let bytes = Some(source.bytes.to_vec());
+    let capture = crate::process::run_captured(command, bytes, &stop, 8 * 1024)
+        .map_err(Converted::Refused)?;
     if capture.cancelled {
         return Err(Converted::Refused(format!(
             "conversion stopped (cancelled, or past {}s)",
@@ -767,7 +762,7 @@ fn run(
         let page = pages.first().copied().unwrap_or(1);
         return Err(Converted::Refused(format!(
             "no text layer on any of the {blank} PDF page(s) read of {total} (image-only or vector art), so there is no text to show; to see page {page}, render it to PNG in ipython, if its kernel has pymupdf: `import pymupdf; p = \"/tmp/page-{page}.png\"; pymupdf.open({source})[{index}].get_pixmap(dpi=200).save(p); print(await attach_image(p))`",
-            source = python_str(source),
+            source = python_str(source.path),
             index = page.saturating_sub(1),
         )));
     }
@@ -779,4 +774,33 @@ fn run(
         str::to_owned,
     );
     Err(Converted::Refused(reason))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    /// Review of #925 (F2): the converter parses untrusted files, so its profile keeps no network,
+    /// not even the loopback every other contained spawn has.
+    #[test]
+    fn the_converter_runs_with_no_network() {
+        if !super::Sandbox::available() {
+            return;
+        }
+        let converter = super::Converter {
+            python: PathBuf::from("/usr/bin/python3"),
+            formats: Vec::new(),
+        };
+        let documents = super::Documents::fixed(PathBuf::from("/home/u"), converter.clone());
+        let dir = Path::new("/work/cache");
+        let command = super::command_for(&documents, &converter, dir, dir, dir, &[]);
+        let args: Vec<String> = (command.get_args())
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let policy = args.iter().find(|arg| arg.contains("(deny default)"));
+        assert!(
+            policy.is_some_and(|policy| !policy.contains("network")),
+            "{args:?}"
+        );
+    }
 }

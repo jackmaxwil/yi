@@ -42,5 +42,8 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
    and `-c full` wrote a 0-byte file while exiting 0. Pace the typing with
    `type-ms <n>` (0 by default, so assertion scripts stay instant) and
    raise `--deadline <secs>` when the beats outlast the 60 s default.
+   The headless screen is 80x24; `--size COLSxROWS` renders another, and
+   `just console-proof <script> <out> 254x40` passes it through, for a
+   layout that only shows on a wide screen.
    `scripts/proof/demo.drive` is the worked example. A test replays both
    casts and asserts they land on the frame the assertions ran against.

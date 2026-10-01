@@ -28,6 +28,8 @@ struct Tokens {
     cache_read: i64,
     cache_write: i64,
     cost: f64,
+    /// A reply came back without usage, so `cost` is a lower bound.
+    lower_bound: bool,
     /// A same-model request after the first that read nothing back: the prefix broke or
     /// never cleared the provider's minimum, and either way it was paid for twice.
     misses: u64,
@@ -41,6 +43,7 @@ impl Tokens {
         self.cache_read = self.cache_read.saturating_add(usage.cache_read);
         self.cache_write = self.cache_write.saturating_add(usage.cache_write);
         self.cost += usage.cost.total.as_f64().unwrap_or(0.0);
+        self.lower_bound |= usage.unknown;
         self.misses = self.misses.saturating_add(u64::from(miss));
     }
 
@@ -70,13 +73,13 @@ impl Tokens {
 impl Tokens {
     fn line(&self) -> String {
         format!(
-            "turns {}  tokens in {} out {} cache-read {} cache-write {}  cost ${:.4}  cache-hit {:.1}% write {:.1}% misses {}",
+            "turns {}  tokens in {} out {} cache-read {} cache-write {}  cost {}  cache-hit {:.1}% write {:.1}% misses {}",
             self.turns,
             self.input,
             self.output,
             self.cache_read,
             self.cache_write,
-            self.cost,
+            yi_types::message::fmt_cost(self.cost, self.lower_bound),
             self.hit_rate() * 100.0,
             self.write_share() * 100.0,
             self.misses
@@ -137,7 +140,9 @@ fn reduce_entry(entry: &Entry, tools: &mut BTreeMap<String, ToolRow>, totals: &m
             ..
         } => {
             let key = format!("{provider}/{model}");
+            // A refusal (known zero input) sent no prompt, so it missed nothing.
             let miss = usage.cache_read == 0
+                && usage.input > 0
                 && !usage.unknown
                 && totals.last_model.as_deref() == Some(key.as_str());
             totals.all.add(usage, miss);
@@ -405,6 +410,39 @@ mod tests {
         assert_eq!(cold_then_hit.all.write_share(), 0.25);
         assert_eq!(cold_then_hit.by_model.len(), 1);
     }
+
+    /// A refusal is a known zero with no prompt: not a miss, and not a lower bound.
+    #[test]
+    fn a_refusal_is_no_miss_and_a_lost_usage_makes_the_cost_a_lower_bound() {
+        let refused = |unknown: bool| {
+            let mut entry = assistant(0, 0);
+            if let Entry::Message {
+                message: AgentMessage::Assistant { usage, .. },
+                ..
+            } = &mut entry
+            {
+                *usage = if unknown {
+                    Usage::unknown()
+                } else {
+                    Usage::zero()
+                };
+            }
+            entry
+        };
+        let totals = reduce(&[assistant(0, 1000), refused(false)]);
+        assert_eq!(totals.all.misses, 0);
+        assert!(
+            totals.all.line().contains("  cost $0.000  "),
+            "{}",
+            totals.all.line()
+        );
+        let lost = reduce(&[assistant(0, 1000), refused(true)]);
+        assert!(
+            lost.all.line().contains("  cost $?  "),
+            "{}",
+            lost.all.line()
+        );
+    }
 }
 
 #[derive(Default)]
@@ -471,6 +509,7 @@ fn telemetry_rollup(dir: &std::path::Path, json_out: bool) -> i32 {
                         .cache_write
                         .saturating_add(span.cache_write.unwrap_or(0));
                     cost += span.cost_usd.unwrap_or(0.0);
+                    tokens.lower_bound |= span.cost_usd.is_none();
                 }
                 SpanKind::Tool => {
                     let row = tools
@@ -525,11 +564,12 @@ fn telemetry_rollup(dir: &std::path::Path, json_out: bool) -> i32 {
         turns
     );
     println!(
-        "ttft p50 {} ms · p95 {} ms · total p50 {} ms · cache hit {:.1}% · cost ${cost:.4}",
+        "ttft p50 {} ms · p95 {} ms · total p50 {} ms · cache hit {:.1}% · cost {}",
         percentile(&ttft, 0.5),
         percentile(&ttft, 0.95),
         percentile(&total, 0.5),
-        tokens.hit_rate() * 100.0
+        tokens.hit_rate() * 100.0,
+        yi_types::message::fmt_cost(cost, tokens.lower_bound)
     );
     for (name, row) in &tools {
         println!(

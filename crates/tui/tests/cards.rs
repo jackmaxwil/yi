@@ -415,6 +415,46 @@ fn a_total_miss_after_the_first_request_shows_zero_cached() -> TestResult {
     Ok(())
 }
 
+/// Dies with `model 100%`: the model's share of wall time read like a cache rate, and the owner
+/// asked whether it was one. The footer times the model instead, and its only percentage is
+/// the cache rate.
+#[test]
+fn a_turn_footer_times_the_model_and_its_only_percentage_is_the_cache_rate() -> TestResult {
+    let reply = || -> Result<AgentMessage, serde_json::Error> {
+        serde_json::from_value(json!({
+            "role": "assistant", "content": [], "api": "openai-completions",
+            "provider": "openrouter", "model": "anthropic/claude-opus-5.5",
+            "stopReason": "stop", "timestamp": 0,
+            "usage": {"input": 5000, "output": 200, "cacheRead": 0, "cacheWrite": 0,
+                "totalTokens": 5200, "cost": {"input": 0, "output": 0, "cacheRead": 0,
+                "cacheWrite": 0, "total": 0}},
+        }))
+    };
+    let footer = |tools: bool| -> Result<String, Box<dyn Error>> {
+        let mut app = app();
+        app.reduce_agent(AgentEvent::AgentStart);
+        for call in 0..2 {
+            app.reduce_agent(AgentEvent::MessageStart { message: reply()? });
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            app.reduce_agent(AgentEvent::MessageEnd { message: reply()? });
+            if tools && call == 0 {
+                ran(&mut app, "c1", "ok");
+            }
+        }
+        app.reduce_agent(AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        });
+        Ok(footer_of(&mut app)?)
+    };
+    let with_tools = footer(true)?;
+    assert!(with_tools.contains(" (model "), "{with_tools}");
+    assert!(with_tools.contains(" · 0% cached"), "{with_tools}");
+    assert_eq!(with_tools.matches('%').count(), 1, "{with_tools}");
+    let talk = footer(false)?;
+    assert!(!talk.contains("model"), "all of it was model time: {talk}");
+    Ok(())
+}
+
 /// Three pointers in one turn landed as three padded blocks, one of them bare:
 /// injected text takes one shape, and a run of it is one block.
 #[test]
@@ -458,7 +498,7 @@ fn injected_text_takes_one_callout_shape_and_a_run_is_one_block() -> TestResult 
 /// Dies with "3 tools" for a turn that read, edited and ran: the receipt now says which work
 /// the turn did and how much of its time the model took.
 #[test]
-fn a_turn_receipt_names_its_kinds_of_work_and_the_model_share() -> TestResult {
+fn a_turn_receipt_names_its_kinds_of_work_and_the_model_time() -> TestResult {
     let mut app = app();
     app.reduce_agent(AgentEvent::AgentStart);
     let reply = || AgentMessage::Assistant {
@@ -512,7 +552,7 @@ fn a_turn_receipt_names_its_kinds_of_work_and_the_model_share() -> TestResult {
         footer.starts_with("  ↳ read 1 · edited 1 · ran 1 · "),
         "{footer}"
     );
-    assert!(footer.contains(" · model "), "{footer}");
+    assert!(footer.contains(" (model "), "{footer}");
     Ok(())
 }
 

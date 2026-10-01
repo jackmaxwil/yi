@@ -2,6 +2,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use yi_runtime::plan::accept_text;
 use yi_types::plan::doc::{BlockedOn, Plan, PlanTier, Todo, TodoLabel, TodoState};
+use yi_types::status_mark::StatusMark;
 
 use crate::colors::{Theme, name_accent};
 use crate::keymap::{KeyCodeValue, SingleKey};
@@ -84,9 +85,9 @@ fn face(state: &TodoState, label: &str) -> (char, Face) {
         TodoState::Running { .. } => ('◆', Face::Named(name_accent(label))),
         TodoState::Blocked { .. } => ('☐', Face::Warn),
         TodoState::Done { .. } => ('☑', Face::Ok),
-        TodoState::Failed { .. } => ('✗', Face::Bad),
+        TodoState::Failed { .. } => (StatusMark::Failed.symbol(), Face::Bad),
         TodoState::Abandoned => ('☐', Face::Struck),
-        TodoState::Other(_) => ('?', Face::Dim),
+        TodoState::Other(_) => (StatusMark::Unknown.symbol(), Face::Dim),
     }
 }
 

@@ -104,6 +104,9 @@ pub struct KernelOptions {
     pub on_progress: Option<Arc<ProgressFn>>,
     pub snapshot: Option<KernelSnapshotConfig>,
     pub wrap: Option<(String, Vec<String>)>,
+    /// The directory `wrap`'s profile re-allows for this kernel's connection file; `None` makes
+    /// a fresh one per start under [`crate::connection::connection_root`].
+    pub connection_dir: Option<PathBuf>,
 }
 
 pub type StreamFn = dyn FnMut(&str, &str) + Send;
@@ -151,6 +154,7 @@ pub(crate) struct Inner {
     pub(crate) env: Vec<(String, String)>,
     pub(crate) username: String,
     pub(crate) home: PathBuf,
+    pub(crate) connection_dir: Option<PathBuf>,
     pub(crate) runtime_source_dir: PathBuf,
     pub(crate) host: Option<Arc<dyn HostHandlers>>,
     pub(crate) on_progress: Option<Arc<ProgressFn>>,
@@ -235,6 +239,22 @@ pub fn civil_from_days(days: u64) -> (u64, u64, u64) {
     (adjusted_year, month, day)
 }
 
+/// Incident: ipykernel imports debugpy after IOPub is up, debugpy's `platform.processor()` forks a
+/// child that never exits under Rosetta, and `kernel_info` times out; a failed import is debugging off.
+fn shadow_debugpy(
+    connection_path: &std::path::Path,
+    existing: Option<std::ffi::OsString>,
+) -> Option<std::ffi::OsString> {
+    let dir = connection_path.parent()?;
+    let stub = "raise ImportError('yi kernel does not load debugpy')\n";
+    std::fs::write(dir.join("debugpy.py"), stub).ok()?;
+    let rest = existing
+        .iter()
+        .flat_map(std::env::split_paths)
+        .collect::<Vec<_>>();
+    std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(rest)).ok()
+}
+
 fn spawn_kernel_process(
     inner: &Arc<Inner>,
     python: &std::path::Path,
@@ -265,6 +285,15 @@ fn spawn_kernel_process(
     }
     for (key, value) in &inner.env {
         command.env(key, value);
+    }
+    let existing = inner
+        .env
+        .iter()
+        .find(|(key, _)| key == "PYTHONPATH")
+        .map(|(_, value)| std::ffi::OsString::from(value))
+        .or_else(|| std::env::var_os("PYTHONPATH"));
+    if let Some(path) = shadow_debugpy(connection_path, existing) {
+        command.env("PYTHONPATH", path);
     }
     let child = command
         .spawn()
@@ -408,11 +437,11 @@ impl Inner {
                 && !current.settled
             {
                 current.settled = true;
+                let aborted = current.abort.as_ref().is_some_and(AbortFlag::is_fired)
+                    || matches!(force_status, Some(ExecuteStatus::Aborted));
                 if let Some(status) = force_status {
                     current.cell.status = status;
                 }
-                let aborted = current.abort.as_ref().is_some_and(AbortFlag::is_fired)
-                    || matches!(force_status, Some(ExecuteStatus::Aborted));
                 let duration =
                     u64::try_from(current.started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let cell = std::mem::replace(
@@ -559,6 +588,7 @@ impl KernelManager {
                 env: options.env,
                 username: options.username,
                 home: options.home,
+                connection_dir: options.connection_dir,
                 runtime_source_dir: options.runtime_source_dir,
                 host: options.host,
                 on_progress: options.on_progress,
@@ -654,7 +684,7 @@ impl KernelManager {
             return Err("Kernel start superseded".to_owned());
         }
 
-        let connection = make_connection(&std::env::temp_dir())?;
+        let connection = make_connection(&inner.home, inner.connection_dir.as_deref())?;
         if let Ok(mut slot) = inner.temp_dir.lock() {
             *slot = Some(connection.temp_dir.clone());
         }
@@ -1113,14 +1143,30 @@ fn aborted_result() -> ExecuteResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{KernelManager, KernelOptions};
+    use super::{KernelManager, KernelOptions, shadow_debugpy};
     use crate::scratch::Scratch;
+
+    #[test]
+    fn the_debugpy_shadow_imports_as_an_error_ahead_of_any_existing_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = Scratch::new("yi-kernel-debugpy")?;
+        let connection = root.join("connection.json");
+        std::fs::write(&connection, "{}")?;
+        let ahead = shadow_debugpy(&connection, Some("/already".into())).ok_or("no path")?;
+        assert_eq!(
+            ahead,
+            std::ffi::OsString::from(format!("{}:/already", root.display()))
+        );
+        let alone = shadow_debugpy(&connection, None).ok_or("no path")?;
+        assert_eq!(alone, root.as_os_str());
+        Ok(())
+    }
 
     #[test]
     fn a_manager_dropped_without_shutdown_removes_its_connection_dir()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = Scratch::new("yi-kernel-drop")?;
-        let connection = crate::connection::make_connection(&root)?;
+        let connection = crate::connection::make_connection(&root, None)?;
         let manager = KernelManager::new(KernelOptions {
             python: None,
             cwd: None,
@@ -1132,6 +1178,7 @@ mod tests {
             on_progress: None,
             snapshot: None,
             wrap: None,
+            connection_dir: None,
         })?;
         if let Ok(mut slot) = manager.inner.temp_dir.lock() {
             *slot = Some(connection.temp_dir.clone());

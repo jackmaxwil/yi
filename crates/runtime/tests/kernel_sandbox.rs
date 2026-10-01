@@ -144,34 +144,116 @@ async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult
     Ok(())
 }
 
+/// #599: every contained spawn reaches loopback, so a connection file's key would let one
+/// sandbox run code in another's kernel. Every profile hides them; each kernel reads its own.
 #[tokio::test]
-async fn a_profile_change_restarts_the_kernel() -> TestResult {
+async fn a_kernel_reaches_loopback_and_no_other_kernels_key() -> TestResult {
     if !Sandbox::available() {
         return Ok(());
     }
-    let (_root, project, home, session) = workspace("restart")?;
+    let (_root, project, home, session) = workspace("keys")?;
     let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
-    let kernel = service(project.clone(), home.clone(), sandbox.clone(), None);
-    let first = cell(&kernel, "marker = 1\nprint(marker)".to_owned()).await?;
-    assert_eq!(first.result.status, yi_types::kernel::ExecuteStatus::Ok);
+    let first = service(project.clone(), home.clone(), sandbox.clone(), None);
+    let second = service(project.clone(), home.clone(), sandbox.clone(), None);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let _ = std::io::Write::write_all(&mut &stream, b"HOST");
+        }
+    });
+    let own = cell(
+        &first,
+        "import ipykernel\nprint(ipykernel.get_connection_file())".to_owned(),
+    )
+    .await?;
+    let file = own.result.stdout.trim().to_owned();
+    let text = std::fs::read_to_string(&file)?;
+    let key = serde_json::from_str::<serde_json::Value>(&text)?["key"]
+        .as_str()
+        .filter(|key| !key.is_empty())
+        .ok_or("the connection file names no key")?
+        .to_owned();
+    let code = format!(
+        "import socket\nfor attempt in (lambda: open(r'{file}').read(), lambda: open(r'{file}', 'a').write(' ')):\n    try:\n        print(attempt())\n    except OSError as e:\n        print('denied', e.errno)\nprint(socket.create_connection(('127.0.0.1', {port}), 3).recv(4))"
+    );
+    let other = cell(&second, code).await;
+    let context = yi_tools::ToolContext::new(project.clone());
+    let timeout = std::time::Duration::from_secs(60);
+    let command = format!("cat '{file}'");
+    let catted =
+        yi_tools::run_or_background(&command, &context, None, timeout, Some(&sandbox), None);
+    first.dispose().await;
+    second.dispose().await;
+    let other = other?.result;
+    let catted = match catted? {
+        yi_tools::Run::Finished(capture) => format!("{}{}", capture.stdout, capture.stderr),
+        _ => return Err("cat did not finish".into()),
+    };
+    let seen = (
+        other.stdout.contains(&key) || catted.contains(&key),
+        other.stdout.matches("denied 1\n").count(),
+        other.stdout.contains("b'HOST'"),
+    );
+    assert_eq!(
+        seen,
+        (false, 2, true),
+        "(key seen, denials, loopback reached): cell {other:?}, cat {catted}"
+    );
+    Ok(())
+}
 
-    let extra = home.join(format!("yi-p7-extra-{}", std::process::id()));
-    std::fs::create_dir_all(&extra)?;
-    let mut next = sandbox;
-    next.writable.push(extra.clone());
-    kernel.set_sandbox(Some(next)).await;
-
-    let second = cell(&kernel, "print(marker)".to_owned()).await?;
-    assert_eq!(second.result.status, yi_types::kernel::ExecuteStatus::Error);
-    let name = second
-        .result
-        .error
-        .as_ref()
-        .map(|error| error.ename.as_str())
-        .unwrap_or("");
-    assert_eq!(name, "NameError", "{name}");
+/// Review of #925 (F1): the kernel's re-allow was bound to its directory as resolved on disk,
+/// where its own profile writes; a process outliving it planted a link, and the next boot
+/// re-allowed the link's target.
+#[tokio::test]
+async fn a_link_planted_at_the_kernels_own_directory_grants_nothing() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home, session) = workspace("own-link")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
+    let probe = uncovered(&sandbox, &home).ok_or("no directory outside the sandbox")?;
+    let target = probe.join(format!("yi-own-link-{}", std::process::id()));
+    std::fs::create_dir_all(&target)?;
+    let kernel = service(project.clone(), home.clone(), sandbox, None);
+    let own = cell(
+        &kernel,
+        "import ipykernel, os\nprint(os.path.dirname(ipykernel.get_connection_file()))".to_owned(),
+    )
+    .await?
+    .result
+    .stdout
+    .trim()
+    .to_owned();
+    let plant = format!(
+        "import subprocess\nsubprocess.Popen(['/bin/sh', '-c', 'for i in $(seq 400); do [ -e \"$0/connection.json\" ] || {{ ln -s \"$1\" \"$0\"; exit; }}; sleep 0.05; done', r'{own}', r'{}'], start_new_session=True)",
+        target.display()
+    );
+    cell(&kernel, plant).await?;
+    kernel.kill().await;
+    let own = PathBuf::from(own);
+    for _ in 0..100 {
+        if own.is_symlink() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let planted = own.is_symlink();
+    let escape = target.join("escape.txt");
+    let code = format!(
+        "try:\n    open(r'{}', 'w').write('x')\n    print('wrote')\nexcept OSError as e:\n    print('denied', e.errno)",
+        escape.display()
+    );
+    let next = cell(&kernel, code).await;
     kernel.dispose().await;
-    let _ = std::fs::remove_dir_all(&extra);
+    let escaped = escape.exists();
+    let _ = std::fs::remove_dir_all(&target);
+    let next = next?.result.stdout;
+    assert!(
+        planted && !escaped && next.contains("denied 1"),
+        "planted {planted}, escaped {escaped}: {next}"
+    );
     Ok(())
 }
 
@@ -430,6 +512,59 @@ print(await bash(bound))"#;
     assert!(
         bound.contains("bound-ok"),
         "a loopback bind in bash() failed: {bound}"
+    );
+    Ok(())
+}
+
+/// #600 stage 2c: a `bash()` job ran under the profile captured when the session was wired, so a
+/// grant kept later, here replayed from the ledger on `--continue`, never reached the kernel's jobs.
+#[tokio::test]
+async fn a_kernel_bash_job_takes_a_grant_kept_after_wiring() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, home, _session) = workspace("grant")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let probe = uncovered(&sandbox, &home).ok_or("no directory outside the sandbox")?;
+    let granted = probe.join(format!("yi-job-grant-{}", std::process::id()));
+    std::fs::create_dir_all(&granted)?;
+    let (events, _keep) = tokio::sync::broadcast::channel(16);
+    let broker = Arc::new(
+        yi_runtime::permission::PermissionBroker::new(
+            yi_runtime::PermissionMode::Auto,
+            project.clone(),
+            Vec::new(),
+            None,
+            events,
+        )
+        .with_sandbox(Some(sandbox)),
+    );
+    let session = root_session(&project, &home, &root.join("rlm"), None, Some(broker), None);
+    let store = crate::support::memory_store("job-grant");
+    let grant = yi_permission::write_grant(&granted);
+    let rule = serde_json::json!({
+        "id": 1, "kind": "command", "canonical": grant.canonical,
+        "displayIdentity": grant.label, "decision": "allow", "generation": 1
+    });
+    yi_session::lock_session(&store).append_custom("main", "permission_rule", Some(rule))?;
+    session.attach_store(store)?;
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let made = granted.join("made");
+    let code = format!(
+        "print(await bash(\"touch '{}' && echo made\"))",
+        made.display()
+    );
+    let ran = cell(&kernel, code).await;
+    kernel.dispose().await;
+    let wrote = made.is_file();
+    let _ = std::fs::remove_dir_all(&granted);
+    let ran = ran?;
+    assert!(
+        wrote,
+        "the job's profile lacks the kept grant: {}",
+        ran.result.stdout
     );
     Ok(())
 }
