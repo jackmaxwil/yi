@@ -478,7 +478,9 @@ fn every_todo_field_the_protocol_teaches_is_one_init_accepts() -> TestResult {
     for key in keys {
         let mut todo = serde_json::Map::new();
         todo.insert("label".to_owned(), json!("probe"));
-        todo.insert(key.to_owned(), Value::Null);
+        if key != "label" {
+            todo.insert(key.to_owned(), Value::Null);
+        }
         let input = json!({"op": "init", "goal": "g", "todos": [todo]});
         let verdict = rig.tool.validate(input.as_object().ok_or("args")?);
         let refused = verdict.err().unwrap_or_default();
@@ -502,6 +504,13 @@ fn a_todo_level_check_is_refused_with_where_it_belongs() -> TestResult {
     assert!(refused, "{text}");
     assert!(text.contains("decider: {cmd"), "{text}");
     for (todo, hint) in [
+        (json!({"label": "t", "title": "t"}), "a todo is {label"),
+        (json!({"label": "t", "deps": ["a"]}), "a todo is {label"),
+        (
+            json!({"label": "t", "accept": {"command": "true"}}),
+            "accept: {command",
+        ),
+        (json!({"label": "t", "acceptance": "true"}), "decider: {cmd"),
         (
             json!({"label": "b", "after": "a"}),
             "a todo's after is a list of labels",
@@ -528,8 +537,8 @@ fn the_todo_schema_carries_the_parsers_label_cap_and_list_shapes() -> TestResult
         todo["label"]["maxLength"],
         json!(yi_types::plan::doc::TODO_LABEL_MAX)
     );
-    assert_eq!(todo["after"]["type"], json!("array"));
-    assert_eq!(todo["intent"]["type"], json!("array"));
+    assert_eq!(todo["after"]["items"]["type"], json!("string"));
+    assert_eq!(todo["intent"]["items"]["type"], json!("string"));
     let item = &todo["contract"]["properties"]["items"]["items"];
     assert_eq!(
         item["required"],
@@ -549,7 +558,7 @@ fn a_checker_given_as_an_object_keeps_its_deadline() -> TestResult {
             "label": "slow",
             "contract": {"class": "inline", "items": [
                 {"id": "gate", "critical": true, "weight": 1,
-                 "decider": {"cmd": {"checker": "true", "timeout_ms": 900_000}}}
+                 "decider": {"cmd": {"checker": "true", "timeout_ms": 300_000}}}
             ]},
         }]),
     )?;
@@ -568,7 +577,7 @@ fn a_checker_given_as_an_object_keeps_its_deadline() -> TestResult {
         return Err("a cmd decider".into());
     };
     let manifest = CheckerManifest::parse(&rig.store.artifacts(&plan.id).get(&checker.digest)?)?;
-    assert_eq!((*timeout_ms, manifest.timeout_ms), (900_000, 900_000));
+    assert_eq!((*timeout_ms, manifest.timeout_ms), (300_000, 300_000));
     let decider = rig.tool.schema()["properties"]["todos"]["items"]["properties"]["contract"]
         ["properties"]["items"]["items"]["properties"]["decider"]["description"]
         .to_string();
