@@ -102,6 +102,8 @@ pub struct KernelServiceMap {
     kernels: std::sync::Mutex<
         std::collections::HashMap<String, std::sync::Weak<crate::kernel::KernelService>>,
     >,
+    /// Invariant: a reader has no kernel, so the family cap counts it by its session instead.
+    kernelless: std::sync::Mutex<Vec<std::sync::Weak<crate::session::AgentSession>>>,
 }
 
 impl KernelServiceMap {
@@ -109,12 +111,31 @@ impl KernelServiceMap {
         Arc::new(Self::default())
     }
 
-    /// Every session whose kernel service is still held somewhere: the family cap counts these (D165).
+    /// Every session still held, by its kernel or else by itself: the family cap counts these.
     pub fn live(&self) -> usize {
-        self.lock()
-            .values()
-            .filter(|service| service.strong_count() > 0)
-            .count()
+        let kernels = {
+            let mut kernels = self.lock();
+            kernels.retain(|_, service| service.strong_count() > 0);
+            kernels.len()
+        };
+        kernels.saturating_add(self.kernelless().len())
+    }
+
+    pub fn enroll(&self, session: &Arc<crate::session::AgentSession>) {
+        if session.kernel_service().is_none() {
+            self.kernelless().push(Arc::downgrade(session));
+        }
+    }
+
+    fn kernelless(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Vec<std::sync::Weak<crate::session::AgentSession>>> {
+        let mut held = self
+            .kernelless
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.retain(|session| session.strong_count() > 0);
+        held
     }
 
     pub fn insert(&self, agent: impl Into<String>, service: &Arc<crate::kernel::KernelService>) {
