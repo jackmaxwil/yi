@@ -2,14 +2,7 @@ use serde_json::Value;
 use yi_types::message::{Content, UserContent};
 
 pub(crate) fn text_of(content: &[Content]) -> String {
-    content
-        .iter()
-        .filter_map(|c| match c {
-            Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    yi_types::message::join_text(content, "\n")
 }
 
 /// An assistant message's text blocks, one paragraph each.

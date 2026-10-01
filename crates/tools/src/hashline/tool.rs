@@ -10,6 +10,7 @@ use super::patcher::{PatchSectionResult, Patcher, SectionOp};
 use super::snapshots::SnapshotStore;
 use super::types::Clipboard;
 use crate::diff::GitPatch;
+use crate::grid::{GridLayer, Unavailable};
 use crate::tool::{
     Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, resolve_path, text_output,
 };
@@ -136,7 +137,7 @@ impl Tool for HashlineReadTool {
         }
         let path = resolve_path(context, &display_path);
         if path.is_dir() {
-            return read_dir(&display_path, &path, &context.deny_read);
+            return read_dir(&display_path, &path, context);
         }
         self.read_file(&display_path, &path, &input, context)
     }
@@ -280,7 +281,7 @@ fn skeleton_rows(text: &str) -> Vec<String> {
     rows
 }
 
-fn read_dir(display_path: &str, path: &Path, deny: &[std::path::PathBuf]) -> ToolOutput {
+fn read_dir(display_path: &str, path: &Path, context: &ToolContext) -> ToolOutput {
     let entries = match std::fs::read_dir(path) {
         Ok(entries) => entries,
         Err(error) => return error_output(format!("failed to read {}: {error}", path.display())),
@@ -289,7 +290,7 @@ fn read_dir(display_path: &str, path: &Path, deny: &[std::path::PathBuf]) -> Too
     let mut files: Vec<(String, u64)> = Vec::new();
     let mut walled = 0_usize;
     for entry in entries.flatten() {
-        if crate::builtins::walled(deny, &entry.path()) {
+        if crate::builtins::walled(&context.deny_read, &entry.path()) {
             walled = walled.saturating_add(1);
             continue;
         }
@@ -318,6 +319,7 @@ fn read_dir(display_path: &str, path: &Path, deny: &[std::path::PathBuf]) -> Too
     }
     let mut skeleton: Vec<String> = Vec::new();
     let mut source_files = 0_usize;
+    let gate = context.read_gate();
     for (name, _) in &files {
         let source = Path::new(name)
             .extension()
@@ -330,7 +332,8 @@ fn read_dir(display_path: &str, path: &Path, deny: &[std::path::PathBuf]) -> Too
         if skeleton.len() >= SKELETON_ROWS {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(path.join(name)) else {
+        let opened = gate.open(&path.join(name), &context.deny_read);
+        let Ok(text) = opened.and_then(std::io::read_to_string) else {
             continue;
         };
         let (heads, _) = crate::orient::skeleton(&text, DIR_HEADS_PER_FILE);
@@ -392,13 +395,15 @@ impl HashlineReadTool {
         let mut spent = 0_usize;
         let mut whole = 0_usize;
         let mut budget_named = false;
+        let gate = context.read_gate();
         for path in &matches {
             let display = path
                 .strip_prefix(&root)
                 .unwrap_or(path)
                 .to_string_lossy()
                 .into_owned();
-            let bytes = std::fs::read(path).unwrap_or_default();
+            let opened = gate.open(path, &context.deny_read);
+            let bytes = opened.and_then(crate::tool::read_all).unwrap_or_default();
             let document = self.listed_document(path, &bytes, spent < READ_BYTE_FLOOR, context);
             let size = match &document {
                 Some(super::documents::Listed::Copy(copy)) => std::fs::metadata(&copy.path)
@@ -894,6 +899,7 @@ impl Tool for HashlineEditTool {
         drop(parsing);
         let applying = yi_types::trace::span("edit.apply");
         let mut patcher = Patcher::new(snapshots, context.cwd.clone());
+        patcher.walls = context.write_walls();
         let results = patcher.apply(&patch, &mut host_clipboard);
         drop(applying);
         *clipboard = host_clipboard;
@@ -954,14 +960,14 @@ impl Tool for HashlineEditTool {
             }
             rendered.push(render_section_result(result, snapshots));
         }
-        let charted = results.iter().any(|result| {
-            result.op == SectionOp::Update
-                && Path::new(&result.canonical_path)
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| matches!(extension, "rs" | "py"))
-        });
-        let (verdicts, layer) = post_edit_checks(&checked, charted, context);
+        let updated = results
+            .iter()
+            .filter(|result| result.op == SectionOp::Update);
+        let charted = crate::grid::charted_files(
+            context,
+            updated.map(|result| result.canonical_path.as_str()),
+        );
+        let (verdicts, layer) = post_edit_checks(&checked, &charted, context);
         let mut syntax: Option<String> = None;
         for ((index, _), line) in checked.iter().zip(verdicts) {
             let Some(line) = line else { continue };
@@ -1004,62 +1010,17 @@ impl Tool for HashlineEditTool {
     }
 }
 
-/// What `grid check --quick` said after an edit to a charted file; an absent grid is a
-/// named header, never a failed edit.
-enum GridLayer {
-    Clean,
-    Findings(String),
-    Unavailable(Unavailable),
-}
-
-enum Unavailable {
-    NoBinary,
-    Timeout { ms: u64 },
-    Exit { code: i32 },
-}
-
-const GRID_CHECK_TIMEOUT_MS: u64 = 2_000;
-const GRID_CHECK_LINES: usize = 40;
-
-impl GridLayer {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::Clean => "clean",
-            Self::Findings(_) => "findings",
-            Self::Unavailable(Unavailable::NoBinary) => "no-binary",
-            Self::Unavailable(Unavailable::Timeout { .. }) => "timeout",
-            Self::Unavailable(Unavailable::Exit { .. }) => "exit",
-        }
-    }
-
-    fn render(&self) -> String {
-        match self {
-            Self::Clean => "[grid check: clean]".to_owned(),
-            Self::Findings(text) => format!("[grid check]\n{text}"),
-            Self::Unavailable(Unavailable::NoBinary) => {
-                "[grid check: unavailable — no grid binary]".to_owned()
-            }
-            Self::Unavailable(Unavailable::Timeout { ms }) => {
-                format!("[grid check: unavailable — no answer in {ms} ms]")
-            }
-            Self::Unavailable(Unavailable::Exit { code }) => {
-                format!("[grid check: unavailable — exit {code}]")
-            }
-        }
-    }
-}
-
 /// Both read the settled tree, so the grid check runs beside the syntax verdicts.
 fn post_edit_checks(
     paths: &[(usize, &str)],
-    charted: bool,
+    charted: &[String],
     context: &ToolContext,
 ) -> (Vec<Option<String>>, Option<GridLayer>) {
     std::thread::scope(|scope| {
-        let grid = charted.then(|| {
+        let grid = (!charted.is_empty()).then(|| {
             scope.spawn(|| {
                 let _span = yi_types::trace::span("edit.grid");
-                grid_check(context)
+                crate::grid::check(context, charted)
             })
         });
         let verdicts = paths
@@ -1073,52 +1034,6 @@ fn post_edit_checks(
         });
         (verdicts, layer)
     })
-}
-
-/// Exit 3 is grid's finding; anything else means the layer is absent.
-fn grid_check(context: &ToolContext) -> GridLayer {
-    let mut spawn = crate::process::command("grid");
-    spawn.args(["check", "--quick"]).current_dir(&context.cwd);
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_millis(GRID_CHECK_TIMEOUT_MS);
-    let parent = Arc::clone(&context.cancelled);
-    let cancelled: crate::tool::CancelFlag =
-        Arc::new(move || parent() || std::time::Instant::now() > deadline);
-    let capture =
-        match crate::process::run_captured(spawn, None, &cancelled, crate::process::OUTPUT_CAP) {
-            Ok(capture) => capture,
-            Err(_) => return GridLayer::Unavailable(Unavailable::NoBinary),
-        };
-    if capture.cancelled && !context.cancelled.as_ref()() {
-        return GridLayer::Unavailable(Unavailable::Timeout {
-            ms: GRID_CHECK_TIMEOUT_MS,
-        });
-    }
-    match capture.exit_code {
-        Some(0) => GridLayer::Clean,
-        Some(3) => {
-            let all: Vec<&str> = capture
-                .stdout
-                .lines()
-                .chain(capture.stderr.lines())
-                .filter(|line| !line.trim().is_empty())
-                .collect();
-            let mut text: Vec<String> = all
-                .iter()
-                .take(GRID_CHECK_LINES)
-                .map(|line| (*line).to_owned())
-                .collect();
-            if all.len() > GRID_CHECK_LINES {
-                text.push(format!(
-                    "[grid check: first {GRID_CHECK_LINES} of {} lines — bash: grid check --quick for all]",
-                    all.len()
-                ));
-            }
-            GridLayer::Findings(text.join("\n"))
-        }
-        Some(code) => GridLayer::Unavailable(Unavailable::Exit { code }),
-        None => GridLayer::Unavailable(Unavailable::NoBinary),
-    }
 }
 
 pub fn record_write_snapshot(

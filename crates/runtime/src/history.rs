@@ -9,6 +9,7 @@ use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, UserContent};
 use yi_types::wire::{JsonlV4Header, Mutation};
 
+use crate::args::Args;
 use crate::memory::rank::{Bm25, tokens};
 
 const PAGE: usize = 8;
@@ -97,16 +98,7 @@ pub fn find_session(sessions_dir: &Path, cwd: &Path, id: &str) -> Option<PathBuf
 }
 
 fn text_of(message: &AgentMessage) -> Option<(&'static str, String)> {
-    let texts = |blocks: &[Content]| {
-        blocks
-            .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let texts = |blocks: &[Content]| yi_types::message::join_text(blocks, "\n");
     match message {
         AgentMessage::User { content, .. } => Some((
             "user",
@@ -286,16 +278,14 @@ pub fn register(registry: &mut crate::kernel::HostRegistry, sessions_dir: PathBu
         let (corpus, sessions_dir, cwd) = (Arc::clone(&corpus), sessions_dir.clone(), cwd.clone());
         Box::pin(async move {
             let query = payload
-                .get("query")
-                .and_then(Value::as_str)
+                .str_of("query")
                 .map(str::trim)
                 .filter(|query| !query.is_empty())
                 .ok_or_else(|| "history.search requires a \"query\" argument".to_owned())?
                 .to_owned();
             let number = |key: &str, default: usize| {
                 payload
-                    .get(key)
-                    .and_then(Value::as_u64)
+                    .u64_of(key)
                     .map_or(default, |n| usize::try_from(n).unwrap_or(default))
             };
             let (offset, limit) = (number("offset", 0), number("limit", PAGE));

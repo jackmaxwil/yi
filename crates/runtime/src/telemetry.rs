@@ -27,14 +27,7 @@ fn ms(duration: Duration) -> u64 {
 
 fn text_of(message: &AgentMessage) -> String {
     match message {
-        AgentMessage::Assistant { content, .. } => content
-            .iter()
-            .filter_map(|part| match part {
-                yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
+        AgentMessage::Assistant { content, .. } => yi_types::message::join_text(content, " "),
         _ => String::new(),
     }
 }
@@ -63,7 +56,8 @@ fn fill_usage(span: &mut Span, usage: &Usage) {
     span.output = Some(usage.output);
     span.cache_read = Some(usage.cache_read);
     span.cache_write = Some(usage.cache_write);
-    span.cost_usd = usage.cost.total.as_f64();
+    // An unreported usage has no cost to record: absent, not a measured zero.
+    span.cost_usd = usage.cost.total.as_f64().filter(|_| !usage.unknown);
 }
 
 impl Telemetry {

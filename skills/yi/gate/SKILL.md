@@ -63,8 +63,8 @@ wrote) before the diff.
 
 ## Tests that cannot pass inside the sandbox
 
-In auto mode an unprovable command runs contained: no network, no socket
-bind, writes only under the working tree and tmp. These tests fail there
+In auto mode an unprovable command runs contained: no network beyond
+loopback, no unix socket, writes only under the working tree and tmp. These tests fail there
 for that reason and for no other; the list is
 `evals/fixtures/sandbox_bound_tests.txt`:
 
@@ -82,8 +82,9 @@ CI for its real state.
 
 - A sibling session rebuilding `~/.yi/kernel-venv-<hash>` reds kernel tests
   mid-rebuild; wait and retry, never repair the venv.
-- Ratchet baselines only shrink; a red `test_size`, `request_budget` or
-  `crate_size` after your change is your change, and growth is `--update`
+- A red `test_size`, `crate_size` or `comments` after your change is your
+  change; intended growth is a `raise:` line in the change file. A stored
+  baseline (`request_budget`) only shrinks, and growth there is `--update`
   in its own commit, never in the code commit.
 - `just check` takes minutes; use `wait` up to the clamp and let the
   command become a job if it runs longer, then check it with a bare bash

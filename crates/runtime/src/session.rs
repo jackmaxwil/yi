@@ -585,6 +585,16 @@ impl AgentSession {
         if let Ok(mut slot) = self.permission.lock() {
             slot.clone_from(&permission);
         }
+        if let Some(broker) = &permission {
+            broker.set_rule_journal(crate::wiring::journal_into(self.store_handle()));
+        }
+        // A session with no store yet still spills under a dir of its own (D340).
+        let (store_id, unsaved) = (
+            self.store_id_hook(),
+            yi_session::IdGenerator::new().next_id(),
+        );
+        let spill_key: Arc<dyn Fn() -> Option<String> + Send + Sync> =
+            Arc::new(move || store_id().or_else(|| Some(unsaved.clone())));
         let adapters = tools
             .into_iter()
             .map(|tool| {
@@ -603,6 +613,7 @@ impl AgentSession {
                     .with_rules(self.rules_engine())
                     .with_check(crate::plan::covers::write_check(self.plan_service()))
                     .with_wall(self.wall())
+                    .with_spill_key(Arc::clone(&spill_key))
                     .with_extensions(Some(self.ext_hook())),
                 ) as Arc<dyn yi_loop::AgentTool>
             })
@@ -647,6 +658,19 @@ impl AgentSession {
             for message in crate::mail::unread(&entries) {
                 run::push(&mut queue, Queued::new(message, false, None));
             }
+        }
+        if let Some(broker) = self.permission_broker() {
+            let kept = entries.iter().filter_map(|entry| match entry {
+                Entry::Custom {
+                    custom_type,
+                    data: Some(data),
+                    ..
+                } if custom_type == yi_types::permission::PERMISSION_RULE_ENTRY => {
+                    serde_json::from_value(data.clone()).ok()
+                }
+                _ => None,
+            });
+            broker.replay(kept.collect(), &self.wall());
         }
         let id = yi_session::lock_session(&store).metadata().id.clone();
         if let Ok(mut slot) = self.shared.store.lock() {
@@ -811,6 +835,9 @@ impl AgentSession {
 
     /// Detaches any store; [`AgentSession::attach_store`] afterwards points at a new file.
     pub fn reset(&self) {
+        if let Some(broker) = self.permission_broker() {
+            broker.forget_rules();
+        }
         if let Ok(mut messages) = self.shared.messages.lock() {
             messages.clear();
         }
@@ -918,15 +945,18 @@ impl AgentSession {
         }
     }
 
-    /// Running sessions compact at the next message boundary inside the tool
-    /// loop, idle sessions immediately. True when one was applied now.
-    pub async fn compact_now(&self) -> bool {
+    /// Running sessions compact at the next boundary of the tool loop, idle ones now and say
+    /// what they did; a failure returns at once and also queues a notice for the next prompt.
+    pub async fn compact_now(
+        &self,
+    ) -> Result<crate::compaction::CompactOutcome, crate::compaction::CompactError> {
+        use crate::compaction::CompactOutcome;
         let Some(compactor) = &self.compactor else {
-            return false;
+            return Ok(CompactOutcome::NotApplied);
         };
         compactor.schedule();
         if self.status() == Status::Running {
-            return false;
+            return Ok(CompactOutcome::NotApplied);
         }
         let messages = self.messages();
         let (model, effort) = hooks::settings_of(&self.shared);
@@ -945,9 +975,12 @@ impl AgentSession {
             )
             .await;
         match replaced {
-            Ok(Some(new_messages)) => {
+            Ok(Some(replaced)) => {
                 if let Ok(mut slot) = self.shared.messages.lock() {
-                    *slot = new_messages;
+                    *slot = replaced.messages;
+                }
+                if let Some(elision) = replaced.elision {
+                    run::queue_compaction_notice(&self.parts(), &elision.to_string());
                 }
                 dispatch_ext(&self.shared, &crate::ext::Event::Compacted);
                 if let Ok(slot) = self.on_compacted.lock()
@@ -955,12 +988,14 @@ impl AgentSession {
                 {
                     hook();
                 }
-                true
+                Ok(replaced
+                    .elision
+                    .map_or(CompactOutcome::Summarized, CompactOutcome::Elided))
             }
-            Ok(None) => false,
+            Ok(None) => Ok(CompactOutcome::NotApplied),
             Err(error) => {
-                run::unsaved_compaction(&self.parts(), &error);
-                false
+                run::failed_compaction(&self.parts(), &error);
+                Err(error)
             }
         }
     }
@@ -997,14 +1032,7 @@ fn prompt_text(prompt: &AgentMessage) -> String {
         AgentMessage::User {
             content: UserContent::Blocks(blocks),
             ..
-        } => blocks
-            .iter()
-            .filter_map(|block| match block {
-                yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        } => yi_types::message::join_text(blocks, "\n"),
         _ => String::new(),
     }
 }
@@ -1129,6 +1157,18 @@ pub(crate) async fn until<T>(
             }
             std::ops::ControlFlow::Continue(None) => woken.await,
         }
+    }
+}
+
+pub async fn next_event(
+    events: &mut broadcast::Receiver<AgentEvent>,
+) -> Option<Result<AgentEvent, yi_types::event::EventGap>> {
+    match events.recv().await {
+        Ok(event) => Some(Ok(event)),
+        Err(broadcast::error::RecvError::Lagged(dropped)) => {
+            Some(Err(yi_types::event::EventGap { dropped }))
+        }
+        Err(broadcast::error::RecvError::Closed) => None,
     }
 }
 

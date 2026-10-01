@@ -19,14 +19,14 @@ fn truncate_for_summary(text: &str, max_chars: usize) -> String {
     )
 }
 
+/// A tool's output is data: every line after its label is indented, so none reads as a role
+/// line such as `[User]:` (#950 F3).
+fn tool_output(text: &str) -> String {
+    truncate_for_summary(text, TOOL_RESULT_MAX_CHARS).replace('\n', "\n  ")
+}
+
 pub(crate) fn text_of(blocks: &[Content]) -> String {
-    blocks
-        .iter()
-        .filter_map(|block| match block {
-            Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect()
+    yi_types::message::join_text(blocks, "")
 }
 
 fn user_text(content: &UserContent) -> String {
@@ -89,10 +89,7 @@ pub fn serialize_conversation(messages: &[AgentMessage]) -> String {
             AgentMessage::ToolResult { content, .. } => {
                 let text = text_of(content);
                 if !text.is_empty() {
-                    parts.push(format!(
-                        "[Tool result]: {}",
-                        truncate_for_summary(&text, TOOL_RESULT_MAX_CHARS)
-                    ));
+                    parts.push(format!("[Tool result]: {}", tool_output(&text)));
                 }
             }
             AgentMessage::BashExecution {
@@ -100,10 +97,7 @@ pub fn serialize_conversation(messages: &[AgentMessage]) -> String {
             } => {
                 parts.push(format!("[User]: $ {command}"));
                 if !output.is_empty() {
-                    parts.push(format!(
-                        "[Tool result]: {}",
-                        truncate_for_summary(output, TOOL_RESULT_MAX_CHARS)
-                    ));
+                    parts.push(format!("[Tool result]: {}", tool_output(output)));
                 }
             }
             AgentMessage::BranchSummary { summary, .. }

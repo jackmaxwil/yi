@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::args::Args;
 use serde_json::{Map, Value};
 use yi_types::model::Model;
 use yi_types::subagent::{ChildExit, FailClass};
@@ -43,7 +44,8 @@ pub(crate) struct Service {
     /// A revoke or the parent's close is a deliberate stop: nothing respawns after it.
     stopped: bool,
     prompt: String,
-    kwargs: Map<String, Value>,
+    /// Invariant: what admission ran with, a reader's wall included: a respawn builds from these.
+    pub(super) kwargs: Map<String, Value>,
 }
 
 impl Standing {
@@ -144,7 +146,7 @@ impl SubagentHost {
             restarts: Vec::new(),
             stopped: false,
             prompt: prompt.clone(),
-            kwargs: kwargs.clone(),
+            kwargs: Map::new(),
         };
         self.admit(prompt, kwargs, Standing::Service(service))
     }
@@ -239,6 +241,7 @@ impl SubagentHost {
             children.touch(key, crate::family::Cause::Respawned);
             dead
         };
+        self.options.family_live.enroll(&session);
         // A queued or woken receipt is owed a turn: what the dead run never drained moves on.
         session.adopt_pending(&dead);
         Self::dispose_child_kernel(&dead);
@@ -263,10 +266,10 @@ impl SubagentHost {
     pub(super) fn register_service(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
         let host = Arc::clone(self);
         registry.register("rlm.service", move |payload| {
-            let text = |key: &str| payload.get(key).and_then(Value::as_str).map(str::to_owned);
+            let text = |key: &str| payload.str_of(key).map(str::to_owned);
             let (name, prompt) = (text("name"), text("prompt"));
             let kwargs = payload.get("kwargs").and_then(Value::as_object).cloned();
-            let restart = payload.get("restart").and_then(Value::as_u64);
+            let restart = payload.u64_of("restart");
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let (name, prompt) = name

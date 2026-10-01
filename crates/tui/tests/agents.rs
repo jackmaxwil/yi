@@ -127,3 +127,22 @@ fn stopping_an_agent_needs_a_second_press() -> TestResult {
     assert!(!disarmed.contains("again to stop"), "{disarmed}");
     Ok(())
 }
+
+/// The roster draws a child's state in the sidebar's marks: `◐` running, `○` finished,
+/// `✕` failed (D336).
+#[test]
+fn the_roster_marks_each_child_in_the_status_vocabulary() -> TestResult {
+    let popup = AgentsPopup::new(
+        vec![
+            row("scout", AgentState::Running, 1, None),
+            row("builder", AgentState::Done, 1, None),
+            row("broke", AgentState::Failed, 1, None),
+        ],
+        200_000,
+    );
+    let rendered = flat(&popup.lines(100, &theme())).join("\n");
+    for mark in ["◐ scout", "○ builder", "✕ broke"] {
+        assert!(rendered.contains(mark), "{mark}: {rendered}");
+    }
+    Ok(())
+}

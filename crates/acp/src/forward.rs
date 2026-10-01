@@ -12,7 +12,7 @@ use yi_runtime::{AgentSession, SubagentHost};
 use yi_types::acp::AcpSessionUpdate;
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, Content, UserContent};
+use yi_types::message::{AgentMessage, UserContent};
 use yi_types::subagent::ChildId;
 
 use crate::LineSink;
@@ -54,11 +54,10 @@ impl Forward {
 }
 
 async fn forward_child(mut events: tokio::sync::broadcast::Receiver<AgentEvent>, forward: Forward) {
-    loop {
-        match events.recv().await {
+    while let Some(next) = yi_runtime::next_event(&mut events).await {
+        match next {
             Ok(event) => forward.event(&event),
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => forward.gap(dropped),
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Err(gap) => forward.gap(gap.dropped),
         }
     }
 }
@@ -140,7 +139,8 @@ impl Parent {
     }
 
     fn title(&mut self) {
-        let scripted = self.session.summarizer().provider == yi_runtime::faux::FAUX_PROVIDER;
+        let scripted = self.session.provider_arc().forces_faux()
+            || self.session.summarizer().provider == yi_runtime::faux::FAUX_PROVIDER;
         if std::mem::replace(&mut self.titled, true) || scripted {
             return;
         }
@@ -206,13 +206,10 @@ pub(crate) async fn forward_parent(
     mut events: tokio::sync::broadcast::Receiver<AgentEvent>,
     mut parent: Parent,
 ) {
-    loop {
-        match events.recv().await {
+    while let Some(next) = yi_runtime::next_event(&mut events).await {
+        match next {
             Ok(event) => parent.reduce(&event),
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
-                parent.forward.gap(dropped);
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Err(gap) => parent.forward.gap(gap.dropped),
         }
     }
 }
@@ -240,13 +237,6 @@ pub(crate) fn session_name(store: &SharedSession) -> Option<String> {
 fn prompt_of(content: &UserContent) -> String {
     match content {
         UserContent::Text(text) => text.clone(),
-        UserContent::Blocks(blocks) => blocks
-            .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
+        UserContent::Blocks(blocks) => yi_types::message::join_text(blocks, " "),
     }
 }

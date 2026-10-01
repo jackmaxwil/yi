@@ -7,6 +7,7 @@ use crate::cell::{Cell, TaskStatus, ToolStatus};
 use crate::colors::{Theme, name_accent};
 use crate::keymap::SingleKey;
 use crate::popup::{BottomView, PopupResult};
+use yi_types::status_mark::StatusMark;
 
 /// In-row confirm window: long enough to be deliberate, short enough that a
 /// stray key does not stay armed while the reader looks away.
@@ -41,12 +42,15 @@ pub struct AgentsPopup {
     pub stop: Option<String>,
 }
 
-fn glyph(state: AgentState) -> char {
+/// The roster knows only running, done and failed, so a child that needs you or is
+/// stuck reads `◐` here where the rail says `?` or `!`.
+fn glyph(state: AgentState) -> &'static str {
     match state {
-        AgentState::Running => '◆',
-        AgentState::Done => '✓',
-        AgentState::Failed => '✗',
+        AgentState::Running => StatusMark::Working,
+        AgentState::Done => StatusMark::Idle,
+        AgentState::Failed => StatusMark::Failed,
     }
+    .glyph()
 }
 
 fn tokens_label(tokens: u64) -> String {

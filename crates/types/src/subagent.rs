@@ -9,20 +9,24 @@ impl ChildId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildStatus {
     Running,
     Completed,
     Error,
+    /// A state a newer Yi wrote; it re-emits verbatim.
+    #[serde(untagged)]
+    Other(String),
 }
 
 impl ChildStatus {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Running => "running",
             Self::Completed => "completed",
             Self::Error => "error",
+            Self::Other(status) => status,
         }
     }
 }

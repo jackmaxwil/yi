@@ -72,6 +72,10 @@ impl PreparedSection {
 pub struct Patcher<'a> {
     pub snapshots: &'a mut SnapshotStore,
     pub cwd: PathBuf,
+    /// Every file a section names is read and written through it (#890).
+    gate: yi_permission::ReadGate,
+    /// The wall's lists, judged on the file each open lands on.
+    pub walls: Vec<PathBuf>,
 }
 
 /// Chosen by extension: indentation-scoped languages have no closer to scan for.
@@ -89,7 +93,18 @@ pub fn block_resolver(request: &BlockResolverRequest<'_>) -> Option<BlockSpan> {
 
 impl<'a> Patcher<'a> {
     pub fn new(snapshots: &'a mut SnapshotStore, cwd: PathBuf) -> Self {
-        Self { snapshots, cwd }
+        let gate = yi_permission::ReadGate::new(&yi_permission::CatastrophicContext::detect(&cwd));
+        Self {
+            snapshots,
+            cwd,
+            gate,
+            walls: Vec::new(),
+        }
+    }
+
+    fn write(&self, path: &Path, content: &str) -> std::io::Result<()> {
+        let mut file = self.gate.open_write(path, &self.walls)?;
+        crate::tool::overwrite(&mut file, content.as_bytes())
     }
 
     fn resolve_path(&self, path: &str) -> PathBuf {
@@ -307,8 +322,10 @@ impl<'a> Patcher<'a> {
 
         if matches!(prepared.file_op, Some(FileOp::Rem)) {
             self.refuse_symlink(&section.path)?;
-            std::fs::remove_file(self.resolve_path(&section.path))
-                .map_err(|error| format!("failed to delete {}: {error}", section.path))?;
+            (self
+                .gate
+                .remove(&self.resolve_path(&section.path), &self.walls))
+            .map_err(|error| format!("failed to delete {}: {error}", section.path))?;
             self.snapshots.invalidate(&prepared.canonical_path);
             let hash = compute_file_hash(&prepared.normalized);
             return Ok(PatchSectionResult {
@@ -356,10 +373,12 @@ impl<'a> Patcher<'a> {
             if let Some(parent) = dest_resolved.parent() {
                 let _best_effort = std::fs::create_dir_all(parent);
             }
-            std::fs::write(&dest_resolved, &persisted)
+            self.write(&dest_resolved, &persisted)
                 .map_err(|error| format!("failed to write {dest}: {error}"))?;
-            std::fs::remove_file(self.resolve_path(&section.path))
-                .map_err(|error| format!("failed to remove {}: {error}", section.path))?;
+            (self
+                .gate
+                .remove(&self.resolve_path(&section.path), &self.walls))
+            .map_err(|error| format!("failed to remove {}: {error}", section.path))?;
             let file_hash = self.snapshots.record(&dest_canonical, &after, None);
             return Ok(PatchSectionResult {
                 path: dest.clone(),
@@ -376,7 +395,7 @@ impl<'a> Patcher<'a> {
         }
 
         self.refuse_symlink(&section.path)?;
-        std::fs::write(self.resolve_path(&section.path), &persisted)
+        self.write(&self.resolve_path(&section.path), &persisted)
             .map_err(|error| format!("failed to write {}: {error}", section.path))?;
         let file_hash = self
             .snapshots
@@ -415,7 +434,9 @@ impl<'a> Patcher<'a> {
     }
 
     fn try_read(&self, path: &str) -> Option<String> {
-        std::fs::read_to_string(self.resolve_path(path)).ok()
+        (self.gate.open(&self.resolve_path(path), &self.walls))
+            .and_then(std::io::read_to_string)
+            .ok()
     }
 
     fn assert_seen_lines(

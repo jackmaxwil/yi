@@ -9,6 +9,7 @@ use yi_kernel::client::{
 use yi_tools::ToolOutput;
 use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome};
 
+use crate::args::Args;
 pub use crate::kernel_bootstrap::{
     BootFn, RLM_BOOTSTRAP_CODE, restore_notice_text, rlm_bootstrap_code,
 };
@@ -35,18 +36,21 @@ impl HostRegistry {
             .insert(request_type.to_owned(), Arc::new(handler));
     }
 
-    /// The host half of the kernel's `bash()` handle: five `exec.*` requests over
-    /// [`yi_tools::jobs`]. A spawned job is handle-owned; only `exec.release` retires it.
-    pub fn register_exec(&mut self, cwd: PathBuf, sandbox: Option<yi_tools::Sandbox>) {
+    /// The kernel's `bash()`: five `exec.*` requests over [`yi_tools::jobs`], each job handle-owned
+    /// until `exec.release`, its profile built as it spawns so a grant kept since reaches it.
+    pub fn register_exec(
+        &mut self,
+        cwd: PathBuf,
+        sandbox: impl Fn() -> Option<yi_tools::Sandbox> + Send + Sync + 'static,
+    ) {
         let spawned = Arc::clone(&self.handles);
         self.register("exec.spawn", move |payload| {
             let cwd = cwd.clone();
-            let sandbox = sandbox.clone();
+            let sandbox = sandbox();
             let spawned = Arc::clone(&spawned);
             Box::pin(async move {
                 let command = payload
-                    .get("command")
-                    .and_then(Value::as_str)
+                    .str_of("command")
                     .filter(|command| !command.trim().is_empty())
                     .ok_or_else(|| {
                         "exec.spawn requires a non-empty \"command\" argument".to_owned()
@@ -62,7 +66,7 @@ impl HostRegistry {
         self.register("exec.tail", |payload| {
             Box::pin(async move {
                 let id = job_id_of(&payload, "exec.tail")?;
-                let cursor = payload.get("cursor").and_then(Value::as_u64).unwrap_or(0);
+                let cursor = payload.u64_of("cursor").unwrap_or(0);
                 let chunk = yi_tools::jobs::registry()
                     .output_since(id, cursor)
                     .map_err(|error| error.to_string())?;
@@ -128,8 +132,7 @@ impl HostRegistry {
 
 fn job_id_of(payload: &Map<String, Value>, request: &str) -> Result<yi_tools::JobId, String> {
     payload
-        .get("job_id")
-        .and_then(Value::as_u64)
+        .u64_of("job_id")
         .map(yi_tools::JobId)
         .ok_or_else(|| format!("{request} requires an integer \"job_id\" argument"))
 }
@@ -226,7 +229,6 @@ pub(crate) fn kernel_profile(
     profile
         .writable
         .extend(family_dir.map(std::path::Path::to_path_buf));
-    profile.loopback = true;
     profile.writable.sort();
     profile.writable.dedup();
     profile
@@ -235,7 +237,8 @@ pub(crate) fn kernel_profile(
 /// Boots on first cell, memoizes the manager, retries a failed start, owns busy recovery.
 pub struct KernelService {
     options: KernelServiceOptions,
-    sandbox: tokio::sync::Mutex<Option<yi_tools::Sandbox>>,
+    /// Named once, so the prefix that re-allows it stays equal across boots (#599).
+    connection_dir: PathBuf,
     manager: tokio::sync::Mutex<Option<Arc<KernelManager>>>,
     last_error: Mutex<Option<String>>,
     on_death: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -250,8 +253,11 @@ pub struct KernelService {
 
 impl KernelService {
     pub fn new(options: KernelServiceOptions) -> Self {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = yi_kernel::connection::connection_root(&options.home);
         Self {
-            sandbox: tokio::sync::Mutex::new(options.sandbox.clone()),
+            connection_dir: root.join(format!("{}-{n}", std::process::id())),
             options,
             manager: tokio::sync::Mutex::new(None),
             last_error: Mutex::new(None),
@@ -311,16 +317,6 @@ impl KernelService {
         state
     }
 
-    pub async fn set_sandbox(&self, sandbox: Option<yi_tools::Sandbox>) {
-        let mut slot = self.sandbox.lock().await;
-        if *slot == sandbox {
-            return;
-        }
-        *slot = sandbox;
-        drop(slot);
-        self.kill().await;
-    }
-
     fn kernel_wrap(
         &self,
         sandbox: Option<&yi_tools::Sandbox>,
@@ -331,7 +327,7 @@ impl KernelService {
             .writable
             .extend(state.map(std::path::Path::to_path_buf));
         let family = self.options.family_dir.as_deref().map(make_board);
-        Some(kernel_profile(&sandbox, family.as_deref()).kernel_prefix())
+        Some(kernel_profile(&sandbox, family.as_deref()).kernel_prefix(&self.connection_dir))
     }
 
     fn kernel_env(&self, state: Option<&std::path::Path>) -> Vec<(String, String)> {
@@ -390,7 +386,7 @@ impl KernelService {
         let state = self.options.session_dir.as_deref().and_then(|dir| {
             crate::kernel_state::state_dir(dir, self.options.per_session_state, key.as_deref())
         });
-        let wrap = self.kernel_wrap(self.sandbox.lock().await.as_ref(), state.as_deref());
+        let wrap = self.kernel_wrap(self.options.sandbox.as_ref(), state.as_deref());
         let snapshot = state.as_deref().map(|dir| {
             let (path, manifest_path) = snapshot_paths(dir, key.as_deref());
             yi_kernel::client::KernelSnapshotConfig {
@@ -446,6 +442,7 @@ impl KernelService {
             on_progress: Some(booting.progress()),
             snapshot,
             wrap,
+            connection_dir: Some(self.connection_dir.clone()),
         })?);
         manager.hold_until_exit(admitted.slot);
         *self.waited.lock().map_err(|error| error.to_string())? = admitted.waited;
@@ -989,7 +986,7 @@ mod tests {
 
     fn exec_registry() -> HostRegistry {
         let mut registry = HostRegistry::default();
-        registry.register_exec(std::env::temp_dir(), None);
+        registry.register_exec(std::env::temp_dir(), || None);
         registry
     }
 

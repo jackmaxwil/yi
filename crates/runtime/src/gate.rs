@@ -19,6 +19,7 @@ pub struct Report {
     pub decision: Decision,
     pub segments: Vec<Segment>,
     pub unparsed: bool,
+    pub sandboxed: bool,
 }
 
 impl Report {
@@ -59,7 +60,7 @@ impl Report {
             "mode": mode_label(self.mode),
             "decision": self.outcome(),
             "reason": self.reason(),
-            "sandboxed": matches!(self.decision, Decision::Contain { .. }),
+            "sandboxed": self.sandboxed,
             "unparsed": self.unparsed,
             "segments": self.segments.iter().map(|segment| json!({
                 "argv": segment.argv,
@@ -80,6 +81,38 @@ pub fn compile_ask(decision: Decision, attached: bool) -> Decision {
         },
         other => other,
     }
+}
+
+/// A refused call's retry with no one to ask: what runs it, which is never an allow rule.
+pub(crate) fn headless_refusal(
+    sandbox: Option<&yi_tools::Sandbox>,
+    refusal: &yi_tools::SandboxRefusal,
+) -> String {
+    const HEAD: &str = "Permission required but no interactive surface is available: the sandbox refused this command's last contained run";
+    match refusal {
+        yi_tools::SandboxRefusal::Path(path) => {
+            let dir = path.parent().unwrap_or(path);
+            let widen =
+                match sandbox.is_some_and(|sandbox| crate::permission::protected(sandbox, dir)) {
+                    true => format!("`{}` is protected, so no approval widens it", dir.display()),
+                    false => format!("an interactive run asks to widen it by `{}`", dir.display()),
+                };
+            format!(
+                "{HEAD} writing `{}`, and {widen}. Rerun with --yolo, or keep the writes inside the working tree (for a build, set CARGO_TARGET_DIR under it).",
+                path.display()
+            )
+        }
+        yi_tools::SandboxRefusal::Scopes(_) => format!(
+            "{HEAD}, naming no path (a nested sandbox, or the network past loopback), and only an interactive approval runs it outside. Rerun with --yolo."
+        ),
+    }
+}
+
+/// An allowed compound, part of which must leave the sandbox, with no one to ask.
+pub(crate) fn headless_split(why: &str) -> String {
+    format!(
+        "Permission required but no interactive surface is available: part of this command must run outside the sandbox ({why}) and would take the rest with it. Split it into separate calls, or rerun with --yolo."
+    )
 }
 
 pub fn mode_label(mode: PermissionMode) -> &'static str {
@@ -127,14 +160,8 @@ pub fn explain(command: &str, mode: PermissionMode, cwd: &Path) -> Report {
         targets: &[],
         command: Some(command),
     };
-    let decision = match decide(
-        &call,
-        mode,
-        &[],
-        &SessionRules::new(),
-        &[],
-        &CatastrophicContext::detect(cwd),
-    ) {
+    let context = CatastrophicContext::detect(cwd);
+    let decision = match decide(&call, mode, &[], &SessionRules::new(), &[], &context) {
         Decision::Contain { reason } if !yi_tools::Sandbox::available() => Decision::Ask {
             title: format!("{} requires permission", call.tool_name),
             description: format!("{reason}: {command}"),
@@ -142,12 +169,22 @@ pub fn explain(command: &str, mode: PermissionMode, cwd: &Path) -> Report {
         },
         other => other,
     };
+    let sandboxed = match decision {
+        Decision::Contain { .. } => true,
+        Decision::Allow { .. } => {
+            yi_tools::Sandbox::available()
+                && mode != PermissionMode::Yolo
+                && crate::permission::leaves_sandbox(command, &context).is_none()
+        }
+        Decision::Ask { .. } | Decision::Deny { .. } => false,
+    };
     Report {
         command: command.to_owned(),
         mode,
         decision,
         segments,
         unparsed,
+        sandboxed,
     }
 }
 

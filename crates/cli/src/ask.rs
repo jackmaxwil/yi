@@ -5,8 +5,8 @@ use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
 
 use super::{
-    Args, Resume, attach_store, build_session, emit_structured, exit_refused, release_lane,
-    render_text, session_target, tty,
+    Args, Resume, attach_store, build_session, exit_refused, release_lane, render_text,
+    session_target, tty,
 };
 
 const HOLD_POLL: Duration = Duration::from_millis(500);
@@ -98,6 +98,50 @@ pub(super) fn run(args: &Args) -> i32 {
     release_lane(lane.as_deref());
     runtime.shutdown_timeout(left(deadline));
     code
+}
+
+/// D10: `--schema` answers are JSON or a non-zero exit, never prose. The answer is the newest
+/// assistant message that holds a matching value: a reader narrates before tool calls and wraps up after.
+fn emit_structured(schema: &yi_runtime::schema::Schema, said: &[String], json: bool) -> i32 {
+    let mut newest_error = None;
+    for text in said.iter().rev() {
+        let checked = yi_runtime::schema::extract(text).and_then(|value| {
+            let valid = schema.validate(&value);
+            valid
+                .map(|()| value)
+                .map_err(|error| format!("answer does not match --schema: {error}"))
+        });
+        match checked {
+            Ok(value) => {
+                if !json && let Ok(line) = serde_json::to_string(&value) {
+                    println!("{line}");
+                }
+                return 0;
+            }
+            Err(error) => {
+                newest_error.get_or_insert(error);
+            }
+        }
+    }
+    let error = newest_error.unwrap_or_else(|| "answer contains no JSON value".to_owned());
+    eprintln!("error: {error}");
+    // Incident: a void review round's only evidence was this line; the forge could not keep the session.
+    if let Some(text) = said
+        .iter()
+        .rev()
+        .map(|text| text.trim())
+        .find(|text| !text.is_empty())
+    {
+        let (head, total) = (
+            text.chars().take(160).collect::<String>(),
+            text.chars().count(),
+        );
+        let kept = total.min(160);
+        eprintln!(
+            "the newest message began: {head:?} ({kept} of {total} characters; the session file holds the rest)"
+        );
+    }
+    3
 }
 
 #[derive(Clone, Copy)]
@@ -224,28 +268,36 @@ async fn follow(
     let (mut last_stop, mut said_anything) = (None, false);
     loop {
         let next = match patience(holding, ends) {
-            None => events.recv().await,
+            None => yi_runtime::next_event(&mut events).await,
             Some(wait) if wait.is_zero() => {
                 ended = true;
                 break;
             }
-            Some(wait) => match tokio::time::timeout(wait, events.recv()).await {
-                Ok(next) => next,
-                Err(_) if holds(holding && working(), ends) => continue,
-                Err(_) => {
-                    ended = true;
-                    break;
+            Some(wait) => {
+                match tokio::time::timeout(wait, yi_runtime::next_event(&mut events)).await {
+                    Ok(next) => next,
+                    Err(_) if holds(holding && working(), ends) => continue,
+                    Err(_) => {
+                        ended = true;
+                        break;
+                    }
                 }
-            },
+            }
         };
         let event = match next {
-            Ok(event) => event,
+            Some(Ok(event)) => event,
             // A slow reader is not the end of the run: breaking here exited 0 mid-turn.
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                eprintln!("warning: {missed} events dropped behind a slow reader");
+            Some(Err(gap)) => {
+                match serde_json::to_string(&gap) {
+                    Ok(line) if json => println!("{line}"),
+                    _ => eprintln!(
+                        "warning: {} events dropped behind a slow reader",
+                        gap.dropped
+                    ),
+                }
                 continue;
             }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            None => break,
         };
         if json && let Ok(line) = serde_json::to_string(&event) {
             println!("{line}");

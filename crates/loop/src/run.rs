@@ -792,6 +792,31 @@ async fn stream_assistant_response<S: StreamFn>(
     (final_message, cut, timed_out)
 }
 
+fn read_steering(config: &LoopConfig) -> Vec<AgentMessage> {
+    config
+        .get_steering_messages
+        .as_ref()
+        .map_or_else(Vec::new, |get| get())
+}
+
+fn push_messages(
+    messages: impl IntoIterator<Item = AgentMessage>,
+    context: &mut LoopContext,
+    collected: &mut Vec<AgentMessage>,
+    emit: &mut (dyn FnMut(AgentEvent) + Send),
+) {
+    for message in messages {
+        emit(AgentEvent::MessageStart {
+            message: message.clone(),
+        });
+        emit(AgentEvent::MessageEnd {
+            message: message.clone(),
+        });
+        context.messages.push(message.clone());
+        collected.push(message);
+    }
+}
+
 async fn side_work(config: &LoopConfig) {
     if let Some(gate) = &config.side_work {
         gate().await;
@@ -834,6 +859,7 @@ pub async fn run_loop<S: StreamFn>(
 
     let mut current_model = config.model.clone();
     let mut current_effort = config.effort;
+    let mut sent = (current_model.clone(), current_effort);
     let mut first_turn = true;
     let mut length_stops: u32 = 0;
     let mut cut_stops: u32 = 0;
@@ -843,10 +869,7 @@ pub async fn run_loop<S: StreamFn>(
     let mut steered = false;
     let mut last_word_said = false;
     let mut tool_choice = config.first_turn_tool_choice.clone();
-    let mut pending: Vec<AgentMessage> = config
-        .get_steering_messages
-        .as_ref()
-        .map_or_else(Vec::new, |get| get());
+    let mut pending = read_steering(config);
 
     loop {
         let mut has_more_tool_calls = true;
@@ -856,25 +879,23 @@ pub async fn run_loop<S: StreamFn>(
             } else {
                 first_turn = false;
             }
-            for message in pending.drain(..) {
-                emit(AgentEvent::MessageStart {
-                    message: message.clone(),
-                });
-                emit(AgentEvent::MessageEnd {
-                    message: message.clone(),
-                });
-                context.messages.push(message.clone());
-                collected.push(message);
-            }
+            push_messages(pending.drain(..), context, &mut collected, emit);
 
             let compacting = yi_types::trace::span("loop.maybe_compact");
             if !signal.is_fired()
                 && let Some(compact) = &config.maybe_compact
-                && let Some(compacted) = compact(&context.messages).await
             {
-                context.messages = compacted;
+                if let Some(compacted) = compact(&context.messages, &sent.0, sent.1).await {
+                    context.messages = compacted;
+                }
+                // What the compaction queued rides this request, not the next (#863); a last word
+                // refuses tool calls, so a steer waits for the run after it instead.
+                if !last_word_said {
+                    push_messages(read_steering(config), context, &mut collected, emit);
+                }
             }
             drop(compacting);
+            sent = (current_model.clone(), current_effort);
             let (message, cut, timed_out) = stream_assistant_response(
                 context,
                 config,
@@ -1029,10 +1050,7 @@ pub async fn run_loop<S: StreamFn>(
             {
                 return end(config, emit, collected).await;
             }
-            pending = config
-                .get_steering_messages
-                .as_ref()
-                .map_or_else(Vec::new, |get| get());
+            pending = read_steering(config);
             // after three repeating turns in a row, so a fresh edit before each check is progress,
             // and once per stretch: two batches taking turns hold the count at three for good
             if repeats >= REPEAT_STEER_AT && repeating >= REPEAT_STEER_AT && !steered {

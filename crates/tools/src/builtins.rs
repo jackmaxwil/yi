@@ -58,7 +58,10 @@ impl Tool for WriteTool {
         let path = input.get("path").and_then(Value::as_str)?;
         let content = input.get("content").and_then(Value::as_str)?;
         let resolved = yi_permission::resolve_target(path, cwd);
-        let before = fs::read_to_string(&resolved).unwrap_or_default();
+        // The diff reaches the approval and the auto-reviewer's model before any check runs.
+        let gate = yi_permission::ReadGate::new(&yi_permission::CatastrophicContext::detect(cwd));
+        let opened = gate.open(&resolved, &[]);
+        let before = opened.and_then(std::io::read_to_string).unwrap_or_default();
         let patch = crate::diff::patch(&before, content, &resolved);
         (!patch.is_empty()).then(|| patch.as_str().to_owned())
     }
@@ -78,16 +81,8 @@ impl Tool for WriteTool {
             .as_ref()
             .and_then(crate::hashline::tool::documents)
             .map(|documents| documents.home);
-        // Read before the write: nothing else reconstructs the ground it replaced. Past the
-        // cap no base is read and no patch claimed, since a missing base reads as an add.
-        let cap = u64::try_from(DETAIL_CAP).unwrap_or(u64::MAX);
-        let before = match fs::metadata(&path) {
-            Ok(meta) if meta.len() > cap => None,
-            Ok(_) => Some(fs::read_to_string(&path).unwrap_or_default()),
-            Err(_) => Some(String::new()),
-        };
-        let syntax = match land(home.as_deref(), &path, content) {
-            Ok(syntax) => syntax,
+        let (before, syntax) = match land(home.as_deref(), &path, content, context) {
+            Ok(landed) => landed,
             Err(message) => return error_output(message),
         };
         // Incident: the tag minted here was never shown, so 30 F0e edits after a write
@@ -138,12 +133,14 @@ pub(crate) fn symlink_refusal(path: &Path, shown: &str) -> Option<String> {
         })
 }
 
-/// Invariant: the one write of a named file outside `edit`'s patcher, and its syntax verdict.
+/// Invariant: the one write of a named file outside `edit`'s patcher. Returns the ground it
+/// replaced (none past [`DETAIL_CAP`], since a missing base reads as an add) and the syntax verdict.
 pub(crate) fn land(
     home: Option<&Path>,
     path: &Path,
     content: &str,
-) -> Result<Option<String>, String> {
+    context: &ToolContext,
+) -> Result<(Option<String>, Option<String>), String> {
     if let Some(refusal) = crate::document::write_refusal(home, path)
         .or_else(|| symlink_refusal(path, &path.display().to_string()))
     {
@@ -153,9 +150,19 @@ pub(crate) fn land(
         fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
     }
-    fs::write(path, content)
-        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
-    Ok(crate::syntax::verdict(path))
+    let failed = |error: std::io::Error| format!("failed to write {}: {error}", path.display());
+    let mut file = context
+        .read_gate()
+        .open_write(path, &context.write_walls())
+        .map_err(failed)?;
+    let cap = u64::try_from(DETAIL_CAP).unwrap_or(u64::MAX);
+    let before = match file.metadata() {
+        Ok(meta) if meta.len() > cap => None,
+        Ok(_) => Some(std::io::read_to_string(&mut file).unwrap_or_default()),
+        Err(_) => Some(String::new()),
+    };
+    crate::tool::overwrite(&mut file, content.as_bytes()).map_err(failed)?;
+    Ok((before, crate::syntax::verdict(path)))
 }
 
 pub fn wall_refusal(tool_name: &str, path: &str, list: &str) -> String {
@@ -561,8 +568,9 @@ fn tagged_header(
     typed: &str,
     path: &Path,
     view: &Shown<'_>,
+    context: &ToolContext,
 ) -> Option<String> {
-    let content = fs::read_to_string(path).ok()?;
+    let content = String::from_utf8(context.read(path).ok()?).ok()?;
     let seen = viewed_lines(&content, view);
     let tag = crate::hashline::tool::record_view_snapshot(state, path, &content, &seen);
     Some(crate::hashline::format::format_hashline_header(typed, tag))
@@ -680,7 +688,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode, where a sandbox exists (macOS), a command the gate cannot prove or one a question approved runs contained: no network, no socket bind, writes only under cwd, its git dirs and tmp; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; only an approval whose question says so (network, credentials, a protected path) runs outside. A container child's commands have its image's network."
+        "Run a shell command with bash -c (sh where bash is absent) in the working directory and return its output and exit code. Each call starts fresh in the session's working directory; a `cd` does not carry over to the next call. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream keeps its first and last 15,000 bytes ([N bytes omitted from the middle]), and over 8,192 bytes it is reduced ([N lines omitted: A-B]); a cut or reduced output names [full output: path], a file with every byte (the first 256 MiB), which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. Pass wait (5-300 s, below timeout_secs) with a command to get the turn back: still running then, it becomes a job. Its result reaches you on its own only if it exits while your turn is still running, so before you end the turn, wait for it: bash with job=N, wait and no command returns once it exits or wait passes. A command is killed at timeout_secs (default 300 s, ceiling 600 s), job or not; raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. Where a sandbox exists (macOS) every command runs contained, outside yolo mode: no network except loopback, no unix socket, writes only under cwd, its git dirs and tmp, no reads of credential stores or walled paths; a PermissionDenied there says nothing about the code. After a refusal the next such call asks, and approving widens that run by the refused directory; \"always\" on a refusal naming no path passes that exact command outside for the session. Unasked, only a command needing the network, an install or a credential store runs outside, and its result says so; a compound mixing such a part with one that could stay inside, or one Yi cannot parse, asks. An approval runs outside only where its question says so. A container child's commands have its image's network."
     }
 
     fn schema(&self) -> Value {
@@ -826,7 +834,7 @@ impl Tool for BashTool {
                 match bridge_target(command, &context.cwd) {
                     Bridge::Tag { typed, path } => {
                         let view = shown(command, &reduced, capture.truncated);
-                        match tagged_header(state, &typed, &path, &view) {
+                        match tagged_header(state, &typed, &path, &view, context) {
                             Some(header) => {
                                 text = format!("{header}\n{text}");
                                 "tag"
