@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.525.0         # bump on any structural change; row goes in CHANGELOG.md
+version: 0.525.0         # the recorder bumps it once per change file in docs/changes/
 design:  YI_DESIGN.md   # the law; § refs below point into it
 status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; open work is forge issues
 ```
@@ -9,13 +9,13 @@ status:  a Rust coding agent: one `yi` binary and a Python kernel beside it; ope
 ## Changelog
 
 Moved to [CHANGELOG.md](CHANGELOG.md). The `version:` above and that file's
-top row are the same version.
+top row are the same version; both are written on main from `docs/changes/`.
 
 ## Crates (16) and line budgets
 
-Internal deps are the allowlist in `scripts/guardrails/boundaries.toml` (YI_DESIGN §2). A budget is
-the `src/` line ceiling in `scripts/guardrails/baselines/crate_size_budget.json`, enforced
-shrink-only by `check_crate_size` (§21).
+Internal deps are the allowlist in `scripts/guardrails/boundaries.toml` (YI_DESIGN §2). A crate's
+`src/` lines may not pass its fork point's without a `raise: crate <name> +N` in the change file
+(`check_crate_size`, §21); the budget column is the size when the table was last written.
 
 | crate | owns | deps (internal) | budget |
 |---|---|---|---|
