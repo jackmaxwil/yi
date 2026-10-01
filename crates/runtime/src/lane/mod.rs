@@ -723,6 +723,14 @@ impl Pool {
                 held = held.saturating_add(1);
                 continue;
             }
+            if self.repo_gone(slot) {
+                self.stop_warmer(slot)?;
+                let path = self.slot_path(slot);
+                std::fs::remove_dir_all(&path).map_err(io_error(&path))?;
+                self.write_state(slot, &SlotState::default())?;
+                free = Some((slot, Some(guard), true));
+                break;
+            }
             match self.read_state(slot)?.session {
                 Some(left) if left == session => {
                     // A resumed session gets its own slot and branch back, work intact.
@@ -854,6 +862,12 @@ impl Pool {
         }
         state.lockfile = None;
         self.write_state(slot, &state)
+    }
+
+    /// Incident: a repository recreated at its path left slots whose `.git` named a gone gitdir.
+    fn repo_gone(&self, slot: SlotIndex) -> bool {
+        let path = self.slot_path(slot);
+        path.join(".git").is_file() && yi_permission::git_dirs(&path).is_empty()
     }
 
     /// Incident: three lanes left by dead `pid-` drives held nothing and still filled the pool.
