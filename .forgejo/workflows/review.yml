@@ -24,8 +24,11 @@ jobs:
     # One round on a 293-line change took 510 s; two rounds and a warm build fit.
     timeout-minutes: 60
     steps:
+      # Main's tree, never the PR's: this job holds yi-bot's token, whose comments count as rounds,
+      # so a PR's own justfile, scripts or probes would judge themselves. The PR is read as data.
       - uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
       - run: rustup show
       # The same dev build the live job reads from postmerge's `test` cache.
