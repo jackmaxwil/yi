@@ -18,7 +18,8 @@ pub type CancelFlag = Arc<dyn Fn() -> bool + Send + Sync>;
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancelled: CancelFlag,
-    /// None means a reducer must hand back the raw text instead.
+    /// The session's own spill dir, `<root>/<session>`, whose root the spill sweeps; None
+    /// means a reducer must hand back the raw text instead.
     pub recovery_dir: Option<PathBuf>,
     /// How long a command may hold the turn before it keeps running as a job, when the call
     /// passes no `wait`. None, the default, backgrounds only a call that does.
@@ -40,7 +41,8 @@ impl ToolContext {
     /// The gate every file a call names opens through, so the file judged is the file opened
     /// (#890). Built once per call: each guarded directory costs a stat.
     pub(crate) fn read_gate(&self) -> yi_permission::ReadGate {
-        yi_permission::ReadGate::new(&yi_permission::CatastrophicContext::detect(&self.cwd))
+        let context = yi_permission::CatastrophicContext::detect(&self.cwd);
+        yi_permission::ReadGate::new(&context).except(self.recovery_dir.clone())
     }
 
     /// A named file's bytes, read through [`Self::read_gate`] under the wall's `deny_read`.
