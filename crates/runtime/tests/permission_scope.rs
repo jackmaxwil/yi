@@ -97,7 +97,7 @@ fn an_approved_network_ask_says_it_leaves_the_sandbox() -> TestResult {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
-        spared: None,
+        spared: Vec::new(),
     }));
     let mut args = Map::new();
     args.insert(
@@ -131,7 +131,7 @@ fn an_exec_source_the_gate_allows_is_still_admitted() {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
-        spared: None,
+        spared: Vec::new(),
     }));
     assert_eq!(
         yi_runtime::tools::refuse_armed("git status", false, Some(&broker), ""),
@@ -160,7 +160,7 @@ fn an_allowed_credential_read_runs_outside_and_says_so() -> TestResult {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
-        spared: None,
+        spared: Vec::new(),
     }));
     let mut args = Map::new();
     args.insert("command".to_owned(), json!("cat ~/.netrc"));
@@ -203,7 +203,7 @@ fn counted(
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
-        spared: None,
+        spared: Vec::new(),
     }));
     (broker, asks)
 }
@@ -343,7 +343,7 @@ fn a_headless_compound_says_to_split_it() -> TestResult {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
-        spared: None,
+        spared: Vec::new(),
     }));
     let args = bash_args("cargo test && cargo add serde");
     let outcome = broker.decide_call("bash", ToolKind::Exec, true, "c1", &args, None);
@@ -469,7 +469,7 @@ fn a_retry_is_widened_by_its_dir_but_never_by_home_or_yi_state() -> TestResult {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
-        spared: None,
+        spared: Vec::new(),
     }));
     let lane = home.join("yi-a2-nonexistent-lane");
     for (refused, widened) in [
@@ -533,7 +533,7 @@ fn always_on_a_widened_retry_keeps_the_dir_and_the_sandbox() -> TestResult {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
-        spared: None,
+        spared: Vec::new(),
     }));
     let lane = home.join("yi-a2-nonexistent-kept");
     broker.note_containment_failure(yi_tools::SandboxRefusal::Path(lane.join("x")));
@@ -709,7 +709,7 @@ fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
     Ok(())
 }
 
-struct MainTree(PathBuf);
+pub(crate) struct MainTree(pub(crate) PathBuf);
 
 impl yi_runtime::fetch::MemberTrees for MainTree {
     fn cwd_of(&self, agent: &str) -> Option<PathBuf> {

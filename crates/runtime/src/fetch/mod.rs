@@ -361,6 +361,8 @@ pub struct Resolver {
     plans_dir: PathBuf,
     spill_dir: Option<PathBuf>,
     wall: Wall,
+    /// Walled from a walled reader's file reads, so no link reaches a transcript (#971).
+    session_stores: Vec<PathBuf>,
     session: Option<(String, crate::goal::StoreHandle)>,
     checkpoint_show: Option<Arc<dyn CheckpointShow>>,
     mcp_read: Option<Arc<dyn McpResourceRead>>,
@@ -379,6 +381,7 @@ impl Resolver {
             plans_dir,
             spill_dir: None,
             wall,
+            session_stores: crate::tools::session_stores(None),
             session: None,
             checkpoint_show: None,
             mcp_read: None,
@@ -400,6 +403,11 @@ impl Resolver {
 
     pub fn with_plans_dir(mut self, dir: PathBuf) -> Self {
         self.plans_dir = dir;
+        self
+    }
+
+    pub fn with_session_stores(mut self, stores: Vec<PathBuf>) -> Self {
+        self.session_stores = stores;
         self
     }
 
@@ -554,6 +562,13 @@ impl Resolver {
 
     pub(super) fn wall(&self) -> &Wall {
         &self.wall
+    }
+
+    /// What a member-tree read may not land on: the wall's `deny_read` and, for a walled reader,
+    /// every session store. A `local://` read never leaves the workspace's resolved root.
+    pub(super) fn file_walls(&self) -> Vec<PathBuf> {
+        let stores = self.session_stores.iter().filter(|_| !self.wall.is_empty());
+        self.wall.deny_read.iter().chain(stores).cloned().collect()
     }
 
     pub(super) fn plans_dir(&self) -> &std::path::Path {

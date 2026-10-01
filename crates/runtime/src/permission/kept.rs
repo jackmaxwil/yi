@@ -21,7 +21,7 @@ impl PermissionBroker {
         rules.rules.retain(|rule| {
             self.admits(rule, wall) && !(elsewhere && yi_permission::is_exact_command(rule))
         });
-        Self {
+        let mut child = Self {
             sandbox: self.sandbox.clone(),
             mode: Arc::clone(&self.mode),
             config_rules: self.config_rules.clone(),
@@ -40,7 +40,13 @@ impl PermissionBroker {
                 self.asker.clone(),
                 self.events.clone(),
             )
-        }
+        };
+        // The `--session-dir` in use stays host-owned below the root too (D335, #971).
+        child
+            .context
+            .host_owned
+            .clone_from(&self.context.host_owned);
+        child
     }
 
     /// A write grant holds while its directory is neither protected nor walled; a pass, which
@@ -107,6 +113,11 @@ impl PermissionBroker {
             sandbox.host_owned.push(dir.to_path_buf());
         }
         self
+    }
+
+    /// The session stores: `~/.yi/sessions` and the `--session-dir` in use.
+    pub fn session_stores(&self) -> &[PathBuf] {
+        &self.context.host_owned
     }
 
     /// A session switch (`/new`, rpc `switch_session` or `fork`): the next session replays its own.

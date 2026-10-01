@@ -614,6 +614,7 @@ impl AgentSession {
                     .with_check(crate::plan::covers::write_check(self.plan_service()))
                     .with_wall(self.wall())
                     .with_spill_key(Arc::clone(&spill_key))
+                    .with_transcript(self.store_handle())
                     .with_extensions(Some(self.ext_hook())),
                 ) as Arc<dyn yi_loop::AgentTool>
             })
