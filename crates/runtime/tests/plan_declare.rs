@@ -471,6 +471,10 @@ fn every_todo_field_the_protocol_teaches_is_one_init_accepts() -> TestResult {
         .map(|key| key.trim_matches('`'))
         .collect();
     assert!(keys.len() >= 3, "the section names its fields: {section}");
+    assert!(
+        yi_runtime::doctrine_fragment().contains("its check a `decider: {cmd}` item"),
+        "doctrine's plan step names where a check goes"
+    );
     for key in keys {
         let mut todo = serde_json::Map::new();
         todo.insert("label".to_owned(), json!("probe"));
@@ -497,6 +501,19 @@ fn a_todo_level_check_is_refused_with_where_it_belongs() -> TestResult {
     );
     assert!(refused, "{text}");
     assert!(text.contains("decider: {cmd"), "{text}");
+    for (todo, hint) in [
+        (
+            json!({"label": "b", "after": "a"}),
+            "a todo's after is a list of labels",
+        ),
+        (
+            json!({"label": "t", "intent": ["verify the code"]}),
+            "user://<n> addresses, not prose",
+        ),
+    ] {
+        let (refused, text) = call(&rig, json!({"op": "init", "goal": "g", "todos": [todo]}));
+        assert!(refused && text.contains(hint), "{text}");
+    }
     Ok(())
 }
 
@@ -552,5 +569,12 @@ fn a_checker_given_as_an_object_keeps_its_deadline() -> TestResult {
     };
     let manifest = CheckerManifest::parse(&rig.store.artifacts(&plan.id).get(&checker.digest)?)?;
     assert_eq!((*timeout_ms, manifest.timeout_ms), (900_000, 900_000));
+    let decider = rig.tool.schema()["properties"]["todos"]["items"]["properties"]["contract"]
+        ["properties"]["items"]["items"]["properties"]["decider"]["description"]
+        .to_string();
+    assert!(
+        decider.contains("{cmd: {checker: command, timeout_ms}}"),
+        "{decider}"
+    );
     Ok(())
 }

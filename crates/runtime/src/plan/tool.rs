@@ -33,7 +33,7 @@ fn field_hint(field: &str) -> &'static str {
             "; output is a url of the product (tree://<child>/<path> or file:///abs/path), omitted when there is none, and a check's output line belongs to the todo tool's evidence"
         }
         "todos" | "delegation" | "title" | "deps" | "accept" => {
-            "; a todo is {label, after?, delegation?: {spec: {role?, isolation?}, accept: {command: \"...\"}}}"
+            "; a todo is {label, after?, contract?, delegation?: {spec: {role?, isolation?}, accept: {command: \"...\"}}}, and isolation worktree needs a contract"
         }
         "contract" | "check" | "acceptance" => {
             "; a contract is {class, items: [{id, critical, weight, decider: {cmd: \"shell command\"}}]}, or omit it and a worktree delegation's accept {command} is its contract"
@@ -801,7 +801,7 @@ pub fn schema() -> Value {
                 "plan": {"type": "string", "description": "Sub-plan id; omit for the root plan"},
                 "goal": {"type": "string", "description": "init: the whole deliverable in one line"},
                 "todos": {"type": "array", "minItems": 1, "description": "init/append/decompose/supersede: the todos. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract, as does container:<image>, the same worktree with its bash run in a container of that image; done runs the contract", "items": {"type": "object", "required": ["label"], "properties": {
-                    "label": {"type": "string", "maxLength": TODO_LABEL_MAX, "description": "the todo's name, imperative, at most 80 chars"}, "after": {"type": "array", "items": {"type": "string"}, "description": "labels of the todos this one waits on"},
+                    "label": {"type": "string", "maxLength": TODO_LABEL_MAX, "description": format!("the todo's name, imperative, at most {TODO_LABEL_MAX} chars")}, "after": {"type": "array", "items": {"type": "string"}, "description": "labels of the todos this one waits on"},
                     "intent": {"type": "array", "items": {"type": "string"}, "description": "user://<n> of each user message it serves; default the latest"}, "waived": {"type": "array", "items": {"type": "object"}, "description": "[{address, reason}]: a user message the plan leaves unserved"},
                     "delegation": {"type": "object", "description": "{spec: {role?, model?, effort?, isolation?}, accept: {command} | {stated}, context?: [url], output?: {schema: url}}"},
                     "contract": contract}}},
