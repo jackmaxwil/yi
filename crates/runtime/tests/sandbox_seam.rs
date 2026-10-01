@@ -1122,3 +1122,42 @@ async fn a_walled_retry_the_auto_reviewer_approves_never_runs_outside_the_sandbo
     );
     Ok(())
 }
+
+/// #1001: a walled session's contained profile spared its own spill even when the wall itself
+/// named a folder above it, so a glob, which the wall's text check never matches, read it.
+#[tokio::test]
+async fn a_glob_under_a_walled_ancestor_reaches_no_spared_spill() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, _, probe) = workspace("yi-seam-walled-ancestor")?;
+    let home = probe.join(format!("yi-walled-ancestor-{}", std::process::id()));
+    std::fs::create_dir_all(home.join(".yi/spills/juror"))?;
+    std::fs::write(home.join(".yi/spills/juror/own.txt"), "OWN SPILL\n")?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    // `/./` misses the text check; a glob through the walled root itself stats it and fails.
+    let glob = format!("cat {}/./.yi/spills/juror/own.t?t", home.display());
+    let mut ran = Vec::new();
+    for denied in [project.join("secret"), home.join(".yi")] {
+        let gate = BrokerSetup {
+            wall: Wall {
+                deny_read: vec![denied],
+                ..Wall::default()
+            },
+            session: Some("juror"),
+            ..BrokerSetup::default()
+        };
+        let sandbox = Sandbox::for_workspace(&project, &home, None);
+        ran.push(run_held(&project, &project, sandbox, &[&glob], gate).await);
+    }
+    let _ = std::fs::remove_dir_all(&home);
+    let [open, walled] = <[_; 2]>::try_from(ran).map_err(|_| "two runs")?;
+    let (open, walled) = (open?.concat(), walled?.concat());
+    assert!(open.contains("OWN SPILL"), "the glob reads a spare: {open}");
+    assert!(
+        !walled.contains("OWN SPILL"),
+        "a spare reopened what the wall names: {walled}"
+    );
+    Ok(())
+}
