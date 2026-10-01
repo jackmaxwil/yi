@@ -12,6 +12,7 @@ from extract import (
     MASK,
     RUST_MIRRORS,
     SIGNAL_NAMES,
+    claimed_numbers,
     dedupe,
     mark,
     read_only_command,
@@ -160,8 +161,18 @@ def check_module_missing(root, fixtures, tmp):
     assert row["signals"]["module_missing"] == 1, "the current missing-module hint is not counted"
 
 
+def check_claimed_numbers():
+    """The cases todo_coupling.rs pins for `numbers_of`: a path fragment and a code span are
+    names, a bare count is a claim."""
+    assert claimed_numbers("per .ruler/040 and crates/v2/300/x") == set()
+    assert claimed_numbers("`line 1234` then 5000 `x 6000`") == {"5000"}
+    assert claimed_numbers("(1088) and 2500. then 777") == {"1088", "777"}
+    assert claimed_numbers("a stray ` then 1234 rows") == {"1234"}
+
+
 def selfcheck():
     check_rust_mirrors(Path(__file__).resolve().parents[3])
+    check_claimed_numbers()
     fixtures = Path(__file__).resolve().parent / "fixtures"
     with tempfile.TemporaryDirectory() as tmp:
         check_module_missing(Path(__file__).resolve().parents[3], fixtures, tmp)

@@ -1,7 +1,9 @@
+use std::sync::{Arc, Mutex};
+
 use serde_json::{Value, json};
 use yi_types::acp::{
     AcpContentBlock, AcpExtensionUpdate, AcpOtherBlock, AcpSessionUpdate, AcpState, AcpStopReason,
-    AcpTerminalExit, AcpToolCallStatus, AcpToolContent, AcpToolKind,
+    AcpTerminalExit, AcpToolCallStatus, AcpToolCallUpdate, AcpToolContent, AcpToolKind,
 };
 use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
@@ -123,6 +125,22 @@ pub fn replay_update(frame: &ReplayFrame<'_>) -> AcpSessionUpdate {
     extension("_yi/replay", fields)
 }
 
+#[derive(Debug)]
+pub struct PendingPrompt {
+    pub text: String,
+    pub message_id: String,
+    pub request: Value,
+}
+
+pub type PendingPrompts = Arc<Mutex<Vec<PendingPrompt>>>;
+
+/// A poisoned list is still a list: a prompt dropped with it would never be answered.
+pub fn queued(prompts: &PendingPrompts) -> std::sync::MutexGuard<'_, Vec<PendingPrompt>> {
+    prompts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Per-session translation state (design §17.2): message ids are allocated
 /// here, tool-call and terminal ids pass through from the event stream.
 #[derive(Debug, Default)]
@@ -131,6 +149,8 @@ pub struct IdMap {
     current_message: Option<String>,
     last_stop: Option<AcpStopReason>,
     context_window: u64,
+    prompts: PendingPrompts,
+    inserted: Vec<PendingPrompt>,
 }
 
 impl IdMap {
@@ -139,6 +159,32 @@ impl IdMap {
             context_window,
             ..Self::default()
         }
+    }
+
+    pub fn with_prompts(context_window: u64, prompts: PendingPrompts) -> Self {
+        Self {
+            prompts,
+            ..Self::new(context_window)
+        }
+    }
+
+    pub fn take_inserted(&mut self) -> Vec<PendingPrompt> {
+        std::mem::take(&mut self.inserted)
+    }
+
+    pub fn waiting(&self) -> &PendingPrompts {
+        &self.prompts
+    }
+
+    /// Two queued prompts of equal text may trade ids; both ids still land on a message.
+    fn claim(&mut self, text: &str) -> Option<String> {
+        let mut prompts = queued(&self.prompts);
+        let index = prompts.iter().position(|prompt| prompt.text == text)?;
+        let prompt = prompts.remove(index);
+        let id = prompt.message_id.clone();
+        self.inserted.push(prompt);
+        self.current_message = Some(id.clone());
+        Some(id)
     }
 
     fn allocate(&mut self) -> String {
@@ -163,7 +209,7 @@ fn stop_reason(reason: StopReason) -> AcpStopReason {
         }
         StopReason::Length => AcpStopReason::MaxTokens,
         StopReason::Aborted => AcpStopReason::Cancelled,
-        StopReason::Error => AcpStopReason::Other("error".to_owned()),
+        StopReason::Error => AcpStopReason::Other("_yi/error".to_owned()),
     }
 }
 
@@ -195,6 +241,13 @@ fn image_block(block: &Content) -> Option<AcpContentBlock> {
     }))
 }
 
+pub(crate) fn plain(content: &UserContent, sep: &str) -> String {
+    match content {
+        UserContent::Text(text) => text.clone(),
+        UserContent::Blocks(blocks) => yi_types::message::join_text(blocks, sep),
+    }
+}
+
 fn user_blocks(content: &UserContent) -> Vec<AcpContentBlock> {
     match content {
         UserContent::Text(text) => vec![AcpContentBlock::Text { text: text.clone() }],
@@ -209,7 +262,8 @@ fn user_blocks(content: &UserContent) -> Vec<AcpContentBlock> {
 }
 
 fn user_update(content: &UserContent, typed: bool, ids: &mut IdMap) -> AcpSessionUpdate {
-    let message_id = ids.allocate();
+    let claimed = typed.then(|| ids.claim(&plain(content, ""))).flatten();
+    let message_id = claimed.unwrap_or_else(|| ids.allocate());
     let content = user_blocks(content);
     if typed {
         return AcpSessionUpdate::UserMessage {
@@ -257,11 +311,7 @@ fn extension_of(
     content: &UserContent,
     details: Option<&Value>,
 ) -> AcpSessionUpdate {
-    let text = match content {
-        UserContent::Text(text) => text.clone(),
-        UserContent::Blocks(blocks) => text_of(blocks),
-    };
-    let mut fields = vec![("text", Value::String(text))];
+    let mut fields = vec![("text", Value::String(plain(content, "")))];
     if let Some(details) = details {
         fields.push(("details", details.clone()));
     }
@@ -300,18 +350,26 @@ fn tool_call_update(
     raw_output: Option<Value>,
     content: Option<Vec<AcpToolContent>>,
 ) -> AcpSessionUpdate {
-    AcpSessionUpdate::ToolCallUpdate {
+    AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
         tool_call_id: tool_call_id.to_owned(),
-        title: None,
-        kind: None,
         status: Some(status),
         content,
-        raw_input: None,
         raw_output,
+        ..AcpToolCallUpdate::default()
+    })
+}
+
+fn tool_status(result: &yi_types::event::ToolResult, is_error: bool) -> AcpToolCallStatus {
+    let aborted = result.details.get("errorKind").and_then(Value::as_str)
+        == Some(yi_types::event::ToolErrorKind::Aborted.as_str());
+    let cut = result.details.get("cancelled").and_then(Value::as_bool) == Some(true);
+    match (aborted || cut, is_error) {
+        (true, _) => AcpToolCallStatus::Cancelled,
+        (false, true) => AcpToolCallStatus::Failed,
+        (false, false) => AcpToolCallStatus::Completed,
     }
 }
 
-/// Pure event → update mapping (design §17.2).
 /// Exhaustive over `AgentEvent` so a new variant fails compile, not wire.
 pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> {
     match event {
@@ -379,15 +437,15 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
             tool_call_id,
             tool_name,
             args,
-        } => vec![AcpSessionUpdate::ToolCallUpdate {
+        } => vec![AcpSessionUpdate::ToolCallUpdate(AcpToolCallUpdate {
             tool_call_id: tool_call_id.clone(),
+            name: Some(tool_name.clone()),
             title: Some(tool_name.clone()),
             kind: Some(tool_kind(tool_name)),
             status: Some(AcpToolCallStatus::InProgress),
-            content: None,
             raw_input: Some(args.clone()),
-            raw_output: None,
-        }],
+            ..AcpToolCallUpdate::default()
+        })],
         AgentEvent::ToolExecutionUpdate {
             tool_call_id,
             partial_result,
@@ -406,14 +464,14 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
             result,
             is_error,
         } => {
-            let status = if *is_error {
-                AcpToolCallStatus::Failed
-            } else {
-                AcpToolCallStatus::Completed
-            };
+            let status = tool_status(result, *is_error);
             let text = text_of(&result.content);
             if tool_name == "bash" {
-                let exit_code = result.details.get("exitCode").and_then(Value::as_i64);
+                let exit_code = result
+                    .details
+                    .get("exitCode")
+                    .and_then(Value::as_u64)
+                    .and_then(|code| u32::try_from(code).ok());
                 vec![
                     AcpSessionUpdate::TerminalOutputChunk {
                         terminal_id: tool_call_id.clone(),

@@ -355,8 +355,22 @@ fn wire_schedule(
             )
             .with_gate({
                 let (broker, contained) = (wiring.broker.clone(), wiring.wall.container.is_some());
+                let (wall, cwd, own) = (
+                    wiring.wall.clone(),
+                    wiring.cwd.clone(),
+                    wiring.own_paths(session),
+                );
+                let spills = crate::tools::default_spill_root();
+                let roots =
+                    crate::tools::spill_roots_and_stores(spills.as_deref(), broker.as_deref());
+                let roots: Vec<PathBuf> = roots.into_iter().filter(|_| !wall.is_empty()).collect();
+                // An `exec://` source runs on the host, where the wall is its text alone (#1001).
+                // The spares are read per call: a child's store attaches after its wiring.
                 Arc::new(move |command: &str| {
-                    crate::tools::refuse_armed(command, contained, broker.as_deref(), "")
+                    let spared: Vec<PathBuf> = own.iter().flat_map(|own| own(None)).collect();
+                    crate::tools::host_wall(command, &wall, (&roots, &spared), &cwd).or_else(|| {
+                        crate::tools::refuse_armed(command, contained, broker.as_deref(), "")
+                    })
                 })
             })
             .interned();
@@ -1153,5 +1167,30 @@ mod tests {
         assert_eq!(wide["hits"].as_array().map(Vec::len), Some(10));
         assert!(wide.get("notice").is_none());
         Ok(())
+    }
+
+    /// #1001: with no Seatbelt (Linux) a walled kernel and its `bash()` jobs would run with no
+    /// profile, so a cell would meet no wall at all; it is refused before it boots.
+    #[tokio::test]
+    async fn a_walled_kernel_with_no_profile_never_boots() {
+        let dir = std::env::temp_dir();
+        let options = crate::kernel::KernelServiceOptions {
+            cwd: dir.clone(),
+            home: dir.join("yi-no-home"),
+            session_dir: None,
+            family_dir: None,
+            host: Arc::new(crate::kernel::HostRegistry::default()),
+            on_restore: None,
+            on_boot: None,
+            sandbox: None,
+            snapshot_key: None,
+            per_session_state: false,
+            cell_ceiling: None,
+        };
+        let walled: OwnPathsFn = Arc::new(|_| Vec::new());
+        let service = crate::kernel::KernelService::new(options).with_own_paths(Some(walled));
+        service.prewarm().await;
+        let state = service.state();
+        assert!(state.starts_with("unavailable: ipython"), "{state}");
     }
 }
