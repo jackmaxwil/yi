@@ -85,7 +85,7 @@ fn host(answer: Option<&'static str>) -> std::io::Result<(Scratch, Arc<SubagentH
         attribute: Arc::new(|_| {}),
         store: Arc::new(|| None),
         plans_dir: std::env::temp_dir().join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     Ok((root, host))
 }

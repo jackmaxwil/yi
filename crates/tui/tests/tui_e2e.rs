@@ -223,7 +223,7 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: dir.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     let mut app = app();
     runtime.block_on(async {
@@ -1092,7 +1092,7 @@ fn the_status_cost_sums_the_session_not_the_last_turn() -> TestResult {
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: dir.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     let (_ask_tx, ask_rx) = std::sync::mpsc::channel();
     let script = yi_tui::parse_script(
@@ -1375,7 +1375,7 @@ fn a_recording_replays_to_the_frame_the_run_asserted_on() -> TestResult {
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: dir.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     let (_ask_tx, ask_rx) = std::sync::mpsc::channel();
     let cast = dir.join("run.cast");
@@ -1569,7 +1569,7 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: dir.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     let backend = VT100Backend::with_scrollback(80, 24, 200);
     let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
@@ -2184,7 +2184,7 @@ fn the_hud_shows_open_todos_in_a_headless_frame() -> TestResult {
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: dir.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     let (_ask_tx, ask_rx) = std::sync::mpsc::channel();
     let script = yi_tui::parse_script("type hi\nkey enter\nwait-idle 10000\nquit\n")?;
@@ -2248,7 +2248,7 @@ fn child_host_options(dir: &Scratch, reply: &'static str) -> SubagentHostOptions
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: dir.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }
 }
 
