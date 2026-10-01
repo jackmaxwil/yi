@@ -643,28 +643,53 @@ fn handle_for(
     )
 }
 
-/// Two `/land` calls are one poller; the second is refused while the first runs.
+/// Two `/land` calls are one poller; the second is refused at once while the first pushes.
 #[test]
 fn two_lands_share_one_poller() -> TestResult {
     let rig = Rig::new("poller")?;
     let pool = rig.pool(1)?;
     let lane = pool.claim("s-poll", ClaimBase::Main)?;
-    let slow = vec!["sh".to_owned(), "-c".to_owned(), "sleep 1".to_owned()];
-    let (handle, _steers) = handle_for(lane, Some(slow));
+    let gate = rig.root.join("gate");
+    let pushing = rig.root.join("gate.up");
+    std::fs::write(&gate, "")?;
+    let held = vec![
+        "sh".to_owned(),
+        "-c".to_owned(),
+        r#": > "$0.up"; while [ -e "$0" ]; do sleep 0.01; done"#.to_owned(),
+        gate.to_string_lossy().into_owned(),
+    ];
+    let (handle, steers) = handle_for(lane, Some(held));
     handle.land("Title")?;
-    let refused = handle.land("Title");
+    assert!(until(|| pushing.exists()), "the first push never started");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let second = std::sync::Arc::clone(&handle);
+    std::thread::spawn(move || {
+        let _ = tx.send(second.land("Title").map_err(|error| error.to_string()));
+    });
+    let refused = rx.recv_timeout(std::time::Duration::from_secs(60));
+    std::fs::remove_file(&gate)?;
     assert!(
-        matches!(&refused, Err(error) if error.to_string().contains("landing in progress")),
-        "{refused:?}"
+        matches!(&refused, Ok(Err(error)) if error.contains("landing in progress")),
+        "{refused:?}, steers {:?}",
+        steers.try_iter().collect::<Vec<_>>()
     );
-    std::thread::sleep(std::time::Duration::from_millis(1_800));
     assert!(
-        handle.land("Title").is_ok(),
+        until(|| handle.land("Title").is_ok()),
         "the poller is free once the first ends"
     );
-    std::thread::sleep(std::time::Duration::from_millis(1_500));
     handle.release()?;
     Ok(())
+}
+
+fn until(mut ready: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !ready() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    true
 }
 
 /// A base that conflicts stops the landing before the push: the steer names the file,
