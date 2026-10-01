@@ -654,6 +654,48 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
     Ok(())
 }
 
+/// #889: under a denied read root, a spared writable root (a walled kernel's own dir, the family
+/// board) reads and takes writes; a spared path no root grants (its own spill dir) only reads; a
+/// denial inside a spare, read or write, holds (#1000 review F1, F2), and an aliased spare matches.
+#[test]
+fn a_spared_writable_root_takes_writes_and_a_spared_path_only_reads() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, _home) = workspace("spared")?;
+    let store = project.join("store");
+    let (state, spill) = (store.join("state"), store.join("spill"));
+    for (dir, text) in [(&state, "SPARED"), (&spill, "SPARED"), (&store, "WALLED")] {
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(dir.join("f"), text)?;
+    }
+    std::fs::create_dir_all(state.join("secret"))?;
+    // The spare names the root by another spelling (`/private/var` for `/var`), as a link may.
+    let spelled = state.canonicalize()?;
+    assert_ne!(spelled, state, "the scratch dir has one spelling only");
+    std::fs::write(state.join("secret/f"), "WALLED")?;
+    let sandbox = Sandbox {
+        writable: vec![project.clone(), state.clone()],
+        deny_read: vec![store.clone(), state.join("secret")],
+        deny_write: vec![state.join("locked")],
+        host_owned: Vec::new(),
+        spared: vec![spelled, spill],
+    };
+    let script = "cat store/state/f store/spill/f store/f store/state/secret/f; \
+        echo x > store/state/new && echo wrote-state; echo x > store/spill/new && echo wrote-spill; \
+        echo x > store/state/locked && echo wrote-locked; echo x > store/state/secret/g && echo wrote-secret";
+    let (_, output) = run(script, &project, Some(&sandbox))?;
+    let seen = (
+        output.matches("SPARED").count(),
+        output.contains("WALLED"),
+        output.contains("wrote-state"),
+        output.contains("wrote-spill") || output.contains("wrote-locked"),
+        output.contains("wrote-secret"),
+    );
+    assert_eq!(seen, (2, false, true, false, false), "{output}");
+    Ok(())
+}
+
 /// What a contained script reports, one word per probe: loopback works both ways, and nothing
 /// past it answers, however the address is spelled. Every refusal must be EPERM, the sandbox's
 /// errno, so a machine with no network cannot pass it by timing out.
