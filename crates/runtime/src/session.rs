@@ -588,6 +588,13 @@ impl AgentSession {
         if let Some(broker) = &permission {
             broker.set_rule_journal(crate::wiring::journal_into(self.store_handle()));
         }
+        // A session with no store yet still spills under a dir of its own (D340).
+        let (store_id, unsaved) = (
+            self.store_id_hook(),
+            yi_session::IdGenerator::new().next_id(),
+        );
+        let spill_key: Arc<dyn Fn() -> Option<String> + Send + Sync> =
+            Arc::new(move || store_id().or_else(|| Some(unsaved.clone())));
         let adapters = tools
             .into_iter()
             .map(|tool| {
@@ -606,6 +613,7 @@ impl AgentSession {
                     .with_rules(self.rules_engine())
                     .with_check(crate::plan::covers::write_check(self.plan_service()))
                     .with_wall(self.wall())
+                    .with_spill_key(Arc::clone(&spill_key))
                     .with_extensions(Some(self.ext_hook())),
                 ) as Arc<dyn yi_loop::AgentTool>
             })
@@ -1090,8 +1098,7 @@ fn start_ext(shared: &Arc<Shared>, prompt: &str) {
     dispatch_ext(shared, &event);
 }
 
-/// The request this session runs on, from whoever drives it in code: a parent, a reviewer's
-/// host, a test; read bare like the user's words and never served by `user://`.
+/// The request a parent, a reviewer's host or a test runs on: read bare, never via `user://`.
 pub fn task(text: &str) -> AgentMessage {
     AgentMessage::task(text, 0)
 }

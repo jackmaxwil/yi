@@ -447,6 +447,50 @@ fn fetch_entry(seeded: &Recalled) -> Result<String, Box<dyn Error>> {
     Ok(resolver.fetch(&url)?.text)
 }
 
+/// #950 F1: the tail an idle `/compact` keeps holds the reply whose usage counted the whole
+/// history before it. Read as the count, it made the next prompt compact again: a second summary
+/// request, summarizing a summary.
+#[tokio::test]
+async fn the_prompt_after_an_idle_compaction_does_not_compact_again() -> Result<(), Box<dyn Error>>
+{
+    let provider = Arc::new(ProviderStream::new(None));
+    let summary = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+    provider.queue_faux(vec![
+        reply_with_usage(&"answer ".repeat(20), 1_400, 1_500),
+        summary("## Goal\nFIRST"),
+        summary("ok"),
+        summary("## Goal\nSECOND"),
+    ]);
+    let session = session_for_compaction(Arc::clone(&provider));
+    session.prompt("ask")?;
+    session.wait_idle().await;
+    assert!(
+        session
+            .compact_now()
+            .await
+            .is_ok_and(|outcome| outcome.applied()),
+        "the idle compaction applies"
+    );
+    session.prompt("next ask")?;
+    session.wait_idle().await;
+    let left = provider
+        .faux
+        .lock()
+        .map_err(|_| "faux lock")?
+        .pending_response_count();
+    assert_eq!(
+        left, 1,
+        "one compaction: the next prompt's request took the reply, no second summary"
+    );
+    let messages = session.messages();
+    assert!(
+        matches!(messages.first(), Some(AgentMessage::CompactionSummary { summary, .. })
+            if summary.ends_with("FIRST")),
+        "the idle compaction's summary still leads: {messages:#?}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn compaction_below_threshold_is_a_no_op() -> Result<(), Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None));
@@ -464,64 +508,6 @@ async fn compaction_below_threshold_is_a_no_op() -> Result<(), Box<dyn Error>> {
             .messages()
             .iter()
             .any(|message| matches!(message, AgentMessage::CompactionSummary { .. }))
-    );
-    Ok(())
-}
-
-// A server-observed prefill latches for the whole window, so an unreported
-// usage recorded as zero pins the prefix at zero permanently and the first-only
-// guard drops every later real observation.
-#[tokio::test]
-async fn an_unknown_usage_never_pins_the_window_prefill() -> Result<(), Box<dyn Error>> {
-    async fn compacts_after(first: yi_types::message::Usage) -> bool {
-        let mut compactor = yi_runtime::Compactor::new("win-0".to_owned());
-        compactor.settings = tight_settings();
-        compactor.on_usage(&first);
-        let mut reported = yi_types::message::Usage::zero();
-        reported.input = 1_500;
-        compactor.on_usage(&reported);
-        let messages = vec![
-            AgentMessage::user_input(UserContent::Text("ask ".repeat(30)), 0),
-            reply_with_usage(&"answer ".repeat(30), 1_500, 1_600),
-            AgentMessage::user_input(UserContent::Text("follow up".to_owned()), 0),
-        ];
-        let provider = Arc::new(ProviderStream::new(None));
-        provider.queue_faux(vec![faux_assistant_message(
-            vec![faux_text("## Goal\nSummary")],
-            StopReason::Stop,
-        )]);
-        let signal = yi_loop::interrupt::InterruptSignal::default();
-        compactor
-            .maybe_compact(
-                &messages,
-                &faux_model(2_000),
-                &yi_runtime::compaction::LoopRequest::new("sys".to_owned(), &[], Effort::Off),
-                &provider,
-                None,
-                &signal,
-            )
-            .await
-            .is_ok_and(|replaced| replaced.is_some())
-    }
-
-    let mut tiny = yi_types::message::Usage::zero();
-    tiny.input = 1;
-    assert!(
-        compacts_after(tiny).await,
-        "control: a reported 1-token prefix latches and charges 1599 against the 1000 budget"
-    );
-    assert!(
-        !compacts_after(yi_types::message::Usage::unknown()).await,
-        "an unknown usage must not forge a zero prefix: the reported 1500 leaves 100 charged"
-    );
-    let mut refused = yi_ai::request::empty_assistant(&faux_model(2_000));
-    let _ = yi_ai::request::fail_message(&mut refused, "HTTP 402: insufficient credits");
-    let AgentMessage::Assistant { usage, .. } = refused else {
-        return Err("not an assistant message".into());
-    };
-    assert!(
-        !compacts_after(usage).await,
-        "a refusal's known zero sent no prompt and must not pin the prefix either"
     );
     Ok(())
 }
@@ -729,6 +715,8 @@ fn openrouter_stand_in(
             }
             let mut body = vec![0u8; length];
             let _ = reader.read_exact(&mut body);
+            // A measured reply counts its prompt as the provider would: the whole body, bytes/3.
+            let reply = reply.replace("\"MEASURED\"", &body.len().div_ceil(3).to_string());
             bodies.push(String::from_utf8_lossy(&body).into_owned());
             let _ = write!(
                 reader.into_inner(),
@@ -760,6 +748,54 @@ fn sse_reply_after(delta: &serde_json::Value, finish: &str, prompt_tokens: u64) 
         .collect();
     text.push_str("data: [DONE]\n\n");
     text
+}
+
+/// A text reply whose usage the stand-in fills in from the request it answers.
+fn sse_reply_measured(content: &str) -> String {
+    let chunks = [
+        serde_json::json!({"choices": [{"index": 0, "delta": {"content": content}}]}),
+        serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": "MEASURED", "completion_tokens": content.len().div_ceil(3)}}),
+    ];
+    let mut text: String = chunks
+        .iter()
+        .map(|chunk| format!("data: {chunk}\n\n"))
+        .collect();
+    text.push_str("data: [DONE]\n\n");
+    text
+}
+
+/// One Anthropic Messages event stream holding `block`, a text or a `tool_use` block.
+fn anthropic_sse(block: &serde_json::Value, stop: &str) -> String {
+    let (start, delta) = match block["type"].as_str() {
+        Some("text") => (
+            serde_json::json!({"type": "text", "text": ""}),
+            serde_json::json!({"type": "text_delta", "text": block["text"]}),
+        ),
+        _ => (
+            serde_json::json!({"type": "tool_use", "id": block["id"], "name": block["name"],
+                "input": {}}),
+            serde_json::json!({"type": "input_json_delta", "partial_json": "{}"}),
+        ),
+    };
+    [
+        serde_json::json!({"type": "message_start", "message": {"id": "msg_1",
+            "model": "claude-haiku-4-5", "usage": {"input_tokens": 10, "output_tokens": 1}}}),
+        serde_json::json!({"type": "content_block_start", "index": 0, "content_block": start}),
+        serde_json::json!({"type": "content_block_delta", "index": 0, "delta": delta}),
+        serde_json::json!({"type": "content_block_stop", "index": 0}),
+        serde_json::json!({"type": "message_delta", "delta": {"stop_reason": stop},
+            "usage": {"output_tokens": 5}}),
+        serde_json::json!({"type": "message_stop"}),
+    ]
+    .iter()
+    .map(|event| {
+        format!(
+            "event: {}\ndata: {event}\n\n",
+            event["type"].as_str().unwrap_or("")
+        )
+    })
+    .collect()
 }
 
 /// A tool whose result is long enough to make the next boundary compact.
@@ -802,7 +838,19 @@ impl yi_loop::AgentTool for LongResult {
 /// A Claude route on OpenRouter with reasoning, a tool table, and a proxy to the stand-in. A cut
 /// needs a reply inside `keep_recent`: a single message over it keeps everything.
 fn openrouter_session(port: u16, keep_recent: u64) -> Result<AgentSession, Box<dyn Error>> {
-    let mut model = faux_model(2_000);
+    let settings = Settings {
+        keep_recent_tokens: Tokens(keep_recent),
+        ..tight_settings()
+    };
+    openrouter_session_with(port, 2_000, settings)
+}
+
+fn openrouter_session_with(
+    port: u16,
+    window: u64,
+    settings: Settings,
+) -> Result<AgentSession, Box<dyn Error>> {
+    let mut model = faux_model(window);
     model.id = "anthropic/claude-haiku-4.5".to_owned();
     model.api = "openai-completions".to_owned();
     model.provider = "openrouter".to_owned();
@@ -834,10 +882,7 @@ fn openrouter_session(port: u16, keep_recent: u64) -> Result<AgentSession, Box<d
         Arc::new(provider),
     );
     session.set_tools(vec![Arc::new(LongResult)]);
-    session.enable_compaction_with(Settings {
-        keep_recent_tokens: Tokens(keep_recent),
-        ..tight_settings()
-    });
+    session.enable_compaction_with(settings);
     Ok(session)
 }
 
@@ -932,6 +977,76 @@ async fn an_in_loop_compaction_reads_the_loop_requests_prefix() -> Result<(), Bo
     assert_warm(before, compaction)
 }
 
+/// #947: a first request longer than the reserve made compaction due only once the body past
+/// it filled window − reserve, so the history overflowed first. It is due while the summary
+/// request still fits, and that request reads the loop's cache. The stand-in counts each prompt
+/// from its whole body, system prompt and tools included.
+#[tokio::test(flavor = "multi_thread")]
+async fn compaction_is_due_while_the_warm_summary_still_fits() -> Result<(), Box<dyn Error>> {
+    const WINDOW: usize = 6_000;
+    let reply = sse_reply_measured(&format!("## Goal\n{}", "answer ".repeat(300)));
+    let (port, served) = openrouter_stand_in(vec![reply; 5])?;
+    let settings = Settings {
+        enabled: true,
+        reserve_tokens: Tokens(2_000),
+        keep_recent_tokens: Tokens(10),
+    };
+    let session = openrouter_session_with(port, WINDOW as u64, settings)?;
+    for ask in ["ask ".repeat(1_500).as_str(), "go on", "go on", "go on"] {
+        session.prompt(ask)?;
+        session.wait_idle().await;
+    }
+    assert!(
+        session
+            .messages()
+            .iter()
+            .any(|message| matches!(message, AgentMessage::CompactionSummary { .. })),
+        "the fourth prompt leaves room for the summary request only if it compacts first"
+    );
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let [_, _, before, compaction, _] = bodies.as_slice() else {
+        return Err(format!("expected five requests, got {}", bodies.len()).into());
+    };
+    for body in &bodies {
+        assert!(
+            body.len().div_ceil(3) < WINDOW,
+            "no request overflows the window: {} tokens",
+            body.len().div_ceil(3)
+        );
+    }
+    assert_warm(before, compaction)
+}
+
+/// #947: what follows the last reported usage counts at bytes/3, as the rescue charges it. At
+/// chars/4 this history sits under window − reserve (110 + 750 of 1,000); at bytes/3 it is over.
+#[tokio::test]
+async fn text_after_the_last_usage_counts_at_bytes_per_three() -> Result<(), Box<dyn Error>> {
+    let mut compactor = yi_runtime::Compactor::new("w".to_owned());
+    compactor.settings = tight_settings();
+    let messages = vec![
+        AgentMessage::user_input(UserContent::Text("ask".to_owned()), 0),
+        reply_with_usage("ok", 100, 110),
+        AgentMessage::user_input(UserContent::Text("x".repeat(3_000)), 0),
+    ];
+    let provider = ProviderStream::new(None);
+    provider.queue_faux(vec![faux_assistant_message(
+        vec![faux_text("## Goal\nSummary")],
+        StopReason::Stop,
+    )]);
+    let replaced = compactor
+        .maybe_compact(
+            &messages,
+            &faux_model(2_000),
+            &yi_runtime::compaction::LoopRequest::new("sys".to_owned(), &[], Effort::Off),
+            &provider,
+            None,
+            &yi_loop::interrupt::InterruptSignal::default(),
+        )
+        .await?;
+    assert!(replaced.is_some(), "1,110 of a 1,000-token budget is due");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_idle_compaction_reads_the_last_requests_prefix() -> Result<(), Box<dyn Error>> {
     let (port, served) = openrouter_stand_in(vec![
@@ -1009,6 +1124,88 @@ async fn a_call_instead_of_a_summary_retries_without_tools() -> Result<(), Box<d
             .as_deref()
             .is_some_and(|text| text.contains("## Goal\nProbe")),
         "{summary:?}"
+    );
+    Ok(())
+}
+
+/// #948: Anthropic refuses `tool_use` and `tool_result` blocks in a request that defines no
+/// tools. A cold attempt sends none, so its history must hold no tool block either.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cold_attempt_on_anthropic_sends_no_tool_block_without_tools()
+-> Result<(), Box<dyn Error>> {
+    let call = serde_json::json!({"type": "tool_use", "id": "toolu_1", "name": "probe"});
+    let summary = serde_json::json!({"type": "text", "text": "## Goal\nProbe"});
+    let (port, served) = openrouter_stand_in(vec![
+        anthropic_sse(&call, "tool_use"),
+        anthropic_sse(&summary, "end_turn"),
+    ])?;
+    let mut model = faux_model(200_000);
+    model.id = "claude-haiku-4-5".to_owned();
+    model.api = "anthropic-messages".to_owned();
+    model.provider = "anthropic".to_owned();
+    model.base_url = "http://api.anthropic.invalid".to_owned();
+    let provider = ProviderStream::new(None)
+        .with_auth(
+            "anthropic",
+            yi_runtime::auth::Resolved {
+                secret: yi_runtime::auth::Secret::new("sk-ant-test".to_owned()),
+                kind: yi_runtime::auth::AuthKind::ApiKey,
+                org: None,
+                expires: None,
+                headers: Vec::new(),
+            },
+        )
+        .with_proxy(yi_ai::request::ProxyConfig::from_values(
+            Some(&format!("http://127.0.0.1:{port}")),
+            None,
+            None,
+        )?);
+    let mut compactor = yi_runtime::Compactor::new("w".to_owned());
+    compactor.settings = tight_settings();
+    compactor.schedule();
+    let [step, result] = tool_step("toolu_1");
+    let messages = vec![
+        AgentMessage::user_input(UserContent::Text("read the probe".to_owned()), 0),
+        step,
+        result,
+        reply_with_usage("done", 900, 950),
+    ];
+    let tools: Vec<Arc<dyn yi_loop::AgentTool>> = vec![Arc::new(LongResult)];
+    let replaced = compactor
+        .maybe_compact(
+            &messages,
+            &model,
+            &yi_runtime::compaction::LoopRequest::new("sys".to_owned(), &tools, Effort::Off),
+            &provider,
+            None,
+            &yi_loop::interrupt::InterruptSignal::default(),
+        )
+        .await?;
+    assert!(replaced.is_some(), "the cold attempt's summary applies");
+    let bodies = served.join().map_err(|_| "the stand-in panicked")?;
+    let [warm, cold] = bodies.as_slice() else {
+        return Err(format!("expected two requests, got {}", bodies.len()).into());
+    };
+    for body in [warm, cold] {
+        let body: serde_json::Value = serde_json::from_str(body)?;
+        let blocks = body["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|message| message["content"].as_array().into_iter().flatten());
+        let tool_blocks = blocks
+            .filter(|block| matches!(block["type"].as_str(), Some("tool_use" | "tool_result")))
+            .count();
+        assert!(
+            tool_blocks == 0 || body["tools"].is_array(),
+            "{tool_blocks} tool blocks and no tools: {body}"
+        );
+    }
+    let cold: serde_json::Value = serde_json::from_str(cold)?;
+    let sent = cold["messages"].to_string();
+    assert!(
+        cold.get("tools").is_none() && sent.contains("probe()") && sent.contains("result toolu_1"),
+        "the cold attempt is text, and still carries the call and its result: {cold}"
     );
     Ok(())
 }
@@ -1317,12 +1514,10 @@ async fn a_rescue_keeps_the_prompt_or_follow_up_the_run_is_working_on() -> Resul
 }
 
 /// Runs one compaction whose two summaries come back blank, on a 2,000-token window with a
-/// 1,000-token reserve and no tools. No prefix is observed, as after a resume, unless
-/// `observed` latches one; `opening` is the message the run began with.
+/// 1,000-token reserve and no tools; `opening` is the message the run began with.
 async fn rescue(
     messages: &[AgentMessage],
     system: &str,
-    observed: Option<i64>,
     opening: Option<&AgentMessage>,
 ) -> Result<Option<yi_runtime::compaction::Replacement>, yi_runtime::compaction::CompactError> {
     let mut compactor = yi_runtime::Compactor::new("w".to_owned());
@@ -1331,11 +1526,6 @@ async fn rescue(
         reserve_tokens: Tokens(1_000),
         keep_recent_tokens: Tokens(500),
     };
-    if let Some(input) = observed {
-        let mut usage = yi_types::message::Usage::zero();
-        usage.input = input;
-        compactor.on_usage(&usage);
-    }
     if let Some(opening) = opening {
         compactor.open_run(opening);
     }
@@ -1426,7 +1616,7 @@ fn every_result_has_its_call(messages: &[AgentMessage]) -> bool {
 
 /// #946 R1, R2, R6: one prompt then more tool steps than fit. The prompt stays, a marker after
 /// it counts what went, every kept result keeps its call, and the request fits with the system
-/// prompt counted though no prefix was observed; one more step would not have fit.
+/// prompt counted; one more step would not have fit.
 #[tokio::test]
 async fn a_rescue_keeps_the_prompt_of_a_long_turn_and_whole_tool_steps()
 -> Result<(), Box<dyn Error>> {
@@ -1437,7 +1627,7 @@ async fn a_rescue_keeps_the_prompt_of_a_long_turn_and_whole_tool_steps()
     for step in 0..12 {
         messages.extend(tool_step(&format!("c{step}")));
     }
-    let replaced = rescue(&messages, &system, None, Some(&prompt))
+    let replaced = rescue(&messages, &system, Some(&prompt))
         .await?
         .ok_or("no rescue")?;
     let kept = &replaced.messages;
@@ -1462,7 +1652,7 @@ async fn a_rescue_keeps_the_prompt_of_a_long_turn_and_whole_tool_steps()
     Ok(())
 }
 
-/// #946 R2, N2: after an earlier compaction with its prefix latched, the rescue carries the
+/// #946 R2, N2: after an earlier compaction, the rescue carries the
 /// earlier summary, keeps the first ask and the run's opening, and drops no more than needed.
 #[tokio::test]
 async fn a_rescue_after_a_compaction_carries_its_summary_and_drops_no_more_than_needed()
@@ -1492,7 +1682,7 @@ async fn a_rescue_after_a_compaction_carries_its_summary_and_drops_no_more_than_
         third.clone(),
         reply_with_usage("done", 1_900, 2_100),
     ];
-    let replaced = rescue(&messages, &system, Some(900), Some(&third))
+    let replaced = rescue(&messages, &system, Some(&third))
         .await?
         .ok_or("no rescue")?;
     let kept = &replaced.messages;
@@ -1552,7 +1742,7 @@ async fn a_childs_second_rescue_keeps_its_brief() -> Result<(), Box<dyn Error>> 
     for step in 0..12 {
         messages.extend(tool_step(&format!("b{step}")));
     }
-    let replaced = rescue(&messages, "sys", None, Some(&brief))
+    let replaced = rescue(&messages, "sys", Some(&brief))
         .await?
         .ok_or("no rescue")?;
     assert_eq!(
@@ -1576,7 +1766,7 @@ async fn a_host_woken_run_keeps_its_waking_message() -> Result<(), Box<dyn Error
     for step in 0..12 {
         messages.extend(tool_step(&format!("c{step}")));
     }
-    let replaced = rescue(&messages, "sys", None, Some(&wake))
+    let replaced = rescue(&messages, "sys", Some(&wake))
         .await?
         .ok_or("no rescue")?;
     let texts: Vec<Option<&str>> = replaced
@@ -1611,7 +1801,7 @@ async fn a_rescue_with_nothing_to_drop_but_the_summary_elides_nothing() -> Resul
         ask("second ask"),
         reply_with_usage(&said, 1_900, 2_100),
     ];
-    let outcome = rescue(&messages, "sys", None, None).await;
+    let outcome = rescue(&messages, "sys", None).await;
     assert!(
         matches!(
             &outcome,

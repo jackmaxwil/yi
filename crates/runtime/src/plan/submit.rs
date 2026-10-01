@@ -60,12 +60,14 @@ impl OutputResolve for LaneResolver<'_> {
         }
         let path = self.root.join(relative);
         let context = yi_permission::CatastrophicContext::detect(self.root);
-        if yi_permission::read_is_catastrophic(&path, &context) {
+        let gate = yi_permission::ReadGate::new(&context);
+        if gate.denies(&path) {
             return Err(format!(
                 "{url} in the candidate checkout is a protected path"
             ));
         }
-        std::fs::read_to_string(path)
+        (gate.open(&path, &[]))
+            .and_then(std::io::read_to_string)
             .map(Some)
             .map_err(|error| format!("{url} in the candidate checkout: {error}"))
     }

@@ -31,8 +31,7 @@ try:
     import anydoc, pdf_inspector
 except ImportError as error:
     say(missing=str(error))
-with open(source, "rb") as handle:
-    data = handle.read()
+data = sys.stdin.buffer.read()
 kind = anydoc.format_from_bytes(data) or anydoc.format_from_path(source)
 if kind in (None, "csv"):
     say(unsupported=True)
@@ -627,13 +626,7 @@ pub(crate) fn convert(
         ATTEMPT.fetch_add(1, Ordering::Relaxed)
     ));
     let outcome = run(
-        documents,
-        &converter,
-        &dir,
-        source.path,
-        &staging,
-        &pages,
-        cancelled,
+        documents, &converter, &dir, source, &staging, &pages, cancelled,
     );
     let converted = match outcome {
         Ok(kind) => keep(&dir, &prefix, &staging, kind, started),
@@ -727,17 +720,19 @@ fn run(
     documents: &Documents,
     converter: &Converter,
     dir: &Path,
-    source: &Path,
+    source: &Source<'_>,
     staging: &Path,
     pages: &[u64],
     cancelled: &CancelFlag,
 ) -> Result<String, Converted> {
-    let command = command_for(documents, converter, dir, source, staging, pages);
+    let command = command_for(documents, converter, dir, source.path, staging, pages);
     let deadline = Instant::now() + documents.timeout;
     let caller = Arc::clone(cancelled);
     let stop: CancelFlag = Arc::new(move || caller() || Instant::now() > deadline);
-    let capture =
-        crate::process::run_captured(command, None, &stop, 8 * 1024).map_err(Converted::Refused)?;
+    // The bytes the read gate judged, never the name again (#890); the name gives the extension.
+    let bytes = Some(source.bytes.to_vec());
+    let capture = crate::process::run_captured(command, bytes, &stop, 8 * 1024)
+        .map_err(Converted::Refused)?;
     if capture.cancelled {
         return Err(Converted::Refused(format!(
             "conversion stopped (cancelled, or past {}s)",
@@ -767,7 +762,7 @@ fn run(
         let page = pages.first().copied().unwrap_or(1);
         return Err(Converted::Refused(format!(
             "no text layer on any of the {blank} PDF page(s) read of {total} (image-only or vector art), so there is no text to show; to see page {page}, render it to PNG in ipython, if its kernel has pymupdf: `import pymupdf; p = \"/tmp/page-{page}.png\"; pymupdf.open({source})[{index}].get_pixmap(dpi=200).save(p); print(await attach_image(p))`",
-            source = python_str(source),
+            source = python_str(source.path),
             index = page.saturating_sub(1),
         )));
     }
