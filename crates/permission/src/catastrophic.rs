@@ -369,19 +369,28 @@ impl ReadGate {
         }
     }
 
-    /// Unlinks `path` once judged as a write and while its name still names the file opened; std
-    /// has no `unlinkat`, so an ancestor swapped between that check and the unlink is the gap left.
+    /// Unlinks `path`, the link itself when it is one, once judged as a write and while its name
+    /// still names the file opened. Linux unlinks inside the directory held open; macOS by name.
     pub fn remove(&self, path: &Path, walls: &[PathBuf]) -> io::Result<()> {
         let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
             return Err(io::ErrorKind::InvalidInput.into());
         };
         let real = fs::canonicalize(parent)?.join(name);
-        let file = self.opened(&real, walls, true, OpenOptions::new().read(true))?;
+        self.judge(&real, walls, true)?;
+        let (_dir, at) = beside(&real)?;
+        let file = no_link(OpenOptions::new().read(true))?.open(&at)?;
         let id = |meta: io::Result<fs::Metadata>| meta.ok().as_ref().and_then(file_id);
-        if id(file.metadata()) != id(fs::symlink_metadata(&real)) {
+        if !opened_at(&file, &real) || id(file.metadata()) != id(fs::symlink_metadata(&at)) {
             return Err(refused(&real));
         }
-        fs::remove_file(real)
+        fs::remove_file(at)
+    }
+
+    fn judge(&self, real: &Path, walls: &[PathBuf], writes: bool) -> io::Result<()> {
+        let denied = self.denies(real)
+            || (writes && is_catastrophic(real, &self.context))
+            || beneath(walls, real);
+        if denied { Err(refused(real)) } else { Ok(()) }
     }
 
     fn opened(
@@ -391,13 +400,9 @@ impl ReadGate {
         writes: bool,
         options: &OpenOptions,
     ) -> io::Result<File> {
-        if self.denies(real)
-            || (writes && is_catastrophic(real, &self.context))
-            || beneath(walls, real)
-        {
-            return Err(refused(real));
-        }
-        let file = no_link(options).open(real)?;
+        self.judge(real, walls, writes)?;
+        let (_dir, at) = beside(real)?;
+        let file = no_link(options)?.open(&at)?;
         opened_at(&file, real)
             .then_some(file)
             .ok_or_else(|| refused(real))
@@ -437,19 +442,35 @@ fn refused(real: &Path) -> io::Error {
     )
 }
 
-/// `O_NOFOLLOW_ANY` from `<sys/fcntl.h>` (macOS 11): the open fails if any component of the
-/// path is a link, so a resolved path opens as judged or not at all.
+/// `O_NOFOLLOW_ANY` from `<sys/fcntl.h>`: the open fails if any component of the path is a
+/// link, so a resolved path opens as judged or not at all.
 #[cfg(target_os = "macos")]
-fn no_link(options: &OpenOptions) -> OpenOptions {
+fn no_link(options: &OpenOptions) -> io::Result<OpenOptions> {
     use std::os::unix::fs::OpenOptionsExt;
-    let mut options = options.clone();
-    options.custom_flags(0x2000_0000);
-    options
+    static HONOURED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let flagged = |options: &OpenOptions| {
+        let mut options = options.clone();
+        options.custom_flags(0x2000_0000);
+        options
+    };
+    // A kernel before macOS 11 ignores the bit, so `/etc`, a link to `/private/etc`, opens
+    // instead of failing with ELOOP (62); every gated open is refused then, never raced.
+    let honoured = *HONOURED.get_or_init(|| {
+        let probe = flagged(OpenOptions::new().read(true)).open("/etc");
+        probe.err().and_then(|error| error.raw_os_error()) == Some(62)
+    });
+    match honoured {
+        true => Ok(flagged(options)),
+        false => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this macOS ignores O_NOFOLLOW_ANY (it needs macOS 11), so no tool opens a file a swapped link could redirect",
+        )),
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn no_link(options: &OpenOptions) -> OpenOptions {
-    options.clone()
+fn no_link(options: &OpenOptions) -> io::Result<OpenOptions> {
+    Ok(options.clone())
 }
 
 /// Linux has no such flag on `open`, so the kernel's own name for the descriptor must be the
@@ -463,6 +484,27 @@ fn opened_at(file: &File, real: &Path) -> bool {
 #[cfg(not(target_os = "linux"))]
 fn opened_at(_file: &File, _real: &Path) -> bool {
     true
+}
+
+/// Where to open `real` from: on Linux through its parent held open and checked, so a create or
+/// an unlink lands in the directory judged (std has no `openat` or `unlinkat`).
+#[cfg(target_os = "linux")]
+fn beside(real: &Path) -> io::Result<(Option<File>, PathBuf)> {
+    use std::os::fd::AsRawFd;
+    let (Some(parent), Some(name)) = (real.parent(), real.file_name()) else {
+        return Ok((None, real.to_path_buf()));
+    };
+    let dir = File::open(parent)?;
+    if !opened_at(&dir, parent) {
+        return Err(refused(real));
+    }
+    let at = Path::new(&format!("/proc/self/fd/{}", dir.as_raw_fd())).join(name);
+    Ok((Some(dir), at))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn beside(real: &Path) -> io::Result<(Option<File>, PathBuf)> {
+    Ok((None, real.to_path_buf()))
 }
 
 /// Invariant: beneath when it or an ancestor is one of `roots` by spelling or file identity, so

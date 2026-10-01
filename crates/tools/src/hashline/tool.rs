@@ -395,13 +395,15 @@ impl HashlineReadTool {
         let mut spent = 0_usize;
         let mut whole = 0_usize;
         let mut budget_named = false;
+        let gate = context.read_gate();
         for path in &matches {
             let display = path
                 .strip_prefix(&root)
                 .unwrap_or(path)
                 .to_string_lossy()
                 .into_owned();
-            let bytes = context.read(path).unwrap_or_default();
+            let opened = gate.open(path, &context.deny_read);
+            let bytes = opened.and_then(crate::tool::read_all).unwrap_or_default();
             let document = self.listed_document(path, &bytes, spent < READ_BYTE_FLOOR, context);
             let size = match &document {
                 Some(super::documents::Listed::Copy(copy)) => std::fs::metadata(&copy.path)

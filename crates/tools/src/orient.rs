@@ -185,6 +185,7 @@ fn skeletons(
             .collect::<Vec<_>>()
             .join("\n"));
     }
+    let gate = context.read_gate();
     // Incident: name order spent the whole layer on the alphabetically first
     // crate, so a symbol's own file was never shown.
     let mut ranked: Vec<(u8, usize, String)> = files
@@ -198,7 +199,11 @@ fn skeletons(
             // ponytail: heat keys are repo-root relative, so from a subdirectory
             // cwd nothing matches; the order line then reports 0 with heat.
             let hot = heat.and_then(|heat| heat.counts.get(&name)).copied();
-            (symbol_rank(path, symbol), hot.unwrap_or(0), name)
+            (
+                symbol_rank(path, symbol, &gate, context),
+                hot.unwrap_or(0),
+                name,
+            )
         })
         .collect();
     ranked.sort_by(|left, right| {
@@ -209,7 +214,6 @@ fn skeletons(
             .then_with(|| left.2.cmp(&right.2))
     });
     let total = ranked.len();
-    let gate = context.read_gate();
     let mut out = order_line(&ranked, symbol);
     let mut shown = 0_usize;
     let mut cap = format!("the {SKELETON_FILES}-file cap");
@@ -242,9 +246,15 @@ fn skeletons(
 }
 
 /// 2 defines the symbol, 1 only mentions it, 0 neither or no symbol given.
-fn symbol_rank(path: &Path, symbol: Option<&str>) -> u8 {
+fn symbol_rank(
+    path: &Path,
+    symbol: Option<&str>,
+    gate: &yi_permission::ReadGate,
+    context: &ToolContext,
+) -> u8 {
     let Some(symbol) = symbol else { return 0 };
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let opened = gate.open(path, &context.deny_read);
+    let Ok(text) = opened.and_then(std::io::read_to_string) else {
         return 0;
     };
     if text
