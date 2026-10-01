@@ -92,11 +92,11 @@ fn a_taken_name_is_neither_followed_nor_overwritten() -> Fallible {
     );
     assert!(fs::symlink_metadata(dir.join(&name))?.is_symlink());
     assert_eq!(fs::read(&first)?, b"output");
-    // Two different outputs on one name: the planted one stays, the new one gets its own.
+    // Two outputs of one length on one name: the planted one stays, the new one gets its own.
     fs::remove_file(dir.join(&name))?;
-    fs::write(dir.join(&name), "other")?;
+    fs::write(dir.join(&name), "OUTPUT")?;
     let second = kept(&dir, b"output")?;
-    assert_eq!(fs::read_to_string(dir.join(&name))?, "other");
+    assert_eq!(fs::read_to_string(dir.join(&name))?, "OUTPUT");
     assert_eq!(fs::read(&second)?, b"output");
     fs::write(dir.join(&name), "output")?;
     assert_eq!(
@@ -202,6 +202,43 @@ fn a_keep_sweeps_other_sessions_old_spills() -> Fallible {
     assert!(
         !old.exists(),
         "another session's old spill outlived the sweep"
+    );
+    Ok(())
+}
+
+/// #881: the flat dir every session shared is swept by the same rule, made 0700 again, and
+/// removed once empty. Run alone, as nextest does, since the sweep runs once an hour.
+#[test]
+fn the_flat_dir_is_made_private_and_swept() -> Fallible {
+    let root = Scratch::new("yi-spill-flat")?;
+    let flat = root.join(spill::FLAT_SPILLS);
+    fs::create_dir_all(&flat)?;
+    fs::set_permissions(&flat, fs::Permissions::from_mode(0o755))?;
+    for name in ["old.txt", "young.txt"] {
+        fs::write(flat.join(name), name)?;
+    }
+    let old = fs::OpenOptions::new()
+        .write(true)
+        .open(flat.join("old.txt"))?;
+    old.set_modified(std::time::SystemTime::UNIX_EPOCH)?;
+    kept(&root.join(spill::SPILLS).join("s1"), b"output")?;
+    assert_eq!(mode(&flat)?, 0o700);
+    assert!(!flat.join("old.txt").exists() && flat.join("young.txt").exists());
+    Ok(())
+}
+
+#[test]
+fn an_emptied_flat_dir_is_removed() -> Fallible {
+    let root = Scratch::new("yi-spill-flat-empty")?;
+    let old = root.join(spill::FLAT_SPILLS).join("old.txt");
+    fs::create_dir_all(root.join(spill::FLAT_SPILLS))?;
+    fs::write(&old, "a week old")?;
+    let file = fs::OpenOptions::new().write(true).open(&old)?;
+    file.set_modified(std::time::SystemTime::UNIX_EPOCH)?;
+    kept(&root.join(spill::SPILLS).join("s1"), b"output")?;
+    assert!(
+        !root.join(spill::FLAT_SPILLS).exists(),
+        "the emptied flat dir stayed"
     );
     Ok(())
 }
