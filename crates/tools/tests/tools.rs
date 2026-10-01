@@ -482,6 +482,23 @@ fn checkpoint_restore_keeps_what_was_edited_after_the_turn() -> TestResult {
     Ok(())
 }
 
+/// Dies with the shadow snapshotting itself when `yi` starts in `~`: each capture stages the
+/// last one's objects, so the tree moves with nothing edited and every capture runs slower.
+#[test]
+fn a_capture_leaves_out_a_shadow_that_lives_inside_the_project() -> TestResult {
+    let project = temp_dir("checkpoint-home-project")?;
+    fs::write(project.join("notes.txt"), "alpha\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&project.join(".yi/checkpoints"), &project)?;
+    let first = checkpoints.capture()?;
+    assert_eq!(
+        checkpoints.capture()?,
+        first,
+        "nothing edited, yet the tree moved"
+    );
+    assert_eq!(checkpoints.show(&first, "notes.txt")?, "alpha\n");
+    Ok(())
+}
+
 #[test]
 fn checkpoint_restore_undoes_a_rename() -> TestResult {
     let project = temp_dir("checkpoint-rename-project")?;
