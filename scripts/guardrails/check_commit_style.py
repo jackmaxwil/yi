@@ -148,7 +148,9 @@ if __name__ == "__main__":
             parts = line.split("\t")
             if len(parts) >= 2:
                 edits.append((parts[0][:1], parts[-1]))
-        baselines = sum(1 for status, f in edits if f.startswith(BASELINES) and status in "MD")
+        # A deletion rides with the gate that stopped reading it: a gate still reading the file
+        # crashes, and check_orphans refuses one nobody reads, so only a modification hides growth.
+        baselines = sum(1 for status, f in edits if f.startswith(BASELINES) and status == "M")
         code = sum(1 for _, f in edits if code_path(f))
         if baselines and code:
             return [f"{baselines} baseline edit(s) ride beside {code} code file(s); a baseline edit lands in its own commit (a new baseline may seed with its gate)"]

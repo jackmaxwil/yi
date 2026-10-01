@@ -1,7 +1,8 @@
 # Changelog
 
-One row per version of `docs/ARCHITECTURE.md`. A structural change bumps the
-`version:` there and adds its row here in the same diff.
+One row per version of `docs/ARCHITECTURE.md`. A structural change adds a file
+under `docs/changes/`; after the merge the recorder bumps the `version:` there and
+writes its row here.
 
 | ver | date | change |
 |---|---|---|
