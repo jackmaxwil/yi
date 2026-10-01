@@ -143,6 +143,40 @@ fn an_exec_source_the_gate_allows_is_still_admitted() {
     );
 }
 
+/// #1001: an `exec://` source runs on the host, so where Seatbelt exists a walled session's never
+/// runs, even one the gate allows outright; yolo, the user's own choice, still admits it.
+#[test]
+fn a_walled_sessions_exec_source_never_runs_where_a_sandbox_exists() {
+    let project = PathBuf::from("/nonexistent/project");
+    let broker = |mode| {
+        PermissionBroker::new(
+            mode,
+            project.clone(),
+            Vec::new(),
+            None,
+            tokio::sync::broadcast::channel(8).0,
+        )
+        .with_sandbox(Some(yi_tools::Sandbox {
+            writable: vec![project.clone()],
+            deny_read: Vec::new(),
+            deny_write: Vec::new(),
+            host_owned: Vec::new(),
+            spared: Vec::new(),
+        }))
+    };
+    let wall = yi_runtime::Wall {
+        deny_read: vec![project.join("secret")],
+        ..yi_runtime::Wall::default()
+    };
+    let refused = |mode| {
+        let walled = broker(mode).for_child(&wall, &project);
+        yi_runtime::tools::refuse_armed("git status", false, Some(&walled), "")
+    };
+    let auto = refused(PermissionMode::Auto).unwrap_or_default();
+    assert!(auto.contains("never leave"), "{auto}");
+    assert_eq!(refused(PermissionMode::Yolo), None, "yolo runs it");
+}
+
 /// A rule may allow a credential read the profile would refuse; it runs outside, and says so.
 #[test]
 fn an_allowed_credential_read_runs_outside_and_says_so() -> TestResult {

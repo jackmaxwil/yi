@@ -482,6 +482,23 @@ fn checkpoint_restore_keeps_what_was_edited_after_the_turn() -> TestResult {
     Ok(())
 }
 
+/// Dies with the shadow snapshotting itself when `yi` starts in `~`: each capture stages the
+/// last one's objects, so the tree moves with nothing edited and every capture runs slower.
+#[test]
+fn a_capture_leaves_out_a_shadow_that_lives_inside_the_project() -> TestResult {
+    let project = temp_dir("checkpoint-home-project")?;
+    fs::write(project.join("notes.txt"), "alpha\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&project.join(".yi/checkpoints"), &project)?;
+    let first = checkpoints.capture()?;
+    assert_eq!(
+        checkpoints.capture()?,
+        first,
+        "nothing edited, yet the tree moved"
+    );
+    assert_eq!(checkpoints.show(&first, "notes.txt")?, "alpha\n");
+    Ok(())
+}
+
 #[test]
 fn checkpoint_restore_undoes_a_rename() -> TestResult {
     let project = temp_dir("checkpoint-rename-project")?;
@@ -2083,6 +2100,83 @@ fn grep_replace_previews_then_applies_and_tags() -> TestResult {
         guard.snapshots.head(&canonical).is_some(),
         "the rewrite is tagged"
     );
+    Ok(())
+}
+
+/// A grep apply lands files the way `write` and `edit` do: a rewrite that breaks a Python file
+/// says so, and the result carries the patch a diff pane renders.
+#[test]
+fn a_grep_apply_carries_the_syntax_verdict_and_its_patch() -> TestResult {
+    if !on_path("python3") {
+        return Ok(());
+    }
+    let dir = temp_dir("grep-apply-land")?;
+    fs::write(dir.join("a.py"), "x = 1\n")?;
+    // A later file that still parses must not wash out the earlier failure.
+    fs::write(dir.join("b.py"), "s = '= 1'\n")?;
+    let applied = GrepTool::default().execute(
+        args(&[
+            ("pattern", json!("= 1")),
+            ("replace", json!("= (")),
+            ("apply", json!(true)),
+        ]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    let text = output_text(&applied);
+    assert!(text.contains("a.py: syntax: error line 1"), "{text}");
+    let patch = applied.result.details["patch"]
+        .as_str()
+        .ok_or(text.clone())?;
+    assert!(
+        patch.contains("-x = 1") && patch.contains("+x = ("),
+        "{patch}"
+    );
+    // ACP renders the patch headers as paths, so they name the file absolutely, as write's do.
+    let absolute = dir.join("a.py").canonicalize()?.display().to_string();
+    assert!(patch.contains(&format!("+++ b/{absolute}")), "{patch}");
+    let syntax = applied.result.details["syntax"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(syntax.starts_with("syntax: error"), "{syntax}");
+    // No checker ran on a text file, so no verdict is claimed.
+    fs::write(dir.join("notes.txt"), "x = 1\n")?;
+    let unchecked = GrepTool::default().execute(
+        args(&[
+            ("pattern", json!("= 1")),
+            ("replace", json!("= 2")),
+            ("include", json!("*.txt")),
+            ("apply", json!(true)),
+        ]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    assert_eq!(
+        unchecked.result.details["syntax"],
+        Value::Null,
+        "{}",
+        output_text(&unchecked)
+    );
+    Ok(())
+}
+
+/// Approval of a write is approval of the named path; through a symlink the bytes land at its
+/// target, a file nobody reviewed.
+#[cfg(unix)]
+#[test]
+fn a_write_through_a_symlink_is_refused() -> TestResult {
+    let dir = temp_dir("write-symlink")?;
+    fs::write(dir.join("target.txt"), "kept\n")?;
+    std::os::unix::fs::symlink(dir.join("target.txt"), dir.join("link.txt"))?;
+    let refused = WriteTool::default().execute(
+        args(&[("path", json!("link.txt")), ("content", json!("lost\n"))]),
+        &ToolContext::new(dir.to_path_buf()),
+    );
+    assert!(refused.is_error, "{}", output_text(&refused));
+    assert!(
+        output_text(&refused).contains("is a symlink"),
+        "{}",
+        output_text(&refused)
+    );
+    assert_eq!(fs::read_to_string(dir.join("target.txt"))?, "kept\n");
     Ok(())
 }
 

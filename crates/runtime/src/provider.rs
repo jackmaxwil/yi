@@ -14,8 +14,15 @@ use yi_types::event::AssistantMessageEvent;
 use yi_types::message::AgentMessage;
 use yi_types::model::{Effort, LlmContext, Model};
 
+/// OpenRouter's model list omits routing variants (`:exacto`, `:nitro`): one takes its base's entry.
 pub fn resolve_model(provider: &str, id: &str) -> Option<Model> {
-    Catalog::shared().get(provider, id).cloned()
+    let catalog = Catalog::shared();
+    catalog.get(provider, id).cloned().or_else(|| {
+        let (base, _variant) = id.rsplit_once(':').filter(|_| provider == "openrouter")?;
+        let mut model = catalog.get(provider, base)?.clone();
+        model.id = id.to_owned();
+        Some(model)
+    })
 }
 
 pub fn available_models() -> Vec<Model> {
@@ -358,6 +365,22 @@ mod tests {
         assert_eq!(output_cap(&model), OUTPUT_CEILING);
         model.max_tokens = 16_384;
         assert_eq!(output_cap(&model), 16_384);
+        Ok(())
+    }
+
+    #[test]
+    fn an_openrouter_variant_takes_its_base_entry_and_no_other_provider_does()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let base = resolve_model("openrouter", "z-ai/glm-5.3-flash").ok_or("no base")?;
+        let variant =
+            resolve_model("openrouter", "z-ai/glm-5.3-flash:exacto").ok_or("variant refused")?;
+        assert_eq!(variant.id, "z-ai/glm-5.3-flash:exacto");
+        assert_eq!(
+            (variant.cost, variant.context_window),
+            (base.cost, base.context_window)
+        );
+        assert!(resolve_model("openrouter", "z-ai/no-such-model:exacto").is_none());
+        assert!(resolve_model("openai", "gpt-5.6-luna:exacto").is_none());
         Ok(())
     }
 

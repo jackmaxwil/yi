@@ -116,12 +116,29 @@ impl PermissionBroker {
         self
     }
 
-    /// A walled holder's retry of a refusal in a protected dir, a store or `~/.yi` among them, is
-    /// refused outright: approved outside the sandbox, it would read what the wall hides (D345).
+    /// Invariant: where Seatbelt exists, a walled holder's call never runs unconfined, unless the
+    /// user chose yolo: outside, its text would be its only wall, and text is bypassable (#1001).
+    pub(crate) fn confines_walled(&self) -> bool {
+        self.walled && self.sandbox.is_some() && self.mode() != crate::PermissionMode::Yolo
+    }
+
+    /// A walled holder's call that would leave the sandbox is refused before anyone is asked: one
+    /// that needs the host, a retry of a pathless refusal, or one in a protected dir (D345).
     pub(super) fn walled_retry(
         &self,
+        command: Option<&str>,
         refusal: Option<&yi_tools::SandboxRefusal>,
     ) -> Option<String> {
+        let confined = command.filter(|_| self.confines_walled());
+        if let Some((why, _)) = confined.and_then(|text| super::leaves_sandbox(text, &self.context))
+        {
+            return Some(crate::gate::walled_host_refusal(why));
+        }
+        if let (Some(_), Some(yi_tools::SandboxRefusal::Scopes(_))) = (confined, refusal) {
+            return Some(crate::gate::walled_host_refusal(
+                "its last contained run was refused",
+            ));
+        }
         let (true, Some(sandbox), Some(yi_tools::SandboxRefusal::Path(path))) =
             (self.walled, &self.sandbox, refusal)
         else {

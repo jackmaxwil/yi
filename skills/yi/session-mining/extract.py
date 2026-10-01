@@ -123,6 +123,14 @@ CAVEAT = (
 )
 
 
+def claimed_numbers(text):
+    """Digit runs of three or more outside closed code spans, bounded by no word character, dot or
+    slash: the numerals `numbers_of` in todo/coupling.rs sends back, so the two agree."""
+    parts = text.split("`")
+    prose = " ".join(p for i, p in enumerate(parts) if i % 2 == 0 or i == len(parts) - 1)
+    return set(re.findall(r"(?<![\w./])\d{3,}(?![\w./])", prose))
+
+
 def _entropy(text):
     counts = collections.Counter(text)
     n = len(text)
@@ -500,7 +508,7 @@ def signals(entries):
         if tail.endswith("?") or any(word in tail for word in OFFER_WORDS):
             out["closing_offer"] = 1
     seen = " ".join(r["text"] for r in results)
-    for number in set(re.findall(r"(?<![\w.])\d{3,}(?![\w.])", final)):
+    for number in claimed_numbers(final):
         if number not in seen and number not in "".join(users):
             out["count_claim"] += 1
     out["answer_shape"] = len(final)
