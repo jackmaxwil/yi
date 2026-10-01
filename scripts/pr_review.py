@@ -58,7 +58,7 @@ PROBES = ROOT / "skills/yi/pr-review/probes"
 # PRs here are written by Claude Code and yi on Anthropic models, so that family is avoided.
 AVOID_FAMILIES = ("anthropic",)
 # The review job's fgj is signed in as this account; its rounds count wherever the sweep runs.
-BOT = "yi-bot"
+BOT = bot_meter.BOT
 # Every `yi ask` a round makes adds its sessions here; cmd_review starts a fresh one per round.
 METER = bot_meter.Meter()
 
