@@ -432,3 +432,158 @@ fn a_stated_worktree_accept_is_refused_with_the_command_road() -> TestResult {
     );
     Ok(())
 }
+
+/// The orchestrate protocol as the model reads it: attached by a prompt that asks for a plan.
+fn orchestrate_protocol(dir: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    let mut host = yi_runtime::ext::install(yi_runtime::ext::ExtOptions {
+        cwd: dir.to_path_buf(),
+        home: dir.to_path_buf(),
+        mode: yi_runtime::PermissionMode::Auto,
+        user_system: String::new(),
+        schema_instruction: None,
+        context_window: 128_000,
+        global_skills: Vec::new(),
+    });
+    host.start(None, false);
+    host.dispatch(&host.prompt_event("plan this: split the crate"), None);
+    let prompt = host.system_prompt();
+    let at = prompt
+        .find("# Orchestrate")
+        .ok_or("the protocol did not attach")?;
+    Ok(prompt.get(at..).ok_or("no protocol text")?.to_owned())
+}
+
+/// Dies on `check`: the protocol taught title, acceptance, check and deps, the tool refused
+/// each, and a model spent five init calls learning the tool's own names from its errors.
+#[test]
+fn every_todo_field_the_protocol_teaches_is_one_init_accepts() -> TestResult {
+    let rig = rig("protocol-keys")?;
+    let protocol = orchestrate_protocol(&rig.temp)?;
+    let section = protocol
+        .split("## Write the plan")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .ok_or("no Write the plan section")?;
+    let keys: Vec<&str> = section
+        .lines()
+        .filter_map(|line| line.strip_prefix("- "))
+        .filter_map(|line| line.split(':').next())
+        .map(|key| key.trim_matches('`'))
+        .collect();
+    assert!(keys.len() >= 3, "the section names its fields: {section}");
+    assert!(
+        yi_runtime::doctrine_fragment().contains("its check a `decider: {cmd}` item"),
+        "doctrine's plan step names where a check goes"
+    );
+    for key in keys {
+        let mut todo = serde_json::Map::new();
+        todo.insert("label".to_owned(), json!("probe"));
+        if key != "label" {
+            todo.insert(key.to_owned(), Value::Null);
+        }
+        let input = json!({"op": "init", "goal": "g", "todos": [todo]});
+        let verdict = rig.tool.validate(input.as_object().ok_or("args")?);
+        let refused = verdict.err().unwrap_or_default();
+        assert!(
+            !refused.contains("does not take"),
+            "the protocol teaches `{key}`, which init refuses: {refused}"
+        );
+    }
+    Ok(())
+}
+
+/// Dies with no pointer to `decider`: the refusal listed the legal keys and left the model to
+/// guess where a check goes.
+#[test]
+fn a_todo_level_check_is_refused_with_where_it_belongs() -> TestResult {
+    let rig = rig("check-hint")?;
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "init", "goal": "g", "todos": [{"label": "t", "check": "cargo test"}]}),
+    );
+    assert!(refused, "{text}");
+    assert!(text.contains("decider: {cmd"), "{text}");
+    for (todo, hint) in [
+        (json!({"label": "t", "title": "t"}), "a todo is {label"),
+        (json!({"label": "t", "deps": ["a"]}), "a todo is {label"),
+        (
+            json!({"label": "t", "accept": {"command": "true"}}),
+            "accept: {command",
+        ),
+        (json!({"label": "t", "acceptance": "true"}), "decider: {cmd"),
+        (
+            json!({"label": "b", "after": "a"}),
+            "a todo's after is a list of labels",
+        ),
+        (
+            json!({"label": "t", "intent": ["verify the code"]}),
+            "user://<n> addresses, not prose",
+        ),
+    ] {
+        let (refused, text) = call(&rig, json!({"op": "init", "goal": "g", "todos": [todo]}));
+        assert!(refused && text.contains(hint), "{text}");
+    }
+    Ok(())
+}
+
+/// Dies on a label past the cap reaching the engine: the schema now carries the cap the
+/// parser enforces, so a provider that honours it never sends the 103-character label.
+#[test]
+fn the_todo_schema_carries_the_parsers_label_cap_and_list_shapes() -> TestResult {
+    let rig = rig("schema")?;
+    let schema = rig.tool.schema();
+    let todo = &schema["properties"]["todos"]["items"]["properties"];
+    assert_eq!(
+        todo["label"]["maxLength"],
+        json!(yi_types::plan::doc::TODO_LABEL_MAX)
+    );
+    assert_eq!(todo["after"]["items"]["type"], json!("string"));
+    assert_eq!(todo["intent"]["items"]["type"], json!("string"));
+    let item = &todo["contract"]["properties"]["items"]["items"];
+    assert_eq!(
+        item["required"],
+        json!(["id", "critical", "weight", "decider"])
+    );
+    Ok(())
+}
+
+/// Dies on the schema's own example: `{cmd: {checker, timeout_ms}}` is how the decider text says
+/// to set a check's deadline, and the deadline it names must be the one frozen.
+#[test]
+fn a_checker_given_as_an_object_keeps_its_deadline() -> TestResult {
+    let rig = rig("cmd-object")?;
+    let plan = opened(
+        &rig,
+        json!([{
+            "label": "slow",
+            "contract": {"class": "inline", "items": [
+                {"id": "gate", "critical": true, "weight": 1,
+                 "decider": {"cmd": {"checker": "true", "timeout_ms": 300_000}}}
+            ]},
+        }]),
+    )?;
+    let contract = todo_of(&plan, "slow")?
+        .contract
+        .as_ref()
+        .ok_or("no contract")?;
+    let [item] = contract.items.as_slice() else {
+        return Err("one item".into());
+    };
+    let Decider::Cmd {
+        checker,
+        timeout_ms,
+    } = &item.decider
+    else {
+        return Err("a cmd decider".into());
+    };
+    let manifest = CheckerManifest::parse(&rig.store.artifacts(&plan.id).get(&checker.digest)?)?;
+    assert_eq!((*timeout_ms, manifest.timeout_ms), (300_000, 300_000));
+    let decider = rig.tool.schema()["properties"]["todos"]["items"]["properties"]["contract"]
+        ["properties"]["items"]["items"]["properties"]["decider"]["description"]
+        .to_string();
+    assert!(
+        decider.contains("{cmd: {checker: command, timeout_ms}}"),
+        "{decider}"
+    );
+    Ok(())
+}

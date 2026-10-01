@@ -125,7 +125,8 @@ phase you are in when you change it.
    boundary, a preference between real tradeoffs. Exit: no open question
    that a read could answer.
 5. Plan, when it pays: several files, several constraints, delegation, or
-   ambiguity. Lift the todos into the plan tool with a check per task.
+   ambiguity. Lift the todos into the plan tool with a contract per task,
+   its check a `decider: {cmd}` item.
    Exit: every task has an acceptance and, where one can be written, a
    command that exits 0 only when it holds.
 6. Execute. Smallest correct change first; the build ladder; root cause
