@@ -209,9 +209,16 @@ impl From<PlanId> for String {
 
 /// The todo's address: verbatim-content identity, unique per plan, immutable once created —
 /// rewording is append-new plus abandon-old — which makes it safe as an edge endpoint.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct TodoLabel(String);
+
+/// The label as its user wrote it, quoted: every refusal names a todo through this.
+impl std::fmt::Debug for TodoLabel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:?}", self.0)
+    }
+}
 
 text_newtype!(TodoLabel, DocError, |label| one_line(
     label,

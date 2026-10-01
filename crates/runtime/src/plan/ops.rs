@@ -76,7 +76,9 @@ pub struct Outcome {
 pub enum PlanOpError {
     #[error("no plan is open; add goal to this set to open one, or init")]
     NoPlan,
-    #[error("plan {id} already exists and is open; Plan.attach({id:?}) resumes it")]
+    #[error(
+        "plan {id} already exists and is open; view it, append to it, or supersede its todos (in the kernel, Plan.attach resumes it)"
+    )]
     PlanExists { id: PlanId },
     #[error("no todo labelled {label:?} in plan {plan}")]
     UnknownLabel { plan: PlanId, label: TodoLabel },

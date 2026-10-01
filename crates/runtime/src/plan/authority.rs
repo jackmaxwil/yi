@@ -81,7 +81,7 @@ pub enum SubmitError {
     #[error("{0}")]
     Arg(#[from] ArgError),
     #[error(
-        "{op} needs the user's confirmation, and no session holds a prompt that could ask for it"
+        "{op} needs the user's confirmation, and nothing in this session can ask for it: say in your answer what you ran and its exit line, and leave the todo open"
     )]
     NoConfirmer { op: &'static str },
     #[error("the user declined {op} on plan {plan}")]
