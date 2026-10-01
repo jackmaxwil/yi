@@ -512,8 +512,8 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   `grep` (both by default), `turns` its request cap (3, at most 10; the last is the last word, whose tool calls are refused,
   after a `[turns]` note; one turn is one request with no tools), `deny_write` gains `.`, the user's
   gate rules bind it, and it has no extension, kernel, plan, schedule,
-  checkpoint or environment block; a fork or an isolation refuses; 64 held readers refuse the next
-  until one is reaped. `rlm.ask(question, partition,
+  checkpoint or environment block; a fork or an isolation refuses; it counts toward the family cap
+  like any child (D341). `rlm.ask(question, partition,
   schema=…)` runs one, reads its result and reaps it. A reader's `schema` is named in its
   question and sent as structured output only by a reader with `tools=[]` or `turns=1` (the turn cap's last word still carries the tools, so a reader that keeps its tools gets the schema in its question and `result`'s check only), strictly only where it closes every object (D309); its
   partition is its own first message, marked `shared_through` when a sibling sent it within 300 s.
@@ -990,7 +990,7 @@ The enforced rules for Rust in `crates/`; production lines precede a file's firs
 | `#![deny(clippy::string_slice)]` on every crate root outside the shrink-only pending list (`ai`, `context`, `kernel`, `mcp-cli`, `runtime`, `tools`) | `check_manifests.py`, `string_slice_pending.json` |
 | fallible crate boundaries return `thiserror` enums; `anyhow` is banned | `cargo deny` (§18.5) |
 | ids and units that cross a module get a newtype (`Tokens`, `Bytes`, `JobId`, `TreeId`, `PrNumber`, console `SessionId`) | review; no gate |
-| a comment run is ≤ 2 lines (a line-1 license header is exempt) and the over-cap count may not grow; comment volume outside `crates/types` may not grow | `check_comments.py`, `comment_budget.json` |
+| a comment run is ≤ 2 lines (a line-1 license header is exempt) and the over-cap count may not grow; comment volume outside `crates/types` may not grow | `check_comments.py`, measured at the fork point, raised in the change file |
 | a comment opening with `Word:` uses a closed grant, `Incident:` or `Invariant:`; a comment under 8 words once its decision ids are stripped is rejected | `check_comments.py` |
 | `rustdoc::broken_intra_doc_links = "deny"`; `private_intra_doc_links` is allowed (D55) | `cargo doc --workspace --no-deps --document-private-items` in `check_guardrails.sh` |
 | a dist build aborts on panic | the §18.2 `dist` profile |
@@ -1021,25 +1021,28 @@ format is 1 and migrates on read (D282); kernel venv `BOOTSTRAP_SCHEMA = 1` (§9
 `scripts/guardrails/check_guardrails.sh` runs every gate below in parallel and prints the reports
 in launch order. `just check` is `lint`, `guardrails` and `test`; the pre-commit hook runs
 `--fast`, which skips the dist build, `binary_size`, `startup`, `growth`, `cargo doc`, `machete`
-and `deny`. Baselines live in `scripts/guardrails/baselines/`; a gate's `--update` records growth.
+and `deny`. The size ceilings (crate, test, comments, growth) are measured at the branch's fork point
+(`git merge-base origin/main HEAD`) and raised by a `raise:` line in its change file; every other
+baseline lives in `scripts/guardrails/baselines/`, and a gate's `--update` records its growth.
 
 | Gate | Enforces | Baseline |
 |---|---|---|
 | `check_manifests` | folder `x` is crate `yi-x`; workspace version, edition, license, rust-version, lints; deps `{ workspace = true }`; feature allowlist; string_slice roots (§19); `serde`/`serde_derive` only in `yi-types` (§20) | `string_slice_pending.json` |
 | `check_boundaries` | each crate's `yi-*` deps are in its allowlist; unknown crate or stale entry fails | `boundaries.toml` |
 | `check_filenames`, `check_glob_reexport`, `check_orphans` | no `part_N.rs` or `_NN.rs` source file; no `pub use …::*` or `use super::*` in production lines; no write-only `pub` field, no baseline without a reader (D109) | — |
-| `check_commit_style` | subjects on `HEAD --not origin/main`: one imperative line, ≤ 72 chars, no assistant trailers; a baseline edit never shares a commit with code (merge commits exempt) | — |
-| `check_panic`, `check_comments`, `check_schemas_lock` | §19, §20 | `panic_budget.json`, `comment_budget.json`, `schemas.lock` |
+| `check_commit_style` | subjects on `HEAD --not origin/main`: one imperative line, ≤ 72 chars, no assistant trailers; a baseline modification never shares a commit with code (a deletion rides with the gate that stopped reading it; merge commits exempt) | — |
+| `check_panic`, `check_comments`, `check_schemas_lock` | §19, §20 | `panic_budget.json`, the fork point, `schemas.lock` |
 | `check_deps_budget`, `check_binary_size`, `check_startup` | §18.6 | `deps_budget.json`, `binary_size_budget.json`, `startup_ms_budget.json` |
-| `check_file_size`, `check_fn_size`, `check_crate_size` | a `src/` file ≤ 1,200 lines; a function ≤ 150 lines, counted by braces; per-crate `src/` line ceilings | `crate_size_budget.json` |
+| `check_file_size`, `check_fn_size`, `check_crate_size` | a `src/` file ≤ 1,200 lines; a function ≤ 150 lines, counted by braces; per-crate `src/` lines ≤ the fork point's plus `raise: crate <name> +N` | the fork point |
 | `check_duplication` | no 15-line normalized window repeated across production `.rs` | — |
-| `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | `test_size_budget.json` |
+| `check_test_size`, `check_test_tiers` | total `crates/*/tests` lines ≤ the fork point's plus `raise: tests +N`; every `#[ignore]` carries exactly the `just journeys` tier-2 reason | the fork point |
 | `check_env_surface`, `check_blob_size` | every `YI_*` name in `src/` is declared, at most 40 declared; no tracked file > 512,000 bytes outside the allowlist | `env_vars.json`, `blob_allowlist.txt` |
 | `check_public_surface` | after the mirror's exclusions and substitutions no file matches a deny pattern (D172) | `scripts/mirror/{exclude,replace,deny}.txt` |
 | `check_request_budget` | system-prompt and tool-table bytes; tool-surface hashes (D188) | `request_budget.json`, `tool_surface.json` |
 | `check_behavior` | faux-cassette behavior cases: a locked pass never fails (D76) | `behavior_baseline.json` |
 | `check_prompt_examples` | Python in prompts and skills awaits every `yi` coroutine call | — |
-| `check_growth` | net `src/` growth over 150 lines needs a `growth +N:` changelog memo, over 2,000 a D-row cite; full run only | `src_loc.json` |
+| `check_growth` | net `src/` growth over the fork point past 150 lines needs `growth: +N <memo>` in the change file, past 2,000 a `decision:`; full run only | the fork point |
+| `check_changes` | a change is a file under `docs/changes/` in the header format; a branch never edits the `version:` line, a changelog row, a decision row, an ADR or a change file main holds | — |
 | `check_pr_metadata` | PR title as `check_commit_style`; a feature or over-band PR names an open, sized issue (D106); CI only | — |
 
 Also run: `codespell`, the `python/yi_runtime` unittests, `evals/selftest.py`, each script's
