@@ -60,7 +60,7 @@ pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<&'s
             let url = args
                 .get("output")
                 .and_then(Value::as_str)
-                .is_some_and(|out| out.contains("://"));
+                .is_some_and(|out| out.contains("://") && !out.contains(char::is_whitespace));
             if !url && args.remove("output").is_some() {
                 said.push("output takes a url; that text stays in this call's arguments");
             }
@@ -140,8 +140,8 @@ fn labels(op: &str, args: &mut Map<String, Value>) {
     }
 }
 
-/// `set` takes rows as `todos` or `list`; `supersede` takes them as `list`. Headings and blank
-/// lines are not rows, a struck row (`- [-]`, `- [~]`) leaves the list, and the parser judges the rest.
+/// `set` takes rows as `todos` or `list`; `supersede` takes them as `list`. A line that is not a
+/// row leaves the list, as a struck row (`- [-]`, `- [~]`) does; a box set cannot read is unchecked.
 fn checklist(op: &str, args: &mut Map<String, Value>, said: &mut Vec<&'static str>) {
     let rows: Vec<String> = match (op, args.remove("list"), args.remove("todos")) {
         ("set", Some(Value::String(list)), todos) => {
@@ -176,17 +176,28 @@ fn checklist(op: &str, args: &mut Map<String, Value>, said: &mut Vec<&'static st
             .iter()
             .any(|mark| line.trim_start().starts_with(mark))
     };
-    let kept: Vec<&String> = rows
-        .iter()
-        .filter(|line| {
-            let line = line.trim_start();
-            !(line.is_empty() || line.starts_with('#') || struck(line))
-        })
-        .collect();
     if rows.iter().any(|line| struck(line)) {
         said.push("struck rows (- [-]) leave the list, as an omitted row does");
     }
-    let list: Vec<&str> = kept.iter().map(|line| line.as_str()).collect();
+    let mut list = Vec::new();
+    for line in rows.iter().filter(|line| !struck(line)) {
+        let body = line.trim_start();
+        let indent = line
+            .get(..line.len().saturating_sub(body.len()))
+            .unwrap_or_default();
+        match body
+            .strip_prefix("- [")
+            .and_then(|rest| rest.split_at_checked(1))
+        {
+            Some((" " | ">" | "x" | "X", _)) => list.push(line.clone()),
+            Some((_, rest)) if rest.starts_with(']') => {
+                said.push("a box set does not read, such as [!], was kept unchecked");
+                list.push(format!("{indent}- [ {rest}"));
+            }
+            _ if body.is_empty() || body.starts_with('#') => {}
+            _ => said.push("lines that are not checklist rows were left out"),
+        }
+    }
     args.insert("list".to_owned(), json!(list.join("\n")));
 }
 

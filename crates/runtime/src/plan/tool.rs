@@ -640,7 +640,17 @@ impl PlanTool {
                     ..request
                 })?
             }
-            Err(PlanOpError::NoPlan) => {
+            Err(PlanOpError::NoPlan) if request.plan.is_some() => {
+                let mut again = args.clone();
+                again.remove("plan");
+                let mut text = self.run(&again)?;
+                said.push("the plan named is not open, so the call ran on the open plan");
+                for line in said {
+                    text.push_str(&format!("\nnote: {line}"));
+                }
+                return Ok(text);
+            }
+            Err(refused @ (PlanOpError::NoPlan | PlanOpError::NotActive { .. })) => {
                 let first = match &request.op {
                     Op::Set { goal: None, rows } => rows.first().map(|row| row.spec.label.clone()),
                     Op::Append { todos } | Op::Supersede { todos, .. } => {
@@ -648,7 +658,9 @@ impl PlanTool {
                     }
                     _ => None,
                 };
-                let first = first.ok_or(PlanOpError::NoPlan)?;
+                let Some(first) = first else {
+                    return Err(refused.into());
+                };
                 let goal = GoalText::new(first.as_str()).map_err(PlanOpError::Doc)?;
                 let op = match request.op.clone() {
                     Op::Set { rows, .. } => Op::Set {
@@ -659,8 +671,14 @@ impl PlanTool {
                     other => other,
                 };
                 said.push("no plan was open, so one was opened, named after the first todo");
-                self.engine
-                    .apply_with(OpRequest { op, ..request }, &blobs)?
+                self.engine.apply_with(
+                    OpRequest {
+                        op,
+                        plan: None,
+                        ..request
+                    },
+                    &blobs,
+                )?
             }
             Err(PlanOpError::NotAPermutation { .. }) => {
                 let Op::Reorder { labels } = &request.op else {

@@ -1,5 +1,5 @@
 {
- "source": "plan calls glm-5.3-flash sent in three rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982), refused then; checker commands replaced by `true`",
+ "source": "plan calls glm-5.3-flash sent in four rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982), refused then; checker commands replaced by `true`",
  "cases": [
   {
    "name": "no op beside goal and todos",
@@ -890,6 +890,169 @@
    },
    "lands": false,
    "says": "\"todos\" is malformed: expected"
+  },
+  {
+   "name": "a stray line under the checklist",
+   "setup": [],
+   "call": {
+    "op": "set",
+    "list": "- [ ] User decides divide-by-zero behavior (ValueError vs None vs other)\n- [ ] Implement input validation in calc.divide\n- [ ] Add regression test for the chosen behavior\n- [ ] Run test suite\nuser://1"
+   },
+   "lands": true,
+   "says": "not checklist rows"
+  },
+  {
+   "name": "a box set does not read",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "Add a mod(a, b) function to calc.py with a unit test, via a plan that exercises every plan op",
+     "todos": [
+      {
+       "label": "survey calc.py and test_calc.py"
+      },
+      {
+       "label": "implement mod(a, b) in calc.py"
+      },
+      {
+       "label": "add test_mod to test_calc.py"
+      },
+      {
+       "label": "run unittest gate green"
+      },
+      {
+       "label": "update README with mod usage"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "set",
+    "list": "- [x] survey calc.py and test_calc.py\n- [x] implement mod(a, b) in calc.py\n- [>] add test_mod to test_calc.py\n- [!] run unittest gate green\n- [-] update README with mod usage",
+    "plan": "add-a-mod-a-b-function-to-calc-py-with"
+   },
+   "lands": true,
+   "says": "kept unchecked"
+  },
+  {
+   "name": "decompose naming its sub-plan as plan",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "Add a mod(a, b) function to calc.py with a unit test, via a plan that exercises every plan op",
+     "todos": [
+      {
+       "label": "survey calc.py and test_calc.py"
+      },
+      {
+       "label": "implement mod(a, b) in calc.py"
+      },
+      {
+       "label": "add test_mod to test_calc.py"
+      },
+      {
+       "label": "run unittest gate green"
+      },
+      {
+       "label": "update README with mod usage"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "decompose",
+    "plan": "gate",
+    "todo": "run unittest gate green",
+    "todos": [
+     {
+      "label": "focused test_mod run green",
+      "after": [
+       "full unittest gate green"
+      ]
+     },
+     {
+      "label": "full unittest gate green",
+      "contract": {
+       "class": "inline",
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "full-green",
+         "weight": 100
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "lands": true,
+   "says": "ran on the open plan"
+  },
+  {
+   "name": "prose output holding a scheme",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "Add a mod(a, b) function to calc.py with a unit test, via a plan that exercises every plan op",
+     "todos": [
+      {
+       "label": "survey calc.py and test_calc.py"
+      },
+      {
+       "label": "implement mod(a, b) in calc.py"
+      },
+      {
+       "label": "add test_mod to test_calc.py"
+      },
+      {
+       "label": "run unittest gate green"
+      },
+      {
+       "label": "update README with mod usage"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "done",
+    "label": "survey calc.py and test_calc.py",
+    "output": "read://calc.py — add/divide present; read://test_calc.py — CalcTest with test_add, test_divide"
+   },
+   "lands": true,
+   "says": "output takes a url"
+  },
+  {
+   "name": "supersede a finished plan by name",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "Add a mod(a, b) function to calc.py with a unit test, via a plan that exercises every plan op",
+     "todos": [
+      {
+       "label": "survey calc.py and test_calc.py"
+      }
+     ]
+    },
+    {
+     "op": "done",
+     "label": "survey calc.py and test_calc.py"
+    }
+   ],
+   "call": {
+    "op": "supersede",
+    "plan": "add-a-mod-a-b-function-to-calc-py-with",
+    "reason": "work complete: mod(a,b) added with test, unittest gate green (exit=0); decompose and accepted_by_user proved unreachable in this build, remaining ops all exercised",
+    "todos": [
+     {
+      "label": "mod(a, b) added to calc.py with test_mod, gate green"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "no plan was open"
   }
  ]
 }
