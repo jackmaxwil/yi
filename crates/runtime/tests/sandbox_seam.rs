@@ -1161,3 +1161,60 @@ async fn a_glob_under_a_walled_ancestor_reaches_no_spared_spill() -> TestResult 
     );
     Ok(())
 }
+
+/// #1001 review: a walled call a rule or an approval let out of the sandbox met only a text
+/// check, which `curl -s file://` passed. Where Seatbelt exists it never leaves; a contained one
+/// meets Seatbelt alone, so the text check never refuses it first.
+#[tokio::test]
+async fn a_walled_call_never_leaves_the_sandbox_even_allowed() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, _, probe) = workspace("yi-seam-walled-leaving")?;
+    let home = probe.join(format!("yi-walled-leaving-{}", std::process::id()));
+    let other = home.join(".yi/spills/author/0123.txt");
+    std::fs::create_dir_all(other.parent().ok_or("no parent")?)?;
+    std::fs::write(&other, "WALLED OUTPUT\n")?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    // A rule lets curl out (network), an approval lets `/` out (an ancestor of key stores).
+    let commands = [
+        format!("curl -s file://{}", other.display()),
+        "curl -s http://127.0.0.1:9/".to_owned(),
+        "echo a / b".to_owned(),
+        format!("ls {}", home.join(".yi/spills").display()),
+    ];
+    let commands: Vec<&str> = commands.iter().map(String::as_str).collect();
+    let allow: Asker = Arc::new(|_| AskOutcome::AllowOnce);
+    let gate = BrokerSetup {
+        rules: vec![ConfigRule::new("bash", "curl *", ConfigRuleAction::Allow)?],
+        asker: Some(allow),
+        wall: Wall {
+            deny_read: vec![project.join("secret")],
+            ..Wall::default()
+        },
+        session: Some("juror"),
+        ..BrokerSetup::default()
+    };
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let ran = run_held(&project, &project, sandbox, &commands, gate).await;
+    let _ = std::fs::remove_dir_all(&home);
+    let ran = ran?;
+    for (command, text) in commands.iter().zip(&ran[..3]) {
+        assert!(
+            !text.contains("WALLED") && text.contains("never leave"),
+            "{command} left the sandbox: {text}"
+        );
+    }
+    let contained = (
+        ran[3].contains("Operation not permitted"),
+        ran[3].contains("reviewer wall"),
+    );
+    assert_eq!(
+        contained,
+        (true, false),
+        "Seatbelt, not the text check: {}",
+        ran[3]
+    );
+    Ok(())
+}

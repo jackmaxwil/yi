@@ -116,8 +116,15 @@ pub(crate) fn walled_refusal(path: &std::path::Path) -> String {
     )
 }
 
+/// A walled session's call that would leave a sandbox that exists (#1001).
+pub(crate) fn walled_host_refusal(why: &str) -> String {
+    format!(
+        "Denied by the reviewer wall: this command would run outside the sandbox ({why}), and a walled session's commands never leave it. Do without it, and report what you could not check."
+    )
+}
+
 /// A walled session's command that runs outside the sandbox, naming a walled root (#1001).
-pub(crate) fn outside_wall_refusal(root: &std::path::Path) -> String {
+pub(crate) fn outside_sandbox_refusal(root: &std::path::Path) -> String {
     format!(
         "Denied by the reviewer wall: this command runs outside the sandbox and names `{}` or a directory above it, which hold other sessions' transcripts and output. Read only what the wall leaves open, and report what you could not check.",
         root.display()

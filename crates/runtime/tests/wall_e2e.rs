@@ -999,6 +999,7 @@ async fn a_walled_call_outside_the_sandbox_reads_no_other_sessions_store() -> Te
     unsafe { std::env::set_var("HOME", &home) };
     let project = root.join("project");
     let (planted, store, [own_spill, transcript]) = plant_own(&home, &project)?;
+    let other = home.join(".yi/spills/author/0123.txt");
     let yolo = yi_permission::PermissionMode::Yolo;
     let (session, provider) = wired_child(&root, &project, juror_wall(&project), yolo, None);
     session.attach_store(store)?;
@@ -1010,6 +1011,8 @@ async fn a_walled_call_outside_the_sandbox_reads_no_other_sessions_store() -> Te
             "cd {} && cat spills/author/0123.txt",
             home.join(".yi").display()
         ),
+        format!("curl -s file://{}", other.display()),
+        format!("curl -s -d @{} file:///dev/null", other.display()),
         format!("cat {}", own_spill.display()),
         format!("cat {}", transcript.display()),
     ];
@@ -1018,9 +1021,9 @@ async fn a_walled_call_outside_the_sandbox_reads_no_other_sessions_store() -> Te
         .collect();
     let seen = run_turns(&session, &provider, calls).await?;
     let [.., spill, own] = seen.as_slice() else {
-        return Err(format!("six calls, got {seen:?}").into());
+        return Err(format!("eight calls, got {seen:?}").into());
     };
-    for (command, (text, _)) in commands.iter().zip(&seen[..4]) {
+    for (command, (text, _)) in commands.iter().zip(&seen[..6]) {
         assert!(
             !text.contains("WALLED") && text.contains("runs outside the sandbox"),
             "{command} reached a walled session: {text}"
@@ -1052,7 +1055,7 @@ async fn a_walled_heartbeat_source_names_no_walled_path() -> TestResult {
     // SAFETY: nextest runs each test in its own process; no other test reads HOME.
     unsafe { std::env::set_var("HOME", &home) };
     let project = root.join("project");
-    let (planted, store, _) = plant_own(&home, &project)?;
+    let (planted, store, [own_spill, _]) = plant_own(&home, &project)?;
     std::fs::create_dir_all(project.join("secret"))?;
     std::fs::write(project.join("secret/key.txt"), "WALLED KEY\n")?;
     let mut wall = juror_wall(&project);
@@ -1064,10 +1067,12 @@ async fn a_walled_heartbeat_source_names_no_walled_path() -> TestResult {
     heartbeats.bind_session("juror".to_owned());
     let mut host = yi_runtime::HostRegistry::default();
     heartbeats.register(&mut host);
-    for path in [
-        project.join("secret/key.txt"),
-        planted.author,
-        home.join(".yi/spills/author/0123.txt"),
+    // Its own spill is spared, as its tools' is.
+    for (path, walled) in [
+        (project.join("secret/key.txt"), true),
+        (planted.author, true),
+        (home.join(".yi/spills/author/0123.txt"), true),
+        (own_spill, false),
     ] {
         let address = format!("exec://cat {}?every=30s", path.display());
         let payload = serde_json::json!({"address": address, "prompt": "watch"});
@@ -1077,11 +1082,10 @@ async fn a_walled_heartbeat_source_names_no_walled_path() -> TestResult {
         let made = create
             .ok_or("rlm_heartbeat.create is not registered")?
             .await;
-        assert!(
-            made.as_ref()
-                .is_err_and(|refused| refused.contains("reviewer wall")),
-            "{address}: {made:?}"
-        );
+        let refused = made
+            .as_ref()
+            .is_err_and(|text| text.contains("reviewer wall"));
+        assert_eq!(refused, walled, "{address}: {made:?}");
     }
     Ok(())
 }
