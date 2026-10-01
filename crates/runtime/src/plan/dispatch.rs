@@ -491,7 +491,7 @@ pub(crate) mod tests {
             attribute: Arc::new(|_usage| {}),
             store: Arc::new(|| None),
             plans_dir: root.join(crate::plan::PLANS_DIR),
-            family_live: Arc::new(|| 0),
+            family_live: crate::fetch::KernelServiceMap::new(),
         }));
         let pins = Arc::new(FetchLog::new());
         let delegate = Arc::new(SessionDelegate::new(
@@ -1104,7 +1104,7 @@ pub(crate) mod tests {
             max_children: 8,
             parent_session_dir: root.join("children"),
             plans_dir: root.join(crate::plan::PLANS_DIR),
-            family_live: Arc::new(|| 0),
+            family_live: crate::fetch::KernelServiceMap::new(),
             cwd: root.to_path_buf(),
             home: std::env::temp_dir(),
             lane_slots: 1,
