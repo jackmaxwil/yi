@@ -21,7 +21,7 @@ impl PermissionBroker {
         rules.rules.retain(|rule| {
             self.admits(rule, wall) && !(elsewhere && yi_permission::is_exact_command(rule))
         });
-        Self {
+        let mut child = Self {
             sandbox: self.sandbox.clone(),
             mode: Arc::clone(&self.mode),
             config_rules: self.config_rules.clone(),
@@ -33,6 +33,7 @@ impl PermissionBroker {
             prompts_close_on_settle: std::sync::atomic::AtomicBool::new(
                 self.prompts_close_on_settle.load(Ordering::Relaxed),
             ),
+            walled: self.walled || !wall.is_empty(),
             ..Self::new(
                 self.mode(),
                 self.cwd.clone(),
@@ -40,7 +41,13 @@ impl PermissionBroker {
                 self.asker.clone(),
                 self.events.clone(),
             )
-        }
+        };
+        // The `--session-dir` in use stays host-owned below the root too (D335, #971).
+        child
+            .context
+            .host_owned
+            .clone_from(&self.context.host_owned);
+        child
     }
 
     /// A write grant holds while its directory is neither protected nor walled; a pass, which
@@ -107,6 +114,27 @@ impl PermissionBroker {
             sandbox.host_owned.push(dir.to_path_buf());
         }
         self
+    }
+
+    /// A walled holder's retry of a refusal in a protected dir, a store or `~/.yi` among them, is
+    /// refused outright: approved outside the sandbox, it would read what the wall hides (D345).
+    pub(super) fn walled_retry(
+        &self,
+        refusal: Option<&yi_tools::SandboxRefusal>,
+    ) -> Option<String> {
+        let (true, Some(sandbox), Some(yi_tools::SandboxRefusal::Path(path))) =
+            (self.walled, &self.sandbox, refusal)
+        else {
+            return None;
+        };
+        let dir = path.parent().unwrap_or(path);
+        let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        protected(sandbox, &dir).then(|| crate::gate::walled_refusal(path))
+    }
+
+    /// The session stores: `~/.yi/sessions` and the `--session-dir` in use.
+    pub fn session_stores(&self) -> &[PathBuf] {
+        &self.context.host_owned
     }
 
     /// A session switch (`/new`, rpc `switch_session` or `fork`): the next session replays its own.

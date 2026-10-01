@@ -532,14 +532,17 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   drops (reap, repossession, a failed spawn) and by name at the next spawn on that lane. A node
   whose card lacks `container` refuses before a lane is claimed; a missing image is pulled once
   with a notice.
-- Admission refuses at lever `family.cap` (16) live sessions, at depth `rlm.maxDepth` (1,
-  clamped 1..=3) but for a juror, at `family.max_children` (8) workers, and on a taken name.
+- Admission refuses at lever `family.cap` (16, an eval run's levers raise it to 128) live sessions,
+  at depth `rlm.maxDepth` (1, clamped 1..=3) but for a juror, at `family.max_children` (8, up to
+  128) workers, and on a taken name (D344).
 - `Standing { Worker, Juror, Reader, Service }`: juror, reader and service stand outside the worker cap; lease,
   wall and family cap bind them all. A service (`rlm.service(name, brief, restart=3)`)
   respawns on its `ChildRecord` after `Failed { Provider | KernelDeath }`, ≤ 10 per 10 min.
   A judge seats `policy.n` jurors from the cheapest other model family, else `Abstain` (§13).
 - The wall only reduces and `under(parent)` makes it hereditary; it refuses at the tool adapter
   before permission, `deny_read` implies write-deny, and bash naming a denied path is refused.
+  A walled session also walls the spill root and every session store and spares its own spill
+  dir and transcript, at the read gate and in its contained profile (D340, D345).
 - A lease is drawn under the roster lock; an ask past the parent's deadline less 30 s or its
   unreserved tokens is refused with both numbers. `rlm.revoke` journals `custom{lease}` and
   sends `cancel`; at grace expiry the child is `Repossessed` with its lane `Retained`.
