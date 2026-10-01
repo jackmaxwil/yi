@@ -105,11 +105,26 @@ def sh(cwd, *args, env=None, input=None, check=True):
 
 
 def conflicts_of(base_ref, sha, repo=ROOT):
-    """Paths a merge of `origin/<base_ref>` into `sha` leaves conflicted, without touching a tree."""
-    out = sh(repo, "git", "merge-tree", "--write-tree", "--name-only", f"origin/{base_ref}", sha, check=False)
-    if out.returncode == 0:
-        return []
-    return [line for line in out.stdout.split("\n\n", 1)[0].splitlines()[1:] if line]
+    """Paths a merge of `origin/<base_ref>` into `sha` leaves conflicted, by a trial merge in a
+    throwaway clone with the baseline driver the fix uses. Incident: `git merge-tree --write-tree`
+    needs git 2.38 and the runner has 2.34, so every PR read clean there; the forge's mergeable
+    flag counts conflicts the baseline driver resolves and goes stale."""
+    trial = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-trial-"))
+    try:
+        make_clone(repo, trial, sha)
+        sh(trial, "git", "-c", "user.name=t", "-c", "user.email=t@t", "merge", "--no-commit", "--no-ff",
+           f"origin/{base_ref}", env=scrubbed(), check=False)
+        return sh(trial, "git", "diff", "--name-only", "--diff-filter=U").stdout.split()
+    finally:
+        shutil.rmtree(trial, ignore_errors=True)
+
+
+def make_clone(repo, into, sha):
+    """A clone sharing `repo`'s objects, at `sha`, with its remote-tracking refs and the baseline driver."""
+    sh(repo, "git", "clone", "-q", "--shared", "--no-checkout", str(repo), str(into))
+    sh(into, "git", "fetch", "-q", str(repo), "+refs/remotes/origin/*:refs/remotes/origin/*")
+    sh(into, "git", "checkout", "-q", "--detach", sha)
+    sh(into, "git", "config", "merge.baseline.driver", f"{sys.executable} scripts/merge_baseline.py %O %A %B")
 
 
 def resolve_prompt(pr, base_ref, conflicted):
@@ -220,10 +235,7 @@ def fix(pr, ask=pr_review.ask):
     clone = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-"))
     sessions = pathlib.Path(tempfile.mkdtemp(prefix="yi-autofix-sessions-"))
     try:
-        sh(ROOT, "git", "clone", "-q", "--shared", "--no-checkout", str(ROOT), str(clone))
-        sh(clone, "git", "fetch", "-q", str(ROOT), "+refs/remotes/origin/*:refs/remotes/origin/*")
-        sh(clone, "git", "checkout", "-q", "--detach", sha)
-        sh(clone, "git", "config", "merge.baseline.driver", f"{sys.executable} scripts/merge_baseline.py %O %A %B")
+        make_clone(ROOT, clone, sha)
         answer = lambda prompt, model: ask(prompt, RESOLVE_SCHEMA, clone, write=True, deadline=1800, model=model[0],
                                            thinking=model[1], env=scrubbed(), sessions=sessions)
         summary, model, touched = resolve_in(clone, pr, base_ref, answer)
@@ -411,8 +423,11 @@ def selfcheck():
         git("checkout", "-q", "-b", "topic"); (tmp / "a.txt").write_text("topic\n"); git("commit", "-qam", "topic")
         git("checkout", "-q", "main"); (tmp / "a.txt").write_text("main\n"); git("commit", "-qam", "main")
         git("update-ref", "refs/remotes/origin/main", "main")
-        if conflicts_of("main", "topic", tmp) != ["a.txt"]:
-            errs.append(f"merge-tree read {conflicts_of('main', 'topic', tmp)}, not the conflicted a.txt")
+        topic = sh(tmp, "git", "rev-parse", "topic").stdout.strip()
+        if conflicts_of("main", topic, tmp) != ["a.txt"]:
+            errs.append(f"the trial merge read {conflicts_of('main', topic, tmp)}, not the conflicted a.txt")
+        if conflicts_of("main", sh(tmp, "git", "rev-parse", "main~1").stdout.strip(), tmp):
+            errs.append("a branch main already contains read as conflicted")
         pr = {"number": 7, "title": "t"}
         staged = []
 
