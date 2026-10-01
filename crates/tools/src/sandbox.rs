@@ -307,7 +307,10 @@ impl Sandbox {
         // A path hidden from reads is not writable either: renamed, it would leave its rule behind;
         // a spared writable root under it reads, so the other rules decide its writes.
         let spared: String = (self.spared.iter().enumerate())
-            .filter(|(_, dir)| self.writable.contains(dir))
+            .filter(|(_, dir)| {
+                let dir = resolve_aliases(dir);
+                (self.writable.iter()).any(|root| resolve_aliases(root) == dir)
+            })
             .flat_map(|(index, _)| {
                 [
                     format!("SPARED_{index}"),
