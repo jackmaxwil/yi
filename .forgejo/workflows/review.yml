@@ -3,13 +3,16 @@
 # No fixer: a round is a comment, and a blocked round (D322) fails this job; nothing here pushes or merges.
 name: review
 
+# The workflow file is main's, never the PR's: a `pull_request` run reads the head's copy, so a PR
+# could edit this job to pass the required `review` check, and old branches kept a stale one.
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
 
-# A newer head supersedes the rounds on the old one.
+# A newer head supersedes the rounds on the old one. The group is this event's own: a branch that
+# never merged main still runs its `pull_request` copy, and a shared group let it cancel this run.
 concurrency:
-  group: review-${{ github.event.pull_request.number }}
+  group: review-target-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:
@@ -24,8 +27,11 @@ jobs:
     # One round on a 293-line change took 510 s; two rounds and a warm build fit.
     timeout-minutes: 60
     steps:
+      # Main's tree, never the PR's: this job holds yi-bot's token, whose comments count as rounds,
+      # so a PR's own justfile, scripts or probes would judge themselves. The PR is read as data.
       - uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
       - run: rustup show
       # The same dev build the live job reads from postmerge's `test` cache.
