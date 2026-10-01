@@ -616,7 +616,7 @@ impl PermissionBroker {
         let passed = session_rules.decision_for(rule_kind, &canonical) == Some(RuleDecision::Allow);
         drop(session_rules);
         let refusal = self.retried_refusal(command);
-        if let Some(refused) = self.walled_retry(refusal.as_ref()) {
+        if let Some(refused) = self.walled_retry(command, refusal.as_ref()) {
             return self.denied(refused);
         }
         let mut split = None;
