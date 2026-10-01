@@ -161,6 +161,8 @@ def selfcheck():
         f = meter.fields()
         if (f["calls"], f["turns"], f["tin"], f["tout"], f["tcache"], f["cost"], f["models"]) != (2, 2, 3000, 120, 2700, "0.0300", "glm-5.3-flash"):
             errs.append(f"the meter read {f}")
+        if "models=glm-5.3-flash" not in meta(f).split():
+            errs.append(f"the meta line drops the models a comment paid for: {meta(f)}")
         line = status_line(meter, 1.234, 5.5, "round 2")
         for part in ("round 2", "glm-5.3-flash", "2 call(s), 2 turn(s)", "in 3.0k", "(cached 2.7k)", "out 120", "$0.03", "this PR $1.23", "today $5.50"):
             if part not in line:
