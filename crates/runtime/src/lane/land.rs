@@ -419,12 +419,14 @@ impl LaneHandle {
         if title.is_empty() {
             return Err(LaneError::Forge("/land needs a title".to_owned()));
         }
-        let branch = self.with_lane(|lane| Ok(lane.branch().to_string()))?;
         if !self.take_poller() {
             return Err(LaneError::Forge(
                 "landing in progress; the status row follows it".to_owned(),
             ));
         }
+        let branch = self
+            .with_lane(|lane| Ok(lane.branch().to_string()))
+            .inspect_err(|_| self.release_poller())?;
         let handle = Arc::clone(self);
         std::thread::spawn(move || {
             if let Err(error) = handle.land_blocking(&title) {

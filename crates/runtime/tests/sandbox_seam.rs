@@ -1122,3 +1122,130 @@ async fn a_walled_retry_the_auto_reviewer_approves_never_runs_outside_the_sandbo
     );
     Ok(())
 }
+
+/// #1001: a walled session's contained profile spared its own spill and transcript even when the
+/// wall itself named a folder above them, so a spelling the wall's text check misses read them.
+#[tokio::test]
+async fn a_glob_under_a_walled_ancestor_reaches_no_spared_spill() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, _, probe) = workspace("yi-seam-walled-ancestor")?;
+    let home = probe.join(format!("yi-walled-ancestor-{}", std::process::id()));
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let mut ran = Vec::new();
+    for denied in [project.join("secret"), home.join(".yi")] {
+        ran.push(own_reads_under(&project, &home, denied).await);
+    }
+    let _ = std::fs::remove_dir_all(&home);
+    let [open, walled] = <[_; 2]>::try_from(ran).map_err(|_| "two runs")?;
+    assert_eq!(open?, (true, true), "the spellings read the spares");
+    assert_eq!(
+        walled?,
+        (false, false),
+        "a spare reopened what the wall names"
+    );
+    Ok(())
+}
+
+/// Whether a session walled off `denied` reads its own spill (by a glob) and its own transcript,
+/// each spelled through `/./`, which the wall's text check misses.
+async fn own_reads_under(
+    project: &Path,
+    home: &Path,
+    denied: PathBuf,
+) -> Result<(bool, bool), Box<dyn Error>> {
+    let store = yi_session::create_flat_session(
+        home.join(".yi/sessions/fam"),
+        project.to_string_lossy(),
+        None,
+    )?;
+    let (id, transcript) = {
+        let store = yi_session::lock_session(&store);
+        (store.metadata().id.clone(), store.file_path().cloned())
+    };
+    let transcript = transcript
+        .ok_or("no transcript file")?
+        .display()
+        .to_string();
+    let spill = home.join(".yi/spills").join(&id);
+    std::fs::create_dir_all(&spill)?;
+    std::fs::write(spill.join("own.txt"), "OWN SPILL\n")?;
+    // Only the transcript file is spared, never its dir, so no glob can list it.
+    let reads = [
+        format!("cat {}/own.t?t", spill.display()),
+        format!("cat {transcript}"),
+    ]
+    .map(|read| read.replacen("/.yi/", "/./.yi/", 1));
+    let reads: Vec<&str> = reads.iter().map(String::as_str).collect();
+    let gate = BrokerSetup {
+        wall: Wall {
+            deny_read: vec![denied],
+            ..Wall::default()
+        },
+        store: Some(store),
+        ..BrokerSetup::default()
+    };
+    let sandbox = Sandbox::for_workspace(project, home, None);
+    let ran = run_held(project, project, sandbox, &reads, gate).await?;
+    let header = format!("\"id\":\"{id}\"");
+    Ok((ran[0].contains("OWN SPILL"), ran[1].contains(&header)))
+}
+
+/// #1001 review: a walled call a rule or an approval let out of the sandbox met only a text
+/// check, which `curl -s file://` passed. Where Seatbelt exists it never leaves; a contained one
+/// meets Seatbelt alone, so the text check never refuses it first.
+#[tokio::test]
+async fn a_walled_call_never_leaves_the_sandbox_even_allowed() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, _, probe) = workspace("yi-seam-walled-leaving")?;
+    let home = probe.join(format!("yi-walled-leaving-{}", std::process::id()));
+    let other = home.join(".yi/spills/author/0123.txt");
+    std::fs::create_dir_all(other.parent().ok_or("no parent")?)?;
+    std::fs::write(&other, "WALLED OUTPUT\n")?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    // A rule lets curl out (network), an approval lets `/` out (an ancestor of key stores).
+    let commands = [
+        format!("curl -s file://{}", other.display()),
+        "curl -s http://127.0.0.1:9/".to_owned(),
+        "echo a / b".to_owned(),
+        format!("ls {}", home.join(".yi/spills").display()),
+    ];
+    let commands: Vec<&str> = commands.iter().map(String::as_str).collect();
+    let allow: Asker = Arc::new(|_| AskOutcome::AllowOnce);
+    let gate = BrokerSetup {
+        rules: vec![ConfigRule::new("bash", "curl *", ConfigRuleAction::Allow)?],
+        asker: Some(allow),
+        wall: Wall {
+            deny_read: vec![project.join("secret")],
+            ..Wall::default()
+        },
+        session: Some("juror"),
+        ..BrokerSetup::default()
+    };
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let ran = run_held(&project, &project, sandbox, &commands, gate).await;
+    let _ = std::fs::remove_dir_all(&home);
+    let ran = ran?;
+    for (command, text) in commands.iter().zip(&ran[..3]) {
+        assert!(
+            !text.contains("WALLED") && text.contains("never leave"),
+            "{command} left the sandbox: {text}"
+        );
+    }
+    let contained = (
+        ran[3].contains("Operation not permitted"),
+        ran[3].contains("reviewer wall"),
+    );
+    assert_eq!(
+        contained,
+        (true, false),
+        "Seatbelt, not the text check: {}",
+        ran[3]
+    );
+    Ok(())
+}
