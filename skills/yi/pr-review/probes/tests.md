@@ -1,13 +1,14 @@
 ---
 id: tests
-question: is it proven
+question: is the proof real
 decider: reader
 claim: Seen red
-severity: {"high": "a new or changed test that passes against the unfixed code", "medium": "a changed behaviour no test would notice breaking", "low": "a weak assertion"}
-refute: {"high": 3, "medium": 1, "low": 1}
+when: {"paths": ["crates/*", "python/*", "scripts/*", "evals/*", "adapters/*"]}
+severity: {"high": "a test the PR offers as proof (in Seen red, or as a bug fix's regression test) that would pass against the code before this change", "medium": "a behaviour a user or caller sees changes and no test, new or old, would fail if it broke"}
+refute: {"high": 3, "medium": 1}
 ---
-Judge the proof, not the behaviour. For each new or changed test, would it fail against the code
-before this change? For each changed behaviour, which test would notice it breaking? Test the
-"Seen red" lines against the diff. Report a test only when it would pass against the unfixed code,
-and a behaviour only when no test notices it: a test that fails for its own reason is not a finding.
-Bugs themselves belong to the correctness probe.
+Judge only whether the PR's proof is real. A test the PR offers as proof must fail against the
+code before the change; when it would pass, it proves nothing, and that is the finding. Name a
+changed behaviour only when a user or caller would see it and no test anywhere would notice it
+breaking. Do not ask for more unit tests, coverage of internal helpers, extra edge cases, stronger
+assertions or another test style: none of those is a finding. Bugs belong to the correctness probe.
