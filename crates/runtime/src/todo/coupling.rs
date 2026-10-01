@@ -449,13 +449,18 @@ pub fn intercept_text(rung: u8, list: &TodoList) -> String {
     }
 }
 
-/// Digit runs of three or more outside code spans with no word character, dot or slash on
+/// Digit runs of three or more outside closed code spans with no word character, dot or slash on
 /// either side: the same numerals the session miner's `count_claim` reads, so the two agree.
 pub fn numbers_of(text: &str) -> Vec<String> {
     let bound = |c: Option<char>| {
         c.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '/'))
     };
-    let prose: Vec<&str> = text.split('`').step_by(2).collect();
+    let parts: Vec<&str> = text.split('`').collect();
+    let last = parts.len().saturating_sub(1);
+    let prose: Vec<&str> = (parts.iter().enumerate())
+        .filter(|(index, _)| index % 2 == 0 || *index == last)
+        .map(|(_, part)| *part)
+        .collect();
     let chars: Vec<char> = prose.join(" ").chars().collect();
     let mut out: Vec<String> = Vec::new();
     let mut at = 0;
@@ -826,6 +831,8 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             .as_ref()
             .map(|inner| Arc::clone(&inner.intercept_stop));
         Arc::new(move |snapshot: &yi_loop::TurnSnapshot| {
+            let acked =
+                (cycle.lock().ok()).is_some_and(|mut c| std::mem::take(&mut c.awaiting_unsourced));
             if is_terminal(snapshot.message) {
                 return None;
             }
@@ -836,7 +843,6 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
                 return None;
             };
             let text = text_of(snapshot.message);
-            let acked = std::mem::take(&mut cycle.awaiting_unsourced);
             if text.trim().is_empty() {
                 if acked {
                     return None;

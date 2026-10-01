@@ -167,6 +167,7 @@ def check_claimed_numbers():
     assert claimed_numbers("per .ruler/040 and crates/v2/300/x") == set()
     assert claimed_numbers("`line 1234` then 5000 `x 6000`") == {"5000"}
     assert claimed_numbers("(1088) and 2500. then 777") == {"1088", "777"}
+    assert claimed_numbers("a stray ` then 1234 rows") == {"1234"}
 
 
 def selfcheck():
