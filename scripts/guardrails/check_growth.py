@@ -7,31 +7,15 @@ free band lands almost exactly on the seam between the two regimes — 46 organi
 bumps under it, 49 landings over — and 7 of those landings clear +2000."""
 import re, statistics, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import SRC, src_files, fail, fork, git, no_fork, FREE_BAND as FREE
+from _common import SRC, fail, fork, git, no_fork, texts, FREE_BAND as FREE
 from check_changes import GROWTH, pending
 
 DROW = 2000
 VERSION = re.compile(r"^version:\s*(\S+)", re.M)
 
 
-def measured():
-    return sum(len(f.read_text().splitlines()) for f in src_files())
-
-
-def loc_at(rev):
-    """Empty pattern-free `^` matches every line; rc 1 only means the rev holds no such file."""
-    got = git("grep", "-c", "^", rev, "--", "crates/*/src/*.rs")
-    if got.returncode not in (0, 1):
-        return None
-    total = 0
-    for line in got.stdout.splitlines():
-        head, _, count = line.rpartition(":")
-        if not count.isdigit():
-            return None
-        # A filter, not the pathspec: git's globs cross a slash and would count a nested crate.
-        if SRC.match(head.partition(":")[2]):
-            total += int(count)
-    return total
+def loc_at(rev=None):
+    return sum(len(text.splitlines()) for text in texts(SRC, rev).values())
 
 
 def version_at(rev):
@@ -53,11 +37,11 @@ def calibrate():
         else:
             opens.append([version, rev])
             seen = version
-    rows, close = [], measured()
+    rows, close = [], loc_at()
     for version, rev in opens:
-        before = loc_at(f"{rev}^")
-        if before is None:
+        if git("rev-parse", "--verify", "--quiet", f"{rev}^").returncode:
             break
+        before = loc_at(f"{rev}^")
         rows.append((version, close - before))
         close = before
     for version, delta in rows:
@@ -99,8 +83,5 @@ if "--calibrate" in sys.argv:
 base = fork()
 if base is None:
     no_fork("growth")
-before = loc_at(base)
-if before is None:
-    fail([f"could not count src lines at the fork {base[:8]}"], "growth")
-delta = measured() - before
+delta = loc_at() - loc_at(base)
 fail(unpaid(delta, pending(base)), f"growth ({delta:+d} src lines since the fork {base[:8]}, free band +{FREE})")

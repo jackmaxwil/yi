@@ -10,6 +10,9 @@ import subprocess
 import sys
 from collections import defaultdict
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "guardrails"))
+from _common import base_commit  # noqa: E402
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GROWTH = ROOT / "scripts/guardrails/check_growth.py"
 
@@ -18,15 +21,6 @@ def git(*args):
     return subprocess.run(
         ("git", "-C", str(ROOT)) + args, capture_output=True, text=True, check=False
     )
-
-
-def base_commit():
-    for ref in ("origin/main", "main"):
-        if git("rev-parse", "--verify", "--quiet", ref).returncode == 0:
-            found = git("merge-base", ref, "HEAD")
-            if found.returncode == 0:
-                return ref, found.stdout.strip()
-    return None, None
 
 
 def diff_stats(base):

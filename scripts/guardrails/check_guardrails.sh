@@ -83,6 +83,9 @@ run "$PY" scripts/guardrails/check_pr_metadata.py --selfcheck
 # Change files are the one place a branch records a change; the format and the view-edit
 # refusals are rules over text, so only this flag proves each refusal fires.
 run "$PY" scripts/guardrails/check_changes.py --selfcheck
+# A baseline edit that rides beside code is how growth hid before the ratchets had their own
+# commits; the deletion carve-out is a rule over file statuses, so only this flag proves it.
+run "$PY" scripts/guardrails/check_commit_style.py --selfcheck
 # The landing verbs decide from the forge's answers — behind, failed, ready — and a
 # decision read wrong retries a refusal forever; only this flag walks the table.
 run "$PY" scripts/forge_pr.py --selfcheck

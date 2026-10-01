@@ -12,7 +12,7 @@ skips yi-types, where a schema fact earns its line."""
 import re, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import SRC, code_lines, fail, fork, no_fork, texts
-from check_changes import raised
+from check_changes import raise_errors, raised
 
 CAP = 2
 LICENSE = re.compile(r"SPDX|Copyright|\bMIT\b|Apache-2\.0|BSD|licen[sc]e", re.I)
@@ -82,10 +82,8 @@ if base is None:
     no_fork("comments")
 over, volume, tags, pointers = scan(texts(SRC))
 was_over, was_volume, _, _ = scan(texts(SRC, base))
-cap_limit, volume_limit = len(was_over) + raised(base, "over-cap"), was_volume + raised(base, "comments")
-errs = tags + pointers
-if len(over) > cap_limit:
-    errs += over + [f"{len(over)} comments over the {CAP}-line cap > {cap_limit} (fork {len(was_over)}); a change file here says `raise: over-cap +{len(over) - len(was_over)}`"]
-if volume > volume_limit:
-    errs.append(f"comment volume outside yi-types {volume} > {volume_limit} (fork {was_volume}); a change file here says `raise: comments +{volume - was_volume}`")
-fail(errs, f"comments ({volume}/{volume_limit} lines, {len(over)}/{cap_limit} over cap)")
+cap_raise, volume_raise = raised(base, "over-cap"), raised(base, "comments")
+cap_errs = raise_errors("over-cap", len(over), len(was_over), cap_raise)
+errs = tags + pointers + (over if len(over) > len(was_over) + cap_raise else []) + cap_errs
+errs += raise_errors("comments", volume, was_volume, volume_raise)
+fail(errs, f"comments ({volume}/{was_volume + volume_raise} lines outside yi-types, {len(over)}/{len(was_over) + cap_raise} over cap)")
