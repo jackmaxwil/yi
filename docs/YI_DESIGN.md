@@ -532,8 +532,9 @@ A detached `AgentSession` admitted by `SubagentHost` under a lease, a wall and a
   drops (reap, repossession, a failed spawn) and by name at the next spawn on that lane. A node
   whose card lacks `container` refuses before a lane is claimed; a missing image is pulled once
   with a notice.
-- Admission refuses at lever `family.cap` (16) live sessions, at depth `rlm.maxDepth` (1,
-  clamped 1..=3) but for a juror, at `family.max_children` (8) workers, and on a taken name.
+- Admission refuses at lever `family.cap` (16, an eval run's levers raise it to 128) live sessions,
+  at depth `rlm.maxDepth` (1, clamped 1..=3) but for a juror, at `family.max_children` (8, up to
+  128) workers, and on a taken name (D344).
 - `Standing { Worker, Juror, Reader, Service }`: juror, reader and service stand outside the worker cap; lease,
   wall and family cap bind them all. A service (`rlm.service(name, brief, restart=3)`)
   respawns on its `ChildRecord` after `Failed { Provider | KernelDeath }`, ≤ 10 per 10 min.
