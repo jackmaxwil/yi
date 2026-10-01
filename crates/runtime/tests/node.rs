@@ -599,7 +599,7 @@ fn demo_family(root: &Path, repo: &Path, home: &Path, cell: String) -> Demo {
             report: Arc::new(|_, _| {}),
             attribute: Arc::new(|_| {}),
             store: Arc::new(|| None),
-            family_live: Arc::new(|| 0),
+            family_live: yi_runtime::fetch::KernelServiceMap::new(),
         },
     ));
     Demo { host, trees }

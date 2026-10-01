@@ -45,7 +45,7 @@ impl HashlineReadTool {
         input: &Map<String, Value>,
         context: &ToolContext,
     ) -> ToolOutput {
-        let bytes = match std::fs::read(path) {
+        let bytes = match context.read(path) {
             Ok(bytes) => bytes,
             Err(error) => {
                 return error_output(format!("failed to read {}: {error}", path.display()));

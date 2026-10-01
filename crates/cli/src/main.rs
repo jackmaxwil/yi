@@ -155,7 +155,8 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     }
     yi_types::trace::init(debug::process_label(&command));
     // A drive is a harness: it claims no lane unless the scenario is about lanes.
-    let here = here || (headless && !lanes);
+    // A cassette run is a harness too: a claim would fetch origin (#943).
+    let here = here || ((headless || faux.is_some()) && !lanes);
     // Drive-only flags are silently inert outside the headless loop, which
     // reads downstream as a capture that produced nothing.
     if !headless
@@ -173,10 +174,12 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             format!("{flag} needs --headless").into(),
         ));
     }
-    if faux.is_some() && !headless && !solo && matches!(command.as_str(), "" | "console") {
+    // The console, headless too, is a client of a daemon that never sees the cassette, and
+    // `yi serve` does not hand it to its workers (#943).
+    let daemon = matches!(command.as_str(), "console" | "serve") || (command.is_empty() && !solo);
+    if faux.is_some() && daemon {
         return Err(lexopt::Error::Custom(
-            "--faux runs in-process only: add --solo, or use `yi tui`, `yi ask` or --headless"
-                .into(),
+            "--faux runs in-process only: use `yi tui`, `yi ask`, `yi rpc` or `yi --solo`".into(),
         ));
     }
     Ok(Args {
@@ -439,25 +442,26 @@ fn build_session(
             class: yi_types::telemetry::ErrorClass::RefusalUnknownModel,
         });
     };
-    let faux = model.provider == "faux";
+    // `--faux` scripts whatever model is named, which keeps its id and catalog facts on
+    // screen; the host starts no request of its own below, while a scripted tool call still
+    // runs (#943).
+    let faux = args.faux.is_some() || model.provider == "faux";
     let interactive = {
         use std::io::IsTerminal;
         std::io::stdin().is_terminal()
     };
     // Incident: an inherited proxy value ureq cannot dial refused every faux run too, so an
-    // operator's shell broke `just check`. E2 guards egress; faux never leaves the process.
-    let proxy = if faux {
-        None
-    } else {
-        match proxy_from_env() {
-            Ok(proxy) => proxy,
-            Err(reason) => {
-                return Err(Refused {
-                    code: 2,
-                    reason,
-                    class: yi_types::telemetry::ErrorClass::RefusalConfig,
-                });
-            }
+    // operator's shell broke `just check`. A faux run keeps a proxy it can dial, so a request
+    // that leaks rides it where a test's listener sees it (#943).
+    let proxy = match proxy_from_env() {
+        Ok(proxy) => proxy,
+        Err(_) if faux => None,
+        Err(reason) => {
+            return Err(Refused {
+                code: 2,
+                reason,
+                class: yi_types::telemetry::ErrorClass::RefusalConfig,
+            });
         }
     };
     let telemetry = config()
@@ -471,7 +475,8 @@ fn build_session(
             .with_long_cache(interactive)
             .with_proxy(proxy.clone())
             .with_routing(config().routing.clone())
-            .with_telemetry(telemetry.clone()),
+            .with_telemetry(telemetry.clone())
+            .with_forced_faux(faux),
     );
     if !faux {
         // Resolved through the session's proxy so an OAuth refresh can reach the token
@@ -505,6 +510,9 @@ fn build_session(
     }
     let cwd = effective_cwd(args);
     let home = home().to_path_buf();
+    if faux {
+        yi_runtime::lane::forbid_fetch();
+    }
     let claiming = yi_types::trace::span("build_session.claim_lane");
     let claimed = claim_lane(args, &home, session_id);
     drop(claiming);
@@ -585,17 +593,21 @@ fn build_session(
             plans_dir: configured_plans_dir(&work),
             auto_background: configured_auto_background(),
             deadline: args.deadline.map(std::time::Duration::from_secs),
-            kernel_prewarm: config()
-                .kernel
-                .as_ref()
-                .and_then(|kernel| kernel.prewarm)
-                .unwrap_or(true),
+            // A cold venv installs from PyPI; a scripted run boots it at its first cell.
+            kernel_prewarm: !faux
+                && config()
+                    .kernel
+                    .as_ref()
+                    .and_then(|kernel| kernel.prewarm)
+                    .unwrap_or(true),
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
     drop(wiring);
-    for why in yi_runtime::classifier::attach(&session, &work, &home, config()) {
-        eprintln!("warning: {why}");
+    if !faux {
+        for why in yi_runtime::classifier::attach(&session, &work, &home, config()) {
+            eprintln!("warning: {why}");
+        }
     }
     if let Some(every) = config()
         .spend

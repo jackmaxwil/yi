@@ -33,6 +33,7 @@ run "$PY" scripts/guardrails/check_commit_style.py
 run "$PY" scripts/guardrails/check_glob_reexport.py
 run "$PY" scripts/guardrails/check_orphans.py
 run "$PY" scripts/guardrails/check_panic.py
+run "$PY" scripts/guardrails/check_changes.py
 run "$PY" scripts/guardrails/check_comments.py
 run "$PY" scripts/guardrails/check_file_size.py
 run "$PY" scripts/guardrails/check_crate_size.py
@@ -79,6 +80,12 @@ run "$PY" scripts/forge_tracking.py --selfcheck
 # is this flag: a fake transport walks every branch — each issue defect, each fgj
 # fix line, and the exempt path that must ask the forge nothing at all.
 run "$PY" scripts/guardrails/check_pr_metadata.py --selfcheck
+# Change files are the one place a branch records a change; the format and the view-edit
+# refusals are rules over text, so only this flag proves each refusal fires.
+run "$PY" scripts/guardrails/check_changes.py --selfcheck
+# A baseline edit that rides beside code is how growth hid before the ratchets had their own
+# commits; the deletion carve-out is a rule over file statuses, so only this flag proves it.
+run "$PY" scripts/guardrails/check_commit_style.py --selfcheck
 # The landing verbs decide from the forge's answers — behind, failed, ready — and a
 # decision read wrong retries a refusal forever; only this flag walks the table.
 run "$PY" scripts/forge_pr.py --selfcheck
@@ -117,11 +124,11 @@ else
   run scripts/build_dist.sh
   DIST=$N
 fi
-# Growth is priced once per version, in the changelog row a landing writes last,
+# Growth is priced once per branch, in the change file a landing writes last,
 # so asking it of every commit inside that landing only teaches people to ignore
 # it; --fast is the pre-commit hook and the full run is the push.
 if [ "$FAST" -eq 1 ]; then
-  run echo "skip growth (--fast: a version's growth is priced at the push, not per commit)"
+  run echo "skip growth (--fast: a branch's growth is priced at the push, not per commit)"
 else
   run "$PY" scripts/guardrails/check_growth.py
 fi
