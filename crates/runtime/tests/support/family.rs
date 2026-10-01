@@ -138,7 +138,7 @@ pub fn family(
         store: Arc::new(move || {
             (!plug.load(std::sync::atomic::Ordering::SeqCst)).then(|| journal.clone())
         }),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     Family {
         host,

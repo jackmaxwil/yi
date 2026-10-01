@@ -165,7 +165,10 @@ fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> ImportError + '_ {
 
 /// The bounded reader in front of every decode: one cap over the whole file.
 fn read_capped(path: &Path) -> Result<Vec<u8>, ImportError> {
-    let file = std::fs::File::open(path).map_err(io_at(path))?;
+    take_capped(path, std::fs::File::open(path).map_err(io_at(path))?)
+}
+
+fn take_capped(path: &Path, file: std::fs::File) -> Result<Vec<u8>, ImportError> {
     let cap = u64::try_from(IMPORT_CAP_BYTES).unwrap_or(u64::MAX);
     let mut bytes = Vec::new();
     file.take(cap.saturating_add(1))
@@ -196,7 +199,7 @@ fn load(path: &Path) -> Result<(Vec<u8>, LegacyDocument), ImportError> {
     Ok((bytes, document))
 }
 
-fn source_path(cwd: &Path, source: &Url) -> Result<PathBuf, ImportError> {
+fn source_path(cwd: &Path, source: &Url) -> Result<(PathBuf, std::fs::File), ImportError> {
     if source.scheme() != &Scheme::Local || source.fragment().is_some() {
         return Err(ImportError::NotLocal {
             url: source.clone(),
@@ -208,14 +211,19 @@ fn source_path(cwd: &Path, source: &Url) -> Result<PathBuf, ImportError> {
     } else {
         cwd.join(raw)
     };
-    // Judged before the open, so no error can quote a key's first line (D323).
-    let context = yi_permission::CatastrophicContext::detect(cwd);
-    if yi_permission::read_is_catastrophic(&path, &context) {
-        return Err(ImportError::Protected {
-            url: source.clone(),
-        });
+    // Judged before the open and on the file opened, so no error quotes a key (D323, #890).
+    let gate = yi_permission::ReadGate::new(&yi_permission::CatastrophicContext::detect(cwd));
+    let protected = || ImportError::Protected {
+        url: source.clone(),
+    };
+    if gate.denies(&path) {
+        return Err(protected());
     }
-    Ok(path)
+    match gate.open(&path, &[]) {
+        Ok(file) => Ok((path, file)),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Err(protected()),
+        Err(error) => Err(io_at(&path)(error)),
+    }
 }
 
 fn map_sections(
@@ -271,8 +279,8 @@ pub struct Source {
 /// A format-2 checkpoint (a clone's `plan.json`) reads as a plan with no body; a format-1
 /// document parses as before.
 pub fn read(cwd: &Path, source: &Url) -> Result<Source, ImportError> {
-    let path = source_path(cwd, source)?;
-    let bytes = read_capped(&path)?;
+    let (path, file) = source_path(cwd, source)?;
+    let bytes = take_capped(&path, file)?;
     if bytes.trim_ascii_start().starts_with(b"{") {
         let id = path
             .parent()
