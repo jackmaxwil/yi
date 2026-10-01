@@ -102,7 +102,7 @@ fn family(parent: &Arc<AgentSession>, kind: Child) -> std::io::Result<Family> {
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(move || Some(store.clone())),
         plans_dir: root.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     Ok((root, host, kept))
 }
