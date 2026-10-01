@@ -24,6 +24,10 @@ struct AcpClient {
 
 impl AcpClient {
     fn spawn(dir: &std::path::Path) -> Result<Self, Box<dyn Error>> {
+        Self::spawn_with(dir, &["--model", "faux/faux-1"])
+    }
+
+    fn spawn_with(dir: &std::path::Path, model: &[&str]) -> Result<Self, Box<dyn Error>> {
         #[expect(
             clippy::disallowed_methods,
             reason = "the protocol contract is the spawned binary's stdio; tests must drive the real process"
@@ -31,10 +35,9 @@ impl AcpClient {
         let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
             // Invariant: a harness never claims from the person's pool.
             .env("HOME", dir.join("home"))
+            .arg("acp")
+            .args(model)
             .args([
-                "acp",
-                "--model",
-                "faux/faux-1",
                 "--session-dir",
                 &dir.join("sessions").display().to_string(),
                 "--cwd",
@@ -187,6 +190,65 @@ fn v2_client_drives_a_session_end_to_end() -> TestResult {
         .count();
     assert!(session_files >= 1, "the session must persist as v4 JSONL");
     Ok(())
+}
+
+/// #943: under `--faux` a routed model streams from the cassette, so the session title the
+/// first turn's end asks of the summarizer would take the second turn's scripted reply.
+#[test]
+fn a_cassette_session_with_a_routed_model_keeps_every_reply_for_its_turns() -> TestResult {
+    let dir = temp_dir("faux-routed")?;
+    let cassette = dir.join("cassette.jsonl");
+    let reply = |text: &str| {
+        json!({
+            "role": "assistant", "content": [{"type": "text", "text": text}],
+            "api": "faux", "provider": "faux", "model": "faux-1",
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                      "cost": {"input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.0}},
+            "stopReason": "stop", "timestamp": 0
+        })
+        .to_string()
+    };
+    std::fs::write(
+        &cassette,
+        format!("{}\n{}\n", reply("first reply"), reply("second reply")),
+    )?;
+    let cassette = cassette.display().to_string();
+    let mut client = AcpClient::spawn_with(
+        &dir,
+        &[
+            "--model",
+            "openrouter/anthropic/claude-opus-5",
+            "--faux",
+            &cassette,
+        ],
+    )?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let new = client.request(
+        "2",
+        "session/new",
+        json!({"cwd": dir.display().to_string()}),
+    )?;
+    let session_id = new
+        .last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .ok_or("missing sessionId")?
+        .to_owned();
+    for (id, expected) in [("3", "first reply"), ("4", "second reply")] {
+        client.send(&json!({
+            "jsonrpc": "2.0", "id": id, "method": "session/prompt",
+            "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "go"}]},
+        }))?;
+        let frames = client.read_until(|frame| {
+            frame["params"]["update"]["sessionUpdate"] == "state_update"
+                && frame["params"]["update"]["state"] == "idle"
+        })?;
+        let text: String = updates_of(&frames, "agent_message_chunk")
+            .iter()
+            .filter_map(|frame| frame["params"]["update"]["content"]["text"].as_str())
+            .collect();
+        assert_eq!(text, expected, "turn {id}");
+    }
+    client.finish()
 }
 
 #[test]
