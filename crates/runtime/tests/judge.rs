@@ -215,7 +215,7 @@ fn rig_holding(owner: Model, max_children: usize, held: &[&str]) -> Result<Rig, 
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
         plans_dir: root.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     let artifacts = Artifacts::under(&root.join(".yi/plans/demo"));
     Ok(Rig {

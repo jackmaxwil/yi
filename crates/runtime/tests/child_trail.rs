@@ -84,7 +84,7 @@ fn host(depth: u8, parent_dir: PathBuf, parent: Slot) -> Arc<SubagentHost> {
         attribute: Arc::new(|_| {}),
         store: Arc::new(move || parent.lock().ok().and_then(|held| held.clone())),
         plans_dir: std::env::temp_dir().join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }))
 }
 
