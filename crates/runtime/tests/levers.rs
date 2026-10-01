@@ -154,3 +154,31 @@ fn an_override_is_applied_whole_or_refused_with_its_reason() -> Result<(), Box<d
     assert!(load(&std::env::temp_dir()).is_err(), "a directory was read");
     Ok(())
 }
+
+/// A swarm run may hold 128 live children and 128 workers under one parent, and not one more:
+/// the defaults stay the everyday fuses, and only an eval run's levers raise them.
+#[test]
+fn a_swarm_run_raises_the_family_to_128_and_no_further() -> Result<(), Box<dyn Error>> {
+    let path = overrides(
+        "swarm",
+        r#"{"family.cap": 128, "family.max_children": 128}"#,
+    )?;
+    let raised = load(&path)?;
+    std::fs::remove_file(&path)?;
+    assert_eq!((raised.family_cap, raised.family_max_children), (128, 128));
+    for key in ["family.cap", "family.max_children"] {
+        let path = overrides("over", &format!(r#"{{"{key}": 129}}"#))?;
+        let refused = load(&path);
+        std::fs::remove_file(&path)?;
+        let error = refused.err().ok_or(format!("{key} 129 was admitted"))?;
+        assert!(error.contains(key) && error.contains("128"), "{error}");
+    }
+    assert_eq!(
+        (
+            Levers::DEFAULT.family_cap,
+            Levers::DEFAULT.family_max_children
+        ),
+        (16, 8)
+    );
+    Ok(())
+}
