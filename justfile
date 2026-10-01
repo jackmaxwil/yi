@@ -262,6 +262,10 @@ ratchet *args:
 improve base binary *args:
     python3 evals/improve/round.py propose --base {{base}} --binary {{binary}} --out "$HOME/Development/yi-runs/improve/$(date +%Y%m%d-%H%M%S)" {{args}}
 
+# Re-render every `yi:schema` block in the prompts and skills from the live tool schemas.
+schema-blocks:
+    YI_BLESS=1 cargo test -q -p yi-runtime --test integration prompt_drift::every_schema_block
+
 # One ADR from its decision-log row, plus the index line.
 adr number:
     python3 scripts/adr.py {{number}}

@@ -309,5 +309,6 @@ edited by hand.
 - [D336](adr/d336.md) - one status vocabulary for every surface
 - [D337](adr/d337.md) - a compaction never replaces the history without a summary, except to make...
 - [D339](adr/d339.md) - the model may ask to accept a todo, and the user, or the classifier in auto...
+- [D343](adr/d343.md) - a prompt or skill that lists a tool's fields lists them in a `<!-- yi
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
