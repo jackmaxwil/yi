@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::args::Args;
 use serde_json::{Map, Value, json};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Usage};
@@ -207,8 +208,8 @@ pub struct SubagentHostOptions {
     /// The plan a discovery's named ancestor task is resolved against.
     pub store: crate::goal::StoreHandle,
     pub plans_dir: PathBuf,
-    /// how many sessions the family holds live right now (the shared kernel map) (D165).
-    pub family_live: Arc<dyn Fn() -> usize + Send + Sync>,
+    /// The sessions the family holds live right now, shared by every host in it (D165).
+    pub family_live: Arc<crate::fetch::KernelServiceMap>,
 }
 
 pub struct SubagentHost {
@@ -448,14 +449,7 @@ pub(crate) fn answer_text(messages: &[AgentMessage]) -> Option<String> {
 pub(crate) fn last_assistant_text(messages: &[AgentMessage]) -> Option<String> {
     messages.iter().rev().find_map(|message| match message {
         AgentMessage::Assistant { content, .. } => {
-            let text = content
-                .iter()
-                .filter_map(|content| match content {
-                    yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+            let text = yi_types::message::join_text(content, "\n");
             if text.is_empty() { None } else { Some(text) }
         }
         _ => None,
@@ -635,12 +629,16 @@ impl SubagentHost {
             kwargs.insert("role".to_owned(), Value::from("reader"));
         }
         let reader = reader::parse(&kwargs)?;
-        let standing = match (&reader, standing) {
-            (Some(_), Standing::Worker) => Standing::Reader,
+        let role = reader.as_ref().map(|reader| reader.role);
+        let mut standing = match (role, standing) {
+            (Some(reader::Role::Reader), Standing::Worker) => Standing::Reader,
             (_, standing) => standing,
         };
-        if reader.is_some() {
+        if role == Some(reader::Role::Reader) {
             reader::walls_writes(&mut kwargs);
+        }
+        if let Standing::Service(service) = &mut standing {
+            service.kwargs.clone_from(&kwargs);
         }
         let requested_name = optional_string(&kwargs, "name")?;
         let fork = parse_fork(&kwargs)?;
@@ -650,17 +648,23 @@ impl SubagentHost {
         let ask = crate::lease::Ask::from_kwargs(&kwargs)?;
         let overrides =
             optional_string(&kwargs, "model")?.or(optional_string(&kwargs, "thinking")?);
-        if reader.is_some() && (fork != Fork::None || isolation != Isolation::None) {
-            return Err(reader::full_child(
-                "a reader gets a partition, not a fork, and writes nothing to isolate",
-            ));
+        match role {
+            Some(reader::Role::Reader) if fork != Fork::None || isolation != Isolation::None => {
+                return Err(reader::full_child(
+                    "a reader gets a partition, not a fork, and writes nothing to isolate",
+                ));
+            }
+            Some(reader::Role::Worker) if fork != Fork::None => {
+                return Err(reader::full_child("a worker gets a partition, not a fork"));
+            }
+            _ => {}
         }
         if fork == Fork::All && overrides.is_some() {
             return Err(
                 "fork=all inherits the parent's model and thinking; drop the override".to_owned(),
             );
         }
-        if (self.options.family_live)() >= family_cap {
+        if self.options.family_live.live() >= family_cap {
             return Err(format!(
                 "the family holds {family_cap} live sessions; reap one with rlm.delete_subagent before spawning"
             ));
@@ -710,6 +714,7 @@ impl SubagentHost {
             child.seed_messages(seed);
         }
         let session = Arc::new(child);
+        self.options.family_live.enroll(&session);
         let lead = stagger.and_then(|stagger| stagger.arm(&session));
         if matches!(standing, Standing::Service(_)) {
             service::watch_kernel(&session);
@@ -850,7 +855,7 @@ impl SubagentHost {
     }
 
     fn status_read(&self, payload: &Map<String, Value>) -> Map<String, Value> {
-        let reply = self.status_of(payload.get("name").and_then(Value::as_str));
+        let reply = self.status_of(payload.str_of("name"));
         self.shown_by(reply, payload)
     }
 
@@ -859,7 +864,7 @@ impl SubagentHost {
         reply: Map<String, Value>,
         ask: &Map<String, Value>,
     ) -> Map<String, Value> {
-        let quiet = ask.get("quiet").and_then(Value::as_bool) == Some(true);
+        let quiet = ask.bool_of("quiet") == Some(true);
         let notes = match (reply.get("members"), reply.get("notes")) {
             (Some(Value::Array(members)), _) => {
                 members.iter().filter_map(|m| m.get("note")).collect()
@@ -1037,7 +1042,7 @@ impl SubagentHost {
         registry.register("rlm.wait", move |payload| {
             let timeout = timeout_of(&payload);
             let kept = seen.load(std::sync::atomic::Ordering::Relaxed);
-            let given = payload.get("cursor").and_then(Value::as_u64);
+            let given = payload.u64_of("cursor");
             let cursor = given.or((kept > 0).then_some(kept));
             let (host, seen) = (Arc::clone(&host), Arc::clone(&seen));
             Box::pin(async move {
@@ -1053,10 +1058,7 @@ impl SubagentHost {
         self.register_service(registry);
         let host = Arc::clone(self);
         registry.register("rlm.result", move |payload| {
-            let target = payload
-                .get("target")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let target = payload.str_of("target").map(str::to_owned);
             let schema = payload
                 .get("schema")
                 .cloned()
@@ -1072,10 +1074,7 @@ impl SubagentHost {
         });
         let host = Arc::clone(self);
         registry.register("rlm.run", move |payload| {
-            let prompt = payload
-                .get("prompt")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let prompt = payload.str_of("prompt").map(str::to_owned);
             let kwargs = payload
                 .get("kwargs")
                 .and_then(Value::as_object)
@@ -1101,10 +1100,7 @@ impl SubagentHost {
         });
         let host = Arc::clone(self);
         registry.register("rlm.delete_subagent", move |payload| {
-            let target = payload
-                .get("target")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let target = payload.str_of("target").map(str::to_owned);
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let target = target.ok_or("rlm.delete_subagent requires a target")?;
@@ -1117,10 +1113,7 @@ impl SubagentHost {
         ] {
             let host = Arc::clone(self);
             registry.register(method, move |payload| {
-                let target = payload
-                    .get("target")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
+                let target = payload.str_of("target").map(str::to_owned);
                 let host = Arc::clone(&host);
                 Box::pin(async move {
                     let target = target.ok_or_else(|| format!("{method} requires a target"))?;
@@ -1134,10 +1127,9 @@ impl SubagentHost {
         }
         let host = Arc::clone(self);
         registry.register("rlm.find_models", move |payload| {
-            let query = payload.get("query").and_then(Value::as_str);
+            let query = payload.str_of("query");
             let limit = payload
-                .get("limit")
-                .and_then(Value::as_u64)
+                .u64_of("limit")
                 .map(|limit| usize::try_from(limit).unwrap_or(8))
                 .unwrap_or(8);
             let reply = host.find_models(query.unwrap_or_default(), limit);

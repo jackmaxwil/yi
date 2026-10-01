@@ -35,7 +35,7 @@ fn key() -> yi_runtime::auth::Resolved {
     }
 }
 
-fn route(id: &str, api: &str, provider: &str, base_url: &str) -> Model {
+pub(crate) fn route(id: &str, api: &str, provider: &str, base_url: &str) -> Model {
     let mut model = faux_model(200_000);
     (model.id, model.api) = (id.to_owned(), api.to_owned());
     (model.provider, model.base_url) = (provider.to_owned(), base_url.to_owned());
@@ -43,11 +43,21 @@ fn route(id: &str, api: &str, provider: &str, base_url: &str) -> Model {
 }
 
 /// A root session wired the way `yi` wires one, its requests proxied to the stand-in.
-fn root(
+pub(crate) fn root(
     scratch: &Scratch,
     model: Model,
     port: u16,
     long_cache: bool,
+) -> Result<(AgentSession, Arc<SubagentHost>), Box<dyn Error>> {
+    root_with(scratch, model, port, long_cache, None)
+}
+
+pub(crate) fn root_with(
+    scratch: &Scratch,
+    model: Model,
+    port: u16,
+    long_cache: bool,
+    broker: Option<Arc<yi_runtime::PermissionBroker>>,
 ) -> Result<(AgentSession, Arc<SubagentHost>), Box<dyn Error>> {
     let (cwd, home) = (scratch.join("ws"), scratch.join("home"));
     std::fs::create_dir_all(&cwd)?;
@@ -81,7 +91,7 @@ fn root(
             cwd,
             home: home.clone(),
             lane_slots: 1,
-            broker: None,
+            broker,
             tools: Arc::new(yi_tools::builtin_tools),
             depth: 0,
             max_depth: 1,
@@ -123,7 +133,7 @@ fn reader_over(url: &str, question: &str, readers: Option<u64>) -> (String, Map<
 
 /// Every request body, sent on as it arrives, each answered with `reply`. A reader's finish
 /// wakes the root, whose own requests come here too, so bodies are found by what they ask.
-fn stand_in(reply: String) -> std::io::Result<(u16, mpsc::Receiver<Value>)> {
+pub(crate) fn stand_in(reply: String) -> std::io::Result<(u16, mpsc::Receiver<Value>)> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let (sender, bodies) = mpsc::channel();
@@ -154,7 +164,7 @@ fn stand_in(reply: String) -> std::io::Result<(u16, mpsc::Receiver<Value>)> {
 }
 
 /// The first body that asks `question`, waiting up to ten seconds for it.
-async fn body_asking(
+pub(crate) async fn body_asking(
     bodies: &mut Vec<Value>,
     from: &mpsc::Receiver<Value>,
     question: &str,

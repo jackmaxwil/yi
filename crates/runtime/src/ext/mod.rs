@@ -17,7 +17,7 @@ use crate::Deliver;
 
 pub use assemble::{PromptState, Rank, Slot, Trust};
 pub(crate) use assemble::{fence, sanitize};
-pub use install::{ExtOptions, install};
+pub use install::{ExtOptions, install, narrow};
 pub use orchestrate::{Features, Route, features, prefilter};
 pub use pack::Pack;
 pub use project::{

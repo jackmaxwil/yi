@@ -83,7 +83,53 @@ fn manager_with_snapshot(snapshot: Option<KernelSnapshotConfig>) -> Result<Kerne
         on_progress: None,
         snapshot,
         wrap: None,
+        connection_dir: None,
     })
+}
+
+/// Under Rosetta debugpy's import forked a child that never exited and `kernel_info` timed out;
+/// the kernel's own `PYTHONPATH` shadows it, ahead of the path the caller gave, which it keeps.
+#[tokio::test]
+async fn a_kernel_cannot_import_debugpy_and_keeps_the_given_python_path() -> TestResult {
+    let python = ensure_kernel_python(&BootstrapOptions {
+        on_progress: None,
+        home: home(),
+        runtime_source_dir: default_runtime_source_dir(),
+        skills_source_dir: default_skills_source_dir(),
+        toolchain: None,
+        venv_dir: None,
+    })?;
+    let kernel = KernelManager::new(KernelOptions {
+        python: Some(python),
+        cwd: None,
+        env: vec![("PYTHONPATH".to_owned(), "/already".to_owned())],
+        username: "yi".to_owned(),
+        home: home(),
+        runtime_source_dir: default_runtime_source_dir(),
+        host: Some(Arc::new(EchoHost)),
+        on_progress: None,
+        snapshot: None,
+        wrap: None,
+        connection_dir: None,
+    })?;
+    let shadowed = kernel
+        .execute("import debugpy", ExecuteOptions::default())
+        .await?;
+    let said = shadowed.error.as_ref().map(|error| error.evalue.as_str());
+    assert_eq!(
+        said,
+        Some("yi kernel does not load debugpy"),
+        "{shadowed:?}"
+    );
+    let path = kernel
+        .execute(
+            "import os; os.environ['PYTHONPATH'].split(os.pathsep)[1:]",
+            ExecuteOptions::default(),
+        )
+        .await?;
+    assert_eq!(path.result.as_deref(), Some("['/already']"), "{path:?}");
+    kernel.shutdown().await;
+    Ok(())
 }
 
 #[tokio::test]
@@ -580,6 +626,7 @@ async fn the_kernel_boots_on_system_python_when_uv_is_absent() -> TestResult {
         on_progress: None,
         snapshot: None,
         wrap: None,
+        connection_dir: None,
     })?;
     let result = kernel
         .execute(

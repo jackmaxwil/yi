@@ -174,7 +174,7 @@ const fn chord(
     }
 }
 
-pub const CHORDS: [Chord; 20] = [
+pub const CHORDS: [Chord; 21] = [
     chord("command palette", "⌥/", "⌘P", "g", Some(Action::Navigator)),
     chord("new session", "⌥n", "⌘⇧N", "o", Some(Action::NewSession)),
     chord("jump to rail slot 1..9", "⌥1..9", "⌘1..9", "", None),
@@ -243,7 +243,14 @@ pub const CHORDS: [Chord; 20] = [
     ),
     chord("chat: hide or show the HUD", "ctrl+t", "ctrl+t", "", None),
     chord(
-        "sidebar: ✕ needs you · ◐ working · ● done, unseen · ○ idle",
+        "sidebar: ? needs you · ◐ working · ● done, unseen · ○ idle · ! stuck · ✕ failed",
+        "",
+        "",
+        "",
+        None,
+    ),
+    chord(
+        "status: ≥$ is a lower bound; a reply came back without its usage",
         "",
         "",
         "",

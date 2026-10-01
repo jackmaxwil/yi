@@ -3,9 +3,8 @@ use std::path::PathBuf;
 
 use yi_permission::{
     CatastrophicContext, ConfigRule, ConfigRuleAction, Decision, Hold, HoldPattern, HoldSource,
-    ParseOutcome, PermissionMode, SessionRules, ToolCall, canonical_command_identity,
-    canonical_tool_identity, command_reads_credentials, decide, git_dirs, grants, is_catastrophic,
-    lexical_normalize, parse_command,
+    PermissionMode, SessionRules, ToolCall, canonical_command_identity, canonical_tool_identity,
+    command_reads_credentials, decide, git_dirs, grants, is_catastrophic, lexical_normalize,
 };
 use yi_types::permission::{RuleDecision, RuleKind, SessionPermissionState};
 
@@ -20,6 +19,7 @@ fn context() -> CatastrophicContext {
         home_dir: Some(PathBuf::from("/home/user")),
         working_dir: Some(PathBuf::from("/home/user/project")),
         workspace_git: vec![PathBuf::from("/home/user/project/.git")],
+        host_owned: vec![PathBuf::from("/home/user/.yi/sessions")],
     }
 }
 
@@ -225,15 +225,41 @@ fn mode_fallbacks_match_the_reference_gate() -> TestResult {
     Ok(())
 }
 
+/// Session rules and "always" answers key on these bytes; the length prefix counts bytes, so a
+/// non-ASCII field cannot run into the next one.
 #[test]
-fn unparseable_commands_are_their_own_outcome() -> TestResult {
+fn identities_keep_their_bytes() -> TestResult {
     assert_eq!(
-        parse_command("cargo build"),
-        ParseOutcome::Parsed(vec!["cargo build".to_owned()])
+        canonical_command_identity("ls é", "/tmp/café"),
+        "22:yi-permission-state-v2\n7:command\n5:ls é\n10:/tmp/café\n"
     );
-    assert_eq!(parse_command("rg foo | head"), ParseOutcome::Unparsed);
-    assert_eq!(parse_command("a && b"), ParseOutcome::Unparsed);
-    assert_eq!(parse_command("echo $(whoami)"), ParseOutcome::Unparsed);
+    assert_eq!(
+        canonical_tool_identity("write", r#"{"path":"a"}"#),
+        "22:yi-permission-state-v2\n5:write\n12:{\"path\":\"a\"}\n"
+    );
+    assert_eq!(
+        yi_permission::write_grant(std::path::Path::new("/w/ü")).canonical,
+        "22:yi-permission-state-v2\n5:write\n5:/w/ü\n"
+    );
+    let targets = [PathBuf::from("/home/user/project/src/a.rs")];
+    let dirs: Vec<String> = grants(&write_call(&targets, true), &context())
+        .into_iter()
+        .map(|grant| grant.canonical)
+        .collect();
+    assert_eq!(
+        dirs,
+        [
+            "22:yi-permission-state-v2\n3:dir\n22:/home/user/project/src\n",
+            "22:yi-permission-state-v2\n3:dir\n18:/home/user/project\n",
+        ]
+    );
+    let command = "git worktree add ../a b";
+    let canonical = canonical_command_identity(command, "/home/user/project");
+    let scope = grants(&bash_call(command, &canonical), &context());
+    assert_eq!(
+        scope.first().map(|grant| grant.canonical.as_str()),
+        Some("22:yi-permission-state-v2\n5:scope\n12:git worktree\n18:/home/user/project\n")
+    );
     Ok(())
 }
 
@@ -344,6 +370,75 @@ fn a_credential_read_is_named_before_it_happens() -> TestResult {
             assert!(description.contains("credential store"), "{description}")
         }
         other => return Err(format!("expected an ask, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// #911 review: allowed bash read the new stores by a glob, a parent directory, a link or
+/// letter case, since the belt compared spellings and only paths beneath a store.
+#[test]
+fn a_credential_read_is_named_by_glob_parent_link_and_case() -> TestResult {
+    let lexical = context();
+    for command in [
+        "cat ~/.n?trc",
+        "cat ~/.config/*/hosts.yml",
+        "cat ~/.{netrc,npmrc}",
+        "grep -r oauth_token ~/.config",
+        "rg token ~",
+        "cat '~/.yi/oauth/acme.json'",
+        "cat /home/*/.netrc",
+        "cat ~/{.netrc,x}",
+        "cat ~/[.]netrc",
+        "cat \"$HOME\"/.npmrc",
+        "cat /home/user/\\.netrc",
+        "grep -r oauth_token /",
+        "find /home -name .npmrc",
+    ] {
+        assert!(
+            command_reads_credentials(command, &lexical).is_some(),
+            "{command}"
+        );
+    }
+    // A plain glob never matches a dotfile, and a sibling of a store is not one.
+    for command in [
+        "ls ~/*.md",
+        "cat ~/notes/*.txt",
+        "ls ~/.config/nvim",
+        "cat ~/.cargo/config.toml",
+    ] {
+        assert!(
+            command_reads_credentials(command, &lexical).is_none(),
+            "{command}"
+        );
+    }
+
+    let root = Scratch::new("yi-belt-identity")?;
+    let home = root.join("home");
+    std::fs::create_dir_all(home.join(".config/gh"))?;
+    std::fs::write(home.join(".netrc"), "machine x password y")?;
+    std::os::unix::fs::symlink(home.join(".config"), root.join("cfg"))?;
+    let real = CatastrophicContext {
+        home_dir: Some(home.clone()),
+        working_dir: Some(root.to_path_buf()),
+        workspace_git: Vec::new(),
+        host_owned: vec![home.join(".yi/sessions")],
+    };
+    let mut commands = vec![
+        // `cfg` is `~/.config`, so the kernel opens `~/.netrc`; popped first, it is `<root>/.netrc`.
+        "cat cfg/../.netrc".to_owned(),
+        "cat cfg/gh/hosts.yml".to_owned(),
+        "grep -r token cfg".to_owned(),
+        "cat cfg/*/hosts.yml".to_owned(),
+    ];
+    // Another letter case names the same file only where the filesystem folds case (macOS).
+    if home.join(".NETRC").exists() {
+        commands.push(format!("cat {}/.NETRC", home.display()));
+    }
+    for command in commands {
+        assert!(
+            command_reads_credentials(&command, &real).is_some(),
+            "{command}"
+        );
     }
     Ok(())
 }

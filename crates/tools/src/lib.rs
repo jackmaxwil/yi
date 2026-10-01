@@ -6,6 +6,7 @@ pub mod diff;
 mod document;
 mod exec;
 mod grep;
+mod grid;
 pub mod hashline;
 mod ignore;
 mod ipython;
@@ -17,7 +18,7 @@ pub mod sandbox;
 #[cfg(test)]
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
-pub mod spill;
+mod spill;
 mod syntax;
 mod tool;
 
@@ -36,6 +37,7 @@ pub use orient::GetContextTool;
 pub use process::{CommandCapture, OUTPUT_CAP, command, edit_file, run_captured};
 pub use reduce::{Reduced, reduce};
 pub use sandbox::{Sandbox, SandboxRefusal, denial_hint, sandbox_refusal};
+pub use spill::{FLAT_SPILLS, SPILLS};
 pub use tool::{
     CancelFlag, DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output,
     error_output_kind, glob_head, text_output,

@@ -252,6 +252,38 @@ async fn an_error_span_is_classed_from_its_error_message() -> TestResult {
     Ok(())
 }
 
+/// Dies with `costUsd: 0` for a reply that reported no usage: that cost is missing, and a
+/// recorded zero would let `yi stats telemetry` print the sum as exact.
+#[tokio::test]
+async fn an_unreported_usage_records_no_cost() -> TestResult {
+    let root = Scratch::new("yi-telemetry-cost")?;
+    let telemetry = Arc::new(Telemetry::default());
+    telemetry.bind(&root.join("1_t-4.jsonl"), "t-4");
+    for unknown in [false, true] {
+        let mut error = faux_assistant_message(Vec::new(), StopReason::Error);
+        if let AgentMessage::Assistant { usage, .. } = &mut error {
+            usage.unknown = unknown;
+        }
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let mut wrapped = telemetry.wrap(&faux_model(), receiver);
+        sender
+            .send(AssistantMessageEvent::Error {
+                reason: StopReason::Error,
+                error,
+            })
+            .await
+            .map_err(|_| "the wrapper closed its input")?;
+        drop(sender);
+        while wrapped.recv().await.is_some() {}
+    }
+    let costs: Vec<_> = spans_in(&root.join("1_t-4.telemetry.jsonl"))?
+        .into_iter()
+        .map(|span| span.cost_usd)
+        .collect();
+    assert_eq!(costs, [Some(0.0), None]);
+    Ok(())
+}
+
 /// The provider's error text names its transport class; the vocabulary is closed and printable.
 #[test]
 fn error_classes_render_a_closed_vocabulary() {

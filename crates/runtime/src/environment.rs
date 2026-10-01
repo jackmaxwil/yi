@@ -262,8 +262,9 @@ pub fn hook(
             budget = Some(budget.map_or(turn.clone(), |b| format!("{b} · {turn}")));
         }
         if let Some(mut line) = budget {
-            if let Some(cost) = cost().filter(|cost| *cost > 0.0) {
-                line.push_str(&format!(" · session ${cost:.2}"));
+            if let Some((cost, lower_bound)) = cost().filter(|(cost, _)| *cost > 0.0) {
+                let cost = yi_types::message::fmt_cost(cost, lower_bound);
+                line.push_str(&format!(" · session {cost}"));
             }
             lines.push(format!("context: {line}"));
         }

@@ -509,3 +509,122 @@ fn a_named_path_never_reaches_a_walled_tree_by_another_name() -> TestResult {
     );
     Ok(())
 }
+
+/// One turn per call, so a later call can name what an earlier one printed.
+async fn run_turns(
+    session: &AgentSession,
+    provider: &ProviderStream,
+    calls: Vec<(&str, serde_json::Map<String, serde_json::Value>)>,
+) -> Result<Vec<(String, bool)>, Box<dyn Error>> {
+    let mut seen = Vec::new();
+    for (tool, call) in calls {
+        provider.queue_faux(vec![
+            faux_assistant_message(vec![faux_tool_call("c", tool, call)], StopReason::ToolUse),
+            faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+        ]);
+        let mut events = session.subscribe();
+        session.prompt("go")?;
+        session.wait_idle().await;
+        while let Ok(event) = events.try_recv() {
+            if let AgentEvent::ToolExecutionEnd {
+                result, is_error, ..
+            } = event
+            {
+                seen.push((
+                    yi_types::message::join_text(&result.content, "\n"),
+                    is_error,
+                ));
+            }
+        }
+    }
+    Ok(seen)
+}
+
+/// #888: spills are kept per session, and a walled session reads back its own spill but
+/// neither another session's nor one from before spills were per session.
+#[tokio::test]
+async fn a_walled_session_reads_back_its_own_spill_and_no_other() -> TestResult {
+    let root = Scratch::new("yi-wall-spill")?;
+    let home = root.home()?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let other = home.join(".yi/spills/author/0123.txt");
+    let legacy = home.join(".yi/tool-output/4567.txt");
+    for planted in [&other, &legacy] {
+        std::fs::create_dir_all(planted.parent().ok_or("no parent")?)?;
+        std::fs::write(planted, "WALLED OUTPUT\n")?;
+    }
+    let provider = Arc::new(ProviderStream::new(None));
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    session.attach_store(Arc::new(std::sync::Mutex::new(
+        yi_session::SessionStore::in_memory(yi_session::SessionMetadata {
+            id: "juror".to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+            name: None,
+        }),
+    )))?;
+    session.set_wall(read_walled(&root));
+    session.use_tools(yi_tools::builtin_tools(), root.to_path_buf(), None);
+    let cut = run_turns(
+        &session,
+        &provider,
+        vec![("bash", args(&[("command", "seq 1 20000")]))],
+    );
+    let (text, _) = cut.await?.pop().ok_or("no bash result")?;
+    let pointer = (text.split("[full output: ").nth(1))
+        .and_then(|rest| rest.split(']').next())
+        .ok_or_else(|| format!("no pointer: {text}"))?;
+    assert!(
+        pointer.starts_with(&home.join(".yi/spills/juror/").display().to_string()),
+        "the spill is not under the session's own dir: {pointer}"
+    );
+    let (other_path, flat_path) = (other.display().to_string(), legacy.display().to_string());
+    let mut calls = [pointer, &other_path, &flat_path]
+        .map(|path| ("read", args(&[("path", path)])))
+        .to_vec();
+    calls.push(("grep", args(&[("pattern", "^20000$"), ("path", pointer)])));
+    let seen = run_turns(&session, &provider, calls).await?;
+    let [own, author, flat, grep] = seen.as_slice() else {
+        return Err(format!("four calls, got {seen:?}").into());
+    };
+    let head: String = own.0.chars().take(300).collect();
+    assert!(!own.1 && own.0.contains("\n20:20\n"), "own spill: {head}");
+    assert!(
+        grep.0.contains("20000"),
+        "grep of its own spill: {}",
+        grep.0
+    );
+    for (name, (text, is_error)) in [("another session's", author), ("a flat", flat)] {
+        assert!(
+            *is_error && !text.contains("WALLED"),
+            "{name} spill reached a walled session: {text}"
+        );
+    }
+    // An unwalled session's bash reads any file the user can, so its `read` is not walled either.
+    let mut open = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    open.use_tools(yi_tools::builtin_tools(), root.to_path_buf(), None);
+    let read = vec![("read", args(&[("path", other_path.as_str())]))];
+    let (text, _) = run_turns(&open, &provider, read)
+        .await?
+        .pop()
+        .ok_or("no read")?;
+    assert!(text.contains("WALLED OUTPUT"), "an unwalled read: {text}");
+    Ok(())
+}

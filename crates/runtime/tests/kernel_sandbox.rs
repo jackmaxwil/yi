@@ -144,34 +144,116 @@ async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult
     Ok(())
 }
 
+/// #599: every contained spawn reaches loopback, so a connection file's key would let one
+/// sandbox run code in another's kernel. Every profile hides them; each kernel reads its own.
 #[tokio::test]
-async fn a_profile_change_restarts_the_kernel() -> TestResult {
+async fn a_kernel_reaches_loopback_and_no_other_kernels_key() -> TestResult {
     if !Sandbox::available() {
         return Ok(());
     }
-    let (_root, project, home, session) = workspace("restart")?;
+    let (_root, project, home, session) = workspace("keys")?;
     let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
-    let kernel = service(project.clone(), home.clone(), sandbox.clone(), None);
-    let first = cell(&kernel, "marker = 1\nprint(marker)".to_owned()).await?;
-    assert_eq!(first.result.status, yi_types::kernel::ExecuteStatus::Ok);
+    let first = service(project.clone(), home.clone(), sandbox.clone(), None);
+    let second = service(project.clone(), home.clone(), sandbox.clone(), None);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let _ = std::io::Write::write_all(&mut &stream, b"HOST");
+        }
+    });
+    let own = cell(
+        &first,
+        "import ipykernel\nprint(ipykernel.get_connection_file())".to_owned(),
+    )
+    .await?;
+    let file = own.result.stdout.trim().to_owned();
+    let text = std::fs::read_to_string(&file)?;
+    let key = serde_json::from_str::<serde_json::Value>(&text)?["key"]
+        .as_str()
+        .filter(|key| !key.is_empty())
+        .ok_or("the connection file names no key")?
+        .to_owned();
+    let code = format!(
+        "import socket\nfor attempt in (lambda: open(r'{file}').read(), lambda: open(r'{file}', 'a').write(' ')):\n    try:\n        print(attempt())\n    except OSError as e:\n        print('denied', e.errno)\nprint(socket.create_connection(('127.0.0.1', {port}), 3).recv(4))"
+    );
+    let other = cell(&second, code).await;
+    let context = yi_tools::ToolContext::new(project.clone());
+    let timeout = std::time::Duration::from_secs(60);
+    let command = format!("cat '{file}'");
+    let catted =
+        yi_tools::run_or_background(&command, &context, None, timeout, Some(&sandbox), None);
+    first.dispose().await;
+    second.dispose().await;
+    let other = other?.result;
+    let catted = match catted? {
+        yi_tools::Run::Finished(capture) => format!("{}{}", capture.stdout, capture.stderr),
+        _ => return Err("cat did not finish".into()),
+    };
+    let seen = (
+        other.stdout.contains(&key) || catted.contains(&key),
+        other.stdout.matches("denied 1\n").count(),
+        other.stdout.contains("b'HOST'"),
+    );
+    assert_eq!(
+        seen,
+        (false, 2, true),
+        "(key seen, denials, loopback reached): cell {other:?}, cat {catted}"
+    );
+    Ok(())
+}
 
-    let extra = home.join(format!("yi-p7-extra-{}", std::process::id()));
-    std::fs::create_dir_all(&extra)?;
-    let mut next = sandbox;
-    next.writable.push(extra.clone());
-    kernel.set_sandbox(Some(next)).await;
-
-    let second = cell(&kernel, "print(marker)".to_owned()).await?;
-    assert_eq!(second.result.status, yi_types::kernel::ExecuteStatus::Error);
-    let name = second
-        .result
-        .error
-        .as_ref()
-        .map(|error| error.ename.as_str())
-        .unwrap_or("");
-    assert_eq!(name, "NameError", "{name}");
+/// Review of #925 (F1): the kernel's re-allow was bound to its directory as resolved on disk,
+/// where its own profile writes; a process outliving it planted a link, and the next boot
+/// re-allowed the link's target.
+#[tokio::test]
+async fn a_link_planted_at_the_kernels_own_directory_grants_nothing() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (_root, project, home, session) = workspace("own-link")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
+    let probe = uncovered(&sandbox, &home).ok_or("no directory outside the sandbox")?;
+    let target = probe.join(format!("yi-own-link-{}", std::process::id()));
+    std::fs::create_dir_all(&target)?;
+    let kernel = service(project.clone(), home.clone(), sandbox, None);
+    let own = cell(
+        &kernel,
+        "import ipykernel, os\nprint(os.path.dirname(ipykernel.get_connection_file()))".to_owned(),
+    )
+    .await?
+    .result
+    .stdout
+    .trim()
+    .to_owned();
+    let plant = format!(
+        "import subprocess\nsubprocess.Popen(['/bin/sh', '-c', 'for i in $(seq 400); do [ -e \"$0/connection.json\" ] || {{ ln -s \"$1\" \"$0\"; exit; }}; sleep 0.05; done', r'{own}', r'{}'], start_new_session=True)",
+        target.display()
+    );
+    cell(&kernel, plant).await?;
+    kernel.kill().await;
+    let own = PathBuf::from(own);
+    for _ in 0..100 {
+        if own.is_symlink() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let planted = own.is_symlink();
+    let escape = target.join("escape.txt");
+    let code = format!(
+        "try:\n    open(r'{}', 'w').write('x')\n    print('wrote')\nexcept OSError as e:\n    print('denied', e.errno)",
+        escape.display()
+    );
+    let next = cell(&kernel, code).await;
     kernel.dispose().await;
-    let _ = std::fs::remove_dir_all(&extra);
+    let escaped = escape.exists();
+    let _ = std::fs::remove_dir_all(&target);
+    let next = next?.result.stdout;
+    assert!(
+        planted && !escaped && next.contains("denied 1"),
+        "planted {planted}, escaped {escaped}: {next}"
+    );
     Ok(())
 }
 
@@ -183,6 +265,19 @@ fn root_session(
     sessions_dir: Option<PathBuf>,
     broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
     mcp_read: Option<Arc<dyn yi_runtime::fetch::McpResourceRead>>,
+) -> yi_runtime::AgentSession {
+    let wall = yi_runtime::Wall::default();
+    walled_session(project, home, rlm_dir, sessions_dir, broker, mcp_read, wall)
+}
+
+fn walled_session(
+    project: &std::path::Path,
+    home: &std::path::Path,
+    rlm_dir: &std::path::Path,
+    sessions_dir: Option<PathBuf>,
+    broker: Option<Arc<yi_runtime::permission::PermissionBroker>>,
+    mcp_read: Option<Arc<dyn yi_runtime::fetch::McpResourceRead>>,
+    wall: yi_runtime::Wall,
 ) -> yi_runtime::AgentSession {
     let provider = Arc::new(yi_runtime::ProviderStream::new(None));
     let mut session = yi_runtime::AgentSession::new(
@@ -215,7 +310,7 @@ fn root_session(
             plan_stale_turns: None,
             plans_dir: Some(rlm_dir.join("plans")),
             parent_link: None,
-            wall: yi_runtime::Wall::default(),
+            wall,
             auto_background: None,
             deadline: None,
             kernel_prewarm: false,
@@ -225,6 +320,51 @@ fn root_session(
         },
     );
     session
+}
+
+/// #598, #889: a walled juror's kernel wrote the tree and read walled files, since the wall was
+/// a check at the tool seam and in no profile; and a cell inherited `*_API_KEY`. The stores
+/// themselves are proven in `tools/tests/sandbox.rs` with a scratch HOME, not the runner's.
+#[tokio::test]
+async fn a_walled_kernel_and_its_bash_keep_to_the_wall_and_inherit_no_key() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    // SAFETY: nextest runs each test in a process of its own, so no thread reads the env.
+    unsafe { std::env::set_var("YI_598_PROBE_API_KEY", "ENV-598") };
+    let (root, project, home, _session) = workspace("walled")?;
+    std::fs::write(project.join("walled.txt"), "WALLED-598")?;
+    std::os::unix::fs::symlink(&project, root.join("via"))?;
+    let wall = yi_runtime::Wall {
+        deny_write: vec![project.clone()],
+        deny_read: vec![project.join("walled.txt")],
+        ..yi_runtime::Wall::default()
+    };
+    let rlm = root.join("rlm");
+    let session = walled_session(&project, &home, &rlm, None, None, None, wall);
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let via = root.join("via");
+    let (tree, via) = (project.display(), via.display());
+    let code = format!(
+        "import os\nfor path in (r'{tree}/walled.txt', r'{tree}/WALLED.TXT', r'{via}/walled.txt'):\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)\ntry:\n    open(r'{tree}/by-cell.txt', 'w').write('x')\nexcept OSError as e:\n    print('denied', e.errno)\nprint(os.environ.get('YI_598_PROBE_API_KEY'))\nprint(await bash(\"cat '{tree}/walled.txt'; touch '{tree}/by-job.txt'; env\"))",
+    );
+    let ran = cell(&kernel, code).await;
+    kernel.dispose().await;
+    let wrote = ["by-cell.txt", "by-job.txt"].map(|name| project.join(name).exists());
+    let stdout = ran?.result.stdout;
+    let read = ["WALLED-598", "ENV-598"].map(|secret| stdout.contains(secret));
+    // Three reads and a write refused with EPERM, and the job ran: proof the cell got that far.
+    let ran = (
+        stdout.matches("denied 1\n").count(),
+        stdout.contains("PATH="),
+    );
+    assert!(
+        wrote == [false, false] && read == [false, false] && ran == (4, true),
+        "wrote (cell, job) {wrote:?}, read (walled, env) {read:?}, (denials, job ran) {ran:?}"
+    );
+    Ok(())
 }
 
 /// Incident (#580): the root kernel's writable root was the whole session corpus, where every
@@ -372,6 +512,59 @@ print(await bash(bound))"#;
     assert!(
         bound.contains("bound-ok"),
         "a loopback bind in bash() failed: {bound}"
+    );
+    Ok(())
+}
+
+/// #600 stage 2c: a `bash()` job ran under the profile captured when the session was wired, so a
+/// grant kept later, here replayed from the ledger on `--continue`, never reached the kernel's jobs.
+#[tokio::test]
+async fn a_kernel_bash_job_takes_a_grant_kept_after_wiring() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, project, home, _session) = workspace("grant")?;
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let probe = uncovered(&sandbox, &home).ok_or("no directory outside the sandbox")?;
+    let granted = probe.join(format!("yi-job-grant-{}", std::process::id()));
+    std::fs::create_dir_all(&granted)?;
+    let (events, _keep) = tokio::sync::broadcast::channel(16);
+    let broker = Arc::new(
+        yi_runtime::permission::PermissionBroker::new(
+            yi_runtime::PermissionMode::Auto,
+            project.clone(),
+            Vec::new(),
+            None,
+            events,
+        )
+        .with_sandbox(Some(sandbox)),
+    );
+    let session = root_session(&project, &home, &root.join("rlm"), None, Some(broker), None);
+    let store = crate::support::memory_store("job-grant");
+    let grant = yi_permission::write_grant(&granted);
+    let rule = serde_json::json!({
+        "id": 1, "kind": "command", "canonical": grant.canonical,
+        "displayIdentity": grant.label, "decision": "allow", "generation": 1
+    });
+    yi_session::lock_session(&store).append_custom("main", "permission_rule", Some(rule))?;
+    session.attach_store(store)?;
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    let made = granted.join("made");
+    let code = format!(
+        "print(await bash(\"touch '{}' && echo made\"))",
+        made.display()
+    );
+    let ran = cell(&kernel, code).await;
+    kernel.dispose().await;
+    let wrote = made.is_file();
+    let _ = std::fs::remove_dir_all(&granted);
+    let ran = ran?;
+    assert!(
+        wrote,
+        "the job's profile lacks the kept grant: {}",
+        ran.result.stdout
     );
     Ok(())
 }

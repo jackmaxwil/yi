@@ -323,6 +323,116 @@ fn status_keeps_the_model_under_a_long_path_and_branch() -> TestResult {
     Ok(())
 }
 
+/// Dies with rows wider than their width: the fit counted neither the 2-cell name tile nor
+/// the effort spans, so the terminal cut the session name mid-word. Every width fits, and a
+/// field once dropped stays dropped at every narrower width, in one order.
+#[test]
+fn the_status_row_fits_its_width_and_drops_whole_fields_in_one_order() {
+    let input = StatusInput {
+        model: "claude-opus-5".to_owned(),
+        provider: Some("openrouter".to_owned()),
+        thinking: Some("high".to_owned()),
+        mode: Some("verbose".to_owned()),
+        cwd: "/Users/someone/Development/yi".to_owned(),
+        branch: Some("jack/h3-status-row".to_owned()),
+        landing: Some("PR #962 ●●".to_owned()),
+        cost: Some("≥$17.03".to_owned()),
+        cache: Some("0% cached".to_owned()),
+        session_name: "dogfood".to_owned(),
+        subagents: 2,
+        context_used: 154_491,
+        context_window: 1_000_000,
+        ..StatusInput::default()
+    };
+    let order = [
+        "0% cached",
+        "PR #962",
+        "👥 2",
+        "◉ verbose",
+        "via openrouter",
+        "dogfood",
+        "◉ high",
+        "154,491 / 1M",
+        "≥$17.03",
+        "@",
+    ];
+    let left = [
+        "claude-opus-5",
+        "via openrouter",
+        "◉ high",
+        "◉ verbose",
+        "@",
+        "PR #962",
+    ];
+    let right = ["👥 2", "≥$17.03", "0% cached", "154,491 / 1M", "dogfood"];
+    for width in 20..=260 {
+        let row = yi_tui::status::render(&input, width, &theme());
+        let text = flat(&row);
+        assert!(
+            row.width() < width,
+            "{width}: {} cells: {text}",
+            row.width()
+        );
+        let shown: Vec<bool> = order.iter().map(|field| text.contains(field)).collect();
+        let first = shown.iter().position(|&on| on).unwrap_or(order.len());
+        assert!(
+            shown.iter().skip(first).all(|&on| on),
+            "{width}: a field came back after a later one was cut: {text}"
+        );
+        assert!(text.contains("claude-opus-5"), "{width}: {text}");
+        for group in [&left[..], &right[..]] {
+            let at: Vec<usize> = group.iter().filter_map(|field| text.find(field)).collect();
+            assert!(at.is_sorted(), "{width}: out of screen order: {text}");
+        }
+        // The gap is the one unstyled run of blanks between the groups.
+        let gap = row
+            .spans
+            .iter()
+            .find(|span| span.style == Style::default() && span.content.trim().is_empty())
+            .map_or(0, |span| span.width());
+        if right.iter().any(|field| text.contains(field)) {
+            assert!(gap >= 4, "{width}: a gap of {gap} cells: {text}");
+        }
+    }
+    let narrow = yi_tui::status::render(&input, 20, &theme());
+    assert!(
+        !flat(&narrow).contains('@'),
+        "the place goes last: {}",
+        flat(&narrow)
+    );
+}
+
+/// A model wider than the row loses its tail at a cell boundary, marked, instead of running
+/// off the edge where the terminal would cut it mid-glyph.
+#[test]
+fn a_model_wider_than_the_row_is_clipped_with_a_mark() {
+    let input = StatusInput {
+        model: "nemotron-3-nano-omni-30b-a3b-reasoning:free".to_owned(),
+        cost: Some("$0.01".to_owned()),
+        ..StatusInput::default()
+    };
+    for width in 8..=48 {
+        let row = yi_tui::status::render(&input, width, &theme());
+        let text = flat(&row);
+        assert!(
+            row.width() < width,
+            "{width}: {} cells: {text}",
+            row.width()
+        );
+        assert!(
+            text.contains("nemotron") || text.contains('…'),
+            "{width}: {text}"
+        );
+    }
+    let wide = StatusInput {
+        model: "模型模型模型模型模型模型".to_owned(),
+        ..StatusInput::default()
+    };
+    let row = yi_tui::status::render(&wide, 16, &theme());
+    assert!(row.width() < 16, "{}: {}", row.width(), flat(&row));
+    assert!(flat(&row).contains("模…"), "{}", flat(&row));
+}
+
 /// A lane session's row names the checkout and the slot, not the pool's hash path.
 #[test]
 fn status_names_the_lane_instead_of_the_slot_path() -> TestResult {

@@ -107,7 +107,7 @@ fn host_with(root: &Scratch, gate: Arc<dyn Fn() + Send + Sync>) -> (Arc<Subagent
         attribute: Arc::new(|_| {}),
         store: Arc::new(|| None),
         plans_dir: root.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     (host, bus)
 }
@@ -134,8 +134,10 @@ impl Cards {
     fn reconcile(&mut self, host: &SubagentHost) {
         let roster = host.children_view();
         for child in &roster {
-            self.0
-                .insert(child.update.id.as_str().to_owned(), child.update.status);
+            self.0.insert(
+                child.update.id.as_str().to_owned(),
+                child.update.status.clone(),
+            );
         }
         for (id, status) in &mut self.0 {
             let listed = roster.iter().any(|child| child.update.id.as_str() == id);

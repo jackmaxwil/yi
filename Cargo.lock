@@ -2243,6 +2243,7 @@ dependencies = [
  "ratatui",
  "serde_json",
  "tui-textarea",
+ "unicode-width 0.2.0",
  "yi-tui",
  "yi-types",
 ]

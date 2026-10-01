@@ -2,21 +2,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use yi_context::{
-    Prefill, Preparation, Scope, Settings, Tokens, Window, compose_summary, convert_to_llm,
-    drop_internal, estimate_context, prepare_compaction, prompts, should_compact,
+    Preparation, Settings, Tokens, Window, compose_summary, convert_to_llm, drop_internal,
+    estimate_context, estimate_message, is_cut_point, prepare_compaction, prompts, reply_tokens,
+    serialize_conversation, should_compact,
 };
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
 use yi_types::entry::Entry;
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
+use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::model::{Effort, LlmContext, Model, Reuse, ToolDef};
 
 use crate::provider::ProviderStream;
 
 pub type CompactFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<AgentMessage>>> + Send>>;
-pub type CompactHook = Box<dyn Fn(&[AgentMessage]) -> CompactFuture + Send + Sync>;
+pub type CompactHook = Box<dyn Fn(&[AgentMessage], &Model, Effort) -> CompactFuture + Send + Sync>;
 pub type StoreOf = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
 pub type WaitFn = dyn Fn(Option<yi_types::event::Wait>) + Send + Sync;
 
@@ -24,7 +25,97 @@ pub type WaitFn = dyn Fn(Option<yi_types::event::Wait>) + Send + Sync;
 pub struct CompactReports {
     pub waiting: Arc<WaitFn>,
     pub compacted: Arc<dyn Fn() + Send + Sync>,
-    pub unsaved: Arc<dyn Fn(&yi_session::SessionError) + Send + Sync>,
+    pub failed: Arc<dyn Fn(&CompactError) + Send + Sync>,
+    pub elided: Arc<dyn Fn(&Elision) + Send + Sync>,
+}
+
+/// What a compaction puts in place of the history.
+pub struct Replacement {
+    pub messages: Vec<AgentMessage>,
+    /// Set when no summary came and the oldest context left the view instead (D337).
+    pub elision: Option<Elision>,
+}
+
+/// How many messages `Compactor::elide` took out of the model's view (notes aside).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Elision {
+    pub messages: usize,
+}
+
+/// One text for the user's notice, the summary's line and the marker where the messages sat.
+impl std::fmt::Display for Elision {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let plural = if self.messages == 1 { "" } else { "s" };
+        write!(
+            formatter,
+            "[compaction elided {} earlier message{plural} from the model's view: summary failed; \
+             the transcript keeps them]",
+            self.messages
+        )
+    }
+}
+
+/// What `AgentSession::compact_now` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactOutcome {
+    NotApplied,
+    Summarized,
+    Elided(Elision),
+}
+
+impl CompactOutcome {
+    pub fn applied(&self) -> bool {
+        *self != Self::NotApplied
+    }
+}
+
+/// Bytes/3, not chars/4: code and JSON run denser, and a count that runs short overflows.
+fn wide(tokens: Tokens) -> Tokens {
+    Tokens(tokens.0.saturating_mul(4).div_ceil(3))
+}
+
+fn text_tokens(text: &str) -> Tokens {
+    Tokens(u64::try_from(text.len()).unwrap_or(u64::MAX).div_ceil(3))
+}
+
+/// A summary's own words, without the view and file lists the new summary renders again.
+fn carried(summary: &str) -> &str {
+    let body = summary
+        .rsplit_once("</yi_compact_view>")
+        .map_or(summary, |(_, rest)| rest);
+    let end = ["<read-files>", "<modified-files>"]
+        .iter()
+        .filter_map(|tag| body.find(tag))
+        .min()
+        .unwrap_or(body.len());
+    body[..end].trim()
+}
+
+/// The earliest cut point from which the rest of `messages` fits `budget`.
+fn fitting_start(messages: &[AgentMessage], budget: Tokens) -> Option<usize> {
+    let (mut kept, mut found) = (Tokens(0), None);
+    for (index, message) in messages.iter().enumerate().rev() {
+        kept = kept.saturating_add(wide(estimate_message(message)));
+        if kept > budget {
+            break;
+        }
+        if is_cut_point(message) {
+            found = Some(index);
+        }
+    }
+    found
+}
+
+/// The custom type of every compaction notice and marker: a note, never a turn of its own.
+pub const COMPACTION_NOTICE: &str = "compaction_notice";
+
+/// Why a due compaction left the history as it was; the text is the notice the model reads.
+#[derive(Debug, thiserror::Error)]
+pub enum CompactError {
+    #[error("compaction not saved: {0}; history left uncompacted, /compact retries")]
+    Unsaved(#[from] yi_session::SessionError),
+    #[error("compaction failed: {0}; history left uncompacted, the next prompt retries")]
+    NoSummary(String),
 }
 
 struct Closing(Arc<WaitFn>);
@@ -60,31 +151,35 @@ impl LoopRequest {
     }
 }
 
-/// Built only when a compaction is due: a run's tool table is not free to render.
-pub type LoopRequestOf = Arc<dyn Fn() -> LoopRequest + Send + Sync>;
+/// Built only when a compaction is due: a run's tool table is not free to render. Takes the
+/// effort of the loop's last request, which the loop hands the hook.
+pub type LoopRequestOf = Arc<dyn Fn(Effort) -> LoopRequest + Send + Sync>;
 
 pub fn loop_hook(
     compactor: Arc<Compactor>,
     provider: Arc<ProviderStream>,
-    model: Model,
     request: LoopRequestOf,
     store: StoreOf,
     reports: CompactReports,
 ) -> CompactHook {
-    Box::new(move |messages: &[AgentMessage]| {
+    // One failed compaction per run: the next prompt's run tries again (#946 F1).
+    let gave_up = Arc::new(AtomicBool::new(false));
+    let hook = move |messages: &[AgentMessage], model: &Model, effort: Effort| -> CompactFuture {
         let _span = yi_types::trace::span("compact.hook");
-        if !compactor.wanted(messages, &model) {
+        if gave_up.load(Ordering::Relaxed) || !compactor.wanted(messages, model) {
             return Box::pin(std::future::ready(None));
         }
+        let gave_up = Arc::clone(&gave_up);
         let compactor = Arc::clone(&compactor);
         let provider = Arc::clone(&provider);
         let model = model.clone();
-        let request = request();
+        let request = request(effort);
         let store = store();
         let CompactReports {
             waiting,
             compacted,
-            unsaved,
+            failed,
+            elided,
         } = reports.clone();
         let messages = messages.to_vec();
         Box::pin(async move {
@@ -107,19 +202,23 @@ pub fn loop_hook(
                 .await;
             drop(closing);
             match replaced {
-                Ok(replaced) => {
-                    if replaced.is_some() {
-                        compacted();
+                Ok(Some(replaced)) => {
+                    if let Some(elision) = &replaced.elision {
+                        elided(elision);
                     }
-                    replaced
+                    compacted();
+                    Some(replaced.messages)
                 }
+                Ok(None) => None,
                 Err(error) => {
-                    unsaved(&error);
+                    gave_up.store(true, Ordering::Relaxed);
+                    failed(&error);
                     None
                 }
             }
         })
-    })
+    };
+    Box::new(hook)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,7 +234,6 @@ pub struct Compactor {
     /// §5 `summarizer` role. The window math stays on the turn's own model: a cheaper
     /// summarizer with a smaller window must not make compaction look overdue.
     pub summarizer: Option<Model>,
-    scope: Scope,
     window: Mutex<Window>,
     pending: AtomicBool,
     running: AtomicBool,
@@ -143,6 +241,12 @@ pub struct Compactor {
     unsaved: AtomicBool,
     instructions: Mutex<Option<String>>,
     standing: Mutex<Option<Standing>>,
+    /// The message that opened the latest run, which a rescue keeps (D337).
+    opening: Mutex<Option<AgentMessage>>,
+    /// The newest reply with a usage that the latest compaction kept: its count is the history
+    /// before that compaction, so `due` does not read it (D338).
+    /// ponytail: in memory, so a resumed session compacts once more; persist with the window.
+    stale: Mutex<Option<AgentMessage>>,
 }
 
 struct Raised<'a>(&'a AtomicBool);
@@ -206,14 +310,7 @@ pub(crate) async fn complete_text(
                     if stop_reason == StopReason::Error {
                         return Err(error_message.unwrap_or_else(|| "unknown error".to_owned()));
                     }
-                    let text: String = content
-                        .iter()
-                        .filter_map(|block| match block {
-                            Content::Text { text, .. } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                    let text: String = yi_types::message::join_text(&content, "\n");
                     return Ok(text);
                 }
                 return Err("summarizer returned a non-assistant message".to_owned());
@@ -263,13 +360,14 @@ impl Compactor {
         Self {
             settings: Settings::default(),
             summarizer: None,
-            scope: Scope::BodyAfterPrefix,
             window: Mutex::new(Window::new_initial(initial_window_id)),
             pending: AtomicBool::new(false),
             running: AtomicBool::new(false),
             unsaved: AtomicBool::new(false),
             instructions: Mutex::new(None),
             standing: Mutex::new(None),
+            opening: Mutex::new(None),
+            stale: Mutex::new(None),
         }
     }
 
@@ -296,6 +394,13 @@ impl Compactor {
         merge(self.standing_directive(), once)
     }
 
+    /// Recorded at a run's start, whoever sent it: a typed prompt, a child's brief, a wake.
+    pub fn open_run(&self, prompt: &AgentMessage) {
+        if let Ok(mut slot) = self.opening.lock() {
+            *slot = Some(prompt.clone());
+        }
+    }
+
     pub fn schedule(&self) {
         self.pending.store(true, Ordering::Relaxed);
     }
@@ -316,25 +421,6 @@ impl Compactor {
 
     pub fn compacting(&self) -> bool {
         self.running.load(Ordering::Relaxed)
-    }
-
-    /// Input-side tokens only: the reply is body, not prefix.
-    pub fn on_usage(&self, usage: &Usage) {
-        // Invariant: a `ServerObserved` prefill latches for the whole window, so an unreported
-        // usage recorded as zero would pin it there and drop every later observation.
-        if usage.unknown {
-            return;
-        }
-        let mut window = lock_window(&self.window);
-        if window.prefill_tokens().is_none() {
-            let input_side = usage
-                .input
-                .saturating_add(usage.cache_read)
-                .saturating_add(usage.cache_write);
-            window.observe_prefill(Prefill::ServerObserved(Tokens(
-                u64::try_from(input_side).unwrap_or(0),
-            )));
-        }
     }
 
     pub fn status(&self, messages: &[AgentMessage], model: &Model) -> CompactStatus {
@@ -363,14 +449,115 @@ impl Compactor {
         if self.unsaved.load(Ordering::Relaxed) {
             return false;
         }
+        // The whole request, prefix included, leaves the reserve for the summary request (#947):
+        // the provider's count, then bytes/3 as the rescue charges it.
         let estimate = estimate_context(messages);
-        let prefill = lock_window(&self.window).prefill_tokens();
-        let scoped = yi_context::account::scoped_tokens(estimate.tokens, self.scope, prefill);
-        should_compact(scoped, Tokens(model.context_window), &self.settings)
+        let stale = self.stale.lock().ok().and_then(|slot| slot.clone());
+        let counted = estimate
+            .last_usage_index
+            .is_some_and(|index| Some(&messages[index]) != stale.as_ref());
+        let sent = if counted {
+            estimate
+                .usage_tokens
+                .saturating_add(wide(estimate.trailing_tokens))
+        } else {
+            wide(
+                messages
+                    .iter()
+                    .map(estimate_message)
+                    .fold(Tokens(0), Tokens::saturating_add),
+            )
+        };
+        should_compact(sent, Tokens(model.context_window), &self.settings)
     }
 
-    /// On the session's model this is the loop's request plus the directive, a cache read (§7);
-    /// another summarizer sends no tools or thinking. Overflow retries once trimmed, then rolls.
+    /// No summary, no room (D337): keep the first user message, the work's opening and the earlier
+    /// summary; fill the rest with the newest messages from a cut point, charged at bytes/3.
+    fn elide(
+        &self,
+        messages: &[AgentMessage],
+        model: &Model,
+        loop_request: &LoopRequest,
+        prepared: &Preparation,
+    ) -> Option<(String, Vec<AgentMessage>, Elision)> {
+        let window = Tokens(model.context_window);
+        if estimate_context(messages).tokens < window {
+            return None;
+        }
+        let (start, earlier) = match messages.first() {
+            Some(AgentMessage::CompactionSummary { summary, .. }) => (1, carried(summary)),
+            _ => (0, ""),
+        };
+        let opening = self.opening.lock().ok().and_then(|slot| slot.clone());
+        let first = messages[start..]
+            .iter()
+            .position(|message| matches!(message, AgentMessage::User { .. }))
+            .map(|offset| start.saturating_add(offset));
+        let run = opening
+            .and_then(|opening| messages.iter().rposition(|message| *message == opening))
+            .filter(|run| Some(*run) != first);
+        let tools = loop_request
+            .tools
+            .as_ref()
+            .and_then(|tools| serde_json::to_string(tools).ok())
+            .unwrap_or_default();
+        // The marker rides twice: in the summary and where the dropped messages sat.
+        let line = format!("[{}]", "#".repeat(96));
+        let widest = format!("{earlier}\n\n{line}");
+        let (summary_room, _) = compose_summary(&widest, &prepared.file_ops, &prepared.view);
+        let cost = |index: usize| wide(estimate_message(&messages[index]));
+        let room = [&loop_request.system_prompt, &tools, &summary_room, &line]
+            .into_iter()
+            .map(|text| text_tokens(text))
+            .chain(first.map(cost))
+            .fold(
+                window.saturating_sub(self.settings.reserve_tokens),
+                Tokens::saturating_sub,
+            );
+        let floor = first.map_or(start, |first| first.saturating_add(1));
+        let fit = |room: Tokens| {
+            fitting_start(&messages[floor..], room)
+                .map_or(messages.len(), |offset| floor.saturating_add(offset))
+        };
+        // The run's opening rides in the kept tail when it fits, else it is kept ahead of it.
+        let mut cut = fit(room);
+        let run = run.filter(|run| *run < cut);
+        if let Some(run) = run {
+            cut = fit(room.saturating_sub(cost(run)));
+        }
+        let mut pinned: Vec<usize> = first.into_iter().chain(run).collect();
+        pinned.sort_unstable();
+        let elision = Elision {
+            messages: (start..cut)
+                .filter(|index| !pinned.contains(index))
+                .filter(|index| !matches!(messages[*index], AgentMessage::Custom { .. }))
+                .count(),
+        };
+        if elision.messages == 0 {
+            return None;
+        }
+        let marker = elision.to_string();
+        let mut tail: Vec<AgentMessage> = pinned
+            .iter()
+            .map(|index| messages[*index].clone())
+            .collect();
+        tail.push(AgentMessage::host_note(
+            COMPACTION_NOTICE,
+            marker.clone(),
+            0,
+        ));
+        tail.extend_from_slice(&messages[cut..]);
+        let body = if earlier.is_empty() {
+            marker
+        } else {
+            format!("{earlier}\n\n{marker}")
+        };
+        let (summary, _) = compose_summary(&body, &prepared.file_ops, &prepared.view);
+        Some((summary, drop_internal(&tail), elision))
+    }
+
+    /// The loop's request plus the directive, a cache read on its model (§7). A failed summary
+    /// retries once trimmed and cold, then keeps the history (#871) unless `elide` must make room.
     pub async fn maybe_compact(
         &self,
         messages: &[AgentMessage],
@@ -379,18 +566,18 @@ impl Compactor {
         provider: &ProviderStream,
         store: Option<&yi_session::SharedSession>,
         signal: &InterruptSignal,
-    ) -> Result<Option<Vec<AgentMessage>>, yi_session::SessionError> {
+    ) -> Result<Option<Replacement>, CompactError> {
         if !self.wanted(messages, model) {
             return Ok(None);
         }
-        self.pending.store(false, Ordering::Relaxed);
+        let scheduled = self.pending.swap(false, Ordering::Relaxed);
         let _running = Raised::new(&self.running);
         let once = self
             .instructions
             .lock()
             .ok()
             .and_then(|mut slot| slot.take());
-        let instructions = merge(self.standing_directive(), once);
+        let instructions = merge(self.standing_directive(), once.clone());
         let entries: Option<Vec<Entry>> = match store {
             Some(store) => yi_session::lock_session(store)
                 .find_entries_on_branch(
@@ -416,6 +603,12 @@ impl Compactor {
             system_prompt: loop_request.system_prompt.clone(),
             messages: {
                 let mut converted = convert_to_llm(window_messages);
+                // A cold attempt sends no tools, and Anthropic refuses tool blocks without them
+                // (#948): it reads the history as text.
+                if !warm {
+                    let text = serialize_conversation(&converted);
+                    converted = vec![AgentMessage::host_user(UserContent::Text(text), 0)];
+                }
                 let key = yi_context::user_key(window_messages, inputs.as_deref().unwrap_or(&[]));
                 converted.push(directive_message(&prepared, instructions.as_deref(), &key));
                 converted
@@ -438,22 +631,64 @@ impl Compactor {
                 summarizer.clamp_effort(Effort::Off)
             }
         };
-        let first = request(messages, warm);
-        let summary_text =
-            match complete_text(provider, summarizer, &first, effort(warm), signal).await {
+        let summarize = |context: LlmContext, warm: bool| async move {
+            match complete_text(provider, summarizer, &context, effort(warm), signal).await {
                 // With the loop's tools attached a reply can be a call alone: no summary in it.
-                Ok(text) if !text.trim().is_empty() => text,
-                // The trimmed retry shares no prefix, so it goes cold: no tools, so it must be text.
-                _ => {
-                    let trimmed = request(&messages[messages.len() / 4..], false);
-                    complete_text(provider, summarizer, &trimmed, effort(false), signal)
-                        .await
-                        .unwrap_or_default()
+                Ok(text) if text.trim().is_empty() => {
+                    Err("the summarizer returned no text".to_owned())
                 }
-            };
-        let (composed, mut details) =
-            compose_summary(&summary_text, &prepared.file_ops, &prepared.view);
-        let retained_tail = drop_internal(&prepared.retained_tail);
+                outcome => outcome,
+            }
+        };
+        // Past the window the warm request cannot go out: two cold tries, a quarter then half
+        // trimmed. Else warm, then a cold quarter-trimmed retry (no tools, so it must be text).
+        let over = estimate_context(messages).tokens >= Tokens(model.context_window);
+        let len = messages.len();
+        let attempts = if over {
+            [(len / 4, false), (len / 2, false)]
+        } else {
+            [(0, warm), (len / 4, false)]
+        };
+        let mut summary = Err(String::new());
+        for (skip, warm) in attempts {
+            // Never open on a tool result, which no provider takes without its call.
+            let skip = messages[skip..]
+                .iter()
+                .position(is_cut_point)
+                .map_or(len, |offset| skip.saturating_add(offset));
+            summary = summarize(request(&messages[skip..], warm), warm).await;
+            if summary.is_ok() {
+                break;
+            }
+        }
+        let (composed, mut details, retained_tail, elision) = match summary {
+            Ok(text) => {
+                let (composed, details) =
+                    compose_summary(&text, &prepared.file_ops, &prepared.view);
+                (
+                    composed,
+                    details,
+                    drop_internal(&prepared.retained_tail),
+                    None,
+                )
+            }
+            Err(reason) => match self.elide(messages, model, loop_request, &prepared) {
+                Some((summary, tail, elision)) => {
+                    let (_, details) = compose_summary("", &prepared.file_ops, &prepared.view);
+                    (summary, details, tail, Some(elision))
+                }
+                None => {
+                    // The asked-for compaction and its instructions wait for the retry.
+                    self.pending.fetch_or(scheduled, Ordering::Relaxed);
+                    if let Ok(mut slot) = self.instructions.lock()
+                        && slot.is_none()
+                    {
+                        *slot = once;
+                    }
+                    return Err(CompactError::NoSummary(reason));
+                }
+            },
+        };
         let new_window_id = match store {
             Some(store) => yi_session::lock_session(store).next_id(),
             None => format!("win-{}", yi_session::now_ms()),
@@ -474,6 +709,12 @@ impl Compactor {
             saved?;
         }
         *lock_window(&self.window) = next;
+        if let Ok(mut slot) = self.stale.lock() {
+            *slot = retained_tail
+                .iter()
+                .rfind(|message| reply_tokens(message).is_some())
+                .cloned();
+        }
         let mut replacement = Vec::with_capacity(retained_tail.len().saturating_add(1));
         replacement.push(AgentMessage::CompactionSummary {
             summary: composed,
@@ -481,6 +722,9 @@ impl Compactor {
             timestamp,
         });
         replacement.extend(retained_tail);
-        Ok(Some(replacement))
+        Ok(Some(Replacement {
+            messages: replacement,
+            elision,
+        }))
     }
 }

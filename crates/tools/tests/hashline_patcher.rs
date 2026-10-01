@@ -490,7 +490,9 @@ fn path_recovery_never_rebinds_to_a_guarded_path() -> TestResult {
     let fixture = Fixture::new("path-recovery-gate")?;
     fs::create_dir_all(fixture.context.cwd.join(".git"))?;
     fixture.write(".git/config", "[core]\n")?;
-    let tag = fixture.tag_of(".git/config")?;
+    // The read tool opens no `.git` file (#890), so the view a session holds is seeded here.
+    let config = fixture.context.cwd.join(".git/config");
+    let tag = yi_tools::hashline::tool::record_write_snapshot(&fixture.state, &config, "[core]\n");
 
     let edit = fixture.edit(&format!("[config#{tag}]\nPUT 1.=1:\n+hooked\n"));
     assert!(edit.is_error, "{}", output_text(&edit));
@@ -650,6 +652,7 @@ fn a_block_op_on_a_python_file_replaces_the_indented_body() -> TestResult {
 #[test]
 fn an_edit_to_a_charted_file_carries_a_named_grid_layer() -> TestResult {
     let fixture = Fixture::new("grid-layer")?;
+    fs::create_dir_all(fixture.context.cwd.join(".grid"))?;
     fixture.write("a.rs", "fn a() {}\n")?;
     let tag = fixture.tag_of("a.rs")?;
     let edit = fixture.edit(&format!("[a.rs#{tag}]\nPUT 1.=1:\n+fn a() {{ 1 }}\n"));

@@ -108,8 +108,8 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             record: args.record.clone().map(std::path::PathBuf::from),
             snap: args.snap.clone().map(std::path::PathBuf::from),
             deadline_secs: args.deadline.unwrap_or(60),
-            width: 80,
-            height: 24,
+            width: args.size.map_or(80, |(cols, _)| cols),
+            height: args.size.map_or(24, |(_, rows)| rows),
         };
         let session = std::sync::Arc::new(session);
         let code = yi_tui::run_headless(
@@ -295,8 +295,8 @@ pub fn run_console_command(args: &Args) -> i32 {
             script,
             frames_dir: args.frames.clone().map(std::path::PathBuf::from),
             record: args.record.clone().map(std::path::PathBuf::from),
-            width: 80,
-            height: 24,
+            width: args.size.map_or(80, |(cols, _)| cols),
+            height: args.size.map_or(24, |(_, rows)| rows),
         };
         return yi_console::run_headless(&options, drive);
     }

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
+use yi_types::message::{AgentMessage, Attribution, StopReason, UserContent};
 use yi_types::schedule::DeliveryMode;
 
 use crate::fetch::FetchLog;
@@ -439,14 +439,7 @@ fn typed_text(message: &AgentMessage) -> Option<String> {
     };
     Some(match content {
         UserContent::Text(text) => text.clone(),
-        UserContent::Blocks(blocks) => blocks
-            .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        UserContent::Blocks(blocks) => yi_types::message::join_text(blocks, "\n"),
     })
 }
 
@@ -733,14 +726,7 @@ impl RuleEngine {
         else {
             return;
         };
-        let text: String = content
-            .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let text: String = yi_types::message::join_text(content, "\n");
         let mut reminders = Vec::new();
         let rules = self.snapshot();
         if let Ok(mut state) = self.state.lock() {
