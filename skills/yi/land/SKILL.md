@@ -2,7 +2,7 @@
 name: land
 description: >
   Land a lane on this repository's forge: commit by name, the ratchet in
-  its own commit, the changelog row, the ADR, push, open, wait, merge. Use
+  its own commit, the change file, push, open, wait, merge. Use
   when the user asks to commit, push, open a pull request, land, or merge.
   Do NOT commit, push or open anything the user did not ask for.
 trigger: git commit, git push, fgj pr, just land, open a pull request
@@ -45,29 +45,29 @@ EOF
 
 ## Ratchets
 
-A baseline never rides the code commit. Order: land the code red on the
-baselines, then `python3 scripts/guardrails/<gate>.py --update` and commit
-the baseline files alone, subject `Ratchet: …`. The hook checks
+Test LOC, crate sizes and comment volume are measured at the fork point;
+growth past it is a `raise:` line in the change file, not a commit. A stored
+baseline never rides the code commit: land the code red on it, then
+`python3 scripts/guardrails/<gate>.py --update` and commit the baseline
+files alone, subject `Ratchet: …`. The hook checks
 `HEAD..origin/main` for style: a subject over 72 characters anywhere in
 the branch blocks every later commit; recreate the branch tip with
 `git update-ref` and `git restore --staged`, never rebase.
 
 ## Docs in the same change
 
-A structural change bumps `version:` in `docs/ARCHITECTURE.md`, adds a
-row to `docs/CHANGELOG.md` with a `growth +N:` memo when the version's src
-growth passes the free band (`python3 scripts/guardrails/check_growth.py`
-prints N), adds its D-row above the last one, and renders the ADR with
-`python3 scripts/adr.py <N>`. A user-visible behaviour change updates the
-feature ledger. Read the header and the last D-row immediately before
-writing them; another session may have claimed the number.
+A structural change adds `docs/changes/<yyyy-mm-dd>-<slug>.md`: a `---`
+header (`issue: Closes #N`, `growth: +N <memo>` when the branch's src
+growth passes the free band — `python3 scripts/guardrails/check_growth.py`
+prints N — `raise:` lines, `decision: <decision> | <why> | <reversible
+via>`), then the changelog prose. It never edits the `version:` line, a
+changelog row, a decision row or an ADR: the recorder numbers and writes
+those on main. A user-visible behaviour change updates the feature ledger.
 
 ## Push and open
 
-`just land` is the whole dance: merge `origin/main`, ratchet, reprice the
-growth memo, render missing ADRs, push, open, wait, merge. When the ADR
-backlog breaks it, land by parts: `just commit`, `just adr <N>`, `just pr
-open`, `just pr merge`. The push runs a pre-push lane that takes minutes;
+`just land` is the whole dance: merge `origin/main`, ratchet, push, open,
+wait, merge. Or by parts: `just commit`, `just pr open`, `just pr merge`. The push runs a pre-push lane that takes minutes;
 export `UV_CACHE_DIR` before it or the cli_surfaces tests time out.
 
 Behind base after a predecessor lands: `POST pulls/N/update?style=merge`
