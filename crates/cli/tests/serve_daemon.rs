@@ -236,8 +236,9 @@ fn reconnect_keeps_heartbeats() -> TestResult {
             json!({"sessionId": session_id, "cwd": dir.display().to_string()}),
         )?;
         assert!(
-            resume["result"]["configOptions"].is_array(),
-            "resume must route to the surviving worker: {resume}"
+            resume["result"]["configOptions"].is_array()
+                && resume["result"].get("sessionId").is_none(),
+            "resume must route to the surviving worker and answer in the v2 shape: {resume}"
         );
         Ok(())
     })();
@@ -338,8 +339,9 @@ fn two_roots_run_two_workers_that_keep_their_own_schedules() -> TestResult {
             let resume =
                 reconnected.request("3", "session/resume", json!({"sessionId": session}))?;
             assert!(
-                resume["result"]["configOptions"].is_array(),
-                "resume must route to the surviving worker: {resume}"
+                resume["result"]["configOptions"].is_array()
+                    && resume["result"].get("sessionId").is_none(),
+                "resume must route to the surviving worker and answer in the v2 shape: {resume}"
             );
         }
         Ok(())
@@ -411,8 +413,9 @@ fn workers_do_not_lose_heartbeats_or_tear_the_job_ledger() -> TestResult {
                 json!({"sessionId": session_id, "cwd": cwd}),
             )?;
             assert!(
-                resume["result"]["configOptions"].is_array(),
-                "resume must route to the surviving worker: {resume}"
+                resume["result"]["configOptions"].is_array()
+                    && resume["result"].get("sessionId").is_none(),
+                "resume must route to the surviving worker and answer in the v2 shape: {resume}"
             );
         }
         Ok(())
