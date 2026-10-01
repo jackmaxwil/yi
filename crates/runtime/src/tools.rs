@@ -160,6 +160,15 @@ pub(crate) fn default_spill_root() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi").join(yi_tools::SPILLS))
 }
 
+/// A session's own spill dir under `root`, when its key is a valid session id.
+pub(crate) fn own_spill_dir(
+    root: Option<&std::path::Path>,
+    key: Option<String>,
+) -> Option<PathBuf> {
+    let key = key.filter(|key| yi_session::validate_session_id(key).is_ok())?;
+    Some(root?.join(key))
+}
+
 /// Every session store: `~/.yi/sessions` and the `--session-dir` in use, which the broker holds
 /// as host-owned (D335).
 pub(crate) fn session_stores(broker: Option<&PermissionBroker>) -> Vec<PathBuf> {
@@ -175,7 +184,7 @@ pub(crate) fn session_stores(broker: Option<&PermissionBroker>) -> Vec<PathBuf> 
 
 /// The spill roots and every session store: what a walled session's tools and kernel read only
 /// where a later rule spares it.
-pub(crate) fn walled_roots(
+pub(crate) fn spill_roots_and_stores(
     spill_root: Option<&std::path::Path>,
     broker: Option<&PermissionBroker>,
 ) -> Vec<PathBuf> {
@@ -224,9 +233,10 @@ impl ToolAdapter {
 
     /// The session's own spill dir, when its key is a valid session id.
     fn session_spills(&self) -> Option<PathBuf> {
-        let key = (self.spill_key.as_ref()).and_then(|key| key())?;
-        yi_session::validate_session_id(&key).ok()?;
-        Some(self.spill_root.as_ref()?.join(key))
+        own_spill_dir(
+            self.spill_root.as_deref(),
+            self.spill_key.as_ref().and_then(|key| key()),
+        )
     }
 
     /// The store whose file is the session's own transcript, read per call like its spill key.
@@ -241,7 +251,7 @@ impl ToolAdapter {
         if self.wall.is_empty() {
             return Vec::new();
         }
-        walled_roots(self.spill_root.as_deref(), self.permission.as_deref())
+        spill_roots_and_stores(self.spill_root.as_deref(), self.permission.as_deref())
     }
 
     pub fn with_extensions(mut self, ext: Option<crate::session::ExtHook>) -> Self {

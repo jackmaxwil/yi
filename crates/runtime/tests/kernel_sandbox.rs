@@ -817,7 +817,20 @@ async fn a_walled_kernel_reads_its_own_spill_and_transcript_and_no_other() -> Te
     unsafe { std::env::set_var("HOME", &home) };
     let ran = walled_roots_probe(&root, &project, &home).await;
     let _ = std::fs::remove_dir_all(&home);
-    let (walled, named, open, id) = ran?;
+    let (outputs, [id, root_id]) = ran?;
+    let [walled, named, root_run, open] =
+        <[String; 4]>::try_from(outputs).map_err(|_| "four runs")?;
+    // A walled root reads its own transcript and its `kernels/<id>` state, never the corpus.
+    let root_own = (
+        root_run.contains(&format!("\"id\":\"{root_id}\"")),
+        root_run.contains("own state"),
+        root_run.contains("WALLED"),
+    );
+    assert_eq!(
+        root_own,
+        (true, true, false),
+        "(transcript, state, leak): {root_run}"
+    );
     // #1000 review F1: a spare never reopens what the wall itself names, by read or write.
     assert!(
         named.matches("denied 1").count() == 5
@@ -832,15 +845,15 @@ async fn a_walled_kernel_reads_its_own_spill_and_transcript_and_no_other() -> Te
             "{leak} reached a walled kernel: {walled}"
         );
     }
-    // Its own spill twice, by the cell and by its `bash()` job.
+    // Its own spill and state twice, by the cell and by its `bash()` job.
     let own = (
-        walled.matches("OWN SPILL").count(),
+        walled.matches("OWN SPILL").count() + walled.matches("STATE NOTE").count(),
         walled.contains(&format!("\"id\":\"{id}\"")),
-        walled.contains("own state") && walled.contains("board [1]"),
+        walled.contains("board [1]"),
     );
     assert_eq!(
         own,
-        (2, true, true),
+        (4, true, true),
         "(spill, transcript, state and board): {walled}"
     );
     assert!(
@@ -854,7 +867,7 @@ async fn walled_roots_probe(
     root: &std::path::Path,
     project: &std::path::Path,
     home: &std::path::Path,
-) -> Result<(String, String, String, String), Box<dyn Error>> {
+) -> Result<(Vec<String>, [String; 2]), Box<dyn Error>> {
     let planted = crate::wall_e2e::plant_transcripts(home, project)?;
     let (spills, sessions) = (home.join(".yi/spills"), &planted.sessions);
     let elsewhere = home.join("store/--elsewhere--/1_other.jsonl");
@@ -896,10 +909,11 @@ async fn walled_roots_probe(
         transcript.display().to_string(),
     ];
     let code = format!(
-        "import glob, os\nfor path in {reads:?}:\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)\nfor root in ({sessions:?}, {spills:?}):\n    for path in glob.glob(root + '/**/*', recursive=True):\n        try:\n            print(open(path).read())\n        except OSError as e:\n            pass\nstate = os.environ['RLM_SESSION_DIR'] + '/note.txt'\nopen(state, 'w').write('state')\nprint('own', open(state).read())\nrlm.put('shard', [1])\nprint('board', rlm.get('shard'))\nprint('job', await bash(\"cat '{author}' '{own}'\"))",
+        "import glob, os\nfor path in {reads:?}:\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)\nfor root in ({sessions:?}, {spills:?}):\n    for path in glob.glob(root + '/**/*', recursive=True):\n        try:\n            print(open(path).read())\n        except OSError as e:\n            pass\nstate = os.environ['RLM_SESSION_DIR'] + '/note.txt'\nopen(state, 'w').write('STATE NOTE')\nprint(open(state).read())\nrlm.put('shard', [1])\nprint('board', rlm.get('shard'))\nprint('job', await bash(\"cat '{author}' '{own}' '{state}'\"))",
         sessions = sessions.display().to_string(),
         spills = spills.display().to_string(),
         own = own_spill.display(),
+        state = planted.own_dir.join("note.txt").display(),
     );
     let broker = yi_runtime::permission::PermissionBroker::new(
         yi_permission::PermissionMode::Auto,
@@ -932,22 +946,46 @@ async fn walled_roots_probe(
     let named_code = format!(
         "for path in {probes:?}:\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)\nfor path in {writes:?}:\n    try:\n        open(path, 'w').write('x')\n    except OSError as e:\n        print('denied', e.errno)",
     );
+    // A walled root (depth 0) whose sessions dir is the corpus: its state is `kernels/<id>`.
+    let root_store = yi_session::create_flat_session(
+        planted.author.parent().ok_or("no parent")?.to_path_buf(),
+        project.to_string_lossy(),
+        None,
+    )?;
+    let (root_id, root_file) = {
+        let store = yi_session::lock_session(&root_store);
+        (store.metadata().id.clone(), store.file_path().cloned())
+    };
+    let root_file = root_file.ok_or("no root transcript")?.display().to_string();
+    let root_code = format!(
+        "import os\nstate = os.environ['RLM_SESSION_DIR'] + '/note.txt'\nopen(state, 'w').write('state')\nprint('own', open(state).read())\nfor path in ({root_file:?}, {author:?}):\n    try:\n        print(open(path).read())\n    except OSError as e:\n        print('denied', e.errno)",
+    );
     let mut outputs = Vec::new();
+    let own = (planted.own_dir.clone(), None, Some(store));
     let runs = [
-        (wall, broker.clone(), code.clone()),
-        (named, broker, named_code),
-        (yi_runtime::Wall::default(), None, code),
+        (wall.clone(), broker.clone(), code.clone(), own.clone()),
+        (named, broker.clone(), named_code, own),
+        (
+            wall,
+            broker,
+            root_code,
+            (
+                root.join("rlm-root"),
+                Some(sessions.clone()),
+                Some(root_store),
+            ),
+        ),
+        (
+            yi_runtime::Wall::default(),
+            None,
+            code,
+            (root.join("open"), None, None),
+        ),
     ];
-    for (wall, broker, code) in runs {
-        let open = wall.is_empty();
-        let rlm = if open {
-            root.join("open")
-        } else {
-            planted.own_dir.clone()
-        };
-        let session = walled_session(project, home, &rlm, None, broker, None, wall);
-        if !open {
-            session.attach_store(Arc::clone(&store))?;
+    for (wall, broker, code, (rlm, corpus, store)) in runs {
+        let session = walled_session(project, home, &rlm, corpus, broker, None, wall);
+        if let Some(store) = store {
+            session.attach_store(store)?;
         }
         let kernel = session
             .kernel_service()
@@ -957,8 +995,8 @@ async fn walled_roots_probe(
         let ran = ran?;
         outputs.push(format!("{}{:?}", ran.result.stdout, ran.result.error));
     }
-    let wrote = writes.iter().any(|path| path.exists());
-    let named = format!("{}{}", outputs.remove(1), if wrote { "WROTE" } else { "" });
-    let open = outputs.pop().ok_or("no unwalled run")?;
-    Ok((outputs.pop().ok_or("no walled run")?, named, open, id))
+    if writes.iter().any(|path| path.exists()) {
+        outputs[1].push_str("WROTE");
+    }
+    Ok((outputs, [id, root_id]))
 }
