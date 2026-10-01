@@ -18,7 +18,7 @@ import forge_pr  # noqa: E402
 BOT = "yi-bot"
 # The meta lines whose `cost=` the totals sum: a review round, a voided round, an autofix attempt.
 MARKERS = ("<!-- yi-round-meta ", "<!-- yi-round-void-meta ", "<!-- yi-autofix-meta ")
-FIELDS = ("cost", "tin", "tout", "tcache", "calls", "turns", "secs")
+FIELDS = ("cost", "tin", "tout", "tcache", "calls", "turns", "secs", "models")
 
 
 class Meter:
@@ -57,7 +57,8 @@ class Meter:
 
     def fields(self):
         return {"cost": f"{self.cost:.4f}", "tin": self.tin, "tout": self.tout, "tcache": self.tcache,
-                "calls": self.calls, "turns": self.turns, "secs": int(time.monotonic() - self.started)}
+                "calls": self.calls, "turns": self.turns, "secs": int(time.monotonic() - self.started),
+                "models": ",".join(sorted(m.split("/")[-1] for m in self.models)) or "none"}
 
 
 def meta(fields):
@@ -77,8 +78,7 @@ def duration(secs):
 def status_line(meter, pr_total, day_total, what):
     """The last visible line of a bot comment: what this comment cost and where the totals stand."""
     f = meter.fields()
-    models = ", ".join(sorted(m.split("/")[-1] for m in meter.models)) or "no model"
-    return (f"<sub>{what} · {models} · {f['calls']} call(s), {f['turns']} turn(s) · in {tokens(f['tin'])} "
+    return (f"<sub>{what} · {f['models'].replace(',', ', ')} · {f['calls']} call(s), {f['turns']} turn(s) · in {tokens(f['tin'])} "
             f"(cached {tokens(f['tcache'])}) · out {tokens(f['tout'])} · ${float(f['cost']):.2f} · "
             f"{duration(f['secs'])} · this PR ${pr_total:.2f} · today ${day_total:.2f}</sub>")
 
@@ -132,7 +132,7 @@ def cmd_spend(args):
     if not found:
         print(f"spend: no bot comment carries a cost since {start[:10]}")
         return 0
-    for title, key in (("day", lambda r: r["at"][:10]), ("pr", lambda r: f"#{r['pr']}"), ("kind", lambda r: r["kind"])):
+    for title, key in (("day", lambda r: r["at"][:10]), ("pr", lambda r: f"#{r['pr']}"), ("kind", lambda r: r["kind"]), ("models", lambda r: r.get("models") or "-")):
         groups = {}
         for row in found:
             groups.setdefault(key(row), []).append(row)
@@ -159,7 +159,7 @@ def selfcheck():
         meter.add_sessions(tmp / "a")
         meter.add_sessions(tmp / "empty")
         f = meter.fields()
-        if (f["calls"], f["turns"], f["tin"], f["tout"], f["tcache"], f["cost"]) != (2, 2, 3000, 120, 2700, "0.0300"):
+        if (f["calls"], f["turns"], f["tin"], f["tout"], f["tcache"], f["cost"], f["models"]) != (2, 2, 3000, 120, 2700, "0.0300", "glm-5.3-flash"):
             errs.append(f"the meter read {f}")
         line = status_line(meter, 1.234, 5.5, "round 2")
         for part in ("round 2", "glm-5.3-flash", "2 call(s), 2 turn(s)", "in 3.0k", "(cached 2.7k)", "out 120", "$0.03", "this PR $1.23", "today $5.50"):
@@ -169,10 +169,12 @@ def selfcheck():
         shutil.rmtree(tmp)
     bot = {"user": {"login": BOT}, "created_at": "2026-10-01T10:00:00Z", "pull_request_url": "x/pulls/9"}
     found = rows([dict(bot, body="<!-- yi-round 1 -->\n<!-- yi-round-meta pr=9 sha=abc verdict=clean cost=0.2500 tin=10 -->\n"),
-                  dict(bot, body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=9 cost=0.5000 verdict=pushed -->\n"),
+                  dict(bot, body="<!-- yi-autofix -->\n<!-- yi-autofix-meta pr=9 cost=0.5000 models=gpt-6.1-sol verdict=pushed -->\n"),
                   dict(bot, body="<!-- yi-round-void -->\n<!-- yi-round-void-meta pr=9 cost=0.1000 -->\n"),
                   {"user": {"login": "someone"}, "body": "<!-- yi-autofix-meta pr=9 cost=99 -->"},
                   dict(bot, body="prose that mentions <!-- yi-autofix-meta cost=7 --> later\n\n\n")])
+    if [r.get("models") for r in found] != [None, "gpt-6.1-sol", None]:
+        errs.append("the models a comment's cost went to are not read back")
     if round(spent(found), 4) != 0.85 or [r["kind"] for r in found] != ["yi-round", "yi-autofix", "yi-round-void"]:
         errs.append(f"the ledger read {found}: only the bot's own meta lines, at the top, count")
     if tokens(1_234_567) != "1.23M" or duration(492) != "8m12s":
