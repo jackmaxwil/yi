@@ -116,6 +116,18 @@ pub(crate) fn walled_refusal(path: &std::path::Path) -> String {
     )
 }
 
+/// A walled session's command that runs outside the sandbox, naming a walled root (#1001).
+pub(crate) fn outside_wall_refusal(root: &std::path::Path) -> String {
+    format!(
+        "Denied by the reviewer wall: this command runs outside the sandbox and names `{}` or a directory above it, which hold other sessions' transcripts and output. Read only what the wall leaves open, and report what you could not check.",
+        root.display()
+    )
+}
+
+/// Invariant: a walled kernel boots only under a profile. With no Seatbelt (Linux), it and its
+/// `bash()` jobs would meet no wall, and only bash has a container path (#1001).
+pub(crate) const WALLED_KERNEL_UNCONFINED: &str = "ipython is unavailable to a walled session here: with no Seatbelt sandbox (macOS only), its kernel would run unconfined and no wall would hold in a cell. Use read, grep and bash, which the wall checks at each call.";
+
 /// An allowed compound, part of which must leave the sandbox, with no one to ask.
 pub(crate) fn headless_split(why: &str) -> String {
     format!(
