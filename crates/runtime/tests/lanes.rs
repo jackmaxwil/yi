@@ -89,20 +89,25 @@ impl Rig {
         let root = Scratch::new(&format!("yi-lanes-{label}"))?;
         let repo = root.join("repo");
         let home = root.join("home");
-        std::fs::create_dir_all(&repo)?;
         std::fs::create_dir_all(&home)?;
-        git(&repo, &["init", "-q", "-b", "main"])?;
-        git(&repo, &["config", "user.email", "lanes@test"])?;
-        git(&repo, &["config", "user.name", "lanes"])?;
-        std::fs::write(repo.join("README.md"), "base\n")?;
-        git(&repo, &["add", "README.md"])?;
-        git(&repo, &["commit", "-qm", "base"])?;
+        init_repo(&repo)?;
         Ok(Self { repo, home, root })
     }
 
     fn pool(&self, slots: u8) -> Result<Pool, Box<dyn Error>> {
         Ok(Pool::open(&self.home, &self.repo, slots)?)
     }
+}
+
+fn init_repo(repo: &Path) -> TestResult {
+    std::fs::create_dir_all(repo)?;
+    git(repo, &["init", "-q", "-b", "main"])?;
+    git(repo, &["config", "user.email", "lanes@test"])?;
+    git(repo, &["config", "user.name", "lanes"])?;
+    std::fs::write(repo.join("README.md"), "base\n")?;
+    git(repo, &["add", "README.md"])?;
+    git(repo, &["commit", "-qm", "base"])?;
+    Ok(())
 }
 
 #[test]
@@ -269,6 +274,50 @@ fn a_resumed_session_reclaims_its_slot_with_its_work_and_an_orphan_blocks_others
         "the commit is still on the branch"
     );
     drop(back);
+    Ok(())
+}
+
+/// Probe repos deleted and recreated at the same path left slots whose `.git` named a gitdir
+/// that was gone, and every later claim in the project died on `not a git repository`.
+#[test]
+fn a_slot_whose_repository_was_recreated_is_a_free_slot() -> TestResult {
+    let rig = Rig::new("recreated")?;
+    let pool = rig.pool(2)?;
+    let idle = pool.claim("s-idle", ClaimBase::Main)?;
+    let left = pool.claim("pid-left", ClaimBase::Main)?;
+    let slot = left.slot();
+    drop((idle, left));
+    git(&rig.repo, &["branch", "-q", "yi/pid-left", "main"])?;
+    orphan(&pool, slot, "pid-left")?;
+    let work = pool.dir().join(slot.to_string()).join("work.txt");
+    std::fs::write(&work, "UNCOMMITTED\n")?;
+    std::fs::remove_dir_all(&rig.repo)?;
+    init_repo(&rig.repo)?;
+    let pool = rig.pool(2)?;
+    // Review: its own session resuming must not lose the tree, which holds the only copy.
+    match pool.claim("pid-left", ClaimBase::Main) {
+        Err(LaneError::RepoGone { .. }) => {}
+        other => {
+            return Err(format!("a resume deleted or reused its tree: {:?}", other.err()).into());
+        }
+    }
+    assert!(
+        work.is_file(),
+        "the refused resume kept its uncommitted file"
+    );
+    let first = pool.claim("s-one", ClaimBase::Main)?;
+    let second = pool.claim("s-two", ClaimBase::Main)?;
+    for (lane, branch) in [(&first, "yi/s-one"), (&second, "yi/s-two")] {
+        assert_eq!(
+            git(lane.path(), &["symbolic-ref", "--short", "HEAD"])?,
+            branch
+        );
+        assert_eq!(
+            git(lane.path(), &["rev-parse", "HEAD"])?,
+            git(&rig.repo, &["rev-parse", "main"])?,
+            "the slot is a worktree of the new repository"
+        );
+    }
     Ok(())
 }
 
