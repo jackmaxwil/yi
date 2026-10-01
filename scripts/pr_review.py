@@ -420,23 +420,26 @@ class Unanswered(Exception):
     """A model call that did not answer. A round missing a lens is not a clean round."""
 
 
-def ask(prompt, schema, cwd, *, write=False, deadline=900):
+def ask(prompt, schema, cwd, *, write=False, deadline=900, model=None, thinking=None, env=None, sessions=None):
     """One `yi ask` answering `schema`; raises Unanswered. A reader runs under --confirm
     with no terminal, so every write and command that would ask is refused."""
     # Every round's calls land in one session directory, so the ledger of what each lens and
     # refuter read and answered is found in one place rather than under a temp checkout's name.
-    sessions = str(pathlib.Path.home() / ".yi/sessions/pr-rounds")
-    command = [yi_bin(), "ask", "--here", "--cwd", str(cwd), "--session-dir", sessions,
+    sessions = sessions or str(pathlib.Path.home() / ".yi/sessions/pr-rounds")
+    command = [yi_bin(), "ask", "--here", "--cwd", str(cwd), "--session-dir", str(sessions),
                "--schema", json.dumps(schema), "--deadline", str(deadline)]
     command += ["--auto"] if write else ["--confirm"]
-    if os.environ.get("YI_REVIEW_MODEL"):
-        command += ["--model", os.environ["YI_REVIEW_MODEL"]]
+    model = model or os.environ.get("YI_REVIEW_MODEL")
+    if model:
+        command += ["--model", model]
+    if thinking:
+        command += ["--thinking", thinking]
     # Measured: 2 of the first 10 replayed rounds lost a lens to two malformed answers in a row,
     # and a forge round lost one to a host that closed mid-answer (exit 1, 503 provider_overloaded).
     for _ in range(3):
         # A whole diff passes Linux's 128 KiB cap on one argument, so the prompt goes on stdin.
         out = subprocess.run(command + ["-"], input=prompt, capture_output=True, text=True,
-                             timeout=deadline + 120, check=False)
+                             timeout=deadline + 120, check=False, env=env)
         if out.returncode == 0:
             return json.loads(out.stdout)
         if out.returncode not in (1, 3):
