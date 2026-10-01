@@ -436,7 +436,7 @@ async fn child_updates_ride_the_parent_bus_with_counts_and_activity() -> TestRes
 
 fn parent_turn(user: &str, answer: &str) -> [AgentMessage; 2] {
     [
-        AgentMessage::host_user(yi_types::message::UserContent::Text(user.to_owned()), 0),
+        AgentMessage::user_input(yi_types::message::UserContent::Text(user.to_owned()), 0),
         child_reply(answer),
     ]
 }

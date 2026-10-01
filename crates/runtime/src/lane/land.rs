@@ -429,7 +429,10 @@ impl LaneHandle {
         std::thread::spawn(move || {
             if let Err(error) = handle.land_blocking(&title) {
                 (handle.steer)(
-                    crate::session::user_message(&format!("landing failed: {error}")),
+                    crate::session::host_text(
+                        yi_types::message::HostSource::Landing,
+                        &format!("landing failed: {error}"),
+                    ),
                     DeliveryMode::Steer,
                 );
             }
@@ -549,7 +552,10 @@ impl LaneHandle {
                 Ok(_) => {}
                 Err(error) => {
                     (self.steer)(
-                        crate::session::user_message(&format!("gate poll failed: {error}")),
+                        crate::session::host_text(
+                            yi_types::message::HostSource::Landing,
+                            &format!("gate poll failed: {error}"),
+                        ),
                         DeliveryMode::Steer,
                     );
                     break;
@@ -582,10 +588,13 @@ impl LaneHandle {
             for job in jobs.iter().filter(|job| job.state == JobState::Red) {
                 if latched.insert(job.name.clone()) {
                     (self.steer)(
-                        crate::session::user_message(&format!(
-                            "gate red on pull request {pr}: job\n```\n{}\n```\nread its log, fix, and /land again",
-                            job.name
-                        )),
+                        crate::session::host_text(
+                            yi_types::message::HostSource::Landing,
+                            &format!(
+                                "gate red on pull request {pr}: job\n```\n{}\n```\nread its log, fix, and /land again",
+                                job.name
+                            ),
+                        ),
                         DeliveryMode::Steer,
                     );
                 }

@@ -481,9 +481,9 @@ async fn an_unknown_usage_never_pins_the_window_prefill() -> Result<(), Box<dyn 
         reported.input = 1_500;
         compactor.on_usage(&reported);
         let messages = vec![
-            AgentMessage::host_user(UserContent::Text("ask ".repeat(30)), 0),
+            AgentMessage::user_input(UserContent::Text("ask ".repeat(30)), 0),
             reply_with_usage(&"answer ".repeat(30), 1_500, 1_600),
-            AgentMessage::host_user(UserContent::Text("follow up".to_owned()), 0),
+            AgentMessage::user_input(UserContent::Text("follow up".to_owned()), 0),
         ];
         let provider = Arc::new(ProviderStream::new(None));
         provider.queue_faux(vec![faux_assistant_message(
@@ -632,7 +632,11 @@ async fn a_summarys_user_addresses_resolve_to_the_users_own_words() -> Result<()
     for ask in asks {
         session.prompt_message(yi_runtime::session::user_input(ask))?;
         session.wait_idle().await;
-        let host = AgentMessage::host_user(UserContent::Text("[host] a reminder".to_owned()), 0);
+        let host = AgentMessage::host_text(
+            yi_types::message::HostSource::Notice,
+            "[host] a reminder",
+            0,
+        );
         yi_session::lock_session(&store).append_message("main", host)?;
     }
 
@@ -1522,7 +1526,7 @@ async fn a_rescue_after_a_compaction_carries_its_summary_and_drops_no_more_than_
 /// rescue; a queued notice or an earlier marker never stands in for it.
 #[tokio::test]
 async fn a_childs_second_rescue_keeps_its_brief() -> Result<(), Box<dyn Error>> {
-    let brief = AgentMessage::host_user(UserContent::Text("BRIEF: map the parser".to_owned()), 0);
+    let brief = AgentMessage::task("BRIEF: map the parser", 0);
     let note = |text: &str| {
         AgentMessage::host_note(
             yi_runtime::compaction::COMPACTION_NOTICE,
@@ -1562,7 +1566,8 @@ async fn a_childs_second_rescue_keeps_its_brief() -> Result<(), Box<dyn Error>> 
 /// #946 N1: a run a host message woke keeps that message, beside the session's first ask.
 #[tokio::test]
 async fn a_host_woken_run_keeps_its_waking_message() -> Result<(), Box<dyn Error>> {
-    let wake = AgentMessage::host_user(UserContent::Text("SCHEDULED WAKE: check CI".to_owned()), 0);
+    let wake =
+        AgentMessage::user_input(UserContent::Text("SCHEDULED WAKE: check CI".to_owned()), 0);
     let mut messages = vec![
         AgentMessage::user_input(UserContent::Text("first ask".to_owned()), 0),
         faux_assistant_message(vec![faux_text("ok")], StopReason::Stop),

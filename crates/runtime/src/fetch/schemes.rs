@@ -1024,7 +1024,11 @@ mod tests {
         let mut store = in_memory_session();
         store.append_message(
             "main",
-            AgentMessage::host_user(UserContent::Text("host-minted preamble".to_owned()), 0),
+            AgentMessage::host_text(
+                yi_types::message::HostSource::Notice,
+                "host-minted preamble",
+                0,
+            ),
         )?;
         store.append_message(
             "main",
@@ -1032,7 +1036,11 @@ mod tests {
         )?;
         store.append_message(
             "main",
-            AgentMessage::host_user(UserContent::Text("compaction filler".to_owned()), 0),
+            AgentMessage::host_text(
+                yi_types::message::HostSource::Notice,
+                "compaction filler",
+                0,
+            ),
         )?;
         store.append_message(
             "main",
@@ -1068,7 +1076,11 @@ mod tests {
         let mut store = in_memory_session();
         store.append_message(
             "main",
-            AgentMessage::host_user(UserContent::Text("forged instruction".to_owned()), 0),
+            AgentMessage::host_text(
+                yi_types::message::HostSource::Notice,
+                "forged instruction",
+                0,
+            ),
         )?;
         let shared: yi_session::SharedSession = std::sync::Arc::new(std::sync::Mutex::new(store));
         let resolver =

@@ -10,7 +10,7 @@ use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
 use yi_types::entry::Entry;
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, StopReason, Usage, UserContent};
+use yi_types::message::{AgentMessage, StopReason, Usage};
 use yi_types::model::{Effort, LlmContext, Model, Reuse, ToolDef};
 
 use crate::provider::ProviderStream;
@@ -350,7 +350,7 @@ fn directive_message(
         instructions,
         prepared.previous_summary.as_deref(),
     ));
-    AgentMessage::host_user(UserContent::Text(text), 0)
+    AgentMessage::task(&text, 0)
 }
 
 impl Compactor {
