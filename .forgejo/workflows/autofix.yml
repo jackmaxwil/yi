@@ -1,7 +1,7 @@
-# The conflict autofixer (scripts/pr_autofix.py): every 15 minutes, oldest PR first, it merges the
-# base into a same-repo PR that conflicts with it and has been quiet two hours (or carries the
-# `autofix` label), resolves what git cannot with a fresh `yi ask`, commits through the hooks and
-# pushes as yi-bot. Labels steer it: autofix, autofix:hold, autofix:working, autofix:failed.
+# The autofixer (scripts/pr_autofix.py): every 15 minutes, oldest PR first, it merges the base into
+# a same-repo PR that conflicts with it, or answers the findings of a round that blocked its head,
+# once the PR has been quiet two hours (or carries `autofix`), with a fresh `yi ask`; it commits
+# through the hooks and pushes as yi-bot. Labels: autofix, autofix:hold, autofix:working, autofix:failed.
 name: autofix
 
 on:
@@ -45,6 +45,8 @@ jobs:
         env:
           FGJ_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # The rounds the findings fixer answers: the bot's and the owner's, as the review job counts them.
+          YI_ROUND_AUTHORS: yi-bot,jack
         run: |
           set -euo pipefail
           if [ -z "${FGJ_TOKEN:-}" ] || [ -z "${OPENROUTER_API_KEY:-}" ]; then
