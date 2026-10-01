@@ -238,9 +238,10 @@ impl RuntimeWiring {
             let spills = crate::tools::default_spill_root();
             let roots = crate::tools::walled_roots(spills.as_deref(), self.broker.as_deref());
             sandbox.deny_read.extend(roots);
+            let spares = private.into_iter().chain([self.family_dir()]);
             sandbox
                 .spared
-                .extend(private.into_iter().chain([self.family_dir()]));
+                .extend(spares.filter(|dir| crate::tools::unwalled(&self.wall, dir)));
         }
         Some(sandbox)
     }
@@ -248,10 +249,11 @@ impl RuntimeWiring {
     /// A walled session's own spill dir, named as a kernel boots or a job spawns: a child's
     /// store attaches after its wiring. Its transcript sits in its own dir, spared already.
     fn own_spills(&self, session: &AgentSession) -> Option<SpillDirFn> {
-        let key = session.store_id_hook();
+        let (key, wall) = (session.store_id_hook(), self.wall.clone());
         let own = move || {
             let id = key().filter(|id| yi_session::validate_session_id(id).is_ok())?;
             Some(crate::tools::default_spill_root()?.join(id))
+                .filter(|dir| crate::tools::unwalled(&wall, dir))
         };
         (!self.wall.is_empty()).then(|| Arc::new(own) as SpillDirFn)
     }
