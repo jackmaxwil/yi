@@ -297,9 +297,8 @@ fn type_glob(name: &str) -> Option<&'static str> {
 }
 
 fn collect(
-    cwd: &Path,
+    context: &ToolContext,
     root: &Path,
-    deny: &[PathBuf],
     matcher: &regex::Regex,
     include: Option<&RootedGlob>,
     options: &Options,
@@ -312,7 +311,7 @@ fn collect(
     let mut binary_skipped = 0_usize;
     let mut documents_searched = 0_usize;
     let mut documents_unsearched: Vec<String> = Vec::new();
-    let gate = yi_permission::ReadGate::new(&yi_permission::CatastrophicContext::detect(cwd));
+    let (cwd, deny, gate) = (&context.cwd, &context.deny_read, context.read_gate());
     let mut search_file = |path: &Path| -> bool {
         if include.is_some_and(|include| !include.matches(path)) {
             return true;
@@ -574,15 +573,9 @@ impl GrepTool {
         };
         let kind = skip.and_then(|(path, _)| Path::new(path).extension()?.to_str());
         let same_kind = kind.and_then(|kind| rooted_glob(&same_language(kind), root).ok());
-        let collected = collect(
-            root,
-            root,
-            deny,
-            &matcher,
-            same_kind.as_ref(),
-            &options,
-            None,
-        );
+        let mut scope = ToolContext::new(root.to_path_buf());
+        scope.deny_read = deny.to_vec();
+        let collected = collect(&scope, root, &matcher, same_kind.as_ref(), &options, None);
         let mut rows: Vec<String> = Vec::new();
         let mut taken = 0_usize;
         let mut total = 0_usize;
@@ -939,9 +932,8 @@ impl Tool for GrepTool {
         let context_lines = context_asked.min(CONTEXT_CAP);
 
         let collected = collect(
-            &context.cwd,
+            context,
             &root,
-            &context.deny_read,
             &matcher,
             include.as_ref(),
             &options,

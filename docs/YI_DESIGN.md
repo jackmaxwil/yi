@@ -317,11 +317,12 @@ The interpreter is `bash` if `command -v bash` succeeds, else `sh`, probed once.
 default, 600 s cap. Jobs: ≤ 32, LRU with the 8 newest protected. `is_error` = exit ≠ 0 or
 cancelled. Output ≤ 8,192 bytes, or with `-v --verbose --nocapture --porcelain -la -C`, is whole;
 past it: strip ANSI, compress, filter (cargo; grep/rg/ag 60 lines; else head 80/tail 40), kept
-only if shorter. Lossy output is tee'd to `~/.yi/tool-output/` and ends `[full output: <path>]`;
-with nowhere to tee, raw text returns. A contained call runs under Seatbelt (§8).
+only if shorter. Lossy output is tee'd to `~/.yi/spills/<session>/` and ends
+`[full output: <path>]`; with nowhere to tee, raw text returns. A contained call runs under
+Seatbelt (§8).
 
 - Owner: [`jobs.rs`](../crates/tools/src/jobs.rs), [`reduce.rs`](../crates/tools/src/reduce.rs).
-- Settled by: D161, D221.
+- Settled by: D161, D221, D340.
 
 ### 7.4 read
 `path` is a file, directory or glob; `find`, `offset`/`limit` (2000 lines), `ranges`, `pages`

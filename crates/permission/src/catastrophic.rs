@@ -302,6 +302,8 @@ pub struct ReadGate {
     /// The trees, the roots other users' homes sit under, and every directory above a store,
     /// each guarded as itself.
     ids: Vec<FileId>,
+    /// A dir no wall covers: a session's own spills under the spill root its wall holds (D340).
+    spared: Option<PathBuf>,
 }
 
 impl ReadGate {
@@ -323,7 +325,15 @@ impl ReadGate {
             trees,
             tree_ids,
             ids,
+            spared: None,
         }
+    }
+
+    /// This gate with `dir` and all under it outside every wall it is handed.
+    #[must_use]
+    pub fn except(mut self, dir: Option<PathBuf>) -> Self {
+        self.spared = dir;
+        self
     }
 
     /// A named path: refused when it or an ancestor is guarded by spelling or by identity, a
@@ -387,9 +397,11 @@ impl ReadGate {
     }
 
     fn guard_resolved(&self, real: &Path, walls: &[PathBuf], writes: bool) -> io::Result<()> {
+        let spared =
+            (self.spared.as_ref()).is_some_and(|dir| beneath(std::slice::from_ref(dir), real));
         let denied = self.denies(real)
             || (writes && is_catastrophic(real, &self.context))
-            || beneath(walls, real);
+            || (beneath(walls, real) && !spared);
         if denied { Err(refused(real)) } else { Ok(()) }
     }
 
