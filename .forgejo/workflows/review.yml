@@ -9,9 +9,10 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened]
 
-# A newer head supersedes the rounds on the old one.
+# A newer head supersedes the rounds on the old one. The group is this event's own: a branch that
+# never merged main still runs its `pull_request` copy, and a shared group let it cancel this run.
 concurrency:
-  group: review-${{ github.event.pull_request.number }}
+  group: review-target-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:
