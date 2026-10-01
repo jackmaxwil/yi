@@ -3,8 +3,10 @@
 # No fixer: a round is a comment, and a blocked round (D322) fails this job; nothing here pushes or merges.
 name: review
 
+# The workflow file is main's, never the PR's: a `pull_request` run reads the head's copy, so a PR
+# could edit this job to pass the required `review` check, and old branches kept a stale one.
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
 
 # A newer head supersedes the rounds on the old one.
