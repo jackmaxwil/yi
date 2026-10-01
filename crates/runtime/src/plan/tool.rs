@@ -580,29 +580,7 @@ impl PlanTool {
             && (args.get("op").and_then(Value::as_str))
                 .is_some_and(|op| super::natural::TARGETED.contains(&op))
         {
-            let (mut text, mut refused) = (String::new(), false);
-            for label in labels {
-                let mut one = args.clone();
-                one.remove("labels");
-                one.insert("todo".to_owned(), label.clone());
-                let reply = self.run(&one).unwrap_or_else(|err| {
-                    refused = true;
-                    format!("{label}: refused: {err}")
-                });
-                text.push_str(&format!("{reply}\n"));
-            }
-            said.push(
-                "labels named several todos, so each ran as its own call, in order".to_owned(),
-            );
-            for line in said {
-                text.push_str(&format!("note: {line}\n"));
-            }
-            let text = text.trim_end().to_owned();
-            return if refused {
-                Err(ArgError::Declared(text).into())
-            } else {
-                Ok(text)
-            };
+            return self.each(&args, labels, said);
         }
         let (request, blobs) = declared(&self.actor, &args)?;
         if let Op::Accept { .. } = &request.op {
@@ -679,14 +657,15 @@ impl PlanTool {
                 said.push(
                     "no plan was open, so one was opened, named after the first todo".to_owned(),
                 );
-                self.engine.apply_with(
-                    OpRequest {
-                        op,
-                        plan: None,
-                        ..request
-                    },
-                    &blobs,
-                )?
+                let opened = OpRequest {
+                    op,
+                    plan: None,
+                    ..request
+                };
+                match self.engine.apply_with(opened, &blobs) {
+                    Err(PlanOpError::PlanExists { .. }) => return Err(refused.into()),
+                    other => other?,
+                }
             }
             Err(PlanOpError::NotAPermutation { .. }) => {
                 let Op::Reorder { labels } = &request.op else {
@@ -723,6 +702,36 @@ impl PlanTool {
             text.push_str(&format!("\nnote: {line}"));
         }
         Ok(text)
+    }
+
+    /// One call per label, in order; a refusal among them makes the whole reply an error.
+    fn each(
+        &self,
+        args: &Map<String, Value>,
+        labels: &[Value],
+        mut said: Vec<String>,
+    ) -> Result<String, PlanToolError> {
+        let (mut text, mut refused) = (String::new(), false);
+        for label in labels {
+            let mut one = args.clone();
+            one.remove("labels");
+            one.insert("todo".to_owned(), label.clone());
+            let reply = self.run(&one).unwrap_or_else(|err| {
+                refused = true;
+                format!("{label}: refused: {err}")
+            });
+            text.push_str(&format!("{reply}\n"));
+        }
+        said.push("labels named several todos, so each ran as its own call, in order".to_owned());
+        for line in said {
+            text.push_str(&format!("note: {line}\n"));
+        }
+        let text = text.trim_end().to_owned();
+        if refused {
+            Err(ArgError::Declared(text).into())
+        } else {
+            Ok(text)
+        }
     }
 
     /// The owner's own todo, not one a child would be spawned for, so starting it costs nothing.

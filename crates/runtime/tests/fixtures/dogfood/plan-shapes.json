@@ -1,5 +1,5 @@
 {
- "source": "plan calls glm-5.3-flash sent in five rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982), refused then; checker commands replaced by `true`; the two misspellings are the cases a lenient reader must still refuse",
+ "source": "plan calls glm-5.3-flash sent in six rounds of twelve yi ask dogfood sessions on 2026-09-30 (#982), refused then; checker commands replaced by `true`; the two misspellings are the cases a lenient reader must still refuse",
  "cases": [
   {
    "name": "no op beside goal and todos",
@@ -1399,6 +1399,246 @@
    },
    "lands": false,
    "says": "does not take \"outpt\""
+  },
+  {
+   "name": "todos with no op",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "survey"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "todos": [
+     {
+      "contract": {
+       "covers": [
+        "calc.py"
+       ],
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "mod-exists",
+         "weight": 50
+        }
+       ],
+       "threshold": 1000
+      },
+      "label": "Implement mod(a, b) in calc.py"
+     },
+     {
+      "after": [
+       "Implement mod(a, b) in calc.py"
+      ],
+      "contract": {
+       "covers": [
+        "test_calc.py"
+       ],
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "mod-test-passes",
+         "weight": 50
+        }
+       ],
+       "threshold": 1000
+      },
+      "label": "Add test_mod to test_calc.py"
+     },
+     {
+      "after": [
+       "Add test_mod to test_calc.py"
+      ],
+      "contract": {
+       "covers": [
+        "test_calc.py"
+       ],
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "suite-green",
+         "weight": 50
+        }
+       ],
+       "threshold": 1000
+      },
+      "label": "Run the full test suite"
+     },
+     {
+      "label": "Exercise every plan-tool op and report"
+     }
+    ]
+   },
+   "lands": true
+  },
+  {
+   "name": "a contract with no class",
+   "setup": [],
+   "call": {
+    "goal": "Add a mod(a, b) function to calc.py with a passing unit test",
+    "op": "init",
+    "todos": [
+     {
+      "contract": {
+       "covers": [
+        "calc.py"
+       ],
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "mod-exists",
+         "weight": 50
+        }
+       ],
+       "threshold": 1000
+      },
+      "label": "Implement mod(a, b) in calc.py"
+     },
+     {
+      "after": [
+       "Implement mod(a, b) in calc.py"
+      ],
+      "contract": {
+       "covers": [
+        "test_calc.py"
+       ],
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "mod-test-passes",
+         "weight": 50
+        }
+       ],
+       "threshold": 1000
+      },
+      "label": "Add test_mod to test_calc.py"
+     },
+     {
+      "after": [
+       "Add test_mod to test_calc.py"
+      ],
+      "contract": {
+       "covers": [
+        "test_calc.py"
+       ],
+       "items": [
+        {
+         "critical": true,
+         "decider": {
+          "cmd": "true"
+         },
+         "id": "suite-green",
+         "weight": 50
+        }
+       ],
+       "threshold": 1000
+      },
+      "label": "Run the full test suite"
+     },
+     {
+      "label": "Exercise every plan-tool op and report"
+     }
+    ]
+   },
+   "lands": true,
+   "says": "is inline"
+  },
+  {
+   "name": "block with no note",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "demo",
+     "todos": [
+      {
+       "label": "AWAITING USER: fix divide(a, b)? (calc.py:9)"
+      }
+     ]
+    }
+   ],
+   "call": {
+    "op": "block",
+    "on": {
+     "user": null
+    },
+    "todo": "AWAITING USER: fix divide(a, b)? (calc.py:9)"
+   },
+   "lands": true,
+   "says": "label stands in"
+  },
+  {
+   "name": "supersede a finished sub-plan while its parent is open",
+   "setup": [
+    {
+     "op": "init",
+     "goal": "Harden calc.py: fix divide, add input validation",
+     "todos": [
+      {
+       "label": "harden calc.py"
+      }
+     ]
+    },
+    {
+     "op": "decompose",
+     "label": "harden calc.py",
+     "todos": [
+      {
+       "label": "fix divide to true division"
+      },
+      {
+       "label": "add validation and error path"
+      }
+     ]
+    },
+    {
+     "op": "done",
+     "plan": "harden-calc-py-fix-divide-add-input.harden-calc-py",
+     "label": "fix divide to true division"
+    },
+    {
+     "op": "done",
+     "plan": "harden-calc-py-fix-divide-add-input.harden-calc-py",
+     "label": "add validation and error path"
+    }
+   ],
+   "call": {
+    "op": "supersede",
+    "plan": "harden-calc-py-fix-divide-add-input.harden-calc-py",
+    "reason": "The 3-step cut left the isinstance check duplicated in both functions; a shared validation helper is smaller and the same gate judges it.",
+    "todos": [
+     {
+      "label": "extract shared number validation into one helper"
+     },
+     {
+      "after": [
+       "extract shared number validation into one helper"
+      ],
+      "label": "re-run test gate on the refactored code"
+     }
+    ]
+   },
+   "lands": false,
+   "says": "is not active"
   }
  ]
 }
