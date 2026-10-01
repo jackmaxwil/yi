@@ -15,7 +15,8 @@ pub struct ToolAdapter {
     cwd: PathBuf,
     cancelled: CancelFlag,
     permission: Option<Arc<PermissionBroker>>,
-    recovery_dir: Option<PathBuf>,
+    spill_root: Option<PathBuf>,
+    spill_key: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     auto_background: Option<std::time::Duration>,
     rules: Option<Arc<crate::rules::RuleEngine>>,
     wall: crate::wall::Wall,
@@ -153,10 +154,13 @@ type Gates<'a> = (
     Option<&'a Arc<PermissionBroker>>,
 );
 
-/// The §7.3 tee target: the home root, never the user's working tree.
-fn default_recovery_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi/tool-output"))
+/// The §7.3 tee target: the home root, never the user's working tree; one dir per session.
+fn default_spill_root() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi/spills"))
 }
+
+/// Where every session kept its spills before they were per session (D316); none owns them.
+const FLAT_SPILLS: &str = "tool-output";
 
 impl ToolAdapter {
     pub fn new(
@@ -170,7 +174,8 @@ impl ToolAdapter {
             cwd,
             cancelled,
             permission,
-            recovery_dir: default_recovery_dir(),
+            spill_root: default_spill_root(),
+            spill_key: None,
             auto_background: None,
             rules: None,
             wall: crate::wall::Wall::default(),
@@ -178,6 +183,35 @@ impl ToolAdapter {
             check: None,
             rejections: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
+    }
+
+    /// The session's key names its spill dir, read per call: the store may attach after wiring.
+    pub fn with_spill_key(mut self, key: Arc<dyn Fn() -> Option<String> + Send + Sync>) -> Self {
+        self.spill_key = Some(key);
+        self
+    }
+
+    /// The session's own spill dir, when its key is a valid session id.
+    fn session_spills(&self) -> Option<PathBuf> {
+        let key = (self.spill_key.as_ref()).and_then(|key| key())?;
+        yi_session::validate_session_id(&key).ok()?;
+        Some(self.spill_root.as_ref()?.join(key))
+    }
+
+    /// Invariant: a walled session reads back only its own spills: every other session's dir,
+    /// listed per call, and the flat dir from before spills were per session join `deny_read`.
+    fn call_wall(&self, own: Option<&std::path::Path>) -> crate::wall::Wall {
+        let mut wall = self.wall.clone();
+        let Some(root) = self.spill_root.as_ref().filter(|_| !wall.is_empty()) else {
+            return wall;
+        };
+        let others = std::fs::read_dir(root).into_iter().flatten().flatten();
+        let others = others
+            .map(|entry| entry.path())
+            .filter(|dir| Some(dir.as_path()) != own);
+        wall.deny_read
+            .extend(others.chain(root.parent().map(|yi| yi.join(FLAT_SPILLS))));
+        wall
     }
 
     pub fn with_extensions(mut self, ext: Option<crate::session::ExtHook>) -> Self {
@@ -256,20 +290,21 @@ impl AgentTool for ToolAdapter {
         _signal: &'a InterruptSignal,
     ) -> ToolFuture<'a> {
         let tool = Arc::clone(&self.tool);
+        let recovery_dir = self.session_spills();
+        let wall = self.call_wall(recovery_dir.as_deref());
         let mut context = ToolContext {
             cwd: self.cwd.clone(),
             cancelled: Arc::clone(&self.cancelled),
-            recovery_dir: self.recovery_dir.clone(),
+            recovery_dir,
             auto_background: self.auto_background,
             sandbox: None,
-            deny_read: self.wall.deny_read.clone(),
-            deny_write: self.wall.deny_write.clone(),
-            container: self.wall.container.clone(),
+            deny_read: wall.deny_read.clone(),
+            deny_write: wall.deny_write.clone(),
+            container: wall.container.clone(),
             call_id: tool_call_id.to_owned(),
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();
-        let wall = self.wall.clone();
         let ext = self.ext.clone();
         let check = self.check.clone();
         let call_id = tool_call_id.to_owned();
