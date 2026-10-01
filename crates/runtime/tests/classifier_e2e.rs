@@ -30,7 +30,7 @@ fn skill(name: &str, needle: &str) -> RuleDoc {
 }
 
 /// Answers `bodies.len()` connections in order; hands back each request body it read.
-fn sidecar(
+pub(crate) fn sidecar(
     bodies: Vec<&'static str>,
 ) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -363,7 +363,7 @@ async fn a_trigger_words_gap_holds_with_a_classifier_attached() -> TestResult {
     Ok(())
 }
 
-fn safe(p: f64) -> &'static str {
+pub(crate) fn safe(p: f64) -> &'static str {
     Box::leak(
         format!(r#"{{"answers":{{"safe":{{"noul":{p},"answer_confidence":{p}}}}},"routing":{{"model":"english"}}}}"#)
             .into_boxed_str(),

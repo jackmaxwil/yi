@@ -625,10 +625,14 @@ fn wire_plan_engine(
     if let Some(service) = session.plan_service() {
         service.set_engine(Arc::clone(&engine), actor.clone());
     }
-    tools.push(Arc::new(crate::plan::tool::PlanTool::new(
-        Arc::clone(&engine),
-        actor,
-    )));
+    let mut tool = crate::plan::tool::PlanTool::new(Arc::clone(&engine), actor.clone());
+    if let (crate::plan::ops::Actor::Owner, Some(broker)) = (&actor, wiring.broker.clone()) {
+        tool = tool.confirming(crate::plan::authority::Confirming {
+            broker,
+            store: session.store_handle(),
+        });
+    }
+    tools.push(Arc::new(tool));
     tools.push(Arc::new(crate::todo::tool::TodoTool::new(Arc::clone(
         &todos,
     ))));

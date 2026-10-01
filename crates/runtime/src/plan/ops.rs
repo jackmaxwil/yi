@@ -24,8 +24,8 @@ use super::snapshot::{Snapshotter, TreeHash};
 use super::state::{self, Decided, KIND_IMPORT, RootState, leaving_running, root_of};
 use super::store::{Loaded, PlanStore, StoreError, draft};
 use super::table::{
-    OpKind, Refusal, admit, admitted, check_actor, check_plan_state, in_flight, op_name,
-    ready_labels,
+    OpKind, Refusal, admit, admitted, check_actor, check_plan_state, illegal_hint, in_flight,
+    op_name, ready_labels,
 };
 use super::verify::Verifier;
 use yi_types::plan::op::Reaped;
@@ -39,22 +39,13 @@ const CHILD_SUFFIX_MAX: u32 = 9_999;
 /// (8) of `Reaped.last` urls the host mints as `history://<agent>`; the commit seal backstops.
 const REAP_ENVELOPE_BYTES: usize = 8 * 1024;
 
-/// The legal move a refusal named the rule for and not the road to: F0e sessions repeated
-/// `done` on three sibling pending todos in a row because nothing said what to do (#472).
-fn illegal_hint(op: OpKind, from: &TodoStateName) -> &'static str {
-    match (op, from) {
-        (OpKind::Done, TodoStateName::Pending) => {
-            "; start it first, or resend set with the row marked \"- [x]\" for a todo carrying no contract"
-        }
-        _ => "",
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Actor {
     Owner,
     Child(AgentId),
     User(Url),
+    /// The approver standing in for the user on an acceptance, in auto mode only.
+    Classifier,
     Host,
     Engine,
 }
@@ -1152,7 +1143,7 @@ pub(super) fn runs(actor: &Actor, by: &AgentId) -> bool {
     match actor {
         Actor::Owner => by.as_str() == OWNER_AGENT,
         Actor::Child(agent) => agent == by && agent.as_str() != OWNER_AGENT,
-        Actor::User(_) | Actor::Host | Actor::Engine => false,
+        Actor::User(_) | Actor::Classifier | Actor::Host | Actor::Engine => false,
     }
 }
 
@@ -1161,6 +1152,7 @@ fn actor_word(actor: &Actor) -> String {
         Actor::Owner => OWNER_AGENT.to_owned(),
         Actor::Child(agent) => agent.as_str().to_owned(),
         Actor::User(citation) => citation.to_string(),
+        Actor::Classifier => "classifier".to_owned(),
         Actor::Host => "host".to_owned(),
         Actor::Engine => ENGINE_AGENT.to_owned(),
     }
