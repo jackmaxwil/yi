@@ -21,6 +21,8 @@ pub struct ToolContext {
     /// The session's own spill dir, `<root>/<session>`, whose root the spill sweeps; None
     /// means a reducer must hand back the raw text instead.
     pub recovery_dir: Option<PathBuf>,
+    /// The session's own transcript, which its wall spares under the session stores (#971).
+    pub transcript: Option<PathBuf>,
     /// How long a command may hold the turn before it keeps running as a job, when the call
     /// passes no `wait`. None, the default, backgrounds only a call that does.
     pub auto_background: Option<std::time::Duration>,
@@ -42,7 +44,8 @@ impl ToolContext {
     /// (#890). Built once per call: each guarded directory costs a stat.
     pub(crate) fn read_gate(&self) -> yi_permission::ReadGate {
         let context = yi_permission::CatastrophicContext::detect(&self.cwd);
-        yi_permission::ReadGate::new(&context).except(self.recovery_dir.clone())
+        let own = self.recovery_dir.iter().chain(&self.transcript).cloned();
+        yi_permission::ReadGate::new(&context).except(own.collect())
     }
 
     /// A named file's bytes, read through [`Self::read_gate`] under the wall's `deny_read`.
@@ -60,6 +63,7 @@ impl ToolContext {
             cwd,
             cancelled: Arc::new(|| false),
             recovery_dir: None,
+            transcript: None,
             auto_background: None,
             sandbox: None,
             deny_read: Vec::new(),

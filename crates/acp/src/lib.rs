@@ -21,9 +21,11 @@ use yi_runtime::session_store::{
 };
 use yi_runtime::{AgentSession, AskOutcome, Asker, SubagentHost, available_models, resolve_model};
 use yi_types::acp::{
-    AcpConfigOption, AcpErrorResponse, AcpErrorShape, AcpFrame, AcpImplementation,
-    AcpInitializeResult, AcpPermissionOption, AcpPermissionOptionKind, AcpPermissionOutcome,
-    AcpResponse, AcpSessionResult, AcpSessionUpdate,
+    AcpConfigChoice, AcpConfigKind, AcpConfigOption, AcpDiffChange, AcpDiffOperation, AcpDiffPatch,
+    AcpErrorResponse, AcpErrorShape, AcpFrame, AcpImplementation, AcpInitializeResult, AcpMeta,
+    AcpPatchFormat, AcpPermissionOption, AcpPermissionOptionKind, AcpPermissionOutcome,
+    AcpPermissionSubject, AcpResponse, AcpSessionResult, AcpSessionUpdate, AcpToolCallUpdate,
+    AcpToolContent,
 };
 use yi_types::event::AgentEvent;
 use yi_types::permission::{choices, chosen};
@@ -31,7 +33,8 @@ use yi_types::subagent::ChildId;
 
 use crate::forward::{Forward, Parent, forward_parent, session_name};
 use crate::update::{
-    IdMap, ReplayFrame, extension, replay_update, replay_updates, update_notification,
+    IdMap, PendingPrompt, PendingPrompts, ReplayFrame, extension, replay_update, replay_updates,
+    update_notification,
 };
 
 pub const PROTOCOL_VERSION: u16 = 2;
@@ -41,6 +44,7 @@ pub const VERSION_MISMATCH_ERROR: &str =
 const INVALID_PARAMS: i64 = -32602;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INTERNAL_ERROR: i64 = -32603;
+const REQUEST_CANCELLED: i64 = -32800;
 
 /// Builds a session for a store id, so a lane is claimed under the id that resumes it.
 pub type SessionBuilder = Arc<
@@ -129,15 +133,18 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
             title: ask.title.to_owned(),
             description: Some(ask.description.to_owned()),
             options: permission_options(ask.grants),
-            content: ask.patch.map(|patch| {
-                vec![yi_types::acp::AcpToolContent::Diff {
-                    changes: ask
-                        .changes
-                        .iter()
-                        .map(|path| path.to_string_lossy().into_owned())
-                        .collect(),
-                    patch: patch.to_owned(),
-                }]
+            subject: ask.patch.map(|patch| AcpPermissionSubject::ToolCall {
+                tool_call: Box::new(AcpToolCallUpdate {
+                    tool_call_id: ask.tool_call_id.unwrap_or_default().to_owned(),
+                    content: Some(vec![AcpToolContent::Diff {
+                        changes: ask.changes.iter().map(|path| diff_change(path)).collect(),
+                        patch: Some(AcpDiffPatch {
+                            format: AcpPatchFormat::GitPatch,
+                            text: patch.to_owned(),
+                        }),
+                    }]),
+                    ..AcpToolCallUpdate::default()
+                }),
             }),
         };
         let request = AcpFrame {
@@ -171,10 +178,24 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
     })
 }
 
+/// Invariant: an ask precedes the write it gates, so what is on disk is the pre-image.
+fn diff_change(path: &std::path::Path) -> AcpDiffChange {
+    let operation = if path.exists() {
+        AcpDiffOperation::Modify
+    } else {
+        AcpDiffOperation::Add
+    };
+    AcpDiffChange {
+        operation,
+        path: path.to_string_lossy().into_owned(),
+    }
+}
+
 struct SessionHandle {
     session: Arc<AgentSession>,
     host: Arc<SubagentHost>,
     forwarder: JoinHandle<()>,
+    prompts: PendingPrompts,
 }
 
 impl Drop for SessionHandle {
@@ -200,6 +221,7 @@ struct AcpState {
     agent_version: String,
     initialized: bool,
     cwd: PathBuf,
+    prompt_serial: u64,
 }
 
 fn mode_value(mode: Option<yi_runtime::PermissionMode>) -> &'static str {
@@ -219,69 +241,70 @@ fn options_for(
     effort: yi_types::model::Effort,
     mode: &str,
 ) -> Vec<AcpConfigOption> {
-    let models: Vec<Value> = available_models()
+    let choice = |value: String, name: String| AcpConfigChoice { value, name };
+    let models = available_models()
         .iter()
         .map(|candidate| {
             let value = format!("{}/{}", candidate.provider, candidate.id);
-            json!({"value": value, "name": candidate.name})
+            choice(value, candidate.name.clone())
         })
         .collect();
-    let modes: Vec<Value> = ["ask", "auto", "yolo"]
+    let modes = ["ask", "auto", "yolo"]
         .iter()
-        .map(|mode| json!({"value": mode, "name": mode}))
+        .map(|mode| choice((*mode).to_owned(), (*mode).to_owned()))
         .collect();
-    let levels: Vec<Value> = model
+    let levels = model
         .supported_efforts()
         .iter()
-        .map(|level| json!({"value": level.to_string(), "name": level.to_string()}))
+        .map(|level| choice(level.to_string(), level.to_string()))
         .collect();
+    let select = |config_id: &str, name: &str, current_value: String, options| AcpConfigOption {
+        config_id: config_id.to_owned(),
+        name: name.to_owned(),
+        kind: AcpConfigKind::Select,
+        current_value,
+        options,
+    };
     vec![
-        AcpConfigOption {
-            config_id: "model".to_owned(),
-            name: "Model".to_owned(),
-            kind: json!({
-                "type": "select",
-                "value": format!("{}/{}", model.provider, model.id),
-                "options": models,
-            }),
-        },
-        AcpConfigOption {
-            config_id: "thought_level".to_owned(),
-            name: "Thinking level".to_owned(),
-            kind: json!({
-                "type": "select",
-                "value": effort.to_string(),
-                "options": levels,
-            }),
-        },
-        AcpConfigOption {
-            config_id: "mode".to_owned(),
-            name: "Permission mode".to_owned(),
-            kind: json!({
-                "type": "select",
-                "value": mode,
-                "options": modes,
-            }),
-        },
+        select(
+            "model",
+            "Model",
+            format!("{}/{}", model.provider, model.id),
+            models,
+        ),
+        select(
+            "thought_level",
+            "Thinking level",
+            effort.to_string(),
+            levels,
+        ),
+        select("mode", "Permission mode", mode.to_owned(), modes),
     ]
 }
 
 fn prompt_text(params: &Value) -> String {
-    params
-        .get("prompt")
-        .and_then(Value::as_array)
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter_map(|block| {
-                    (block.get("type").and_then(Value::as_str) == Some("text"))
-                        .then(|| block.get("text").and_then(Value::as_str))
-                        .flatten()
-                })
-                .collect::<Vec<_>>()
-                .join("")
+    let blocks = params.get("prompt").and_then(Value::as_array);
+    blocks
+        .into_iter()
+        .flatten()
+        .fold(String::new(), |mut text, block| {
+            let field = |key| block.get(key).and_then(Value::as_str);
+            match (
+                block.get("type").and_then(Value::as_str),
+                field("text"),
+                field("uri"),
+            ) {
+                (Some("text"), Some(part), _) => text.push_str(part),
+                (Some("resource_link"), _, Some(uri)) => {
+                    if !text.is_empty() && !text.ends_with(char::is_whitespace) {
+                        text.push(' ');
+                    }
+                    text.push_str(uri);
+                }
+                _ => {}
+            }
+            text
         })
-        .unwrap_or_default()
 }
 
 impl AcpState {
@@ -323,6 +346,7 @@ impl AcpState {
         }
         let events = session.subscribe();
         let context_window = session.model().context_window;
+        let prompts = PendingPrompts::default();
         let mut parent = Parent {
             forward: Forward {
                 session_id: session_id.clone(),
@@ -332,7 +356,7 @@ impl AcpState {
             },
             session: Arc::clone(&session),
             host: Arc::clone(&host),
-            ids: IdMap::new(context_window),
+            ids: IdMap::with_prompts(context_window, Arc::clone(&prompts)),
             children: JoinSet::new(),
             seen: HashSet::new(),
             last_goal: Value::Null,
@@ -352,6 +376,7 @@ impl AcpState {
                 session,
                 host,
                 forwarder,
+                prompts,
             },
         );
         Ok(session_id)
@@ -416,7 +441,7 @@ impl AcpState {
             .ok_or((INVALID_PARAMS, format!("unknown session {id}")))
     }
 
-    fn session_result(&self, session_id: &str) -> Value {
+    fn session_result(&self, session_id: &str) -> AcpSessionResult {
         let handle = self.sessions.get(session_id);
         let options = handle
             .map(|handle| config_options(&handle.session))
@@ -424,11 +449,45 @@ impl AcpState {
         let name = self
             .store_of(session_id)
             .and_then(|store| session_name(&store));
-        json!(AcpSessionResult {
-            session_id: session_id.to_owned(),
+        let mut meta = AcpMeta::default();
+        meta.yi.name = name;
+        AcpSessionResult {
+            session_id: Some(session_id.to_owned()),
             config_options: options,
-            name,
-        })
+            meta: Some(meta),
+        }
+    }
+
+    /// Answered by the forwarder once the prompt is inserted; only a refusal answers here.
+    fn prompt(&mut self, request: Value, params: &Value) -> Option<Result<Value, (i64, String)>> {
+        if let Some(id) = params.get("sessionId").and_then(Value::as_str) {
+            let id = id.to_owned();
+            self.settle(&id);
+        }
+        self.prompt_serial = self.prompt_serial.saturating_add(1);
+        let message_id = format!("msg_p{}", self.prompt_serial);
+        let (handle, _) = match self.session(params) {
+            Ok(found) => found,
+            Err(refused) => return Some(Err(refused)),
+        };
+        let text = prompt_text(params);
+        crate::update::queued(&handle.prompts).push(PendingPrompt {
+            text: text.clone(),
+            message_id,
+            request,
+        });
+        let prompt = yi_runtime::session::user_input(&text);
+        if handle.session.prompt_message(prompt.clone()).is_err() {
+            handle.session.follow_up_message(prompt);
+        }
+        None
+    }
+
+    fn drop_session(&mut self, session_id: &str) {
+        if let Some(handle) = self.sessions.remove(session_id) {
+            let closed = "the session closed before this prompt was inserted";
+            refuse(&self.sink, &handle.prompts, REQUEST_CANCELLED, closed);
+        }
     }
 
     fn emit_config(&self, session_id: &str) {
@@ -456,6 +515,10 @@ impl AcpState {
     fn set_config_option(&mut self, params: &Value) -> Result<Value, (i64, String)> {
         let (handle, id) = self.session(params)?;
         let config_id = params.get("configId").and_then(Value::as_str).unwrap_or("");
+        if params.get("type").and_then(Value::as_str) != Some("id") {
+            let refused = format!("{config_id} is a select option: send \"type\": \"id\"");
+            return Err((INVALID_PARAMS, refused));
+        }
         let value = params.get("value").and_then(Value::as_str).unwrap_or("");
         match config_id {
             "model" => {
@@ -498,9 +561,7 @@ impl AcpState {
             }
         }
         self.emit_config(&id);
-        let result = self.session_result(&id);
-        let options = result.get("configOptions").cloned().unwrap_or(Value::Null);
-        Ok(json!({"configOptions": options}))
+        Ok(json!({"configOptions": self.session_result(&id).config_options}))
     }
 
     fn handle(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
@@ -524,7 +585,7 @@ impl AcpState {
                         name: "yi".to_owned(),
                         version: self.agent_version.clone(),
                     },
-                    capabilities: json!({}),
+                    capabilities: json!({"session": {"delete": {}}}),
                     auth_methods: Vec::new(),
                 }))
             }
@@ -539,7 +600,7 @@ impl AcpState {
                     let session_id = self
                         .attach(&store)
                         .map_err(|error| (INTERNAL_ERROR, error))?;
-                    return Ok(self.session_result(&session_id));
+                    return Ok(json!(self.session_result(&session_id)));
                 };
                 let options = options_for(
                     &defaults.model,
@@ -548,17 +609,8 @@ impl AcpState {
                 );
                 let session_id = self.attach_later(&store);
                 let mut result = self.session_result(&session_id);
-                result["configOptions"] = json!(options);
-                Ok(result)
-            }
-            "session/prompt" => {
-                let (handle, _) = self.session(params)?;
-                let text = prompt_text(params);
-                let prompt = yi_runtime::session::user_input(&text);
-                if handle.session.prompt_message(prompt.clone()).is_err() {
-                    handle.session.follow_up_message(prompt);
-                }
-                Ok(json!({}))
+                result.config_options = options;
+                Ok(json!(result))
             }
             "session/cancel" => {
                 let (handle, _) = self.session(params)?;
@@ -575,10 +627,13 @@ impl AcpState {
                     .map(|metadata| {
                         json!({
                             "sessionId": metadata.id,
-                            "attached": self.sessions.contains_key(&metadata.id)
-                                || self.building.contains_key(&metadata.id),
-                            "createdAt": metadata.created_at,
-                            "name": metadata.name,
+                            "cwd": self.cwd,
+                            "title": metadata.name,
+                            "_meta": {"yi": {
+                                "attached": self.sessions.contains_key(&metadata.id)
+                                    || self.building.contains_key(&metadata.id),
+                                "createdAt": metadata.created_at,
+                            }},
                         })
                     })
                     .collect();
@@ -603,30 +658,31 @@ impl AcpState {
                     }
                 };
                 let mut result = self.session_result(&id);
+                result.session_id = None;
                 // v2 clients send `{"type": "start"}`; a bare number is the
                 // entry-offset extension. Anything non-null replays.
                 if let Some(replay_from) = params.get("replayFrom").filter(|v| !v.is_null()) {
                     let from = replay_from.as_u64().unwrap_or(0);
                     let window = self.context_window(&id);
-                    let standard =
-                        params.get("replayUpdates").and_then(Value::as_bool) != Some(false);
+                    let standard = params
+                        .pointer("/_meta/yi/replayUpdates")
+                        .and_then(Value::as_bool)
+                        != Some(false);
                     let replayed = if standard {
                         Some(self.replay(&id, &store, from, window)?)
                     } else {
                         None
                     };
                     let total = self.emit_replay_from(&id, &store, from, window, None)?;
-                    let replayed_to = replayed.unwrap_or(total);
-                    if let Some(map) = result.as_object_mut() {
-                        map.insert("replayedTo".to_owned(), json!(replayed_to));
-                    }
+                    let meta = result.meta.get_or_insert_with(AcpMeta::default);
+                    meta.yi.replayed_to = Some(replayed.unwrap_or(total));
                 }
-                Ok(result)
+                Ok(json!(result))
             }
             "session/close" => {
                 let id = self.session(params)?.1;
                 self.user_cells.close(&id);
-                self.sessions.remove(&id);
+                self.drop_session(&id);
                 Ok(json!({}))
             }
             "session/delete" => {
@@ -635,7 +691,7 @@ impl AcpState {
                     .and_then(Value::as_str)
                     .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?
                     .to_owned();
-                self.sessions.remove(&id);
+                self.drop_session(&id);
                 self.repo
                     .delete(&id)
                     .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
@@ -1001,6 +1057,13 @@ fn submit_plan(
         .map_err(|error| (INVALID_PARAMS, error))
 }
 
+fn refuse(sink: &LineSink, prompts: &PendingPrompts, code: i64, why: &str) {
+    let waiting = std::mem::take(&mut *crate::update::queued(prompts));
+    for prompt in waiting {
+        respond(sink, prompt.request, Err((code, why.to_owned())));
+    }
+}
+
 fn respond(sink: &LineSink, id: Value, outcome: Result<Value, (i64, String)>) {
     let frame = match outcome {
         Ok(result) => json!(AcpResponse {
@@ -1036,6 +1099,7 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
         agent_version: options.agent_version,
         initialized: false,
         cwd: options.cwd,
+        prompt_serial: 0,
     };
     runtime.block_on(async move {
         std::thread::spawn(move || {
@@ -1087,8 +1151,14 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
             match incoming.id {
                 Some(id) => {
                     let _span = yi_types::trace::span(format!("acp {}", incoming.method));
-                    let outcome = state.handle(&incoming.method, &params);
-                    respond(&sink, id, outcome);
+                    let outcome = if incoming.method == "session/prompt" {
+                        state.prompt(id.clone(), &params)
+                    } else {
+                        Some(state.handle(&incoming.method, &params))
+                    };
+                    if let Some(outcome) = outcome {
+                        respond(&sink, id, outcome);
+                    }
                 }
                 None => {
                     if incoming.method == "session/cancel" {

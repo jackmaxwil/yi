@@ -382,6 +382,8 @@ pub struct Resolver {
     plans_dir: PathBuf,
     spill_dir: Option<PathBuf>,
     wall: Wall,
+    /// Every session store, which no file a walled reader fetches may lie under (D345).
+    session_stores: Vec<PathBuf>,
     session: Option<(String, crate::goal::StoreHandle)>,
     checkpoint_show: Option<Arc<dyn CheckpointShow>>,
     mcp_read: Option<Arc<dyn McpResourceRead>>,
@@ -400,6 +402,7 @@ impl Resolver {
             plans_dir,
             spill_dir: None,
             wall,
+            session_stores: crate::tools::session_stores(None),
             session: None,
             checkpoint_show: None,
             mcp_read: None,
@@ -421,6 +424,11 @@ impl Resolver {
 
     pub fn with_plans_dir(mut self, dir: PathBuf) -> Self {
         self.plans_dir = dir;
+        self
+    }
+
+    pub fn with_session_stores(mut self, stores: Vec<PathBuf>) -> Self {
+        self.session_stores = stores;
         self
     }
 
@@ -531,7 +539,7 @@ impl Resolver {
         url: &Url,
         page: Option<Page>,
     ) -> Result<(String, String, Option<usize>), FetchError> {
-        if let Some(refusal) = self.wall.check_url(url, &self.workspace) {
+        if let Some(refusal) = self.wall().check_url(url, &self.workspace) {
             return Err(FetchError::Denied {
                 url: url.to_string(),
                 refusal,
@@ -573,8 +581,13 @@ impl Resolver {
         &self.workspace
     }
 
-    pub(super) fn wall(&self) -> &Wall {
-        &self.wall
+    /// The reader's wall and, walled, every session store in its `deny_read`: every scheme that
+    /// serves a host file judges by this, so no spelling or link reaches a transcript (D345).
+    pub(super) fn wall(&self) -> Wall {
+        let stores = self.session_stores.iter().filter(|_| !self.wall.is_empty());
+        let mut wall = self.wall.clone();
+        wall.deny_read.extend(stores.cloned());
+        wall
     }
 
     pub(super) fn plans_dir(&self) -> &std::path::Path {
