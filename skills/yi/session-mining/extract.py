@@ -124,9 +124,10 @@ CAVEAT = (
 
 
 def claimed_numbers(text):
-    """Digit runs of three or more outside code spans, bounded by no word character, dot or
+    """Digit runs of three or more outside closed code spans, bounded by no word character, dot or
     slash: the numerals `numbers_of` in todo/coupling.rs sends back, so the two agree."""
-    prose = " ".join(text.split("`")[0::2])
+    parts = text.split("`")
+    prose = " ".join(p for i, p in enumerate(parts) if i % 2 == 0 or i == len(parts) - 1)
     return set(re.findall(r"(?<![\w./])\d{3,}(?![\w./])", prose))
 
 

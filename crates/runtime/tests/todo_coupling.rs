@@ -657,11 +657,11 @@ fn numbers_match_the_extractor_regex() {
     assert_eq!(numbers_of("(1088) and 2500. then 777"), vec!["1088", "777"]);
     assert!(numbers_of("per .ruler/040 and crates/v2/300/x").is_empty());
     assert_eq!(numbers_of("`line 1234` then 5000 `x 6000`"), vec!["5000"]);
+    assert_eq!(numbers_of("a stray ` then 1234 rows"), vec!["1234"]);
 }
 
-/// Dies with "The turn produced no output" after the model accepted a flagged path fragment:
-/// `.ruler/040` was flagged, the send-back asked for a quote per number, and the model wrote its
-/// whole answer again; an empty stop is now the answer that says every number was a name.
+/// Dies with "The turn produced no output" after the model accepted a flagged path fragment
+/// (`.ruler/040`, answered with a whole rewrite): an empty stop now says every number was a name.
 #[test]
 fn an_empty_stop_answers_the_unsourced_send_back() -> TestResult {
     let r = rig("unsourced-ack")?;
@@ -684,6 +684,15 @@ fn an_empty_stop_answers_the_unsourced_send_back() -> TestResult {
     assert!(
         later.is_some(),
         "an empty stop that answers nothing is still re-driven"
+    );
+    let cut = rig("unsourced-ack-cut")?;
+    let hooks = prelude_hooks(&cut);
+    (hooks.intercept_stop)(&snapshot(&claim)).ok_or("an unsourced number re-drives")?;
+    let errored = faux_assistant_message(vec![faux_text("")], StopReason::Error);
+    assert!((hooks.intercept_stop)(&snapshot(&errored)).is_none());
+    assert!(
+        (hooks.intercept_stop)(&snapshot(&empty)).is_some(),
+        "a stop that errored answered nothing, so the next empty stop is re-driven"
     );
     Ok(())
 }
