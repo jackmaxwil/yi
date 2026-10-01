@@ -188,6 +188,30 @@ fn one_edit(a: &str, b: &str) -> bool {
     }
 }
 
+/// Incident: validate read a todo's on and a targeted op's labels as unknown keys, which the tool's
+/// run splits into calls of their own, so the loop refused what execute lands. These are those calls.
+pub(super) fn calls(args: &Map<String, Value>) -> Vec<Map<String, Value>> {
+    let mut args = args.clone();
+    let blocks = blocks(&mut args);
+    let (args, _) = natural(&args);
+    let targeted =
+        (args.get("op").and_then(Value::as_str)).is_some_and(|op| TARGETED.contains(&op));
+    let mut out = match args.get("labels") {
+        Some(Value::Array(labels)) if targeted => labels
+            .iter()
+            .flat_map(|label| {
+                let mut one = args.clone();
+                one.remove("labels");
+                one.insert("todo".to_owned(), label.clone());
+                calls(&one)
+            })
+            .collect(),
+        _ => vec![args.clone()],
+    };
+    out.extend(blocks.iter().flat_map(calls));
+    out
+}
+
 /// A todo written with `on` is blocked by its own call once the todo exists.
 pub(super) fn blocks(args: &mut Map<String, Value>) -> Vec<Map<String, Value>> {
     let Some(Value::Array(todos)) = args.get_mut("todos") else {

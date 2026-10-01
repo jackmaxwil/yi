@@ -59,8 +59,12 @@ fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
 }
 
 /// The tool's answer and whether it was an error.
+/// The loop's order: validate refuses before execute runs, so a shape only execute reads is refused.
 fn call(rig: &Rig, args: Value) -> (bool, String) {
     let input = args.as_object().cloned().unwrap_or_default();
+    if let Err(refusal) = rig.tool.validate(&input) {
+        return (true, refusal);
+    }
     let output = rig
         .tool
         .execute(input, &ToolContext::new(std::env::temp_dir()));
