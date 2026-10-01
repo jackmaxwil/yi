@@ -1,5 +1,5 @@
 ---
-raise: tests +25, crate runtime +2
+raise: tests +35, crate runtime +2
 ---
 A second `/land` while a push runs is refused at once: `land()` takes the poller before the
 lane lock the running push holds, where it used to wait out the push and then race the first

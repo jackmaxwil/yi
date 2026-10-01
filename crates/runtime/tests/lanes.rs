@@ -628,7 +628,7 @@ fn a_rollup_is_bounded_at_the_parser() {
 type Steers = std::sync::mpsc::Receiver<String>;
 
 fn handle_for(
-    lane: yi_runtime::lane::Lane,
+    lane: Option<yi_runtime::lane::Lane>,
     land_command: Option<Vec<String>>,
 ) -> (std::sync::Arc<LaneHandle>, Steers) {
     let (events, _keep) = tokio::sync::broadcast::channel(16);
@@ -637,10 +637,7 @@ fn handle_for(
         std::sync::Arc::new(move |message, _| {
             let _ = tx.send(format!("{message:?}"));
         });
-    (
-        LaneHandle::new(Some(lane), None, land_command, events, steer),
-        rx,
-    )
+    (LaneHandle::new(lane, None, land_command, events, steer), rx)
 }
 
 /// Two `/land` calls are one poller; the second is refused at once while the first pushes.
@@ -658,7 +655,7 @@ fn two_lands_share_one_poller() -> TestResult {
         r#": > "$0.up"; while [ -e "$0" ]; do sleep 0.01; done"#.to_owned(),
         gate.to_string_lossy().into_owned(),
     ];
-    let (handle, steers) = handle_for(lane, Some(held));
+    let (handle, steers) = handle_for(Some(lane), Some(held));
     handle.land("Title")?;
     assert!(until(|| pushing.exists()), "the first push never started");
     let (tx, rx) = std::sync::mpsc::channel();
@@ -679,6 +676,19 @@ fn two_lands_share_one_poller() -> TestResult {
     );
     handle.release()?;
     Ok(())
+}
+
+/// A `/land` that finds no lane gives the poller back: the next one says why, not "in progress".
+#[test]
+fn a_land_without_a_lane_frees_the_poller() {
+    let (handle, _steers) = handle_for(None, None);
+    for _ in 0..2 {
+        let refused = handle.land("Title");
+        assert!(
+            matches!(&refused, Err(error) if error.to_string().contains("nothing to land")),
+            "{refused:?}"
+        );
+    }
 }
 
 fn until(mut ready: impl FnMut() -> bool) -> bool {
@@ -713,7 +723,7 @@ fn a_conflicting_base_pushes_nothing() -> TestResult {
     git(&rig.repo, &["commit", "-qam", "trunk edit"])?;
     git(&rig.repo, &["push", "-q", "origin", "main"])?;
     let lane_path = lane.path().to_path_buf();
-    let (handle, steers) = handle_for(lane, None);
+    let (handle, steers) = handle_for(Some(lane), None);
     handle.land("Title")?;
     let steer = steers.recv_timeout(std::time::Duration::from_secs(60))?;
     assert!(
