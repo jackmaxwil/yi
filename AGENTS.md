@@ -49,7 +49,8 @@ gate too: `startup` scores the *minimum* of its 50 runs, which contention can
 only raise toward, never below, the binary's real cost — so a red startup gate
 is a red startup gate, and re-running it idle is not an explanation. If a
 stale-cache explanation tempts you, `touch` the crate's lib.rs and rerun before
-believing it. Ratchet growth is intentional only as `--update` in its own commit.
+believing it. Ratchet growth is intentional only as a `raise:` line in the change file, or for
+the stored baselines as `--update` in its own commit.
 
 
 
@@ -161,7 +162,12 @@ Wire-type drift corrections (these override instinct):
 Run `just check` (fmt-check + clippy -D warnings + scripts/guardrails/check_guardrails.sh)
 before claiming any task done; quote failures verbatim, do not paraphrase them.
 
-- Ratchets only shrink. Intentional growth is `--update`, in its own commit; a baseline edit in
+- The size ceilings — net src growth, per-crate src lines, test LOC, comment volume and
+  over-cap count — are measured at the fork point (`git merge-base origin/main HEAD`), not stored:
+  growth past the fork's number is a `raise:` line in the branch's change file (`tests +N`,
+  `comments +N`, `over-cap +N`, `crate <name> +N`), and a shrink on main tightens the next branch
+  with no commit. Two branches never write one shared ceiling, which is what made every PR conflict.
+- Every other ratchet only shrinks. Intentional growth is `--update`, in its own commit; a baseline edit in
   the same commit as a code edit fails the build (check_commit_style refuses the mix per commit at the PR range). No aggregate fix, ever. Order follows direction (097): a raised
   ceiling's `--update` commit lands before the code, since guardrails --fast runs on every
   commit and refuses one against a ceiling it would exceed; a shrunk ceiling's `--update`
@@ -170,16 +176,13 @@ before claiming any task done; quote failures verbatim, do not paraphrase them.
   the tree. Report it, do not allowlist or delete another session's artifact.
 - Budgets start at zero — measure the dimension the mess will move to next: glob re-exports 0,
   production duplication 0 (prompts and .md included), panics 0.
-- Size ratchets count src/ only; test LOC has its own budget (check_test_size.py --update).
-- Net src growth is priced per version: +150 lines ride free; past that the version's own
-  changelog row carries a `growth +N:` memo naming the measured number and what was weighed for
-  deletion; past +2000 that row also cites the D-row the landing claimed. check_growth.py reads
-  baselines/src_loc.json, and its `--update` obeys the own-commit law like every other baseline.
+- Size ratchets count src/ only; test LOC has its own budget (check_test_size.py, `raise: tests +N`).
+- Net src growth is priced per branch, against its fork point: +150 lines ride free; past that the
+  branch's change file carries `growth: +N <memo>` naming the measured number and what was weighed
+  for deletion; past +2000 that file also carries the `decision:` the landing claims.
 - Growth is paid for before it is excused. The budget is a price, not a permission: a landing
   that cannot say why its bytes earn their place does not land, and deletion is weighed first.
-  `--update` charges the same price before it absorbs a delta, so the baseline update is not a
-  way around the memo; the memo's number is checked against the measurement, trailing it by at
-  most the free band.
+  The memo's number is checked against the measurement, trailing it by at most the free band.
 - A new guardrail script's `--selfcheck` is its own refute pass: each check is disabled in turn
   and the selfcheck must fail for that check's reason. The 0.119.0 refute pass was run by hand
   and killed fifteen mutants; the flag is the same pass on every run.
@@ -415,11 +418,13 @@ trailing blanks and the counts drift (the duplicated-list bug).
 
 # Workflow
 
-- A structural change bumps docs/ARCHITECTURE.md version and adds a docs/CHANGELOG.md row in the same
-  commit. Read the version header and the last D-row immediately before writing them: another
-  session sharing this tree may have claimed both since the last read, and a collision costs a
-  reset + renumber (0.35.0/D55 and 0.38.0/D57 were both taken mid-change this way).
-- Revising a settled decision requires a new D-row (decision, why, reversible-via) before code.
+- A structural change adds one change file, `docs/changes/<yyyy-mm-dd>-<slug>.md`: a `---` header
+  (`issue:`, `growth:`, `raise:`, `decision: <decision> | <why> | <reversible via>`, each optional)
+  and the changelog prose. It never writes the `version:` line, a CHANGELOG.md row, a decision row
+  or an ADR: those are views the recorder writes on main after the merge, numbering versions and
+  D-rows in merge order, and check_changes.py refuses a branch that edits them. Every PR claimed
+  the next number by hand and every landing renumbered, until 9 of 9 conflicted PRs collided on it.
+- Revising a settled decision requires a new decision (a `decision:` line in the change file) before code.
 - Feature cuts are discussed before being written into the docs.
 - One-in-one-out: adding a top-level feature deletes or demotes one and edits YI_DESIGN.md §1.2
   in the same commit.
@@ -449,14 +454,14 @@ trailing blanks and the counts drift (the duplicated-list bug).
 - Commit messages containing backticks or `$(` go through `git commit -F -` with a quoted
   heredoc, never `-m` — zsh command-substitutes inside double quotes and mangles the message.
 - A change that adds a feature-ledger row, or whose net src growth exceeds the free band, carries
-  `Closes #N` or `Refs #N` in its PR body and cites the same `#N` in its changelog row — the
-  register is on the forge (095), so the row and the issue have to name each other or neither
+  `Closes #N` or `Refs #N` in its PR body and cites the same `#N` in its change file — the
+  register is on the forge (095), so the change and the issue have to name each other or neither
   can be found from the other. Ratchets, doc fixes and in-band repairs are exempt by
   construction: they add no ledger row and move no bytes past the band.
 - A user-visible behavior change updates the ARCHITECTURE feature ledger and,
-  when structural, docs/CHANGELOG.md — in the same change as the code.
+  when structural, adds its change file — in the same change as the code.
 - A landed decision gets its ADR under docs/solutions/adr/ (one file per decision-log row,
-  regenerated from the row rather than hand-drifted) and a line in the docs/solutions index.
+  rendered from the row by the recorder rather than hand-drifted) and a line in the docs/solutions index.
 - Never `git add -A` in a shared tree: it swallows the other session's uncommitted files. Stage
   the paths the change touched, by name — and check `git commit`'s own file list afterwards: a
   deletion another session staged rides along silently otherwise (a moved skill did exactly this).
@@ -512,7 +517,8 @@ here. The steps between the two are where sessions fail, so they are verbs, not 
 or `just land` to open the PR as a draft the review bot reads; it merges after `just pr ready`
 passes on two clean rounds. The yi-forge skill is the procedure; this is the law.
 
-- Baselines move in their own `Ratchet: …` commit, never beside the code commit: a raised
+- The size ceilings move with no commit: a raise is a line in the change file (040). Every
+  other baseline moves in its own `Ratchet: …` commit, never beside the code commit: a raised
   ceiling moves first (040) — `just commit` refuses a code commit while a ratchet is red — a
   shrunk one moves after. `just ratchet` makes that commit; `just commit` refuses to bury one.
 - A subject is at most 72 characters, imperative, no trailing period. `just commit` and
@@ -521,7 +527,7 @@ passes on two clean rounds. The yi-forge skill is the procedure; this is the law
   background with a long timeout and read its exit, never a foreground call that a timeout kills
   half way, which pushes nothing and says nothing.
 - A pull request cites an open issue with one `size:` label, an `area:` label and a milestone,
-  and the changelog row it adds cites the same `#N`. `just pr open` runs the `title` job's judge
+  and the change file it adds cites the same `#N`. `just pr open` runs the `title` job's judge
   locally and refuses before the forge does.
 - A green pull request still does not merge once `main` moved: the forge answers "head behind
   base" only to the API. `just pr merge` updates the branch on the forge and retries; a refusal
