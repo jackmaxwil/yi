@@ -802,8 +802,8 @@ impl Tool for PlanTool {
     }
 
     fn validate(&self, input: &Map<String, Value>) -> Result<(), String> {
-        declared(&self.actor, &super::natural::natural(input).0)
-            .map(|_| ())
+        (super::natural::calls(input).iter())
+            .try_for_each(|call| declared(&self.actor, call).map(|_| ()))
             .map_err(|error| error.to_string())
     }
 
