@@ -309,5 +309,6 @@ edited by hand.
 - [D336](adr/d336.md) - one status vocabulary for every surface
 - [D337](adr/d337.md) - a compaction never replaces the history without a summary, except to make...
 - [D338](adr/d338.md) - compaction is due while the whole request leaves the reserve for the summary...
+- [D339](adr/d339.md) - a tool judges the file it opened, not the name a check saw (amends D323)
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
