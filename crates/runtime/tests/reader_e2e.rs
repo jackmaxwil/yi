@@ -164,7 +164,7 @@ fn family_with(max_children: usize, script: Script, setup: Setup) -> std::io::Re
         attribute: Arc::new(|_| {}),
         store: Arc::new(|| None),
         plans_dir: workspace.join(".yi/plans"),
-        family_live: Arc::new(|| 0),
+        family_live: yi_runtime::fetch::KernelServiceMap::new(),
     }));
     host.set_resolver(Arc::new(yi_runtime::fetch::Resolver::new(
         workspace,
@@ -344,10 +344,12 @@ async fn readers_stand_outside_the_worker_cap() -> TestResult {
     Ok(())
 }
 
+/// Dies with the control: count the family by its kernels alone and a parent holds readers
+/// past the family cap, since a reader has no kernel; reaping one frees its seat.
 #[tokio::test]
-async fn held_readers_are_a_fuse_not_a_leak() -> TestResult {
+async fn held_readers_fill_the_family_cap() -> TestResult {
     let family = family(1, Arc::default())?;
-    let cap = yi_runtime::subagent::reader::HELD_CAP;
+    let cap = yi_runtime::levers::get().family_cap;
     for index in 0..cap {
         let name = format!("r{index}");
         family.host.spawn(
@@ -359,7 +361,26 @@ async fn held_readers_are_a_fuse_not_a_leak() -> TestResult {
         "ask".to_owned(),
         kwargs(json!({"name": "over", "role": "reader"})),
     );
-    assert!(refused.is_err_and(|error| error.contains("readers are held")));
+    let refusal = refused
+        .err()
+        .ok_or("a reader past the family cap was admitted")?;
+    assert!(
+        refusal.contains(&format!("the family holds {cap} live sessions")),
+        "{refusal}"
+    );
+    family.host.delete("r0")?;
+    let mut seated = Err(refusal);
+    for _ in 0..100 {
+        seated = family.host.spawn(
+            "ask".to_owned(),
+            kwargs(json!({"name": "over", "role": "reader"})),
+        );
+        if seated.is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    seated.map_err(|error| format!("the refusal's remedy freed no seat: {error}"))?;
     Ok(())
 }
 
