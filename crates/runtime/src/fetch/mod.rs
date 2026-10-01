@@ -102,6 +102,8 @@ pub struct KernelServiceMap {
     kernels: std::sync::Mutex<
         std::collections::HashMap<String, std::sync::Weak<crate::kernel::KernelService>>,
     >,
+    /// Invariant: a reader has no kernel, so the family cap counts it by its session instead.
+    kernelless: std::sync::Mutex<Vec<std::sync::Weak<crate::session::AgentSession>>>,
 }
 
 impl KernelServiceMap {
@@ -109,12 +111,31 @@ impl KernelServiceMap {
         Arc::new(Self::default())
     }
 
-    /// Every session whose kernel service is still held somewhere: the family cap counts these (D165).
+    /// Every session still held, by its kernel or else by itself: the family cap counts these.
     pub fn live(&self) -> usize {
-        self.lock()
-            .values()
-            .filter(|service| service.strong_count() > 0)
-            .count()
+        let kernels = {
+            let mut kernels = self.lock();
+            kernels.retain(|_, service| service.strong_count() > 0);
+            kernels.len()
+        };
+        kernels.saturating_add(self.kernelless().len())
+    }
+
+    pub fn enroll(&self, session: &Arc<crate::session::AgentSession>) {
+        if session.kernel_service().is_none() {
+            self.kernelless().push(Arc::downgrade(session));
+        }
+    }
+
+    fn kernelless(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Vec<std::sync::Weak<crate::session::AgentSession>>> {
+        let mut held = self
+            .kernelless
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.retain(|session| session.strong_count() > 0);
+        held
     }
 
     pub fn insert(&self, agent: impl Into<String>, service: &Arc<crate::kernel::KernelService>) {
@@ -361,6 +382,8 @@ pub struct Resolver {
     plans_dir: PathBuf,
     spill_dir: Option<PathBuf>,
     wall: Wall,
+    /// Every session store, which no file a walled reader fetches may lie under (D345).
+    session_stores: Vec<PathBuf>,
     session: Option<(String, crate::goal::StoreHandle)>,
     checkpoint_show: Option<Arc<dyn CheckpointShow>>,
     mcp_read: Option<Arc<dyn McpResourceRead>>,
@@ -379,6 +402,7 @@ impl Resolver {
             plans_dir,
             spill_dir: None,
             wall,
+            session_stores: crate::tools::session_stores(None),
             session: None,
             checkpoint_show: None,
             mcp_read: None,
@@ -400,6 +424,11 @@ impl Resolver {
 
     pub fn with_plans_dir(mut self, dir: PathBuf) -> Self {
         self.plans_dir = dir;
+        self
+    }
+
+    pub fn with_session_stores(mut self, stores: Vec<PathBuf>) -> Self {
+        self.session_stores = stores;
         self
     }
 
@@ -510,7 +539,7 @@ impl Resolver {
         url: &Url,
         page: Option<Page>,
     ) -> Result<(String, String, Option<usize>), FetchError> {
-        if let Some(refusal) = self.wall.check_url(url, &self.workspace) {
+        if let Some(refusal) = self.wall().check_url(url, &self.workspace) {
             return Err(FetchError::Denied {
                 url: url.to_string(),
                 refusal,
@@ -552,8 +581,13 @@ impl Resolver {
         &self.workspace
     }
 
-    pub(super) fn wall(&self) -> &Wall {
-        &self.wall
+    /// The reader's wall and, walled, every session store in its `deny_read`: every scheme that
+    /// serves a host file judges by this, so no spelling or link reaches a transcript (D345).
+    pub(super) fn wall(&self) -> Wall {
+        let stores = self.session_stores.iter().filter(|_| !self.wall.is_empty());
+        let mut wall = self.wall.clone();
+        wall.deny_read.extend(stores.cloned());
+        wall
     }
 
     pub(super) fn plans_dir(&self) -> &std::path::Path {
@@ -649,21 +683,17 @@ pub fn fence_untrusted(source: &str, text: &str) -> String {
     )
 }
 
-/// Every scheme that serves a host file opens it here, after the read gate judged it against
-/// the checkout it belongs to (D323): the model's `read <scheme>://…` and the kernel's
-/// `rlm.fetch` open it on the host, where `decide` never looked.
-fn read_text(url: &Url, path: &Path, checkout: &Path) -> Result<String, FetchError> {
+/// Every scheme that serves a host file opens it here, where `decide` never looked: through the
+/// read gate against its checkout and the reader's `deny_read`, on the file opened (D323, #890).
+fn read_text(
+    url: &Url,
+    path: &Path,
+    checkout: &Path,
+    walls: &[std::path::PathBuf],
+) -> Result<String, FetchError> {
     let context = yi_permission::CatastrophicContext::detect(checkout);
-    if yi_permission::read_is_catastrophic(path, &context) {
-        return Err(FetchError::Denied {
-            url: url.to_string(),
-            refusal: format!(
-                "{} is a protected path (a key store, the workspace .git or a device); no read reaches it",
-                path.display()
-            ),
-        });
-    }
-    match std::fs::read_to_string(path) {
+    let opened = yi_permission::ReadGate::new(&context).open(path, walls);
+    match opened.and_then(std::io::read_to_string) {
         Ok(raw) => Ok(yi_tools::hashline::normalize::normalize_to_lf(
             yi_tools::hashline::normalize::strip_bom(&raw).text,
         )),
@@ -671,6 +701,12 @@ fn read_text(url: &Url, path: &Path, checkout: &Path) -> Result<String, FetchErr
             url: url.to_string(),
             what: path.display().to_string(),
         }),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(FetchError::Denied {
+                url: url.to_string(),
+                refusal: error.to_string(),
+            })
+        }
         Err(error) => Err(FetchError::Backend {
             url: url.to_string(),
             message: error.to_string(),

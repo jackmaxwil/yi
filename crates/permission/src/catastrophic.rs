@@ -1,4 +1,5 @@
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
 /// Credential stores, protected recursively: destroying one private key inside
@@ -68,6 +69,7 @@ const SYSTEM_PATHS_PROTECTED_RECURSIVELY: [&str; 12] = [
     "/var/lib", "/System",
 ];
 
+#[derive(Clone)]
 pub struct CatastrophicContext {
     pub home_dir: Option<PathBuf>,
     pub working_dir: Option<PathBuf>,
@@ -289,10 +291,10 @@ const PROC_LINKS: [&str; 4] = ["root", "cwd", "fd", "map_files"];
 /// What a read may not touch (D180, D323): a key, the workspace `.git` or a device, which never
 /// ends (`/dev/zero`) or waits (`/dev/tty`), and a directory a walk would carry into a key
 /// store; judged by file identity too, so letter case, a link, `/private` or a firmlink names no
-/// way in at the time of the check (a link swapped between check and open is #890). Built
+/// way in; [`ReadGate::open`] judges the file it opened, so no swapped link either (#890). Built
 /// once per call or walk: each guarded directory costs a stat.
-pub struct ReadGate<'a> {
-    context: &'a CatastrophicContext,
+pub struct ReadGate {
+    context: CatastrophicContext,
     stores: Vec<PathBuf>,
     /// Guarded with all under them: the key stores, `/dev` and the workspace `.git`.
     trees: Vec<PathBuf>,
@@ -300,10 +302,13 @@ pub struct ReadGate<'a> {
     /// The trees, the roots other users' homes sit under, and every directory above a store,
     /// each guarded as itself.
     ids: Vec<FileId>,
+    /// Paths no wall covers, with all under them: a session's own spills and transcript under
+    /// the roots its wall holds (D340, #971).
+    spared: Vec<PathBuf>,
 }
 
-impl<'a> ReadGate<'a> {
-    pub fn new(context: &'a CatastrophicContext) -> Self {
+impl ReadGate {
+    pub fn new(context: &CatastrophicContext) -> Self {
         let stores = stores(context);
         let mut trees = stores.clone();
         trees.push(PathBuf::from("/dev"));
@@ -316,12 +321,20 @@ impl<'a> ReadGate<'a> {
         let tree_ids = identities(&trees);
         let ids = [tree_ids.clone(), identities(&exact)].concat();
         Self {
-            context,
+            context: context.clone(),
             stores,
             trees,
             tree_ids,
             ids,
+            spared: Vec::new(),
         }
+    }
+
+    /// This gate with each of `paths` and all under them outside every wall it is handed.
+    #[must_use]
+    pub fn except(mut self, paths: Vec<PathBuf>) -> Self {
+        self.spared = paths;
+        self
     }
 
     /// A named path: refused when it or an ancestor is guarded by spelling or by identity, a
@@ -336,6 +349,75 @@ impl<'a> ReadGate<'a> {
     /// without following it. Its spelling adds nothing, since every guarded directory has one.
     pub fn denies_entry(&self, meta: Option<&fs::Metadata>) -> bool {
         denied_file(&self.ids, meta)
+    }
+
+    /// Opens the resolved `path`, judged with `walls`, with no link left to follow: the file judged
+    /// is the file opened, so a link swapped in after an earlier check reaches nothing (#890).
+    pub fn open(&self, path: &Path, walls: &[PathBuf]) -> io::Result<File> {
+        let real = fs::canonicalize(path)?;
+        self.opened(&real, walls, false, OpenOptions::new().read(true))
+    }
+
+    /// [`Self::open`] to write, under the destroy gate too: untruncated, or created only where
+    /// nothing stands, not even a dangling link; the caller truncates through the handle.
+    pub fn open_write(&self, path: &Path, walls: &[PathBuf]) -> io::Result<File> {
+        let real = match fs::canonicalize(path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+                    return Err(error);
+                };
+                fs::canonicalize(parent)?.join(name)
+            }
+            resolved => resolved?,
+        };
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        match self.opened(&real, walls, true, &options) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.opened(&real, walls, true, options.create_new(true))
+            }
+            opened => opened,
+        }
+    }
+
+    /// Unlinks `path`, the link itself when it is one, once judged as a write and while its name
+    /// still names the file opened. Linux unlinks inside the directory held open; macOS by name.
+    pub fn remove(&self, path: &Path, walls: &[PathBuf]) -> io::Result<()> {
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+            return Err(io::ErrorKind::InvalidInput.into());
+        };
+        let real = fs::canonicalize(parent)?.join(name);
+        self.guard_resolved(&real, walls, true)?;
+        let (_dir, at) = beside(&real)?;
+        let file = no_link(OpenOptions::new().read(true))?.open(&at)?;
+        let id = |meta: io::Result<fs::Metadata>| meta.ok().as_ref().and_then(file_id);
+        if !opened_at(&file, &real) || id(file.metadata()) != id(fs::symlink_metadata(&at)) {
+            return Err(refused(&real));
+        }
+        fs::remove_file(at)
+    }
+
+    fn guard_resolved(&self, real: &Path, walls: &[PathBuf], writes: bool) -> io::Result<()> {
+        let spared = beneath(&self.spared, real);
+        let denied = self.denies(real)
+            || (writes && is_catastrophic(real, &self.context))
+            || (beneath(walls, real) && !spared);
+        if denied { Err(refused(real)) } else { Ok(()) }
+    }
+
+    fn opened(
+        &self,
+        real: &Path,
+        walls: &[PathBuf],
+        writes: bool,
+        options: &OpenOptions,
+    ) -> io::Result<File> {
+        self.guard_resolved(real, walls, writes)?;
+        let (_dir, at) = beside(real)?;
+        let file = no_link(options)?.open(&at)?;
+        opened_at(&file, real)
+            .then_some(file)
+            .ok_or_else(|| refused(real))
     }
 
     fn denies_spelling(&self, path: &Path) -> bool {
@@ -360,6 +442,81 @@ impl<'a> ReadGate<'a> {
 /// [`ReadGate::denies`] for one path.
 pub fn read_is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
     ReadGate::new(context).denies(path)
+}
+
+fn refused(real: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "{} is a protected path (a key store, the workspace .git, a device or a walled path); no call opens it",
+            real.display()
+        ),
+    )
+}
+
+/// `O_NOFOLLOW_ANY` from `<sys/fcntl.h>`: the open fails if any component of the path is a
+/// link, so a resolved path opens as judged or not at all.
+#[cfg(target_os = "macos")]
+fn no_link(options: &OpenOptions) -> io::Result<OpenOptions> {
+    use std::os::unix::fs::OpenOptionsExt;
+    static HONOURED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let flagged = |options: &OpenOptions| {
+        let mut options = options.clone();
+        options.custom_flags(0x2000_0000);
+        options
+    };
+    // A kernel before macOS 11 ignores the bit, so `/etc`, a link to `/private/etc`, opens
+    // instead of failing with ELOOP (62); every gated open is refused then, never raced.
+    let honoured = *HONOURED.get_or_init(|| {
+        let probe = flagged(OpenOptions::new().read(true)).open("/etc");
+        probe.err().and_then(|error| error.raw_os_error()) == Some(62)
+    });
+    match honoured {
+        true => Ok(flagged(options)),
+        false => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this macOS ignores O_NOFOLLOW_ANY (it needs macOS 11), so no tool opens a file a swapped link could redirect",
+        )),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn no_link(options: &OpenOptions) -> io::Result<OpenOptions> {
+    Ok(options.clone())
+}
+
+/// Linux has no such flag on `open`, so the kernel's own name for the descriptor must be the
+/// path judged: a link anywhere on the way lands elsewhere and reads back a different name.
+#[cfg(target_os = "linux")]
+fn opened_at(file: &File, real: &Path) -> bool {
+    use std::os::fd::AsRawFd;
+    fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).is_ok_and(|at| at == real)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn opened_at(_file: &File, _real: &Path) -> bool {
+    true
+}
+
+/// Where to open `real` from: on Linux through its parent held open and checked, so a create or
+/// an unlink lands in the directory judged (std has no `openat` or `unlinkat`).
+#[cfg(target_os = "linux")]
+fn beside(real: &Path) -> io::Result<(Option<File>, PathBuf)> {
+    use std::os::fd::AsRawFd;
+    let (Some(parent), Some(name)) = (real.parent(), real.file_name()) else {
+        return Ok((None, real.to_path_buf()));
+    };
+    let dir = File::open(parent)?;
+    if !opened_at(&dir, parent) {
+        return Err(refused(real));
+    }
+    let at = Path::new(&format!("/proc/self/fd/{}", dir.as_raw_fd())).join(name);
+    Ok((Some(dir), at))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn beside(real: &Path) -> io::Result<(Option<File>, PathBuf)> {
+    Ok((None, real.to_path_buf()))
 }
 
 /// Invariant: beneath when it or an ancestor is one of `roots` by spelling or file identity, so

@@ -135,19 +135,3 @@ pub fn estimate_context(messages: &[AgentMessage]) -> Estimate {
         last_usage_index: Some(index),
     }
 }
-
-/// Which tokens count against the compaction budget (design §4.4): the whole context, or only
-/// growth past the cached prefix — the ~10 %-priced prefix must not be charged full price.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Scope {
-    Total,
-    #[default]
-    BodyAfterPrefix,
-}
-
-pub fn scoped_tokens(total: Tokens, scope: Scope, prefill: Option<Tokens>) -> Tokens {
-    match scope {
-        Scope::Total => total,
-        Scope::BodyAfterPrefix => total.saturating_sub(prefill.unwrap_or(Tokens(0))),
-    }
-}

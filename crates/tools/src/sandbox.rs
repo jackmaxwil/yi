@@ -19,6 +19,9 @@ pub struct Sandbox {
     /// Stores only the host writes, the session corpus above all (its JSONL is the ledger kept
     /// rules replay from): denied to writes, save a writable root nested inside one.
     pub host_owned: Vec<PathBuf>,
+    /// Paths reads reach again under a broader denied one, never a denial inside them: a walled
+    /// session's own spills and transcript, its kernel's dir and board, which as roots take writes.
+    pub spared: Vec<PathBuf>,
 }
 
 /// Loopback for every profile (D329). Seatbelt's `localhost` is every address of this host and
@@ -53,6 +56,7 @@ impl Sandbox {
             deny_read: yi_permission::credential_stores(home),
             deny_write,
             host_owned: vec![home.join(".yi/sessions")],
+            spared: Vec::new(),
         }
     }
 
@@ -136,6 +140,16 @@ impl Sandbox {
                 yi_permission::resolve_links(store),
             ));
         }
+        for (index, dir) in self.spared.iter().enumerate() {
+            // Its parent resolved, never the path: a link planted there would widen the grant.
+            let parent = dir.parent().map(yi_permission::resolve_links);
+            let resolved = parent.zip(dir.file_name()).map(|(up, name)| up.join(name));
+            params.push((format!("SPARED_{index}"), dir.clone()));
+            params.push((
+                format!("SPARED_{index}_RESOLVED"),
+                resolved.unwrap_or_else(|| dir.clone()),
+            ));
+        }
         for (index, dir) in parents.iter().enumerate() {
             params.push((format!("DENIED_PARENT_{index}"), dir.clone()));
         }
@@ -152,6 +166,32 @@ impl Sandbox {
     fn policy_for(&self, parents: usize, own: bool, network: bool) -> String {
         let mut sections = vec![BASE_POLICY.to_owned(), self.read_policy()];
         sections.push(self.write_policy(parents));
+        if !self.spared.is_empty() {
+            // After the read rule, which leaves out the denied root each sits under.
+            let spared: String = (0..self.spared.len())
+                .map(|index| {
+                    format!(
+                        " (subpath (param \"SPARED_{index}\")) (subpath (param \"SPARED_{index}_RESOLVED\"))"
+                    )
+                })
+                .collect();
+            sections.push(format!(
+                "; a walled session's own spills, transcript, kernel dir and board\n(allow file-read*{spared})"
+            ));
+            let inside: String = (0..self.deny_read.len())
+                .filter(|index| self.inside_spare(*index))
+                .map(|index| {
+                    format!(
+                        " (subpath (param \"DENY_READ_{index}\")) (subpath (param \"DENY_READ_{index}_RESOLVED\"))"
+                    )
+                })
+                .collect();
+            if !inside.is_empty() {
+                sections.push(format!(
+                    "; a denial inside a spare\n(deny file-read*{inside})"
+                ));
+            }
+        }
         if own {
             // Last, so it outranks the deny on the connection root: file rules are last-match.
             sections.push(
@@ -241,6 +281,14 @@ impl Sandbox {
         )
     }
 
+    /// `deny_read[index]` at or inside a spared path: the spare never reopens it.
+    fn inside_spare(&self, index: usize) -> bool {
+        let denied = self.deny_read.get(index).map(|path| resolve_aliases(path));
+        denied.is_some_and(|denied| {
+            (self.spared.iter()).any(|dir| denied.starts_with(resolve_aliases(dir)))
+        })
+    }
+
     /// Invariant: the unlink denial on each root stops a contained process
     /// replacing the boundary its own policy is written against.
     fn write_policy(&self, parents: usize) -> String {
@@ -256,13 +304,33 @@ impl Sandbox {
                 "(deny file-write-unlink (require-all (literal (param \"{key}\")) (vnode-type DIRECTORY)))"
             ));
         }
-        // A path hidden from reads is not writable either: renamed, it would leave its rule behind.
-        let denied = (0..self.deny_write.len())
-            .map(|index| format!("DENY_WRITE_{index}"))
-            .chain((0..self.deny_read.len()).map(|index| format!("DENY_READ_{index}")));
-        for key in denied {
+        // A path hidden from reads is not writable either: renamed, it would leave its rule behind;
+        // a spared writable root under it reads, so the other rules decide its writes.
+        let spared: String = (self.spared.iter().enumerate())
+            .filter(|(_, dir)| {
+                let dir = resolve_aliases(dir);
+                (self.writable.iter()).any(|root| resolve_aliases(root) == dir)
+            })
+            .flat_map(|(index, _)| {
+                [
+                    format!("SPARED_{index}"),
+                    format!("SPARED_{index}_RESOLVED"),
+                ]
+            })
+            .map(|key| format!(" (require-not (subpath (param \"{key}\")))"))
+            .collect();
+        let denied = ((0..self.deny_write.len()).map(|index| (format!("DENY_WRITE_{index}"), "")))
+            .chain((0..self.deny_read.len()).map(|index| {
+                let exempt = if self.inside_spare(index) {
+                    ""
+                } else {
+                    &*spared
+                };
+                (format!("DENY_READ_{index}"), exempt)
+            }));
+        for (key, spared) in denied {
             anchors.push(format!(
-                "(deny file-write* (subpath (param \"{key}\")) (subpath (param \"{key}_RESOLVED\")))"
+                "(deny file-write* (require-all (require-any (subpath (param \"{key}\")) (subpath (param \"{key}_RESOLVED\"))){spared}))"
             ));
         }
         for (index, store) in self.host_owned.iter().enumerate() {

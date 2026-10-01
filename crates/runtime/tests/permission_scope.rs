@@ -97,6 +97,7 @@ fn an_approved_network_ask_says_it_leaves_the_sandbox() -> TestResult {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
+        spared: Vec::new(),
     }));
     let mut args = Map::new();
     args.insert(
@@ -130,6 +131,7 @@ fn an_exec_source_the_gate_allows_is_still_admitted() {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
+        spared: Vec::new(),
     }));
     assert_eq!(
         yi_runtime::tools::refuse_armed("git status", false, Some(&broker), ""),
@@ -158,6 +160,7 @@ fn an_allowed_credential_read_runs_outside_and_says_so() -> TestResult {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
+        spared: Vec::new(),
     }));
     let mut args = Map::new();
     args.insert("command".to_owned(), json!("cat ~/.netrc"));
@@ -200,6 +203,7 @@ fn counted(
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
+        spared: Vec::new(),
     }));
     (broker, asks)
 }
@@ -339,6 +343,7 @@ fn a_headless_compound_says_to_split_it() -> TestResult {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
+        spared: Vec::new(),
     }));
     let args = bash_args("cargo test && cargo add serde");
     let outcome = broker.decide_call("bash", ToolKind::Exec, true, "c1", &args, None);
@@ -464,6 +469,7 @@ fn a_retry_is_widened_by_its_dir_but_never_by_home_or_yi_state() -> TestResult {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
+        spared: Vec::new(),
     }));
     let lane = home.join("yi-a2-nonexistent-lane");
     for (refused, widened) in [
@@ -527,6 +533,7 @@ fn always_on_a_widened_retry_keeps_the_dir_and_the_sandbox() -> TestResult {
         deny_read: Vec::new(),
         deny_write: Vec::new(),
         host_owned: Vec::new(),
+        spared: Vec::new(),
     }));
     let lane = home.join("yi-a2-nonexistent-kept");
     broker.note_containment_failure(yi_tools::SandboxRefusal::Path(lane.join("x")));
@@ -702,7 +709,7 @@ fn a_named_read_is_judged_by_the_file_it_opens() -> TestResult {
     Ok(())
 }
 
-struct MainTree(PathBuf);
+pub(crate) struct MainTree(pub(crate) PathBuf);
 
 impl yi_runtime::fetch::MemberTrees for MainTree {
     fn cwd_of(&self, agent: &str) -> Option<PathBuf> {
@@ -747,5 +754,237 @@ fn a_url_that_serves_a_host_file_meets_the_read_gate() -> TestResult {
             "{url} is an ordinary file"
         );
     }
+    Ok(())
+}
+
+/// A link swapped between the check and the open (#890): the broker judges the name, then the
+/// real tool opens it while a thread flips `x` between an ordinary file and a link to a key
+/// (`Swap::File`), or `d` between a directory and a link to the key store (`Swap::Parent`). The
+/// reviews of #885 and #903 read a key 40 times in 20,000 tries; `reached` names a hit.
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum Swap {
+    File,
+    Parent,
+}
+
+#[cfg(unix)]
+fn race(
+    tool: &str,
+    swap: Swap,
+    benign: &str,
+    args: &dyn Fn(&dyn yi_tools::Tool, &yi_tools::ToolContext) -> Map<String, Value>,
+    reached: &dyn Fn(&yi_tools::ToolOutput, &std::path::Path) -> bool,
+) -> Result<(usize, usize), Box<dyn Error>> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let scratch = Scratch::new("yi-scope-swap")?;
+    let (home, workspace) = (scratch.join("home"), scratch.join("workspace"));
+    std::fs::create_dir_all(home.join(".ssh"))?;
+    std::fs::create_dir_all(workspace.join("d"))?;
+    let key = home.join(".ssh/id_rsa");
+    std::fs::write(&key, "FAKE KEY MARKER\n")?;
+    std::fs::write(workspace.join("x"), benign)?;
+    std::fs::write(workspace.join("d/id_rsa"), benign)?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let broker = PermissionBroker::new(
+        PermissionMode::Yolo,
+        workspace.clone(),
+        Vec::new(),
+        None,
+        tokio::sync::broadcast::channel(8).0,
+    );
+    let tools = yi_tools::builtin_tools();
+    let tool_impl = (tools.iter())
+        .find(|candidate| candidate.name() == tool)
+        .ok_or("no such tool")?;
+    let context = yi_tools::ToolContext::new(workspace.clone());
+    let read = (tools.iter())
+        .find(|candidate| candidate.name() == "read")
+        .ok_or("no read tool")?;
+    let args = args(read.as_ref(), &context);
+    let stop = Arc::new(AtomicBool::new(false));
+    let swapper = {
+        let (stop, workspace, home) = (Arc::clone(&stop), workspace.clone(), home.clone());
+        let benign = benign.to_owned();
+        std::thread::spawn(move || {
+            let at = |name: &str| workspace.join(name);
+            // Each state is held a while, a different while each round, so some round's hold
+            // straddles the gap between a tool's check and its open, however wide.
+            let mut round = 0_u32;
+            let hold = |round: u32| {
+                let until = std::time::Instant::now()
+                    + std::time::Duration::from_micros(u64::from(round % 16) * 125);
+                while std::time::Instant::now() < until {}
+            };
+            while !stop.load(Ordering::Relaxed) {
+                round = round.wrapping_add(1);
+                match swap {
+                    Swap::File => {
+                        let _ = std::fs::write(at("plain.tmp"), &benign);
+                        let _ = std::fs::rename(at("plain.tmp"), at("x"));
+                        let _ = std::os::unix::fs::symlink(home.join(".ssh/id_rsa"), at("l.tmp"));
+                        let _ = std::fs::rename(at("l.tmp"), at("x"));
+                    }
+                    Swap::Parent => {
+                        let _ = std::fs::write(at("d/id_rsa"), &benign);
+                        hold(round / 16);
+                        let _ = std::fs::rename(at("d"), at("dir.tmp"));
+                        let _ = std::os::unix::fs::symlink(home.join(".ssh"), at("d"));
+                        hold(round);
+                        let _ = std::fs::remove_file(at("d"));
+                        let _ = std::fs::rename(at("dir.tmp"), at("d"));
+                    }
+                }
+            }
+        })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let (mut allowed, mut leaks) = (0_usize, 0_usize);
+    for _ in 0..20_000 {
+        if std::time::Instant::now() > deadline {
+            break;
+        }
+        let (kind, irreversible) = (tool_impl.kind_for(&args), tool_impl.irreversible(&args));
+        if !(broker.decide_call(tool, kind, irreversible, "c1", &args, None)).allowed {
+            continue;
+        }
+        allowed += 1;
+        let output = tool_impl.execute(args.clone(), &context);
+        if reached(&output, &key) {
+            leaks += 1;
+            std::fs::write(&key, "FAKE KEY MARKER\n")?;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    swapper.join().map_err(|_| "the swapper panicked")?;
+    Ok((allowed, leaks))
+}
+
+#[cfg(unix)]
+fn shows_key(output: &yi_tools::ToolOutput, _: &std::path::Path) -> bool {
+    format!("{:?}", output.result).contains("MARKER")
+}
+
+/// A write that lands on the key replaces it; an edit's refusal that prints its rows shows it.
+#[cfg(unix)]
+fn changes_key(output: &yi_tools::ToolOutput, key: &std::path::Path) -> bool {
+    shows_key(output, key)
+        || std::fs::read_to_string(key).is_ok_and(|text| !text.contains("MARKER"))
+}
+
+#[cfg(unix)]
+fn path_arg(
+    path: &str,
+) -> impl Fn(&dyn yi_tools::Tool, &yi_tools::ToolContext) -> Map<String, Value> + '_ {
+    move |_, _| {
+        let mut args = Map::new();
+        args.insert("path".to_owned(), json!(path));
+        args
+    }
+}
+
+#[cfg(unix)]
+fn assert_no_leak(tool: &str, swap: Swap, (allowed, leaks): (usize, usize)) {
+    let swapped = match swap {
+        Swap::File => "file",
+        Swap::Parent => "parent",
+    };
+    assert!(
+        allowed > 20,
+        "{tool}: the check passed only {allowed} times"
+    );
+    assert_eq!(
+        leaks, 0,
+        "{tool}, {swapped} swap: {leaks} of {allowed} calls reached the key"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_swapped_after_the_check_reads_no_key() -> TestResult {
+    assert_no_leak(
+        "read",
+        Swap::File,
+        race("read", Swap::File, "ordinary\n", &path_arg("x"), &shows_key)?,
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parent_swapped_after_the_check_reads_no_key() -> TestResult {
+    let tried = race(
+        "read",
+        Swap::Parent,
+        "ordinary\n",
+        &path_arg("d/id_rsa"),
+        &shows_key,
+    )?;
+    assert_no_leak("read", Swap::Parent, tried);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_swapped_after_the_check_overwrites_no_key() -> TestResult {
+    let args = |_: &dyn yi_tools::Tool, _: &yi_tools::ToolContext| write("x", "overwritten\n");
+    assert_no_leak(
+        "write",
+        Swap::File,
+        race("write", Swap::File, "ordinary\n", &args, &changes_key)?,
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parent_swapped_after_the_check_overwrites_no_key() -> TestResult {
+    let args =
+        |_: &dyn yi_tools::Tool, _: &yi_tools::ToolContext| write("d/id_rsa", "overwritten\n");
+    let tried = race("write", Swap::Parent, "ordinary\n", &args, &changes_key)?;
+    assert_no_leak("write", Swap::Parent, tried);
+    Ok(())
+}
+
+/// The edit names `d/id_rsa` by the tag a read of the ordinary file minted before the swaps.
+#[cfg(unix)]
+#[test]
+fn a_parent_swapped_after_the_check_edits_no_key() -> TestResult {
+    let args = |read: &dyn yi_tools::Tool, context: &yi_tools::ToolContext| {
+        let shown = read.execute(path_arg("d/id_rsa")(read, context), context);
+        let text = format!("{:?}", shown.result);
+        let tag: String = (text
+            .split_once("d/id_rsa#")
+            .map(|(_, tail)| tail)
+            .unwrap_or(""))
+        .chars()
+        .take_while(char::is_ascii_hexdigit)
+        .collect();
+        let mut args = Map::new();
+        let patch = format!("[d/id_rsa#{tag}]\nPUT 1.=1:\n+overwritten\n");
+        args.insert("patch".to_owned(), json!(patch));
+        args
+    };
+    // A long file widens the gap between the edit's read and its write.
+    let benign = format!("ordinary\n{}", "filler\n".repeat(20_000));
+    let tried = race("edit", Swap::Parent, &benign, &args, &changes_key)?;
+    assert_no_leak("edit", Swap::Parent, tried);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parent_swapped_after_the_check_rewrites_no_key_by_grep() -> TestResult {
+    let args = |_: &dyn yi_tools::Tool, _: &yi_tools::ToolContext| {
+        let mut args = Map::new();
+        args.insert("pattern".to_owned(), json!("ordinary"));
+        args.insert("path".to_owned(), json!("d"));
+        args.insert("replace".to_owned(), json!("overwritten"));
+        args.insert("apply".to_owned(), json!(true));
+        args
+    };
+    let tried = race("grep", Swap::Parent, "ordinary\n", &args, &changes_key)?;
+    assert_no_leak("grep apply", Swap::Parent, tried);
     Ok(())
 }
