@@ -361,7 +361,7 @@ pub struct Resolver {
     plans_dir: PathBuf,
     spill_dir: Option<PathBuf>,
     wall: Wall,
-    /// Walled from a walled reader's file reads, so no link reaches a transcript (#971).
+    /// Every session store, which no file a walled reader fetches may lie under (D345).
     session_stores: Vec<PathBuf>,
     session: Option<(String, crate::goal::StoreHandle)>,
     checkpoint_show: Option<Arc<dyn CheckpointShow>>,
@@ -518,7 +518,7 @@ impl Resolver {
         url: &Url,
         page: Option<Page>,
     ) -> Result<(String, String, Option<usize>), FetchError> {
-        if let Some(refusal) = self.wall.check_url(url, &self.workspace) {
+        if let Some(refusal) = self.wall().check_url(url, &self.workspace) {
             return Err(FetchError::Denied {
                 url: url.to_string(),
                 refusal,
@@ -560,15 +560,13 @@ impl Resolver {
         &self.workspace
     }
 
-    pub(super) fn wall(&self) -> &Wall {
-        &self.wall
-    }
-
-    /// What a member-tree read may not land on: the wall's `deny_read` and, for a walled reader,
-    /// every session store. A `local://` read never leaves the workspace's resolved root.
-    pub(super) fn file_walls(&self) -> Vec<PathBuf> {
+    /// The reader's wall and, walled, every session store in its `deny_read`: every scheme that
+    /// serves a host file judges by this, so no spelling or link reaches a transcript (D345).
+    pub(super) fn wall(&self) -> Wall {
         let stores = self.session_stores.iter().filter(|_| !self.wall.is_empty());
-        self.wall.deny_read.iter().chain(stores).cloned().collect()
+        let mut wall = self.wall.clone();
+        wall.deny_read.extend(stores.cloned());
+        wall
     }
 
     pub(super) fn plans_dir(&self) -> &std::path::Path {

@@ -113,6 +113,7 @@ struct BrokerSetup {
     store: Option<yi_session::SharedSession>,
     /// The `--session-dir` the root's broker holds; the session's broker is its child's.
     session_dir: Option<PathBuf>,
+    reviewer: Option<Arc<yi_runtime::auto_review::Reviewer>>,
 }
 
 impl Default for BrokerSetup {
@@ -125,6 +126,7 @@ impl Default for BrokerSetup {
             session: None,
             store: None,
             session_dir: None,
+            reviewer: None,
         }
     }
 }
@@ -162,11 +164,16 @@ async fn run_held(
     )
     .with_sandbox(Some(sandbox));
     if let Some(dir) = &gate.session_dir {
-        broker = broker
-            .with_session_store(dir)
-            .for_child(&gate.wall, project);
+        broker = broker.with_session_store(dir);
+    }
+    // A walled session is always a child, its broker its parent's `for_child`.
+    if !gate.wall.is_empty() {
+        broker = broker.for_child(&gate.wall, project);
     }
     let broker = Arc::new(broker);
+    if let Some(reviewer) = gate.reviewer {
+        broker.set_reviewer(reviewer);
+    }
     if let Some(store) = gate.store {
         session.attach_store(store)?;
     }
@@ -964,33 +971,49 @@ async fn a_thousand_spill_dirs_leave_a_contained_command_fast() -> TestResult {
     Ok(())
 }
 
-/// #971: a walled juror's contained command reads its own transcript and no other session's,
-/// under `~/.yi/sessions` or the `--session-dir` in use; an unwalled one reads them as before.
-#[tokio::test]
-async fn a_walled_command_reads_its_own_transcript_and_no_other() -> TestResult {
-    let root = Scratch::new("yi-seam-transcript")?;
+/// The author's transcript and a child's of the juror's own in a fake HOME's store, a second
+/// store for the `--session-dir`, and the juror's own transcript; returns them and its header.
+fn plant_store(
+    root: &Path,
+    project: &Path,
+) -> Result<(PathBuf, [PathBuf; 3], SharedStore), Box<dyn Error>> {
     let home = root.join("home");
-    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
-    unsafe { std::env::set_var("HOME", &home) };
-    let project = root.join("project");
-    let sessions = home.join(".yi/sessions");
-    let family = sessions.join(yi_session::session_directory_name(
-        &project.to_string_lossy(),
-    ));
-    let author = family.join("100_author.jsonl");
-    let elsewhere = root.join("store/--elsewhere--/1_other.jsonl");
-    for planted in [&author, &elsewhere] {
-        std::fs::create_dir_all(planted.parent().ok_or("no parent")?)?;
-        std::fs::write(planted, "WALLED TRANSCRIPT\n")?;
-    }
-    std::fs::create_dir_all(&project)?;
+    let family = home
+        .join(".yi/sessions")
+        .join(yi_session::session_directory_name(
+            &project.to_string_lossy(),
+        ));
     let own_dir = family.join("100_author/children/sub-own");
-    std::fs::create_dir_all(&own_dir)?;
+    let planted = [
+        family.join("100_author.jsonl"),
+        own_dir.join("children/sub-g/1_g.jsonl"),
+        root.join("store/--elsewhere--/1_other.jsonl"),
+    ];
+    for file in &planted {
+        std::fs::create_dir_all(file.parent().ok_or("no parent")?)?;
+        std::fs::write(file, "WALLED TRANSCRIPT\n")?;
+    }
+    std::fs::create_dir_all(project)?;
     let store = yi_session::create_flat_session(
         own_dir,
         project.to_string_lossy(),
         Some("author".to_owned()),
     )?;
+    Ok((home, planted, store))
+}
+
+type SharedStore = yi_session::SharedSession;
+
+/// #971: a walled juror's contained command reads its own transcript and no other session's,
+/// under `~/.yi/sessions` or the `--session-dir` in use, and a refused one before it neither
+/// claims nor refuses the own transcript; an unwalled one reads them as before.
+#[tokio::test]
+async fn a_walled_command_reads_its_own_transcript_and_no_other() -> TestResult {
+    let root = Scratch::new("yi-seam-transcript")?;
+    let project = root.join("project");
+    let (home, [author, grandchild, elsewhere], store) = plant_store(&root, &project)?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
     let (own_id, own_file) = {
         let store = yi_session::lock_session(&store);
         let file = store.file_path().cloned().ok_or("no transcript file")?;
@@ -1003,54 +1026,39 @@ async fn a_walled_command_reads_its_own_transcript_and_no_other() -> TestResult 
             "cat {}",
             author_text.replace("/.yi/sessions/", "/.YI/SESSIONS/")
         ),
-        format!("grep -r WALLED {}", sessions.display()),
+        format!("grep -r WALLED {}", home.join(".yi/sessions").display()),
+        format!("cat {}", grandchild.display()),
         format!("cat {}", elsewhere.display()),
         format!("cat {}", own_file.display()),
     ];
-    let juror = |store| BrokerSetup {
+    let commands: Vec<&str> = commands.iter().map(String::as_str).collect();
+    let gate = BrokerSetup {
         wall: Wall {
             deny_write: vec![project.clone()],
             deny_read: Vec::new(),
             deny_url: vec!["history://".to_owned()],
             container: None,
         },
-        store,
+        store: Some(store),
         session_dir: Some(root.join("store")),
         ..BrokerSetup::default()
     };
-    // One session each: a refused run makes the broker ask before the next one near it.
     let sandbox = || Sandbox::for_workspace(&project, &home, None);
-    let (own, others) = commands.split_last().ok_or("no commands")?;
-    let ran = run_held(
-        &project,
-        &project,
-        sandbox(),
-        &[own.as_str()],
-        juror(Some(store)),
-    )
-    .await?;
-    assert!(ran[0].contains(&own_id), "own transcript: {}", ran[0]);
-    for command in others {
-        let ran = run_held(
-            &project,
-            &project,
-            sandbox(),
-            &[command.as_str()],
-            juror(None),
-        )
-        .await?;
-        let text = &ran[0];
+    // One session: the refusals first, so a retry that claimed the own transcript would show.
+    let ran = run_held(&project, &project, sandbox(), &commands, gate).await?;
+    let (own, others) = ran.split_last().ok_or("no results")?;
+    for (command, text) in commands.iter().zip(others) {
         assert!(
             !text.contains("WALLED TRANSCRIPT"),
             "{command} reached a walled juror: {text}"
         );
     }
-    let first = [others[0].as_str()];
+    assert!(own.contains(&own_id), "own transcript: {own}");
     let open = run_held(
         &project,
         &project,
         sandbox(),
-        &first,
+        &commands[..1],
         BrokerSetup::default(),
     );
     let open = open.await?;
@@ -1058,6 +1066,76 @@ async fn a_walled_command_reads_its_own_transcript_and_no_other() -> TestResult 
         open[0].contains("WALLED TRANSCRIPT"),
         "an unwalled cat: {}",
         open[0]
+    );
+    Ok(())
+}
+
+/// D345: after a contained refusal in a protected dir (here the git hooks), a walled session's
+/// retry naming it is refused outright, never approved to run outside the sandbox, where it
+/// would read another session's transcript. `asker` or `reviewer` approves anything asked.
+async fn walled_retry(
+    asker: Option<Asker>,
+    reviewer: Option<Arc<yi_runtime::auto_review::Reviewer>>,
+) -> Result<String, Box<dyn Error>> {
+    let root = Scratch::new("yi-seam-walled-retry")?;
+    // Under HOME: a refusal there asks again for a later call that only names its dir.
+    let project = root.join("home/project");
+    let (home, [author, ..], _) = plant_store(&root, &project)?;
+    // SAFETY: nextest runs each test in its own process; no other test reads HOME.
+    unsafe { std::env::set_var("HOME", &home) };
+    let hooks = project.join(".git/hooks");
+    std::fs::create_dir_all(&hooks)?;
+    let commands = [
+        format!("touch {}/probe", hooks.display()),
+        format!("ls {}; cat {}", hooks.display(), author.display()),
+    ];
+    let commands: Vec<&str> = commands.iter().map(String::as_str).collect();
+    let gate = BrokerSetup {
+        asker,
+        reviewer,
+        wall: Wall {
+            deny_write: Vec::new(),
+            deny_read: vec![project.join("secret")],
+            deny_url: Vec::new(),
+            container: None,
+        },
+        ..BrokerSetup::default()
+    };
+    let sandbox = Sandbox::for_workspace(&project, &home, None);
+    let mut ran = run_held(&project, &project, sandbox, &commands, gate).await?;
+    ran.pop().ok_or_else(|| "no retry".into())
+}
+
+fn refused_outright(retry: &str) -> bool {
+    !retry.contains("WALLED TRANSCRIPT") && retry.contains("never runs it outside the sandbox")
+}
+
+#[tokio::test]
+async fn a_walled_retry_an_asker_approves_never_runs_outside_the_sandbox() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let allow: Asker = Arc::new(|_| AskOutcome::AllowOnce);
+    let retry = walled_retry(Some(allow), None).await?;
+    assert!(refused_outright(&retry), "an asker ran it outside: {retry}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_walled_retry_the_auto_reviewer_approves_never_runs_outside_the_sandbox() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let provider = Arc::new(ProviderStream::new(None));
+    provider.queue_faux(vec![faux_assistant_message(
+        vec![yi_ai::faux::faux_text("allow")],
+        StopReason::Stop,
+    )]);
+    let reviewer = yi_runtime::auto_review::Reviewer::new(provider, faux_model());
+    let retry = walled_retry(None, Some(Arc::new(reviewer))).await?;
+    assert!(
+        refused_outright(&retry),
+        "the reviewer ran it outside: {retry}"
     );
     Ok(())
 }
