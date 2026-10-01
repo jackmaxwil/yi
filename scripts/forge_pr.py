@@ -114,7 +114,7 @@ def required_jobs(contexts):
     jobs = []
     for context in contexts:
         name = re.sub(r"^\w+ / ", "", context)
-        name = re.sub(r" \(pull_request\)$", "", name)
+        name = re.sub(r" \(pull_request(_target)?\)$", "", name)
         jobs.append(name)
     return jobs
 
@@ -589,6 +589,7 @@ def selfcheck():
     assert repo_of("ssh://git@forge.example.invalid:2222/apex/yi.git") == "apex/yi"
     assert repo_of("https://git.example.invalid/apex/yi") == "apex/yi"
     assert repo_of("git@github.com:jackmaxwil/yi.git") == "jackmaxwil/yi"
+    assert required_jobs(["review / review (pull_request_target)"]) == ["review"], "the review job runs on the target event"
     assert required_jobs(["pr / gate (test) (pull_request)", "pr / title (pull_request)"]) == [
         "gate (test)", "title",
     ]
