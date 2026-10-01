@@ -33,9 +33,11 @@ def git(*args):
 def base_commit():
     """(ref, sha) where this branch left main: the size gates price growth from here, so a shrink
     on main tightens the next branch with no commit, and two branches never write one ceiling."""
+    # Mid-merge the commit being made has MERGE_HEAD as a parent too: its fork, not HEAD's, is judged.
+    tips = ("HEAD", "MERGE_HEAD") if git("rev-parse", "--verify", "--quiet", "MERGE_HEAD").returncode == 0 else ("HEAD",)
     for ref in ("origin/main", "main"):
         if git("rev-parse", "--verify", "--quiet", ref).returncode == 0:
-            found = git("merge-base", ref, "HEAD")
+            found = git("merge-base", ref, *tips)
             if found.returncode == 0:
                 return ref, found.stdout.strip()
     return None, None
