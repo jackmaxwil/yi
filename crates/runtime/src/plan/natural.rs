@@ -5,6 +5,8 @@ use serde_json::{Map, Value, json};
 
 use yi_types::plan::op::{ALL_OPS, MODEL_OPS, op_name};
 
+use super::tool::{TODO_SPEC_KEYS, field_hint, known_keys, misplaced};
+
 /// Keys an op does not record that models attach to explain themselves; the call's arguments in
 /// the transcript keep them, and the reply says so.
 const ANNOTATIONS: [&str; 5] = ["reason", "note", "evidence", "why", "explanation"];
@@ -24,7 +26,7 @@ pub(super) const TARGETED: [&str; 10] = [
     "accepted_by_user",
 ];
 
-pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<&'static str>) {
+pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<String>) {
     let mut args = args.clone();
     let mut said = Vec::new();
     infer_op(&mut args);
@@ -39,16 +41,39 @@ pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<&'s
         .unwrap_or_default()
         .to_owned();
     labels(&op, &mut args);
+    if let ("init" | "append", Some(shared)) = (op.as_str(), args.remove("delegation"))
+        && let Some(Value::Array(todos)) = args.get_mut("todos")
+    {
+        for todo in todos.iter_mut().filter_map(Value::as_object_mut) {
+            todo.entry("delegation").or_insert_with(|| shared.clone());
+        }
+        said.push("the delegation given beside todos went to each todo without one".to_owned());
+    }
+    if op == "block"
+        && !args.contains_key("note")
+        && let Some(question) = args.remove("question")
+    {
+        args.insert("note".to_owned(), question);
+    }
+    if let Some(Value::String(said_how)) = args.get("disposition")
+        && !["retained", "discarded"].contains(&said_how.as_str())
+    {
+        args.remove("disposition");
+        said.push(
+            "disposition is retained or discarded; the text given stays in this call's arguments"
+                .to_owned(),
+        );
+    }
     if op == "supersede" && !args.contains_key("reason") {
         args.insert("reason".to_owned(), json!("none given"));
-        said.push("supersede records a reason and none was given");
+        said.push("supersede records a reason and none was given".to_owned());
     }
     match op.as_str() {
         "set" | "supersede" => checklist(&op, &mut args, &mut said),
         "init" if !args.contains_key("goal") => {
             if let Some(goal) = first_label(&args) {
                 args.insert("goal".to_owned(), json!(goal));
-                said.push("no goal was given, so the first todo names the plan");
+                said.push("no goal was given, so the first todo names the plan".to_owned());
             }
         }
         "fail" if !args.contains_key("cause") => {
@@ -62,7 +87,9 @@ pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<&'s
                 .and_then(Value::as_str)
                 .is_some_and(|out| out.contains("://") && !out.contains(char::is_whitespace));
             if !url && args.remove("output").is_some() {
-                said.push("output takes a url; that text stays in this call's arguments");
+                said.push(
+                    "output takes a url; that text stays in this call's arguments".to_owned(),
+                );
             }
         }
         _ => {}
@@ -72,15 +99,88 @@ pub(super) fn natural(args: &Map<String, Value>) -> (Map<String, Value>, Vec<&'s
         "supersede" => &["reason"],
         _ => &[],
     };
-    if ANNOTATIONS
-        .iter()
-        .filter(|key| !kept.contains(key))
-        .any(|key| args.remove(*key).is_some())
-    {
-        said.push("the plan records no note on this op; it stays in this call's arguments");
+    let mut left: Vec<String> = (ANNOTATIONS.iter())
+        .filter(|key| !kept.contains(key) && args.remove(**key).is_some())
+        .map(|key| (*key).to_owned())
+        .collect();
+    unknown(&op, &mut args, &mut left);
+    if !left.is_empty() {
+        said.push(format!(
+            "{op} reads no {}; left out, they stay in this call's arguments",
+            left.join(", ")
+        ));
     }
     weights(&mut args, &mut said);
     (args, said)
+}
+
+/// Invariant: a key the op does not read is left out and named, unless it is one edit from a key
+/// the tool reads or carries a hint: a misspelled `contract` must refuse, never land unverified.
+fn unknown(op: &str, args: &mut Map<String, Value>, left: &mut Vec<String>) {
+    let Some(kind) = ALL_OPS.into_iter().find(|kind| op_name(*kind) == op) else {
+        return;
+    };
+    let every: Vec<&str> = (ALL_OPS.into_iter().flat_map(known_keys))
+        .copied()
+        .chain(TODO_SPEC_KEYS)
+        .collect();
+    let loose = |key: &str, legal: &[&str], in_todo: bool| {
+        !legal.contains(&key)
+            && !["actor", "labels"].contains(&key)
+            && misplaced(kind, in_todo, key).is_none()
+            && field_hint(key).is_empty()
+            && (every.contains(&key) || !every.iter().any(|known| one_edit(key, known)))
+    };
+    args.retain(|key, _| {
+        let drop = loose(key, known_keys(kind), false);
+        if drop {
+            left.push(key.clone());
+        }
+        !drop
+    });
+    if let Some(Value::Array(todos)) = args.get_mut("todos") {
+        for todo in todos.iter_mut().filter_map(Value::as_object_mut) {
+            if !todo.contains_key("delegation")
+                && let Some(delegation) = todo.remove("delegate")
+            {
+                todo.insert("delegation".to_owned(), delegation);
+            }
+            todo.retain(|key, _| {
+                let drop = loose(key, &TODO_SPEC_KEYS, true);
+                if drop && !left.contains(key) {
+                    left.push(format!("todos[].{key}"));
+                }
+                !drop
+            });
+        }
+    }
+}
+
+/// One insertion, deletion, substitution or swap of neighbours apart.
+fn one_edit(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let (short, long) = if a.len() <= b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    let same = short
+        .iter()
+        .zip(long.iter())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (s, l) = (
+        short.get(same..).unwrap_or_default(),
+        long.get(same..).unwrap_or_default(),
+    );
+    match long.len().saturating_sub(short.len()) {
+        0 => {
+            s.get(1..) == l.get(1..)
+                || (s.first() == l.get(1) && s.get(1) == l.first() && s.get(2..) == l.get(2..))
+        }
+        1 => l.get(1..) == Some(s),
+        _ => false,
+    }
 }
 
 /// `goal` and `todos` open a plan and `list` sets one; a key named after an op, as a flag, holding
@@ -120,10 +220,16 @@ fn infer_op(args: &mut Map<String, Value>) {
 /// `labels` lists rows for an op that takes rows, and the todo for one that takes a single todo;
 /// several on such an op are run one call each by the tool.
 fn labels(op: &str, args: &mut Map<String, Value>) {
+    let rows = ["init", "append", "set", "supersede"].contains(&op);
+    if rows
+        && !args.contains_key("todos")
+        && let Some(label @ Value::String(_)) = args.remove("label")
+    {
+        args.insert("labels".to_owned(), json!([label]));
+    }
     let Some(Value::Array(labels)) = args.get("labels") else {
         return;
     };
-    let rows = ["init", "append", "set", "supersede"].contains(&op);
     if rows && !args.contains_key("todos") && !args.contains_key("list") {
         let todos: Vec<Value> = labels
             .iter()
@@ -142,7 +248,7 @@ fn labels(op: &str, args: &mut Map<String, Value>) {
 
 /// `set` takes rows as `todos` or `list`; `supersede` takes them as `list`. A line that is not a
 /// row leaves the list, as a struck row (`- [-]`, `- [~]`) does; a box set cannot read is unchecked.
-fn checklist(op: &str, args: &mut Map<String, Value>, said: &mut Vec<&'static str>) {
+fn checklist(op: &str, args: &mut Map<String, Value>, said: &mut Vec<String>) {
     let rows: Vec<String> = match (op, args.remove("list"), args.remove("todos")) {
         ("set", Some(Value::String(list)), todos) => {
             if let Some(todos) = todos {
@@ -177,7 +283,7 @@ fn checklist(op: &str, args: &mut Map<String, Value>, said: &mut Vec<&'static st
             .any(|mark| line.trim_start().starts_with(mark))
     };
     if rows.iter().any(|line| struck(line)) {
-        said.push("struck rows (- [-]) leave the list, as an omitted row does");
+        said.push("struck rows (- [-]) leave the list, as an omitted row does".to_owned());
     }
     let mut list = Vec::new();
     for line in rows.iter().filter(|line| !struck(line)) {
@@ -191,11 +297,11 @@ fn checklist(op: &str, args: &mut Map<String, Value>, said: &mut Vec<&'static st
         {
             Some((" " | ">" | "x" | "X", _)) => list.push(line.clone()),
             Some((_, rest)) if rest.starts_with(']') => {
-                said.push("a box set does not read, such as [!], was kept unchecked");
+                said.push("a box set does not read, such as [!], was kept unchecked".to_owned());
                 list.push(format!("{indent}- [ {rest}"));
             }
             _ if body.is_empty() || body.starts_with('#') => {}
-            _ => said.push("lines that are not checklist rows were left out"),
+            _ => said.push("lines that are not checklist rows were left out".to_owned()),
         }
     }
     args.insert("list".to_owned(), json!(list.join("\n")));
@@ -230,7 +336,7 @@ fn first_label(args: &Map<String, Value>) -> Option<String> {
 
 /// A contract item's weight is a share from 1 to 100: a missing one is 1, and items weighted past
 /// 100 are rescaled together so their ratios hold. An item with an empty decider checks nothing.
-fn weights(args: &mut Map<String, Value>, said: &mut Vec<&'static str>) {
+fn weights(args: &mut Map<String, Value>, said: &mut Vec<String>) {
     let Some(Value::Array(todos)) = args.get_mut("todos") else {
         return;
     };
@@ -245,7 +351,9 @@ fn weights(args: &mut Map<String, Value>, said: &mut Vec<&'static str>) {
                 .is_some_and(|decider| decider.as_object().is_none_or(|keys| !keys.is_empty()))
         });
         if items.len() < before {
-            said.push("a contract item with an empty decider checks nothing and was left out");
+            said.push(
+                "a contract item with an empty decider checks nothing and was left out".to_owned(),
+            );
         }
         if before > 0 && items.is_empty() {
             todo.remove("contract");
@@ -268,7 +376,10 @@ fn weights(args: &mut Map<String, Value>, said: &mut Vec<&'static str>) {
             }
         }
         if max > 100 {
-            said.push("contract weights past 100 were rescaled to 1..100, keeping their ratios");
+            said.push(
+                "contract weights past 100 were rescaled to 1..100, keeping their ratios"
+                    .to_owned(),
+            );
         }
     }
 }

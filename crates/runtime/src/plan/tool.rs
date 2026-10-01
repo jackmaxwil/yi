@@ -27,7 +27,7 @@ fn legal_ops() -> String {
 
 /// A key that belongs to another op or level, named where it goes; dogfood sessions sent a
 /// block's `on` inside init, and a todo's `label` beside append's `todos`.
-fn misplaced(op: OpKind, in_todo: bool, key: &str) -> Option<&'static str> {
+pub(super) fn misplaced(op: OpKind, in_todo: bool, key: &str) -> Option<&'static str> {
     match (op, in_todo, key) {
         (_, _, "on" | "note" | "options") if matches!(op, OpKind::Init | OpKind::Append) => Some(
             "; blocking is its own op after the todo exists: op=block, label, on: {user: null}, note, options",
@@ -44,7 +44,7 @@ fn misplaced(op: OpKind, in_todo: bool, key: &str) -> Option<&'static str> {
 
 /// What the caller evidently meant, per argument: F0e sessions sent prose or a bare path as
 /// `output`, and a todo spec without its `spec`, against a schema text they had not read (#472).
-fn field_hint(field: &str) -> &'static str {
+pub(super) fn field_hint(field: &str) -> &'static str {
     match field {
         "output" => {
             "; output is a url of the product (tree://<child>/<path> or file:///abs/path), omitted when there is none, and a check's output line belongs to the todo tool's evidence"
@@ -117,7 +117,7 @@ pub enum ArgError {
 }
 
 /// Every key an op reads, `op` and `plan` included; `todo` is the alias for `label`.
-fn known_keys(kind: OpKind) -> &'static [&'static str] {
+pub(super) fn known_keys(kind: OpKind) -> &'static [&'static str] {
     match kind {
         OpKind::Init => &["op", "plan", "goal", "todos"],
         OpKind::Append => &["op", "plan", "todos"],
@@ -144,7 +144,7 @@ fn known_keys(kind: OpKind) -> &'static [&'static str] {
     }
 }
 
-const TODO_SPEC_KEYS: [&str; 6] = [
+pub(super) const TODO_SPEC_KEYS: [&str; 6] = [
     "label",
     "after",
     "delegation",
@@ -153,8 +153,8 @@ const TODO_SPEC_KEYS: [&str; 6] = [
     "waived",
 ];
 
-/// Invariant: a key no op reads is refused, never dropped: a misspelled `contract` or `output`
-/// would otherwise land a todo on the unverified path with no error.
+/// What [`super::natural::natural`] did not leave out: a key one edit from a known key, or one
+/// with a hint saying where it goes.
 fn refuse_unknown(
     args: &Map<String, Value>,
     op: OpKind,
@@ -591,7 +591,9 @@ impl PlanTool {
                 });
                 text.push_str(&format!("{reply}\n"));
             }
-            said.push("labels named several todos, so each ran as its own call, in order");
+            said.push(
+                "labels named several todos, so each ran as its own call, in order".to_owned(),
+            );
             for line in said {
                 text.push_str(&format!("note: {line}\n"));
             }
@@ -621,11 +623,11 @@ impl PlanTool {
                     ..request.clone()
                 };
                 if kind == OpKind::Retry {
-                    said.push("it had not run yet, so it was started");
+                    said.push("it had not run yet, so it was started".to_owned());
                     self.engine.apply(start)?
                 } else {
                     self.engine.apply(start)?;
-                    said.push("it was pending, so it was started first");
+                    said.push("it was pending, so it was started first".to_owned());
                     self.engine.apply_with(request, &blobs)?
                 }
             }
@@ -634,17 +636,21 @@ impl PlanTool {
                 op: OpKind::Unblock,
                 ..
             }) => {
-                said.push("it was not blocked, so nothing changed");
+                said.push("it was not blocked, so nothing changed".to_owned());
                 self.engine.apply(OpRequest {
                     op: Op::View { full: false },
                     ..request
                 })?
             }
-            Err(PlanOpError::NoPlan) if request.plan.is_some() => {
+            Err(
+                PlanOpError::NoPlan | PlanOpError::Store(super::store::StoreError::Missing { .. }),
+            ) if request.plan.is_some() => {
                 let mut again = args.clone();
                 again.remove("plan");
                 let mut text = self.run(&again)?;
-                said.push("the plan named is not open, so the call ran on the open plan");
+                said.push(
+                    "the plan named is not open, so the call ran on the open plan".to_owned(),
+                );
                 for line in said {
                     text.push_str(&format!("\nnote: {line}"));
                 }
@@ -670,7 +676,9 @@ impl PlanTool {
                     Op::Append { todos } | Op::Supersede { todos, .. } => Op::Init { goal, todos },
                     other => other,
                 };
-                said.push("no plan was open, so one was opened, named after the first todo");
+                said.push(
+                    "no plan was open, so one was opened, named after the first todo".to_owned(),
+                );
                 self.engine.apply_with(
                     OpRequest {
                         op,
@@ -698,7 +706,7 @@ impl PlanTool {
                     .filter(|label| !labels.contains(label))
                     .collect();
                 order.extend(rest);
-                said.push("the todos not named keep their order after the named ones");
+                said.push("the todos not named keep their order after the named ones".to_owned());
                 let reorder = Op::Reorder { labels: order };
                 self.engine.apply_with(
                     OpRequest {
