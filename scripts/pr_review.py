@@ -261,7 +261,7 @@ def render(n, pr, sha, base, findings, dropped, overridden, mode, outside=0):
     if dropped:
         lines += ["", f"Dropped before this table: {dropped} finding(s) whose quote was not on its line, or that a refuter broke."]
     if outside:
-        lines += ["", f"Out of scope: {outside} finding(s) on lines this PR's own change (its fork to `{sha[:8]}`) does not add were not checked or posted."]
+        lines += ["", f"Out of scope: {outside} finding(s) on lines this PR's own change (its fork to `{sha[:8]}`) does not add were dropped before any refuter."]
     lines += ["", "<!-- yi-round-findings " + json.dumps(findings).replace("-->", "--\\u003e") + " -->"]
     return "\n".join(lines) + "\n"
 
@@ -322,14 +322,14 @@ def intake(pr, diff, others, diff_of, repo, stacked=lambda a, b: False):
 
 
 def stacked(pr, other):
-    """The two heads share commits the base does not have, so one was built on the other,
-    even when the successor has not yet merged the predecessor's newest push. Fetched only
-    for a PR the cheap checks already flagged."""
+    """The two heads share a commit the base does not have, so one was built on the other, even
+    when the successor has not yet merged the predecessor's newest push. Fetched only for a PR the
+    cheap checks already flagged. Incident: once both heads merged main, their one merge base was
+    main's tip and every stack member read as its neighbour's twin, a blocking high on six PRs."""
     forge_pr.git("fetch", "-q", "origin", f"refs/pull/{pr['number']}/head", f"refs/pull/{other['number']}/head")
-    shared = forge_pr.git("merge-base", pr["head"]["sha"], other["head"]["sha"])
-    on_base = subprocess.run(("git", "-C", str(ROOT), "merge-base", "--is-ancestor", shared, f"origin/{pr['base']['ref']}"),
-                             capture_output=True).returncode == 0
-    return bool(shared) and not on_base
+    base = f"origin/{pr['base']['ref']}"
+    mine = set(forge_pr.git("rev-list", pr["head"]["sha"], f"^{base}").split())
+    return bool(mine & set(forge_pr.git("rev-list", other["head"]["sha"], f"^{base}").split()))
 
 
 # --- lenses and refuters --------------------------------------------------------------
@@ -348,7 +348,7 @@ def lens_prompt(probe, pr, diff, base, sha):
         "Read any file to confirm a finding. Only reading works here: commands, code cells and edits are "
         "refused, so do not spend a turn on them.\n"
         "Only lines this diff adds or changes are in scope: a defect in code the diff does not touch is "
-        "out of scope even when you are sure of it, and is dropped unread. "
+        "out of scope even when you are sure of it, and is dropped. "
         "Report only what you can quote: every finding names a path in this checkout, a 1-based line, and "
         "that line's text copied exactly as `quote`; a finding without its line is dropped. "
         "A finding is a defect the author should change; a check that passed, or a test that works, is not "
@@ -439,8 +439,9 @@ def ask(prompt, schema, cwd, *, write=False, deadline=900):
     # and a forge round lost one to a host that closed mid-answer (exit 1, 503 provider_overloaded).
     for _ in range(3):
         # A whole diff passes Linux's 128 KiB cap on one argument, so the prompt goes on stdin.
-        out = subprocess.run(command + ["-"], input=prompt, capture_output=True, text=True,
-                             timeout=deadline + 120, check=False)
+        # A lens reads PR text; the forge token it never needs stays out of its reach.
+        out = subprocess.run(command + ["-"], input=prompt, capture_output=True, text=True, timeout=deadline + 120,
+                             check=False, env={k: v for k, v in os.environ.items() if k not in ("FGJ_TOKEN", "GITEA_TOKEN")})
         if out.returncode == 0:
             return json.loads(out.stdout)
         if out.returncode not in (1, 3):
@@ -629,7 +630,7 @@ def replay_row(read, label):
     written before the v2 template fails it whatever its code is worth."""
     severity = {s: sum(f["severity"] == s for f in read["kept"]) for s in SEVERITIES}
     return {"pr": read["pr"]["number"], "label": label, "sha": read["sha"], "severity": severity,
-            "intake": sorted({f["lens"] for f in read["intake"]}), "dropped": read["dropped"],
+            "intake": sorted({f["lens"] for f in read["intake"]}), "dropped": read["dropped"], "outside": read.get("outside", 0),
             "findings": [{k: f[k] for k in ("lens", "severity", "claim", "path", "line")} for f in read["kept"]]}
 
 
