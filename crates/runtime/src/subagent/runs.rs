@@ -75,8 +75,7 @@ impl SubagentHost {
         {
             children.touch(&child_id, crate::family::Cause::Started);
         }
-        let outcome =
-            session.prompt_requested(crate::session::user_message(&content), Some(requested));
+        let outcome = session.prompt_requested(crate::session::task(&content), Some(requested));
         let mut ended = outcome.err().map(|error| {
             let class = FailClass::RefusedSpawn;
             (ChildExit::Failed { class }, Some(error.to_string()))
