@@ -1,0 +1,48 @@
+{
+  "constraints": [],
+  "examples": [],
+  "format": 2,
+  "goal": "ship the widget end to end",
+  "intent": null,
+  "journal_digest": "sha256:dbbe5155fabe044902bfd45f33e245bb2f799c5e2901e0ddf8c6042eeda04812",
+  "journal_seq": 5,
+  "placement": null,
+  "plan": "ship-the-widget-end-to-end",
+  "shape": null,
+  "state": "done",
+  "tier": "root",
+  "todos": [
+    {
+      "attempt": 1,
+      "contract": {
+        "class": "writer",
+        "items": [
+          {
+            "critical": true,
+            "decider": {
+              "cmd": {
+                "checker": {
+                  "digest": "sha256:adccf8b0295a9738b576e705d5e1f8176ea9650a3f95d20b0f6174cc76c5cde8",
+                  "length": 147,
+                  "media_type": "application/vnd.yi.checker-manifest+json"
+                },
+                "timeout_ms": 10000
+              }
+            },
+            "id": "check",
+            "weight": 100
+          }
+        ],
+        "min_coverage": 1000,
+        "threshold": 1000
+      },
+      "contract_hash": "sha256:ca978b3bab176486d48ea671f0394dd6f41fc53af3d4cdfa459d1b8b7665d521",
+      "label": "ship it",
+      "refusals": 1,
+      "resolution": "accepted_by_classifier",
+      "state": "done"
+    }
+  ],
+  "touched": 3,
+  "version": 1
+}

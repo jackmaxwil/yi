@@ -30,7 +30,7 @@ fn skill(name: &str, needle: &str) -> RuleDoc {
 }
 
 /// Answers `bodies.len()` connections in order; hands back each request body it read.
-fn sidecar(
+pub(crate) fn sidecar(
     bodies: Vec<&'static str>,
 ) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<String>>)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -265,7 +265,7 @@ async fn a_dead_sidecar_trips_the_breaker_and_says_so_once() -> TestResult {
 async fn a_message_the_user_did_not_type_is_never_classified() -> TestResult {
     let (port, _served) = sidecar(vec![LAND])?;
     let rig = rig(format!("http://127.0.0.1:{port}"), Some(0.7))?;
-    let delegated = AgentMessage::host_user(UserContent::Text("land this branch".to_owned()), 7);
+    let delegated = AgentMessage::task("land this branch", 7);
     assert!(rig.engine.observe_user(&delegated).is_empty());
     assert!(next(&rig, Duration::from_millis(500)).await.is_none());
     Ok(())
@@ -363,7 +363,7 @@ async fn a_trigger_words_gap_holds_with_a_classifier_attached() -> TestResult {
     Ok(())
 }
 
-fn safe(p: f64) -> &'static str {
+pub(crate) fn safe(p: f64) -> &'static str {
     Box::leak(
         format!(r#"{{"answers":{{"safe":{{"noul":{p},"answer_confidence":{p}}}}},"routing":{{"model":"english"}}}}"#)
             .into_boxed_str(),

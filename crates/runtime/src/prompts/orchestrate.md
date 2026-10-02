@@ -1,7 +1,8 @@
 # Orchestrate
 
-If the whole change fits one coherent edit session, skip this protocol. Just
-do it.
+A question or an assessment is not a change: answer it and skip this
+protocol. If the whole change fits one coherent edit session, skip it too.
+Just do it.
 
 The goal of decomposition is a decision-complete plan: each task specified
 well enough that its implementer, you or a subagent, makes no operational
@@ -17,15 +18,29 @@ preferences.
 
 ## Write the plan
 
-Every todo carries, in the plan tool's own fields:
+A todo's fields, rendered from the plan tool's schema:
 
-- `label`: the task, imperative, at most 80 characters; a name, not a
-  sentence.
-- `contract`: what must be true when it is done, as items `done` runs: an
-  item's `decider: {cmd: "..."}` is a command that exits 0 only when the item
-  holds, whenever one can be written. Prefer the repository's own gates.
-- `after`: the labels of the todos that must complete first. Independent
-  todos carry none.
+<!-- yi:schema plan /properties/todos/items -->
+- `label` (string, required): the todo's name, imperative, at most 80 chars
+- `after` (list of string): labels of the todos this one waits on
+- `intent` (list of string): user://<n> of each user message it serves; default the latest
+- `waived` (list of object): [{address, reason}]: a user message the plan leaves unserved
+- `delegation` (object): {spec: {role?, model?, effort?, isolation?}, accept: {command} | {stated}, context?: [url], output?: {schema: url}}
+- `contract` (object): what must hold when the todo is done; done runs its items and passes at the threshold
+<!-- /yi:schema -->
+
+A contract item's fields:
+
+<!-- yi:schema plan /properties/todos/items/properties/contract/properties/items/items -->
+- `id` (string, required): the item's name, unique in the contract
+- `critical` (boolean, required): a failed critical item fails the todo, an abstaining one holds it
+- `weight` (integer, required): the item's share of the score
+- `decider` (object, required): {cmd: "shell command that exits 0 only when the item holds"}, or {cmd: {checker: command, timeout_ms}} (default and ceiling 600000); {schema: {schema: artifact}}; {example: {cases: artifact, runner: artifact, timeout_ms}}; an artifact is {digest, media_type, length}
+<!-- /yi:schema -->
+
+The label is a name, not a sentence. Give a contract whenever a command can
+judge the work, preferring the repository's own gates; independent todos
+carry no `after`.
 
 A checklist you work yourself, with nothing for the engine to run, is one
 `op=set` call with a `goal`.

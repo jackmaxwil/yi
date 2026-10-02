@@ -1372,6 +1372,13 @@ mod accept {
                 matches!(refused, Err(LaneError::Git { .. })),
                 "{blocker}: {refused:?}"
             );
+            let said = refused.as_ref().err().map(ToString::to_string);
+            assert!(
+                !said
+                    .as_deref()
+                    .is_some_and(|text| text.contains("Some(") || text.contains("None")),
+                "{said:?}"
+            );
             assert_eq!(parent_view(&parent)?, before, "{blocker}: nothing moved");
             std::fs::remove_file(&path)?;
         }

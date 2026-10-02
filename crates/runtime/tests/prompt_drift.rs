@@ -143,3 +143,138 @@ fn read_names_exactly_the_formats_the_installed_wheel_converts() -> TestResult {
     assert_eq!(claimed, live);
     Ok(())
 }
+
+/// The field list a schema block renders: one line per property, in the schema's order, with its
+/// type, whether it is required, and its description.
+fn render_fields(schema: &serde_json::Value) -> String {
+    let required: Vec<&str> = schema["required"]
+        .as_array()
+        .map(|names| names.iter().filter_map(|name| name.as_str()).collect())
+        .unwrap_or_default();
+    let kind = |field: &serde_json::Value| match field["type"].as_str() {
+        Some("array") => format!(
+            "list of {}",
+            field["items"]["type"].as_str().unwrap_or("value")
+        ),
+        Some(name) => name.to_owned(),
+        None => "value".to_owned(),
+    };
+    let mut out = Vec::new();
+    for (name, field) in schema["properties"].as_object().into_iter().flatten() {
+        let mut facts = vec![kind(field)];
+        if required.contains(&name.as_str()) {
+            facts.push("required".to_owned());
+        }
+        if let Some(values) = field["enum"].as_array() {
+            let values: Vec<String> = values
+                .iter()
+                .map(|v| format!("`{}`", v.as_str().unwrap_or("")))
+                .collect();
+            facts.push(format!("one of {}", values.join(", ")));
+        }
+        let description = field["description"].as_str().unwrap_or("");
+        let line = format!("- `{name}` ({})", facts.join(", "));
+        out.push(if description.is_empty() {
+            line
+        } else {
+            format!("{line}: {description}")
+        });
+    }
+    out.join("\n")
+}
+
+const BLOCK_OPEN: &str = "<!-- yi:schema ";
+const BLOCK_CLOSE: &str = "<!-- /yi:schema -->";
+
+/// Every schema block in `text`, re-rendered from the live schema it names.
+fn rendered(text: &str) -> Result<(String, Vec<String>), Box<dyn Error>> {
+    let mut out = String::new();
+    let mut blocks = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(BLOCK_OPEN) {
+        let (before, from) = rest.split_at(at);
+        out.push_str(before);
+        let header_end = from.find("-->").ok_or("an unclosed block header")?;
+        let header = from
+            .get(BLOCK_OPEN.len()..header_end)
+            .ok_or("header")?
+            .trim();
+        let (tool, pointer) = header
+            .split_once(' ')
+            .ok_or("a header names a tool and a pointer")?;
+        let schema = match tool {
+            "plan" => yi_runtime::plan::tool::schema(),
+            "todo" => yi_runtime::todo::tool::schema(),
+            other => return Err(format!("no schema named {other}").into()),
+        };
+        let at_pointer = schema
+            .pointer(pointer)
+            .ok_or(format!("{tool} has no {pointer}"))?;
+        let close = from.find(BLOCK_CLOSE).ok_or("a block without its close")?;
+        out.push_str(from.get(..header_end + 3).ok_or("header")?);
+        out.push('\n');
+        out.push_str(&render_fields(at_pointer));
+        out.push('\n');
+        out.push_str(BLOCK_CLOSE);
+        blocks.push(format!("{tool} {pointer}"));
+        rest = from.get(close + BLOCK_CLOSE.len()..).ok_or("tail")?;
+    }
+    out.push_str(rest);
+    Ok((out, blocks))
+}
+
+/// Dies with a prompt or skill teaching fields its tool does not take: the plan skill still said
+/// title, acceptance, check and deps after the orchestrate protocol was fixed by hand.
+#[test]
+fn every_schema_block_is_the_schemas_own_rendering() -> TestResult {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.ancestors().nth(2).ok_or("the repository root")?;
+    let skills = root.join("skills");
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(manifest.join("src/prompts"))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .collect();
+    for set in std::fs::read_dir(&skills)?.flatten() {
+        for skill in std::fs::read_dir(set.path())?.flatten() {
+            let manifest = skill.path().join("SKILL.md");
+            if manifest.is_file() {
+                files.push(manifest);
+            }
+        }
+    }
+    let bless = std::env::var_os("YI_BLESS").is_some();
+    let mut stale = Vec::new();
+    let mut found = Vec::new();
+    for path in files {
+        let text = std::fs::read_to_string(&path)?;
+        let (fresh, blocks) = rendered(&text)?;
+        let name = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        found.extend(blocks.into_iter().map(|block| format!("{name}: {block}")));
+        if fresh != text {
+            if bless {
+                std::fs::write(&path, fresh)?;
+            } else {
+                stale.push(name);
+            }
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "stale schema blocks in {stale:?}; run `just schema-blocks`"
+    );
+    for owed in [
+        "crates/runtime/src/prompts/orchestrate.md: plan /properties/todos/items",
+        "skills/yi/plan/SKILL.md: plan /properties/todos/items",
+        "skills/yi/review/SKILL.md: plan /properties/todos/items/properties/contract/properties/items/items",
+    ] {
+        assert!(
+            found.iter().any(|block| block == owed),
+            "missing block {owed}; found {found:?}"
+        );
+    }
+    Ok(())
+}

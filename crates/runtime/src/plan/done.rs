@@ -701,7 +701,12 @@ pub(super) fn admit(
                 });
             }
         }
-        Op::Accept { .. } => decided.resolution = Some(Resolution::AcceptedByUser),
+        Op::Accept { .. } => {
+            decided.resolution = Some(match txn.principal {
+                Actor::Classifier => Resolution::AcceptedByClassifier,
+                _ => Resolution::AcceptedByUser,
+            });
+        }
         _ => {}
     }
     Ok(())

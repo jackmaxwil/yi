@@ -383,3 +383,27 @@ fn an_unknown_status_on_four_wire_enums_round_trips() -> Result<(), Box<dyn std:
     assert_eq!(written, ["\"paused\"", "\"skipped\"", "\"draining\""]);
     Ok(())
 }
+
+/// Dies with a child's brief or a host notice unreadable after a restart, or its attribution
+/// read back as the user's: each line round-trips byte for byte and keeps who wrote it.
+#[test]
+fn a_task_and_a_host_message_keep_their_attribution() -> Result<(), Box<dyn std::error::Error>> {
+    use yi_types::message::{AgentMessage, Attribution, HostSource};
+    let raw = include_str!("fixtures/message-attribution-v2.json");
+    let mut seen = Vec::new();
+    for line in raw
+        .lines()
+        .filter_map(|line| line.strip_suffix(',').or(Some(line)))
+    {
+        let Ok(message) = serde_json::from_str::<AgentMessage>(line) else {
+            continue;
+        };
+        assert_eq!(serde_json::to_string(&message)?, line);
+        seen.push(message.attribution());
+    }
+    assert_eq!(
+        seen,
+        [Attribution::Task, Attribution::Host(HostSource::Job)]
+    );
+    Ok(())
+}

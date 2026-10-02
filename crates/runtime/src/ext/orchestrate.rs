@@ -259,7 +259,7 @@ impl Extension for Orchestrate {
                 ..
             } => {
                 if *files_matched > crate::levers::get().route_files_matched {
-                    self.attach(out, "files_matched", true);
+                    self.attach(out, "files_matched", false);
                 }
                 if self.edited && name == "bash" && exit.is_some_and(|code| code != 0) {
                     self.attach(out, "failed_check_after_edit", true);

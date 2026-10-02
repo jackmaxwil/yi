@@ -488,7 +488,7 @@ fn verdict_of(
     };
     if capture.cancelled {
         return abstain(format!(
-            "checker timed out (deadline {} ms)",
+            "checker timed out (deadline {} ms); run it by hand, then op=accept with its exit line as note",
             manifest.timeout_ms
         ));
     }
