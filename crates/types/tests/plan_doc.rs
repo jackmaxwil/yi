@@ -458,3 +458,24 @@ fn an_ask_takes_three_to_five_light_options() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with the classifier's acceptance unreadable or read back as the user's: a plan file the
+/// store wrote after the classifier accepted a refused todo keeps that resolution, byte for byte.
+#[test]
+fn a_checkpoint_carrying_a_classifier_acceptance_round_trips() -> TestResult {
+    let raw = include_str!("fixtures/plan-accepted-by-classifier-v1.json");
+    let plan: Plan = serde_json::from_str(raw)?;
+    let todo = plan.todo(&TodoLabel::new("ship it")?).ok_or("no todo")?;
+    assert!(matches!(
+        todo.state,
+        yi_types::plan::doc::TodoState::Done {
+            resolution: Some(yi_types::plan::contract::Resolution::AcceptedByClassifier),
+            ..
+        }
+    ));
+    assert_eq!(
+        serde_json::to_value(&plan)?,
+        serde_json::from_str::<serde_json::Value>(raw)?
+    );
+    Ok(())
+}

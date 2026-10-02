@@ -1,7 +1,7 @@
 use yi_loop::interrupt::InterruptSignal;
 use yi_session::lock_session;
 use yi_types::entry::Entry;
-use yi_types::message::{AgentMessage, UserContent};
+use yi_types::message::AgentMessage;
 use yi_types::model::LlmContext;
 
 use crate::AgentSession;
@@ -57,10 +57,7 @@ pub async fn title_session(session: &AgentSession) -> Result<Option<String>, Str
     let context = LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "You name coding sessions.".to_owned(),
-        messages: yi_context::convert_to_llm(&[AgentMessage::host_user(
-            UserContent::Text(prompt),
-            0,
-        )]),
+        messages: vec![AgentMessage::task(&prompt, 0)],
         transient: Vec::new(),
         schema: None,
         shared_through: None,

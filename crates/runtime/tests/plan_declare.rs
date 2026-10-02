@@ -59,8 +59,12 @@ fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
 }
 
 /// The tool's answer and whether it was an error.
+/// The loop's order: validate refuses before execute runs, so a shape only execute reads is refused.
 fn call(rig: &Rig, args: Value) -> (bool, String) {
     let input = args.as_object().cloned().unwrap_or_default();
+    if let Err(refusal) = rig.tool.validate(&input) {
+        return (true, refusal);
+    }
     let output = rig
         .tool
         .execute(input, &ToolContext::new(std::env::temp_dir()));
@@ -126,7 +130,7 @@ fn a_plain_checker_command_is_frozen_and_the_engine_starts_the_todo() -> TestRes
     else {
         return Err("not a cmd item".into());
     };
-    assert_eq!(*timeout_ms, 60_000);
+    assert_eq!(*timeout_ms, yi_runtime::goal::DEFAULT_CHECK_TIMEOUT_MS);
     let manifest = CheckerManifest::parse(&rig.store.artifacts(&plan.id).get(&checker.digest)?)?;
     assert_eq!(manifest.command, "grep -qx alpha alpha.txt");
     Ok(())
@@ -433,62 +437,14 @@ fn a_stated_worktree_accept_is_refused_with_the_command_road() -> TestResult {
     Ok(())
 }
 
-/// The orchestrate protocol as the model reads it: attached by a prompt that asks for a plan.
-fn orchestrate_protocol(dir: &std::path::Path) -> Result<String, Box<dyn Error>> {
-    let mut host = yi_runtime::ext::install(yi_runtime::ext::ExtOptions {
-        cwd: dir.to_path_buf(),
-        home: dir.to_path_buf(),
-        mode: yi_runtime::PermissionMode::Auto,
-        user_system: String::new(),
-        schema_instruction: None,
-        context_window: 128_000,
-        global_skills: Vec::new(),
-    });
-    host.start(None, false);
-    host.dispatch(&host.prompt_event("plan this: split the crate"), None);
-    let prompt = host.system_prompt();
-    let at = prompt
-        .find("# Orchestrate")
-        .ok_or("the protocol did not attach")?;
-    Ok(prompt.get(at..).ok_or("no protocol text")?.to_owned())
-}
-
-/// Dies on `check`: the protocol taught title, acceptance, check and deps, the tool refused
-/// each, and a model spent five init calls learning the tool's own names from its errors.
+/// Dies with doctrine teaching a todo-level check: its plan step names the contract item the tool
+/// takes; the protocol's and the skill's field lists are schema blocks (`prompt_drift`).
 #[test]
-fn every_todo_field_the_protocol_teaches_is_one_init_accepts() -> TestResult {
-    let rig = rig("protocol-keys")?;
-    let protocol = orchestrate_protocol(&rig.temp)?;
-    let section = protocol
-        .split("## Write the plan")
-        .nth(1)
-        .and_then(|rest| rest.split("\n## ").next())
-        .ok_or("no Write the plan section")?;
-    let keys: Vec<&str> = section
-        .lines()
-        .filter_map(|line| line.strip_prefix("- "))
-        .filter_map(|line| line.split(':').next())
-        .map(|key| key.trim_matches('`'))
-        .collect();
-    assert!(keys.len() >= 3, "the section names its fields: {section}");
+fn doctrine_names_where_a_check_goes() -> TestResult {
     assert!(
         yi_runtime::doctrine_fragment().contains("its check a `decider: {cmd}` item"),
         "doctrine's plan step names where a check goes"
     );
-    for key in keys {
-        let mut todo = serde_json::Map::new();
-        todo.insert("label".to_owned(), json!("probe"));
-        if key != "label" {
-            todo.insert(key.to_owned(), Value::Null);
-        }
-        let input = json!({"op": "init", "goal": "g", "todos": [todo]});
-        let verdict = rig.tool.validate(input.as_object().ok_or("args")?);
-        let refused = verdict.err().unwrap_or_default();
-        assert!(
-            !refused.contains("does not take"),
-            "the protocol teaches `{key}`, which init refuses: {refused}"
-        );
-    }
     Ok(())
 }
 
@@ -585,5 +541,50 @@ fn a_checker_given_as_an_object_keeps_its_deadline() -> TestResult {
         decider.contains("{cmd: {checker: command, timeout_ms}}"),
         "{decider}"
     );
+    Ok(())
+}
+
+/// Dies with one of the calls glm-5.3-flash sent in the dogfood refused again: each natural shape
+/// lands, and each refusal that stays names where the field goes (`dogfood/plan-shapes.json`, #982).
+#[test]
+fn every_dogfood_call_lands_or_says_where_it_goes() -> TestResult {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/dogfood/plan-shapes.json");
+    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    let mut wrong = Vec::new();
+    for case in fixture["cases"].as_array().ok_or("cases")? {
+        let name = case["name"].as_str().unwrap_or("?");
+        let rig = rig(&name.replace(' ', "-"))?;
+        for step in case["setup"].as_array().ok_or("setup")? {
+            let (refused, text) = call(&rig, step.clone());
+            assert!(!refused, "{name} setup: {text}");
+        }
+        let (refused, text) = call(&rig, case["call"].clone());
+        let lands = case["lands"].as_bool().unwrap_or(false);
+        let says = case["says"].as_str().unwrap_or("");
+        if refused == lands || !text.contains(says) {
+            wrong.push(format!("{name}: refused={refused} {text}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    Ok(())
+}
+
+/// Dies on a set whose todo rows carry a contract: each row became a checklist line, so the
+/// contract was dropped without a word and the todo would land unverified.
+#[test]
+fn a_set_row_with_a_contract_is_refused_and_bare_rows_land() -> TestResult {
+    let rig = rig("set-rows")?;
+    let contract = json!({"class": "inline", "items": [
+        {"id": "t", "critical": true, "weight": 1, "decider": {"cmd": "true"}}]});
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "set", "todos": [{"label": "a"}, {"label": "b", "contract": contract}]}),
+    );
+    assert!(refused && text.contains("a todo is {label"), "{text}");
+    let (refused, text) = call(&rig, json!({"op": "set", "todos": []}));
+    assert!(refused, "an empty set is no checklist: {text}");
+    let (refused, text) = call(&rig, json!({"op": "set", "todos": [{"label": "a"}, "b"]}));
+    assert!(!refused, "{text}");
     Ok(())
 }

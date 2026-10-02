@@ -16,8 +16,9 @@ use yi_types::plan::ledger::RequestId;
 use yi_types::url::Url;
 
 use super::ops::{Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError};
+use super::render::render_outcome;
 use super::table::{check_actor, op_name};
-use super::tool::{ArgError, render_outcome, request};
+use super::tool::{ArgError, request};
 use crate::permission::{AskOutcome, PermissionAsk, PermissionBroker};
 
 pub const CONFIRM_TTL: Duration = Duration::from_secs(300);
@@ -32,6 +33,34 @@ pub struct Submission {
     pub args: Map<String, Value>,
     pub request_id: Option<RequestId>,
     pub expected_revision: Option<TouchCount>,
+}
+
+/// The session's own prompt and transcript, read when an acceptance asks: the store attaches
+/// after the tools are wired.
+pub struct Confirming {
+    pub broker: Arc<PermissionBroker>,
+    pub store: Arc<dyn Fn() -> Option<SharedSession> + Send + Sync>,
+}
+
+/// The plan tool's acceptance: with no session prompt wired, the refusal says no one can confirm.
+pub(super) fn accept(
+    engine: &PlanEngine,
+    actor: &Actor,
+    confirming: Option<&Confirming>,
+    args: &Map<String, Value>,
+) -> Result<Applied, SubmitError> {
+    let confirmer = confirming.and_then(|confirming| {
+        (confirming.store)().map(|store| Confirmer {
+            broker: Arc::clone(&confirming.broker),
+            store,
+        })
+    });
+    let submission = Submission {
+        args: args.clone(),
+        request_id: None,
+        expected_revision: None,
+    };
+    submit(engine, actor, confirmer.as_ref(), submission)
 }
 
 #[must_use]
@@ -52,7 +81,7 @@ pub enum SubmitError {
     #[error("{0}")]
     Arg(#[from] ArgError),
     #[error(
-        "{op} needs the user's confirmation, and no session holds a prompt that could ask for it"
+        "{op} needs the user's confirmation, and nothing in this session can ask for it: say in your answer what you ran and its exit line, and leave the todo open"
     )]
     NoConfirmer { op: &'static str },
     #[error("the user declined {op} on plan {plan}")]
@@ -117,7 +146,7 @@ pub fn submit(
         return Err(refused.into());
     }
     let op = op_name(request.op.kind());
-    let Some(confirmer) = confirmer.filter(|confirmer| confirmer.broker.can_ask()) else {
+    let Some(confirmer) = confirmer.filter(|confirmer| confirmer.broker.can_confirm()) else {
         return Err(SubmitError::NoConfirmer { op });
     };
     confirmed(engine, confirmer, request, op)
@@ -141,21 +170,41 @@ fn confirmed(
     let revision = request.expected_revision.unwrap_or(current.touched);
     let args = request.op.args().map_err(PlanOpError::from)?;
     let args_hash = canonical_digest(&args).map_err(PlanOpError::from)?;
+    let accepting = match &request.op {
+        Op::Accept { label, note, .. } => Some(format!("{label}: {note}")),
+        _ => None,
+    };
     let description = format!(
-        "{op} on plan {} at revision {} (args {args_hash}): an op the plan owner may not apply alone",
-        current.id, revision.0
+        "{op} on plan {} at revision {} (args {args_hash}): an op the plan owner may not apply alone{}",
+        current.id,
+        revision.0,
+        accepting
+            .as_deref()
+            .map(|why| format!("; {why}"))
+            .unwrap_or_default()
     );
-    let asked_at = Instant::now();
-    let answer = confirmer.broker.confirm(&PermissionAsk {
-        title: &format!("yi plan {op} asks for your confirmation"),
-        description: &description,
-        patch: None,
-        changes: &[],
-        // No standing grant for an administrative op: D193 wants a confirmed
-        // channel per op, so "always" here is the one answer, not a rule kept.
-        grants: &[],
-        tool_call_id: None,
+    let cwd = engine.cwd.to_string_lossy();
+    let call = accepting.as_deref().map(|display| crate::classifier::Call {
+        tool: "plan",
+        display,
+        command: None,
+        reason: "the plan owner asks to close a todo its check did not verify",
+        cwd: &cwd,
     });
+    let asked_at = Instant::now();
+    let (answer, classified) = confirmer.broker.confirm_judged(
+        &PermissionAsk {
+            title: &format!("yi plan {op} asks for your confirmation"),
+            description: &description,
+            patch: None,
+            changes: &[],
+            // No standing grant for an administrative op: D193 wants a confirmed
+            // channel per op, so "always" here is the one answer, not a rule kept.
+            grants: &[],
+            tool_call_id: None,
+        },
+        call.as_ref(),
+    );
     if !matches!(answer, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_)) {
         return Err(SubmitError::Declined {
             op,
@@ -169,10 +218,14 @@ fn confirmed(
             ttl_ms: CONFIRM_TTL.as_millis(),
         });
     }
-    request.actor = Actor::User(cite(
-        &confirmer.store,
-        &format!("confirmed: {description}"),
-    )?);
+    request.actor = if classified {
+        Actor::Classifier
+    } else {
+        Actor::User(cite(
+            &confirmer.store,
+            &format!("confirmed: {description}"),
+        )?)
+    };
     // Invariant: the answer binds the root the human saw; unnamed resolution runs before the
     // ask, never again after it.
     request.plan = Some(current.id.clone());

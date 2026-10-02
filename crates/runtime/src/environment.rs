@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use yi_types::message::{AgentMessage, ENVIRONMENT_TAG, UserContent};
+use yi_types::message::{AgentMessage, ENVIRONMENT_TAG};
 
 use crate::session::{AgentSession, EnvironmentFn};
 use crate::subagent::SubagentHost;
@@ -161,7 +161,7 @@ pub fn render(lines: &[String]) -> String {
 }
 
 pub fn message(block: String) -> AgentMessage {
-    AgentMessage::host_user(UserContent::Text(block), 0)
+    yi_context::wrap_internal("environment", &block, 0)
 }
 
 /// What the turn says about the machine: os, arch, shell, and where yi runs (D209).

@@ -22,7 +22,16 @@ Spawn a subagent whose prompt contains **only the standard, never your
 implementation story**:
 
 - the plan's tasks with their acceptance criteria, verbatim (`plan.get`);
-- each task's `check` command and the goal's `check`;
+- each todo's `contract` and the goal's `check`; a contract item, rendered
+  from the plan tool's schema:
+
+<!-- yi:schema plan /properties/todos/items/properties/contract/properties/items/items -->
+- `id` (string, required): the item's name, unique in the contract
+- `critical` (boolean, required): a failed critical item fails the todo, an abstaining one holds it
+- `weight` (integer, required): the item's share of the score
+- `decider` (object, required): {cmd: "shell command that exits 0 only when the item holds"}, or {cmd: {checker: command, timeout_ms}} (default and ceiling 600000); {schema: {schema: artifact}}; {example: {cases: artifact, runner: artifact, timeout_ms}}; an artifact is {digest, media_type, length}
+<!-- /yi:schema -->
+
 - the original user requirements that matter, verbatim;
 - how to report (see below).
 

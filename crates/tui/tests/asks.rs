@@ -147,8 +147,9 @@ fn a_replayed_notice_and_mail_name_their_source() -> TestResult {
         timestamp,
     };
     let entry = |seq, message| at(seq, yi_types::message::ATTRIBUTED_SINCE_MS + seq, message);
-    let notice = AgentMessage::host_user(
-        UserContent::Text("[subagent writer (sub-writer) finished]".to_owned()),
+    let notice = AgentMessage::host_text(
+        yi_types::message::HostSource::Lifecycle,
+        "[subagent writer (sub-writer) finished]",
         0,
     );
     let envelope = json!({"id": "writer-1", "from": "writer", "to": "parent", "kind": "request"});
@@ -162,7 +163,11 @@ fn a_replayed_notice_and_mail_name_their_source() -> TestResult {
         timestamp: 0,
     };
     let typed = AgentMessage::user_input(UserContent::Text("write a greeting".to_owned()), 0);
-    let old = AgentMessage::host_user(UserContent::Text("hello from august".to_owned()), 0);
+    let old = AgentMessage::User {
+        content: UserContent::Text("hello from august".to_owned()),
+        timestamp: 0,
+        attribution: yi_types::message::Attribution::Unproven,
+    };
     let old = at(0, 1_787_622_423_154, old);
     let mut app = app();
     app.replay_entries(&[old, entry(1, typed), entry(2, notice), entry(3, mail)]);

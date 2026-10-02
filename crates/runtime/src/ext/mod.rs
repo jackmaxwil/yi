@@ -315,7 +315,7 @@ impl Host {
                     );
                     changed |= self.state.attach_external(&source, trust, &text);
                 }
-                Effect::Remind { text } => self.send(crate::session::user_message(&text)),
+                Effect::Remind { text } => self.send(crate::rules::reminder(text)),
                 Effect::Record { key, value } => record(store, key, &value),
             }
         }
