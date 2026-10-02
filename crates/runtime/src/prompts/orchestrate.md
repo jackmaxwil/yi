@@ -1,7 +1,8 @@
 # Orchestrate
 
-If the whole change fits one coherent edit session, skip this protocol. Just
-do it.
+A question or an assessment is not a change: answer it and skip this
+protocol. If the whole change fits one coherent edit session, skip it too.
+Just do it.
 
 The goal of decomposition is a decision-complete plan: each task specified
 well enough that its implementer, you or a subagent, makes no operational

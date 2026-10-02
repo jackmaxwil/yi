@@ -265,7 +265,7 @@ async fn a_dead_sidecar_trips_the_breaker_and_says_so_once() -> TestResult {
 async fn a_message_the_user_did_not_type_is_never_classified() -> TestResult {
     let (port, _served) = sidecar(vec![LAND])?;
     let rig = rig(format!("http://127.0.0.1:{port}"), Some(0.7))?;
-    let delegated = AgentMessage::host_user(UserContent::Text("land this branch".to_owned()), 7);
+    let delegated = AgentMessage::task("land this branch", 7);
     assert!(rig.engine.observe_user(&delegated).is_empty());
     assert!(next(&rig, Duration::from_millis(500)).await.is_none());
     Ok(())

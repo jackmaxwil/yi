@@ -37,6 +37,13 @@ enum Input {
 /// rather than left waiting.
 const PARKED_MAX: usize = 8;
 
+struct ClientRequest {
+    client: ClientId,
+    original: Value,
+    root: String,
+    resumed: Option<String>,
+}
+
 struct Worker {
     child: Child,
     stdin: ChildStdin,
@@ -182,11 +189,8 @@ struct Supervisor {
     ledger: std::sync::mpsc::Sender<DaemonLedger>,
     workers: HashMap<String, Worker>,
     clients: HashMap<ClientId, mpsc::Sender<String>>,
-    /// session_id → routing and ledger state.
     sessions: HashMap<String, SessionEntry>,
-    /// rewritten request id → (client, original id, root).
-    requests: HashMap<u64, (ClientId, Value, String)>,
-    /// worker-originated request id → root (permission bridge round trip).
+    requests: HashMap<u64, ClientRequest>,
     worker_requests: HashMap<String, String>,
     /// Worker-originated requests that arrived with no attached client, flushed on the next
     /// attach; without this the worker's synchronous asker blocks on an unseen answer.
@@ -294,8 +298,17 @@ impl Supervisor {
         if let Some(original) = id {
             self.next_request = self.next_request.wrapping_add(1);
             let rewritten = self.next_request;
-            self.requests
-                .insert(rewritten, (client, original, root.to_owned()));
+            let resumed = (frame["method"] == "session/resume")
+                .then(|| frame.pointer("/params/sessionId").and_then(Value::as_str))
+                .flatten()
+                .map(str::to_owned);
+            let request = ClientRequest {
+                client,
+                original,
+                root: root.to_owned(),
+                resumed,
+            };
+            self.requests.insert(rewritten, request);
             if let Some(map) = frame.as_object_mut() {
                 map.insert("id".to_owned(), json!(format!("sup_{rewritten}")));
             }
@@ -344,7 +357,7 @@ impl Supervisor {
                         json!({
                             "protocolVersion": agreed,
                             "info": {"name": "yi", "version": self.options.agent_version},
-                            "capabilities": {},
+                            "capabilities": {"session": {"delete": {}}},
                             "authMethods": [],
                         }),
                     ),
@@ -415,11 +428,13 @@ impl Supervisor {
                         json!({
                             "sessionId": session_id,
                             "cwd": entry.root,
-                            "attached": !entry.attached.is_empty(),
-                            "unseen": entry.unseen,
-                            "lastState": entry.last_state,
-                            "lastEventMs": entry.last_event_ms,
-                            "name": entry.name,
+                            "title": entry.name,
+                            "_meta": {"yi": {
+                                "attached": !entry.attached.is_empty(),
+                                "unseen": entry.unseen,
+                                "lastState": entry.last_state,
+                                "lastEventMs": entry.last_event_ms,
+                            }},
                         })
                     })
                     .collect();
@@ -486,7 +501,6 @@ impl Supervisor {
             .unwrap_or("")
             .to_owned();
         if method.is_empty() {
-            // Response to a client-originated request.
             let Some(rewritten) = frame
                 .get("id")
                 .and_then(Value::as_str)
@@ -495,16 +509,24 @@ impl Supervisor {
             else {
                 return;
             };
-            let Some((client, original, request_root)) = self.requests.remove(&rewritten) else {
+            let Some(ClientRequest {
+                client,
+                original,
+                root: request_root,
+                resumed,
+            }) = self.requests.remove(&rewritten)
+            else {
                 return;
             };
+            let answered = frame.get("result").is_some();
             if let Some(session_id) = frame
                 .pointer("/result/sessionId")
                 .and_then(Value::as_str)
                 .map(str::to_owned)
+                .or(resumed.filter(|_| answered))
             {
                 let name = frame
-                    .pointer("/result/name")
+                    .pointer("/result/_meta/yi/name")
                     .and_then(Value::as_str)
                     .map(str::to_owned);
                 match self.sessions.get_mut(&session_id) {
@@ -627,12 +649,13 @@ impl Supervisor {
         let dead: Vec<u64> = self
             .requests
             .iter()
-            .filter(|(_, (_, _, request_root))| *request_root == root)
+            .filter(|(_, request)| request.root == root)
             .map(|(id, _)| *id)
             .collect();
         for id in dead {
-            if let Some((client, original, _)) = self.requests.remove(&id) {
-                self.send_client(client, error_frame(original, -32603, "worker exited"));
+            if let Some(request) = self.requests.remove(&id) {
+                let exited = error_frame(request.original, -32603, "worker exited");
+                self.send_client(request.client, exited);
             }
         }
         self.sessions.retain(|_, entry| entry.root != root);
@@ -647,8 +670,7 @@ impl Supervisor {
         }
         self.sessions
             .retain(|_, entry| !entry.provisional || !entry.attached.is_empty());
-        self.requests
-            .retain(|_, (request_client, _, _)| *request_client != client);
+        self.requests.retain(|_, request| request.client != client);
     }
 }
 

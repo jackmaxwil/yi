@@ -65,7 +65,7 @@ fn routed() -> Model {
 }
 
 fn user(text: &str) -> AgentMessage {
-    AgentMessage::host_user(UserContent::Text(text.to_owned()), 0)
+    AgentMessage::user_input(UserContent::Text(text.to_owned()), 0)
 }
 
 fn tool_result(id: &str) -> AgentMessage {

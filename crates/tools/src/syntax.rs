@@ -71,6 +71,16 @@ fn same_file(_left: &Path, _right: &Path) -> bool {
     false
 }
 
+pub const OK: &str = "syntax: ok";
+
+/// The verdict a result reports over many files: the first failure, else `ok`.
+pub fn worst(kept: Option<String>, line: String) -> String {
+    match kept {
+        Some(kept) if kept != OK => kept,
+        _ => line,
+    }
+}
+
 /// `syntax: ok`, `syntax: error line N: <message>`, or `syntax: check timed out`; None when
 /// no checker applies or its program is absent.
 pub fn verdict(path: &Path) -> Option<String> {
@@ -78,7 +88,7 @@ pub fn verdict(path: &Path) -> Option<String> {
     if extension == "json" {
         let text = std::fs::read_to_string(path).ok()?;
         return Some(match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(_) => "syntax: ok".to_owned(),
+            Ok(_) => OK.to_owned(),
             Err(error) => error_line(&error.to_string()),
         });
     }
@@ -104,7 +114,7 @@ pub fn verdict(path: &Path) -> Option<String> {
     Some(if failed {
         error_line(&output)
     } else {
-        "syntax: ok".to_owned()
+        OK.to_owned()
     })
 }
 

@@ -34,4 +34,4 @@ pub use view::{
     OUTSTANDING_CAP, compile_view, view_extra, view_from_extra,
 };
 pub use window::Window;
-pub use wrapper::{drop_internal, internal_source, wrap_internal};
+pub use wrapper::{drop_internal, internal_source, wrap_content, wrap_internal};

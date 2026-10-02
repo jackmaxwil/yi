@@ -27,7 +27,7 @@ pub(crate) fn history_context() -> LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "be terse".to_owned(),
         messages: vec![
-            AgentMessage::host_user(UserContent::Text("hi".to_owned()), 0),
+            AgentMessage::user_input(UserContent::Text("hi".to_owned()), 0),
             AgentMessage::Assistant {
                 content: vec![Content::Text {
                     text: "hello".to_owned(),
@@ -47,7 +47,7 @@ pub(crate) fn history_context() -> LlmContext {
                 end_turn: None,
                 timestamp: 0,
             },
-            AgentMessage::host_user(UserContent::Text("again".to_owned()), 0),
+            AgentMessage::user_input(UserContent::Text("again".to_owned()), 0),
         ],
         transient: Vec::new(),
         schema: None,
@@ -144,7 +144,7 @@ fn tool_loop_context() -> LlmContext {
         is_error: false,
         timestamp: 0,
     });
-    context.transient.push(AgentMessage::host_user(
+    context.transient.push(AgentMessage::user_input(
         UserContent::Text(format!("{ENVIRONMENT_TAG}\nturn: 3\n</environment>")),
         0,
     ));
@@ -249,7 +249,7 @@ fn an_image_turn_marks_its_last_text_part_and_never_the_image() -> TestResult {
         text_signature: None,
     };
     let mut context = tool_loop_context();
-    context.messages.push(AgentMessage::host_user(
+    context.messages.push(AgentMessage::user_input(
         UserContent::Blocks(vec![
             text("compare these"),
             text("the second is newer"),

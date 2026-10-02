@@ -8,8 +8,8 @@ use yi_types::model::{Effort, Model};
 
 use super::run::{self, Queued};
 use super::{
-    AgentSession, ExtHook, Shared, Status, StillNews, attribute_to_shared, dispatch_ext, store_of,
-    user_message,
+    AgentSession, ExtHook, Shared, Status, StillNews, attribute_to_shared, dispatch_ext, host_text,
+    store_of,
 };
 
 pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
@@ -279,7 +279,7 @@ impl AgentSession {
         let shared = Arc::clone(&self.shared);
         Arc::new(move |text: &str| {
             if let Ok(mut queue) = shared.follow_up.lock() {
-                queue.push(user_message(text));
+                queue.push(host_text(yi_types::message::HostSource::Job, text));
             }
         })
     }
@@ -293,10 +293,13 @@ impl AgentSession {
         })
     }
 
-    pub fn notice_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
+    pub fn notice_hook(
+        &self,
+        source: yi_types::message::HostSource,
+    ) -> Arc<dyn Fn(&str) + Send + Sync> {
         let parts = self.parts();
         Arc::new(move |text: &str| {
-            run::enqueue(&parts, Queued::new(user_message(text), false, None));
+            run::enqueue(&parts, Queued::new(host_text(source, text), false, None));
         })
     }
 

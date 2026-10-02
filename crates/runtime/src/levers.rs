@@ -85,8 +85,8 @@ levers! {
     todo_intercept_cap: u32 = "todo.intercept_cap", todo_gate::INTERCEPT_CAP_PER_CYCLE, 0..=12, true;
     todo_empty_stop_cap: u32 = "todo.empty_stop_cap", todo_gate::EMPTY_STOP_CAP, 1..=8, true;
     todo_ladder_top: u8 = "todo.ladder_top", todo_gate::LADDER_TOP, 1..=3, false;
-    family_max_children: usize = "family.max_children", subagent::DEFAULT_MAX_CHILDREN, 2..=16, true;
-    family_cap: usize = "family.cap", subagent::FAMILY_CAP, 4..=32, true;
+    family_max_children: usize = "family.max_children", subagent::DEFAULT_MAX_CHILDREN, 2..=128, true;
+    family_cap: usize = "family.cap", subagent::FAMILY_CAP, 4..=128, true;
     family_depth: u8 = "family.depth", yi_types::config::DEFAULT_MAX_DEPTH, 1..=3, false;
     family_stuck_idle_s: u64 = "family.stuck_idle_s", family::STUCK_IDLE_MS / 1000, 60..=1800, true;
     mail_wait_min_ms: u64 = "mail.wait_min_ms", mailbox::WAIT_MIN_MS, 100..=10000, false;

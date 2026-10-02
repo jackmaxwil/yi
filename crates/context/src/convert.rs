@@ -33,12 +33,14 @@ fn bash_execution_to_text(
     text
 }
 
-fn as_user(text: String, timestamp: u64) -> AgentMessage {
-    AgentMessage::host_user(UserContent::Text(text), timestamp)
+/// Invariant: only its requester's words reach the model as bare user text; every other
+/// user-role or custom message arrives fenced as runtime context under its source.
+fn host_view(source: &str, content: &UserContent, timestamp: u64) -> AgentMessage {
+    crate::wrapper::wrap_content(source, content, timestamp)
 }
 
-/// Design §4.2: harness-internal message kinds become plain user messages, their text
-/// unchanged; kinds with no LLM representation drop.
+/// Design §4.2: harness-internal message kinds become user-role messages, fenced unless they
+/// are the requester's words; kinds with no LLM representation drop.
 pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
     let _span = yi_types::trace::span("context.convert_to_llm").arg("messages", messages.len());
     messages
@@ -57,15 +59,16 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
                 if exclude_from_context.unwrap_or(false) {
                     return None;
                 }
-                Some(as_user(
-                    bash_execution_to_text(
-                        command,
-                        output,
-                        *exit_code,
-                        *cancelled,
-                        *truncated,
-                        full_output_path.as_deref(),
-                    ),
+                let text = bash_execution_to_text(
+                    command,
+                    output,
+                    *exit_code,
+                    *cancelled,
+                    *truncated,
+                    full_output_path.as_deref(),
+                );
+                Some(AgentMessage::user_input(
+                    UserContent::Text(text),
                     *timestamp,
                 ))
             }
@@ -83,23 +86,37 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
                     },
                     *timestamp,
                 )),
-                None => Some(AgentMessage::host_user(content.clone(), *timestamp)),
+                None => Some(host_view(custom_type, content, *timestamp)),
             },
             AgentMessage::BranchSummary {
                 summary, timestamp, ..
-            } => Some(as_user(
-                format!("{BRANCH_SUMMARY_PREFIX}{summary}{BRANCH_SUMMARY_SUFFIX}"),
+            } => Some(crate::wrapper::wrap_internal(
+                "summary",
+                &format!("{BRANCH_SUMMARY_PREFIX}{summary}{BRANCH_SUMMARY_SUFFIX}"),
                 *timestamp,
             )),
             AgentMessage::CompactionSummary {
                 summary, timestamp, ..
-            } => Some(as_user(
-                format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}"),
+            } => Some(crate::wrapper::wrap_internal(
+                "summary",
+                &format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}"),
                 *timestamp,
             )),
-            AgentMessage::User { .. }
-            | AgentMessage::Assistant { .. }
-            | AgentMessage::ToolResult { .. } => Some(message.clone()),
+            AgentMessage::User {
+                content,
+                timestamp,
+                attribution,
+            } => Some(match attribution {
+                yi_types::message::Attribution::Host(source) => {
+                    host_view(source.label(), content, *timestamp)
+                }
+                _ if attribution.reads_as_typed(*timestamp) => message.clone(),
+                _ if crate::wrapper::internal_source(message).is_some() => message.clone(),
+                _ => host_view("host", content, *timestamp),
+            }),
+            AgentMessage::Assistant { .. } | AgentMessage::ToolResult { .. } => {
+                Some(message.clone())
+            }
         })
         .collect()
 }
