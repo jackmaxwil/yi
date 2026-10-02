@@ -61,7 +61,8 @@ FINDINGS_SCHEMA = {
 # Findings a model cannot fix: the PR body's sections and a twin are a person's call.
 INTAKE = ("template", "duplicate")
 # A file the findings fixer creates is kept when it is source or a test, never a build dir's output.
-NEW_FILE = re.compile(r"^(crates|python|skills|docs|evals)/(?!.*(^|/)target[^/]*/).+\.(rs|py|md|toml|txt)$")
+# Not skills/: a skill is instructions later sessions load, never a file a fixer model writes.
+NEW_FILE = re.compile(r"^(crates|python|docs|evals)/(?!.*(^|/)target[^/]*/).+\.(rs|py|md|toml|txt)$")
 SIGNED = "The fixer's answer to review round"
 
 
@@ -284,7 +285,7 @@ def findings_prompt(pr, n, todo):
     listed = "\n".join(fenced(f"{i}. [{f['lens']}, {f['severity']}] {f['claim']} at {f.get('path')}:{f.get('line')}"
                                + (f" — suggested: {f['fix']}" if f.get("fix") else "")) for i, f in enumerate(todo, 1))
     return (
-        f"Your working directory is pull request #{pr['number']} ({pr['title']!r}). Review round {n} blocked it "
+        f"Your working directory is pull request #{pr['number']} ({fenced(pr['title'])!r}). Review round {n} blocked it "
         "with the findings below. Fix every one, high and medium, with the smallest change that does it. A finding "
         "you can show is wrong after reading the code: change nothing for it and decline it in `declined`, naming "
         "the file:line that shows why; a person decides those. Scope is no reason to decline: these are the work.\n"
@@ -420,8 +421,9 @@ def fix(pr, ask=pr_review.ask, root=ROOT, kind="conflict", rnd=None, tried=0):
             said = answer(hook_prompt(pr, refused), model or TIERS[0])
             more, note = accept(clone, [], before, keep_new=NEW_FILE.match if kind == "findings" else lambda path: False)
             touched = sorted(set(touched) | set(more))
-            if kind == "findings" and weakened(clone):
-                raise RuntimeError(weakened(clone))
+            refused = weakened(clone) if kind == "findings" else None
+            if refused:
+                raise RuntimeError(refused)
             reprice(clone)
             summary += ("\n\nThe commit hook refused the first attempt; one more turn: "
                         + ((said.get("summary") or "").strip() or "no summary") + note)
@@ -508,6 +510,9 @@ def quiet_for(pr, notes, now):
 def attempt(repo, pr, ids, asked=False):
     """Decide and, when owed, fix one PR. Returns the decision made."""
     number = pr["number"]
+    # The fix pushes to origin's branch of the head's name; a fork's head lives elsewhere.
+    if ((pr.get("head") or {}).get("repo") or {}).get("full_name") != repo:
+        return "fork"
     labels = {label["name"] for label in pr.get("labels") or []}
     forge_pr.git("fetch", "-q", "origin", f"refs/pull/{number}/head", pr["base"]["ref"])
     notes = pr_review.comments(repo, number)
@@ -616,7 +621,7 @@ def selfcheck():
         errs.append(f"the misses since the last push read {misses(notes), misses(tries), misses(tries + notes[:1])}")
     if fix_spend(notes) != 0.5:
         errs.append(f"the fixer's cap read {fix_spend(notes)}, not 0.5: only its own meta lines count")
-    if not NEW_FILE.match("crates/a/tests/new.rs") or NEW_FILE.match("target-check/x.d") or NEW_FILE.match("crates/a/target/x.rs"):
+    if not NEW_FILE.match("crates/a/tests/new.rs") or NEW_FILE.match("target-check/x.d") or NEW_FILE.match("crates/a/target/x.rs") or NEW_FILE.match("skills/x/SKILL.md"):
         errs.append("the new-file rule keeps a build output or drops a new test")
     if not MARKER.search("a\n<<<<<<< HEAD\nb\n") or MARKER.search("a\n<<<<<<<< not one\n"):
         errs.append("the marker check misreads a conflict marker")
@@ -728,6 +733,9 @@ def selfcheck():
             errs.append("a fix that deleted the test was accepted")
         if "more assertion" not in str(findings_run({"tests/t.rs": "#[test]\nfn t() {\n}\n"})):
             errs.append("a fix that dropped an assertion was accepted")
+        into = findings_run({"mv": lambda cwd: sh(cwd, "git", "mv", "tests/t.rs", "scripts/hooks/t.rs")})
+        if "may not touch" not in str(into):
+            errs.append(f"a file the model moved into the wall with `git mv` read {into if isinstance(into, str) else 'pushed'}")
         hidden = findings_run({"mv": lambda cwd: sh(cwd, "git", "mv", "scripts/hooks/pre-commit", "gone")})
         if "may not touch" not in str(hidden):
             errs.append(f"a walled file the model moved with `git mv` read {hidden if isinstance(hidden, str) else 'pushed'}")
@@ -815,7 +823,11 @@ def selfcheck():
         pr_review.comments, pr_review.authors, bot_meter.since = (lambda repo, n: tried_notes), (lambda: {"jack"}), (lambda *a: [])
         for name, value in stand.items():
             setattr(module, name, value)
-        attempt("o/r", {"number": 1, "labels": [{"name": "autofix"}], "head": {"sha": "abc"}, "base": {"ref": "main"}}, {})
+        attempt("o/r", {"number": 1, "labels": [{"name": "autofix"}], "head": {"sha": "abc", "repo": {"full_name": "o/r"}},
+                        "base": {"ref": "main"}}, {})
+        fork = {"number": 2, "labels": [], "head": {"sha": "abc", "repo": {"full_name": "someone/r"}}, "base": {"ref": "main"}}
+        if attempt("o/r", fork, {}) != "fork":
+            errs.append("a fork's PR was handed to the fixer, which pushes to origin")
         if passed.get("tried") != 1:
             errs.append(f"attempt handed fix() tried={passed.get('tried')}, not the 1 failed try since the last push")
     finally:
