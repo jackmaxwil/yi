@@ -93,6 +93,9 @@ run "$PY" scripts/forge_pr.py --selfcheck
 # decisions are the gate: the quote check, the refute tally, the marker's author, the
 # delta range and the fixer's wall; only this flag walks them without a forge or a model.
 run "$PY" scripts/pr_review.py --selfcheck
+# The autofixer pushes to people's branches, so its table, its wall and its marker check are
+# proved here on a scratch merge with a stand-in model, never a forge.
+run "$PY" scripts/pr_autofix.py --selfcheck
 # The orphan scans are heuristics over text, so the flag is where they are proved to
 # judge anything at all: each scan is disabled in turn and the selfcheck must fail
 # for that scan's own reason (D109).

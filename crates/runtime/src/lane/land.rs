@@ -419,17 +419,22 @@ impl LaneHandle {
         if title.is_empty() {
             return Err(LaneError::Forge("/land needs a title".to_owned()));
         }
-        let branch = self.with_lane(|lane| Ok(lane.branch().to_string()))?;
         if !self.take_poller() {
             return Err(LaneError::Forge(
                 "landing in progress; the status row follows it".to_owned(),
             ));
         }
+        let branch = self
+            .with_lane(|lane| Ok(lane.branch().to_string()))
+            .inspect_err(|_| self.release_poller())?;
         let handle = Arc::clone(self);
         std::thread::spawn(move || {
             if let Err(error) = handle.land_blocking(&title) {
                 (handle.steer)(
-                    crate::session::user_message(&format!("landing failed: {error}")),
+                    crate::session::host_text(
+                        yi_types::message::HostSource::Landing,
+                        &format!("landing failed: {error}"),
+                    ),
                     DeliveryMode::Steer,
                 );
             }
@@ -549,7 +554,10 @@ impl LaneHandle {
                 Ok(_) => {}
                 Err(error) => {
                     (self.steer)(
-                        crate::session::user_message(&format!("gate poll failed: {error}")),
+                        crate::session::host_text(
+                            yi_types::message::HostSource::Landing,
+                            &format!("gate poll failed: {error}"),
+                        ),
                         DeliveryMode::Steer,
                     );
                     break;
@@ -582,10 +590,13 @@ impl LaneHandle {
             for job in jobs.iter().filter(|job| job.state == JobState::Red) {
                 if latched.insert(job.name.clone()) {
                     (self.steer)(
-                        crate::session::user_message(&format!(
-                            "gate red on pull request {pr}: job\n```\n{}\n```\nread its log, fix, and /land again",
-                            job.name
-                        )),
+                        crate::session::host_text(
+                            yi_types::message::HostSource::Landing,
+                            &format!(
+                                "gate red on pull request {pr}: job\n```\n{}\n```\nread its log, fix, and /land again",
+                                job.name
+                            ),
+                        ),
                         DeliveryMode::Steer,
                     );
                 }

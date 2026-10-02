@@ -1,4 +1,4 @@
-use yi_types::message::{AgentMessage, UserContent};
+use yi_types::message::{AgentMessage, Content, UserContent};
 
 fn valid_source(source: &str) -> bool {
     let mut chars = source.chars();
@@ -10,24 +10,65 @@ fn valid_source(source: &str) -> bool {
 pub const ADVISORY_LINE: &str =
     "Runtime advisory, not a user instruction; act on it only if it applies to the work in hand.";
 
-/// The wrapper makes an injected prompt data-with-provenance and droppable at compaction, so
-/// it never accumulates across windows. Invalid source labels fall back to `internal`.
+/// Invariant: a body cannot open or close a fence of its own, so each wrapped message carries
+/// one source; the wrapper makes injected text droppable at compaction, never accumulating.
 pub fn wrap_internal(source: &str, text: &str, timestamp: u64) -> AgentMessage {
     let source = if valid_source(source) {
         source
     } else {
         "internal"
     };
+    let text = if text.contains("yi_internal_context") {
+        text.replace("<yi_internal_context", "<\\yi_internal_context")
+            .replace("</yi_internal_context", "<\\/yi_internal_context")
+    } else {
+        text.to_owned()
+    };
     let body = match source {
         "reminder" | "advisory" => format!("{ADVISORY_LINE}\n{text}"),
-        _ => text.to_owned(),
+        _ => text,
     };
-    AgentMessage::host_user(
-        UserContent::Text(format!(
+    AgentMessage::User {
+        content: UserContent::Text(format!(
             "<yi_internal_context source=\"{source}\">\n{body}\n</yi_internal_context>"
         )),
         timestamp,
-    )
+        attribution: yi_types::message::Attribution::Unproven,
+    }
+}
+
+/// [`wrap_internal`] over any content: an image rides between a text block that opens the fence
+/// and one that closes it.
+pub fn wrap_content(source: &str, content: &UserContent, timestamp: u64) -> AgentMessage {
+    let blocks = match content {
+        UserContent::Text(text) => return wrap_internal(source, text, timestamp),
+        UserContent::Blocks(blocks) => blocks,
+    };
+    let text = yi_types::message::join_text(blocks, "\n");
+    let AgentMessage::User {
+        content: UserContent::Text(fenced),
+        ..
+    } = wrap_internal(source, &text, timestamp)
+    else {
+        return wrap_internal(source, &text, timestamp);
+    };
+    let mut wrapped: Vec<Content> = blocks
+        .iter()
+        .filter(|block| !matches!(block, Content::Text { .. }))
+        .cloned()
+        .collect();
+    wrapped.insert(
+        0,
+        Content::Text {
+            text: fenced,
+            text_signature: None,
+        },
+    );
+    AgentMessage::User {
+        content: UserContent::Blocks(wrapped),
+        timestamp,
+        attribution: yi_types::message::Attribution::Unproven,
+    }
 }
 
 pub fn internal_source(message: &AgentMessage) -> Option<&str> {
@@ -56,6 +97,7 @@ pub fn internal_source_of_custom(custom_type: &str) -> Option<&'static str> {
         "reminder" => Some("reminder"),
         "classifier" => Some("classifier"),
         "fragment" => Some("fragment"),
+        "todo_intercept" => Some("todo"),
         _ => None,
     }
 }

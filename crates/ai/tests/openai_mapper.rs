@@ -35,7 +35,7 @@ fn context() -> LlmContext {
     LlmContext {
         cache_ttl: yi_types::model::Ttl::Min5,
         system_prompt: "be terse".to_owned(),
-        messages: vec![AgentMessage::host_user(
+        messages: vec![AgentMessage::user_input(
             UserContent::Text("hi".to_owned()),
             0,
         )],
@@ -367,7 +367,7 @@ fn a_routed_claude_request_keeps_its_newest_twenty_images() {
         system_prompt: String::new(),
         messages: (0..count)
             .map(|_| {
-                AgentMessage::host_user(
+                AgentMessage::user_input(
                     UserContent::Blocks(vec![Content::Image {
                         data: "iVBORw0KGgo=".to_owned(),
                         mime_type: "image/png".to_owned(),

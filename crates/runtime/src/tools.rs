@@ -17,6 +17,7 @@ pub struct ToolAdapter {
     permission: Option<Arc<PermissionBroker>>,
     spill_root: Option<PathBuf>,
     spill_key: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    transcript: Option<crate::goal::StoreHandle>,
     auto_background: Option<std::time::Duration>,
     rules: Option<Arc<crate::rules::RuleEngine>>,
     wall: crate::wall::Wall,
@@ -85,6 +86,7 @@ fn facts_of(tool: &str, command: &str, output: &yi_tools::ToolOutput) -> Vec<Str
 async fn gate_armed(
     command: &str,
     (rules, wall, broker): Gates<'_>,
+    walled: (&[PathBuf], &[PathBuf]),
     context: &ToolContext,
 ) -> Option<String> {
     let json = serde_json::to_string(&bash(command)).unwrap_or_default();
@@ -94,20 +96,81 @@ async fn gate_armed(
     {
         return Some(denial);
     }
-    let walled = wall.check(
-        "bash",
-        yi_tools::ToolKind::Exec,
-        &bash(command),
-        &context.cwd,
-    );
-    if walled.is_some() {
-        return walled;
+    let refused = host_wall(command, wall, walled, &context.cwd);
+    if refused.is_some() {
+        return refused;
     }
     let (broker, id, owned) = (broker.cloned(), context.call_id.clone(), command.to_owned());
     let container = context.container.is_some();
     tokio::task::spawn_blocking(move || refuse_armed(&owned, container, broker.as_deref(), &id))
         .await
         .unwrap_or_else(|join_error| Some(format!("permission check failed: {join_error}")))
+}
+
+/// Invariant: a command run on the host meets the wall by its text alone: the wall's own lists,
+/// and its walled roots save a spare (#1001).
+pub(crate) fn host_wall(
+    command: &str,
+    wall: &crate::wall::Wall,
+    (roots, spared): (&[PathBuf], &[PathBuf]),
+    cwd: &std::path::Path,
+) -> Option<String> {
+    let walled = wall.check("bash", yi_tools::ToolKind::Exec, &bash(command), cwd);
+    walled.or_else(|| walled_root_refusal(command, roots, spared, cwd))
+}
+
+/// Incident: each relative `cd` resolved against every dir so far, doubling them, so a chain of
+/// k cds cost 2^k resolves per word; past this the check refuses rather than skip a target.
+const CD_DIRS_MAX: usize = 64;
+
+/// Refuses a command naming a root or a dir above one, but a spare, in most spellings (`~`, a glob,
+/// `..` after a `cd`, glued to a flag). Text only: `$(…)`, a variable or a built path pass it.
+fn walled_root_refusal(
+    command: &str,
+    roots: &[PathBuf],
+    spared: &[PathBuf],
+    cwd: &std::path::Path,
+) -> Option<String> {
+    let text = command.replace(['"', '\'', '\\'], "");
+    let text = text.replace("${HOME}", "~").replace("$HOME", "~");
+    let words = text.split(|c: char| c.is_whitespace() || "=;|&()<>`:@".contains(c));
+    // Every `cd` target joins the dirs a word is resolved from, scoped or not: fail closed.
+    let (mut dirs, mut after_cd) = (vec![cwd.to_path_buf()], false);
+    for word in words.filter(|word| !word.is_empty() && !roots.is_empty()) {
+        let glued = word.find('/').filter(|at| *at > 0).map(|at| &word[at..]);
+        for spelled in std::iter::once(word).chain(glued) {
+            let head: String = (spelled.split_inclusive('/'))
+                .take_while(|part| !part.contains(['*', '?', '[']))
+                .collect();
+            let paths: Vec<PathBuf> = (dirs.iter())
+                .map(|dir| yi_permission::resolve_target(&head, dir))
+                .collect();
+            let hit = roots.iter().find(|root| {
+                paths.iter().any(|path| {
+                    yi_tools::walled(std::slice::from_ref(path), root)
+                        || yi_tools::walled(std::slice::from_ref(*root), path)
+                            && !yi_tools::walled(spared, path)
+                })
+            });
+            if let Some(root) = hit {
+                return Some(crate::gate::outside_sandbox_refusal(root));
+            }
+            for path in paths.into_iter().filter(|_| after_cd) {
+                if !dirs.contains(&path) {
+                    dirs.push(path);
+                }
+            }
+            if dirs.len() > CD_DIRS_MAX {
+                let why = format!(
+                    "its cd targets give {} directories to read its paths from, past the check's cap of {CD_DIRS_MAX}; run the cds as separate calls",
+                    dirs.len()
+                );
+                return Some(crate::gate::walled_host_refusal(&why));
+            }
+        }
+        after_cd = matches!(word, "cd" | "pushd");
+    }
+    None
 }
 
 fn bash(command: &str) -> Map<String, Value> {
@@ -126,6 +189,11 @@ pub fn refuse_armed(
     if in_container {
         return Some(format!(
             "an exec:// source runs `{command}` on the host, and this session's commands run in a container"
+        ));
+    }
+    if broker.is_some_and(PermissionBroker::confines_walled) {
+        return Some(crate::gate::walled_host_refusal(
+            "an exec:// source runs on the host",
         ));
     }
     let outcome = broker?.decide_call(
@@ -155,8 +223,50 @@ type Gates<'a> = (
 );
 
 /// The §7.3 tee target: the home root, never the user's working tree; one dir per session.
-fn default_spill_root() -> Option<PathBuf> {
+pub(crate) fn default_spill_root() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi").join(yi_tools::SPILLS))
+}
+
+/// A session's own spill dir under `root`, when its key is a valid session id.
+pub(crate) fn own_spill_dir(
+    root: Option<&std::path::Path>,
+    key: Option<String>,
+) -> Option<PathBuf> {
+    let key = key.filter(|key| yi_session::validate_session_id(key).is_ok())?;
+    Some(root?.join(key))
+}
+
+/// Every session store: `~/.yi/sessions` and the `--session-dir` in use, which the broker holds
+/// as host-owned (D335).
+pub(crate) fn session_stores(broker: Option<&PermissionBroker>) -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi/sessions"));
+    let held = broker
+        .map(PermissionBroker::session_stores)
+        .unwrap_or_default();
+    let mut stores: Vec<PathBuf> = home.into_iter().chain(held.iter().cloned()).collect();
+    stores.sort();
+    stores.dedup();
+    stores
+}
+
+/// The spill roots and every session store: what a walled session's tools and kernel read only
+/// where a later rule spares it.
+pub(crate) fn spill_roots_and_stores(
+    spill_root: Option<&std::path::Path>,
+    broker: Option<&PermissionBroker>,
+) -> Vec<PathBuf> {
+    let flat =
+        (spill_root.and_then(std::path::Path::parent)).map(|yi| yi.join(yi_tools::FLAT_SPILLS));
+    (spill_root.map(std::path::Path::to_path_buf).into_iter())
+        .chain(flat)
+        .chain(session_stores(broker))
+        .collect()
+}
+
+/// Invariant: a spare, a kernel's or a tool's, never reopens a path the wall's own `deny_read`
+/// covers (#1000, #1001).
+pub(crate) fn unwalled(wall: &crate::wall::Wall, dir: &std::path::Path) -> bool {
+    !yi_tools::walled(&wall.deny_read, dir)
 }
 
 impl ToolAdapter {
@@ -173,6 +283,7 @@ impl ToolAdapter {
             permission,
             spill_root: default_spill_root(),
             spill_key: None,
+            transcript: None,
             auto_background: None,
             rules: None,
             wall: crate::wall::Wall::default(),
@@ -190,19 +301,25 @@ impl ToolAdapter {
 
     /// The session's own spill dir, when its key is a valid session id.
     fn session_spills(&self) -> Option<PathBuf> {
-        let key = (self.spill_key.as_ref()).and_then(|key| key())?;
-        yi_session::validate_session_id(&key).ok()?;
-        Some(self.spill_root.as_ref()?.join(key))
+        own_spill_dir(
+            self.spill_root.as_deref(),
+            self.spill_key.as_ref().and_then(|key| key()),
+        )
     }
 
-    /// Invariant: a walled session reads back only its own spills: the spill root and the flat
-    /// dir from before spills were per session are walled, and its own dir is spared.
-    fn spill_walls(&self) -> Vec<PathBuf> {
-        let root = self.spill_root.as_ref().filter(|_| !self.wall.is_empty());
-        let flat = root
-            .and_then(|root| root.parent())
-            .map(|yi| yi.join(yi_tools::FLAT_SPILLS));
-        root.cloned().into_iter().chain(flat).collect()
+    /// The store whose file is the session's own transcript, read per call like its spill key.
+    pub fn with_transcript(mut self, store: crate::goal::StoreHandle) -> Self {
+        self.transcript = Some(store);
+        self
+    }
+
+    /// Invariant: a walled session reads only its own spills and transcript: the spill roots and
+    /// session stores are walled, its own spill dir and transcript spared (D340, D345).
+    fn walled_roots(&self) -> Vec<PathBuf> {
+        if self.wall.is_empty() {
+            return Vec::new();
+        }
+        spill_roots_and_stores(self.spill_root.as_deref(), self.permission.as_deref())
     }
 
     pub fn with_extensions(mut self, ext: Option<crate::session::ExtHook>) -> Self {
@@ -281,14 +398,22 @@ impl AgentTool for ToolAdapter {
         _signal: &'a InterruptSignal,
     ) -> ToolFuture<'a> {
         let tool = Arc::clone(&self.tool);
-        let (spared, spill_walls) = (self.session_spills(), self.spill_walls());
+        let (spills, walled_roots) = (self.session_spills(), self.walled_roots());
+        let store = (self.transcript.as_ref()).and_then(|store| store());
+        let transcript =
+            store.and_then(|store| yi_session::lock_session(&store).file_path().cloned());
+        let spared: Vec<PathBuf> = (spills.iter().chain(&transcript))
+            .filter(|dir| !walled_roots.is_empty() && unwalled(&self.wall, dir))
+            .cloned()
+            .collect();
         let mut context = ToolContext {
             cwd: self.cwd.clone(),
             cancelled: Arc::clone(&self.cancelled),
-            recovery_dir: spared.clone(),
+            recovery_dir: spills,
+            transcript,
             auto_background: self.auto_background,
             sandbox: None,
-            deny_read: [self.wall.deny_read.as_slice(), &spill_walls].concat(),
+            deny_read: [self.wall.deny_read.as_slice(), &walled_roots].concat(),
             deny_write: self.wall.deny_write.clone(),
             container: self.wall.container.clone(),
             call_id: tool_call_id.to_owned(),
@@ -338,8 +463,9 @@ impl AgentTool for ToolAdapter {
             }
             drop(gate_span);
             for command in tool.arms(&args) {
-                let refused =
-                    gate_armed(&command, (&rules, &wall, permission.as_ref()), &context).await;
+                let walled = (walled_roots.as_slice(), spared.as_slice());
+                let gates = (&rules, &wall, permission.as_ref());
+                let refused = gate_armed(&command, gates, walled, &context).await;
                 if let Some(denial) = refused {
                     return ToolOutcome {
                         result: yi_loop::tool::error_tool_result_kind(
@@ -376,8 +502,8 @@ impl AgentTool for ToolAdapter {
                         if let Containment::Contained { widen, .. } = &outcome.containment {
                             context.sandbox = (reporter.sandbox_for(&context.cwd, &wall, widen))
                                 .map(|mut sandbox| {
-                                    sandbox.deny_read.extend_from_slice(&spill_walls);
-                                    sandbox.spared = spared.filter(|_| !spill_walls.is_empty());
+                                    sandbox.deny_read.extend_from_slice(&walled_roots);
+                                    sandbox.spared.clone_from(&spared);
                                     sandbox
                                 });
                             contained = context.sandbox.as_ref().map(|_| reporter);
@@ -410,6 +536,20 @@ impl AgentTool for ToolAdapter {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
+            // Outside the sandbox the command text is the only wall left (#1001).
+            let on_host = context.sandbox.is_none() && context.container.is_none();
+            if let Some(denial) = on_host
+                .then(|| walled_root_refusal(&command, &walled_roots, &spared, &context.cwd))
+                .flatten()
+            {
+                return ToolOutcome {
+                    result: yi_loop::tool::error_tool_result_kind(
+                        &denial,
+                        yi_types::event::ToolErrorKind::Denied,
+                    ),
+                    is_error: true,
+                };
+            }
             let written = (tool.kind_for(&args) == yi_tools::ToolKind::Write)
                 .then(|| crate::permission::extract_targets(&name, &args, &context.cwd));
             let (cwd, cancel) = (context.cwd.clone(), Arc::clone(&context.cancelled));
@@ -422,9 +562,16 @@ impl AgentTool for ToolAdapter {
                 Ok(mut output) => {
                     let _after = yi_types::trace::span("tool.after").arg("tool", name.as_str());
                     // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
+                    // One at or naming a path under the own walls is never kept: Seatbelt judges
+                    // each run, so a retry neither asks to leave nor claims the own transcript.
+                    let own = |path: &std::path::Path| yi_tools::walled(&walled_roots, path);
+                    let named = (command.split_whitespace())
+                        .any(|word| own(&yi_permission::resolve_target(word, &cwd)));
                     if let Some(broker) = &contained
                         && let Some(refusal) = (output.result.details.get("sandboxRefusal"))
                             .and_then(yi_tools::SandboxRefusal::from_json)
+                        && !named
+                        && !matches!(&refusal, yi_tools::SandboxRefusal::Path(path) if own(path))
                     {
                         broker.note_containment_failure(refusal);
                     }

@@ -624,7 +624,7 @@ mod tests {
     use crate::fetch::{FetchLog, KernelVariables, McpResourceRead, open_checkpoint_show};
     use crate::scratch::Scratch;
     use crate::wall::Wall;
-    use yi_types::message::AgentMessage;
+    use yi_types::message::{AgentMessage, HostSource};
 
     struct StubKernel;
 
@@ -1029,7 +1029,7 @@ mod tests {
         let mut store = in_memory_session();
         store.append_message(
             "main",
-            AgentMessage::host_user(UserContent::Text("host-minted preamble".to_owned()), 0),
+            AgentMessage::host_text(HostSource::Notice, "host-minted preamble", 0),
         )?;
         store.append_message(
             "main",
@@ -1037,7 +1037,7 @@ mod tests {
         )?;
         store.append_message(
             "main",
-            AgentMessage::host_user(UserContent::Text("compaction filler".to_owned()), 0),
+            AgentMessage::host_text(HostSource::Notice, "compaction filler", 0),
         )?;
         store.append_message(
             "main",
@@ -1073,7 +1073,7 @@ mod tests {
         let mut store = in_memory_session();
         store.append_message(
             "main",
-            AgentMessage::host_user(UserContent::Text("forged instruction".to_owned()), 0),
+            AgentMessage::host_text(HostSource::Notice, "forged instruction", 0),
         )?;
         let shared: yi_session::SharedSession = std::sync::Arc::new(std::sync::Mutex::new(store));
         let resolver =
