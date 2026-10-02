@@ -687,13 +687,14 @@ fn wire_plan_engine(
     if let Some(service) = session.plan_service() {
         service.set_engine(Arc::clone(&engine), actor.clone());
     }
-    tools.push(Arc::new(crate::plan::tool::PlanTool::new(
-        Arc::clone(&engine),
-        actor,
-    )));
-    tools.push(Arc::new(crate::todo::tool::TodoTool::new(Arc::clone(
-        &todos,
-    ))));
+    let store = session.store_handle();
+    let mut tool = crate::plan::tool::PlanTool::new(Arc::clone(&engine), actor.clone());
+    if let (crate::plan::ops::Actor::Owner, Some(broker)) = (&actor, wiring.broker.clone()) {
+        tool = tool.confirming(crate::plan::authority::Confirming { broker, store });
+    }
+    tools.push(Arc::new(tool));
+    let todo = crate::todo::tool::TodoTool::new(Arc::clone(&todos));
+    tools.push(Arc::new(todo));
     session.set_todos(Arc::clone(&todos));
     if let Some(clock) = session.heartbeat_service() {
         let clock = Arc::downgrade(&clock);

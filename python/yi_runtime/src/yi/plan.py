@@ -582,7 +582,7 @@ class Plan:
 class Run:
     """One scheduler's lease on a plan; ``outcome`` is None while it runs.
 
-    It ends ``verified_success``, ``accepted_by_user``, ``failed``,
+    It ends ``verified_success``, ``accepted_by_user``, ``accepted_by_classifier``, ``failed``,
     ``cancelled`` or ``unresolved``. A shape drives it with ``launch``,
     ``settle`` and ``over``.
 
@@ -753,8 +753,11 @@ class Run:
         if any(doc["state"] == "failed" for doc in docs):
             return "failed"
         resolutions = {doc.get("resolution") for doc in docs}
-        if resolutions <= {"verified_done", "accepted_by_user"}:
-            return "accepted_by_user" if "accepted_by_user" in resolutions else "verified_success"
+        accepted = {"accepted_by_user", "accepted_by_classifier"}
+        if resolutions <= {"verified_done"} | accepted:
+            if "accepted_by_user" in resolutions:
+                return "accepted_by_user"
+            return "accepted_by_classifier" if resolutions & accepted else "verified_success"
         return "unresolved"
 
     async def status(self) -> dict[str, Any]:

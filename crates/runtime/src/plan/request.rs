@@ -10,8 +10,9 @@ use yi_types::plan::doc::{PlanId, TodoLabel, TouchCount};
 use yi_types::plan::ledger::RequestId;
 
 use super::ops::{Actor, Op, PlanEngine, PlanOpError};
+use super::render::render_outcome;
 use super::table::OpKind;
-use super::tool::{PlanToolError, declared, render_outcome};
+use super::tool::{PlanToolError, declared};
 
 /// ponytail: a linear scan over 64 replies keyed on request id and args digest, holding only
 /// refusals that never reached the journal (a refused parse or actor); the journal replays the rest.
@@ -139,7 +140,7 @@ fn code_of(error: &PlanToolError) -> &'static str {
             | PlanOpError::StaleRevision { .. }
             | PlanOpError::RequestIdReused { .. }),
         ) => error.code(),
-        PlanToolError::Op(_) => "refused",
+        PlanToolError::Op(_) | PlanToolError::Submit(_) => "refused",
     }
 }
 

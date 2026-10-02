@@ -669,14 +669,15 @@ impl Verdict {
     }
 }
 
-/// How a `Done` came to be: verified by the kernel, accepted by the user, or carried in from a
-/// format-1 file whose success nobody checked.
+/// How a `Done` came to be: verified by the kernel, accepted by the user or by the classifier
+/// in their place, or carried in from a format-1 file whose success nobody checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Resolution {
     VerifiedDone,
     AcceptedByUser,
     LegacyUnverified,
+    AcceptedByClassifier,
 }
 
 impl std::fmt::Display for Resolution {
@@ -685,6 +686,7 @@ impl std::fmt::Display for Resolution {
             Self::VerifiedDone => "verified_done",
             Self::AcceptedByUser => "accepted_by_user",
             Self::LegacyUnverified => "legacy_unverified",
+            Self::AcceptedByClassifier => "accepted_by_classifier",
         })
     }
 }
