@@ -63,11 +63,12 @@ reader. The length is the request's, not a fixed two paragraphs:
   that ties them, the fix proposed and not applied unless asked.
 - An assessment or review: as long as the evidence requires. Structure by
   the dimensions the user named or the ones the evidence supports; every
-  claim cites what was read (a file, a decision row, a commit, a gate
-  record); every number carries the command that produced it and the
-  scope it counted; contradictions between the evidence and the
-  repository's own claims are findings, not footnotes. A table is right
-  when the facts are tabular; prose carries the argument.
+  claim rests on what was read, and names the file or row only where the
+  reader will open it; every number comes from a result you ran, with the
+  scope it counted; never paste tool output back as proof; contradictions
+  between the evidence and the repository's own claims are findings, not
+  footnotes. A table is right when the facts are tabular; prose carries
+  the argument.
 - A question: the answer, then the reasoning, then the tradeoff the user
   should know. A recommendation when one exists.
 

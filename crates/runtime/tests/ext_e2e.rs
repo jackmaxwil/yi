@@ -51,9 +51,9 @@ fn fragments(seen: &Seen) -> Vec<String> {
     delivered(seen, |custom_type| custom_type == Some("fragment"))
 }
 
-/// The reminder lines, which ride as plain host messages.
+/// The reminder lines: a `reminder` note, which the model reads as runtime context.
 fn reminders(seen: &Seen) -> Vec<String> {
-    delivered(seen, |custom_type| custom_type.is_none())
+    delivered(seen, |custom_type| custom_type == Some("reminder"))
 }
 
 fn delivered(seen: &Seen, keep: impl Fn(Option<&str>) -> bool) -> Vec<String> {
@@ -378,10 +378,13 @@ fn a_turn_that_only_read_stays_one_shot_and_a_write_escalates_silently() -> Test
     Ok(())
 }
 
+/// Dies with "write the plan now" delivered: a question whose grep spanned nine files was
+/// told to plan, and the model took the nudge for the user.
 #[test]
-fn a_search_over_many_files_escalates() -> TestResult {
+fn a_search_over_many_files_escalates_without_a_nudge() -> TestResult {
     let dir = Scratch::new("yi-ext-files")?;
     let mut host = started(&dir, &dir);
+    let seen = deliveries(&mut host);
     host.dispatch(
         &Event::ToolResult {
             name: "grep".to_owned(),
@@ -391,6 +394,11 @@ fn a_search_over_many_files_escalates() -> TestResult {
         None,
     );
     assert!(host.system_prompt().contains("# Orchestrate"));
+    let every = delivered(&seen, |_| true);
+    assert!(
+        every.iter().all(|text| !text.contains("outgrown")),
+        "a read-only signal loads the protocol quietly: {every:?}"
+    );
     Ok(())
 }
 
