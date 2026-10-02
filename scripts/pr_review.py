@@ -916,6 +916,8 @@ def selfcheck():
     prompt = lens_prompt(probes["tests"], {"number": 1, "title": "t", "body": body}, "x", "a" * 8, "b" * 8)
     assert "Closes #4" in prompt and "failed before" in prompt and "## Performance" not in prompt, "every probe reads the why"
     assert "never whether a defect is acceptable" in prompt, "the why cannot excuse a defect"
+    # `yi ask --schema` refuses an answer outside the enum, and two refusals void the round.
+    assert set(FINDING["properties"]["severity"]["enum"]) >= {"low"}, "a lens that still answers low must not void the round"
 
     diff = "+++ b/src/a.rs\n" + "".join(f"+line number {i} of the shared block\n" for i in range(20))
     other = diff.replace("+++ b/src/a.rs", "+++ b/src/b.rs")
