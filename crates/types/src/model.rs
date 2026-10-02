@@ -417,7 +417,7 @@ mod tests {
             cache_ttl: super::Ttl::Min5,
             system_prompt: "s".to_owned(),
             messages: Vec::new(),
-            transient: vec![crate::message::AgentMessage::host_user(
+            transient: vec![crate::message::AgentMessage::user_input(
                 crate::message::UserContent::Text("<environment>".to_owned()),
                 0,
             )],
@@ -486,7 +486,7 @@ mod tests {
         let mut history = base.clone();
         history
             .transient
-            .push(crate::message::AgentMessage::host_user(
+            .push(crate::message::AgentMessage::user_input(
                 crate::message::UserContent::Text("<environment>".to_owned()),
                 0,
             ));

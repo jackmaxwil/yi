@@ -640,7 +640,7 @@ fn only_a_message_the_user_typed_points_to_a_skill() -> TestResult {
         RuleGap::AfterTurns(1),
     )]);
     // A child's prompt and a reviewer's prompt are user-role messages a parent or the host wrote.
-    let delegated = AgentMessage::host_user(UserContent::Text("verify the goal".to_owned()), 0);
+    let delegated = AgentMessage::task("verify the goal", 0);
     assert!(engine.observe_user(&delegated).is_empty());
     assert_eq!(
         pointer_texts(&engine.observe_user(&typed("Verify the goal"))),

@@ -608,7 +608,10 @@ impl SubagentHost {
                 let steer = format!(
                     "{CHASE} {id} from \"{asker}\" {CHASED}. Answer it now with rlm.send(\"{asker}\", text, reply_to=\"{id}\"); if this turn also ends without that call, its final text is sent as your reply."
                 );
-                let woke = session.deliver(crate::session::user_message(&steer), true);
+                let woke = session.deliver(
+                    crate::session::host_text(yi_types::message::HostSource::Mail, &steer),
+                    true,
+                );
                 steered |= woke == yi_types::mail::Delivery::Woken;
                 continue;
             }

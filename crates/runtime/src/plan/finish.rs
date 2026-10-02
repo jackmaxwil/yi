@@ -925,9 +925,7 @@ mod tests {
         let key = {
             let mut children = rig.host.children.lock().map_err(|_| "poisoned")?;
             let (key, record) = children.iter_mut().next().ok_or("no record")?;
-            record
-                .session
-                .deliver(crate::session::user_message("again"), true);
+            record.session.deliver(crate::session::task("again"), true);
             record.step(crate::subagent::Step::Resumed);
             key.clone()
         };
